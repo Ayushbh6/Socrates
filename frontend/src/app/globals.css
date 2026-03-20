@@ -1,0 +1,460 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-headline), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-headline);
+  --font-label: var(--font-label-family);
+  --color-on-surface: var(--on-surface);
+  --color-on-surface-variant: var(--on-surface-variant);
+  --color-primary-container: var(--primary-container);
+  --color-secondary-container: var(--secondary-container);
+  --color-surface-container-low: var(--surface-container-low);
+  --color-surface-container-high: var(--surface-container-high);
+  --color-surface-container: var(--surface-container);
+  --color-sentient-glow: var(--sentient-glow);
+  --color-outline-variant: var(--outline-variant);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+/* Sentient / bioluminescent theme (design.md) — default via .dark on <html> */
+.dark {
+  --background: #080f18;
+  --foreground: #e2e8f6;
+  --on-surface: #e2e8f6;
+  --on-surface-variant: #a5abb8;
+  --card: rgb(28 38 52 / 0.6);
+  --card-foreground: #e2e8f6;
+  --popover: #121a25;
+  --popover-foreground: #e2e8f6;
+  --primary: #72dcff;
+  --primary-foreground: #004c5e;
+  --primary-container: #00d2ff;
+  --secondary: #ace6fa;
+  --secondary-foreground: #004251;
+  --secondary-container: #054e5f;
+  --muted: #121a25;
+  --muted-foreground: #a5abb8;
+  --accent: #17202c;
+  --accent-foreground: #e2e8f6;
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: rgb(114 220 255 / 0.12);
+  --input: rgb(28 38 52 / 0.85);
+  --ring: #72dcff;
+  --outline-variant: #414853;
+  --surface-container-low: #0c141e;
+  --surface-container: #121a25;
+  --surface-container-high: #17202c;
+  --sentient-glow: rgb(114 220 255 / 0.35);
+  --chart-1: #72dcff;
+  --chart-2: #00d2ff;
+  --chart-3: #054e5f;
+  --chart-4: #ace6fa;
+  --chart-5: #a5abb8;
+  --sidebar: rgb(12 20 30 / 0.85);
+  --sidebar-foreground: #e2e8f6;
+  --sidebar-primary: #72dcff;
+  --sidebar-primary-foreground: #004c5e;
+  --sidebar-accent: rgb(114 220 255 / 0.1);
+  --sidebar-accent-foreground: #72dcff;
+  --sidebar-border: rgb(65 72 83 / 0.15);
+  --sidebar-ring: #72dcff;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    font-family: var(--font-headline), ui-sans-serif, system-ui, sans-serif;
+  }
+}
+
+/* Sentient orb: calm breath — scale + glow (respect reduced motion) */
+@keyframes sentient-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 32px rgb(114 220 255 / 0.28))
+      drop-shadow(0 0 64px rgb(0 210 255 / 0.14))
+      drop-shadow(0 12px 40px rgb(5 78 95 / 0.35));
+  }
+  50% {
+    transform: scale(1.028);
+    filter: drop-shadow(0 0 48px rgb(114 220 255 / 0.42))
+      drop-shadow(0 0 96px rgb(0 210 255 / 0.22))
+      drop-shadow(0 16px 48px rgb(5 78 95 / 0.45));
+  }
+}
+
+@keyframes sentient-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -13px, 0);
+  }
+}
+
+@keyframes sentient-corona-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sentient-corona-glow {
+  0%,
+  100% {
+    opacity: 0.38;
+  }
+  50% {
+    opacity: 0.62;
+  }
+}
+
+@keyframes sentient-rays-pulse {
+  0%,
+  100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 0.78;
+  }
+}
+
+@keyframes sentient-ember-drift {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.55;
+  }
+  100% {
+    transform: translate(var(--ember-x), var(--ember-y)) scale(0);
+    opacity: 0;
+  }
+}
+
+@keyframes sentient-bloom-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.04);
+  }
+}
+
+.sentient-orb-float {
+  animation: sentient-float 6s ease-in-out infinite;
+  will-change: transform;
+}
+
+.sentient-orb-breathe {
+  animation: sentient-breathe 6.5s ease-in-out infinite;
+  will-change: transform, filter;
+}
+
+.sentient-orb-corona {
+  animation: sentient-corona-spin 72s linear infinite,
+    sentient-corona-glow 11s ease-in-out infinite;
+}
+
+.sentient-orb-rays {
+  animation: sentient-rays-pulse 9s ease-in-out infinite;
+}
+
+.sentient-orb-bloom {
+  animation: sentient-bloom-pulse 14s ease-in-out infinite;
+}
+
+.sentient-orb-ember {
+  animation: sentient-ember-drift 9s infinite ease-out;
+}
+
+/* Plasma rotation — internal energy churning */
+@keyframes sentient-plasma-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes sentient-plasma-spin-reverse {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(-360deg);
+  }
+}
+
+.sentient-orb-plasma-1 {
+  animation: sentient-plasma-spin 45s linear infinite;
+  will-change: transform;
+}
+
+.sentient-orb-plasma-2 {
+  animation: sentient-plasma-spin-reverse 62s linear infinite;
+  will-change: transform;
+}
+
+/* Orbiting particles */
+@keyframes sentient-orbit {
+  from {
+    transform: rotate(var(--orbit-start)) translateX(var(--orbit-radius));
+  }
+  to {
+    transform: rotate(calc(var(--orbit-start) + 360deg))
+      translateX(var(--orbit-radius));
+  }
+}
+
+.sentient-orb-orbiter {
+  animation: sentient-orbit linear infinite;
+  will-change: transform;
+}
+
+/* Flicker — rapid twinkling */
+@keyframes sentient-flicker {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.85;
+  }
+  25% {
+    opacity: 0.1;
+  }
+  45% {
+    opacity: 0.95;
+  }
+  60% {
+    opacity: 0.05;
+  }
+  80% {
+    opacity: 0.7;
+  }
+  92% {
+    opacity: 0.15;
+  }
+}
+
+.sentient-orb-flicker {
+  animation: sentient-flicker ease-in-out infinite;
+}
+
+/* Fresnel rim pulse */
+@keyframes sentient-fresnel-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.sentient-orb-fresnel {
+  animation: sentient-fresnel-pulse 8s ease-in-out infinite;
+}
+
+/* Atmospheric haze pulse */
+@keyframes sentient-haze-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.03);
+  }
+}
+
+.sentient-orb-haze {
+  animation: sentient-haze-pulse 12s ease-in-out infinite;
+}
+
+/* Subsurface scattering shift */
+@keyframes sentient-subsurface-shift {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.sentient-orb-subsurface {
+  animation: sentient-subsurface-shift 10s ease-in-out infinite;
+}
+
+@keyframes sentient-aura-drift {
+  from {
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+.sentient-aura-drift {
+  animation: sentient-aura-drift 60s linear infinite;
+}
+
+/* Offcanvas sidebar: match gap + panel motion (calm, in sync) */
+[data-slot="sidebar-wrapper"] [data-slot="sidebar-gap"],
+[data-slot="sidebar-wrapper"] [data-slot="sidebar-container"] {
+  transition-duration: 500ms;
+  transition-timing-function: cubic-bezier(0.45, 0, 0.55, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="sidebar-wrapper"] [data-slot="sidebar-gap"],
+  [data-slot="sidebar-wrapper"] [data-slot="sidebar-container"] {
+    transition-duration: 0.01ms;
+  }
+
+  .sentient-orb-breathe,
+  .sentient-orb-float,
+  .sentient-orb-corona,
+  .sentient-orb-rays,
+  .sentient-orb-bloom,
+  .sentient-orb-ember,
+  .sentient-orb-plasma-1,
+  .sentient-orb-plasma-2,
+  .sentient-orb-orbiter,
+  .sentient-orb-flicker,
+  .sentient-orb-fresnel,
+  .sentient-orb-haze,
+  .sentient-orb-subsurface {
+    animation: none !important;
+  }
+  .sentient-orb-breathe {
+    transform: scale(1);
+    filter: drop-shadow(0 0 36px rgb(114 220 255 / 0.32))
+      drop-shadow(0 0 72px rgb(0 210 255 / 0.15));
+  }
+  .sentient-orb-float {
+    transform: none;
+  }
+  .sentient-orb-corona {
+    opacity: 0.45;
+    transform: none;
+  }
+  .sentient-orb-rays {
+    opacity: 0.55;
+  }
+  .sentient-orb-bloom {
+    opacity: 0.75;
+    transform: none;
+  }
+  .sentient-orb-plasma-1,
+  .sentient-orb-plasma-2 {
+    transform: none;
+  }
+  .sentient-orb-fresnel {
+    opacity: 0.7;
+  }
+  .sentient-orb-haze {
+    opacity: 0.6;
+    transform: none;
+  }
+  .sentient-orb-subsurface {
+    opacity: 0.8;
+  }
+  .sentient-aura-drift {
+    animation: none !important;
+  }
+}
