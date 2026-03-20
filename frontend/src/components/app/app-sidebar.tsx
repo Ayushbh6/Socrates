@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -32,20 +33,44 @@ import {
   SidebarRail,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
+import type { ConversationSummary } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
-
-const MOCK_THREADS = [
-  { id: "1", title: "Neural sync review" },
-  { id: "2", title: "Workspace layout" },
-  { id: "3", title: "Profile preferences" },
-  { id: "4", title: "Quiet hours policy" },
-];
 
 const navButtonClass =
   "transition-[background,border-color,color] duration-500 ease-in-out data-active:rounded-r-full data-active:border-l-2 data-active:border-primary data-active:bg-primary/10 data-active:text-primary data-active:shadow-[inset_12px_0_24px_-12px_rgb(114_220_255/0.12)]";
 
 export function AppSidebar() {
   const pathname = usePathname();
+  const [threads, setThreads] = useState<ConversationSummary[]>([]);
+
+  useEffect(() => {
+    const loadConversations = async () => {
+      const response = await fetch("/api/conversations", {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        conversations: ConversationSummary[];
+      };
+      setThreads(payload.conversations);
+    };
+
+    void loadConversations();
+    window.addEventListener("premchat:conversations-changed", loadConversations);
+    window.addEventListener("focus", loadConversations);
+
+    return () => {
+      window.removeEventListener(
+        "premchat:conversations-changed",
+        loadConversations
+      );
+      window.removeEventListener("focus", loadConversations);
+    };
+  }, [pathname]);
 
   return (
     <Sidebar
@@ -127,21 +152,42 @@ export function AppSidebar() {
                 <ChevronDown className="size-4 shrink-0 transition-transform duration-500" />
                 Conversations
               </CollapsibleTrigger>
+              <Link
+                href="/chat"
+                className="font-label text-primary/80 hover:bg-primary/8 mt-1 flex h-8 items-center rounded-full px-3 text-[10px] tracking-[0.14em] uppercase transition-colors duration-300"
+              >
+                New chat
+              </Link>
             </div>
             <CollapsibleContent className="min-h-0 flex-1">
               <SidebarGroupContent className="mt-1 min-h-0 pr-1">
                 <ScrollArea className="h-[min(220px,32vh)]">
                   <SidebarMenuSub className="mx-0 border-l-0 px-0">
-                    {MOCK_THREADS.map((t) => (
-                      <SidebarMenuSubItem key={t.id}>
+                    {threads.map((thread) => (
+                      <SidebarMenuSubItem key={thread.id}>
                         <SidebarMenuSubButton
-                          render={<Link href="/chat" />}
-                          className="hover:bg-primary/5 h-8 w-full rounded-md pl-2"
+                          render={<Link href={`/chat/${thread.id}`} />}
+                          className={cn(
+                            "hover:bg-primary/5 h-10 w-full rounded-md pl-2",
+                            pathname === `/chat/${thread.id}` && "bg-primary/8"
+                          )}
                         >
-                          <span className="truncate">{t.title}</span>
+                          <div className="min-w-0">
+                            <span className="block truncate">{thread.title}</span>
+                            <span className="text-sidebar-foreground/45 block truncate text-[11px]">
+                              {thread.preview}
+                            </span>
+                          </div>
                         </SidebarMenuSubButton>
                       </SidebarMenuSubItem>
                     ))}
+                    {threads.length === 0 ? (
+                      <SidebarMenuSubItem>
+                        <div className="text-sidebar-foreground/45 px-2 py-3 text-sm">
+                          No conversations yet.
+                        </div>
+                      </SidebarMenuSubItem>
+                    ) : null}
                   </SidebarMenuSub>
                 </ScrollArea>
               </SidebarGroupContent>
