@@ -1,0 +1,14 @@
+*.md
+!README.md
+__pycache__/
+*.pyc
+.DS_Store
+.env
+node_modules/
+dist/
+build/
+venv/
+roadmap/
+research/
+frontend/.next/
+frontend/out/

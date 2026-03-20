@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+ollama
+pymongo
+pandas
+openrouter
+openai
+numpy
+pypdf2
+pdf2image
+pytest
+httpx
