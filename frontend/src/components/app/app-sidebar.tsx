@@ -343,15 +343,12 @@ export function AppSidebar() {
                                 <Link
                                   href={`/chat/${thread.id}`}
                                   className={cn(
-                                    "hover:bg-primary/5 block rounded-md px-2 py-2 pr-11 transition-colors",
+                                    "hover:bg-primary/5 block rounded-md px-2 py-2.5 pr-11 transition-colors",
                                     isCurrent && "bg-transparent"
                                   )}
                                 >
                                   <div className="min-w-0">
                                     <span className="block truncate">{thread.title}</span>
-                                    <span className="text-sidebar-foreground/45 block truncate text-[11px]">
-                                      {thread.preview}
-                                    </span>
                                   </div>
                                 </Link>
                                 <button

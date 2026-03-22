@@ -51,7 +51,7 @@ export function ChatDisplay({
   }
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden px-4 pb-2 sm:px-6">
+    <div className="relative min-h-0 flex-1 overflow-hidden px-4 sm:px-6">
       <div className="pointer-events-none absolute inset-x-0 top-[6%] flex justify-center">
         <div className="opacity-28 blur-[1px] transition-opacity duration-700">
           <SentientOrb variant="hero" showLabel={false} className="scale-[1.18]" />
@@ -60,7 +60,7 @@ export function ChatDisplay({
 
       <div
         ref={scrollContainerRef}
-        className="relative z-10 mx-auto flex h-full w-full max-w-4xl flex-col overflow-y-auto overscroll-contain pb-6 pt-4 sm:pb-8 sm:pt-6"
+        className="relative z-10 mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col overflow-y-auto overscroll-contain pb-8 pt-4 sm:pb-10 sm:pt-6"
       >
         <div className="flex flex-col gap-5">
           {messages.map((message) => {

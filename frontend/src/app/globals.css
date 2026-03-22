@@ -143,9 +143,16 @@
   }
   body {
     @apply bg-background text-foreground;
+    min-height: 100svh;
+    overflow: hidden;
   }
   html {
     font-family: var(--font-headline), ui-sans-serif, system-ui, sans-serif;
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    height: 100%;
   }
 }
 

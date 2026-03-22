@@ -21,7 +21,7 @@ export function ChatHeader({ conversationId, title }: ChatHeaderProps) {
   };
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between px-4 sm:px-6">
+    <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center justify-between bg-[#0a111a]/88 px-4 backdrop-blur-xl sm:px-6">
       <div className="flex min-w-0 items-center gap-2">
         <SidebarTrigger className="text-on-surface-variant hover:bg-white/5 hover:text-on-surface" />
         <div className="min-w-0">

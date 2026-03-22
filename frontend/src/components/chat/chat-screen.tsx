@@ -495,11 +495,11 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
   };
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <ChatHeader conversationId={conversationId ?? undefined} title={headerTitle} />
 
       {isEmptyState ? (
-        <div className="flex min-h-0 flex-1 items-center justify-center px-4 pb-[max(2rem,8svh)] sm:px-6">
+        <div className="flex min-h-0 flex-1 items-center justify-center overflow-hidden px-4 pb-[max(2rem,8svh)] sm:px-6">
           <div className="flex w-full max-w-4xl flex-col items-center gap-8 sm:gap-10">
             <ChatDisplay isEmptyState isStreaming={false} messages={messages} />
             <ChatFooter

@@ -49,10 +49,10 @@ export function ChatFooter({
   return (
     <div
       className={cn(
-        "w-full px-4 sm:px-6",
+        "sticky bottom-0 z-30 w-full bg-[#0a111a]/88 px-4 backdrop-blur-xl sm:px-6",
         isCentered
           ? "mx-auto max-w-4xl"
-          : "shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))]"
+          : "shrink-0 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3"
       )}
     >
       <form
