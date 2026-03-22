@@ -1,11 +1,15 @@
 import { NextResponse } from "next/server";
-import { createConversation, listConversations } from "@/lib/chat/store";
+import {
+  createConversationRecord,
+  fetchConversationSummaries,
+} from "@/lib/chat/backend";
 import type { CreateConversationRequest } from "@/lib/chat/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ conversations: listConversations() });
+  const conversations = await fetchConversationSummaries();
+  return NextResponse.json({ conversations });
 }
 
 export async function POST(request: Request) {
@@ -17,15 +21,16 @@ export async function POST(request: Request) {
     body = {};
   }
 
-  const conversation = createConversation(body.title?.trim() || undefined);
+  const conversation = await createConversationRecord({
+    title: body.title?.trim() || undefined,
+    provider: body.provider,
+    model: body.model,
+    thinkingEnabled: body.thinkingEnabled,
+  });
 
   return NextResponse.json(
     {
-      conversation: {
-        id: conversation.id,
-        title: conversation.title,
-        createdAt: conversation.createdAt,
-      },
+      conversation,
     },
     { status: 201 }
   );

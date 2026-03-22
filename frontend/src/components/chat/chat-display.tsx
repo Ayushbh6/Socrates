@@ -2,6 +2,7 @@
 
 import { useEffect, useEffectEvent, useRef } from "react";
 import { Sparkles } from "lucide-react";
+import { ChatMarkdown } from "@/components/chat/chat-markdown";
 import { SentientOrb } from "@/components/sentient/sentient-orb";
 import type { ChatMessage } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
@@ -84,11 +85,40 @@ export function ChatDisplay({
                       <span className="font-label text-[10px] tracking-[0.18em] uppercase">
                         Prem
                       </span>
+                      {message.model ? (
+                        <span className="font-label text-[10px] tracking-[0.12em] uppercase text-[#9cb5d0]">
+                          {message.model}
+                        </span>
+                      ) : null}
                     </div>
                   ) : null}
-                  <p className="text-sm leading-7 tracking-[0.01em] sm:text-[15px]">
-                    {message.content || (message.status === "streaming" ? "…" : "")}
-                  </p>
+                  {isUser ? (
+                    <p className="text-sm leading-7 tracking-[0.01em] sm:text-[15px]">
+                      {message.content || (message.status === "streaming" ? "…" : "")}
+                    </p>
+                  ) : (
+                    <ChatMarkdown
+                      content={message.content || (message.status === "streaming" ? "…" : "")}
+                    />
+                  )}
+                  {!isUser && message.reasoning ? (
+                    <details className="mt-3 rounded-2xl border border-white/8 bg-black/10 p-3">
+                      <summary className="cursor-pointer list-none text-[10px] tracking-[0.16em] text-[#8acfe1] uppercase">
+                        Thinking
+                      </summary>
+                      {message.reasoning.text ? (
+                        <p className="mt-2 text-xs leading-6 text-[#b9c7da]">
+                          {message.reasoning.text}
+                        </p>
+                      ) : null}
+                      {Array.isArray(message.reasoning.details) &&
+                      message.reasoning.details.length > 0 ? (
+                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[#91a2b9]">
+                          {JSON.stringify(message.reasoning.details, null, 2)}
+                        </pre>
+                      ) : null}
+                    </details>
+                  ) : null}
                 </div>
               </div>
             );

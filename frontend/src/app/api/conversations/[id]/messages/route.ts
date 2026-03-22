@@ -1,17 +1,9 @@
 import {
-  addUserMessage,
-  appendAssistantDelta,
-  chunkAssistantResponse,
-  completeAssistantMessage,
-  createAssistantMessage,
-  generateAssistantResponse,
-  getConversation,
-  markAssistantMessageError,
-} from "@/lib/chat/store";
-import type {
-  ChatStreamEvent,
-  SendMessageRequest,
-} from "@/lib/chat/types";
+  BackendRequestError,
+  chunkResponseText,
+  sendConversationMessage,
+} from "@/lib/chat/backend";
+import type { ChatStreamEvent, SendMessageRequest } from "@/lib/chat/types";
 
 export const dynamic = "force-dynamic";
 
@@ -24,11 +16,6 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const conversation = getConversation(id);
-
-  if (!conversation) {
-    return Response.json({ error: "Conversation not found." }, { status: 404 });
-  }
 
   let body: SendMessageRequest;
 
@@ -44,74 +31,97 @@ export async function POST(
     return Response.json({ error: "Message content is required." }, { status: 400 });
   }
 
-  const userMessage = addUserMessage(id, content);
-  const assistantMessage = createAssistantMessage(id);
-  const responseText = generateAssistantResponse(conversation, content);
-  const chunks = chunkAssistantResponse(responseText);
-  const encoder = new TextEncoder();
+  try {
+    const result = await sendConversationMessage(id, {
+      content,
+      provider: body.provider,
+      model: body.model,
+      thinkingEnabled: body.thinkingEnabled,
+    });
 
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(
-        encoder.encode(
-          encodeEvent({
-            type: "meta",
-            conversationId: id,
-            userMessage,
-            assistantMessage,
-          })
-        )
-      );
+    const assistantMessage = {
+      ...result.assistantMessage,
+      content: "",
+      status: "streaming" as const,
+    };
+    const chunks = chunkResponseText(result.assistantMessage.content);
+    const encoder = new TextEncoder();
 
-      let chunkIndex = 0;
-
-      const pushChunk = () => {
-        if (chunkIndex >= chunks.length) {
-          completeAssistantMessage(id, assistantMessage.id);
-          controller.enqueue(
-            encoder.encode(
-              encodeEvent({
-                type: "done",
-                assistantMessageId: assistantMessage.id,
-              })
-            )
-          );
-          controller.close();
-          return;
-        }
-
-        const delta = chunks[chunkIndex] ?? "";
-        chunkIndex += 1;
-        appendAssistantDelta(id, assistantMessage.id, delta);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
         controller.enqueue(
           encoder.encode(
             encodeEvent({
-              type: "delta",
-              assistantMessageId: assistantMessage.id,
-              delta,
+              type: "meta",
+              conversationId: id,
+              conversationTitle: result.conversation.title,
+              provider: result.conversation.provider,
+              model: result.conversation.model,
+              thinkingEnabled: result.conversation.thinkingEnabled,
+              userMessage: result.userMessage,
+              assistantMessage,
             })
           )
         );
 
-        setTimeout(pushChunk, 45 + Math.round(Math.random() * 70));
-      };
+        if (result.assistantMessage.reasoning) {
+          controller.enqueue(
+            encoder.encode(
+              encodeEvent({
+                type: "reasoning",
+                assistantMessageId: result.assistantMessage.id,
+                reasoning: result.assistantMessage.reasoning,
+              })
+            )
+          );
+        }
 
-      setTimeout(pushChunk, 140);
-    },
-    cancel() {
-      markAssistantMessageError(
-        id,
-        assistantMessage.id,
-        "The response stream was interrupted. Please try again."
-      );
-    },
-  });
+        let chunkIndex = 0;
 
-  return new Response(stream, {
-    headers: {
-      "Cache-Control": "no-store",
-      Connection: "keep-alive",
-      "Content-Type": "application/x-ndjson; charset=utf-8",
-    },
-  });
+        const pushChunk = () => {
+          if (chunkIndex >= chunks.length) {
+            controller.enqueue(
+              encoder.encode(
+                encodeEvent({
+                  type: "done",
+                  assistantMessageId: result.assistantMessage.id,
+                })
+              )
+            );
+            controller.close();
+            return;
+          }
+
+          const delta = chunks[chunkIndex] ?? "";
+          chunkIndex += 1;
+          controller.enqueue(
+            encoder.encode(
+              encodeEvent({
+                type: "delta",
+                assistantMessageId: result.assistantMessage.id,
+                delta,
+              })
+            )
+          );
+
+          setTimeout(pushChunk, 30 + Math.round(Math.random() * 55));
+        };
+
+        setTimeout(pushChunk, 80);
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Cache-Control": "no-store",
+        Connection: "keep-alive",
+        "Content-Type": "application/x-ndjson; charset=utf-8",
+      },
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unable to send message.";
+    const status = error instanceof BackendRequestError ? error.status : 500;
+    return Response.json({ error: message, detail: message }, { status });
+  }
 }

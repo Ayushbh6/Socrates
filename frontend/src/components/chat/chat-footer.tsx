@@ -3,14 +3,20 @@
 import { useEffect, useRef } from "react";
 import { ArrowUp, Mic, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import type { ModelOption } from "@/lib/chat/types";
 import { cn } from "@/lib/utils";
 
 type ChatFooterProps = {
   disabled?: boolean;
   isCentered?: boolean;
   isStreaming?: boolean;
+  models?: ModelOption[];
   onSubmit: () => void;
+  onModelChange: (value: string) => void;
+  onThinkingEnabledChange: (value: boolean) => void;
   onValueChange: (value: string) => void;
+  selectedModel: string;
+  thinkingEnabled: boolean;
   value: string;
 };
 
@@ -18,8 +24,13 @@ export function ChatFooter({
   disabled = false,
   isCentered = false,
   isStreaming = false,
+  models = [],
   onSubmit,
+  onModelChange,
+  onThinkingEnabledChange,
   onValueChange,
+  selectedModel,
+  thinkingEnabled,
   value,
 }: ChatFooterProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -76,8 +87,8 @@ export function ChatFooter({
             }}
           />
 
-          <div className="flex items-center justify-between px-1 pt-1">
-            <div className="flex items-center gap-1">
+          <div className="flex items-center justify-between gap-3 px-1 pt-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <Button
                 type="button"
                 variant="ghost"
@@ -96,6 +107,38 @@ export function ChatFooter({
               >
                 <Mic className="size-4.5" />
               </Button>
+              <label className="min-w-0">
+                <span className="sr-only">Model</span>
+                <select
+                  value={selectedModel}
+                  disabled={disabled}
+                  className="h-9 max-w-[14rem] rounded-full border border-white/8 bg-[#0f1520] px-3 text-xs tracking-[0.04em] text-[#dce8f7] outline-none transition-colors focus:border-[#83dff2]/45 disabled:cursor-not-allowed disabled:opacity-60"
+                  onChange={(event) => onModelChange(event.target.value)}
+                >
+                  {models.length === 0 ? (
+                    <option value={selectedModel}>{selectedModel}</option>
+                  ) : null}
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.displayName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={disabled}
+                className={cn(
+                  "h-9 rounded-full border px-3 text-[11px] tracking-[0.14em] uppercase transition-colors",
+                  thinkingEnabled
+                    ? "border-[#83dff2]/35 bg-[#123242]/70 text-[#d6f5ff]"
+                    : "border-white/8 bg-[#0f1520] text-[#9aa6b8]",
+                  disabled && "cursor-not-allowed opacity-60"
+                )}
+                onClick={() => onThinkingEnabledChange(!thinkingEnabled)}
+              >
+                Think {thinkingEnabled ? "On" : "Off"}
+              </button>
             </div>
 
             <Button

@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { getConversation } from "@/lib/chat/store";
+import {
+  BackendRequestError,
+  fetchConversationById,
+  updateConversationRecord,
+} from "@/lib/chat/backend";
+import type { UpdateConversationRequest } from "@/lib/chat/types";
 
 export const dynamic = "force-dynamic";
 
@@ -8,7 +13,7 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const conversation = getConversation(id);
+  const conversation = await fetchConversationById(id);
 
   if (!conversation) {
     return NextResponse.json(
@@ -18,4 +23,35 @@ export async function GET(
   }
 
   return NextResponse.json({ conversation });
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  let body: UpdateConversationRequest;
+
+  try {
+    body = (await request.json()) as UpdateConversationRequest;
+  } catch {
+    return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
+  }
+
+  try {
+    const conversation = await updateConversationRecord(id, body);
+    return NextResponse.json({ conversation });
+  } catch (error) {
+    if (error instanceof BackendRequestError) {
+      return NextResponse.json(
+        { error: error.message, detail: error.message },
+        { status: error.status }
+      );
+    }
+
+    return NextResponse.json(
+      { error: "Unable to update conversation." },
+      { status: 500 }
+    );
+  }
 }

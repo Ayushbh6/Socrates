@@ -4,6 +4,9 @@ import type {
   ConversationSummary,
 } from "@/lib/chat/types";
 
+const DEFAULT_PROVIDER = "openai";
+const DEFAULT_MODEL = "gpt-5.2";
+
 type ConversationStore = {
   conversations: Map<string, Conversation>;
 };
@@ -79,6 +82,9 @@ function seedConversation(
     title,
     createdAt,
     updatedAt: createTimestamp(updatedAtOffsetMinutes),
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    thinkingEnabled: false,
     messages,
   };
 }
@@ -138,6 +144,9 @@ export function listConversations(): ConversationSummary[] {
         updatedAt: conversation.updatedAt,
         preview: lastMessage ? truncate(lastMessage.content, 72) : "New conversation",
         messageCount: conversation.messages.length,
+        provider: conversation.provider,
+        model: conversation.model,
+        thinkingEnabled: conversation.thinkingEnabled,
       };
     });
 }
@@ -154,6 +163,9 @@ export function createConversation(title = "New conversation") {
     title,
     createdAt: now,
     updatedAt: now,
+    provider: DEFAULT_PROVIDER,
+    model: DEFAULT_MODEL,
+    thinkingEnabled: false,
     messages: [],
   };
 

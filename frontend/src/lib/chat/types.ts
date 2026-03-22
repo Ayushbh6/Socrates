@@ -1,6 +1,11 @@
-export type ChatRole = "user" | "assistant";
+export type ChatRole = "system" | "user" | "assistant" | "tool";
 
 export type ChatMessageStatus = "streaming" | "complete" | "error";
+
+export type ReasoningPayload = {
+  text?: string | null;
+  details?: unknown[] | null;
+};
 
 export type ChatMessage = {
   id: string;
@@ -9,6 +14,9 @@ export type ChatMessage = {
   content: string;
   createdAt: string;
   status: ChatMessageStatus;
+  provider?: string | null;
+  model?: string | null;
+  reasoning?: ReasoningPayload | null;
 };
 
 export type Conversation = {
@@ -16,6 +24,9 @@ export type Conversation = {
   title: string;
   createdAt: string;
   updatedAt: string;
+  provider: string;
+  model: string;
+  thinkingEnabled: boolean;
   messages: ChatMessage[];
 };
 
@@ -25,19 +36,50 @@ export type ConversationSummary = {
   updatedAt: string;
   preview: string;
   messageCount: number;
+  provider: string;
+  model: string;
+  thinkingEnabled: boolean;
+};
+
+export type UpdateConversationRequest = {
+  title?: string;
+  status?: "active" | "archived" | "deleted";
+  provider?: string;
+  model?: string;
+  thinkingEnabled?: boolean;
 };
 
 export type CreateConversationRequest = {
   title?: string;
+  provider?: string;
+  model?: string;
+  thinkingEnabled?: boolean;
 };
 
 export type SendMessageRequest = {
   content: string;
+  provider?: string;
+  model?: string;
+  thinkingEnabled?: boolean;
+};
+
+export type ModelOption = {
+  id: string;
+  provider: string;
+  displayName: string;
+  supportsThinking: boolean;
+  supportsImages: boolean;
+  supportsTools: boolean;
+  supportsStructuredOutput: boolean;
 };
 
 export type StreamMetaEvent = {
   type: "meta";
   conversationId: string;
+  conversationTitle: string;
+  provider: string;
+  model: string;
+  thinkingEnabled: boolean;
   userMessage: ChatMessage;
   assistantMessage: ChatMessage;
 };
@@ -46,6 +88,12 @@ export type StreamDeltaEvent = {
   type: "delta";
   assistantMessageId: string;
   delta: string;
+};
+
+export type StreamReasoningEvent = {
+  type: "reasoning";
+  assistantMessageId: string;
+  reasoning: ReasoningPayload;
 };
 
 export type StreamDoneEvent = {
@@ -62,5 +110,6 @@ export type StreamErrorEvent = {
 export type ChatStreamEvent =
   | StreamMetaEvent
   | StreamDeltaEvent
+  | StreamReasoningEvent
   | StreamDoneEvent
   | StreamErrorEvent;
