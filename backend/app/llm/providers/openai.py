@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from collections.abc import AsyncIterator
 from typing import Any
 
 from app.llm.base import BaseLLMProvider, LLMProviderError
@@ -85,6 +86,105 @@ class OpenAIProvider(BaseLLMProvider):
             raw_response=raw,
         )
 
+    async def stream(
+        self,
+        request: LLMRequest,
+        model_spec: ModelSpec,
+    ) -> AsyncIterator["LLMEvent"]:
+        from app.llm.types import LLMEvent
+
+        payload = self._build_chat_completion_payload(request, model_spec)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        event_index = 0
+        provider_message_id: str | None = None
+        finish_reason: str | None = None
+        final_usage = UsageInfo()
+
+        try:
+            stream = await self.client.chat.completions.create(**payload)
+        except Exception as exc:  # pragma: no cover - network/SDK failures
+            raise LLMProviderError(f"OpenAI request failed: {exc}") from exc
+
+        yield LLMEvent(
+            event_type="response.started",
+            event_index=event_index,
+            provider=self.provider_name,
+            model=model_spec.public_id,
+            message_id=request.message_id,
+            payload={},
+        )
+        event_index += 1
+
+        async for chunk in stream:
+            raw_chunk = self._chunk_to_dict(chunk)
+            provider_message_id = raw_chunk.get("id") or provider_message_id
+            choices = raw_chunk.get("choices", [])
+            usage = raw_chunk.get("usage")
+            if isinstance(usage, dict):
+                final_usage = UsageInfo(
+                    input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                    output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                    total_tokens=int(usage.get("total_tokens", 0) or 0),
+                )
+
+            if not isinstance(choices, list):
+                continue
+
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta", {})
+                if not isinstance(delta, dict):
+                    delta = {}
+
+                content_delta = delta.get("content")
+                if isinstance(content_delta, str) and content_delta:
+                    yield LLMEvent(
+                        event_type="text.delta",
+                        event_index=event_index,
+                        provider=self.provider_name,
+                        model=model_spec.public_id,
+                        message_id=request.message_id,
+                        payload={"delta": content_delta},
+                    )
+                    event_index += 1
+
+                if choice.get("finish_reason"):
+                    finish_reason = str(choice.get("finish_reason"))
+
+        yield LLMEvent(
+            event_type="response.completed",
+            event_index=event_index,
+            provider=self.provider_name,
+            model=model_spec.public_id,
+            message_id=request.message_id,
+            payload={
+                "provider_message_id": provider_message_id,
+                "request_id": None,
+                "finish_reason": finish_reason,
+                "provider_metadata": {
+                    "upstreamModel": model_spec.upstream_model_id,
+                    "thinkingEnabled": request.thinking_enabled,
+                },
+                "raw_response": {
+                    "provider": "openai",
+                    "streamed": True,
+                    "provider_message_id": provider_message_id,
+                },
+                "tool_calls": [],
+                "usage": {
+                    "input_tokens": final_usage.input_tokens,
+                    "output_tokens": final_usage.output_tokens,
+                    "total_tokens": final_usage.total_tokens,
+                    "cost_usd": "0",
+                },
+            },
+            input_tokens=final_usage.input_tokens,
+            output_tokens=final_usage.output_tokens,
+        )
+
     def _build_payload(self, request: LLMRequest, model_spec: ModelSpec) -> dict[str, Any]:
         messages: list[LLMInputMessage] = list(request.messages)
         if request.system_prompt:
@@ -140,6 +240,67 @@ class OpenAIProvider(BaseLLMProvider):
 
         return payload
 
+    def _build_chat_completion_payload(
+        self,
+        request: LLMRequest,
+        model_spec: ModelSpec,
+    ) -> dict[str, Any]:
+        messages = list(request.messages)
+        if request.system_prompt:
+            messages = [
+                LLMInputMessage(
+                    role="system",
+                    content=[TextContentPart(text=request.system_prompt)],
+                ),
+                *messages,
+            ]
+
+        payload: dict[str, Any] = {
+            "model": model_spec.upstream_model_id,
+            "messages": [
+                self._serialize_chat_completion_message(message) for message in messages
+            ],
+        }
+
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
+
+        if request.max_output_tokens is not None:
+            payload["max_completion_tokens"] = request.max_output_tokens
+
+        if model_spec.supports_thinking:
+            payload["reasoning_effort"] = "medium" if request.thinking_enabled else "none"
+
+        return payload
+
+    def _serialize_chat_completion_message(self, message: LLMInputMessage) -> dict[str, Any]:
+        text_parts = [part.text for part in message.content if isinstance(part, TextContentPart)]
+        if all(isinstance(part, TextContentPart) for part in message.content):
+            serialized: dict[str, Any] = {
+                "role": message.role,
+                "content": "".join(text_parts),
+            }
+            if message.tool_name:
+                serialized["name"] = message.tool_name
+            if message.tool_call_id:
+                serialized["tool_call_id"] = message.tool_call_id
+            return serialized
+
+        content: list[dict[str, Any]] = []
+        for part in message.content:
+            if isinstance(part, TextContentPart):
+                content.append({"type": "text", "text": part.text})
+            elif isinstance(part, ImageContentPart):
+                image_url = part.image_url or part.source_bytes_ref
+                if not image_url:
+                    raise LLMProviderError("Image content requires image_url or source_bytes_ref.")
+                image_payload: dict[str, Any] = {"url": image_url}
+                if part.detail:
+                    image_payload["detail"] = part.detail
+                content.append({"type": "image_url", "image_url": image_payload})
+
+        return {"role": message.role, "content": content}
+
     def _serialize_message(self, message: LLMInputMessage) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
 
@@ -177,6 +338,13 @@ class OpenAIProvider(BaseLLMProvider):
         if isinstance(response, dict):
             return response
         raise LLMProviderError("OpenAI SDK returned an unsupported response object.")
+
+    def _chunk_to_dict(self, chunk: Any) -> dict[str, Any]:
+        if hasattr(chunk, "model_dump"):
+            return chunk.model_dump(mode="json")
+        if isinstance(chunk, dict):
+            return chunk
+        raise LLMProviderError("OpenAI SDK returned an unsupported stream chunk.")
 
     def _extract_output_text(self, response: Any, raw: dict[str, Any]) -> str:
         output_text = getattr(response, "output_text", None)

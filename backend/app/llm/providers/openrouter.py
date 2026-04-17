@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from decimal import Decimal
 from typing import Any
 
@@ -97,6 +98,163 @@ class OpenRouterProvider(BaseLLMProvider):
                 raw=raw,
             ),
             raw_response=raw,
+        )
+
+    async def stream(
+        self,
+        request: LLMRequest,
+        model_spec: ModelSpec,
+    ) -> AsyncIterator["LLMEvent"]:
+        from app.llm.types import LLMEvent
+
+        payload = self._build_payload(request, model_spec)
+        payload["stream"] = True
+        headers = self._build_headers()
+
+        text_index = 0
+        reasoning_index = 0
+        event_index = 0
+        raw_chunks: list[dict[str, Any]] = []
+        response_id: str | None = None
+        provider_metadata: dict[str, Any] = {
+            "upstreamModel": model_spec.upstream_model_id,
+            "thinkingEnabled": request.thinking_enabled,
+        }
+        tool_calls: list[ToolCallRequest] = []
+        final_usage = UsageInfo()
+        finish_reason: str | None = None
+
+        try:
+            async with self.client.stream(
+                "POST",
+                "/chat/completions",
+                json=payload,
+                headers=headers,
+            ) as response:
+                response.raise_for_status()
+
+                yield LLMEvent(
+                    event_type="response.started",
+                    event_index=event_index,
+                    provider=self.provider_name,
+                    model=model_spec.public_id,
+                    message_id=request.message_id,
+                    payload={},
+                )
+                event_index += 1
+
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+
+                    data = line[6:].strip()
+                    if data == "[DONE]":
+                        break
+
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if isinstance(chunk, dict):
+                        raw_chunks.append(chunk)
+
+                    if response_id is None and isinstance(chunk, dict):
+                        response_id = chunk.get("id")
+
+                    choice = self._first_choice(chunk)
+                    delta = choice.get("delta", {}) if isinstance(choice, dict) else {}
+                    if not isinstance(delta, dict):
+                        delta = {}
+
+                    content_delta = delta.get("content")
+                    if isinstance(content_delta, str) and content_delta:
+                        yield LLMEvent(
+                            event_type="text.delta",
+                            event_index=event_index,
+                            provider=self.provider_name,
+                            model=model_spec.public_id,
+                            message_id=request.message_id,
+                            payload={"delta": content_delta, "index": text_index},
+                        )
+                        event_index += 1
+                        text_index += 1
+
+                    reasoning_delta = self._extract_reasoning_delta(delta)
+                    if reasoning_delta:
+                        yield LLMEvent(
+                            event_type="reasoning.delta",
+                            event_index=event_index,
+                            provider=self.provider_name,
+                            model=model_spec.public_id,
+                            message_id=request.message_id,
+                            payload={"delta": reasoning_delta, "index": reasoning_index},
+                        )
+                        event_index += 1
+                        reasoning_index += 1
+
+                    if isinstance(choice, dict) and choice.get("finish_reason"):
+                        finish_reason = str(choice.get("finish_reason"))
+
+                    if isinstance(chunk, dict):
+                        extracted_usage = self._extract_usage(chunk)
+                        if (
+                            extracted_usage.input_tokens
+                            or extracted_usage.output_tokens
+                            or extracted_usage.total_tokens
+                            or extracted_usage.cost_usd
+                        ):
+                            final_usage = extracted_usage
+
+                        extracted_tool_calls = self._extract_tool_calls(chunk)
+                        if extracted_tool_calls:
+                            tool_calls = extracted_tool_calls
+
+                        chunk_metadata = self._extract_provider_metadata(
+                            request=request,
+                            model_spec=model_spec,
+                            raw=chunk,
+                        )
+                        provider_metadata.update(chunk_metadata)
+
+        except httpx.HTTPStatusError as exc:
+            body = exc.response.text
+            raise LLMProviderError(
+                f"OpenRouter request failed with status {exc.response.status_code}: {body}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LLMProviderError(f"OpenRouter request failed: {exc}") from exc
+
+        yield LLMEvent(
+            event_type="response.completed",
+            event_index=event_index,
+            provider=self.provider_name,
+            model=model_spec.public_id,
+            message_id=request.message_id,
+            payload={
+                "provider_message_id": response_id,
+                "request_id": None,
+                "finish_reason": finish_reason,
+                "provider_metadata": provider_metadata,
+                "raw_response": {"stream": raw_chunks},
+                "tool_calls": [
+                    {
+                        "tool_call_id": item.tool_call_id,
+                        "tool_name": item.tool_name,
+                        "arguments_json": item.arguments_json,
+                        "provider_metadata": item.provider_metadata,
+                    }
+                    for item in tool_calls
+                ],
+                "usage": {
+                    "input_tokens": final_usage.input_tokens,
+                    "output_tokens": final_usage.output_tokens,
+                    "total_tokens": final_usage.total_tokens,
+                    "cost_usd": str(final_usage.cost_usd),
+                },
+            },
+            input_tokens=final_usage.input_tokens,
+            output_tokens=final_usage.output_tokens,
         )
 
     def _build_headers(self) -> dict[str, str]:
@@ -264,6 +422,30 @@ class OpenRouterProvider(BaseLLMProvider):
                 if isinstance(item, dict) and isinstance(item.get("text"), str):
                     fragments.append(item["text"])
             return "".join(fragments)
+
+        return ""
+
+    def _extract_reasoning_delta(self, delta: dict[str, Any]) -> str:
+        candidates = [
+            delta.get("reasoning"),
+            delta.get("reasoning_text"),
+            delta.get("reasoning_content"),
+        ]
+
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return candidate
+
+        reasoning_details = delta.get("reasoning_details")
+        if isinstance(reasoning_details, list):
+            fragments: list[str] = []
+            for item in reasoning_details:
+                if isinstance(item, dict):
+                    text_value = item.get("text") or item.get("summary")
+                    if isinstance(text_value, str) and text_value:
+                        fragments.append(text_value)
+            if fragments:
+                return "\n".join(fragments)
 
         return ""
 

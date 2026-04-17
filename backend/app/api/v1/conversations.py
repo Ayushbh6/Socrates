@@ -1,6 +1,9 @@
 from uuid import UUID
 
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db_session
@@ -18,7 +21,7 @@ from app.schemas.serializers import (
     serialize_conversation_summary,
     serialize_message,
 )
-from app.services.chat import send_chat_message
+from app.services.chat import send_chat_message, stream_chat_message_events
 from app.services.conversations import (
     create_conversation,
     get_conversation_detail,
@@ -122,4 +125,29 @@ async def post_conversation_message(
         conversation=result.conversation_response.model_dump(by_alias=True),
         user_message=serialize_message(result.user_message),
         assistant_message=serialize_message(result.assistant_message),
+    )
+
+
+@router.post("/{conversation_id}/messages/stream")
+async def post_conversation_message_stream(
+    conversation_id: UUID,
+    payload: ChatTurnRequest,
+) -> StreamingResponse:
+    async def event_stream():
+        try:
+            async for event in stream_chat_message_events(conversation_id, payload):
+                yield f"{json.dumps(event)}\n"
+        except ValueError as exc:
+            message = str(exc)
+            yield f'{json.dumps({"type": "error", "assistantMessageId": "stream-error", "message": message})}\n'
+        except (ModelResolutionError, LLMStructuredOutputError, LLMProviderError) as exc:
+            yield f'{json.dumps({"type": "error", "assistantMessageId": "stream-error", "message": str(exc)})}\n'
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={
+            "Cache-Control": "no-store",
+            "Connection": "keep-alive",
+        },
     )

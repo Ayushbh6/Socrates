@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 
 import pytest
@@ -28,6 +29,96 @@ class FakeChatProvider:
             provider_metadata={"upstreamModel": model_spec.upstream_model_id},
             raw_response={"id": "provider-msg-api"},
         )
+
+    async def stream(self, request, model_spec):
+        yield type(
+            "StreamEvent",
+            (),
+            {
+                "event_type": "response.started",
+                "event_index": 0,
+                "provider": model_spec.provider,
+                "model": model_spec.public_id,
+                "message_id": request.message_id,
+                "payload": {},
+                "input_tokens": None,
+                "output_tokens": None,
+                "latency_ms": None,
+            },
+        )()
+        yield type(
+            "StreamEvent",
+            (),
+            {
+                "event_type": "reasoning.delta",
+                "event_index": 1,
+                "provider": model_spec.provider,
+                "model": model_spec.public_id,
+                "message_id": request.message_id,
+                "payload": {"delta": "Thinking through the answer."},
+                "input_tokens": None,
+                "output_tokens": None,
+                "latency_ms": None,
+            },
+        )()
+        yield type(
+            "StreamEvent",
+            (),
+            {
+                "event_type": "text.delta",
+                "event_index": 2,
+                "provider": model_spec.provider,
+                "model": model_spec.public_id,
+                "message_id": request.message_id,
+                "payload": {"delta": "Stored "},
+                "input_tokens": None,
+                "output_tokens": None,
+                "latency_ms": None,
+            },
+        )()
+        yield type(
+            "StreamEvent",
+            (),
+            {
+                "event_type": "text.delta",
+                "event_index": 3,
+                "provider": model_spec.provider,
+                "model": model_spec.public_id,
+                "message_id": request.message_id,
+                "payload": {"delta": "response"},
+                "input_tokens": None,
+                "output_tokens": None,
+                "latency_ms": None,
+            },
+        )()
+        yield type(
+            "StreamEvent",
+            (),
+            {
+                "event_type": "response.completed",
+                "event_index": 4,
+                "provider": model_spec.provider,
+                "model": model_spec.public_id,
+                "message_id": request.message_id,
+                "payload": {
+                    "provider_message_id": "provider-msg-api",
+                    "request_id": "request-api",
+                    "finish_reason": "stop",
+                    "provider_metadata": {"upstreamModel": model_spec.upstream_model_id},
+                    "raw_response": {"id": "provider-msg-api"},
+                    "tool_calls": [],
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 20,
+                        "total_tokens": 30,
+                        "cost_usd": "0.010000",
+                    },
+                },
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "latency_ms": None,
+            },
+        )()
 
 
 def _patch_chat_service(monkeypatch):
@@ -192,3 +283,29 @@ async def test_patch_conversation_deleted_excludes_from_list(client):
         item["id"] != conversation_id for item in list_response.json()["conversations"]
     )
     assert detail_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stream_message_endpoint_returns_ndjson(client, monkeypatch):
+    _patch_chat_service(monkeypatch)
+    create_response = await client.post(
+        "/api/v1/conversations",
+        json={"title": "Streaming thread", "model": "gpt-5.2"},
+    )
+    conversation_id = create_response.json()["conversation"]["id"]
+
+    response = await client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "Stream this", "thinkingEnabled": True},
+    )
+
+    assert response.status_code == 200
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert len(lines) >= 4
+
+    events = [json.loads(line) for line in lines]
+
+    assert events[0]["type"] == "meta"
+    assert events[1]["type"] == "reasoning"
+    assert events[2]["type"] == "delta"
+    assert events[-1]["type"] == "done"

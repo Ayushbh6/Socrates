@@ -1,15 +1,8 @@
-import {
-  BackendRequestError,
-  chunkResponseText,
-  sendConversationMessage,
-} from "@/lib/chat/backend";
-import type { ChatStreamEvent, SendMessageRequest } from "@/lib/chat/types";
+import type { SendMessageRequest } from "@/lib/chat/types";
 
 export const dynamic = "force-dynamic";
-
-function encodeEvent(event: ChatStreamEvent) {
-  return `${JSON.stringify(event)}\n`;
-}
+const BACKEND_BASE_URL =
+  process.env.PREMCHAT_BACKEND_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
 
 export async function POST(
   request: Request,
@@ -32,86 +25,32 @@ export async function POST(
   }
 
   try {
-    const result = await sendConversationMessage(id, {
-      content,
-      provider: body.provider,
-      model: body.model,
-      thinkingEnabled: body.thinkingEnabled,
-    });
+    const response = await fetch(
+      `${BACKEND_BASE_URL}/api/v1/conversations/${id}/messages/stream`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        cache: "no-store",
+        body: JSON.stringify({
+          content,
+          provider: body.provider,
+          model: body.model,
+          thinkingEnabled: body.thinkingEnabled,
+        }),
+      }
+    );
 
-    const assistantMessage = {
-      ...result.assistantMessage,
-      content: "",
-      status: "streaming" as const,
-    };
-    const chunks = chunkResponseText(result.assistantMessage.content);
-    const encoder = new TextEncoder();
+    if (!response.ok || !response.body) {
+      const text = await response.text();
+      return Response.json(
+        { error: text || "Unable to send message.", detail: text || "Unable to send message." },
+        { status: response.status || 500 }
+      );
+    }
 
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            encodeEvent({
-              type: "meta",
-              conversationId: id,
-              conversationTitle: result.conversation.title,
-              provider: result.conversation.provider,
-              model: result.conversation.model,
-              thinkingEnabled: result.conversation.thinkingEnabled,
-              userMessage: result.userMessage,
-              assistantMessage,
-            })
-          )
-        );
-
-        if (result.assistantMessage.reasoning) {
-          controller.enqueue(
-            encoder.encode(
-              encodeEvent({
-                type: "reasoning",
-                assistantMessageId: result.assistantMessage.id,
-                reasoning: result.assistantMessage.reasoning,
-              })
-            )
-          );
-        }
-
-        let chunkIndex = 0;
-
-        const pushChunk = () => {
-          if (chunkIndex >= chunks.length) {
-            controller.enqueue(
-              encoder.encode(
-                encodeEvent({
-                  type: "done",
-                  assistantMessageId: result.assistantMessage.id,
-                })
-              )
-            );
-            controller.close();
-            return;
-          }
-
-          const delta = chunks[chunkIndex] ?? "";
-          chunkIndex += 1;
-          controller.enqueue(
-            encoder.encode(
-              encodeEvent({
-                type: "delta",
-                assistantMessageId: result.assistantMessage.id,
-                delta,
-              })
-            )
-          );
-
-          setTimeout(pushChunk, 30 + Math.round(Math.random() * 55));
-        };
-
-        setTimeout(pushChunk, 80);
-      },
-    });
-
-    return new Response(stream, {
+    return new Response(response.body, {
       headers: {
         "Cache-Control": "no-store",
         Connection: "keep-alive",
@@ -119,9 +58,8 @@ export async function POST(
       },
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unable to send message.";
-    const status = error instanceof BackendRequestError ? error.status : 500;
+    const message = error instanceof Error ? error.message : "Unable to send message.";
+    const status = 500;
     return Response.json({ error: message, detail: message }, { status });
   }
 }

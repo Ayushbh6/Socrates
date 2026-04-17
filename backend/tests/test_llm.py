@@ -33,6 +33,7 @@ class FakeResponsesClient:
 class FakeOpenAIClient:
     def __init__(self, response):
         self.responses = FakeResponsesClient(response)
+        self.chat = None
 
 
 class FakeOpenAIResponse:
@@ -59,6 +60,61 @@ class MockOpenRouterTransport(httpx.AsyncBaseTransport):
             request=request,
             headers={"x-request-id": "or_req_123"},
         )
+
+
+class StaticAsyncByteStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class MockOpenRouterStreamingTransport(httpx.AsyncBaseTransport):
+    def __init__(self, chunks: list[str], status_code: int = 200):
+        self.status_code = status_code
+        self.chunks = chunks
+        self.requests: list[httpx.Request] = []
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(
+            status_code=self.status_code,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            stream=StaticAsyncByteStream([chunk.encode("utf-8") for chunk in self.chunks]),
+        )
+
+
+class FakeOpenAIChatCompletions:
+    def __init__(self, chunks: list[dict]):
+        self.chunks = chunks
+        self.calls = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeOpenAIChatCompletionStream(self.chunks)
+
+
+class FakeOpenAIChatCompletionStream:
+    def __init__(self, chunks: list[dict]):
+        self.chunks = chunks
+
+    def __aiter__(self):
+        async def iterator():
+            for chunk in self.chunks:
+                yield FakeOpenAIChunk(chunk)
+
+        return iterator()
+
+
+class FakeOpenAIChunk:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    def model_dump(self, mode="json"):
+        return self.payload
 
 
 @pytest.mark.asyncio
@@ -516,6 +572,121 @@ async def test_openrouter_provider_raises_on_http_errors():
                     ],
                 )
             )
+
+
+@pytest.mark.asyncio
+async def test_openrouter_provider_streams_reasoning_and_text_deltas():
+    transport = MockOpenRouterStreamingTransport(
+        chunks=[
+            'data: {"id":"or_stream_1","choices":[{"delta":{"reasoning":"Thinking step 1. "}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"Answer "}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"cost":"0.0012"}}\n\n',
+            "data: [DONE]\n\n",
+        ]
+    )
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://openrouter.ai/api/v1",
+    ) as client:
+        provider = OpenRouterProvider(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            client=client,
+        )
+        service = LLMService(registry=ModelRegistry(), providers={"openrouter": provider})
+
+        events = [
+            event
+            async for event in service.stream(
+                LLMRequest(
+                    model="qwen/qwen3.5-397b-a17b",
+                    thinking_enabled=True,
+                    messages=[
+                        LLMInputMessage(
+                            role="user",
+                            content=[TextContentPart(text="Stream this")],
+                        )
+                    ],
+                )
+            )
+        ]
+
+        assert [event.event_type for event in events] == [
+            "response.started",
+            "reasoning.delta",
+            "text.delta",
+            "text.delta",
+            "response.completed",
+        ]
+        assert events[1].payload["delta"] == "Thinking step 1. "
+        assert events[2].payload["delta"] == "Answer "
+        assert events[3].payload["delta"] == "done."
+        assert events[-1].payload["usage"]["total_tokens"] == 18
+        sent_payload = json.loads(transport.requests[0].content.decode("utf-8"))
+        assert sent_payload["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_streams_text_deltas():
+    fake_response = FakeOpenAIResponse(
+        {
+            "id": "resp_unused",
+            "status": "completed",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            "output_text": "done",
+            "output": [],
+        }
+    )
+    client = FakeOpenAIClient(fake_response)
+    client.chat = type(
+        "FakeChatNamespace",
+        (),
+        {
+            "completions": FakeOpenAIChatCompletions(
+                [
+                    {
+                        "id": "chatcmpl_1",
+                        "choices": [{"delta": {"content": "Hello "}}],
+                    },
+                    {
+                        "choices": [{"delta": {"content": "world"}, "finish_reason": "stop"}],
+                        "usage": {
+                            "prompt_tokens": 9,
+                            "completion_tokens": 4,
+                            "total_tokens": 13,
+                        },
+                    },
+                ]
+            )
+        },
+    )()
+    provider = OpenAIProvider(api_key="test-key", client=client)
+    service = LLMService(registry=ModelRegistry(), providers={"openai": provider})
+
+    events = [
+        event
+        async for event in service.stream(
+            LLMRequest(
+                model="gpt-5.2",
+                thinking_enabled=True,
+                messages=[
+                    LLMInputMessage(role="user", content=[TextContentPart(text="Hello")])
+                ],
+            )
+        )
+    ]
+
+    assert [event.event_type for event in events] == [
+        "response.started",
+        "text.delta",
+        "text.delta",
+        "response.completed",
+    ]
+    assert events[1].payload["delta"] == "Hello "
+    assert events[2].payload["delta"] == "world"
+    assert events[-1].payload["usage"]["total_tokens"] == 13
+    assert client.chat.completions.calls[0]["stream"] is True
+    assert client.chat.completions.calls[0]["reasoning_effort"] == "medium"
 
 
 def test_runtime_registers_openrouter_provider(monkeypatch):

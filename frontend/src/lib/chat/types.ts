@@ -5,6 +5,7 @@ export type ChatMessageStatus = "streaming" | "complete" | "error";
 export type ReasoningPayload = {
   text?: string | null;
   details?: unknown[] | null;
+  status?: "streaming" | "complete";
 };
 
 export type ChatMessage = {
@@ -99,6 +100,7 @@ export type StreamReasoningEvent = {
 export type StreamDoneEvent = {
   type: "done";
   assistantMessageId: string;
+  persistedAssistantMessageId?: string;
 };
 
 export type StreamErrorEvent = {

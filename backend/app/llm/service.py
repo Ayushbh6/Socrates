@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from dataclasses import replace
 
 from jsonschema import Draft202012Validator
@@ -13,7 +14,7 @@ from app.llm.base import (
 from app.llm.capabilities import validate_request_against_model
 from app.llm.pricing import calculate_cost
 from app.llm.registry import ModelRegistry
-from app.llm.types import LLMRequest, LLMResponse, ModelSpec
+from app.llm.types import LLMEvent, LLMRequest, LLMResponse, ModelSpec
 
 
 class LLMService:
@@ -43,6 +44,19 @@ class LLMService:
             response = self._validate_structured_output(request, response)
 
         return response
+
+    async def stream(self, request: LLMRequest) -> AsyncIterator[LLMEvent]:
+        model_spec = self.registry.resolve(request.model, request.provider)
+        validate_request_against_model(request, model_spec)
+
+        provider = self.providers.get(model_spec.provider)
+        if provider is None:
+            raise LLMProviderError(
+                f"No provider adapter is configured for '{model_spec.provider}'."
+            )
+
+        async for event in provider.stream(request, model_spec):
+            yield event
 
     def _ensure_cost(self, response: LLMResponse, model_spec: ModelSpec) -> LLMResponse:
         if response.usage.cost_usd != 0:

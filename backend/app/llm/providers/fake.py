@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from decimal import Decimal
 
-from app.llm.types import LLMRequest, LLMResponse, ModelSpec, TextContentPart, UsageInfo
+from app.llm.types import (
+    LLMEvent,
+    LLMRequest,
+    LLMResponse,
+    ModelSpec,
+    TextContentPart,
+    UsageInfo,
+)
 
 
 MARKDOWN_DEMO = """# PremChat Markdown Demo
@@ -93,6 +101,70 @@ class FakeProvider:
                 "fake": True,
                 "thinkingEnabled": request.thinking_enabled,
             },
+        )
+
+    async def stream(
+        self,
+        request: LLMRequest,
+        model_spec: ModelSpec,
+    ) -> AsyncIterator[LLMEvent]:
+        response = await self.generate(request, model_spec)
+
+        yield LLMEvent(
+            event_type="response.started",
+            event_index=0,
+            provider=model_spec.provider,
+            model=model_spec.public_id,
+            message_id=request.message_id,
+            payload={},
+        )
+
+        event_index = 1
+        reasoning_text = response.provider_metadata.get("reasoning")
+        if isinstance(reasoning_text, str) and reasoning_text:
+            yield LLMEvent(
+                event_type="reasoning.delta",
+                event_index=event_index,
+                provider=model_spec.provider,
+                model=model_spec.public_id,
+                message_id=request.message_id,
+                payload={"delta": reasoning_text},
+            )
+            event_index += 1
+
+        for token in response.output_text.split():
+            yield LLMEvent(
+                event_type="text.delta",
+                event_index=event_index,
+                provider=model_spec.provider,
+                model=model_spec.public_id,
+                message_id=request.message_id,
+                payload={"delta": f"{token} "},
+            )
+            event_index += 1
+
+        yield LLMEvent(
+            event_type="response.completed",
+            event_index=event_index,
+            provider=model_spec.provider,
+            model=model_spec.public_id,
+            message_id=request.message_id,
+            payload={
+                "provider_message_id": response.provider_message_id,
+                "request_id": response.request_id,
+                "finish_reason": response.finish_reason,
+                "provider_metadata": response.provider_metadata,
+                "raw_response": response.raw_response,
+                "tool_calls": [],
+                "usage": {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                    "cost_usd": str(response.usage.cost_usd),
+                },
+            },
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
         )
 
     def _build_response_text(self, prompt: str, display_name: str) -> str:

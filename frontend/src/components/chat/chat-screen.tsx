@@ -27,6 +27,56 @@ type PendingOptimisticTurn = {
   user: ChatMessage;
 };
 
+function normalizeStreamMessage(message: Record<string, unknown>): ChatMessage {
+  const rawStatus = typeof message.status === "string" ? message.status : "completed";
+  let status: ChatMessage["status"] = "complete";
+  if (rawStatus === "streaming" || rawStatus === "pending") {
+    status = "streaming";
+  } else if (rawStatus === "failed" || rawStatus === "cancelled" || rawStatus === "error") {
+    status = "error";
+  }
+
+  const reasoningValue = message.reasoning;
+  const reasoning =
+    reasoningValue && typeof reasoningValue === "object"
+      ? {
+          text:
+            typeof (reasoningValue as { text?: unknown }).text === "string"
+              ? ((reasoningValue as { text?: string }).text ?? null)
+              : null,
+          details: Array.isArray((reasoningValue as { details?: unknown[] }).details)
+            ? ((reasoningValue as { details?: unknown[] }).details ?? null)
+            : null,
+          status:
+            (reasoningValue as { status?: ChatMessage["reasoning"] extends infer R
+              ? R extends { status?: infer S }
+                ? S
+                : never
+              : never }).status ?? undefined,
+        }
+      : null;
+
+  return {
+    id: String(message.id),
+    conversationId: String(message.conversationId),
+    role: message.role as ChatMessage["role"],
+    content:
+      typeof message.content === "string"
+        ? message.content
+        : typeof message.contentText === "string"
+          ? message.contentText
+          : "",
+    createdAt:
+      typeof message.createdAt === "string"
+        ? message.createdAt
+        : new Date().toISOString(),
+    status,
+    provider: typeof message.provider === "string" ? message.provider : null,
+    model: typeof message.model === "string" ? message.model : null,
+    reasoning,
+  };
+}
+
 function createOptimisticMessage(
   conversationId: string,
   role: ChatMessage["role"],
@@ -124,13 +174,20 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
   }, []);
 
   const createOptimisticTurn = useCallback(
-    (targetConversationId: string, content: string): PendingOptimisticTurn => ({
-      assistant: createOptimisticMessage(
-        targetConversationId,
-        "assistant",
-        "",
-        "streaming"
-      ),
+    (
+      targetConversationId: string,
+      content: string,
+      includeReasoning: boolean
+    ): PendingOptimisticTurn => ({
+      assistant: {
+        ...createOptimisticMessage(
+          targetConversationId,
+          "assistant",
+          "",
+          "streaming"
+        ),
+        reasoning: includeReasoning ? { status: "streaming", text: "" } : null,
+      },
       user: createOptimisticMessage(targetConversationId, "user", content, "complete"),
     }),
     []
@@ -167,7 +224,12 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
       const effectiveThinkingEnabled =
         options?.overrideThinkingEnabled ?? thinkingEnabled;
       const optimisticTurn =
-        options?.optimisticTurn ?? createOptimisticTurn(conversationId, trimmedContent);
+        options?.optimisticTurn ??
+        createOptimisticTurn(
+          conversationId,
+          trimmedContent,
+          effectiveThinkingEnabled
+        );
       const { assistant: optimisticAssistant, user: optimisticUser } = optimisticTurn;
 
       setIsStreaming(true);
@@ -236,14 +298,20 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
               setConversationTitle(event.conversationTitle);
               setSelectedModel(event.model);
               setThinkingEnabled(event.thinkingEnabled);
+              const normalizedUserMessage = normalizeStreamMessage(
+                event.userMessage as unknown as Record<string, unknown>
+              );
+              const normalizedAssistantMessage = normalizeStreamMessage(
+                event.assistantMessage as unknown as Record<string, unknown>
+              );
               setMessages((current) =>
                 current.map((message) => {
                   if (message.id === optimisticUser.id) {
-                    return event.userMessage;
+                    return normalizedUserMessage;
                   }
 
                   if (message.id === optimisticAssistant.id) {
-                    return event.assistantMessage;
+                    return normalizedAssistantMessage;
                   }
 
                   return message;
@@ -293,7 +361,20 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
               setMessages((current) =>
                 current.map((message) =>
                   message.id === event.assistantMessageId
-                    ? { ...message, status: "complete" }
+                    ? {
+                        ...message,
+                        id:
+                          event.persistedAssistantMessageId ??
+                          event.assistantMessageId,
+                        status: "complete",
+                        reasoning:
+                          message.reasoning &&
+                          (message.reasoning.text ||
+                            (Array.isArray(message.reasoning.details) &&
+                              message.reasoning.details.length > 0))
+                            ? { ...message.reasoning, status: "complete" }
+                            : null,
+                      }
                     : message
                 )
               );
@@ -308,6 +389,9 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
                         ...message,
                         content: event.message,
                         status: "error",
+                        reasoning: message.reasoning
+                          ? { ...message.reasoning, status: "complete" }
+                          : null,
                       }
                     : message
                 )
@@ -333,6 +417,9 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
                   ...message,
                   content: fallbackMessage,
                   status: "error",
+                  reasoning: message.reasoning
+                    ? { ...message.reasoning, status: "complete" }
+                    : null,
                 }
               : message
           )
@@ -427,7 +514,8 @@ export function ChatScreen({ initialConversation = null }: ChatScreenProps) {
 
     const optimisticTurn = createOptimisticTurn(
       conversationId,
-      pendingPayload.content
+      pendingPayload.content,
+      pendingPayload.thinkingEnabled
     );
 
     setMessages((current) =>
