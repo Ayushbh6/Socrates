@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = Field(default=None, validation_alias="GEMINI_API_KEY")
     openrouter_api_key: Optional[str] = Field(default=None, validation_alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL")
+    ollama_host: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_HOST")
+    ollama_api_key: Optional[str] = Field(default=None, validation_alias="OLLAMA_API_KEY")
     app_url: Optional[str] = Field(default=None, validation_alias="APP_URL")
     app_name: str = Field(default="PremChat", validation_alias="APP_NAME")
 

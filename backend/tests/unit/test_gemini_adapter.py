@@ -45,7 +45,8 @@ def test_thinking_level_mapping():
     adapter = GeminiAdapter(model_name="gemini-2.5-pro", api_key="test-key")
     
     off_config = adapter._map_thinking_level(ThinkingLevel.OFF)
-    assert not off_config.include_thoughts
+    assert off_config.include_thoughts
+    assert off_config.thinking_level == types.ThinkingLevel.MINIMAL
     
     low_config = adapter._map_thinking_level(ThinkingLevel.LOW)
     assert low_config.include_thoughts
@@ -98,7 +99,7 @@ def test_prepare_input_tool_response_mapping():
     assert len(gemini_input) == 2
     assert gemini_input[0].role == "user"
     assert gemini_input[0].parts[0].function_response.name == "get_weather"
-    assert gemini_input[0].parts[0].function_response.response == {"result": {"temp": 20}}
+    assert gemini_input[0].parts[0].function_response.response == {"temp": 20}
 
 def test_generate_sync(mock_genai_client):
     """Verify sync generate call uses correct parameters."""

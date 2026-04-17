@@ -44,7 +44,7 @@ class GeminiAdapter(BaseProvider):
 
         for msg in request.history:
             if msg.role == MessageRole.TOOL:
-                func_name = call_id_to_name.get(msg.tool_call_id, "unknown")
+                func_name = call_id_to_name.get(msg.tool_call_id) or msg.tool_call_id or "unknown"
                 gemini_input.append(
                     types.Content(
                         role="user",
