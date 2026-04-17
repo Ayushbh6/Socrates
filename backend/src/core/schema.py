@@ -28,6 +28,7 @@ class Message(BaseModel):
     """A single message in the conversation history."""
     role: MessageRole
     content: Optional[str] = None
+    thinking: Optional[str] = None  # Intermediate reasoning/chain-of-thought
     attachments: Optional[List[Attachment]] = None
     tool_calls: Optional[List[ToolCall]] = None
     tool_call_id: Optional[str] = None
