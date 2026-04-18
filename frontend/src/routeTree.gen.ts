@@ -15,6 +15,7 @@ import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsIndexRouteImport } from './routes/projects/index'
 import { Route as ProjectsProjectIdRouteImport } from './routes/projects/$projectId'
+import { Route as ProjectsProjectIdIndexRouteImport } from './routes/projects/$projectId/index'
 import { Route as ProjectsProjectIdConversationsConversationIdRouteImport } from './routes/projects/$projectId/conversations.$conversationId'
 
 const WelcomeRoute = WelcomeRouteImport.update({
@@ -47,6 +48,11 @@ const ProjectsProjectIdRoute = ProjectsProjectIdRouteImport.update({
   path: '/$projectId',
   getParentRoute: () => ProjectsRoute,
 } as any)
+const ProjectsProjectIdIndexRoute = ProjectsProjectIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ProjectsProjectIdRoute,
+} as any)
 const ProjectsProjectIdConversationsConversationIdRoute =
   ProjectsProjectIdConversationsConversationIdRouteImport.update({
     id: '/conversations/$conversationId',
@@ -61,14 +67,15 @@ export interface FileRoutesByFullPath {
   '/welcome': typeof WelcomeRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/conversations/$conversationId': typeof ProjectsProjectIdConversationsConversationIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/onboarding': typeof OnboardingRoute
   '/welcome': typeof WelcomeRoute
-  '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/projects': typeof ProjectsIndexRoute
+  '/projects/$projectId': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/conversations/$conversationId': typeof ProjectsProjectIdConversationsConversationIdRoute
 }
 export interface FileRoutesById {
@@ -79,6 +86,7 @@ export interface FileRoutesById {
   '/welcome': typeof WelcomeRoute
   '/projects/$projectId': typeof ProjectsProjectIdRouteWithChildren
   '/projects/': typeof ProjectsIndexRoute
+  '/projects/$projectId/': typeof ProjectsProjectIdIndexRoute
   '/projects/$projectId/conversations/$conversationId': typeof ProjectsProjectIdConversationsConversationIdRoute
 }
 export interface FileRouteTypes {
@@ -90,14 +98,15 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/projects/$projectId'
     | '/projects/'
+    | '/projects/$projectId/'
     | '/projects/$projectId/conversations/$conversationId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/onboarding'
     | '/welcome'
-    | '/projects/$projectId'
     | '/projects'
+    | '/projects/$projectId'
     | '/projects/$projectId/conversations/$conversationId'
   id:
     | '__root__'
@@ -107,6 +116,7 @@ export interface FileRouteTypes {
     | '/welcome'
     | '/projects/$projectId'
     | '/projects/'
+    | '/projects/$projectId/'
     | '/projects/$projectId/conversations/$conversationId'
   fileRoutesById: FileRoutesById
 }
@@ -161,6 +171,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProjectsProjectIdRouteImport
       parentRoute: typeof ProjectsRoute
     }
+    '/projects/$projectId/': {
+      id: '/projects/$projectId/'
+      path: '/'
+      fullPath: '/projects/$projectId/'
+      preLoaderRoute: typeof ProjectsProjectIdIndexRouteImport
+      parentRoute: typeof ProjectsProjectIdRoute
+    }
     '/projects/$projectId/conversations/$conversationId': {
       id: '/projects/$projectId/conversations/$conversationId'
       path: '/conversations/$conversationId'
@@ -172,10 +189,12 @@ declare module '@tanstack/react-router' {
 }
 
 interface ProjectsProjectIdRouteChildren {
+  ProjectsProjectIdIndexRoute: typeof ProjectsProjectIdIndexRoute
   ProjectsProjectIdConversationsConversationIdRoute: typeof ProjectsProjectIdConversationsConversationIdRoute
 }
 
 const ProjectsProjectIdRouteChildren: ProjectsProjectIdRouteChildren = {
+  ProjectsProjectIdIndexRoute: ProjectsProjectIdIndexRoute,
   ProjectsProjectIdConversationsConversationIdRoute:
     ProjectsProjectIdConversationsConversationIdRoute,
 }

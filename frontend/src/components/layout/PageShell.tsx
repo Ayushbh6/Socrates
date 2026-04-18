@@ -19,37 +19,48 @@ export function PageShell({ children, className }: PageShellProps) {
   return (
     <div
       className={cn(
-        'relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-midnight',
+        'relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-canvas text-ink',
         className,
       )}
     >
-      {/* ── Radial teal glow ─────────────────────────────────── */}
+      {/* ── Radial sage glow ─────────────────────────────────── */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
           background: `radial-gradient(ellipse 70% 55% at 50% 48%,
-            rgba(12,197,197,0.065) 0%,
+            rgba(143,196,170,0.18) 0%,
             transparent 68%)`,
+        }}
+      />
+
+      {/* ── Paper wash ───────────────────────────────────────── */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            'linear-gradient(180deg, rgba(255,253,247,0.92) 0%, rgba(244,241,232,0.86) 100%)',
         }}
       />
 
       {/* ── Dot grid texture ─────────────────────────────────── */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.038]"
+        className="pointer-events-none absolute inset-0 opacity-[0.05]"
         style={{
           backgroundImage: `radial-gradient(circle, ${colors.greenTea} 1px, transparent 1px)`,
           backgroundSize: '40px 40px',
         }}
       />
 
-      {/* ── Bottom vignette ──────────────────────────────────── */}
+      {/* ── Top highlight ───────────────────────────────────── */}
       <div
         aria-hidden
-        className="pointer-events-none absolute bottom-0 left-0 right-0 h-48"
+        className="pointer-events-none absolute inset-x-0 top-0 h-48"
         style={{
-          background: `linear-gradient(to top, ${colors.midnight} 0%, transparent 100%)`,
+          background:
+            'linear-gradient(to bottom, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0) 100%)',
         }}
       />
 

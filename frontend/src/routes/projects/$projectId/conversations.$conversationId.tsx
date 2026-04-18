@@ -1,16 +1,19 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Send, Paperclip, X, Brain } from 'lucide-react'
-import { apiFetch } from '../../../lib/api'
-import { useAgentStream } from '../../../hooks/useAgentStream'
+import { Brain, LoaderCircle, Paperclip, Send, Sparkles, X } from 'lucide-react'
+
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
+import { apiFetch } from '@/lib/api'
+import { useAgentStream } from '@/hooks/useAgentStream'
 import type {
-  Message,
   Asset,
+  Message,
   SendMessageResponse,
-  WsEvent,
   ThinkingLevel,
+  WsEvent,
 } from '../../../types/api'
 
 export const Route = createFileRoute('/projects/$projectId/conversations/$conversationId')({
@@ -44,8 +47,14 @@ function ConversationPage() {
   const [streamingThinking, setStreamingThinking] = useState('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const { register, handleSubmit, reset, watch, formState: { isSubmitting } } = useForm<SendForm>()
-  const inputValue = watch('content_text', '')
+  const {
+    register,
+    handleSubmit,
+    reset,
+    control,
+    formState: { isSubmitting },
+  } = useForm<SendForm>()
+  const inputValue = useWatch({ control, name: 'content_text', defaultValue: '' })
 
   // Fetch persisted message history
   const { data: messages = [] } = useQuery({
@@ -163,12 +172,28 @@ function ConversationPage() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      {/* Message list */}
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+      <div className="border-b border-sage-strong/80 bg-paper/70 px-6 py-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
+              Conversation
+            </p>
+            <h2 className="font-display text-3xl leading-none tracking-tight text-forest">
+              Socratic exchange
+            </h2>
+          </div>
+          <div className="hidden items-center gap-2 rounded-full border border-sage-strong bg-white/80 px-4 py-2 text-sm text-ink-soft md:flex">
+            <Sparkles className="size-4 text-moss" />
+            Streaming answers stay grounded in this project.
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-6 py-6">
         {allMessages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center pt-16">
-            <p className="font-serif text-2xl font-semibold text-[var(--color-accent)] mb-2">Socrates</p>
-            <p className="text-sm text-[var(--color-muted)] max-w-xs">
+          <div className="flex h-full flex-col items-center justify-center gap-3 pt-16 text-center">
+            <p className="font-display text-4xl text-forest">Socrates</p>
+            <p className="max-w-xs text-sm leading-6 text-ink-soft">
               Ask a question, share an image, or start a line of inquiry.
             </p>
           </div>
@@ -185,28 +210,28 @@ function ConversationPage() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Pending assets */}
       {pendingAssets.length > 0 && (
-        <div className="flex gap-2 px-6 pb-2">
+        <div className="flex flex-wrap gap-2 px-6 pb-2">
           {pendingAssets.map((asset) => (
-            <div key={asset.id} className="relative flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-xs text-[var(--color-text)]">
-              <Paperclip size={11} className="text-[var(--color-muted)]" />
+            <div
+              key={asset.id}
+              className="relative flex items-center gap-1.5 rounded-full border border-sage-strong bg-sage/50 px-3 py-1.5 text-xs text-ink"
+            >
+              <Paperclip className="size-3.5 text-ink-soft" />
               <span className="max-w-[120px] truncate">{asset.original_name}</span>
               <button
                 onClick={() => setPendingAssets((prev) => prev.filter((a) => a.id !== asset.id))}
-                className="ml-1 text-[var(--color-muted)] hover:text-[var(--color-error)]"
+                className="ml-1 text-ink-soft transition hover:text-forest"
               >
-                <X size={11} />
+                <X className="size-3.5" />
               </button>
             </div>
           ))}
         </div>
       )}
 
-      {/* Composer */}
-      <div className="border-t border-[var(--color-border)] bg-[var(--color-base)] px-6 py-4">
-        <form onSubmit={handleSubmit(onSubmit)} className="relative flex items-end gap-2">
-          {/* Hidden file input */}
+      <div className="border-t border-sage-strong/80 bg-paper/85 px-6 py-4">
+        <form onSubmit={handleSubmit(onSubmit)} className="flex items-end gap-3">
           <input
             ref={fileInputRef}
             type="file"
@@ -219,36 +244,39 @@ function ConversationPage() {
             }}
           />
 
-          {/* Attach button */}
-          <button
+          <Button
             type="button"
+            size="icon"
+            variant="outline"
             onClick={() => fileInputRef.current?.click()}
             disabled={uploadAsset.isPending}
-            className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--color-muted)] transition-colors hover:bg-[var(--color-surface)] hover:text-[var(--color-accent)] disabled:opacity-40"
+            className="size-11 shrink-0 rounded-full border-sage-strong bg-white text-ink-soft shadow-none hover:bg-sage hover:text-forest"
             title="Attach image"
           >
-            <Paperclip size={16} />
-          </button>
+            {uploadAsset.isPending ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <Paperclip />
+            )}
+          </Button>
 
-          {/* Thinking toggle */}
-          <button
+          <Button
             type="button"
+            size="icon"
+            variant={thinkingLevel !== 'off' ? 'secondary' : 'outline'}
             onClick={() => setThinkingLevel((prev) => prev === 'off' ? 'low' : 'off')}
-            className={`mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] transition-colors ${
-              thinkingLevel !== 'off'
-                ? 'bg-[var(--color-accent-ghost)] text-[var(--color-accent)]'
-                : 'text-[var(--color-muted)] hover:bg-[var(--color-surface)] hover:text-[var(--color-accent)]'
-            }`}
+            className={thinkingLevel !== 'off'
+              ? 'size-11 shrink-0 rounded-full bg-sage text-forest hover:bg-sage'
+              : 'size-11 shrink-0 rounded-full border-sage-strong bg-white text-ink-soft shadow-none hover:bg-sage hover:text-forest'}
             title={thinkingLevel !== 'off' ? 'Thinking on' : 'Thinking off'}
           >
-            <Brain size={16} />
-          </button>
+            <Brain />
+          </Button>
 
-          {/* Text input */}
-          <textarea
+          <Textarea
             placeholder="Ask Socrates…"
             rows={1}
-            className="flex-1 resize-none rounded-[var(--radius-md)] border border-[var(--color-border)] bg-white px-4 py-2.5 text-sm text-[var(--color-text)] placeholder:text-[var(--color-placeholder)] outline-none focus:border-[var(--color-accent-mid)] focus:ring-2 focus:ring-[var(--color-accent-ghost)] transition-all max-h-40 overflow-y-auto"
+            className="min-h-[3.25rem] max-h-40 flex-1 resize-none rounded-[1.5rem] border border-sage-strong bg-white px-4 py-3 text-sm text-ink outline-none transition focus:border-moss/50 focus:ring-3 focus:ring-ring/20"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
@@ -258,14 +286,14 @@ function ConversationPage() {
             {...register('content_text')}
           />
 
-          {/* Send button */}
-          <button
+          <Button
             type="submit"
+            size="icon"
             disabled={isSubmitting || sendMessage.isPending || (!inputValue?.trim() && pendingAssets.length === 0)}
-            className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--color-accent)] text-white transition-colors hover:bg-[var(--color-accent-mid)] disabled:opacity-40 disabled:cursor-not-allowed"
+            className="size-11 shrink-0 rounded-full bg-forest text-white hover:bg-forest/92"
           >
-            <Send size={14} />
-          </button>
+            {sendMessage.isPending ? <LoaderCircle className="animate-spin" /> : <Send />}
+          </Button>
         </form>
       </div>
     </div>
@@ -289,43 +317,45 @@ function MessageBubble({ message, streamingContent, streamingThinking }: Message
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`max-w-[75%] ${isUser ? 'max-w-[60%]' : 'max-w-[80%]'}`}>
-        {/* Thinking block */}
         {displayThinking && (
-          <div className="mb-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-surface)] px-4 py-3">
-            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest text-[var(--color-muted)]">
-              <Brain size={10} />
+          <div className="mb-2 rounded-[1.25rem] border border-sage-strong bg-sage/45 px-4 py-3">
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">
+              <Brain className="size-3" />
               Thinking
             </p>
-            <p className="text-xs leading-relaxed text-[var(--color-muted)] whitespace-pre-wrap">{displayThinking}</p>
+            <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink-soft">
+              {displayThinking}
+            </p>
           </div>
         )}
 
-        {/* Attached assets */}
         {message.assets?.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {message.assets.map((asset) => (
-              <div key={asset.id} className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--color-border)] bg-[var(--color-surface)] px-2.5 py-1.5 text-xs text-[var(--color-muted)]">
-                <Paperclip size={11} />
+              <div
+                key={asset.id}
+                className="flex items-center gap-1.5 rounded-full border border-sage-strong bg-sage/45 px-3 py-1.5 text-xs text-ink-soft"
+              >
+                <Paperclip className="size-3.5" />
                 <span className="max-w-[100px] truncate">{asset.original_name}</span>
               </div>
             ))}
           </div>
         )}
 
-        {/* Content bubble */}
         <div
-          className={`rounded-[var(--radius-lg)] px-4 py-3 text-sm leading-relaxed ${
+          className={`rounded-[1.5rem] px-4 py-3 text-sm leading-7 shadow-[0_12px_30px_rgba(62,92,72,0.05)] ${
             isUser
-              ? 'bg-[var(--color-accent)] text-white'
-              : 'bg-[var(--color-surface)] text-[var(--color-text)]'
+              ? 'bg-forest text-white'
+              : 'border border-sage-strong/80 bg-paper text-ink'
           }`}
         >
           {displayContent ? (
             <p className="whitespace-pre-wrap">{displayContent}</p>
           ) : isStreaming ? (
-            <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
+            <span className="inline-block size-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
           ) : (
-            <p className="text-[var(--color-muted)] italic text-xs">
+            <p className="text-xs italic text-ink-soft">
               {(message as OptimisticMessage).status === 'failed' ? 'Failed to respond.' : '…'}
             </p>
           )}

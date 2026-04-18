@@ -14,6 +14,7 @@ from ..core.schema import Attachment, GenConfig, InputMode, Message, MessageRole
 from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project
 from ..db.session import get_session_factory
 from .assets import get_project_assets_by_ids, resolve_asset_bytes
+from .bootstrap import get_current_user
 from .projects import get_conversation, next_message_sequence
 from .utils import to_json_compatible
 
@@ -199,6 +200,8 @@ def create_message_and_run(
     if project is None:
         raise LookupError("Conversation project not found.")
 
+    current_user = get_current_user(session)
+
     assets = get_project_assets_by_ids(session, conversation.project_id, asset_ids)
     sequence_no = next_message_sequence(session, conversation_id)
     user_message = MessageRecord(
@@ -224,7 +227,10 @@ def create_message_and_run(
         status="queued",
         model=model,
         input_mode=input_mode.value,
-        system_prompt_text=build_socrates_system_prompt(project.default_system_prompt),
+        system_prompt_text=build_socrates_system_prompt(
+            project.default_system_prompt,
+            user_name=current_user.display_name if current_user else None,
+        ),
         query_text=content_text,
         request_json={
             "model": model,

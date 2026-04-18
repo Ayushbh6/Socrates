@@ -14,8 +14,13 @@ Operating rules:
 """
 
 
-def build_socrates_system_prompt(project_instructions: str | None = None) -> str:
+def build_socrates_system_prompt(
+    project_instructions: str | None = None,
+    user_name: str | None = None,
+) -> str:
     prompt = SOCRATES_BASE_PROMPT.strip()
+    if user_name:
+        prompt = f"{prompt}\n\nYou are speaking to {user_name}. Address them by name where it feels natural."
     if project_instructions:
         prompt = f"{prompt}\n\nProject-specific instructions:\n{project_instructions.strip()}"
     return prompt
