@@ -36,7 +36,8 @@ class OpenAIAdapter(BaseProvider):
         def format_content(msg: Message) -> List[Dict[str, Any]]:
             parts = []
             if msg.content:
-                parts.append({"type": "input_text", "text": msg.content})
+                text_part_type = "output_text" if msg.role == MessageRole.ASSISTANT else "input_text"
+                parts.append({"type": text_part_type, "text": msg.content})
             if msg.attachments:
                 for att in msg.attachments:
                     if att.mime_type.startswith("image/"):

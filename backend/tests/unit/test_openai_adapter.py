@@ -40,7 +40,11 @@ def test_prepare_input_mapping():
     # Assertions on mapping
     assert len(openai_input) == 3 # 2 history + 1 current
     assert openai_input[0]["role"] == "user"
+    assert openai_input[0]["content"][0]["type"] == "input_text"
     assert openai_input[0]["content"][0]["text"] == "Past hi"
+    assert openai_input[1]["role"] == "assistant"
+    assert openai_input[1]["content"][0]["type"] == "output_text"
+    assert openai_input[1]["content"][0]["text"] == "Past hello"
     assert openai_input[2]["role"] == "user"
     assert openai_input[2]["content"][0]["text"] == "Hello!"
 

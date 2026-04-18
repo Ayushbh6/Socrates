@@ -1,17 +1,8 @@
-import json
 import pytest
-import os
 from pydantic import BaseModel, Field
-from backend.src.providers.gemini_adapter import GeminiAdapter
-from backend.src.core.schema import (
-    GenConfig,
-    LLMRequest,
-    Message,
-    MessageRole,
-    ThinkingLevel,
-    ToolCall,
-    ToolDefinition,
-)
+from backend.src.agent import AgentRequest, AgentRunner
+from backend.src.agent.events import AgentEventType
+from backend.src.core.schema import GenConfig, ThinkingLevel, ToolCall, ToolDefinition
 from backend.src.core.settings import get_settings
 
 # 1. Define the Structured Output Schema
@@ -60,8 +51,7 @@ async def test_gemini_integration(capsys: pytest.CaptureFixture[str]):
     if not api_key:
         pytest.skip("GEMINI_API_KEY not found in settings or environment")
 
-    # Initialize adapter
-    adapter = GeminiAdapter(model_name="gemini-3-flash-preview", api_key=api_key)
+    runner = AgentRunner(tool_executor=_execute_fake_tool)
 
     # Define fake tools
     weather_tool = ToolDefinition(
@@ -90,16 +80,18 @@ async def test_gemini_integration(capsys: pytest.CaptureFixture[str]):
     )
 
     # Build the complex request
-    request = LLMRequest(
+    request = AgentRequest(
+        model="gemini/gemini-3-flash-preview",
         system_prompt="You are a helpful travel assistant. Use tools to provide accurate info.",
         query="What is the weather in Paris and how far is it from London? Provide the final answer in the requested structured format.",
         tools=[weather_tool, distance_tool],
         response_model=FinalOutput,
-        config=GenConfig(thinking=ThinkingLevel.OFF)
+        config=GenConfig(thinking=ThinkingLevel.OFF),
+        provider_kwargs={"api_key": api_key},
     )
 
     _debug(capsys, "\n=== Gemini Integration Test ===")
-    _debug(capsys, f"Model: {adapter.model_name}")
+    _debug(capsys, f"Model: {request.model}")
     _debug(capsys, f"Query: {request.query}")
     _debug(capsys, f"Tools Available: {[tool.name for tool in request.tools or []]}")
     _debug(capsys, "--- Starting Agent Loop ---")
@@ -107,81 +99,24 @@ async def test_gemini_integration(capsys: pytest.CaptureFixture[str]):
     tools_called = False
     parsed_successfully = False
 
-    initial_query = request.query
-    history: list[Message] = []
-    active_query = initial_query
+    async for event in runner.stream(request):
+        if event.type == AgentEventType.THINKING and event.response and event.response.thinking:
+            _debug(capsys, f"[reasoning] {event.response.thinking}")
+        elif event.type == AgentEventType.CONTENT and event.response and event.response.content:
+            _debug(capsys, f"[content] {event.response.content}")
+        elif event.type == AgentEventType.TOOL_CALL and event.tool_call:
+            tools_called = True
+            _debug(capsys, f"[tool-call] {event.tool_call.name} args={event.tool_call.arguments} call_id={event.tool_call.id}")
+        elif event.type == AgentEventType.TOOL_RESULT and event.tool_call and event.tool_result:
+            _debug(capsys, f"[tool-result] {event.tool_call.name} -> {event.tool_result}")
+        elif event.type == AgentEventType.FINAL_RESPONSE and event.response and event.response.parsed:
+            parsed_successfully = True
+            _debug(capsys, "\n--- Final Structured Output ---")
+            _debug(capsys, f"Answer: {event.response.parsed.final_answer}")
+            _debug(capsys, f"Confidence: {event.response.parsed.confidence_score}%")
 
-    for turn_number in range(1, 4):
-        _debug(capsys, f"\n--- Turn {turn_number} ---")
-
-        turn_request = LLMRequest(
-            system_prompt=request.system_prompt,
-            query=active_query,
-            history=history,
-            tools=request.tools,
-            response_model=request.response_model,
-            config=request.config,
-        )
-
-        turn_tool_calls: list[ToolCall] = []
-        seen_tool_call_ids: set[str] = set()
-
-        async for response in adapter.astream(turn_request):
-            if response.thinking:
-                # We expect "thinking" tokens even if level is OFF because Gemini 3
-                # supports minimal thinking tokens and we capture them.
-                _debug(capsys, f"[reasoning] {response.thinking}")
-
-            if response.content:
-                _debug(capsys, f"[content] {response.content}")
-
-            if response.tool_calls:
-                tools_called = True
-                for tool_call in response.tool_calls:
-                    if tool_call.id in seen_tool_call_ids:
-                        continue
-                    seen_tool_call_ids.add(tool_call.id)
-                    turn_tool_calls.append(tool_call)
-                    _debug(
-                        capsys,
-                        f"[tool-call] {tool_call.name} args={tool_call.arguments} call_id={tool_call.id}",
-                    )
-
-            if response.parsed:
-                parsed_successfully = True
-                _debug(capsys, "\n--- Final Structured Output ---")
-                _debug(capsys, f"Answer: {response.parsed.final_answer}")
-                _debug(capsys, f"Confidence: {response.parsed.confidence_score}%")
-
-                assert isinstance(response.parsed, FinalOutput)
-                assert 1 <= response.parsed.confidence_score <= 100
-                break
-
-        if parsed_successfully:
-            break
-
-        if not turn_tool_calls:
-            break
-
-        if not history:
-            history.append(Message(role=MessageRole.USER, content=initial_query))
-
-        # Replay the assistant's tool call turn
-        history.append(Message(role=MessageRole.ASSISTANT, tool_calls=turn_tool_calls))
-
-        # Execute tools and add results to history
-        for tool_call in turn_tool_calls:
-            tool_result = _execute_fake_tool(tool_call)
-            _debug(capsys, f"[tool-result] {tool_call.name} -> {tool_result}")
-            history.append(
-                Message(
-                    role=MessageRole.TOOL,
-                    tool_call_id=tool_call.id,
-                    content=json.dumps(tool_result),
-                )
-            )
-
-        active_query = "Use the tool results to return the final structured answer."
+            assert isinstance(event.response.parsed, FinalOutput)
+            assert 1 <= event.response.parsed.confidence_score <= 100
 
     _debug(capsys, "--- Stream Complete ---")
     assert tools_called, "Model failed to call tools."

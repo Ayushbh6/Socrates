@@ -1,17 +1,9 @@
-import json
 import pytest
 from openai import AuthenticationError
 from pydantic import BaseModel, Field
-from backend.src.providers.openrouter_adapter import OpenRouterAdapter
-from backend.src.core.schema import (
-    GenConfig,
-    LLMRequest,
-    Message,
-    MessageRole,
-    ThinkingLevel,
-    ToolCall,
-    ToolDefinition,
-)
+from backend.src.agent import AgentRequest, AgentRunner
+from backend.src.agent.events import AgentEventType
+from backend.src.core.schema import GenConfig, ThinkingLevel, ToolCall, ToolDefinition
 from backend.src.core.settings import get_settings
 
 # 1. Define the Structured Output Schema
@@ -58,7 +50,7 @@ async def test_openrouter_integration(capsys: pytest.CaptureFixture[str]):
         pytest.skip("OPENROUTER_API_KEY not found in settings or environment")
 
     model_name = "z-ai/glm-5.1:nitro"
-    adapter = OpenRouterAdapter(model_name=model_name, tool_executor=_execute_fake_tool)
+    runner = AgentRunner(tool_executor=_execute_fake_tool)
 
     weather_tool = ToolDefinition(
         name="get_weather",
@@ -85,7 +77,8 @@ async def test_openrouter_integration(capsys: pytest.CaptureFixture[str]):
         }
     )
 
-    request = LLMRequest(
+    request = AgentRequest(
+        model=f"openrouter/{model_name}",
         system_prompt="You are a helpful travel assistant. Use tools to provide accurate info.",
         query="What is the weather in Paris and how far is it from London? Provide the final answer in the requested structured format.",
         tools=[weather_tool, distance_tool],
@@ -94,7 +87,7 @@ async def test_openrouter_integration(capsys: pytest.CaptureFixture[str]):
     )
 
     _debug(capsys, f"\n=== OpenRouter Integration Test [{model_name}] ===")
-    _debug(capsys, f"Model: {adapter.model_name}")
+    _debug(capsys, f"Model: {request.model}")
     _debug(capsys, f"Query: {request.query}")
     _debug(capsys, f"Tools Available: {[tool.name for tool in request.tools or []]}")
     _debug(capsys, "--- Starting Adapter Stream ---")
@@ -103,31 +96,25 @@ async def test_openrouter_integration(capsys: pytest.CaptureFixture[str]):
     parsed_successfully = False
 
     try:
-        async for response in adapter.astream(request):
-            if response.thinking:
-                _debug(capsys, f"[reasoning] {response.thinking}")
-
-            if response.content:
-                _debug(capsys, f"[content] {response.content}")
-
-            if response.tool_calls:
+        async for event in runner.stream(request):
+            if event.type == AgentEventType.THINKING and event.response and event.response.thinking:
+                _debug(capsys, f"[reasoning] {event.response.thinking}")
+            elif event.type == AgentEventType.CONTENT and event.response and event.response.content:
+                _debug(capsys, f"[content] {event.response.content}")
+            elif event.type == AgentEventType.TOOL_CALL and event.tool_call:
                 tools_called = True
-                for tool_call in response.tool_calls:
-                    _debug(
-                        capsys,
-                        f"[tool-call] {tool_call.name} args={tool_call.arguments} call_id={tool_call.id}",
-                    )
-                    _debug(capsys, f"[tool-result] {tool_call.name} -> {_execute_fake_tool(tool_call)}")
-
-            if response.parsed:
+                _debug(capsys, f"[tool-call] {event.tool_call.name} args={event.tool_call.arguments} call_id={event.tool_call.id}")
+            elif event.type == AgentEventType.TOOL_RESULT and event.tool_call and event.tool_result:
+                _debug(capsys, f"[tool-result] {event.tool_call.name} -> {event.tool_result}")
+            elif event.type == AgentEventType.FINAL_RESPONSE and event.response and event.response.parsed:
                 parsed_successfully = True
                 _debug(capsys, "\n--- Final Structured Output ---")
-                _debug(capsys, f"Answer: {response.parsed.final_answer}")
-                _debug(capsys, f"Confidence: {response.parsed.confidence_score}%")
+                _debug(capsys, f"Answer: {event.response.parsed.final_answer}")
+                _debug(capsys, f"Confidence: {event.response.parsed.confidence_score}%")
 
-                assert isinstance(response.parsed, FinalOutput)
-                assert 1 <= response.parsed.confidence_score <= 100
-                assert response.parsed.final_answer.strip()
+                assert isinstance(event.response.parsed, FinalOutput)
+                assert 1 <= event.response.parsed.confidence_score <= 100
+                assert event.response.parsed.final_answer.strip()
                 break
     except AuthenticationError as exc:
         pytest.fail(

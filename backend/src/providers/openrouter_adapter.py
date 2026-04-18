@@ -1,7 +1,6 @@
 import base64
 import os
 import json
-import inspect
 from typing import List, Any, Dict, Optional, Generator, AsyncGenerator
 from openai import OpenAI, AsyncOpenAI
 
@@ -22,8 +21,6 @@ from ..core.settings import get_settings
 
 @ProviderFactory.register("openrouter")
 class OpenRouterAdapter(BaseProvider):
-    _MAX_TOOL_ROUNDS = 5
-
     def __init__(self, model_name: str, **kwargs: Any):
         super().__init__(model_name, **kwargs)
         settings = get_settings()
@@ -45,8 +42,6 @@ class OpenRouterAdapter(BaseProvider):
         
         self.client = OpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
         self.async_client = AsyncOpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
-        self.tool_executor = kwargs.get("tool_executor")
-        self.tool_handlers = kwargs.get("tool_handlers") or {}
 
     def _prepare_input(self, request: LLMRequest) -> List[Dict[str, Any]]:
         messages = []
@@ -185,106 +180,6 @@ class OpenRouterAdapter(BaseProvider):
             }
 
         return kwargs
-
-    def _should_use_two_phase(self, request: LLMRequest) -> bool:
-        return bool(request.tools and request.response_model)
-
-    def _structured_output_query(self) -> str:
-        return (
-            "Based on the conversation and tool results above, return only a JSON object "
-            "matching the requested schema. Incorporate the tool results into the final answer."
-        )
-
-    def _continue_tool_query(self) -> str:
-        return "Continue using the available tool results until you are ready to answer."
-
-    def _initial_user_message(self, request: LLMRequest) -> Message:
-        return Message(
-            role=MessageRole.USER,
-            content=request.query,
-            attachments=request.attachments,
-        )
-
-    def _has_initial_user_message(self, history: List[Message], request: LLMRequest) -> bool:
-        return any(
-            msg.role == MessageRole.USER
-            and msg.content == request.query
-            and msg.attachments == request.attachments
-            for msg in history
-        )
-
-    def _append_assistant_message(
-        self,
-        history: List[Message],
-        content_parts: List[str],
-        thinking_parts: List[str],
-        tool_calls: List[ToolCall],
-    ) -> None:
-        content = "".join(content_parts).strip() or None
-        thinking = "".join(thinking_parts).strip() or None
-
-        if not content and not thinking and not tool_calls:
-            return
-
-        history.append(
-            Message(
-                role=MessageRole.ASSISTANT,
-                content=content,
-                thinking=thinking,
-                tool_calls=tool_calls or None,
-            )
-        )
-
-    def _serialize_tool_result(self, result: Any) -> str:
-        if isinstance(result, str):
-            return result
-        return json.dumps(result)
-
-    def _execute_tool_call_sync(self, tool_call: ToolCall) -> str:
-        if self.tool_executor is not None:
-            result = self.tool_executor(tool_call)
-        else:
-            handler = self.tool_handlers.get(tool_call.name)
-            if handler is None:
-                raise ValueError(f"No tool executor configured for tool '{tool_call.name}'")
-            result = handler(**tool_call.arguments)
-
-        if inspect.isawaitable(result):
-            raise ValueError("Async tool executors are not supported by sync OpenRouter methods")
-
-        return self._serialize_tool_result(result)
-
-    async def _execute_tool_call_async(self, tool_call: ToolCall) -> str:
-        if self.tool_executor is not None:
-            result = self.tool_executor(tool_call)
-        else:
-            handler = self.tool_handlers.get(tool_call.name)
-            if handler is None:
-                raise ValueError(f"No tool executor configured for tool '{tool_call.name}'")
-            result = handler(**tool_call.arguments)
-
-        if inspect.isawaitable(result):
-            result = await result
-
-        return self._serialize_tool_result(result)
-
-    def _create_tool_phase_request(self, request: LLMRequest, history: List[Message], query: str) -> LLMRequest:
-        return LLMRequest(
-            system_prompt=request.system_prompt,
-            query=query,
-            history=history,
-            tools=request.tools,
-            config=request.config,
-        )
-
-    def _create_final_phase_request(self, request: LLMRequest, history: List[Message]) -> LLMRequest:
-        return LLMRequest(
-            system_prompt=request.system_prompt,
-            query=self._structured_output_query(),
-            history=history,
-            response_model=request.response_model,
-            config=request.config,
-        )
 
     def _request_once(self, request: LLMRequest, *, include_response_format: bool, include_tools: bool) -> LLMResponse:
         response = self.client.chat.completions.create(
@@ -502,241 +397,14 @@ class OpenRouterAdapter(BaseProvider):
         )
 
     def generate(self, request: LLMRequest) -> LLMResponse:
-        if not self._should_use_two_phase(request):
-            return self._request_once(request, include_response_format=True, include_tools=True)
-
-        history = list(request.history)
-        active_query = request.query
-        initial_recorded = self._has_initial_user_message(history, request)
-
-        for _ in range(self._MAX_TOOL_ROUNDS):
-            phase_request = self._create_tool_phase_request(request, history, active_query)
-            phase_response = self._request_once(
-                phase_request,
-                include_response_format=False,
-                include_tools=True,
-            )
-
-            if phase_response.tool_calls:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                    initial_recorded = True
-
-                history.append(
-                    Message(
-                        role=MessageRole.ASSISTANT,
-                        content=phase_response.content or None,
-                        thinking=phase_response.thinking,
-                        tool_calls=phase_response.tool_calls,
-                    )
-                )
-                for tool_call in phase_response.tool_calls:
-                    history.append(
-                        Message(
-                            role=MessageRole.TOOL,
-                            tool_call_id=tool_call.id,
-                            content=self._execute_tool_call_sync(tool_call),
-                        )
-                    )
-                active_query = self._continue_tool_query()
-                continue
-
-            if phase_response.content or phase_response.thinking:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                history.append(
-                    Message(
-                        role=MessageRole.ASSISTANT,
-                        content=phase_response.content or None,
-                        thinking=phase_response.thinking,
-                    )
-                )
-            break
-
-        return self._request_once(
-            self._create_final_phase_request(request, history),
-            include_response_format=True,
-            include_tools=False,
-        )
+        return self._request_once(request, include_response_format=True, include_tools=True)
 
     async def agenerate(self, request: LLMRequest) -> LLMResponse:
-        if not self._should_use_two_phase(request):
-            return await self._arequest_once(request, include_response_format=True, include_tools=True)
-
-        history = list(request.history)
-        active_query = request.query
-        initial_recorded = self._has_initial_user_message(history, request)
-
-        for _ in range(self._MAX_TOOL_ROUNDS):
-            phase_request = self._create_tool_phase_request(request, history, active_query)
-            phase_response = await self._arequest_once(
-                phase_request,
-                include_response_format=False,
-                include_tools=True,
-            )
-
-            if phase_response.tool_calls:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                    initial_recorded = True
-
-                history.append(
-                    Message(
-                        role=MessageRole.ASSISTANT,
-                        content=phase_response.content or None,
-                        thinking=phase_response.thinking,
-                        tool_calls=phase_response.tool_calls,
-                    )
-                )
-                for tool_call in phase_response.tool_calls:
-                    history.append(
-                        Message(
-                            role=MessageRole.TOOL,
-                            tool_call_id=tool_call.id,
-                            content=await self._execute_tool_call_async(tool_call),
-                        )
-                    )
-                active_query = self._continue_tool_query()
-                continue
-
-            if phase_response.content or phase_response.thinking:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                history.append(
-                    Message(
-                        role=MessageRole.ASSISTANT,
-                        content=phase_response.content or None,
-                        thinking=phase_response.thinking,
-                    )
-                )
-            break
-
-        return await self._arequest_once(
-            self._create_final_phase_request(request, history),
-            include_response_format=True,
-            include_tools=False,
-        )
+        return await self._arequest_once(request, include_response_format=True, include_tools=True)
 
     def stream(self, request: LLMRequest) -> Generator[LLMResponse, None, None]:
-        if not self._should_use_two_phase(request):
-            yield from self._stream_once(request, include_response_format=True, include_tools=True)
-            return
-
-        history = list(request.history)
-        active_query = request.query
-        initial_recorded = self._has_initial_user_message(history, request)
-
-        for _ in range(self._MAX_TOOL_ROUNDS):
-            phase_request = self._create_tool_phase_request(request, history, active_query)
-            content_parts: List[str] = []
-            thinking_parts: List[str] = []
-            tool_calls: List[ToolCall] = []
-            seen_tool_call_ids: set[str] = set()
-
-            for response in self._stream_once(
-                phase_request,
-                include_response_format=False,
-                include_tools=True,
-            ):
-                if response.content:
-                    content_parts.append(response.content)
-                if response.thinking:
-                    thinking_parts.append(response.thinking)
-                if response.tool_calls:
-                    for tool_call in response.tool_calls:
-                        if tool_call.id in seen_tool_call_ids:
-                            continue
-                        seen_tool_call_ids.add(tool_call.id)
-                        tool_calls.append(tool_call)
-                yield response
-
-            if tool_calls:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                    initial_recorded = True
-                self._append_assistant_message(history, content_parts, thinking_parts, tool_calls)
-                for tool_call in tool_calls:
-                    history.append(
-                        Message(
-                            role=MessageRole.TOOL,
-                            tool_call_id=tool_call.id,
-                            content=self._execute_tool_call_sync(tool_call),
-                        )
-                    )
-                active_query = self._continue_tool_query()
-                continue
-
-            if content_parts or thinking_parts:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                self._append_assistant_message(history, content_parts, thinking_parts, [])
-            break
-
-        yield from self._stream_once(
-            self._create_final_phase_request(request, history),
-            include_response_format=True,
-            include_tools=False,
-        )
+        yield from self._stream_once(request, include_response_format=True, include_tools=True)
 
     async def astream(self, request: LLMRequest) -> AsyncGenerator[LLMResponse, None]:
-        if not self._should_use_two_phase(request):
-            async for response in self._astream_once(request, include_response_format=True, include_tools=True):
-                yield response
-            return
-
-        history = list(request.history)
-        active_query = request.query
-        initial_recorded = self._has_initial_user_message(history, request)
-
-        for _ in range(self._MAX_TOOL_ROUNDS):
-            phase_request = self._create_tool_phase_request(request, history, active_query)
-            content_parts: List[str] = []
-            thinking_parts: List[str] = []
-            tool_calls: List[ToolCall] = []
-            seen_tool_call_ids: set[str] = set()
-
-            async for response in self._astream_once(
-                phase_request,
-                include_response_format=False,
-                include_tools=True,
-            ):
-                if response.content:
-                    content_parts.append(response.content)
-                if response.thinking:
-                    thinking_parts.append(response.thinking)
-                if response.tool_calls:
-                    for tool_call in response.tool_calls:
-                        if tool_call.id in seen_tool_call_ids:
-                            continue
-                        seen_tool_call_ids.add(tool_call.id)
-                        tool_calls.append(tool_call)
-                yield response
-
-            if tool_calls:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                    initial_recorded = True
-                self._append_assistant_message(history, content_parts, thinking_parts, tool_calls)
-                for tool_call in tool_calls:
-                    history.append(
-                        Message(
-                            role=MessageRole.TOOL,
-                            tool_call_id=tool_call.id,
-                            content=await self._execute_tool_call_async(tool_call),
-                        )
-                    )
-                active_query = self._continue_tool_query()
-                continue
-
-            if content_parts or thinking_parts:
-                if not initial_recorded:
-                    history.append(self._initial_user_message(request))
-                self._append_assistant_message(history, content_parts, thinking_parts, [])
-            break
-
-        async for response in self._astream_once(
-            self._create_final_phase_request(request, history),
-            include_response_format=True,
-            include_tools=False,
-        ):
+        async for response in self._astream_once(request, include_response_format=True, include_tools=True):
             yield response
