@@ -270,6 +270,8 @@ def create_message_and_run(
         system_prompt_text=build_socrates_system_prompt(
             project.default_system_prompt,
             user_name=current_user.display_name if current_user else None,
+            project_name=project.name,
+            project_description=project.description,
         ),
         query_text=content_text,
         request_json={

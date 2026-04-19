@@ -237,6 +237,16 @@ function ConversationSessionPage() {
   useAgentStream({
     runId: activeRunId,
     onEvent: handleWsEvent,
+    onClose: () => {
+      if (activeRunId) {
+        setActiveRunId(null)
+        setStreamingContent('')
+        setStreamingThinking('')
+        setOptimistic((previous) => previous.filter((message) => message.role !== 'assistant'))
+        queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+        queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
+      }
+    },
   })
 
   const uploadAsset = useMutation({

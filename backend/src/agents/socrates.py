@@ -410,8 +410,19 @@ If a linked-workspace command or sensitive action requires approval:
 def build_socrates_system_prompt(
     project_instructions: str | None = None,
     user_name: str | None = None,
+    project_name: str | None = None,
+    project_description: str | None = None,
 ) -> str:
     prompt = SOCRATES_BASE_PROMPT.strip()
+    
+    if project_name or project_description:
+        prompt += "\n\n<project_context>"
+        if project_name:
+            prompt += f"\nProject Name: {project_name}"
+        if project_description:
+            prompt += f"\nProject Description: {project_description}"
+        prompt += "\n</project_context>"
+        
     if user_name:
         prompt = f"{prompt}\n\nYou are speaking to {user_name}. Address them by name where it feels natural."
     if project_instructions:
