@@ -42,8 +42,9 @@ export interface Conversation {
 export interface Asset {
   id: string
   project_id: string
-  kind: 'image'
-  source_type: 'upload'
+  created_by_task_id: string | null
+  kind: string
+  source_type: string
   original_name: string
   mime_type: string
   storage_path: string
@@ -59,6 +60,8 @@ export interface Message {
   project_id: string
   conversation_id: string
   agent_run_id: string | null
+  task_id: string | null
+  execution_mode: 'chat' | 'task'
   role: MessageRole
   input_mode: InputMode
   content_text: string | null
@@ -91,9 +94,11 @@ export interface AgentRun {
   id: string
   project_id: string
   conversation_id: string
+  task_id: string | null
   trigger_message_id: string | null
   response_message_id: string | null
   status: AgentRunStatus
+  execution_mode: 'chat' | 'task'
   provider: string | null
   model: string | null
   input_mode: InputMode
@@ -153,6 +158,70 @@ export interface AgentRunEvent {
   created_at: string
 }
 
+export interface ProjectWorkspace {
+  id: string
+  project_id: string
+  label: string
+  root_path: string
+  editor_type: string
+  is_primary: boolean
+  access_granted: boolean
+  access_granted_at: string | null
+  access_revoked_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface Task {
+  id: string
+  project_id: string
+  conversation_id: string
+  project_workspace_id: string | null
+  created_from_agent_run_id: string | null
+  last_agent_run_id: string | null
+  status: string
+  title: string
+  goal_text: string
+  success_criteria_text: string | null
+  brief_markdown: string
+  workspace_root: string
+  venv_path: string
+  result_summary: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  failed_at: string | null
+}
+
+export interface TaskArtifact {
+  id: string
+  task_id: string
+  asset_id: string | null
+  relative_path: string
+  artifact_role: string
+  display_name: string
+  mime_type: string | null
+  size_bytes: number | null
+  sha256: string | null
+  promoted_to_asset: boolean
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface TaskApproval {
+  id: string
+  task_id: string
+  agent_run_id: string | null
+  tool_execution_id: string | null
+  approval_type: string
+  status: 'pending' | 'approved' | 'denied'
+  request_json: Record<string, unknown>
+  decision_json: Record<string, unknown>
+  requested_at: string | null
+  resolved_at: string | null
+  created_at: string
+}
+
 // ── WebSocket event union ──────────────────────────────────────────────────────
 
 export interface WsRunStarted {
@@ -200,6 +269,29 @@ export interface WsRunFailed {
   run_id: string
   error: string
 }
+export interface WsTaskCreated {
+  type: 'task.created'
+  run_id: string
+  task: Task
+}
+export interface WsTaskApprovalRequested {
+  type: 'task.approval.requested'
+  run_id: string
+  task_id: string
+  approval: TaskApproval
+}
+export interface WsTaskApprovalResolved {
+  type: 'task.approval.resolved'
+  run_id: string
+  task_id: string
+  approval: TaskApproval
+}
+export interface WsTaskArtifactRegistered {
+  type: 'task.artifact.registered'
+  run_id: string
+  task_id: string
+  artifact: TaskArtifact
+}
 
 export type WsEvent =
   | WsRunStarted
@@ -210,3 +302,7 @@ export type WsEvent =
   | WsRunMessageCompleted
   | WsRunCompleted
   | WsRunFailed
+  | WsTaskCreated
+  | WsTaskApprovalRequested
+  | WsTaskApprovalResolved
+  | WsTaskArtifactRegistered

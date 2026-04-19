@@ -47,6 +47,7 @@ class Project(Base):
     conversations: Mapped[list["Conversation"]] = relationship(back_populates="project")
     assets: Mapped[list["Asset"]] = relationship(back_populates="project")
     workspaces: Mapped[list["ProjectWorkspace"]] = relationship(back_populates="project")
+    tasks: Mapped[list["Task"]] = relationship(back_populates="project")
 
 
 class ProjectWorkspace(Base):
@@ -82,6 +83,35 @@ class Conversation(Base):
 
     project: Mapped["Project"] = relationship(back_populates="conversations")
     messages: Mapped[list["MessageRecord"]] = relationship(back_populates="conversation")
+    tasks: Mapped[list["Task"]] = relationship(back_populates="conversation")
+
+
+class Task(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True, nullable=False)
+    project_workspace_id: Mapped[Optional[str]] = mapped_column(ForeignKey("project_workspaces.id"), index=True)
+    created_from_agent_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    last_agent_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    status: Mapped[str] = mapped_column(String(64), default="active", nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    goal_text: Mapped[str] = mapped_column(Text, nullable=False)
+    success_criteria_text: Mapped[Optional[str]] = mapped_column(Text)
+    brief_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    workspace_root: Mapped[str] = mapped_column(Text, nullable=False)
+    venv_path: Mapped[str] = mapped_column(Text, nullable=False)
+    result_summary: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    project: Mapped["Project"] = relationship(back_populates="tasks")
+    conversation: Mapped["Conversation"] = relationship(back_populates="tasks")
+    artifacts: Mapped[list["TaskArtifact"]] = relationship(back_populates="task")
+    approvals: Mapped[list["TaskApproval"]] = relationship(back_populates="task")
 
 
 class AgentRun(Base):
@@ -90,9 +120,11 @@ class AgentRun(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True, nullable=False)
+    task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"), index=True)
     trigger_message_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
     response_message_id: Mapped[Optional[str]] = mapped_column(String(36), index=True)
     status: Mapped[str] = mapped_column(String(64), default="queued", nullable=False, index=True)
+    execution_mode: Mapped[str] = mapped_column(String(32), default="chat", nullable=False)
     provider: Mapped[Optional[str]] = mapped_column(String(64))
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     input_mode: Mapped[str] = mapped_column(String(32), default="text", nullable=False)
@@ -128,6 +160,8 @@ class MessageRecord(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True, nullable=False)
     agent_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"), index=True)
+    execution_mode: Mapped[str] = mapped_column(String(32), default="chat", nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     input_mode: Mapped[str] = mapped_column(String(32), default="text", nullable=False)
     content_text: Mapped[Optional[str]] = mapped_column(Text)
@@ -152,6 +186,7 @@ class Asset(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
     uploaded_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True, nullable=False)
+    created_by_task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"), index=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     source_type: Mapped[str] = mapped_column(String(64), default="upload", nullable=False)
     original_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -239,6 +274,7 @@ class ToolExecution(Base):
     agent_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_runs.id"), index=True)
     agent_run_turn_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_run_turns.id"), index=True)
     agent_event_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_events.id"), index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"), index=True)
     tool_call_id: Mapped[Optional[str]] = mapped_column(String(255), index=True)
     tool_name: Mapped[str] = mapped_column(String(255), nullable=False)
     arguments_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -259,6 +295,8 @@ class WorkspaceAction(Base):
     project_workspace_id: Mapped[Optional[str]] = mapped_column(ForeignKey("project_workspaces.id"), index=True)
     agent_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_runs.id"), index=True)
     tool_execution_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tool_executions.id"), index=True)
+    task_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tasks.id"), index=True)
+    workspace_scope: Mapped[str] = mapped_column(String(32), default="managed_task", nullable=False)
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
     target_path: Mapped[Optional[str]] = mapped_column(Text)
     command_text: Mapped[Optional[str]] = mapped_column(Text)
@@ -270,3 +308,40 @@ class WorkspaceAction(Base):
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class TaskApproval(Base):
+    __tablename__ = "task_approvals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True, nullable=False)
+    agent_run_id: Mapped[Optional[str]] = mapped_column(ForeignKey("agent_runs.id"), index=True)
+    tool_execution_id: Mapped[Optional[str]] = mapped_column(ForeignKey("tool_executions.id"), index=True)
+    approval_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    decision_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    requested_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    task: Mapped["Task"] = relationship(back_populates="approvals")
+
+
+class TaskArtifact(Base):
+    __tablename__ = "task_artifacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True, nullable=False)
+    asset_id: Mapped[Optional[str]] = mapped_column(ForeignKey("assets.id"), index=True)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    artifact_role: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[Optional[str]] = mapped_column(String(255))
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    promoted_to_asset: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    task: Mapped["Task"] = relationship(back_populates="artifacts")

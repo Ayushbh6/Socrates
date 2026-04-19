@@ -19,6 +19,8 @@ def ensure_app_directories() -> None:
         settings.uploads_dir,
         settings.logs_dir,
         settings.cache_dir,
+        settings.projects_dir,
+        settings.host_workspaces_dir,
     ]
     for directory in directories:
         Path(directory).mkdir(parents=True, exist_ok=True)

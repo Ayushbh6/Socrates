@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session, joinedload
 from ..agent import AgentRequest, AgentRunner
 from ..agent.events import AgentEvent, AgentEventType
 from ..agents import build_socrates_system_prompt
+from ..core.settings import get_settings
 from ..core.model_catalog import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, normalize_thinking_level, provider_for_model, require_supported_model
 from ..core.schema import Attachment, GenConfig, InputMode, Message, MessageRole, ThinkingLevel
-from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project
+from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project, TaskApproval, ToolExecution
 from ..db.session import get_session_factory
+from ..tools.registry import get_tools_registry
 from .assets import get_project_assets_by_ids, resolve_asset_bytes
 from .bootstrap import get_current_user
 from .projects import (
@@ -23,6 +25,15 @@ from .projects import (
     get_project,
     next_message_sequence,
 )
+from .tasks import (
+    ensure_task_input_assets,
+    find_matching_approval,
+    get_active_task_for_conversation,
+    list_task_artifacts,
+    serialize_task,
+    serialize_task_approval,
+    serialize_task_artifact,
+)
 from .utils import to_json_compatible
 
 
@@ -30,6 +41,7 @@ def serialize_asset(asset: Asset) -> dict[str, Any]:
     return {
         "id": asset.id,
         "project_id": asset.project_id,
+        "created_by_task_id": asset.created_by_task_id,
         "kind": asset.kind,
         "source_type": asset.source_type,
         "original_name": asset.original_name,
@@ -50,6 +62,8 @@ def serialize_message(message: MessageRecord) -> dict[str, Any]:
         "project_id": message.project_id,
         "conversation_id": message.conversation_id,
         "agent_run_id": message.agent_run_id,
+        "task_id": message.task_id,
+        "execution_mode": message.execution_mode,
         "role": message.role,
         "input_mode": message.input_mode,
         "content_text": message.content_text,
@@ -112,9 +126,11 @@ def serialize_agent_run(run: AgentRun, *, event_count: int, turn_count: int) -> 
         "id": run.id,
         "project_id": run.project_id,
         "conversation_id": run.conversation_id,
+        "task_id": run.task_id,
         "trigger_message_id": run.trigger_message_id,
         "response_message_id": run.response_message_id,
         "status": run.status,
+        "execution_mode": run.execution_mode,
         "provider": run.provider,
         "model": run.model,
         "input_mode": run.input_mode,
@@ -217,6 +233,7 @@ def create_message_and_run(
     resolved_provider = provider_for_model(resolved_model)
 
     current_user = get_current_user(session)
+    active_task = get_active_task_for_conversation(session, conversation.id)
 
     assets = get_project_assets_by_ids(session, conversation.project_id, asset_ids)
     sequence_no = next_message_sequence(session, conversation_id)
@@ -224,6 +241,8 @@ def create_message_and_run(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
         role=MessageRole.USER.value,
+        task_id=active_task.id if active_task else None,
+        execution_mode="task" if active_task else "chat",
         input_mode=input_mode.value,
         content_text=content_text,
         status="queued",
@@ -241,8 +260,10 @@ def create_message_and_run(
     run = AgentRun(
         project_id=conversation.project_id,
         conversation_id=conversation.id,
+        task_id=active_task.id if active_task else None,
         trigger_message_id=user_message.id,
         status="queued",
+        execution_mode="task" if active_task else "chat",
         provider=resolved_provider,
         model=resolved_model,
         input_mode=input_mode.value,
@@ -256,11 +277,17 @@ def create_message_and_run(
             "thinking_level": resolved_thinking.value,
             "input_mode": input_mode.value,
             "asset_ids": asset_ids,
+            "active_task_id": active_task.id if active_task else None,
         },
     )
     session.add(run)
     session.flush()
     user_message.agent_run_id = run.id
+    if active_task is not None:
+        active_task.last_agent_run_id = run.id
+        active_task.updated_at = datetime.now(timezone.utc)
+        if assets:
+            ensure_task_input_assets(session, task=active_task, assets=assets)
     conversation.model = resolved_model
     conversation.thinking_level = resolved_thinking.value
     conversation.updated_at = datetime.now(timezone.utc)
@@ -332,6 +359,29 @@ class RunManager:
         try:
             run = session.get(AgentRun, run_id)
             return run.status if run else None
+        finally:
+            session.close()
+
+    async def record_external_event(
+        self,
+        run_id: str,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        status: str = "ok",
+    ) -> None:
+        session = self._session_factory()
+        try:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                return
+            await self._record_event(
+                session,
+                run,
+                event_type=event_type,
+                payload=payload,
+                status=status,
+            )
         finally:
             session.close()
 
@@ -409,6 +459,61 @@ class RunManager:
         }
         await self._record_event(session, run, event_type="run.turn.started", payload=payload, turn=turn)
 
+    async def _record_tool_side_effects(self, session: Session, run: AgentRun, tool_name: str) -> None:
+        session.refresh(run)
+        if tool_name == "create_task" and run.task_id:
+            from .tasks import get_task
+
+            task = get_task(session, run.task_id)
+            await self._record_event(
+                session,
+                run,
+                event_type="task.created",
+                payload={"type": "task.created", "run_id": run.id, "task": serialize_task(task)},
+            )
+        if run.task_id:
+            latest_execution = (
+                session.query(ToolExecution)
+                .filter(ToolExecution.agent_run_id == run.id)
+                .order_by(ToolExecution.created_at.desc())
+                .first()
+            )
+            approval_id = latest_execution.result_json.get("approval_id") if latest_execution is not None else None
+            approval = session.get(TaskApproval, approval_id) if approval_id else None
+            if approval is None:
+                approval = (
+                    session.query(TaskApproval)
+                    .filter(TaskApproval.task_id == run.task_id, TaskApproval.status == "pending")
+                    .order_by(TaskApproval.created_at.desc())
+                    .first()
+                )
+            if approval is not None:
+                await self._record_event(
+                    session,
+                    run,
+                    event_type="task.approval.requested",
+                    payload={
+                        "type": "task.approval.requested",
+                        "run_id": run.id,
+                        "task_id": run.task_id,
+                        "approval": serialize_task_approval(approval),
+                    },
+                )
+            artifacts = list_task_artifacts(session, run.task_id)
+            if artifacts:
+                latest_artifact = artifacts[-1]
+                await self._record_event(
+                    session,
+                    run,
+                    event_type="task.artifact.registered",
+                    payload={
+                        "type": "task.artifact.registered",
+                        "run_id": run.id,
+                        "task_id": run.task_id,
+                        "artifact": serialize_task_artifact(latest_artifact),
+                    },
+                )
+
     async def _execute_run(self, run_id: str) -> None:
         session = self._session_factory()
         seen_turns: set[int] = set()
@@ -464,18 +569,36 @@ class RunManager:
                 if asset.mime_type.startswith("image/")
             ]
 
+            settings = get_settings()
+            tool_runtime = get_tools_registry(
+                session,
+                project_id=conversation.project_id,
+                conversation_id=conversation.id,
+                run=run,
+                uploads_dir=settings.uploads_dir,
+                host_workspaces_dir=settings.host_workspaces_dir,
+            )
+
             request = AgentRequest(
                 model=run.model,
                 system_prompt=run.system_prompt_text,
                 query=trigger_message.content_text or "",
                 history=history,
                 attachments=attachments or None,
+                tools=tool_runtime.definitions,
                 input_mode=InputMode(run.input_mode),
                 config=GenConfig(
                     thinking=ThinkingLevel(run.request_json.get("thinking_level", ThinkingLevel.OFF.value))
                 ),
             )
-            runner = self._runner_factory()
+            try:
+                runner = self._runner_factory(tool_executor=tool_runtime.execute)
+            except TypeError:
+                runner = self._runner_factory()
+                if hasattr(runner, "tool_executor"):
+                    runner.tool_executor = tool_runtime.execute
+                if hasattr(runner, "tool_handlers"):
+                    runner.tool_handlers = {}
             final_event: AgentEvent | None = None
 
             async for event in runner.stream(request):
@@ -537,6 +660,41 @@ class RunManager:
                         },
                         status="error",
                     )
+                elif event.type == AgentEventType.TOOL_CALL and event.tool_call is not None:
+                    await self._record_event(
+                        session,
+                        run,
+                        event_type="run.tool.called",
+                        payload={
+                            "type": "run.tool.called",
+                            "run_id": run.id,
+                            "round_index": event.round_index,
+                            "tool_call": {
+                                "id": event.tool_call.id,
+                                "name": event.tool_call.name,
+                                "arguments": event.tool_call.arguments,
+                            },
+                        },
+                        turn=turn,
+                        tool_call_ref=event.tool_call.id,
+                    )
+                elif event.type == AgentEventType.TOOL_RESULT and event.tool_call is not None and event.tool_result is not None:
+                    await self._record_event(
+                        session,
+                        run,
+                        event_type="run.tool.result",
+                        payload={
+                            "type": "run.tool.result",
+                            "run_id": run.id,
+                            "round_index": event.round_index,
+                            "tool_call_id": event.tool_call.id,
+                            "tool_name": event.tool_call.name,
+                            "tool_result": to_json_compatible(event.tool_result),
+                        },
+                        turn=turn,
+                        tool_call_ref=event.tool_call.id,
+                    )
+                    await self._record_tool_side_effects(session, run, event.tool_call.name)
 
             if final_event is None or final_event.response is None:
                 raise RuntimeError("Agent run completed without a final response.")
@@ -580,6 +738,8 @@ class RunManager:
                 project_id=conversation.project_id,
                 conversation_id=conversation.id,
                 agent_run_id=run.id,
+                task_id=run.task_id,
+                execution_mode=run.execution_mode,
                 role=MessageRole.ASSISTANT.value,
                 input_mode=InputMode.TEXT.value,
                 content_text=final_response.content,

@@ -92,6 +92,7 @@ class ConversationResponse(BaseModel):
 class AssetResponse(BaseModel):
     id: str
     project_id: str
+    created_by_task_id: str | None = None
     kind: str
     source_type: str
     original_name: str
@@ -109,6 +110,8 @@ class MessageResponse(BaseModel):
     project_id: str
     conversation_id: str
     agent_run_id: str | None
+    task_id: str | None = None
+    execution_mode: str
     role: str
     input_mode: str
     content_text: str | None
@@ -142,9 +145,11 @@ class AgentRunResponse(BaseModel):
     id: str
     project_id: str
     conversation_id: str
+    task_id: str | None
     trigger_message_id: str | None
     response_message_id: str | None
     status: str
+    execution_mode: str
     provider: str | None
     model: str
     input_mode: str
@@ -202,3 +207,87 @@ class AgentRunEventResponse(BaseModel):
     tool_call_ref: str | None
     payload: dict[str, Any]
     created_at: datetime
+
+
+class ProjectWorkspaceResponse(BaseModel):
+    id: str
+    project_id: str
+    label: str
+    root_path: str
+    editor_type: str
+    is_primary: bool
+    access_granted: bool
+    access_granted_at: datetime | None
+    access_revoked_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectWorkspaceCreateRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=255)
+    relative_path: str | None = Field(default=None, min_length=1, max_length=255)
+    editor_type: str = Field(default="vscode", min_length=1, max_length=64)
+    is_primary: bool = False
+    access_granted: bool = True
+
+
+class ProjectWorkspaceUpdateRequest(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=255)
+    editor_type: str | None = Field(default=None, min_length=1, max_length=64)
+    is_primary: bool | None = None
+    access_granted: bool | None = None
+
+
+class TaskResponse(BaseModel):
+    id: str
+    project_id: str
+    conversation_id: str
+    project_workspace_id: str | None
+    created_from_agent_run_id: str | None
+    last_agent_run_id: str | None
+    status: str
+    title: str
+    goal_text: str
+    success_criteria_text: str | None
+    brief_markdown: str
+    workspace_root: str
+    venv_path: str
+    result_summary: str | None
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    failed_at: datetime | None
+
+
+class TaskArtifactResponse(BaseModel):
+    id: str
+    task_id: str
+    asset_id: str | None
+    relative_path: str
+    artifact_role: str
+    display_name: str
+    mime_type: str | None
+    size_bytes: int | None
+    sha256: str | None
+    promoted_to_asset: bool
+    metadata: dict[str, Any]
+    created_at: datetime
+
+
+class TaskApprovalResponse(BaseModel):
+    id: str
+    task_id: str
+    agent_run_id: str | None
+    tool_execution_id: str | None
+    approval_type: str
+    status: str
+    request_json: dict[str, Any]
+    decision_json: dict[str, Any]
+    requested_at: datetime | None
+    resolved_at: datetime | None
+    created_at: datetime
+
+
+class ResolveTaskApprovalRequest(BaseModel):
+    approved: bool
+    note: str | None = None

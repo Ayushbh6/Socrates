@@ -1,4 +1,4 @@
-from .assets import create_image_asset, get_project_assets_by_ids, list_project_assets
+from .assets import create_project_asset, get_project_assets_by_ids, list_project_assets
 from .bootstrap import create_user, get_bootstrap_status, get_current_user, update_user
 from .chat import (
     RunManager,
@@ -23,6 +23,24 @@ from .projects import (
     next_message_sequence,
     update_project,
 )
+from .tasks import (
+    create_project_workspace,
+    create_task,
+    ensure_task_input_assets,
+    export_task_artifact_to_asset,
+    get_active_task_for_conversation,
+    get_task,
+    list_conversation_tasks,
+    list_project_workspaces,
+    list_task_approvals,
+    list_task_artifacts,
+    resolve_task_approval,
+    serialize_task,
+    serialize_task_approval,
+    serialize_task_artifact,
+    sync_task_output_artifacts,
+    update_project_workspace,
+)
 
 __all__ = [
     "create_user",
@@ -37,7 +55,7 @@ __all__ = [
     "get_conversation",
     "list_conversations",
     "list_messages",
-    "create_image_asset",
+    "create_project_asset",
     "get_project_assets_by_ids",
     "list_project_assets",
     "create_message_and_run",
@@ -50,4 +68,20 @@ __all__ = [
     "serialize_asset",
     "serialize_message",
     "RunManager",
+    "create_project_workspace",
+    "create_task",
+    "ensure_task_input_assets",
+    "export_task_artifact_to_asset",
+    "get_active_task_for_conversation",
+    "get_task",
+    "list_conversation_tasks",
+    "list_project_workspaces",
+    "list_task_approvals",
+    "list_task_artifacts",
+    "resolve_task_approval",
+    "serialize_task",
+    "serialize_task_approval",
+    "serialize_task_artifact",
+    "sync_task_output_artifacts",
+    "update_project_workspace",
 ]

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.settings import get_settings
-from ..db.models import Asset
+from ..db.models import Asset, Task
 from .bootstrap import get_current_user
 from .projects import get_project
 
@@ -45,29 +46,47 @@ def get_project_assets_by_ids(session: Session, project_id: str, asset_ids: list
     return assets
 
 
-def create_image_asset(
+def _kind_from_mime_type(mime_type: str, original_name: str) -> str:
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type == "application/pdf":
+        return "pdf"
+    guessed, _ = mimetypes.guess_type(original_name)
+    if mime_type.startswith("text/") or guessed and guessed.startswith("text/"):
+        return "text"
+    if original_name.lower().endswith(".csv"):
+        return "csv"
+    if original_name.lower().endswith(".sqlite") or original_name.lower().endswith(".db"):
+        return "database"
+    return "file"
+
+
+def create_project_asset(
     session: Session,
     *,
     project_id: str,
     original_name: str,
     mime_type: str,
     content: bytes,
+    source_type: str = "upload",
+    created_by_task_id: str | None = None,
 ) -> Asset:
-    if not mime_type.startswith("image/"):
-        raise ValueError("Only image uploads are supported in this slice.")
-
     get_project(session, project_id)
     user = get_current_user(session)
     if user is None:
         raise LookupError("Bootstrap is required before uploading assets.")
+
+    if created_by_task_id is not None and session.get(Task, created_by_task_id) is None:
+        raise LookupError("Task not found for generated asset.")
 
     settings = get_settings()
     digest = hashlib.sha256(content).hexdigest()
     asset = Asset(
         project_id=project_id,
         uploaded_by_user_id=user.id,
-        kind="image",
-        source_type="upload",
+        created_by_task_id=created_by_task_id,
+        kind=_kind_from_mime_type(mime_type, original_name),
+        source_type=source_type,
         original_name=_safe_filename(original_name or "image"),
         mime_type=mime_type,
         storage_path="",

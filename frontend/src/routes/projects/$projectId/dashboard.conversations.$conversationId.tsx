@@ -35,6 +35,9 @@ import type {
   Conversation,
   Message,
   SendMessageResponse,
+  Task,
+  TaskApproval,
+  TaskArtifact,
   ThinkingLevel,
   WsEvent,
 } from '@/types/api'
@@ -112,6 +115,23 @@ function ConversationSessionPage() {
     queryFn: () => apiFetch<Message[]>(`/conversations/${conversationId}/messages`),
   })
 
+  const { data: activeTask } = useQuery({
+    queryKey: ['active-task', conversationId],
+    queryFn: () => apiFetch<Task | null>(`/conversations/${conversationId}/active-task`),
+  })
+
+  const { data: taskApprovals = [] } = useQuery({
+    queryKey: ['task-approvals', activeTask?.id],
+    queryFn: () => apiFetch<TaskApproval[]>(`/tasks/${activeTask?.id}/approvals`),
+    enabled: Boolean(activeTask?.id),
+  })
+
+  const { data: taskArtifacts = [] } = useQuery({
+    queryKey: ['task-artifacts', activeTask?.id],
+    queryFn: () => apiFetch<TaskArtifact[]>(`/tasks/${activeTask?.id}/artifacts`),
+    enabled: Boolean(activeTask?.id),
+  })
+
   const conversation = useMemo(
     () => conversations.find((entry) => entry.id === conversationId) ?? null,
     [conversationId, conversations],
@@ -172,6 +192,25 @@ function ConversationSessionPage() {
         return
       }
 
+      if (event.type === 'task.created') {
+        queryClient.setQueryData(['active-task', conversationId], event.task)
+        queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task.id] })
+        queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task.id] })
+        return
+      }
+
+      if (event.type === 'task.approval.requested' || event.type === 'task.approval.resolved') {
+        queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task_id] })
+        queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
+        return
+      }
+
+      if (event.type === 'task.artifact.registered') {
+        queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
+        queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+        return
+      }
+
       if (event.type === 'run.completed') {
         setActiveRunId(null)
         queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
@@ -229,6 +268,30 @@ function ConversationSessionPage() {
         method: 'PATCH',
         body: JSON.stringify(payload),
       }),
+  })
+
+  const resolveApproval = useMutation({
+    mutationFn: ({ approvalId, approved }: { approvalId: string; approved: boolean }) =>
+      apiFetch<TaskApproval>(`/task-approvals/${approvalId}`, {
+        method: 'POST',
+        body: JSON.stringify({ approved }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
+      queryClient.invalidateQueries({ queryKey: ['task-approvals', activeTask?.id] })
+      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+    },
+  })
+
+  const exportArtifact = useMutation({
+    mutationFn: (artifactId: string) =>
+      apiFetch<TaskArtifact>(`/task-artifacts/${artifactId}/export`, {
+        method: 'POST',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['task-artifacts', activeTask?.id] })
+      queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+    },
   })
 
   const applyConversationSelection = useCallback(
@@ -355,6 +418,17 @@ function ConversationSessionPage() {
           <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-[8.75rem] pt-4 sm:px-6 sm:pb-[10.5rem] sm:pt-6 lg:px-8">
             {hasConversationStarted ? (
               <div className="flex flex-1 flex-col gap-5 pb-8 pt-2 sm:gap-6">
+                {activeTask ? (
+                  <TaskSummaryCard
+                    task={activeTask}
+                    approvals={taskApprovals}
+                    artifacts={taskArtifacts}
+                    approvalPending={resolveApproval.isPending}
+                    exportPending={exportArtifact.isPending}
+                    onResolveApproval={(approvalId, approved) => resolveApproval.mutate({ approvalId, approved })}
+                    onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
+                  />
+                ) : null}
                 {allMessages.map((message) => (
                   <MessageBubble
                     key={message.id}
@@ -434,6 +508,117 @@ function ConversationSessionPage() {
   )
 }
 
+interface TaskSummaryCardProps {
+  task: Task
+  approvals: TaskApproval[]
+  artifacts: TaskArtifact[]
+  approvalPending: boolean
+  exportPending: boolean
+  onResolveApproval: (approvalId: string, approved: boolean) => void
+  onExportArtifact: (artifactId: string) => void
+}
+
+function TaskSummaryCard({
+  task,
+  approvals,
+  artifacts,
+  approvalPending,
+  exportPending,
+  onResolveApproval,
+  onExportArtifact,
+}: TaskSummaryCardProps) {
+  const pendingApprovals = approvals.filter((approval) => approval.status === 'pending')
+  const outputArtifacts = artifacts.filter((artifact) => artifact.artifact_role === 'output')
+
+  return (
+    <section className="rounded-[1.4rem] border border-forest/10 bg-paper/90 p-4 shadow-[0_18px_40px_rgba(62,92,72,0.08)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-moss">Active task</p>
+          <h2 className="font-display text-xl tracking-tight text-forest">{task.title}</h2>
+          <p className="max-w-2xl text-sm leading-6 text-ink-soft">{task.goal_text}</p>
+        </div>
+        <div className="rounded-full bg-canvas px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-moss">
+          {task.status.replace('_', ' ')}
+        </div>
+      </div>
+
+      {pendingApprovals.length > 0 ? (
+        <div className="mt-4 space-y-3 rounded-[1rem] border border-amber-200 bg-amber-50/80 p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">Approvals needed</p>
+          {pendingApprovals.map((approval) => (
+            <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 rounded-[0.9rem] bg-white/80 px-3 py-3">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-forest">{approval.approval_type.replaceAll('_', ' ')}</p>
+                <p className="max-w-2xl text-xs leading-5 text-ink-soft">
+                  {JSON.stringify(approval.request_json)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-forest/20"
+                  disabled={approvalPending}
+                  onClick={() => onResolveApproval(approval.id, false)}
+                >
+                  Deny
+                </Button>
+                <Button type="button" disabled={approvalPending} onClick={() => onResolveApproval(approval.id, true)}>
+                  Approve
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {artifacts.length > 0 ? (
+        <div className="mt-4 rounded-[1rem] border border-forest/10 bg-canvas/70 p-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-moss">Artifacts</p>
+          <div className="mt-2 space-y-2">
+            {artifacts.slice(0, 6).map((artifact) => (
+              <div
+                key={artifact.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-[0.95rem] border border-forest/10 bg-paper px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-forest">{artifact.display_name}</p>
+                  <p className="text-[11px] uppercase tracking-[0.16em] text-moss">{artifact.artifact_role}</p>
+                </div>
+                {artifact.artifact_role === 'output' ? (
+                  artifact.promoted_to_asset ? (
+                    <span className="rounded-full bg-sage px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-forest">
+                      Exported
+                    </span>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="border-forest/20"
+                      disabled={exportPending}
+                      onClick={() => onExportArtifact(artifact.id)}
+                    >
+                      Export
+                    </Button>
+                  )
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {outputArtifacts.length > 0 ? (
+        <p className="mt-3 text-xs leading-5 text-ink-soft">
+          Files written to <span className="font-semibold text-forest">outputs/</span> appear here and can be exported into project resources.
+        </p>
+      ) : null}
+    </section>
+  )
+}
+
 interface ComposerProps {
   compact?: boolean
   register: ReturnType<typeof useForm<SendForm>>['register']
@@ -492,7 +677,7 @@ function ConversationComposer({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,.pdf,.txt,.md,.csv,.tsv,.json,.sqlite,.db,.py,.js,.ts,.tsx"
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0]

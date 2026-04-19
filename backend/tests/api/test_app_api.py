@@ -176,6 +176,55 @@ def test_project_rename_persists(client: TestClient):
     assert fetched.json()["name"] == "Renamed Lab"
 
 
+def test_project_workspace_registration_and_primary_switch(client: TestClient):
+    project_id, _ = bootstrap_user_and_project(client)
+
+    created = client.post(
+        f"/api/v1/projects/{project_id}/workspaces",
+        json={
+            "label": "Sandbox",
+            "relative_path": "sandbox",
+            "is_primary": True,
+            "access_granted": True,
+        },
+    )
+    assert created.status_code == 201
+    first_workspace = created.json()
+    assert first_workspace["label"] == "Sandbox"
+    assert first_workspace["is_primary"] is True
+    assert first_workspace["access_granted"] is True
+
+    second = client.post(
+        f"/api/v1/projects/{project_id}/workspaces",
+        json={
+            "label": "Reports",
+            "relative_path": "reports",
+            "is_primary": False,
+            "access_granted": False,
+        },
+    )
+    assert second.status_code == 201
+    second_workspace = second.json()
+    assert second_workspace["access_granted"] is False
+
+    promoted = client.patch(
+        f"/api/v1/projects/{project_id}/workspaces/{second_workspace['id']}",
+        json={"is_primary": True, "access_granted": True},
+    )
+    assert promoted.status_code == 200
+    promoted_payload = promoted.json()
+    assert promoted_payload["is_primary"] is True
+    assert promoted_payload["access_granted"] is True
+    assert promoted_payload["access_revoked_at"] is None
+
+    workspaces = client.get(f"/api/v1/projects/{project_id}/workspaces")
+    assert workspaces.status_code == 200
+    payload = workspaces.json()
+    assert payload[0]["id"] == second_workspace["id"]
+    assert payload[0]["is_primary"] is True
+    assert any(item["id"] == first_workspace["id"] and item["is_primary"] is False for item in payload)
+
+
 def test_project_asset_and_message_stream_flow(client: TestClient):
     project_id, conversation_id = bootstrap_user_and_project(client)
     client.app.state.run_manager._runner_factory = FakeRunner
@@ -220,9 +269,11 @@ def test_project_asset_and_message_stream_flow(client: TestClient):
     payload = messages.json()
     assert len(payload) == 2
     assert payload[0]["role"] == "user"
+    assert payload[0]["execution_mode"] == "chat"
     assert payload[0]["assets"][0]["id"] == asset_id
     assert payload[0]["model"] == "openai/gpt-5.4-mini"
     assert payload[1]["role"] == "assistant"
+    assert payload[1]["execution_mode"] == "chat"
     assert payload[1]["content_text"] == "The examined answer is ready."
 
     session = get_session_factory()()

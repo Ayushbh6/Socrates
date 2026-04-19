@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      APP_DATA_DIR: /app-data
+      HOST_WORKSPACES_DIR: /host-workspaces
+    volumes:
+      - premchat_app_data:/app-data
+      - ./host-workspaces:/host-workspaces
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
+
+volumes:
+  premchat_app_data:

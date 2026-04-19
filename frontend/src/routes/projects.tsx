@@ -32,6 +32,7 @@ function ProjectsLayout() {
   const pathname = useRouterState({ select: (state) => state.location.pathname })
 
   const isProjectWorkspace = /^\/projects\/[^/]+(?:\/.*)?$/.test(pathname) && pathname !== '/projects/create'
+  const isProjectDashboardRoute = /^\/projects\/[^/]+\/dashboard$/.test(pathname)
   const isConversationRoute = /^\/projects\/[^/]+\/dashboard\/conversations\/[^/]+$/.test(pathname)
   const headerCta = isConversationRoute && activeProject
     ? {
@@ -133,6 +134,8 @@ function ProjectsLayout() {
         <main
           className={isConversationRoute
             ? 'mx-auto flex w-full max-w-[1440px] min-h-0 flex-1 overflow-hidden px-0 pt-20'
+            : isProjectDashboardRoute
+            ? 'mx-auto flex w-full max-w-[1440px] min-h-0 flex-1 overflow-hidden px-0'
             : 'mx-auto flex w-full max-w-[1440px] min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-6 lg:px-10 lg:py-6'}
         >
           <Outlet />

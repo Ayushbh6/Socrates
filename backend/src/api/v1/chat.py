@@ -5,7 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
-from ...services.assets import create_image_asset, list_project_assets
+from ...services.assets import create_project_asset, list_project_assets
 from ...services.chat import RunManager, create_message_and_run, serialize_asset, serialize_message
 from ...services.projects import get_conversation, list_messages
 from .dependencies import get_run_manager, get_session_dependency
@@ -31,7 +31,7 @@ async def upload_asset(
 ) -> AssetResponse:
     try:
         content = await file.read()
-        asset = create_image_asset(
+        asset = create_project_asset(
             session,
             project_id=project_id,
             original_name=file.filename or "image",

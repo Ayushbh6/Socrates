@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback } from 'react'
 import type { WsEvent } from '../types/api'
 
-const WS_BASE = `ws://${window.location.host}/api/v1`
+const WS_PROTOCOL = window.location.protocol === 'https:' ? 'wss' : 'ws'
+const WS_BASE = `${WS_PROTOCOL}://${window.location.host}/api/v1`
 
 interface UseAgentStreamOptions {
   runId: string | null

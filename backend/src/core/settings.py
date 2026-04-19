@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     uploads_dir: Optional[Path] = Field(default=None, validation_alias="UPLOADS_DIR")
     logs_dir: Optional[Path] = Field(default=None, validation_alias="LOGS_DIR")
     cache_dir: Optional[Path] = Field(default=None, validation_alias="CACHE_DIR")
+    projects_dir: Optional[Path] = Field(default=None, validation_alias="PROJECTS_DIR")
+    host_workspaces_dir: Optional[Path] = Field(default=None, validation_alias="HOST_WORKSPACES_DIR")
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILE,
@@ -47,6 +49,12 @@ class Settings(BaseSettings):
 
         if self.cache_dir is None:
             self.cache_dir = self.app_data_dir / "cache"
+
+        if self.projects_dir is None:
+            self.projects_dir = self.app_data_dir / "projects"
+
+        if self.host_workspaces_dir is None:
+            self.host_workspaces_dir = self.app_data_dir / "host-workspaces"
 
     @staticmethod
     def _default_app_data_dir(app_name: str) -> Path:

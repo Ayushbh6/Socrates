@@ -8,6 +8,16 @@ ToolExecutor = Callable[[ToolCall], Any]
 ToolHandler = Callable[..., Any]
 
 
+def _is_serialized_tool_payload(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(payload, dict) and "ok" in payload and "tool_name" in payload
+
+
 def _serialize_payload(payload: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
 
@@ -74,6 +84,8 @@ async def execute_tool_call(
 
         if inspect.isawaitable(result):
             result = await result
+        if _is_serialized_tool_payload(result):
+            return result
         return build_tool_success_result(tool_name=tool_call.name, data=result)
     except TypeError as exc:
         return build_tool_error_result(
