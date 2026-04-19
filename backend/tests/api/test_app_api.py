@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -159,6 +161,21 @@ def test_conversation_model_preferences_persist(client: TestClient):
     assert listed.json()[0]["thinking_level"] == "low"
 
 
+def test_project_rename_persists(client: TestClient):
+    project_id, _ = bootstrap_user_and_project(client)
+
+    patched = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"name": "Renamed Lab"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["name"] == "Renamed Lab"
+
+    fetched = client.get(f"/api/v1/projects/{project_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["name"] == "Renamed Lab"
+
+
 def test_project_asset_and_message_stream_flow(client: TestClient):
     project_id, conversation_id = bootstrap_user_and_project(client)
     client.app.state.run_manager._runner_factory = FakeRunner
@@ -300,3 +317,262 @@ def test_trace_endpoints_404_for_unknown_run(client: TestClient):
     assert client.get(f"/api/v1/agent-runs/{unknown_id}").status_code == 404
     assert client.get(f"/api/v1/agent-runs/{unknown_id}/turns").status_code == 404
     assert client.get(f"/api/v1/agent-runs/{unknown_id}/events").status_code == 404
+
+
+def test_create_conversation_default_placeholder_title(client: TestClient):
+    bootstrap = client.post("/api/v1/bootstrap", json={"display_name": "Ayush", "preferences": {}})
+    assert bootstrap.status_code == 201
+    project = client.post("/api/v1/projects", json={"name": "Lab"})
+    assert project.status_code == 201
+    project_id = project.json()["id"]
+
+    created = client.post(f"/api/v1/projects/{project_id}/conversations", json={"summary": None})
+    assert created.status_code == 201
+    assert created.json()["title"] == "New conversation"
+
+
+def test_first_user_message_derives_conversation_title(client: TestClient):
+    project_id, conversation_id = bootstrap_user_and_project(client)
+    client.patch(
+        f"/api/v1/conversations/{conversation_id}",
+        json={"title": "New conversation"},
+    )
+
+    client.app.state.run_manager._runner_factory = FakeRunner
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "Absolutely this is the question",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 202
+    run_id = message_response.json()["agent_run_id"]
+
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    listed = client.get(f"/api/v1/projects/{project_id}/conversations")
+    assert listed.status_code == 200
+    titles = {row["id"]: row["title"] for row in listed.json()}
+    assert titles[conversation_id] == "Absol..."
+
+
+def test_first_message_does_not_overwrite_renamed_title(client: TestClient):
+    project_id, conversation_id = bootstrap_user_and_project(client)
+
+    patched = client.patch(
+        f"/api/v1/conversations/{conversation_id}",
+        json={"title": "My custom title"},
+    )
+    assert patched.status_code == 200
+
+    client.app.state.run_manager._runner_factory = FakeRunner
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "Hello",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 202
+    run_id = message_response.json()["agent_run_id"]
+
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    listed = client.get(f"/api/v1/projects/{project_id}/conversations")
+    assert listed.json()[0]["title"] == "My custom title"
+
+
+def test_archive_project_soft_delete(client: TestClient):
+    project_id, conversation_id = bootstrap_user_and_project(client)
+
+    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["archived_at"] is not None
+
+    assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
+
+    listed = client.get("/api/v1/projects")
+    assert listed.status_code == 200
+    assert all(row["id"] != project_id for row in listed.json())
+
+    assert client.get(f"/api/v1/conversations/{conversation_id}/messages").status_code == 404
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "Still there?",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 404
+
+
+class SlowStreamingRunner:
+    """Emits many small delta events with awaits between them so the stream
+    is actively producing events while a websocket client is mid-replay.
+    Used to exercise the subscribe/replay race fix."""
+
+    THINKING_CHUNKS = ["Examining ", "the ", "matter ", "carefully ", "now."]
+    CONTENT_CHUNKS = ["The ", "answer ", "is ", "ready ", "for ", "you."]
+
+    async def stream(self, request):
+        for chunk in self.THINKING_CHUNKS:
+            await asyncio.sleep(0.01)
+            yield AgentEvent(
+                type=AgentEventType.THINKING,
+                provider="fake",
+                model=request.model,
+                round_index=0,
+                response=LLMResponse(
+                    content="",
+                    thinking=chunk,
+                    usage=UsageStats(),
+                    raw_dump={},
+                    metadata={"provider": "fake", "model": request.model},
+                ),
+            )
+        for chunk in self.CONTENT_CHUNKS:
+            await asyncio.sleep(0.01)
+            yield AgentEvent(
+                type=AgentEventType.CONTENT,
+                provider="fake",
+                model=request.model,
+                round_index=0,
+                response=LLMResponse(
+                    content=chunk,
+                    usage=UsageStats(),
+                    raw_dump={},
+                    metadata={"provider": "fake", "model": request.model},
+                ),
+            )
+        yield AgentEvent(
+            type=AgentEventType.FINAL_RESPONSE,
+            provider="fake",
+            model=request.model,
+            round_index=1,
+            response=LLMResponse(
+                content="".join(self.CONTENT_CHUNKS),
+                thinking="".join(self.THINKING_CHUNKS),
+                usage=UsageStats(input_tokens=5, output_tokens=6, completion_tokens=6, total_tokens=11),
+                raw_dump={"final": True},
+                metadata={
+                    "provider": "fake",
+                    "model": request.model,
+                    "agent_usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 6,
+                        "completion_tokens": 6,
+                        "total_tokens": 11,
+                    },
+                    "agent_turn_telemetry": [
+                        {
+                            "round_index": 0,
+                            "phase": "tool",
+                            "elapsed_ms": 1.0,
+                            "usage": {
+                                "input_tokens": 5,
+                                "output_tokens": 6,
+                                "completion_tokens": 6,
+                                "total_tokens": 11,
+                            },
+                            "tool_call_count": 0,
+                            "parsed_output": False,
+                            "had_thinking": True,
+                        }
+                    ],
+                    "agent_elapsed_ms": 2.0,
+                },
+            ),
+        )
+
+
+def test_websocket_stream_has_no_gap_or_duplicate_under_race(client: TestClient):
+    """Regression: events emitted between WS replay and subscribe must not
+    be lost, and replayed events must not be re-delivered from the live queue.
+    Each WS payload must carry a monotonically increasing `seq`, with no
+    duplicates and no missing values."""
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    client.app.state.run_manager._runner_factory = SlowStreamingRunner
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "low",
+            "input_mode": "text",
+            "content_text": "Stream me carefully.",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 202
+    run_id = message_response.json()["agent_run_id"]
+
+    received: list[dict] = []
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            received.append(payload)
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    seqs = [payload.get("seq") for payload in received]
+    assert all(isinstance(seq, int) for seq in seqs), f"every payload must carry an int seq, got {seqs}"
+    assert seqs == sorted(set(seqs)), f"seqs must be strictly increasing with no duplicates, got {seqs}"
+
+    session = get_session_factory()()
+    try:
+        persisted = (
+            session.query(AgentEventRecord)
+            .filter(AgentEventRecord.agent_run_id == run_id)
+            .order_by(AgentEventRecord.sequence_no.asc())
+            .all()
+        )
+        persisted_seqs = [record.sequence_no for record in persisted]
+    finally:
+        session.close()
+
+    assert seqs == persisted_seqs, (
+        "WS client must observe every persisted event exactly once. "
+        f"received={seqs} persisted={persisted_seqs}"
+    )
+
+    types = [payload["type"] for payload in received]
+    assert types[0] == "run.started"
+    assert types[-1] == "run.completed"
+    assert types.count("run.thinking.delta") == len(SlowStreamingRunner.THINKING_CHUNKS)
+    assert types.count("run.content.delta") == len(SlowStreamingRunner.CONTENT_CHUNKS)
+
+
+def test_archive_conversation_soft_delete(client: TestClient):
+    project_id, conversation_id = bootstrap_user_and_project(client)
+
+    deleted = client.delete(f"/api/v1/conversations/{conversation_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["archived_at"] is not None
+
+    listed = client.get(f"/api/v1/projects/{project_id}/conversations")
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+    assert client.get(f"/api/v1/conversations/{conversation_id}/messages").status_code == 404

@@ -314,7 +314,7 @@ class OpenRouterAdapter(BaseProvider):
         )
 
     def _create_stream_state(self) -> Dict[str, Any]:
-        return {"tool_calls": {}, "full_content": ""}
+        return {"tool_calls": {}, "full_content": "", "full_thinking": ""}
 
     def _map_stream_event(
         self,
@@ -325,15 +325,26 @@ class OpenRouterAdapter(BaseProvider):
         if not chunk.choices:
             return None
 
-        delta = chunk.choices[0].delta
+        choice = chunk.choices[0]
+        delta = choice.delta
         stream_state = stream_state or self._create_stream_state()
+        finish_reason = choice.finish_reason
         
         content = delta.content or ""
         thinking = getattr(delta, "reasoning", None) or ""
         tool_calls = []
 
+        if content and finish_reason in {"stop", "length"} and stream_state["full_content"] == content:
+            content = ""
+
+        if thinking and finish_reason in {"stop", "length"} and stream_state["full_thinking"] == thinking:
+            thinking = ""
+
         if content:
             stream_state["full_content"] += content
+
+        if thinking:
+            stream_state["full_thinking"] += thinking
 
         if delta.tool_calls:
             for tc_delta in delta.tool_calls:
@@ -354,7 +365,7 @@ class OpenRouterAdapter(BaseProvider):
                         tool_call_state["arguments"] += function_delta.arguments
 
         # Check for finished tool calls on this chunk
-        if chunk.choices[0].finish_reason == "tool_calls":
+        if finish_reason == "tool_calls":
             for idx, tc_data in stream_state["tool_calls"].items():
                 if not tc_data["id"] or not tc_data["name"]:
                     continue

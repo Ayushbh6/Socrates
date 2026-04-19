@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef } from 'react'
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react'
 import { createFileRoute, Link, Outlet, useNavigate, useRouterState } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -8,11 +8,29 @@ import {
   ImageUp,
   MessageSquarePlus,
   MessagesSquare,
+  MoreVertical,
   Paperclip,
 } from 'lucide-react'
 
 import { getModelOption, getThinkingLabelForModel } from '@/config/models'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
 import { apiFetch } from '@/lib/api'
 import { useAppStore } from '@/stores/appStore'
 import type { Asset, Conversation, Project } from '@/types/api'
@@ -29,6 +47,9 @@ function ProjectDashboardPage() {
   const setActiveConversation = useAppStore((state) => state.setActiveConversation)
   const setActiveProject = useAppStore((state) => state.setActiveProject)
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
+  const [renameTitle, setRenameTitle] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -50,7 +71,6 @@ function ProjectDashboardPage() {
       apiFetch<Conversation>(`/projects/${projectId}/conversations`, {
         method: 'POST',
         body: JSON.stringify({
-          title: buildConversationTitle(),
           summary: null,
         }),
       }),
@@ -61,6 +81,55 @@ function ProjectDashboardPage() {
         navigate({
           to: '/projects/$projectId/dashboard/conversations/$conversationId',
           params: { projectId, conversationId: conversation.id },
+        })
+      })
+    },
+  })
+
+  const renameConversation = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      apiFetch<Conversation>(`/conversations/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title }),
+      }),
+    onSuccess: (updated) => {
+      // Eagerly swap the renamed conversation in the cache so the new title
+      // appears the moment the dialog closes — no refetch wait.
+      queryClient.setQueryData<Conversation[]>(['conversations', projectId], (current) =>
+        (current ?? []).map((conversation) =>
+          conversation.id === updated.id ? updated : conversation,
+        ),
+      )
+      queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
+      const { activeConversation } = useAppStore.getState()
+      if (activeConversation?.id === updated.id) {
+        useAppStore.setState({ activeConversation: updated })
+      }
+      setRenameTarget(null)
+    },
+  })
+
+  const deleteConversation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<Conversation>(`/conversations/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: (_, id) => {
+      queryClient.setQueryData<Conversation[]>(['conversations', projectId], (current) =>
+        (current ?? []).filter((conversation) => conversation.id !== id),
+      )
+      queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
+      queryClient.removeQueries({ queryKey: ['messages', id] })
+      const { activeConversation } = useAppStore.getState()
+      if (activeConversation?.id === id) {
+        useAppStore.setState({ activeConversation: null })
+      }
+      setDeleteTarget(null)
+      startTransition(() => {
+        navigate({
+          to: '/projects/$projectId/dashboard',
+          params: { projectId },
+          replace: true,
         })
       })
     },
@@ -108,7 +177,124 @@ function ProjectDashboardPage() {
   }
 
   return (
-    <div className="flex w-full flex-col gap-4 pb-4 sm:gap-6">
+    <>
+      <Dialog
+        open={Boolean(renameTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameTarget(null)
+            renameConversation.reset()
+          }
+        }}
+      >
+        <DialogContent className="border-sage-strong/60 bg-paper/98 sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle className="font-display text-forest">Rename conversation</DialogTitle>
+            <DialogDescription>Choose a short label for this thread.</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={renameTitle}
+            onChange={(event) => setRenameTitle(event.target.value)}
+            className="h-10 rounded-xl border-sage-strong bg-white/90"
+            placeholder="Conversation title"
+            autoFocus
+          />
+          {renameConversation.error ? (
+            <p className="text-sm text-red-600">
+              {renameConversation.error instanceof Error
+                ? renameConversation.error.message
+                : 'Failed to rename conversation.'}
+            </p>
+          ) : null}
+          <DialogFooter className="mt-2 border-t-0 bg-transparent px-1 pb-1 pt-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full border-sage-strong"
+              onClick={() => {
+                setRenameTarget(null)
+                renameConversation.reset()
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="rounded-full bg-forest text-white hover:bg-forest/92"
+              disabled={
+                renameConversation.isPending || !renameTitle.trim() || !renameTarget
+              }
+              onClick={() => {
+                if (!renameTarget || !renameTitle.trim()) {
+                  return
+                }
+                renameConversation.mutate({
+                  id: renameTarget.id,
+                  title: renameTitle.trim(),
+                })
+              }}
+            >
+              {renameConversation.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null)
+            deleteConversation.reset()
+          }
+        }}
+      >
+        <DialogContent className="border-sage-strong/60 bg-paper/98 sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle className="font-display text-forest">Delete conversation?</DialogTitle>
+            <DialogDescription>
+              This archives the thread and removes it from the list. Messages remain in your local
+              database for traceability.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteConversation.error ? (
+            <p className="text-sm text-red-600">
+              {deleteConversation.error instanceof Error
+                ? deleteConversation.error.message
+                : 'Failed to delete conversation.'}
+            </p>
+          ) : null}
+          <DialogFooter className="mt-2 border-t-0 bg-transparent px-1 pb-1 pt-2 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full border-sage-strong"
+              onClick={() => {
+                setDeleteTarget(null)
+                deleteConversation.reset()
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              className="rounded-full"
+              disabled={deleteConversation.isPending || !deleteTarget}
+              onClick={() => {
+                if (!deleteTarget) {
+                  return
+                }
+                deleteConversation.mutate(deleteTarget.id)
+              }}
+            >
+              {deleteConversation.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <div className="flex w-full flex-col gap-4 pb-4 sm:gap-6">
       <section className="shrink-0 rounded-[2rem] bg-paper/92 px-5 py-5 shadow-[0_24px_60px_rgba(62,92,72,0.08)] sm:px-8 sm:py-8">
         <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div className="flex max-w-3xl flex-col gap-4">
@@ -192,23 +378,36 @@ function ProjectDashboardPage() {
                 {recentConversations.map((conversation) => {
                   const model = getModelOption(conversation.model)
 
+                  const openConversation = () => {
+                    setActiveConversation(conversation)
+                    startTransition(() => {
+                      navigate({
+                        to: '/projects/$projectId/dashboard/conversations/$conversationId',
+                        params: { projectId, conversationId: conversation.id },
+                      })
+                    })
+                  }
+
                   return (
-                    <button
+                    <div
                       key={conversation.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveConversation(conversation)
-                        startTransition(() => {
-                          navigate({
-                            to: '/projects/$projectId/dashboard/conversations/$conversationId',
-                            params: { projectId, conversationId: conversation.id },
-                          })
-                        })
+                      role="button"
+                      tabIndex={0}
+                      onClick={openConversation}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          openConversation()
+                        }
                       }}
-                      className="group rounded-[1.6rem] border border-transparent bg-paper/70 px-5 py-5 text-left transition hover:border-sage-strong hover:bg-paper hover:shadow-[0_16px_36px_rgba(62,92,72,0.08)]"
+                      className={cn(
+                        'group cursor-pointer rounded-[1.6rem] border border-transparent bg-paper/70 px-5 py-5 text-left outline-none transition',
+                        'hover:border-sage-strong hover:bg-paper hover:shadow-[0_16px_36px_rgba(62,92,72,0.08)]',
+                        'focus-visible:ring-3 focus-visible:ring-ring/40',
+                      )}
                     >
                       <div className="flex items-start justify-between gap-4">
-                        <div className="flex min-w-0 flex-col gap-2">
+                        <div className="flex min-w-0 flex-1 flex-col gap-2">
                           <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-moss">
                             <MessagesSquare className="size-3.5" />
                             Conversation
@@ -221,13 +420,52 @@ function ProjectDashboardPage() {
                             </span>
                           </div>
                         </div>
-                        <ArrowRight className="size-4 shrink-0 text-moss/70 transition group-hover:translate-x-0.5 group-hover:text-forest" />
+                        <div className="flex shrink-0 items-start gap-1">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                className="size-9 rounded-full text-moss/80 hover:bg-sage/60 hover:text-forest"
+                                aria-label={`Conversation actions for ${conversation.title}`}
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                <MoreVertical className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="min-w-[11rem] border-sage-strong/50 bg-paper/98">
+                              <DropdownMenuItem
+                                className="cursor-pointer"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  setRenameTarget(conversation)
+                                  setRenameTitle(conversation.title)
+                                }}
+                              >
+                                Rename conversation
+                              </DropdownMenuItem>
+                              <DropdownMenuSeparator className="bg-sage-strong/40" />
+                              <DropdownMenuItem
+                                variant="destructive"
+                                className="cursor-pointer"
+                                onClick={(event) => {
+                                  event.stopPropagation()
+                                  setDeleteTarget(conversation)
+                                }}
+                              >
+                                Delete conversation
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          <ArrowRight className="mt-2 size-4 shrink-0 text-moss/70 transition group-hover:translate-x-0.5 group-hover:text-forest" />
+                        </div>
                       </div>
                       <div className="mt-4 flex items-center gap-2 text-sm text-ink-soft">
                         <Clock3 className="size-3.5" />
                         Updated {formatTimestamp(conversation.updated_at)}
                       </div>
-                    </button>
+                    </div>
                   )
                 })}
               </div>
@@ -319,16 +557,8 @@ function ProjectDashboardPage() {
         </section>
       </div>
     </div>
+    </>
   )
-}
-
-function buildConversationTitle() {
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  }).format(new Date())
 }
 
 function formatTimestamp(value: string) {

@@ -122,3 +122,35 @@ def test_map_stream_event_reconstructs_split_tool_call(adapter):
     assert mapped.tool_calls[0].id == "call_123"
     assert mapped.tool_calls[0].name == "get_weather"
     assert mapped.tool_calls[0].arguments == {"city": "Paris"}
+
+
+def test_map_stream_event_ignores_duplicate_terminal_content_chunk(adapter):
+    stream_state = adapter._create_stream_state()
+
+    first_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="Hello", reasoning=None, tool_calls=None),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+        model_dump=lambda: {"chunk": 1},
+    )
+    terminal_chunk = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="Hello", reasoning=None, tool_calls=None),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+        model_dump=lambda: {"chunk": 2},
+    )
+
+    first_mapped = adapter._map_stream_event(first_chunk, stream_state=stream_state)
+    terminal_mapped = adapter._map_stream_event(terminal_chunk, stream_state=stream_state)
+
+    assert first_mapped is not None
+    assert first_mapped.content == "Hello"
+    assert terminal_mapped is None

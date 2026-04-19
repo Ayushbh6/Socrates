@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from ...services.projects import (
+    archive_conversation,
+    archive_project,
     create_conversation,
     create_project,
     get_project,
@@ -103,6 +105,15 @@ def patch_project(
     return _to_project_response(project)
 
 
+@router.delete("/projects/{project_id}", response_model=ProjectResponse)
+def delete_project(project_id: str, session: Session = Depends(get_session_dependency)) -> ProjectResponse:
+    try:
+        project = archive_project(session, project_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return _to_project_response(project)
+
+
 @router.get("/projects/{project_id}/conversations", response_model=list[ConversationResponse])
 def get_project_conversations(project_id: str, session: Session = Depends(get_session_dependency)) -> list[ConversationResponse]:
     try:
@@ -153,4 +164,15 @@ def patch_conversation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_conversation_response(conversation)
+
+
+@router.delete("/conversations/{conversation_id}", response_model=ConversationResponse)
+def delete_conversation_route(
+    conversation_id: str, session: Session = Depends(get_session_dependency)
+) -> ConversationResponse:
+    try:
+        conversation = archive_conversation(session, conversation_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return _to_conversation_response(conversation)

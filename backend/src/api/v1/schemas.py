@@ -64,7 +64,7 @@ class ProjectResponse(BaseModel):
 
 
 class ConversationCreateRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=255)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
     summary: str | None = None
     model: str | None = None
     thinking_level: ThinkingLevel | None = None

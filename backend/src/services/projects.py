@@ -11,6 +11,20 @@ from ..db.models import Conversation, MessageAsset, MessageRecord, Project
 from .bootstrap import get_current_user
 from .utils import apply_updates
 
+# Placeholder title for new conversations; replaced on first user message unless renamed.
+NEW_CONVERSATION_PLACEHOLDER_TITLE = "New conversation"
+
+
+def derive_initial_conversation_title(content_text: str) -> str:
+    """Raw title from the first word of the first user message (product rule)."""
+    stripped = content_text.strip()
+    if not stripped:
+        return NEW_CONVERSATION_PLACEHOLDER_TITLE
+    first_word = stripped.split()[0]
+    if len(first_word) > 5:
+        return f"{first_word[:5]}..."
+    return first_word
+
 
 def list_projects(session: Session) -> list[Project]:
     return list(
@@ -91,7 +105,7 @@ def create_conversation(
     session: Session,
     *,
     project_id: str,
-    title: str,
+    title: str | None,
     summary: str | None = None,
     model: str | None = None,
     thinking_level: ThinkingLevel | None = None,
@@ -103,9 +117,10 @@ def create_conversation(
         resolved_model,
         thinking_level or DEFAULT_THINKING_LEVEL,
     )
+    resolved_title = (title.strip() if title else None) or NEW_CONVERSATION_PLACEHOLDER_TITLE
     conversation = Conversation(
         project_id=project_id,
-        title=title,
+        title=resolved_title,
         summary=summary,
         model=resolved_model,
         thinking_level=resolved_thinking.value,
@@ -151,6 +166,23 @@ def get_conversation(session: Session, conversation_id: str) -> Conversation:
     conversation = session.get(Conversation, conversation_id)
     if conversation is None or conversation.archived_at is not None:
         raise LookupError("Conversation not found.")
+    get_project(session, conversation.project_id)
+    return conversation
+
+
+def archive_project(session: Session, project_id: str) -> Project:
+    project = get_project(session, project_id)
+    project.archived_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(project)
+    return project
+
+
+def archive_conversation(session: Session, conversation_id: str) -> Conversation:
+    conversation = get_conversation(session, conversation_id)
+    conversation.archived_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(conversation)
     return conversation
 
 

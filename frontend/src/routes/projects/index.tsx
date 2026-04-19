@@ -1,11 +1,20 @@
 import { startTransition, useDeferredValue, useMemo, useState } from 'react'
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { motion } from 'framer-motion'
 import { FolderPlus, Search, X } from 'lucide-react'
 
 import { ProjectCard } from '@/components/projects/ProjectCard'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import {
   InputGroup,
   InputGroupAddon,
@@ -32,14 +41,64 @@ function getGreeting() {
 
 function ProjectsHome() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const user = useAppStore((state) => state.user)
   const setActiveProject = useAppStore((state) => state.setActiveProject)
   const [search, setSearch] = useState('')
   const deferredSearch = useDeferredValue(search)
+  const [renameTarget, setRenameTarget] = useState<Project | null>(null)
+  const [renameName, setRenameName] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null)
 
   const { data: projects = [], isPending } = useQuery({
     queryKey: ['projects'],
     queryFn: () => apiFetch<Project[]>('/projects'),
+  })
+
+  const renameProject = useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      apiFetch<Project>(`/projects/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ name }),
+      }),
+    onSuccess: (updated) => {
+      // Eagerly update the cache so the renamed project appears instantly
+      // when the dialog closes — no waiting on the background refetch.
+      queryClient.setQueryData<Project[]>(['projects'], (current) =>
+        (current ?? []).map((project) => (project.id === updated.id ? updated : project)),
+      )
+      queryClient.setQueryData<Project>(['project', updated.id], updated)
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      queryClient.invalidateQueries({ queryKey: ['project', updated.id] })
+      const { activeProject } = useAppStore.getState()
+      if (activeProject?.id === updated.id) {
+        useAppStore.setState({ activeProject: updated })
+      }
+      setRenameTarget(null)
+    },
+  })
+
+  const deleteProject = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<Project>(`/projects/${id}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: (_, id) => {
+      // Eagerly drop the deleted project from the visible list so it
+      // disappears the moment the user confirms — refetch is the safety net.
+      queryClient.setQueryData<Project[]>(['projects'], (current) =>
+        (current ?? []).filter((project) => project.id !== id),
+      )
+      queryClient.removeQueries({ queryKey: ['project', id] })
+      queryClient.removeQueries({ queryKey: ['conversations', id] })
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      const { activeProject } = useAppStore.getState()
+      if (activeProject?.id === id) {
+        useAppStore.setState({ activeProject: null, activeConversation: null })
+        startTransition(() => navigate({ to: '/projects' }))
+      }
+      setDeleteTarget(null)
+    },
   })
 
   const filteredProjects = useMemo(() => {
@@ -60,6 +119,116 @@ function ProjectsHome() {
   const displayName = user?.display_name ?? 'Your'
 
   return (
+    <>
+      <Dialog
+        open={Boolean(renameTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameTarget(null)
+            renameProject.reset()
+          }
+        }}
+      >
+        <DialogContent className="border-sage-strong/60 bg-paper/98 sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle className="font-display text-forest">Rename project</DialogTitle>
+            <DialogDescription>Update how this workspace appears in your list.</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={renameName}
+            onChange={(event) => setRenameName(event.target.value)}
+            className="h-10 rounded-xl border-sage-strong bg-white/90"
+            placeholder="Project name"
+            autoFocus
+          />
+          {renameProject.error ? (
+            <p className="text-sm text-red-600">
+              {renameProject.error instanceof Error ? renameProject.error.message : 'Failed to rename project.'}
+            </p>
+          ) : null}
+          <DialogFooter className="border-t-0 bg-transparent p-0 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full border-sage-strong"
+              onClick={() => {
+                setRenameTarget(null)
+                renameProject.reset()
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="rounded-full bg-forest text-white hover:bg-forest/92"
+              disabled={
+                renameProject.isPending || !renameName.trim() || !renameTarget
+              }
+              onClick={() => {
+                if (!renameTarget || !renameName.trim()) {
+                  return
+                }
+                renameProject.mutate({ id: renameTarget.id, name: renameName.trim() })
+              }}
+            >
+              {renameProject.isPending ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDeleteTarget(null)
+            deleteProject.reset()
+          }
+        }}
+      >
+        <DialogContent className="border-sage-strong/60 bg-paper/98 sm:max-w-md" showCloseButton>
+          <DialogHeader>
+            <DialogTitle className="font-display text-forest">Delete project?</DialogTitle>
+            <DialogDescription>
+              This archives the project and hides it from your workspace. Data stays in your local
+              database for traceability.
+            </DialogDescription>
+          </DialogHeader>
+          {deleteProject.error ? (
+            <p className="text-sm text-red-600">
+              {deleteProject.error instanceof Error ? deleteProject.error.message : 'Failed to delete project.'}
+            </p>
+          ) : null}
+          <DialogFooter className="border-t-0 bg-transparent p-0 sm:justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="rounded-full border-sage-strong"
+              onClick={() => {
+                setDeleteTarget(null)
+                deleteProject.reset()
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              className="rounded-full"
+              disabled={deleteProject.isPending || !deleteTarget}
+              onClick={() => {
+                if (!deleteTarget) {
+                  return
+                }
+                deleteProject.mutate(deleteTarget.id)
+              }}
+            >
+              {deleteProject.isPending ? 'Deleting…' : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <div className="flex w-full flex-col gap-4 pb-4 sm:gap-5">
         <motion.section
           initial={{ opacity: 0, y: 18 }}
@@ -137,7 +306,7 @@ function ProjectsHome() {
                       key={project.id}
                       project={project}
                       index={index}
-                      onClick={() => {
+                      onOpen={() => {
                         setActiveProject(project)
                         startTransition(() => {
                           navigate({
@@ -146,6 +315,11 @@ function ProjectsHome() {
                           })
                         })
                       }}
+                      onRename={(p) => {
+                        setRenameTarget(p)
+                        setRenameName(p.name)
+                      }}
+                      onDelete={(p) => setDeleteTarget(p)}
                     />
                   ))}
                 </div>
@@ -160,6 +334,7 @@ function ProjectsHome() {
           </div>
         </section>
       </div>
+    </>
   )
 }
 

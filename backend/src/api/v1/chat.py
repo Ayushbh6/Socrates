@@ -88,18 +88,45 @@ async def stream_run(websocket: WebSocket, run_id: str) -> None:
         return
 
     await websocket.accept()
-    for payload in run_manager.replay_events(run_id):
-        await websocket.send_json(payload)
 
-    status_value = run_manager.get_run_status(run_id)
-    if status_value in {"completed", "failed"}:
-        await websocket.close()
-        return
-
-    queue = run_manager.subscribe(run_id)
+    # Subscribe BEFORE replaying so live events emitted during/after the DB
+    # read are buffered in the queue. We then replay DB events (each carries
+    # its own seq) and finally drain the queue while skipping any payload
+    # whose seq was already covered by the replay. This eliminates the
+    # subscribe/replay race that would otherwise drop mid-stream deltas.
+    queue = await run_manager.subscribe(run_id)
+    last_replayed_seq = 0
     try:
+        for payload in run_manager.replay_events(run_id):
+            await websocket.send_json(payload)
+            seq_value = payload.get("seq")
+            if isinstance(seq_value, int) and seq_value > last_replayed_seq:
+                last_replayed_seq = seq_value
+            if payload["type"] in {"run.completed", "run.failed"}:
+                await websocket.close()
+                return
+
+        status_value = run_manager.get_run_status(run_id)
+        if status_value in {"completed", "failed"}:
+            # Run finished while we were replaying; drain any straggler
+            # events that were published after our DB read so the client
+            # still receives the terminal frame.
+            while not queue.empty():
+                payload = queue.get_nowait()
+                seq_value = payload.get("seq")
+                if isinstance(seq_value, int) and seq_value <= last_replayed_seq:
+                    continue
+                await websocket.send_json(payload)
+                if payload["type"] in {"run.completed", "run.failed"}:
+                    break
+            await websocket.close()
+            return
+
         while True:
             payload = await queue.get()
+            seq_value = payload.get("seq")
+            if isinstance(seq_value, int) and seq_value <= last_replayed_seq:
+                continue
             await websocket.send_json(payload)
             if payload["type"] in {"run.completed", "run.failed"}:
                 await websocket.close()
@@ -107,4 +134,4 @@ async def stream_run(websocket: WebSocket, run_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
-        run_manager.unsubscribe(run_id, queue)
+        await run_manager.unsubscribe(run_id, queue)

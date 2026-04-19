@@ -16,7 +16,13 @@ from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Convers
 from ..db.session import get_session_factory
 from .assets import get_project_assets_by_ids, resolve_asset_bytes
 from .bootstrap import get_current_user
-from .projects import get_conversation, next_message_sequence
+from .projects import (
+    NEW_CONVERSATION_PLACEHOLDER_TITLE,
+    derive_initial_conversation_title,
+    get_conversation,
+    get_project,
+    next_message_sequence,
+)
 from .utils import to_json_compatible
 
 
@@ -197,9 +203,10 @@ def create_message_and_run(
         raise ValueError("Only text input mode is supported in this slice.")
 
     conversation = get_conversation(session, conversation_id)
-    project = session.get(Project, conversation.project_id)
-    if project is None:
-        raise LookupError("Conversation project not found.")
+    project = get_project(session, conversation.project_id)
+
+    if conversation.title == NEW_CONVERSATION_PLACEHOLDER_TITLE:
+        conversation.title = derive_initial_conversation_title(content_text)
 
     resolved_model = model or conversation.model or DEFAULT_MODEL
     require_supported_model(resolved_model)
@@ -280,21 +287,25 @@ class RunManager:
             task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
             self._tasks[run_id] = task
 
-    def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any]]:
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._subscribers.setdefault(run_id, set()).add(queue)
-        return queue
+    async def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any]]:
+        async with self._lock:
+            queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            self._subscribers.setdefault(run_id, set()).add(queue)
+            return queue
 
-    def unsubscribe(self, run_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        subscribers = self._subscribers.get(run_id)
-        if not subscribers:
-            return
-        subscribers.discard(queue)
-        if not subscribers:
-            self._subscribers.pop(run_id, None)
+    async def unsubscribe(self, run_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        async with self._lock:
+            subscribers = self._subscribers.get(run_id)
+            if not subscribers:
+                return
+            subscribers.discard(queue)
+            if not subscribers:
+                self._subscribers.pop(run_id, None)
 
     async def publish(self, run_id: str, payload: dict[str, Any]) -> None:
-        for queue in list(self._subscribers.get(run_id, set())):
+        async with self._lock:
+            queues = list(self._subscribers.get(run_id, set()))
+        for queue in queues:
             await queue.put(payload)
 
     def replay_events(self, run_id: str) -> list[dict[str, Any]]:
@@ -307,7 +318,12 @@ class RunManager:
                     .order_by(AgentEventRecord.sequence_no.asc())
                 ).scalars()
             )
-            return [record.payload_json for record in records]
+            payloads: list[dict[str, Any]] = []
+            for record in records:
+                payload = dict(record.payload_json)
+                payload["seq"] = record.sequence_no
+                payloads.append(payload)
+            return payloads
         finally:
             session.close()
 
@@ -375,7 +391,9 @@ class RunManager:
         )
         session.add(record)
         session.commit()
-        await self.publish(run.id, payload)
+        outgoing = dict(payload)
+        outgoing["seq"] = record.sequence_no
+        await self.publish(run.id, outgoing)
 
     async def _emit_turn_started(
         self,
@@ -414,7 +432,7 @@ class RunManager:
                     .joinedload(MessageAsset.asset)
                 )
             ).unique().scalars().first()
-            project = session.get(Project, run.project_id)
+            project = get_project(session, run.project_id)
             trigger_message = session.get(MessageRecord, run.trigger_message_id) if run.trigger_message_id else None
             if conversation is None or project is None or trigger_message is None:
                 raise LookupError("Run context is incomplete.")

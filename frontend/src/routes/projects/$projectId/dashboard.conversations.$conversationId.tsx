@@ -5,11 +5,15 @@ import { useForm, useWatch } from 'react-hook-form'
 import {
   Brain,
   ChevronDown,
+  ChevronRight,
   LoaderCircle,
   Paperclip,
   Send,
   X,
 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import type { Components } from 'react-markdown'
 
 import {
   DEFAULT_MODEL_ID,
@@ -56,6 +60,17 @@ interface OptimisticMessage {
   status: 'queued' | 'completed' | 'failed' | 'streaming'
   assets: Asset[]
   sequence_no: number
+  thinking_enabled?: boolean
+  agent_run_id?: string | null
+}
+
+function deriveInitialConversationTitle(content: string) {
+  const trimmed = content.trim()
+  if (!trimmed) {
+    return 'New conversation'
+  }
+  const firstWord = trimmed.split(/\s+/)[0] ?? 'New conversation'
+  return firstWord.length > 5 ? `${firstWord.slice(0, 5)}...` : firstWord
 }
 
 function ConversationSessionPage() {
@@ -131,7 +146,7 @@ function ConversationSessionPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, optimistic, streamingContent])
+  }, [messages, optimistic, streamingContent, streamingThinking])
 
   const handleWsEvent = useCallback(
     (event: WsEvent) => {
@@ -146,10 +161,13 @@ function ConversationSessionPage() {
       }
 
       if (event.type === 'run.message.completed') {
+        queryClient.setQueryData<Message[]>(['messages', conversationId], (current) => {
+          const next = current ? current.filter((message) => message.id !== event.message.id) : []
+          return [...next, event.message].sort((left, right) => left.sequence_no - right.sequence_no)
+        })
         setOptimistic((previous) => previous.filter((message) => message.role !== 'assistant'))
         setStreamingContent('')
         setStreamingThinking('')
-        queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
         queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
         return
       }
@@ -258,6 +276,13 @@ function ConversationSessionPage() {
         }),
       }),
     onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
+      if (conversation?.title === 'New conversation') {
+        setActiveConversation({
+          ...conversation,
+          title: deriveInitialConversationTitle(inputValue),
+        })
+      }
       setActiveRunId(response.agent_run_id)
       setOptimistic((previous) => [
         ...previous,
@@ -269,6 +294,8 @@ function ConversationSessionPage() {
           status: 'streaming',
           assets: [],
           sequence_no: 9999,
+          thinking_enabled: selectedThinking !== 'off',
+          agent_run_id: response.agent_run_id,
         },
       ])
       setPendingAssets([])
@@ -277,7 +304,7 @@ function ConversationSessionPage() {
   })
 
   const onSubmit = (data: SendForm) => {
-    if (!data.content_text.trim() && pendingAssets.length === 0) {
+    if (!data.content_text.trim()) {
       return
     }
 
@@ -297,6 +324,15 @@ function ConversationSessionPage() {
     ])
 
     sendMessage.mutate(data, {
+      onSuccess: (response) => {
+        setOptimistic((previous) =>
+          previous.map((message) =>
+            message.id === optimisticUserId
+              ? { ...message, id: response.message_id, status: 'completed' }
+              : message,
+          ),
+        )
+      },
       onError: () => {
         setOptimistic((previous) => previous.filter((message) => message.id !== optimisticUserId))
       },
@@ -333,6 +369,12 @@ function ConversationSessionPage() {
                       message.role === 'assistant' &&
                       (message as OptimisticMessage).status === 'streaming'
                         ? streamingThinking
+                        : undefined
+                    }
+                    streamingThinkingEnabled={
+                      message.role === 'assistant' &&
+                      (message as OptimisticMessage).status === 'streaming'
+                        ? Boolean((message as OptimisticMessage).thinking_enabled)
                         : undefined
                     }
                   />
@@ -560,7 +602,7 @@ function ConversationComposer({
             <Button
               type="submit"
               size="icon"
-              disabled={isSubmitting || sendPending || (!inputValue?.trim() && pendingAssets.length === 0)}
+              disabled={isSubmitting || sendPending || !inputValue?.trim()}
               className="size-10 rounded-full bg-forest text-white hover:bg-forest/92 sm:size-11"
             >
               {sendPending ? <LoaderCircle className="animate-spin" /> : <Send />}
@@ -611,31 +653,342 @@ function ComposerSelect({ compact = false, label, value, onChange, options }: Co
   )
 }
 
+const assistantMarkdownComponents: Components = {
+  p: ({ children, ...props }) => (
+    <p className="mb-3 last:mb-0 leading-7" {...props}>
+      {children}
+    </p>
+  ),
+  ul: ({ children, ...props }) => (
+    <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0" {...props}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }) => (
+    <li className="leading-7" {...props}>
+      {children}
+    </li>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong className="font-semibold text-forest" {...props}>
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em className="italic" {...props}>
+      {children}
+    </em>
+  ),
+  a: ({ children, href, ...props }) => (
+    <a
+      href={href}
+      className="font-medium text-teal-dim underline decoration-teal-dim/40 underline-offset-2 transition hover:text-forest"
+      target="_blank"
+      rel="noopener noreferrer"
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+  code: ({ className, children, ...props }) => {
+    const isBlock = Boolean(className?.includes('language-'))
+    if (isBlock) {
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code
+        className="rounded-md bg-sage/45 px-1.5 py-0.5 font-mono text-[0.9em] text-ink"
+        {...props}
+      >
+        {children}
+      </code>
+    )
+  },
+  pre: ({ children, ...props }) => (
+    <pre
+      className="mb-3 overflow-x-auto rounded-[1rem] border border-sage-strong/60 bg-paper/90 p-4 text-[13px] leading-6 last:mb-0"
+      {...props}
+    >
+      {children}
+    </pre>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote
+      className="mb-3 border-l-4 border-moss/50 pl-4 text-ink-soft italic last:mb-0"
+      {...props}
+    >
+      {children}
+    </blockquote>
+  ),
+  h1: ({ children, ...props }) => (
+    <h3 className="mb-2 font-display text-xl tracking-tight text-forest" {...props}>
+      {children}
+    </h3>
+  ),
+  h2: ({ children, ...props }) => (
+    <h3 className="mb-2 font-display text-lg tracking-tight text-forest" {...props}>
+      {children}
+    </h3>
+  ),
+  h3: ({ children, ...props }) => (
+    <h3 className="mb-2 font-display text-base tracking-tight text-forest" {...props}>
+      {children}
+    </h3>
+  ),
+  hr: () => <hr className="my-4 border-sage-strong/60" />,
+  table: ({ children, ...props }) => (
+    <div className="mb-3 overflow-x-auto last:mb-0">
+      <table className="w-full border-collapse text-left text-[13px]" {...props}>
+        {children}
+      </table>
+    </div>
+  ),
+  thead: ({ children, ...props }) => <thead className="bg-sage/40" {...props}>{children}</thead>,
+  th: ({ children, ...props }) => (
+    <th className="border border-sage-strong/60 px-3 py-2 font-semibold text-forest" {...props}>
+      {children}
+    </th>
+  ),
+  td: ({ children, ...props }) => (
+    <td className="border border-sage-strong/50 px-3 py-2 text-ink-soft" {...props}>
+      {children}
+    </td>
+  ),
+}
+
+const thinkingMarkdownComponents: Components = {
+  p: ({ children, ...props }) => (
+    <p className="mb-2 last:mb-0 leading-6" {...props}>
+      {children}
+    </p>
+  ),
+  ul: ({ children, ...props }) => (
+    <ul className="mb-2 list-disc space-y-0.5 pl-5 last:mb-0" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="mb-2 list-decimal space-y-0.5 pl-5 last:mb-0" {...props}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }) => (
+    <li className="leading-6" {...props}>
+      {children}
+    </li>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong className="font-semibold text-moss" {...props}>
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em className="italic" {...props}>
+      {children}
+    </em>
+  ),
+  code: ({ className, children, ...props }) => {
+    const isBlock = Boolean(className?.includes('language-'))
+    if (isBlock) {
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      )
+    }
+    return (
+      <code
+        className="rounded bg-sage/60 px-1 py-0.5 font-mono text-[0.85em] text-ink-soft"
+        {...props}
+      >
+        {children}
+      </code>
+    )
+  },
+  pre: ({ children, ...props }) => (
+    <pre
+      className="mb-2 overflow-x-auto rounded-[0.75rem] border border-sage-strong/40 bg-paper/70 p-3 text-[12px] leading-5 last:mb-0"
+      {...props}
+    >
+      {children}
+    </pre>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote className="mb-2 border-l-2 border-moss/40 pl-3 italic last:mb-0" {...props}>
+      {children}
+    </blockquote>
+  ),
+  h1: ({ children, ...props }) => (
+    <h4 className="mb-1.5 font-semibold text-[13px] text-moss" {...props}>
+      {children}
+    </h4>
+  ),
+  h2: ({ children, ...props }) => (
+    <h4 className="mb-1.5 font-semibold text-[13px] text-moss" {...props}>
+      {children}
+    </h4>
+  ),
+  h3: ({ children, ...props }) => (
+    <h4 className="mb-1.5 font-semibold text-[13px] text-moss" {...props}>
+      {children}
+    </h4>
+  ),
+  hr: () => <hr className="my-3 border-sage-strong/40" />,
+  a: ({ children, href, ...props }) => (
+    <a
+      href={href}
+      className="font-medium text-teal-dim underline decoration-teal-dim/40 underline-offset-2 transition hover:text-forest"
+      target="_blank"
+      rel="noopener noreferrer"
+      {...props}
+    >
+      {children}
+    </a>
+  ),
+}
+
+const THINKING_COLLAPSE_PREFIX = 'thinking-collapse:run:'
+
+function deriveThinkingStorageKey(message: Message | OptimisticMessage): string | null {
+  // Prefer the agent_run_id so the key is stable across the optimistic
+  // streaming bubble and the persisted assistant message that replaces it.
+  // For a brand-new optimistic bubble that doesn't yet carry a run id,
+  // we won't persist (collapse state for that brief window stays in memory
+  // via the same key once the run id arrives on the next render).
+  const opt = message as OptimisticMessage
+  const runId = opt.agent_run_id ?? (message as Message).agent_run_id ?? null
+  if (runId) return `${THINKING_COLLAPSE_PREFIX}${runId}`
+  return null
+}
+
+function readPersistedCollapse(storageKey: string | null): boolean {
+  if (!storageKey || typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(storageKey) === '1'
+  } catch {
+    return false
+  }
+}
+
+function writePersistedCollapse(storageKey: string | null, collapsed: boolean): void {
+  if (!storageKey || typeof window === 'undefined') return
+  try {
+    if (collapsed) {
+      window.localStorage.setItem(storageKey, '1')
+    } else {
+      window.localStorage.removeItem(storageKey)
+    }
+  } catch {
+    // localStorage may be unavailable (private mode, quota); fail silently.
+  }
+}
+
+interface ThinkingPanelProps {
+  storageKey: string | null
+  text: string
+  hasThinking: boolean
+  isStreaming: boolean
+  statusLabel: string
+}
+
+function ThinkingPanel({ storageKey, text, hasThinking, isStreaming, statusLabel }: ThinkingPanelProps) {
+  // The parent passes `storageKey` as React `key` so this component remounts
+  // when the key changes (e.g. an optimistic bubble gets its agent_run_id),
+  // letting this initializer read the latest persisted value without an
+  // additional effect.
+  const [collapsed, setCollapsed] = useState<boolean>(() => readPersistedCollapse(storageKey))
+
+  const toggle = useCallback(() => {
+    setCollapsed((current) => {
+      const next = !current
+      writePersistedCollapse(storageKey, next)
+      return next
+    })
+  }, [storageKey])
+
+  const headerLabel = hasThinking && !isStreaming ? 'Reasoning' : 'Thinking'
+  const showBody = hasThinking && !collapsed
+
+  return (
+    <div className="mb-3 rounded-[1.35rem] bg-sage/50 px-4 py-3.5 shadow-[0_10px_24px_rgba(62,92,72,0.05)]">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        aria-label={collapsed ? 'Expand reasoning' : 'Collapse reasoning'}
+        className="flex w-full items-center gap-2 text-left transition hover:opacity-90"
+      >
+        <ThinkingOrb />
+        <div className="flex-1 min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">
+            {headerLabel}
+          </p>
+          <p className="text-[11px] text-ink-soft/80">{statusLabel}</p>
+        </div>
+        <span
+          className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-white/40 text-moss transition hover:bg-white/70"
+          aria-hidden="true"
+        >
+          {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+        </span>
+      </button>
+      {showBody ? (
+        <div className="mt-3 text-[13px] leading-6 tracking-[0.01em] text-ink-soft assistant-markdown min-w-0">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={thinkingMarkdownComponents}>
+            {text}
+          </ReactMarkdown>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 interface MessageBubbleProps {
   message: Message | OptimisticMessage
   streamingContent?: string
   streamingThinking?: string
+  streamingThinkingEnabled?: boolean
 }
 
-function MessageBubble({ message, streamingContent, streamingThinking }: MessageBubbleProps) {
+function MessageBubble({
+  message,
+  streamingContent,
+  streamingThinking,
+  streamingThinkingEnabled,
+}: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const isStreaming = (message as OptimisticMessage).status === 'streaming'
   const displayContent = isStreaming ? streamingContent ?? '' : message.content_text ?? ''
   const displayThinking = isStreaming ? streamingThinking ?? '' : message.thinking_text ?? ''
+  const hasContent = displayContent.trim().length > 0
+  const hasThinking = displayThinking.trim().length > 0
+  const showStreamingStatus = isStreaming && !hasThinking && !hasContent
+  const showThinkingPanel = !isUser && (hasThinking || showStreamingStatus)
+  const statusLabel = streamingThinkingEnabled ? 'Socrates is thinking' : 'Socrates is responding'
+  const renderAssistantAnswer = hasContent || (!isStreaming && !hasThinking)
+  const thinkingStorageKey = !isUser ? deriveThinkingStorageKey(message) : null
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div className={`w-full ${isUser ? 'sm:max-w-[68%]' : 'sm:max-w-[76%]'}`}>
-        {displayThinking ? (
-          <div className="mb-3 rounded-[1.35rem] bg-sage/50 px-4 py-3">
-            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">
-              <Brain className="size-3" />
-              Thinking
-            </p>
-            <p className="whitespace-pre-wrap text-xs leading-relaxed text-ink-soft">
-              {displayThinking}
-            </p>
-          </div>
+        {showThinkingPanel ? (
+          <ThinkingPanel
+            key={thinkingStorageKey ?? message.id}
+            storageKey={thinkingStorageKey}
+            text={displayThinking}
+            hasThinking={hasThinking}
+            isStreaming={isStreaming}
+            statusLabel={statusLabel}
+          />
         ) : null}
 
         {message.assets?.length > 0 ? (
@@ -652,24 +1005,45 @@ function MessageBubble({ message, streamingContent, streamingThinking }: Message
           </div>
         ) : null}
 
-        <div
-          className={
-            isUser
-              ? 'rounded-[1.7rem] bg-forest px-5 py-4 text-sm leading-7 text-white shadow-[0_18px_40px_rgba(27,53,41,0.14)]'
-              : 'rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]'
-          }
-        >
-          {displayContent ? (
-            <p className="whitespace-pre-wrap">{displayContent}</p>
-          ) : isStreaming ? (
-            <span className="inline-block size-4 animate-spin rounded-full border-2 border-current border-t-transparent opacity-50" />
-          ) : (
-            <p className="text-xs italic text-ink-soft">
-              {(message as OptimisticMessage).status === 'failed' ? 'Failed to respond.' : '...'}
-            </p>
-          )}
-        </div>
+        {renderAssistantAnswer ? (
+          <div
+            className={
+              isUser
+                ? 'rounded-[1.7rem] bg-forest px-5 py-4 text-sm leading-7 text-white shadow-[0_18px_40px_rgba(27,53,41,0.14)]'
+                : 'rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]'
+            }
+          >
+            {hasContent ? (
+              isUser ? (
+                <p className="whitespace-pre-wrap">{displayContent}</p>
+              ) : (
+                <div className="assistant-markdown min-w-0 text-[15px] text-ink">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={assistantMarkdownComponents}
+                  >
+                    {displayContent}
+                  </ReactMarkdown>
+                </div>
+              )
+            ) : (
+              <p className="text-xs italic text-ink-soft">
+                {(message as OptimisticMessage).status === 'failed' ? 'Failed to respond.' : '...'}
+              </p>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
+  )
+}
+
+function ThinkingOrb() {
+  return (
+    <span className="relative flex size-3 shrink-0 items-center justify-center">
+      <span className="absolute size-7 rounded-full bg-[radial-gradient(circle,_rgba(143,196,170,0.72)_0%,_rgba(143,196,170,0)_72%)] blur-[6px]" />
+      <span className="absolute size-4 rounded-full bg-sage/55 animate-ping [animation-duration:1.8s]" />
+      <span className="relative size-2.5 rounded-full bg-forest shadow-[0_0_16px_rgba(27,53,41,0.42)]" />
+    </span>
   )
 }
