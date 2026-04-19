@@ -1,3 +1,4 @@
+import base64
 import asyncio
 import json
 import time
@@ -6,7 +7,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from .. import providers as _providers  # noqa: F401
 from ..core.factory import get_provider
 from ..core.interfaces import BaseProvider
-from ..core.schema import LLMRequest, LLMResponse, Message, MessageRole, ToolCall, UsageStats
+from ..core.schema import Attachment, LLMRequest, LLMResponse, Message, MessageRole, ToolCall, UsageStats
 from .events import AgentEvent, AgentEventType
 from .schema import AgentRequest, AgentResult, AgentTurnTelemetry
 from .tools import ToolExecutor, ToolHandler, execute_tool_call
@@ -144,6 +145,7 @@ class AgentRunner:
 
                 round_failed = False
                 round_succeeded = False
+                tool_round_attachments: List[Attachment] = []
                 for tool_call in turn_response.tool_calls:
                     all_tool_calls.append(tool_call)
                     tool_result = await execute_tool_call(
@@ -151,11 +153,16 @@ class AgentRunner:
                         tool_executor=self.tool_executor,
                         tool_handlers=self.tool_handlers,
                     )
+                    attachment = self._attachment_from_tool_result(tool_call=tool_call, tool_result=tool_result)
                     history.append(
                         Message(
                             role=MessageRole.TOOL,
                             tool_call_id=tool_call.id,
-                            content=tool_result,
+                            content=self._tool_history_content(
+                                tool_call=tool_call,
+                                tool_result=tool_result,
+                                attachment=attachment,
+                            ),
                         )
                     )
                     if request.agent.emit_tool_results:
@@ -167,6 +174,9 @@ class AgentRunner:
                             tool_call=tool_call,
                             tool_result=tool_result,
                         )
+
+                    if attachment is not None:
+                        tool_round_attachments.append(attachment)
 
                     if self._tool_result_ok(tool_result):
                         round_succeeded = True
@@ -191,8 +201,11 @@ class AgentRunner:
                     )
                     break
 
-                active_query = self._continue_tool_query()
-                active_attachments = None
+                active_attachments = self._merge_attachments(active_attachments, tool_round_attachments)
+                active_query = self._continue_tool_query(
+                    original_query=request.query,
+                    has_attachments=bool(active_attachments),
+                )
                 continue
 
             if assistant_message is not None:
@@ -420,7 +433,14 @@ class AgentRunner:
             for msg in history
         )
 
-    def _continue_tool_query(self) -> str:
+    def _continue_tool_query(self, *, original_query: str, has_attachments: bool = False) -> str:
+        if has_attachments:
+            return (
+                f"The user originally asked: {original_query}\n\n"
+                "You now have the actual project image attached as multimodal input from read_file. "
+                "Inspect the attached image directly and answer the user's question. "
+                "Do not say that you only have raw bytes or metadata unless the attachment is actually missing."
+            )
         return "Continue using the available tool results until you are ready to answer."
 
     def _tool_result_ok(self, tool_result: str) -> bool:
@@ -429,6 +449,81 @@ class AgentRunner:
         except json.JSONDecodeError:
             return False
         return bool(payload.get("ok"))
+
+    def _attachment_from_tool_result(self, *, tool_call: ToolCall, tool_result: str) -> Optional[Attachment]:
+        if tool_call.name != "read_file":
+            return None
+        try:
+            payload = json.loads(tool_result)
+        except json.JSONDecodeError:
+            return None
+        if payload.get("ok") is not True:
+            return None
+        data = payload.get("data")
+        if not isinstance(data, dict) or data.get("type") != "image_url":
+            return None
+        image_payload = data.get("image_url")
+        if not isinstance(image_payload, dict):
+            return None
+        url = image_payload.get("url")
+        if not isinstance(url, str) or not url.startswith("data:") or "," not in url:
+            return None
+        header, encoded = url.split(",", 1)
+        mime_part = header.removeprefix("data:")
+        mime_type = mime_part.split(";", 1)[0] or "application/octet-stream"
+        try:
+            base64.b64decode(encoded, validate=True)
+        except Exception:
+            return None
+        return Attachment(
+            mime_type=mime_type,
+            content=encoded,
+            name=data.get("filename") or data.get("path") or tool_call.arguments.get("path"),
+        )
+
+    def _merge_attachments(
+        self,
+        existing: Optional[List[Attachment]],
+        new_attachments: List[Attachment],
+    ) -> Optional[List[Attachment]]:
+        if not existing and not new_attachments:
+            return None
+
+        merged: List[Attachment] = list(existing or [])
+        seen = {
+            (attachment.mime_type, attachment.name, attachment.content)
+            for attachment in merged
+        }
+        for attachment in new_attachments:
+            key = (attachment.mime_type, attachment.name, attachment.content)
+            if key in seen:
+                continue
+            merged.append(attachment)
+            seen.add(key)
+        return merged
+
+    def _tool_history_content(
+        self,
+        *,
+        tool_call: ToolCall,
+        tool_result: str,
+        attachment: Optional[Attachment],
+    ) -> str:
+        if attachment is None:
+            return tool_result
+        return json.dumps(
+            {
+                "ok": True,
+                "tool_name": tool_call.name,
+                "data": {
+                    "type": "image_attached",
+                    "mime_type": attachment.mime_type,
+                    "name": attachment.name,
+                },
+                "message": "The project image was attached for direct inspection in the next model turn.",
+            },
+            separators=(",", ":"),
+        )
 
     def _add_usage(self, left: UsageStats, right: UsageStats) -> UsageStats:
         return UsageStats(

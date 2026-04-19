@@ -83,7 +83,6 @@ class OpenAIAdapter(BaseProvider):
                 "name": t.name,
                 "description": t.description,
                 "parameters": self._normalize_schema(t.parameters),
-                "strict": True,
             }
             for t in tools
         ]

@@ -72,6 +72,7 @@ class ToolContext:
 class ProjectToolRuntime:
     def __init__(self, context: ToolContext):
         self.context = context
+        self._command_execution_enabled = self._running_inside_docker()
         self._project_list_resources = make_list_resources(context.session, context.project_id)
         self._project_read_resource = make_read_resource(context.session, context.project_id, context.uploads_dir)
         self._project_search_resources = make_search_resources(context.session, context.project_id, context.uploads_dir)
@@ -88,7 +89,7 @@ class ProjectToolRuntime:
         }
 
     def _build_definitions(self) -> list[ToolDefinition]:
-        return [
+        definitions = [
             ToolDefinition(
                 name="list_files",
                 description="List files in project assets, the current task workspace, or the linked workspace.",
@@ -103,7 +104,7 @@ class ProjectToolRuntime:
             ),
             ToolDefinition(
                 name="read_file",
-                description="Read a file from project assets, the current task workspace, or the linked workspace.",
+                description="Read a file from project assets, the current task workspace, or the linked workspace. When a project asset is an image, use this tool to inspect the image itself before answering questions about what the image shows.",
                 parameters={
                     "type": "object",
                     "properties": {
@@ -201,25 +202,30 @@ class ProjectToolRuntime:
                 },
             ),
             ToolDefinition(
-                name="execute_command",
-                description="Execute a command using argv form in the current task workspace or approved linked workspace.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "scope": {"type": "string", "enum": ["task", "linked_workspace"]},
-                        "argv": {"type": "array", "items": {"type": "string"}},
-                        "cwd": {"type": "string", "default": "."},
-                        "timeout_sec": {"type": "integer", "default": 15},
-                    },
-                    "required": ["scope", "argv"],
-                },
-            ),
-            ToolDefinition(
                 name="get_system_time",
                 description="Returns the current UTC system time and weekday.",
                 parameters={"type": "object", "properties": {}, "required": []},
             ),
         ]
+        if self._command_execution_enabled:
+            definitions.insert(
+                -1,
+                ToolDefinition(
+                    name="execute_command",
+                    description="Execute a command using argv form in the current task workspace or approved linked workspace.",
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "scope": {"type": "string", "enum": ["task", "linked_workspace"]},
+                            "argv": {"type": "array", "items": {"type": "string"}},
+                            "cwd": {"type": "string", "default": "."},
+                            "timeout_sec": {"type": "integer", "default": 15},
+                        },
+                        "required": ["scope", "argv"],
+                    },
+                ),
+            )
+        return definitions
 
     def execute(self, tool_call: ToolCall) -> Any:
         handler = self.handlers.get(tool_call.name)
@@ -388,12 +394,17 @@ class ProjectToolRuntime:
             raise ValueError("line_end must be >= line_start.")
 
         if scope == "project":
+            asset = resolve_asset_by_id_or_name(self.context.session, self.context.project_id, filename=path)
+            if asset is not None and asset.mime_type.startswith("image/"):
+                return self._remap_project_tool_result(
+                    self._project_read_resource(filename=path, offset=offset, limit=limit),
+                    tool_name="read_file",
+                )
             if line_start is None and line_end is None:
                 return self._remap_project_tool_result(
                     self._project_read_resource(filename=path, offset=offset, limit=limit),
                     tool_name="read_file",
                 )
-            asset = resolve_asset_by_id_or_name(self.context.session, self.context.project_id, filename=path)
             asset_path = resolve_asset_path(self.context.session, self.context.project_id, path, self.context.uploads_dir)
             if asset is None or asset_path is None:
                 return build_tool_error_result(

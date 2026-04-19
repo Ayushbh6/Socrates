@@ -6,6 +6,7 @@ from backend.src.core.schema import (
     Message, 
     MessageRole, 
     ToolCall,
+    ToolDefinition,
     ThinkingLevel, 
     GenConfig
 )
@@ -100,6 +101,33 @@ def test_prepare_input_tool_response_mapping():
     assert gemini_input[0].role == "user"
     assert gemini_input[0].parts[0].function_response.name == "get_weather"
     assert gemini_input[0].parts[0].function_response.response == {"temp": 20}
+
+
+def test_prepare_tools_strips_additional_properties():
+    adapter = GeminiAdapter(model_name="gemini-2.5-pro", api_key="test-key")
+
+    tools = [
+        ToolDefinition(
+            name="edit_file",
+            description="Edit a file.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "expected_sha256_map": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                    }
+                },
+                "required": [],
+            },
+        )
+    ]
+
+    prepared = adapter._prepare_tools(tools)
+
+    assert prepared is not None
+    schema = prepared[0].function_declarations[0].parameters.model_dump(exclude_none=True)
+    assert schema["properties"]["expected_sha256_map"].get("additionalProperties") is None
 
 def test_generate_sync(mock_genai_client):
     """Verify sync generate call uses correct parameters."""

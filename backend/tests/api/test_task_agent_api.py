@@ -33,11 +33,14 @@ class FakeAsyncStream:
 class FakeProvider:
     def __init__(self, turns):
         self.turns = list(turns)
+        self.requests = []
 
     async def agenerate(self, request):
+        self.requests.append(request)
         return self.turns.pop(0)["fallback"]
 
     def astream(self, request):
+        self.requests.append(request)
         turn = self.turns.pop(0)
         return FakeAsyncStream(turn["chunks"])
 
@@ -258,6 +261,80 @@ def test_risky_command_creates_approval_and_resolution_is_traced(client: TestCli
     assert events.status_code == 200
     event_types = [event["event_type"] for event in events.json()]
     assert "task.approval.resolved" in event_types
+
+
+def test_execute_command_tool_not_exposed_outside_docker(client: TestClient, monkeypatch):
+    monkeypatch.delenv("PREMCHAT_COMMAND_SANDBOX", raising=False)
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="I can answer without commands.",
+                        usage=UsageStats(total_tokens=3),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr("backend.src.agent.runtime.get_provider", lambda model, **kwargs: provider)
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Read the project and answer directly.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+
+    run_id = response.json()["agent_run_id"]
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    assert provider.requests
+    tool_names = [tool.name for tool in provider.requests[0].tools or []]
+    assert "execute_command" not in tool_names
+
+
+def test_execute_command_tool_exposed_inside_docker(client: TestClient, monkeypatch):
+    monkeypatch.setenv("PREMCHAT_COMMAND_SANDBOX", "docker")
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="I can see the command tool.",
+                        usage=UsageStats(total_tokens=3),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            }
+        ]
+    )
+    monkeypatch.setattr("backend.src.agent.runtime.get_provider", lambda model, **kwargs: provider)
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Read the project and answer directly.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+
+    run_id = response.json()["agent_run_id"]
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    assert provider.requests
+    tool_names = [tool.name for tool in provider.requests[0].tools or []]
+    assert "execute_command" in tool_names
 
 
 def test_query_attachment_is_copied_into_task_inputs(client: TestClient, monkeypatch):

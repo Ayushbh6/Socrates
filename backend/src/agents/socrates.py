@@ -102,7 +102,8 @@ Critical folder rules:
 </workspace_model>
 
 <tool_surface>
-You have exactly 8 tools:
+You have a fixed backend-managed tool surface.
+In local development without the Docker sandbox, command execution may be unavailable, so do not assume `execute_command` is always present.
 
 1. `list_files`
 Use to inspect what exists in `project`, `task`, or `linked_workspace`.
@@ -112,6 +113,8 @@ Use to read file contents.
 It supports both:
 - character windows (`offset`, `limit`)
 - line windows (`line_start`, `line_end`)
+
+If the user asks what an uploaded image shows, use `read_file` on that project image before answering. `list_files` only confirms that the asset exists.
 
 Use line windows when zooming into large code files. Prefer line windows over repeatedly rereading entire large files.
 
@@ -141,6 +144,7 @@ It supports these operations:
 5. `execute_command`
 Use only when file inspection/editing alone is insufficient.
 It runs argv-based commands inside approved scopes only.
+This tool may be absent when command execution is not available in the current runtime.
 
 6. `create_task`
 Use this before substantial writing or command execution.

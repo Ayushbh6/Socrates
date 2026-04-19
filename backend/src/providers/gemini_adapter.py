@@ -111,9 +111,21 @@ class GeminiAdapter(BaseProvider):
             declarations.append(types.FunctionDeclaration(
                 name=t.name,
                 description=t.description,
-                parameters=t.parameters
+                parameters=self._normalize_schema(t.parameters)
             ))
         return [types.Tool(function_declarations=declarations)]
+
+    def _normalize_schema(self, schema: Any) -> Any:
+        if isinstance(schema, dict):
+            normalized: Dict[str, Any] = {}
+            for key, value in schema.items():
+                if key == "additionalProperties":
+                    continue
+                normalized[key] = self._normalize_schema(value)
+            return normalized
+        if isinstance(schema, list):
+            return [self._normalize_schema(item) for item in schema]
+        return schema
 
     def _map_thinking_level(self, level: ThinkingLevel) -> types.ThinkingConfig:
         """Maps unified ThinkingLevel to Gemini's ThinkingConfig."""

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from backend.src.agent import AgentRequest, AgentRunner
 from backend.src.agent.events import AgentEventType
-from backend.src.core.schema import GenConfig, LLMResponse, MessageRole, ThinkingLevel, ToolCall, ToolDefinition, UsageStats
+from backend.src.core.schema import Attachment, GenConfig, LLMResponse, MessageRole, ThinkingLevel, ToolCall, ToolDefinition, UsageStats
 
 
 class FinalOutput(BaseModel):
@@ -281,3 +281,128 @@ async def test_agent_runner_closes_underlying_stream_on_early_break(monkeypatch)
     await stream.aclose()
 
     assert provider.streams[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_reuses_project_image_tool_result_as_next_turn_attachment(monkeypatch):
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Inspecting the resource.",
+                        tool_calls=[ToolCall(id="call_1", name="read_file", arguments={"scope": "project", "path": "diagram.png"})],
+                        usage=UsageStats(total_tokens=4),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="I examined the attached diagram.",
+                        usage=UsageStats(total_tokens=6),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr("backend.src.agent.runtime.get_provider", lambda model, **kwargs: provider)
+
+    def tool_executor(tool_call: ToolCall):
+        assert tool_call.name == "read_file"
+        return {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+            "filename": "diagram.png",
+        }
+
+    runner = AgentRunner(tool_executor=tool_executor)
+    request = AgentRequest(model="fake/fake-model", system_prompt="sys", query="Explain the diagram.")
+
+    result = await runner.arun(request)
+
+    assert result.final_response.content == "I examined the attached diagram."
+    assert len(provider.requests) == 2
+    second_request = provider.requests[1]
+    assert second_request.attachments is not None
+    assert second_request.attachments == [
+        Attachment(mime_type="image/png", content="aGVsbG8=", name="diagram.png")
+    ]
+    assert second_request.history[-1].content == (
+        '{"ok":true,"tool_name":"read_file","data":{"type":"image_attached","mime_type":"image/png","name":"diagram.png"},'
+        '"message":"The project image was attached for direct inspection in the next model turn."}'
+    )
+    assert "actual project image attached as multimodal input" in second_request.query
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_keeps_project_image_attachment_across_later_tool_rounds(monkeypatch):
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Inspecting the resource.",
+                        tool_calls=[ToolCall(id="call_1", name="read_file", arguments={"scope": "project", "path": "diagram.png"})],
+                        usage=UsageStats(total_tokens=4),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Checking one more thing.",
+                        tool_calls=[ToolCall(id="call_2", name="search_files", arguments={"scope": "project", "query": "LSTM"})],
+                        usage=UsageStats(total_tokens=5),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="I examined the attached diagram after the extra search.",
+                        usage=UsageStats(total_tokens=6),
+                        raw_dump={"turn": 3},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr("backend.src.agent.runtime.get_provider", lambda model, **kwargs: provider)
+
+    def tool_executor(tool_call: ToolCall):
+        if tool_call.name == "read_file":
+            return {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,aGVsbG8="},
+                "filename": "diagram.png",
+            }
+        assert tool_call.name == "search_files"
+        return {"matches": []}
+
+    runner = AgentRunner(tool_executor=tool_executor)
+    request = AgentRequest(model="fake/fake-model", system_prompt="sys", query="Explain the diagram.")
+
+    result = await runner.arun(request)
+
+    assert result.final_response.content == "I examined the attached diagram after the extra search."
+    assert len(provider.requests) == 3
+    second_request = provider.requests[1]
+    third_request = provider.requests[2]
+    expected_attachment = Attachment(mime_type="image/png", content="aGVsbG8=", name="diagram.png")
+    assert second_request.attachments == [expected_attachment]
+    assert third_request.attachments == [expected_attachment]
+    assert second_request.history[-1].content == (
+        '{"ok":true,"tool_name":"read_file","data":{"type":"image_attached","mime_type":"image/png","name":"diagram.png"},'
+        '"message":"The project image was attached for direct inspection in the next model turn."}'
+    )
+    assert "actual project image attached as multimodal input" in third_request.query

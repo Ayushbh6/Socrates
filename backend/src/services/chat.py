@@ -183,7 +183,7 @@ def list_agent_run_turns(session: Session, run_id: str) -> list[AgentRunTurn]:
     )
 
 
-def _message_to_runtime(message: MessageRecord) -> Message:
+def _message_to_runtime(message: MessageRecord) -> Message | None:
     attachments = []
     for link in message.asset_links:
         asset = link.asset
@@ -197,12 +197,20 @@ def _message_to_runtime(message: MessageRecord) -> Message:
             )
         )
 
-    return Message(
+    runtime_message = Message(
         role=MessageRole(message.role),
-        content=message.content_text,
-        thinking=message.thinking_text,
+        content=message.content_text or None,
+        thinking=message.thinking_text or None,
         attachments=attachments or None,
     )
+    if (
+        runtime_message.role == MessageRole.ASSISTANT
+        and runtime_message.content is None
+        and runtime_message.thinking is None
+        and not runtime_message.attachments
+    ):
+        return None
+    return runtime_message
 
 
 def create_message_and_run(
@@ -559,7 +567,11 @@ class RunManager:
                 [message for message in conversation.messages if message.sequence_no < trigger_message.sequence_no],
                 key=lambda item: item.sequence_no,
             )
-            history = [_message_to_runtime(message) for message in history_records]
+            history = []
+            for message in history_records:
+                runtime_message = _message_to_runtime(message)
+                if runtime_message is not None:
+                    history.append(runtime_message)
             current_assets = [link.asset for link in trigger_message.asset_links if link.asset.deleted_at is None]
             attachments = [
                 Attachment(

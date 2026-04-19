@@ -7,6 +7,7 @@ from backend.src.core.schema import (
     Message, 
     MessageRole, 
     ToolCall,
+    ToolDefinition,
     ThinkingLevel, 
     GenConfig
 )
@@ -78,6 +79,32 @@ def test_prepare_input_tool_call_mapping():
     assert openai_input[0]["call_id"] == "call_123"
     assert openai_input[0]["name"] == "get_weather"
     assert openai_input[0]["arguments"] == '{"city":"Paris"}'
+
+
+def test_prepare_tools_does_not_force_strict_function_schema():
+    adapter = OpenAIAdapter(model_name="gpt-5.4-mini", api_key="test-key")
+
+    tools = [
+        ToolDefinition(
+            name="list_files",
+            description="List project files.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "scope": {"type": "string"},
+                    "path": {"type": "string", "default": "."},
+                },
+                "required": ["scope"],
+            },
+        )
+    ]
+
+    prepared = adapter._prepare_tools(tools)
+
+    assert prepared is not None
+    assert prepared[0]["name"] == "list_files"
+    assert "strict" not in prepared[0]
+    assert prepared[0]["parameters"]["required"] == ["scope"]
 
 def test_map_stream_event_recovers_tool_name_from_output_item():
     """Verify streamed function-call args can be normalized even when the done event omits the function name."""
