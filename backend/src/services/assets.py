@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import mimetypes
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
@@ -112,3 +113,15 @@ def resolve_asset_bytes(asset: Asset) -> bytes:
     settings = get_settings()
     path = settings.uploads_dir / asset.storage_path
     return path.read_bytes()
+
+
+def delete_project_asset(session: Session, project_id: str, asset_id: str) -> Asset:
+    asset = session.get(Asset, asset_id)
+    if not asset or asset.project_id != project_id or asset.deleted_at is not None:
+        raise LookupError("Asset not found")
+    
+    asset.deleted_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(asset)
+    return asset
+

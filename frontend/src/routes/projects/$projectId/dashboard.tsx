@@ -6,16 +6,13 @@ import {
   CheckCircle2,
   Clock3,
   FolderOpen,
-  FolderPlus,
-  HardDrive,
   ImageUp,
   MessageSquarePlus,
   MessagesSquare,
   MoreVertical,
   Paperclip,
   Search,
-  ShieldAlert,
-  ShieldCheck,
+  Trash2,
 } from 'lucide-react'
 
 import { getModelOption, getThinkingLabelForModel } from '@/config/models'
@@ -42,7 +39,7 @@ import { useAppStore } from '@/stores/appStore'
 import type { Asset, Conversation, Project, ProjectWorkspace } from '@/types/api'
 
 const RESOURCE_ACCEPT =
-  'image/*,.pdf,.txt,.md,.csv,.tsv,.json,.sqlite,.db,.py,.js,.ts,.tsx'
+  '.pdf,.docx,.csv,.xlsx,.txt,.md,.png,.jpg'
 
 export const Route = createFileRoute('/projects/$projectId/dashboard')({
   component: ProjectDashboardPage,
@@ -56,14 +53,13 @@ function ProjectDashboardPage() {
   const setActiveConversation = useAppStore((state) => state.setActiveConversation)
   const setActiveProject = useAppStore((state) => state.setActiveProject)
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null)
   const [renameTitle, setRenameTitle] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null)
   const [conversationSearch, setConversationSearch] = useState('')
-  const [workspaceDialogOpen, setWorkspaceDialogOpen] = useState(false)
-  const [workspaceLabel, setWorkspaceLabel] = useState('')
-  const [workspaceFolder, setWorkspaceFolder] = useState('')
-  const [workspaceIsPrimary, setWorkspaceIsPrimary] = useState(false)
+  const [activeTab, setActiveTab] = useState<'workspace' | 'resources'>('workspace')
+  const [workspacePath, setWorkspacePath] = useState('')
 
   const { data: project } = useQuery({
     queryKey: ['project', projectId],
@@ -112,8 +108,6 @@ function ProjectDashboardPage() {
         body: JSON.stringify({ title }),
       }),
     onSuccess: (updated) => {
-      // Eagerly swap the renamed conversation in the cache so the new title
-      // appears the moment the dialog closes — no refetch wait.
       queryClient.setQueryData<Conversation[]>(['conversations', projectId], (current) =>
         (current ?? []).map((conversation) =>
           conversation.id === updated.id ? updated : conversation,
@@ -176,6 +170,16 @@ function ProjectDashboardPage() {
     },
   })
 
+  const deleteAsset = useMutation({
+    mutationFn: (assetId: string) =>
+      apiFetch(`/projects/${projectId}/assets/${assetId}`, {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+    },
+  })
+
   const createWorkspace = useMutation({
     mutationFn: (payload: { label: string; relativePath: string | null; isPrimary: boolean }) =>
       apiFetch<ProjectWorkspace>(`/projects/${projectId}/workspaces`, {
@@ -189,13 +193,11 @@ function ProjectDashboardPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['project-workspaces', projectId] })
-      setWorkspaceDialogOpen(false)
-      setWorkspaceLabel('')
-      setWorkspaceFolder('')
-      setWorkspaceIsPrimary(false)
+      setWorkspacePath('')
     },
   })
 
+  // We unlink a workspace by setting access_granted to false (or we could delete it, but update works as unlink here)
   const updateWorkspace = useMutation({
     mutationFn: ({
       workspaceId,
@@ -251,6 +253,9 @@ function ProjectDashboardPage() {
   if (pathname !== `/projects/${projectId}/dashboard`) {
     return <Outlet />
   }
+
+  // Active workspace (we only support one active root in this new UI)
+  const activeWorkspace = workspaces.find(w => w.access_granted) || workspaces[0]
 
   return (
     <>
@@ -370,89 +375,6 @@ function ProjectDashboardPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={workspaceDialogOpen}
-        onOpenChange={(open) => {
-          setWorkspaceDialogOpen(open)
-          if (!open) {
-            setWorkspaceLabel('')
-            setWorkspaceFolder('')
-            setWorkspaceIsPrimary(false)
-            createWorkspace.reset()
-          }
-        }}
-      >
-        <DialogContent className="border-sage-strong/60 bg-paper/98 sm:max-w-md" showCloseButton>
-          <DialogHeader>
-            <DialogTitle className="font-display text-forest">Link a workspace</DialogTitle>
-            <DialogDescription>
-              PremChat creates this folder under the managed host-workspaces root and can reuse it in tasks.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-3">
-            <Input
-              value={workspaceLabel}
-              onChange={(event) => setWorkspaceLabel(event.target.value)}
-              className="h-10 rounded-xl border-sage-strong bg-white/90"
-              placeholder="Workspace label"
-              autoFocus
-            />
-            <Input
-              value={workspaceFolder}
-              onChange={(event) => setWorkspaceFolder(event.target.value)}
-              className="h-10 rounded-xl border-sage-strong bg-white/90"
-              placeholder="Folder name (optional)"
-            />
-            <label className="flex items-center gap-3 rounded-xl border border-sage-strong/60 bg-white/70 px-4 py-3 text-sm text-ink">
-              <input
-                type="checkbox"
-                checked={workspaceIsPrimary}
-                onChange={(event) => setWorkspaceIsPrimary(event.target.checked)}
-                className="size-4 accent-[var(--forest)]"
-              />
-              Make this the default linked workspace for new tasks.
-            </label>
-          </div>
-          {createWorkspace.error ? (
-            <p className="text-sm text-red-600">
-              {createWorkspace.error instanceof Error
-                ? createWorkspace.error.message
-                : 'Failed to link workspace.'}
-            </p>
-          ) : null}
-          <DialogFooter className="mt-2 border-t-0 bg-transparent px-1 pb-1 pt-2 sm:justify-end">
-            <Button
-              type="button"
-              variant="outline"
-              className="rounded-full border-sage-strong"
-              onClick={() => {
-                setWorkspaceDialogOpen(false)
-                createWorkspace.reset()
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              className="rounded-full bg-forest text-white hover:bg-forest/92"
-              disabled={createWorkspace.isPending || !workspaceLabel.trim()}
-              onClick={() => {
-                if (!workspaceLabel.trim()) {
-                  return
-                }
-                createWorkspace.mutate({
-                  label: workspaceLabel.trim(),
-                  relativePath: workspaceFolder.trim() || null,
-                  isPrimary: workspaceIsPrimary || workspaces.length === 0,
-                })
-              }}
-            >
-              {createWorkspace.isPending ? 'Linking…' : 'Link workspace'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-4 py-4 sm:px-6 lg:px-10 lg:py-5">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden sm:gap-4">
           <section className="shrink-0 rounded-[2rem] bg-paper/92 px-5 py-4 shadow-[0_24px_60px_rgba(62,92,72,0.08)] sm:px-7 sm:py-5">
@@ -483,16 +405,6 @@ function ProjectDashboardPage() {
               </div>
 
               <div className="flex flex-col gap-3 sm:flex-row">
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-11 rounded-full border-sage-strong bg-white/80 px-5 text-sm text-ink shadow-none hover:bg-sage"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadAsset.isPending}
-                >
-                  <ImageUp data-icon="inline-start" />
-                  {uploadAsset.isPending ? 'Uploading…' : 'Upload resource'}
-                </Button>
                 <Button
                   className="h-11 rounded-full bg-forest px-5 text-sm text-white shadow-[0_16px_40px_rgba(27,53,41,0.18)] hover:bg-forest/92"
                   onClick={() => startConversation.mutate()}
@@ -559,97 +471,97 @@ function ProjectDashboardPage() {
                       {filteredConversations.length > 0 ? (
                         <div className="flex flex-col gap-3 pb-2">
                           {filteredConversations.map((conversation) => {
-                  const model = getModelOption(conversation.model)
+                            const model = getModelOption(conversation.model)
 
-                  const openConversation = () => {
-                    setActiveConversation(conversation)
-                    startTransition(() => {
-                      navigate({
-                        to: '/projects/$projectId/dashboard/conversations/$conversationId',
-                        params: { projectId, conversationId: conversation.id },
-                      })
-                    })
-                  }
+                            const openConversation = () => {
+                              setActiveConversation(conversation)
+                              startTransition(() => {
+                                navigate({
+                                  to: '/projects/$projectId/dashboard/conversations/$conversationId',
+                                  params: { projectId, conversationId: conversation.id },
+                                })
+                              })
+                            }
 
-                  return (
-                    <div
-                      key={conversation.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={openConversation}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          openConversation()
-                        }
-                      }}
-                      className={cn(
-                        'group cursor-pointer rounded-[1.45rem] border border-transparent bg-white/78 px-4 py-4 text-left outline-none transition',
-                        'hover:border-sage-strong hover:bg-paper hover:shadow-[0_16px_36px_rgba(62,92,72,0.08)]',
-                        'focus-visible:ring-3 focus-visible:ring-ring/40',
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex min-w-0 flex-1 flex-col gap-2">
-                          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-moss">
-                            <MessagesSquare className="size-3.5" />
-                            Conversation
-                          </div>
-                          <p className="truncate font-medium text-ink">{conversation.title}</p>
-                          <div className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
-                            <span className="rounded-full bg-white/80 px-2.5 py-1">{model.label}</span>
-                            <span className="rounded-full bg-sage/55 px-2.5 py-1">
-                              Thinking {getThinkingLabelForModel(conversation.model, conversation.thinking_level)}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-start gap-1">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                className="size-9 rounded-full text-moss/80 hover:bg-sage/60 hover:text-forest"
-                                aria-label={`Conversation actions for ${conversation.title}`}
-                                onClick={(event) => event.stopPropagation()}
-                              >
-                                <MoreVertical className="size-4" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="min-w-[11rem] border-sage-strong/50 bg-paper/98">
-                              <DropdownMenuItem
-                                className="cursor-pointer"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  setRenameTarget(conversation)
-                                  setRenameTitle(conversation.title)
+                            return (
+                              <div
+                                key={conversation.id}
+                                role="button"
+                                tabIndex={0}
+                                onClick={openConversation}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault()
+                                    openConversation()
+                                  }
                                 }}
+                                className={cn(
+                                  'group cursor-pointer rounded-[1.45rem] border border-transparent bg-white/78 px-4 py-4 text-left outline-none transition',
+                                  'hover:border-sage-strong hover:bg-paper hover:shadow-[0_16px_36px_rgba(62,92,72,0.08)]',
+                                  'focus-visible:ring-3 focus-visible:ring-ring/40',
+                                )}
                               >
-                                Rename conversation
-                              </DropdownMenuItem>
-                              <DropdownMenuSeparator className="bg-sage-strong/40" />
-                              <DropdownMenuItem
-                                variant="destructive"
-                                className="cursor-pointer"
-                                onClick={(event) => {
-                                  event.stopPropagation()
-                                  setDeleteTarget(conversation)
-                                }}
-                              >
-                                Delete conversation
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                          <ArrowRight className="mt-2 size-4 shrink-0 text-moss/70 transition group-hover:translate-x-0.5 group-hover:text-forest" />
-                        </div>
-                      </div>
-                      <div className="mt-3 flex items-center gap-2 text-sm text-ink-soft">
-                        <Clock3 className="size-3.5" />
-                        Updated {formatTimestamp(conversation.updated_at)}
-                      </div>
-                    </div>
-                  )
+                                <div className="flex items-start justify-between gap-4">
+                                  <div className="flex min-w-0 flex-1 flex-col gap-2">
+                                    <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-moss">
+                                      <MessagesSquare className="size-3.5" />
+                                      Conversation
+                                    </div>
+                                    <p className="truncate font-medium text-ink">{conversation.title}</p>
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                                      <span className="rounded-full bg-white/80 px-2.5 py-1">{model.label}</span>
+                                      <span className="rounded-full bg-sage/55 px-2.5 py-1">
+                                        Thinking {getThinkingLabelForModel(conversation.model, conversation.thinking_level)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="flex shrink-0 items-start gap-1">
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button
+                                          type="button"
+                                          variant="ghost"
+                                          size="icon-sm"
+                                          className="size-9 rounded-full text-moss/80 hover:bg-sage/60 hover:text-forest"
+                                          aria-label={`Conversation actions for ${conversation.title}`}
+                                          onClick={(event) => event.stopPropagation()}
+                                        >
+                                          <MoreVertical className="size-4" />
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="end" className="min-w-[11rem] border-sage-strong/50 bg-paper/98">
+                                        <DropdownMenuItem
+                                          className="cursor-pointer"
+                                          onClick={(event) => {
+                                            event.stopPropagation()
+                                            setRenameTarget(conversation)
+                                            setRenameTitle(conversation.title)
+                                          }}
+                                        >
+                                          Rename conversation
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator className="bg-sage-strong/40" />
+                                        <DropdownMenuItem
+                                          variant="destructive"
+                                          className="cursor-pointer"
+                                          onClick={(event) => {
+                                            event.stopPropagation()
+                                            setDeleteTarget(conversation)
+                                          }}
+                                        >
+                                          Delete conversation
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                    <ArrowRight className="mt-2 size-4 shrink-0 text-moss/70 transition group-hover:translate-x-0.5 group-hover:text-forest" />
+                                  </div>
+                                </div>
+                                <div className="mt-3 flex items-center gap-2 text-sm text-ink-soft">
+                                  <Clock3 className="size-3.5" />
+                                  Updated {formatTimestamp(conversation.updated_at)}
+                                </div>
+                              </div>
+                            )
                           })}
                         </div>
                       ) : (
@@ -693,189 +605,178 @@ function ProjectDashboardPage() {
             </section>
 
             <div className="flex min-h-0 flex-col gap-3 xl:gap-4">
-              <section className="flex flex-col rounded-[2rem] bg-paper/88 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
-                <div className="flex shrink-0 items-center justify-between gap-4 px-6 py-5">
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
-                      Workspaces
-                    </p>
-                    <h2 className="font-display text-3xl tracking-tight text-forest">Linked roots</h2>
+              <section className="flex min-h-0 flex-1 flex-col rounded-[2rem] bg-paper/88 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
+                <div className="flex shrink-0 items-center border-b border-sage-strong/40 px-6 pt-5 pb-3">
+                  <div className="flex gap-6">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('workspace')}
+                      className={cn(
+                        "pb-3 text-sm font-medium transition-colors relative outline-none focus-visible:ring-2 focus-visible:ring-forest/50 focus-visible:rounded",
+                        activeTab === 'workspace' ? "text-forest" : "text-ink-soft hover:text-ink"
+                      )}
+                    >
+                      Workspace
+                      {activeTab === 'workspace' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-forest rounded-t-full" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('resources')}
+                      className={cn(
+                        "pb-3 text-sm font-medium transition-colors relative outline-none focus-visible:ring-2 focus-visible:ring-forest/50 focus-visible:rounded",
+                        activeTab === 'resources' ? "text-forest" : "text-ink-soft hover:text-ink"
+                      )}
+                    >
+                      Resources
+                      <span className="ml-2 rounded-full bg-sage-strong/30 px-2 py-0.5 text-xs text-ink-soft">
+                        {assets.length}
+                      </span>
+                      {activeTab === 'resources' && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-forest rounded-t-full" />
+                      )}
+                    </button>
                   </div>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    className="h-10 rounded-full border-sage-strong bg-white/80 px-4 text-sm text-ink shadow-none hover:bg-sage"
-                    onClick={() => setWorkspaceDialogOpen(true)}
-                  >
-                    <FolderPlus data-icon="inline-start" />
-                    Link workspace
-                  </Button>
                 </div>
-                <div className="px-4 pb-4 sm:px-5 sm:pb-5">
-                  {workspaces.length > 0 ? (
-                    <div className="overflow-hidden rounded-[1.75rem] border border-sage-strong/45 bg-white/52">
-                      <div className="max-h-[18rem] overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
-                        <div className="flex flex-col gap-3 pb-2">
-                          {workspaces.map((workspace) => (
-                            <div
-                              key={workspace.id}
-                              className="rounded-[1.45rem] border border-sage-strong/70 bg-white/88 px-4 py-4"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-moss">
-                                    <HardDrive className="size-3.5" />
-                                    {workspace.editor_type}
-                                  </div>
-                                  <p className="mt-2 truncate font-medium text-ink">{workspace.label}</p>
-                                  <p className="mt-1 truncate text-sm text-ink-soft">{workspace.root_path}</p>
-                                </div>
-                                <div className="flex flex-wrap justify-end gap-2 text-xs">
-                                  {workspace.is_primary ? (
-                                    <span className="rounded-full bg-sage/70 px-2.5 py-1 text-forest">
-                                      Primary
-                                    </span>
-                                  ) : null}
-                                  <span
-                                    className={cn(
-                                      'rounded-full px-2.5 py-1',
-                                      workspace.access_granted
-                                        ? 'bg-emerald-100 text-emerald-800'
-                                        : 'bg-amber-100 text-amber-800',
-                                    )}
-                                  >
-                                    {workspace.access_granted ? 'Granted' : 'Revoked'}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="mt-4 flex flex-wrap gap-2">
-                                {!workspace.is_primary ? (
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    className="h-9 rounded-full border-sage-strong bg-white/90 px-3 text-xs text-ink"
-                                    onClick={() =>
-                                      updateWorkspace.mutate({
-                                        workspaceId: workspace.id,
-                                        patch: { is_primary: true },
-                                      })
-                                    }
-                                    disabled={updateWorkspace.isPending}
-                                  >
-                                    <CheckCircle2 data-icon="inline-start" />
-                                    Make primary
-                                  </Button>
-                                ) : null}
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  className="h-9 rounded-full border-sage-strong bg-white/90 px-3 text-xs text-ink"
-                                  onClick={() =>
-                                    updateWorkspace.mutate({
-                                      workspaceId: workspace.id,
-                                      patch: { access_granted: !workspace.access_granted },
-                                    })
-                                  }
-                                  disabled={updateWorkspace.isPending}
-                                >
-                                  {workspace.access_granted ? (
-                                    <ShieldAlert data-icon="inline-start" />
-                                  ) : (
-                                    <ShieldCheck data-icon="inline-start" />
-                                  )}
-                                  {workspace.access_granted ? 'Revoke access' : 'Grant access'}
-                                </Button>
-                              </div>
+
+                <div className="min-h-0 flex-1 p-4 sm:p-5 overflow-y-auto">
+                  {activeTab === 'workspace' ? (
+                    <div className="flex flex-col gap-4">
+                      {activeWorkspace && activeWorkspace.access_granted ? (
+                        <div className="rounded-[1.45rem] border border-sage-strong/70 bg-white/88 px-5 py-5">
+                          <div className="flex items-center gap-3">
+                            <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+                              <CheckCircle2 className="size-5" />
                             </div>
-                          ))}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-ink truncate" title={activeWorkspace.relative_path || activeWorkspace.label}>
+                                {activeWorkspace.relative_path || activeWorkspace.label}
+                              </p>
+                              <p className="text-xs text-ink-soft mt-1">Linked workspace</p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                              disabled={updateWorkspace.isPending}
+                              onClick={() => updateWorkspace.mutate({
+                                workspaceId: activeWorkspace.id,
+                                patch: { access_granted: false }
+                              })}
+                            >
+                              Unlink
+                            </Button>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="flex flex-col gap-4 rounded-[1.45rem] border border-dashed border-sage-strong/70 bg-white/50 p-6 text-center">
+                          <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-sage/60 text-forest">
+                            <FolderOpen className="size-5" />
+                          </div>
+                          <div>
+                            <h3 className="font-medium text-forest">Link a local workspace</h3>
+                            <p className="mt-1 text-sm text-ink-soft leading-relaxed">
+                              Provide the full absolute path to your local repository.<br />The AI will be able to read and make direct edits here.
+                            </p>
+                          </div>
+                          <div className="mt-2 flex flex-col sm:flex-row items-center gap-2">
+                            <Input
+                              value={workspacePath}
+                              onChange={(e) => setWorkspacePath(e.target.value)}
+                              placeholder="/Users/name/projects/my-app"
+                              className="h-10 rounded-xl border-sage-strong bg-white/90 focus-visible:border-forest/60 focus-visible:ring-ring/20"
+                            />
+                            <Button
+                              type="button"
+                              className="h-10 shrink-0 w-full sm:w-auto rounded-xl bg-forest px-6 text-white hover:bg-forest/92"
+                              disabled={createWorkspace.isPending || !workspacePath.trim()}
+                              onClick={() => {
+                                const path = workspacePath.trim()
+                                createWorkspace.mutate({
+                                  label: path.split('/').pop() || 'workspace',
+                                  relativePath: path,
+                                  isPrimary: true,
+                                })
+                              }}
+                            >
+                              {createWorkspace.isPending ? 'Linking…' : 'Link'}
+                            </Button>
+                          </div>
+                          {createWorkspace.error ? (
+                            <p className="text-sm text-red-600">
+                              {createWorkspace.error instanceof Error
+                                ? createWorkspace.error.message
+                                : 'Failed to link workspace.'}
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
                     </div>
                   ) : (
-                    <div className="flex min-h-[13rem] flex-col items-center justify-center gap-5 rounded-[1.75rem] border border-dashed border-sage-strong bg-white/65 px-8 text-center">
-                      <div className="flex size-16 items-center justify-center rounded-full bg-sage text-forest">
-                        <FolderOpen className="size-6" />
-                      </div>
-                      <div className="flex max-w-md flex-col gap-3">
-                        <h3 className="font-display text-4xl tracking-tight text-forest">No linked workspace</h3>
-                        <p className="text-sm leading-7 text-ink-soft">
-                          Link a project root under the managed host-workspaces directory so tasks can edit real files after approval.
+                    <div className="flex flex-col gap-4 h-full">
+                      <div className="flex justify-between items-center shrink-0">
+                        <p className="text-sm text-ink-soft">
+                          Attach knowledge to this project.
                         </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-9 rounded-full border-sage-strong bg-white/80 px-4 text-sm text-ink shadow-none hover:bg-sage"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={uploadAsset.isPending}
+                        >
+                          <ImageUp className="size-4 mr-2" />
+                          Upload
+                        </Button>
                       </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-11 rounded-full border-sage-strong bg-white/80 px-5 text-sm text-ink shadow-none hover:bg-sage"
-                        onClick={() => setWorkspaceDialogOpen(true)}
-                      >
-                        <FolderPlus data-icon="inline-start" />
-                        Link workspace
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </section>
 
-              <section className="flex min-h-0 flex-1 flex-col rounded-[2rem] bg-paper/88 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
-                <div className="flex shrink-0 items-center justify-between gap-4 px-6 py-5">
-                  <div className="flex flex-col gap-1">
-                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
-                      Resources
-                    </p>
-                    <h2 className="font-display text-3xl tracking-tight text-forest">Project assets</h2>
-                  </div>
-                  <div className="rounded-full border border-sage-strong bg-white/80 px-3 py-1 text-sm text-ink-soft">
-                    {assets.length}
-                  </div>
-                </div>
-
-                <div className="min-h-0 flex-1 px-4 pb-4 sm:px-5 sm:pb-5">
-                  {assets.length > 0 ? (
-                    <div className="h-full min-h-0 overflow-hidden rounded-[1.75rem] border border-sage-strong/45 bg-white/52">
-                      <div className="h-full overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
+                      {assets.length > 0 ? (
                         <div className="flex flex-col gap-3 pb-2">
                           {assets.map((asset) => (
                             <div
                               key={asset.id}
-                              className="rounded-[1.45rem] border border-sage-strong/70 bg-white/88 px-4 py-4"
+                              className="group rounded-[1.45rem] border border-sage-strong/70 bg-white/88 px-4 py-3 flex items-center justify-between gap-3 transition-colors hover:border-sage-strong"
                             >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-moss">
-                                    <Paperclip className="size-3.5" />
-                                    {asset.kind}
-                                  </div>
-                                  <p className="mt-2 truncate font-medium text-ink">{asset.original_name}</p>
+                              <div className="min-w-0 flex-1 flex items-center gap-3">
+                                <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sage/50 text-moss">
+                                  <Paperclip className="size-4" />
                                 </div>
-                                <span className="text-xs text-ink-soft">{formatBytes(asset.size_bytes)}</span>
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-medium text-ink">{asset.original_name}</p>
+                                  <div className="flex items-center gap-2 mt-0.5">
+                                    <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-moss">{asset.kind}</span>
+                                    <span className="text-[10px] text-ink-soft">•</span>
+                                    <span className="text-[10px] text-ink-soft">{formatBytes(asset.size_bytes)}</span>
+                                  </div>
+                                </div>
                               </div>
-                              <p className="mt-3 text-sm text-ink-soft">Added {formatTimestamp(asset.created_at)}</p>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon-sm"
+                                className="size-8 text-moss/50 transition-colors hover:text-red-600 hover:bg-red-50"
+                                onClick={() => deleteAsset.mutate(asset.id)}
+                                disabled={deleteAsset.isPending}
+                              >
+                                <Trash2 className="size-4" />
+                              </Button>
                             </div>
                           ))}
                         </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex h-full min-h-[16rem] flex-col items-center justify-center gap-5 rounded-[1.75rem] border border-dashed border-sage-strong bg-white/65 px-8 text-center">
-                      <div className="flex size-16 items-center justify-center rounded-full bg-sage text-forest">
-                        <ImageUp className="size-6" />
-                      </div>
-                      <div className="flex max-w-md flex-col gap-3">
-                        <h3 className="font-display text-4xl tracking-tight text-forest">No resources yet</h3>
-                        <p className="text-sm leading-7 text-ink-soft">
-                          Keep project files anchored here. Tasks can stage PDFs, code, CSVs, SQLite files, and other local inputs from this asset shelf.
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-11 rounded-full border-sage-strong bg-white/80 px-5 text-sm text-ink shadow-none hover:bg-sage"
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={uploadAsset.isPending}
-                      >
-                        <ImageUp data-icon="inline-start" />
-                        Upload resource
-                      </Button>
+                      ) : (
+                        <div className="flex flex-1 flex-col items-center justify-center gap-4 rounded-[1.45rem] border border-dashed border-sage-strong/60 bg-white/50 p-6 text-center min-h-[12rem]">
+                          <div className="flex size-12 items-center justify-center rounded-full bg-sage/60 text-forest">
+                            <ImageUp className="size-5" />
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-forest">No resources yet</p>
+                            <p className="mt-1 text-xs text-ink-soft max-w-[200px] mx-auto">
+                              Supported files: .pdf, .docx, .csv, .xlsx, .txt, .md, .png, .jpg
+                            </p>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

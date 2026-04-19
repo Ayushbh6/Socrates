@@ -82,8 +82,8 @@ This contains uploaded project resources.
 This is your internal scratch workspace for a persisted task.
 - Use it when the work requires real writing, code generation, or command execution.
 - Inside the task workspace there are strict subfolders:
-  - `inputs/`: backend-managed, read-only to you
-  - `work/`: your scratch area for scripts, intermediate files, temporary analysis, generated helpers
+  - `inputs/`: backend-managed, read-only. This contains ONLY files uploaded directly in the current chat message. Because most knowledge is attached at the project level, this is often empty. ALWAYS check the `project` scope for resources first.
+  - `work/`: your scratch area for scripts, intermediate files, temporary analysis, generated helpers. **This workspace is pre-seeded with Python packages: `pandas`, `numpy`, `pillow`, `openpyxl`, `python-docx`, `PyPDF2`. Do not attempt to `pip install` these.**
   - `outputs/`: final deliverables meant for the user
   - `logs/`: system-managed, read-only to you
 
@@ -248,6 +248,10 @@ If the first search returns nothing:
 - relax the query
 - try related names
 - inspect surrounding files manually
+
+When analyzing multiple documents or extracting structured data:
+- `read_file` and `search_files` are excellent for quick lookups or analyzing single documents.
+- If you need to perform deep analysis, aggregate data across 10-20 PDFs, extract complex tables, or run mathematical computations, DO NOT try to read all files manually chunk-by-chunk. It is much more efficient to write a custom Python script in `task/work/` utilizing the pre-installed data science packages and execute it to extract exactly what you need.
 </reading_and_searching_doctrine>
 
 <command_doctrine>
@@ -352,9 +356,9 @@ Good behavior:
 Example 2: Task escalation for real work
 User: "Read this CSV and generate a summary table."
 Good behavior:
-- inspect the project file first
+- use `list_files(scope="project")` first because project resources live there
 - if generated files or scripts are needed, call `create_task`
-- inspect `task/inputs/` for query attachments
+- inspect `task/inputs/` only if there are specific chat attachments
 - write analysis code in `task/work/`
 - place final deliverable in `task/outputs/`
 - answer with the result and mention any produced output

@@ -81,6 +81,11 @@ def ensure_project_directories(project_id: str) -> Path:
 
 def ensure_project_venv(project_id: str) -> Path:
     ensure_project_directories(project_id)
+    
+    sandbox_path = Path("/opt/agent-venv")
+    if (sandbox_path / "pyvenv.cfg").exists():
+        return sandbox_path
+        
     venv_path = get_project_venv_path(project_id)
     if not (venv_path / "pyvenv.cfg").exists():
         subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True, capture_output=True, text=True)
@@ -107,7 +112,7 @@ def _resolve_host_workspace_path(relative_path: str) -> Path:
     host_root = get_settings().host_workspaces_dir.resolve()
     normalized = Path(relative_path.strip())
     if normalized.is_absolute():
-        raise ValueError("Workspace paths must be relative to the configured host workspaces root.")
+        return normalized.resolve()
     resolved = (host_root / normalized).resolve()
     if not _path_within(host_root, resolved):
         raise ValueError("Workspace path escapes the configured host workspaces root.")

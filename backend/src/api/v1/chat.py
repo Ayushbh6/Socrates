@@ -5,7 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
 from sqlalchemy.orm import Session
 
-from ...services.assets import create_project_asset, list_project_assets
+from ...services.assets import create_project_asset, list_project_assets, delete_project_asset
 from ...services.chat import RunManager, create_message_and_run, serialize_asset, serialize_message
 from ...services.projects import get_conversation, list_messages
 from .dependencies import get_run_manager, get_session_dependency
@@ -51,6 +51,15 @@ def get_assets(project_id: str, session: Session = Depends(get_session_dependenc
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return [AssetResponse.model_validate(serialize_asset(asset)) for asset in assets]
+
+
+@router.delete("/projects/{project_id}/assets/{asset_id}", response_model=AssetResponse)
+def delete_asset(project_id: str, asset_id: str, session: Session = Depends(get_session_dependency)) -> AssetResponse:
+    try:
+        asset = delete_project_asset(session, project_id, asset_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AssetResponse.model_validate(serialize_asset(asset))
 
 
 @router.post("/conversations/{conversation_id}/messages", response_model=CreateMessageResponse, status_code=status.HTTP_202_ACCEPTED)

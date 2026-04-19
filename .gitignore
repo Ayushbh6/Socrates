@@ -18,3 +18,4 @@ research/
 frontend/.next/
 frontend/out/
 .playwright-cli/
+photos/

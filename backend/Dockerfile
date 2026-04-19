@@ -12,6 +12,10 @@ RUN apt-get update \
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt
 
+# Create a pre-seeded agent sandbox environment with essential data science tools
+RUN python -m venv /opt/agent-venv \
+    && /opt/agent-venv/bin/pip install --no-cache-dir pandas numpy pillow matplotlib openpyxl python-docx PyPDF2
+
 COPY backend /app/backend
 
 CMD ["uvicorn", "backend.src.app:app", "--host", "0.0.0.0", "--port", "8000"]
