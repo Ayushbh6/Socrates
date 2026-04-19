@@ -121,6 +121,8 @@ def bootstrap_user_and_project(client: TestClient) -> tuple[str, str]:
         json={"title": "Strategy review"},
     )
     assert conversation.status_code == 201
+    assert conversation.json()["model"] == "openai/gpt-5.4-mini"
+    assert conversation.json()["thinking_level"] == "off"
     return project.json()["id"], conversation.json()["id"]
 
 
@@ -135,6 +137,26 @@ def test_bootstrap_flow(client: TestClient):
 
     duplicate = client.post("/api/v1/bootstrap", json={"display_name": "Other", "preferences": {}})
     assert duplicate.status_code == 409
+
+
+def test_conversation_model_preferences_persist(client: TestClient):
+    project_id, conversation_id = bootstrap_user_and_project(client)
+
+    patched = client.patch(
+        f"/api/v1/conversations/{conversation_id}",
+        json={
+            "model": "openrouter/qwen/qwen3.6-plus",
+            "thinking_level": "high",
+        },
+    )
+    assert patched.status_code == 200
+    assert patched.json()["model"] == "openrouter/qwen/qwen3.6-plus"
+    assert patched.json()["thinking_level"] == "low"
+
+    listed = client.get(f"/api/v1/projects/{project_id}/conversations")
+    assert listed.status_code == 200
+    assert listed.json()[0]["model"] == "openrouter/qwen/qwen3.6-plus"
+    assert listed.json()[0]["thinking_level"] == "low"
 
 
 def test_project_asset_and_message_stream_flow(client: TestClient):
@@ -182,6 +204,7 @@ def test_project_asset_and_message_stream_flow(client: TestClient):
     assert len(payload) == 2
     assert payload[0]["role"] == "user"
     assert payload[0]["assets"][0]["id"] == asset_id
+    assert payload[0]["model"] == "openai/gpt-5.4-mini"
     assert payload[1]["role"] == "assistant"
     assert payload[1]["content_text"] == "The examined answer is ready."
 

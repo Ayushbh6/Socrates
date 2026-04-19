@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from ..agent import AgentRequest, AgentRunner
 from ..agent.events import AgentEvent, AgentEventType
 from ..agents import build_socrates_system_prompt
+from ..core.model_catalog import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, normalize_thinking_level, provider_for_model, require_supported_model
 from ..core.schema import Attachment, GenConfig, InputMode, Message, MessageRole, ThinkingLevel
 from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project
 from ..db.session import get_session_factory
@@ -186,8 +187,8 @@ def create_message_and_run(
     session: Session,
     *,
     conversation_id: str,
-    model: str,
-    thinking_level: ThinkingLevel,
+    model: str | None,
+    thinking_level: ThinkingLevel | None,
     input_mode: InputMode,
     content_text: str,
     asset_ids: list[str],
@@ -199,6 +200,14 @@ def create_message_and_run(
     project = session.get(Project, conversation.project_id)
     if project is None:
         raise LookupError("Conversation project not found.")
+
+    resolved_model = model or conversation.model or DEFAULT_MODEL
+    require_supported_model(resolved_model)
+    resolved_thinking = normalize_thinking_level(
+        resolved_model,
+        thinking_level or ThinkingLevel(conversation.thinking_level or DEFAULT_THINKING_LEVEL.value),
+    )
+    resolved_provider = provider_for_model(resolved_model)
 
     current_user = get_current_user(session)
 
@@ -212,7 +221,9 @@ def create_message_and_run(
         content_text=content_text,
         status="queued",
         sequence_no=sequence_no,
-        metadata_json={},
+        provider=resolved_provider,
+        model=resolved_model,
+        metadata_json={"thinking_level": resolved_thinking.value},
     )
     session.add(user_message)
     session.flush()
@@ -225,7 +236,8 @@ def create_message_and_run(
         conversation_id=conversation.id,
         trigger_message_id=user_message.id,
         status="queued",
-        model=model,
+        provider=resolved_provider,
+        model=resolved_model,
         input_mode=input_mode.value,
         system_prompt_text=build_socrates_system_prompt(
             project.default_system_prompt,
@@ -233,8 +245,8 @@ def create_message_and_run(
         ),
         query_text=content_text,
         request_json={
-            "model": model,
-            "thinking_level": thinking_level.value,
+            "model": resolved_model,
+            "thinking_level": resolved_thinking.value,
             "input_mode": input_mode.value,
             "asset_ids": asset_ids,
         },
@@ -242,6 +254,8 @@ def create_message_and_run(
     session.add(run)
     session.flush()
     user_message.agent_run_id = run.id
+    conversation.model = resolved_model
+    conversation.thinking_level = resolved_thinking.value
     conversation.updated_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(user_message)
@@ -407,7 +421,7 @@ class RunManager:
 
             run.status = "running"
             run.started_at = datetime.now(timezone.utc)
-            run.provider = run.model.split("/", 1)[0] if "/" in run.model else "openai"
+            run.provider = provider_for_model(run.model)
             session.commit()
             await self._record_event(
                 session,

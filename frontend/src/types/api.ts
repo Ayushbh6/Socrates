@@ -32,6 +32,8 @@ export interface Conversation {
   project_id: string
   title: string
   summary: string | null
+  model: string
+  thinking_level: ThinkingLevel
   created_at: string
   updated_at: string
   archived_at: string | null

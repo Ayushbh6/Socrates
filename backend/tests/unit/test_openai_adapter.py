@@ -110,6 +110,41 @@ def test_map_stream_event_recovers_tool_name_from_output_item():
     assert mapped.tool_calls[0].name == "get_weather"
     assert mapped.tool_calls[0].arguments == {"city": "Paris"}
 
+
+def test_map_stream_completed_omits_duplicate_content_after_deltas():
+    adapter = OpenAIAdapter(model_name="gpt-5.4-mini", api_key="test-key")
+    stream_state = adapter._create_stream_state()
+
+    delta_event = SimpleNamespace(
+        type="response.output_text.delta",
+        delta="Hello",
+        model_dump=lambda: {"type": "response.output_text.delta"},
+    )
+    completed_event = SimpleNamespace(
+        type="response.completed",
+        response=SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text="Hello")],
+                )
+            ],
+            usage=SimpleNamespace(
+                input_tokens=1,
+                output_tokens=1,
+                total_tokens=2,
+                output_tokens_details=SimpleNamespace(reasoning_tokens=0),
+            ),
+            model_dump=lambda: {"type": "response.completed"},
+        ),
+    )
+
+    adapter._map_stream_event(delta_event, stream_state=stream_state)
+    mapped = adapter._map_stream_event(completed_event, stream_state=stream_state)
+
+    assert mapped is not None
+    assert mapped.content == ""
+
 def test_generate_sync(mock_openai_client):
     """Verify sync generate call uses correct parameters."""
     mock_instance = mock_openai_client.return_value

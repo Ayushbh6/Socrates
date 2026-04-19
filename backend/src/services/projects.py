@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
+from ..core.model_catalog import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, normalize_thinking_level, require_supported_model
+from ..core.schema import ThinkingLevel
 from ..db.models import Conversation, MessageAsset, MessageRecord, Project
 from .bootstrap import get_current_user
 from .utils import apply_updates
@@ -85,10 +87,61 @@ def list_conversations(session: Session, project_id: str) -> list[Conversation]:
     )
 
 
-def create_conversation(session: Session, *, project_id: str, title: str, summary: str | None = None) -> Conversation:
+def create_conversation(
+    session: Session,
+    *,
+    project_id: str,
+    title: str,
+    summary: str | None = None,
+    model: str | None = None,
+    thinking_level: ThinkingLevel | None = None,
+) -> Conversation:
     get_project(session, project_id)
-    conversation = Conversation(project_id=project_id, title=title, summary=summary)
+    resolved_model = model or DEFAULT_MODEL
+    require_supported_model(resolved_model)
+    resolved_thinking = normalize_thinking_level(
+        resolved_model,
+        thinking_level or DEFAULT_THINKING_LEVEL,
+    )
+    conversation = Conversation(
+        project_id=project_id,
+        title=title,
+        summary=summary,
+        model=resolved_model,
+        thinking_level=resolved_thinking.value,
+    )
     session.add(conversation)
+    session.commit()
+    session.refresh(conversation)
+    return conversation
+
+
+def update_conversation(
+    session: Session,
+    conversation_id: str,
+    *,
+    title: str | None = None,
+    summary: str | None = None,
+    model: str | None = None,
+    thinking_level: ThinkingLevel | None = None,
+) -> Conversation:
+    conversation = get_conversation(session, conversation_id)
+    resolved_model = model or conversation.model
+    require_supported_model(resolved_model)
+    resolved_thinking = normalize_thinking_level(
+        resolved_model,
+        thinking_level or ThinkingLevel(conversation.thinking_level),
+    )
+    apply_updates(
+        conversation,
+        {
+            "title": title,
+            "summary": summary,
+            "model": resolved_model,
+            "thinking_level": resolved_thinking.value,
+        },
+    )
+    conversation.updated_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(conversation)
     return conversation

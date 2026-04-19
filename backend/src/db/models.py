@@ -74,6 +74,8 @@ class Conversation(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     summary: Mapped[Optional[str]] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(255), nullable=False, default="openai/gpt-5.4-mini")
+    thinking_level: Mapped[str] = mapped_column(String(32), nullable=False, default="off")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

@@ -7,12 +7,14 @@ from ...services.projects import (
     get_project,
     list_conversations,
     list_projects,
+    update_conversation,
     update_project,
 )
 from .dependencies import get_session_dependency
 from .schemas import (
     ConversationCreateRequest,
     ConversationResponse,
+    ConversationUpdateRequest,
     ProjectCreateRequest,
     ProjectResponse,
     ProjectUpdateRequest,
@@ -41,6 +43,8 @@ def _to_conversation_response(conversation) -> ConversationResponse:
         project_id=conversation.project_id,
         title=conversation.title,
         summary=conversation.summary,
+        model=conversation.model,
+        thinking_level=conversation.thinking_level,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
         archived_at=conversation.archived_at,
@@ -115,7 +119,38 @@ def post_conversation(
     session: Session = Depends(get_session_dependency),
 ) -> ConversationResponse:
     try:
-        conversation = create_conversation(session, project_id=project_id, title=request.title, summary=request.summary)
+        conversation = create_conversation(
+            session,
+            project_id=project_id,
+            title=request.title,
+            summary=request.summary,
+            model=request.model,
+            thinking_level=request.thinking_level,
+        )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return _to_conversation_response(conversation)
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationResponse)
+def patch_conversation(
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+    session: Session = Depends(get_session_dependency),
+) -> ConversationResponse:
+    try:
+        conversation = update_conversation(
+            session,
+            conversation_id,
+            title=request.title,
+            summary=request.summary,
+            model=request.model,
+            thinking_level=request.thinking_level,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return _to_conversation_response(conversation)

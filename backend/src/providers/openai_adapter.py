@@ -188,7 +188,11 @@ class OpenAIAdapter(BaseProvider):
         }
 
     def _create_stream_state(self) -> Dict[str, Any]:
-        return {"tool_calls": {}}
+        return {
+            "tool_calls": {},
+            "saw_content_delta": False,
+            "saw_thinking_delta": False,
+        }
 
     def _map_stream_event(
         self,
@@ -207,6 +211,7 @@ class OpenAIAdapter(BaseProvider):
             return None
 
         if event_type == "response.output_text.delta":
+            stream_state["saw_content_delta"] = True
             return LLMResponse(
                 content=event.delta,
                 usage=UsageStats(),
@@ -215,6 +220,7 @@ class OpenAIAdapter(BaseProvider):
             )
 
         if event_type in {"response.reasoning_text.delta", "response.reasoning_summary_text.delta"}:
+            stream_state["saw_thinking_delta"] = True
             return LLMResponse(
                 content="",
                 thinking=event.delta,
@@ -254,7 +260,13 @@ class OpenAIAdapter(BaseProvider):
             )
 
         if event_type == "response.completed":
-            return self._map_response(event.response, response_model)
+            mapped = self._map_response(event.response, response_model)
+            return mapped.model_copy(
+                update={
+                    "content": "" if stream_state.get("saw_content_delta") else mapped.content,
+                    "thinking": None if stream_state.get("saw_thinking_delta") else mapped.thinking,
+                }
+            )
 
         return None
 

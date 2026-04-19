@@ -66,6 +66,15 @@ class ProjectResponse(BaseModel):
 class ConversationCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
     summary: str | None = None
+    model: str | None = None
+    thinking_level: ThinkingLevel | None = None
+
+
+class ConversationUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    summary: str | None = None
+    model: str | None = None
+    thinking_level: ThinkingLevel | None = None
 
 
 class ConversationResponse(BaseModel):
@@ -73,6 +82,8 @@ class ConversationResponse(BaseModel):
     project_id: str
     title: str
     summary: str | None
+    model: str
+    thinking_level: ThinkingLevel
     created_at: datetime
     updated_at: datetime
     archived_at: datetime | None
@@ -114,8 +125,8 @@ class MessageResponse(BaseModel):
 
 
 class CreateMessageRequest(BaseModel):
-    model: str
-    thinking_level: ThinkingLevel = ThinkingLevel.OFF
+    model: str | None = None
+    thinking_level: ThinkingLevel | None = None
     input_mode: InputMode = InputMode.TEXT
     content_text: str = Field(min_length=1)
     asset_ids: list[str] = Field(default_factory=list)
