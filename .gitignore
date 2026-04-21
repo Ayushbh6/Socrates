@@ -19,3 +19,4 @@ frontend/.next/
 frontend/out/
 .playwright-cli/
 photos/
+test_material/

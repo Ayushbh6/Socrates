@@ -650,8 +650,8 @@ function ProjectDashboardPage() {
                               <CheckCircle2 className="size-5" />
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-ink truncate" title={activeWorkspace.relative_path || activeWorkspace.label}>
-                                {activeWorkspace.relative_path || activeWorkspace.label}
+                              <p className="text-sm font-medium text-ink truncate" title={activeWorkspace.root_path || activeWorkspace.label}>
+                                {activeWorkspace.root_path || activeWorkspace.label}
                               </p>
                               <p className="text-xs text-ink-soft mt-1">Linked workspace</p>
                             </div>

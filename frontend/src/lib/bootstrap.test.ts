@@ -1,8 +1,12 @@
+import { QueryClient } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  applyBootstrapCompletion,
   getWelcomeDestination,
   hasCompletedOnboarding,
+  bootstrapQueryOptions,
+  meQueryOptions,
   submitBootstrap,
 } from '@/lib/bootstrap'
 
@@ -90,5 +94,17 @@ describe('bootstrap flow helpers', () => {
       user: sampleUser,
       alreadyOnboarded: true,
     })
+  })
+
+  it('updates bootstrap and me caches after onboarding completes', () => {
+    const queryClient = new QueryClient()
+
+    applyBootstrapCompletion(queryClient, sampleUser)
+
+    expect(queryClient.getQueryData(bootstrapQueryOptions().queryKey)).toEqual({
+      has_user: true,
+      onboarding_completed: true,
+    })
+    expect(queryClient.getQueryData(meQueryOptions().queryKey)).toEqual(sampleUser)
   })
 })

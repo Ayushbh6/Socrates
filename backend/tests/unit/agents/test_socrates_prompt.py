@@ -17,3 +17,6 @@ def test_socrates_prompt_describes_workspace_protocol():
     assert "Never write to `task/logs/`." in prompt
     assert "`multi_edit`" in prompt
     assert "`apply_patch`" in prompt
+    assert 'use `list_files(scope="project")` first to discover the available resources' in prompt
+    assert 'use `read_file(scope="project", path="...")` on the relevant PDF/image before answering' in prompt
+    assert "Never claim that no project image or project resource exists unless you verified that with project tools." in prompt

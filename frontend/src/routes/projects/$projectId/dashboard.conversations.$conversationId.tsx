@@ -3,12 +3,17 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, useWatch } from 'react-hook-form'
 import {
+  AlertCircle,
+  ArrowDown,
   Brain,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  FileSearch,
   LoaderCircle,
   Paperclip,
   Send,
+  Sparkles,
   X,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -27,11 +32,36 @@ import {
 } from '@/config/models'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { useAgentStream } from '@/hooks/useAgentStream'
-import { apiFetch } from '@/lib/api'
+import { useAgentStream, type AgentStreamConnectionState } from '@/hooks/useAgentStream'
+import { useStickToBottom } from '@/hooks/useStickToBottom'
+import { ApiError, apiFetch } from '@/lib/api'
+import {
+  applyAssistantTurnEvent,
+  attachPersistedAssistantMessage,
+  createAssistantTurn,
+  hydrateAssistantTurnFromRun,
+  replaceAssistantTurnActivity,
+  setAssistantTurnActivityHydrating,
+  setAssistantTurnConnectionState,
+  shouldShowAssistantTurnActivity,
+  shouldShowAssistantTurnFailure,
+  type AssistantTurnState,
+} from '@/lib/assistantTurns'
+import {
+  buildConversationTimeline,
+  type OptimisticUserMessage,
+} from '@/lib/conversationTimeline'
+import {
+  getRunActivitySummary,
+  hydrateRunActivity,
+  type RunActivityItem,
+} from '@/lib/runActivity'
+import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
 import type {
   Asset,
+  AgentRun,
+  AgentRunEvent,
   Conversation,
   Message,
   SendMessageResponse,
@@ -55,18 +85,6 @@ interface ConversationUpdatePayload {
   thinking_level: ThinkingLevel
 }
 
-interface OptimisticMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content_text: string | null
-  thinking_text: string | null
-  status: 'queued' | 'completed' | 'failed' | 'streaming'
-  assets: Asset[]
-  sequence_no: number
-  thinking_enabled?: boolean
-  agent_run_id?: string | null
-}
-
 function deriveInitialConversationTitle(content: string) {
   const trimmed = content.trim()
   if (!trimmed) {
@@ -79,17 +97,23 @@ function deriveInitialConversationTitle(content: string) {
 function ConversationSessionPage() {
   const { projectId, conversationId } = Route.useParams()
   const queryClient = useQueryClient()
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const {
+    containerRef: scrollContainerRef,
+    hasNewContent: hasUnseenBottomContent,
+    scrollToBottom,
+    notifyContentChanged,
+  } = useStickToBottom()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const selectionVersionRef = useRef(0)
   const setActiveConversation = useAppStore((state) => state.setActiveConversation)
+  const assistantTurnsRef = useRef<Record<string, AssistantTurnState>>({})
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [pendingAssets, setPendingAssets] = useState<Asset[]>([])
   const [pendingSelection, setPendingSelection] = useState<ConversationUpdatePayload | null>(null)
-  const [optimistic, setOptimistic] = useState<OptimisticMessage[]>([])
-  const [streamingContent, setStreamingContent] = useState('')
-  const [streamingThinking, setStreamingThinking] = useState('')
+  const [optimisticUsers, setOptimisticUsers] = useState<OptimisticUserMessage[]>([])
+  const [assistantTurns, setAssistantTurns] = useState<Record<string, AssistantTurnState>>({})
+  const [sendError, setSendError] = useState<string | null>(null)
 
   const {
     register,
@@ -105,6 +129,11 @@ function ConversationSessionPage() {
 
   const inputValue = useWatch({ control, name: 'content_text', defaultValue: '' })
 
+  const messagesQueryFn = useCallback(
+    () => apiFetch<Message[]>(`/conversations/${conversationId}/messages`),
+    [conversationId],
+  )
+
   const { data: conversations = [] } = useQuery({
     queryKey: ['conversations', projectId],
     queryFn: () => apiFetch<Conversation[]>(`/projects/${projectId}/conversations`),
@@ -112,7 +141,12 @@ function ConversationSessionPage() {
 
   const { data: messages = [] } = useQuery({
     queryKey: ['messages', conversationId],
-    queryFn: () => apiFetch<Message[]>(`/conversations/${conversationId}/messages`),
+    queryFn: messagesQueryFn,
+  })
+
+  const { data: activeRun } = useQuery({
+    queryKey: ['active-run', conversationId],
+    queryFn: () => apiFetch<AgentRun | null>(`/conversations/${conversationId}/active-run`),
   })
 
   const { data: activeTask } = useQuery({
@@ -165,19 +199,117 @@ function ConversationSessionPage() {
   }, [conversation, setActiveConversation])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, optimistic, streamingContent, streamingThinking])
+    assistantTurnsRef.current = assistantTurns
+  }, [assistantTurns])
 
-  const handleWsEvent = useCallback(
-    (event: WsEvent) => {
-      if (event.type === 'run.content.delta') {
-        setStreamingContent((previous) => previous + event.delta)
+  useEffect(() => {
+    notifyContentChanged()
+  }, [messages, optimisticUsers, assistantTurns, notifyContentChanged])
+
+  useEffect(() => {
+    if (!activeRun) {
+      return
+    }
+
+    setAssistantTurns((previous) => ({
+      ...previous,
+      [activeRun.id]: hydrateAssistantTurnFromRun(activeRun, previous[activeRun.id]),
+    }))
+    if (activeRun.status === 'queued' || activeRun.status === 'running') {
+      setActiveRunId(activeRun.id)
+    }
+  }, [activeRun])
+
+  useEffect(() => {
+    const assistantMessages = messages.filter(
+      (message): message is Message => message.role === 'assistant' && Boolean(message.agent_run_id),
+    )
+    if (assistantMessages.length === 0) {
+      return
+    }
+
+    setAssistantTurns((previous) => {
+      let next = previous
+      let changed = false
+
+      for (const message of assistantMessages) {
+        const runId = message.agent_run_id
+        if (!runId) {
+          continue
+        }
+        const merged = attachPersistedAssistantMessage(next[runId], message)
+        const current = next[runId]
+        if (
+          current?.persistedMessage?.id === merged.persistedMessage?.id &&
+          current?.status === merged.status &&
+          current?.responseMessageId === merged.responseMessageId
+        ) {
+          continue
+        }
+        if (!changed) {
+          next = { ...next }
+          changed = true
+        }
+        next[runId] = merged
+      }
+
+      return changed ? next : previous
+    })
+  }, [messages])
+
+  const hydrateActivityForRun = useCallback(
+    async (runId: string) => {
+      const currentTurn = assistantTurnsRef.current[runId]
+      if (currentTurn?.activity.hydrated || currentTurn?.activityHydrating) {
         return
       }
 
-      if (event.type === 'run.thinking.delta') {
-        setStreamingThinking((previous) => previous + event.delta)
+      setAssistantTurns((previous) => ({
+        ...previous,
+        [runId]: setAssistantTurnActivityHydrating(previous[runId], {
+          runId,
+          conversationId,
+          hydrating: true,
+        }),
+      }))
+      try {
+        const events = await queryClient.fetchQuery({
+          queryKey: ['run-events', runId],
+          queryFn: () => apiFetch<AgentRunEvent[]>(`/agent-runs/${runId}/events`),
+        })
+        setAssistantTurns((previous) => ({
+          ...previous,
+          [runId]: replaceAssistantTurnActivity(previous[runId], {
+            runId,
+            conversationId,
+            activity: hydrateRunActivity(runId, events, previous[runId]?.activity),
+          }),
+        }))
+      } finally {
+        setAssistantTurns((previous) => ({
+          ...previous,
+          [runId]: setAssistantTurnActivityHydrating(previous[runId], {
+            runId,
+            conversationId,
+            hydrating: false,
+          }),
+        }))
+      }
+    },
+    [conversationId, queryClient],
+  )
+
+  const handleWsEvent = useCallback(
+    (event: WsEvent) => {
+      if (event.type === 'run.heartbeat') {
         return
+      }
+
+      if ('run_id' in event) {
+        setAssistantTurns((previous) => ({
+          ...previous,
+          [event.run_id]: applyAssistantTurnEvent(previous[event.run_id], event, conversationId),
+        }))
       }
 
       if (event.type === 'run.message.completed') {
@@ -185,10 +317,18 @@ function ConversationSessionPage() {
           const next = current ? current.filter((message) => message.id !== event.message.id) : []
           return [...next, event.message].sort((left, right) => left.sequence_no - right.sequence_no)
         })
-        setOptimistic((previous) => previous.filter((message) => message.role !== 'assistant'))
-        setStreamingContent('')
-        setStreamingThinking('')
         queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
+        return
+      }
+
+      if (event.type === 'run.snapshot') {
+        if (event.status === 'completed') {
+          queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+        }
+        if (event.status === 'completed' || event.status === 'failed') {
+          queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
+          setActiveRunId((current) => (current === event.run_id ? null : current))
+        }
         return
       }
 
@@ -214,39 +354,43 @@ function ConversationSessionPage() {
       if (event.type === 'run.completed') {
         setActiveRunId(null)
         queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+        queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
         queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
         return
       }
 
       if (event.type === 'run.failed') {
-        setOptimistic((previous) =>
-          previous.map((message) =>
-            message.role === 'assistant'
-              ? { ...message, status: 'failed', content_text: event.error }
-              : message,
-          ),
-        )
         setActiveRunId(null)
-        setStreamingContent('')
-        setStreamingThinking('')
+        queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
       }
     },
     [conversationId, projectId, queryClient],
   )
 
+  const handleStreamConnectionChange = useCallback(
+    (connectionState: AgentStreamConnectionState) => {
+      if (!activeRunId) {
+        return
+      }
+
+      const runId = activeRunId
+      setAssistantTurns((previous) => ({
+        ...previous,
+        [runId]: setAssistantTurnConnectionState(previous[runId], {
+          runId,
+          conversationId,
+          connectionState,
+        }),
+      }))
+    },
+    [activeRunId, conversationId],
+  )
+
   useAgentStream({
     runId: activeRunId,
+    afterSeq: activeRunId ? assistantTurns[activeRunId]?.lastSeq ?? 0 : 0,
     onEvent: handleWsEvent,
-    onClose: () => {
-      if (activeRunId) {
-        setActiveRunId(null)
-        setStreamingContent('')
-        setStreamingThinking('')
-        setOptimistic((previous) => previous.filter((message) => message.role !== 'assistant'))
-        queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
-        queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
-      }
-    },
+    onConnectionChange: handleStreamConnectionChange,
   })
 
   const uploadAsset = useMutation({
@@ -349,7 +493,9 @@ function ConversationSessionPage() {
         }),
       }),
     onSuccess: (response) => {
+      setSendError(null)
       queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
       if (conversation?.title === 'New conversation') {
         setActiveConversation({
           ...conversation,
@@ -357,20 +503,18 @@ function ConversationSessionPage() {
         })
       }
       setActiveRunId(response.agent_run_id)
-      setOptimistic((previous) => [
+      setAssistantTurns((previous) => ({
         ...previous,
-        {
-          id: `opt-assistant-${response.agent_run_id}`,
-          role: 'assistant',
-          content_text: null,
-          thinking_text: null,
-          status: 'streaming',
-          assets: [],
-          sequence_no: 9999,
-          thinking_enabled: selectedThinking !== 'off',
-          agent_run_id: response.agent_run_id,
-        },
-      ])
+        [response.agent_run_id]:
+          previous[response.agent_run_id] ??
+          createAssistantTurn({
+            runId: response.agent_run_id,
+            conversationId,
+            triggerMessageId: response.message_id,
+            status: response.status,
+            thinkingEnabled: selectedThinking !== 'off',
+          }),
+      }))
       setPendingAssets([])
       reset()
     },
@@ -383,7 +527,8 @@ function ConversationSessionPage() {
 
     const optimisticUserId = `opt-user-${Date.now()}`
 
-    setOptimistic((previous) => [
+    setSendError(null)
+    setOptimisticUsers((previous) => [
       ...previous,
       {
         id: optimisticUserId,
@@ -398,24 +543,46 @@ function ConversationSessionPage() {
 
     sendMessage.mutate(data, {
       onSuccess: (response) => {
-        setOptimistic((previous) =>
+        setOptimisticUsers((previous) =>
           previous.map((message) =>
             message.id === optimisticUserId
-              ? { ...message, id: response.message_id, status: 'completed' }
+              ? { ...message, id: response.message_id, status: 'completed', agent_run_id: response.agent_run_id }
               : message,
           ),
         )
       },
-      onError: () => {
-        setOptimistic((previous) => previous.filter((message) => message.id !== optimisticUserId))
+      onError: (error) => {
+        setOptimisticUsers((previous) => previous.filter((message) => message.id !== optimisticUserId))
+
+        if (error instanceof ApiError && error.status === 409 && error.code === 'conversation_run_in_progress') {
+          const runId =
+            typeof (error.data as { detail?: { run_id?: unknown } })?.detail?.run_id === 'string'
+              ? (error.data as { detail?: { run_id?: string } }).detail?.run_id
+              : null
+          if (runId) {
+            setActiveRunId(runId)
+            queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
+          }
+          setSendError(error.detail ?? 'Socrates is still responding to the previous message.')
+          return
+        }
+
+        setSendError(error instanceof Error ? error.message : 'Unable to send the message.')
       },
     })
   }
 
   const persistedIds = new Set(messages.map((message) => message.id))
-  const visibleOptimistic = optimistic.filter((message) => !persistedIds.has(message.id))
-  const allMessages = [...messages, ...visibleOptimistic]
-  const hasConversationStarted = allMessages.length > 0 || activeRunId !== null
+  const visibleOptimisticUsers = optimisticUsers.filter((message) => !persistedIds.has(message.id))
+  const timelineEntries = useMemo(
+    () => buildConversationTimeline(messages, visibleOptimisticUsers, assistantTurns),
+    [assistantTurns, messages, visibleOptimisticUsers],
+  )
+  const activeAssistantTurn = activeRunId ? assistantTurns[activeRunId] : null
+  const isConversationLocked =
+    Boolean(activeRun) ||
+    (activeAssistantTurn ? activeAssistantTurn.status === 'queued' || activeAssistantTurn.status === 'running' : false)
+  const hasConversationStarted = timelineEntries.length > 0 || activeRunId !== null
   const preferenceError =
     updateConversationPreferences.error instanceof Error
       ? updateConversationPreferences.error.message
@@ -424,7 +591,7 @@ function ConversationSessionPage() {
   return (
     <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-canvas">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="flex-1 overflow-y-auto overscroll-contain">
+        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain">
           <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-[8.75rem] pt-4 sm:px-6 sm:pb-[10.5rem] sm:pt-6 lg:px-8">
             {hasConversationStarted ? (
               <div className="flex flex-1 flex-col gap-5 pb-8 pt-2 sm:gap-6">
@@ -439,31 +606,24 @@ function ConversationSessionPage() {
                     onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
                   />
                 ) : null}
-                {allMessages.map((message) => (
-                  <MessageBubble
-                    key={message.id}
-                    message={message}
-                    streamingContent={
-                      message.role === 'assistant' &&
-                      (message as OptimisticMessage).status === 'streaming'
-                        ? streamingContent
-                        : undefined
-                    }
-                    streamingThinking={
-                      message.role === 'assistant' &&
-                      (message as OptimisticMessage).status === 'streaming'
-                        ? streamingThinking
-                        : undefined
-                    }
-                    streamingThinkingEnabled={
-                      message.role === 'assistant' &&
-                      (message as OptimisticMessage).status === 'streaming'
-                        ? Boolean((message as OptimisticMessage).thinking_enabled)
-                        : undefined
-                    }
-                  />
-                ))}
-                <div ref={bottomRef} className="h-px w-full" />
+                {timelineEntries.map((entry) => {
+                  if (entry.kind === 'assistant') {
+                    return (
+                      <AssistantTurnBubble
+                        key={entry.key}
+                        turn={entry.turn}
+                        onHydrateActivity={hydrateActivityForRun}
+                      />
+                    )
+                  }
+
+                  return (
+                    <MessageBubble
+                      key={entry.key}
+                      message={entry.message}
+                    />
+                  )
+                })}
               </div>
             ) : (
               <div className="flex flex-1 items-center justify-center py-8 sm:py-12">
@@ -483,6 +643,20 @@ function ConversationSessionPage() {
             )}
           </div>
         </div>
+
+        {hasUnseenBottomContent ? (
+          <div className="pointer-events-none fixed inset-x-0 bottom-[6.5rem] z-30 flex justify-center px-4 sm:bottom-[7.5rem]">
+            <button
+              type="button"
+              onClick={() => scrollToBottom('smooth')}
+              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-forest/20 bg-forest px-4 py-2 text-xs font-medium text-canvas shadow-lg shadow-forest/20 transition hover:bg-forest/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-forest/40"
+              aria-label="Jump to latest message"
+            >
+              <ArrowDown className="size-3.5" aria-hidden="true" />
+              <span>Jump to latest</span>
+            </button>
+          </div>
+        ) : null}
 
         <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 bg-canvas px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 sm:px-4 sm:pb-5">
           <div className="pointer-events-auto mx-auto w-full max-w-4xl">
@@ -508,6 +682,8 @@ function ConversationSessionPage() {
               onThinkingChange={(thinking) => applyConversationSelection(selectedModel, thinking)}
               settingsPending={updateConversationPreferences.isPending}
               settingsError={preferenceError}
+              sendError={sendError}
+              disabled={isConversationLocked}
               fileInputRef={fileInputRef}
               onFileSelect={(file) => uploadAsset.mutate(file)}
             />
@@ -648,6 +824,8 @@ interface ComposerProps {
   onThinkingChange: (thinking: ThinkingLevel) => void
   settingsPending: boolean
   settingsError: string | null
+  sendError: string | null
+  disabled: boolean
   fileInputRef: RefObject<HTMLInputElement | null>
   onFileSelect: (file: File) => void
 }
@@ -671,6 +849,8 @@ function ConversationComposer({
   onThinkingChange,
   settingsPending,
   settingsError,
+  sendError,
+  disabled,
   fileInputRef,
   onFileSelect,
 }: ComposerProps) {
@@ -696,6 +876,7 @@ function ConversationComposer({
             }
             event.target.value = ''
           }}
+          disabled={disabled}
         />
 
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
@@ -705,6 +886,7 @@ function ConversationComposer({
             value={selectedProvider}
             onChange={(value) => onProviderChange(value as ProviderId)}
             options={PROVIDER_OPTIONS.map((provider) => ({ value: provider.id, label: provider.label }))}
+            disabled={disabled}
           />
           <ComposerSelect
             compact={compact}
@@ -712,6 +894,7 @@ function ConversationComposer({
             value={selectedModel}
             onChange={onModelChange}
             options={modelOptions.map((model) => ({ value: model.id, label: model.label }))}
+            disabled={disabled}
           />
           <ComposerSelect
             compact={compact}
@@ -719,6 +902,7 @@ function ConversationComposer({
             value={selectedThinking}
             onChange={(value) => onThinkingChange(value as ThinkingLevel)}
             options={thinkingOptions.map((option) => ({ value: option.value, label: option.label }))}
+            disabled={disabled}
           />
           <div className="ml-auto shrink-0 whitespace-nowrap pr-1 text-[11px] text-ink-soft">
             {settingsPending ? 'Saving selection…' : null}
@@ -726,6 +910,7 @@ function ConversationComposer({
         </div>
 
         {settingsError ? <p className="text-sm text-red-600">{settingsError}</p> : null}
+        {sendError ? <p className="text-sm text-red-600">{sendError}</p> : null}
 
         {pendingAssets.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -741,6 +926,7 @@ function ConversationComposer({
                   onClick={() =>
                     setPendingAssets((previous) => previous.filter((entry) => entry.id !== asset.id))
                   }
+                  disabled={disabled}
                   className="text-ink-soft transition hover:text-forest"
                 >
                   <X className="size-3.5" />
@@ -763,6 +949,7 @@ function ConversationComposer({
                 handleSubmit(onSubmit)()
               }
             }}
+            disabled={disabled}
             {...register('content_text')}
           />
 
@@ -772,7 +959,7 @@ function ConversationComposer({
               size="icon"
               variant="outline"
               onClick={() => fileInputRef.current?.click()}
-              disabled={uploadPending}
+              disabled={uploadPending || disabled}
               className="size-10 rounded-full border-0 bg-white/82 text-ink-soft shadow-none hover:bg-sage hover:text-forest sm:size-11"
               title="Attach image"
             >
@@ -784,6 +971,7 @@ function ConversationComposer({
               size="icon"
               variant={selectedThinking !== 'off' ? 'secondary' : 'outline'}
               onClick={() => onThinkingChange(selectedThinking === 'off' ? 'low' : 'off')}
+              disabled={disabled}
               className={
                 selectedThinking !== 'off'
                   ? 'size-10 rounded-full bg-sage text-forest hover:bg-sage sm:size-11'
@@ -797,7 +985,7 @@ function ConversationComposer({
             <Button
               type="submit"
               size="icon"
-              disabled={isSubmitting || sendPending || !inputValue?.trim()}
+              disabled={disabled || isSubmitting || sendPending || !inputValue?.trim()}
               className="size-10 rounded-full bg-forest text-white hover:bg-forest/92 sm:size-11"
             >
               {sendPending ? <LoaderCircle className="animate-spin" /> : <Send />}
@@ -815,9 +1003,10 @@ interface ComposerSelectProps {
   value: string
   onChange: (value: string) => void
   options: Array<{ value: string; label: string }>
+  disabled?: boolean
 }
 
-function ComposerSelect({ compact = false, label, value, onChange, options }: ComposerSelectProps) {
+function ComposerSelect({ compact = false, label, value, onChange, options, disabled = false }: ComposerSelectProps) {
   return (
     <label className={compact ? 'relative min-w-[116px] shrink-0' : 'relative w-full sm:min-w-[140px] sm:flex-1 lg:flex-none'}>
       {compact ? null : (
@@ -828,6 +1017,7 @@ function ComposerSelect({ compact = false, label, value, onChange, options }: Co
       <select
         aria-label={label}
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         className={compact
           ? 'h-9 w-full appearance-none rounded-full border-0 bg-white/82 px-3.5 pr-8 text-xs text-ink outline-none transition focus:bg-white'
@@ -1053,14 +1243,8 @@ const thinkingMarkdownComponents: Components = {
 
 const THINKING_COLLAPSE_PREFIX = 'thinking-collapse:run:'
 
-function deriveThinkingStorageKey(message: Message | OptimisticMessage): string | null {
-  // Prefer the agent_run_id so the key is stable across the optimistic
-  // streaming bubble and the persisted assistant message that replaces it.
-  // For a brand-new optimistic bubble that doesn't yet carry a run id,
-  // we won't persist (collapse state for that brief window stays in memory
-  // via the same key once the run id arrives on the next render).
-  const opt = message as OptimisticMessage
-  const runId = opt.agent_run_id ?? (message as Message).agent_run_id ?? null
+function deriveThinkingStorageKey(message: { agent_run_id?: string | null }): string | null {
+  const runId = message.agent_run_id ?? null
   if (runId) return `${THINKING_COLLAPSE_PREFIX}${runId}`
   return null
 }
@@ -1148,28 +1332,16 @@ function ThinkingPanel({ storageKey, text, hasThinking, isStreaming, statusLabel
 }
 
 interface MessageBubbleProps {
-  message: Message | OptimisticMessage
-  streamingContent?: string
-  streamingThinking?: string
-  streamingThinkingEnabled?: boolean
+  message: Message | OptimisticUserMessage
 }
 
-function MessageBubble({
-  message,
-  streamingContent,
-  streamingThinking,
-  streamingThinkingEnabled,
-}: MessageBubbleProps) {
+function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === 'user'
-  const isStreaming = (message as OptimisticMessage).status === 'streaming'
-  const displayContent = isStreaming ? streamingContent ?? '' : message.content_text ?? ''
-  const displayThinking = isStreaming ? streamingThinking ?? '' : message.thinking_text ?? ''
+  const displayContent = message.content_text ?? ''
+  const displayThinking = message.thinking_text ?? ''
   const hasContent = displayContent.trim().length > 0
   const hasThinking = displayThinking.trim().length > 0
-  const showStreamingStatus = isStreaming && !hasThinking && !hasContent
-  const showThinkingPanel = !isUser && (hasThinking || showStreamingStatus)
-  const statusLabel = streamingThinkingEnabled ? 'Socrates is thinking' : 'Socrates is responding'
-  const renderAssistantAnswer = hasContent || (!isStreaming && !hasThinking)
+  const showThinkingPanel = !isUser && hasThinking
   const thinkingStorageKey = !isUser ? deriveThinkingStorageKey(message) : null
 
   return (
@@ -1181,8 +1353,8 @@ function MessageBubble({
             storageKey={thinkingStorageKey}
             text={displayThinking}
             hasThinking={hasThinking}
-            isStreaming={isStreaming}
-            statusLabel={statusLabel}
+            isStreaming={false}
+            statusLabel="Reasoning"
           />
         ) : null}
 
@@ -1200,36 +1372,334 @@ function MessageBubble({
           </div>
         ) : null}
 
-        {renderAssistantAnswer ? (
-          <div
-            className={
-              isUser
-                ? 'rounded-[1.7rem] bg-forest px-5 py-4 text-sm leading-7 text-white shadow-[0_18px_40px_rgba(27,53,41,0.14)]'
-                : 'rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]'
-            }
-          >
-            {hasContent ? (
-              isUser ? (
-                <p className="whitespace-pre-wrap">{displayContent}</p>
-              ) : (
-                <div className="assistant-markdown min-w-0 text-[15px] text-ink">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={assistantMarkdownComponents}
-                  >
-                    {displayContent}
-                  </ReactMarkdown>
-                </div>
-              )
+        <div
+          className={
+            isUser
+              ? 'rounded-[1.7rem] bg-forest px-5 py-4 text-sm leading-7 text-white shadow-[0_18px_40px_rgba(27,53,41,0.14)]'
+              : 'rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]'
+          }
+        >
+          {hasContent ? (
+            isUser ? (
+              <p className="whitespace-pre-wrap">{displayContent}</p>
             ) : (
-              <p className="text-xs italic text-ink-soft">
-                {(message as OptimisticMessage).status === 'failed' ? 'Failed to respond.' : '...'}
-              </p>
+              <div className="assistant-markdown min-w-0 text-[15px] text-ink">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={assistantMarkdownComponents}
+                >
+                  {displayContent}
+                </ReactMarkdown>
+              </div>
+            )
+          ) : (
+            <p className="text-xs italic text-ink-soft">...</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface AssistantTurnBubbleProps {
+  turn: AssistantTurnState
+  onHydrateActivity?: (runId: string) => void
+}
+
+function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubbleProps) {
+  const isStreaming = turn.status === 'queued' || turn.status === 'running'
+  const displayContent = turn.persistedMessage?.content_text ?? turn.partialContent
+  const displayThinking = turn.persistedMessage?.thinking_text ?? turn.partialThinking
+  const hasContent = displayContent.trim().length > 0
+  const hasThinking = displayThinking.trim().length > 0
+  const showStreamingStatus = isStreaming && !hasThinking && !hasContent
+  const showThinkingPanel = hasThinking || showStreamingStatus
+  const showFailure = shouldShowAssistantTurnFailure(turn)
+  const thinkingStorageKey = deriveThinkingStorageKey({ agent_run_id: turn.runId })
+  const showActivityPanel = shouldShowAssistantTurnActivity(turn)
+  const statusLabel =
+    turn.connectionState === 'reconnecting'
+      ? 'Reconnecting to live stream'
+      : turn.thinkingEnabled
+        ? 'Socrates is thinking'
+        : 'Socrates is responding'
+
+  return (
+    <div className="flex justify-start">
+      <div className="w-full sm:max-w-[76%]">
+        {showThinkingPanel ? (
+          <ThinkingPanel
+            key={thinkingStorageKey ?? turn.runId}
+            storageKey={thinkingStorageKey}
+            text={displayThinking}
+            hasThinking={hasThinking}
+            isStreaming={isStreaming}
+            statusLabel={statusLabel}
+          />
+        ) : null}
+
+        {showActivityPanel ? (
+          <RunActivityPanel
+            key={`${turn.runId}:${isStreaming ? 'live' : 'settled'}`}
+            runId={turn.runId}
+            activity={turn.activity}
+            isStreaming={isStreaming}
+            isLoading={turn.activityHydrating}
+            connectionState={turn.connectionState}
+            onHydrate={onHydrateActivity}
+          />
+        ) : null}
+
+        {turn.persistedMessage?.assets?.length ? (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {turn.persistedMessage.assets.map((asset) => (
+              <div
+                key={asset.id}
+                className="flex items-center gap-1.5 rounded-full bg-sage/40 px-3 py-1.5 text-xs text-ink-soft"
+              >
+                <Paperclip className="size-3.5" />
+                <span className="max-w-[120px] truncate">{asset.original_name}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {hasContent || showFailure ? (
+          <div className="rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]">
+            {hasContent ? (
+              <div className="assistant-markdown min-w-0 text-[15px] text-ink">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={assistantMarkdownComponents}
+                >
+                  {displayContent}
+                </ReactMarkdown>
+              </div>
+            ) : (
+              <p className="text-xs italic text-ink-soft">Failed to respond.</p>
             )}
           </div>
         ) : null}
       </div>
     </div>
+  )
+}
+
+interface RunActivityPanelProps {
+  runId: string
+  activity: AssistantTurnState['activity']
+  isStreaming: boolean
+  isLoading: boolean
+  connectionState: AssistantTurnState['connectionState']
+  onHydrate?: (runId: string) => void
+}
+
+function RunActivityPanel({
+  runId,
+  activity,
+  isStreaming,
+  isLoading,
+  connectionState,
+  onHydrate,
+}: RunActivityPanelProps) {
+  const [expanded, setExpanded] = useState(isStreaming)
+  const summary =
+    connectionState === 'reconnecting'
+      ? 'Reconnecting to live activity…'
+      : !isStreaming && !isLoading && !activity.items.length && !activity.hydrated
+        ? 'Open to load recorded activity.'
+      : getRunActivitySummary(activity)
+  const statusLabel = isStreaming ? 'Live activity' : 'Run trace'
+
+  useEffect(() => {
+    setExpanded(isStreaming)
+  }, [isStreaming, runId])
+
+  const toggleExpanded = useCallback(() => {
+    const next = !expanded
+    setExpanded(next)
+    if (next && !isStreaming && !activity?.hydrated) {
+      onHydrate?.(runId)
+    }
+  }, [activity?.hydrated, expanded, isStreaming, onHydrate, runId])
+
+  return (
+    <div className="mb-3 rounded-[1.4rem] bg-paper/88 px-4 py-3.5 shadow-[0_14px_32px_rgba(62,92,72,0.07)]">
+      <button
+        type="button"
+        onClick={toggleExpanded}
+        aria-expanded={expanded}
+        className="flex w-full items-start gap-3 text-left transition hover:opacity-95"
+      >
+        <RunActivityOrb live={isStreaming} failed={activity?.failed ?? false} />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">
+              {statusLabel}
+            </p>
+            <span
+              className={cn(
+                'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em]',
+                isStreaming
+                  ? 'bg-sage/70 text-forest'
+                  : activity?.failed
+                    ? 'bg-red-100 text-red-700'
+                    : 'bg-white/80 text-moss',
+              )}
+            >
+              {isStreaming ? 'Streaming' : activity?.failed ? 'Failed' : 'Captured'}
+            </span>
+          </div>
+          <p className="mt-1 text-sm leading-6 text-ink-soft">{summary}</p>
+        </div>
+        <span
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-white/50 text-moss"
+          aria-hidden="true"
+        >
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </span>
+      </button>
+
+      {expanded ? (
+        <div className="mt-3 space-y-2.5">
+          {activity?.items.length ? (
+            activity.items.map((item) =>
+              item.kind === 'narration' ? (
+                <RunNarrationRow key={`narration:${item.seq}`} item={item} />
+              ) : (
+                <RunToolRow key={`tool:${item.toolCallId}`} item={item} />
+              ),
+            )
+          ) : (
+            <div className="rounded-[1rem] bg-canvas/70 px-3.5 py-3 text-sm leading-6 text-ink-soft">
+              {isLoading ? 'Loading recorded activity…' : 'Socrates is preparing the next step.'}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function RunNarrationRow({ item }: { item: Extract<RunActivityItem, { kind: 'narration' }> }) {
+  return (
+    <div className="rounded-[1.05rem] bg-canvas/78 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+      <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-moss">
+        <Sparkles className="size-3.5" />
+        <span>Socrates note</span>
+      </div>
+      <p className="mt-1.5 text-sm leading-6 text-ink">{item.text}</p>
+    </div>
+  )
+}
+
+function RunToolRow({ item }: { item: Extract<RunActivityItem, { kind: 'tool' }> }) {
+  const statusText =
+    item.status === 'running' ? 'Running' : item.status === 'failed' ? 'Failed' : 'Done'
+
+  return (
+    <div className="rounded-[1.05rem] bg-canvas/78 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <ToolStatusIcon status={item.status} />
+            <p className="min-w-0 truncate text-sm font-medium text-forest">{item.label}</p>
+          </div>
+          {item.resultSummary ? (
+            <p className="mt-1 pl-6 text-xs leading-5 text-ink-soft">{item.resultSummary}</p>
+          ) : null}
+        </div>
+        <span
+          className={cn(
+            'rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em]',
+            item.status === 'running'
+              ? 'bg-sage/75 text-forest'
+              : item.status === 'failed'
+                ? 'bg-red-100 text-red-700'
+                : 'bg-white/80 text-moss',
+          )}
+        >
+          {statusText}
+        </span>
+      </div>
+
+      {item.arguments || item.rawResult ? (
+        <details className="mt-2.5 group rounded-[0.95rem] bg-white/72 px-3 py-2.5">
+          <summary className="cursor-pointer list-none text-[11px] font-semibold uppercase tracking-[0.18em] text-moss">
+            Raw detail
+          </summary>
+          <div className="mt-2 space-y-2">
+            {item.arguments ? (
+              <div>
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-soft">
+                  Arguments
+                </p>
+                <pre className="overflow-x-auto rounded-[0.8rem] bg-canvas/80 p-3 text-[12px] leading-5 text-ink-soft">
+                  {formatActivityDetail(item.arguments)}
+                </pre>
+              </div>
+            ) : null}
+            {item.rawResult ? (
+              <div>
+                <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-ink-soft">
+                  Result
+                </p>
+                <pre className="overflow-x-auto rounded-[0.8rem] bg-canvas/80 p-3 text-[12px] leading-5 text-ink-soft">
+                  {formatActivityDetail(item.rawResult)}
+                </pre>
+              </div>
+            ) : null}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  )
+}
+
+function ToolStatusIcon({ status }: { status: Extract<RunActivityItem, { kind: 'tool' }>['status'] }) {
+  if (status === 'running') {
+    return <LoaderCircle className="size-4 shrink-0 animate-spin text-moss" />
+  }
+  if (status === 'failed') {
+    return <AlertCircle className="size-4 shrink-0 text-red-600" />
+  }
+  return <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
+}
+
+function formatActivityDetail(value: unknown): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+function RunActivityOrb({ live, failed }: { live: boolean; failed: boolean }) {
+  if (failed) {
+    return (
+      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
+        <AlertCircle className="size-4" />
+      </span>
+    )
+  }
+
+  if (live) {
+    return (
+      <span className="relative mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-sage/55">
+        <span className="absolute size-8 rounded-full bg-[radial-gradient(circle,_rgba(143,196,170,0.78)_0%,_rgba(143,196,170,0)_72%)] blur-[6px]" />
+        <FileSearch className="relative size-4 text-forest" />
+      </span>
+    )
+  }
+
+  return (
+    <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-white/75 text-moss">
+      <FileSearch className="size-4" />
+    </span>
   )
 }
 

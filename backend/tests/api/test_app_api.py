@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.src.agent.events import AgentEvent, AgentEventType
 from backend.src.app import create_app
-from backend.src.core.schema import LLMResponse, UsageStats
+from backend.src.core.schema import LLMResponse, Message, MessageRole, ToolCall, UsageStats
 from backend.src.db.models import AgentEventRecord, AgentRun, MessageRecord
 from backend.src.db.session import get_session_factory
 
@@ -80,6 +80,97 @@ class FakeRunner:
         )
 
 
+class MalformedPayloadRunner:
+    """Emits a tool call whose `arguments` dict contains values that cannot
+    round-trip through strict JSON (NaN, Infinity, Decimal, bytes, UUID). A
+    production-grade stream must sanitize these before persisting or publishing
+    so the WebSocket never closes abnormally on a malformed frame."""
+
+    @staticmethod
+    def _bad_arguments() -> dict:
+        import math
+        from decimal import Decimal
+        from uuid import UUID
+
+        return {
+            "scope": "project",
+            "path": "bad.json",
+            "score": math.nan,
+            "limit": math.inf,
+            "tax": Decimal("1.50"),
+            "checksum": b"\x00\x01\x02",
+            "trace_id": UUID("12345678-1234-5678-1234-567812345678"),
+        }
+
+    async def stream(self, request):
+        tool_call = ToolCall(id="call_bad_args", name="read_file", arguments=self._bad_arguments())
+        yield AgentEvent(
+            type=AgentEventType.TOOL_CALL,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            tool_call=tool_call,
+        )
+        yield AgentEvent(
+            type=AgentEventType.TOOL_RESULT,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            tool_call=tool_call,
+            tool_result='{"ok":true,"tool_name":"read_file","data":{"path":"bad.json"}}',
+        )
+        yield AgentEvent(
+            type=AgentEventType.CONTENT,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            response=LLMResponse(
+                content="Parsed despite odd arguments.",
+                usage=UsageStats(),
+                raw_dump={},
+                metadata={"provider": "fake", "model": request.model},
+            ),
+        )
+        yield AgentEvent(
+            type=AgentEventType.FINAL_RESPONSE,
+            provider="fake",
+            model=request.model,
+            round_index=1,
+            response=LLMResponse(
+                content="Parsed despite odd arguments.",
+                usage=UsageStats(input_tokens=2, output_tokens=3, completion_tokens=3, total_tokens=5),
+                raw_dump={"final": True},
+                metadata={
+                    "provider": "fake",
+                    "model": request.model,
+                    "agent_usage": {
+                        "input_tokens": 2,
+                        "output_tokens": 3,
+                        "completion_tokens": 3,
+                        "total_tokens": 5,
+                    },
+                    "agent_turn_telemetry": [
+                        {
+                            "round_index": 0,
+                            "phase": "tool",
+                            "elapsed_ms": 1.0,
+                            "usage": {
+                                "input_tokens": 2,
+                                "output_tokens": 3,
+                                "completion_tokens": 3,
+                                "total_tokens": 5,
+                            },
+                            "tool_call_count": 1,
+                            "parsed_output": False,
+                            "had_thinking": False,
+                        }
+                    ],
+                    "agent_elapsed_ms": 1.0,
+                },
+            ),
+        )
+
+
 class FailingRunner:
     async def stream(self, request):
         yield AgentEvent(
@@ -95,6 +186,126 @@ class FailingRunner:
             ),
         )
         raise RuntimeError("Synthetic provider failure")
+
+
+class IdleStreamingRunner:
+    """Emits an initial event, then stalls for long enough that the stream
+    must rely on application-level heartbeats to keep intermediaries from
+    dropping the connection. Used to verify heartbeat cadence."""
+
+    IDLE_SECONDS = 1.2
+
+    async def stream(self, request):
+        yield AgentEvent(
+            type=AgentEventType.THINKING,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            response=LLMResponse(
+                content="",
+                thinking="Pausing to reflect...",
+                usage=UsageStats(),
+                raw_dump={},
+                metadata={"provider": "fake", "model": request.model},
+            ),
+        )
+        await asyncio.sleep(self.IDLE_SECONDS)
+        yield AgentEvent(
+            type=AgentEventType.FINAL_RESPONSE,
+            provider="fake",
+            model=request.model,
+            round_index=1,
+            response=LLMResponse(
+                content="Reflection complete.",
+                thinking="Pausing to reflect...",
+                usage=UsageStats(input_tokens=1, output_tokens=1, completion_tokens=1, total_tokens=2),
+                raw_dump={"final": True},
+                metadata={
+                    "provider": "fake",
+                    "model": request.model,
+                    "agent_usage": {
+                        "input_tokens": 1,
+                        "output_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                    "agent_turn_telemetry": [
+                        {
+                            "round_index": 0,
+                            "phase": "tool",
+                            "elapsed_ms": 1.0,
+                            "usage": {
+                                "input_tokens": 1,
+                                "output_tokens": 1,
+                                "completion_tokens": 1,
+                                "total_tokens": 2,
+                            },
+                            "tool_call_count": 0,
+                            "parsed_output": False,
+                            "had_thinking": True,
+                        }
+                    ],
+                    "agent_elapsed_ms": 1.0,
+                },
+            ),
+        )
+
+
+class SlowPendingRunner:
+    async def stream(self, request):
+        yield AgentEvent(
+            type=AgentEventType.THINKING,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            response=LLMResponse(
+                content="",
+                thinking="Working through the problem.",
+                usage=UsageStats(),
+                raw_dump={"chunk": 1},
+                metadata={"provider": "fake", "model": request.model},
+            ),
+        )
+        await asyncio.sleep(0.2)
+        yield AgentEvent(
+            type=AgentEventType.FINAL_RESPONSE,
+            provider="fake",
+            model=request.model,
+            round_index=1,
+            response=LLMResponse(
+                content="Finished after the delay.",
+                thinking="Working through the problem.",
+                usage=UsageStats(input_tokens=3, output_tokens=4, completion_tokens=4, total_tokens=7),
+                raw_dump={"final": True},
+                metadata={
+                    "provider": "fake",
+                    "model": request.model,
+                    "agent_usage": {
+                        "input_tokens": 3,
+                        "output_tokens": 4,
+                        "completion_tokens": 4,
+                        "total_tokens": 7,
+                    },
+                    "agent_turn_telemetry": [
+                        {
+                            "round_index": 0,
+                            "phase": "tool",
+                            "elapsed_ms": 25.0,
+                            "usage": {
+                                "input_tokens": 3,
+                                "output_tokens": 4,
+                                "completion_tokens": 4,
+                                "total_tokens": 7,
+                            },
+                            "tool_call_count": 0,
+                            "parsed_output": False,
+                            "had_thinking": True,
+                        }
+                    ],
+                    "agent_elapsed_ms": 50.0,
+                },
+            ),
+        )
 
 
 @pytest.fixture
@@ -257,12 +468,17 @@ def test_project_asset_and_message_stream_flow(client: TestClient):
             if payload["type"] in {"run.completed", "run.failed"}:
                 break
 
-    assert seen_types[0] == "run.started"
+    assert seen_types[0] == "run.snapshot"
+    assert seen_types[1] == "run.started"
     assert "run.turn.started" in seen_types
     assert "run.thinking.delta" in seen_types
     assert "run.content.delta" in seen_types
     assert "run.message.completed" in seen_types
     assert seen_types[-1] == "run.completed"
+
+    active_run_after = client.get(f"/api/v1/conversations/{conversation_id}/active-run")
+    assert active_run_after.status_code == 200
+    assert active_run_after.json() is None
 
     messages = client.get(f"/api/v1/conversations/{conversation_id}/messages")
     assert messages.status_code == 200
@@ -360,6 +576,48 @@ def test_run_failure_is_persisted(client: TestClient):
     events_response = client.get(f"/api/v1/agent-runs/{run_id}/events")
     assert events_response.status_code == 200
     assert events_response.json()[-1]["event_type"] == "run.failed"
+
+
+def test_conversation_active_run_conflict_returns_409(client: TestClient):
+    _, conversation_id = bootstrap_user_and_project(client)
+    client.app.state.run_manager._runner_factory = SlowPendingRunner
+
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "First request",
+            "asset_ids": [],
+        },
+    )
+    assert first.status_code == 202
+    run_id = first.json()["agent_run_id"]
+
+    active_run = client.get(f"/api/v1/conversations/{conversation_id}/active-run")
+    assert active_run.status_code == 200
+    assert active_run.json()["id"] == run_id
+
+    second = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "Second request",
+            "asset_ids": [],
+        },
+    )
+    assert second.status_code == 409
+    assert second.json()["detail"]["code"] == "conversation_run_in_progress"
+    assert second.json()["detail"]["run_id"] == run_id
+
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
 
 
 def test_trace_endpoints_404_for_unknown_run(client: TestClient):
@@ -485,6 +743,10 @@ class SlowStreamingRunner:
 
     THINKING_CHUNKS = ["Examining ", "the ", "matter ", "carefully ", "now."]
     CONTENT_CHUNKS = ["The ", "answer ", "is ", "ready ", "for ", "you."]
+    TOOL_CALLS = [
+        ToolCall(id="call_read_pdf", name="read_file", arguments={"scope": "project", "path": "trend_following.pdf"}),
+        ToolCall(id="call_read_chart", name="read_file", arguments={"scope": "project", "path": "chart-1-1024x770.jpg"}),
+    ]
 
     async def stream(self, request):
         for chunk in self.THINKING_CHUNKS:
@@ -500,6 +762,38 @@ class SlowStreamingRunner:
                     usage=UsageStats(),
                     raw_dump={},
                     metadata={"provider": "fake", "model": request.model},
+                ),
+            )
+        yield AgentEvent(
+            type=AgentEventType.ASSISTANT_MESSAGE,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            message=Message(
+                role=MessageRole.ASSISTANT,
+                content="I will inspect the PDF first, then the chart image.",
+                tool_calls=self.TOOL_CALLS,
+            ),
+        )
+        for tool_call in self.TOOL_CALLS:
+            await asyncio.sleep(0.01)
+            yield AgentEvent(
+                type=AgentEventType.TOOL_CALL,
+                provider="fake",
+                model=request.model,
+                round_index=0,
+                tool_call=tool_call,
+            )
+            await asyncio.sleep(0.01)
+            yield AgentEvent(
+                type=AgentEventType.TOOL_RESULT,
+                provider="fake",
+                model=request.model,
+                round_index=0,
+                tool_call=tool_call,
+                tool_result=(
+                    '{"ok":true,"tool_name":"read_file","data":{"path":"%s","content":"sample","more_available":false}}'
+                    % tool_call.arguments["path"]
                 ),
             )
         for chunk in self.CONTENT_CHUNKS:
@@ -546,7 +840,7 @@ class SlowStreamingRunner:
                                 "completion_tokens": 6,
                                 "total_tokens": 11,
                             },
-                            "tool_call_count": 0,
+                            "tool_call_count": len(self.TOOL_CALLS),
                             "parsed_output": False,
                             "had_thinking": True,
                         }
@@ -580,14 +874,29 @@ def test_websocket_stream_has_no_gap_or_duplicate_under_race(client: TestClient)
     run_id = message_response.json()["agent_run_id"]
 
     received: list[dict] = []
+    last_seq = 0
     with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
-        while True:
+        while len(received) < 6:
             payload = websocket.receive_json()
             received.append(payload)
+            if isinstance(payload.get("seq"), int):
+                last_seq = payload["seq"]
             if payload["type"] in {"run.completed", "run.failed"}:
                 break
 
-    seqs = [payload.get("seq") for payload in received]
+    resumed: list[dict] = []
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream?after_seq={last_seq}") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            resumed.append(payload)
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    assert received[0]["type"] == "run.snapshot"
+    assert resumed[0]["type"] == "run.snapshot"
+
+    combined = received[1:] + resumed[1:]
+    seqs = [payload.get("seq") for payload in combined]
     assert all(isinstance(seq, int) for seq in seqs), f"every payload must carry an int seq, got {seqs}"
     assert seqs == sorted(set(seqs)), f"seqs must be strictly increasing with no duplicates, got {seqs}"
 
@@ -608,11 +917,143 @@ def test_websocket_stream_has_no_gap_or_duplicate_under_race(client: TestClient)
         f"received={seqs} persisted={persisted_seqs}"
     )
 
-    types = [payload["type"] for payload in received]
+    types = [payload["type"] for payload in combined]
     assert types[0] == "run.started"
     assert types[-1] == "run.completed"
-    assert types.count("run.thinking.delta") == len(SlowStreamingRunner.THINKING_CHUNKS)
-    assert types.count("run.content.delta") == len(SlowStreamingRunner.CONTENT_CHUNKS)
+    assert types.count("run.assistant.message") == 1
+    assert types.count("run.tool.called") == len(SlowStreamingRunner.TOOL_CALLS)
+    assert types.count("run.tool.result") == len(SlowStreamingRunner.TOOL_CALLS)
+
+    thinking_deltas = [payload for payload in combined if payload["type"] == "run.thinking.delta"]
+    content_deltas = [payload for payload in combined if payload["type"] == "run.content.delta"]
+    assert 1 <= len(thinking_deltas) <= len(SlowStreamingRunner.THINKING_CHUNKS)
+    assert 1 <= len(content_deltas) <= len(SlowStreamingRunner.CONTENT_CHUNKS)
+    assert "".join(payload["delta"] for payload in thinking_deltas) == "".join(SlowStreamingRunner.THINKING_CHUNKS)
+    assert "".join(payload["delta"] for payload in content_deltas) == "".join(SlowStreamingRunner.CONTENT_CHUNKS)
+
+    tool_result_indices = [index for index, event_type in enumerate(types) if event_type == "run.tool.result"]
+    assert tool_result_indices
+    assert any(types[index] == "run.assistant.message" for index in range(min(tool_result_indices)))
+
+    assistant_message_index = types.index("run.assistant.message")
+    last_tool_result_index = max(tool_result_indices)
+    for index, event_type in enumerate(types):
+        if event_type == "run.thinking.delta":
+            assert index < assistant_message_index, "thinking deltas must flush before assistant message"
+        if event_type == "run.content.delta":
+            assert index > last_tool_result_index, "content deltas must flush after all tool results"
+
+    events_response = client.get(f"/api/v1/agent-runs/{run_id}/events")
+    assert events_response.status_code == 200
+    event_types = [event["event_type"] for event in events_response.json()]
+    assert "run.assistant.message" in event_types
+    assert event_types.count("run.tool.called") == len(SlowStreamingRunner.TOOL_CALLS)
+    assert event_types.count("run.tool.result") == len(SlowStreamingRunner.TOOL_CALLS)
+
+
+def test_stream_survives_non_json_safe_tool_payload(client: TestClient):
+    """Regression: a tool result containing NaN/Infinity/bytes/Decimal must be
+    sanitized before it is persisted and published. The WS client must receive
+    a valid `run.completed` event rather than having the socket torn down
+    mid-stream."""
+
+    import json
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    client.app.state.run_manager._runner_factory = MalformedPayloadRunner
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "low",
+            "input_mode": "text",
+            "content_text": "Parse this.",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 202
+    run_id = message_response.json()["agent_run_id"]
+
+    received: list[dict] = []
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            received.append(payload)
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    types = [payload["type"] for payload in received]
+    assert types[0] == "run.snapshot"
+    assert "run.tool.called" in types
+    assert "run.tool.result" in types
+    assert types[-1] == "run.completed", f"stream must reach a clean terminal state, got {types}"
+
+    tool_called_payload = next(payload for payload in received if payload["type"] == "run.tool.called")
+    arguments = tool_called_payload["tool_call"]["arguments"]
+    assert arguments["scope"] == "project"
+    assert arguments["path"] == "bad.json"
+    assert arguments["score"] is None
+    assert arguments["limit"] is None
+    assert arguments["tax"] == 1.5
+    assert arguments["checksum"] == {"type": "bytes", "length": 3, "base64": "AAEC"}
+    assert arguments["trace_id"] == "12345678-1234-5678-1234-567812345678"
+
+    for payload in received:
+        json.dumps(payload, allow_nan=False)
+
+
+@pytest.fixture
+def fast_heartbeat_client(monkeypatch, tmp_path):
+    app_data_dir = tmp_path / "appdata"
+    monkeypatch.setenv("APP_DATA_DIR", str(app_data_dir))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'premchat.sqlite3'}")
+    monkeypatch.setenv("STREAM_HEARTBEAT_INTERVAL_SECONDS", "1")
+
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_stream_emits_heartbeats_while_idle(fast_heartbeat_client: TestClient):
+    """Regression: while the agent is mid-reasoning and no events are being
+    published, the WebSocket must emit application-level heartbeats so that
+    intermediary proxies / load balancers do not close the idle connection."""
+
+    client = fast_heartbeat_client
+    _, conversation_id = bootstrap_user_and_project(client)
+    client.app.state.run_manager._runner_factory = IdleStreamingRunner
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "low",
+            "input_mode": "text",
+            "content_text": "Pause then answer.",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 202
+    run_id = message_response.json()["agent_run_id"]
+
+    received: list[dict] = []
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            received.append(payload)
+            if payload["type"] in {"run.completed", "run.failed"}:
+                break
+
+    types = [payload["type"] for payload in received]
+    assert types[0] == "run.snapshot"
+    assert types[-1] == "run.completed"
+    heartbeats = [payload for payload in received if payload["type"] == "run.heartbeat"]
+    assert heartbeats, f"expected at least one heartbeat during the idle phase, got types={types}"
+    for heartbeat in heartbeats:
+        assert heartbeat["run_id"] == run_id
+        assert isinstance(heartbeat.get("ts"), str) and heartbeat["ts"]
+        assert "seq" not in heartbeat or heartbeat["seq"] is None
 
 
 def test_archive_conversation_soft_delete(client: TestClient):

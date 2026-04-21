@@ -35,6 +35,14 @@ export async function ensureCurrentUser(queryClient: QueryClient) {
   return queryClient.ensureQueryData(meQueryOptions())
 }
 
+export function applyBootstrapCompletion(queryClient: QueryClient, user: User) {
+  queryClient.setQueryData<BootstrapStatus>(bootstrapQueryOptions().queryKey, {
+    has_user: true,
+    onboarding_completed: true,
+  })
+  queryClient.setQueryData<User>(meQueryOptions().queryKey, user)
+}
+
 export async function submitBootstrap(displayName: string) {
   try {
     const user = await apiFetch<User>('/bootstrap', {

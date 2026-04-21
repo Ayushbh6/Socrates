@@ -1,17 +1,71 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from datetime import datetime, timezone
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ...core.settings import get_settings
+from ...db.models import AgentEventRecord, AgentRunTurn
 from ...services.assets import create_project_asset, list_project_assets, delete_project_asset
-from ...services.chat import RunManager, create_message_and_run, serialize_asset, serialize_message
+from ...services.chat import (
+    ConversationRunInProgressError,
+    RunManager,
+    create_message_and_run,
+    get_active_run_for_conversation,
+    serialize_agent_run,
+    serialize_asset,
+    serialize_message,
+)
 from ...services.projects import get_conversation, list_messages
+from ...services.utils import to_json_compatible
 from .dependencies import get_run_manager, get_session_dependency
-from .schemas import AssetResponse, CreateMessageRequest, CreateMessageResponse, MessageResponse
+from .schemas import AgentRunResponse, AssetResponse, CreateMessageRequest, CreateMessageResponse, MessageResponse
 
 router = APIRouter(tags=["chat"])
+logger = logging.getLogger(__name__)
+
+
+async def _safe_send_json(websocket: WebSocket, payload: Any, *, run_id: str) -> bool:
+    """Send a JSON payload over the WebSocket, tolerating malformed values.
+
+    Returns True if the payload was transmitted, False if it was dropped due to
+    a serialization error. A single unserializable event must never tear down a
+    live stream -- the client would otherwise enter a reconnect loop that yields
+    the same bad event on replay. By coercing through `to_json_compatible` and
+    then catching residual serialization errors, we guarantee the stream
+    continues and the bug is observable in backend logs.
+    """
+
+    try:
+        await websocket.send_json(payload)
+        return True
+    except (TypeError, ValueError) as exc:
+        event_type = payload.get("type") if isinstance(payload, dict) else None
+        seq = payload.get("seq") if isinstance(payload, dict) else None
+        logger.warning(
+            "Dropping malformed stream payload for run %s (type=%s seq=%s): %s",
+            run_id,
+            event_type,
+            seq,
+            exc,
+        )
+        try:
+            await websocket.send_json(to_json_compatible(payload))
+            return True
+        except (TypeError, ValueError) as retry_exc:
+            logger.error(
+                "Failed to transmit sanitized payload for run %s (type=%s seq=%s): %s",
+                run_id,
+                event_type,
+                seq,
+                retry_exc,
+            )
+            return False
 
 
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageResponse])
@@ -21,6 +75,27 @@ def get_messages(conversation_id: str, session: Session = Depends(get_session_de
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return [MessageResponse.model_validate(serialize_message(message)) for message in messages]
+
+
+@router.get("/conversations/{conversation_id}/active-run", response_model=AgentRunResponse | None)
+def get_active_run(conversation_id: str, session: Session = Depends(get_session_dependency)) -> AgentRunResponse | None:
+    try:
+        run = get_active_run_for_conversation(session, conversation_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    if run is None:
+        return None
+
+    event_count = session.execute(
+        select(func.count(AgentEventRecord.id)).where(AgentEventRecord.agent_run_id == run.id)
+    ).scalar_one()
+    turn_count = session.execute(
+        select(func.count(AgentRunTurn.id)).where(AgentRunTurn.agent_run_id == run.id)
+    ).scalar_one()
+    return AgentRunResponse.model_validate(
+        serialize_agent_run(run, event_count=int(event_count or 0), turn_count=int(turn_count or 0))
+    )
 
 
 @router.post("/projects/{project_id}/assets", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)
@@ -82,6 +157,15 @@ async def create_message(
         )
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ConversationRunInProgressError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "conversation_run_in_progress",
+                "message": str(exc),
+                "run_id": exc.run_id,
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
@@ -90,53 +174,61 @@ async def create_message(
 
 
 @router.websocket("/agent-runs/{run_id}/stream")
-async def stream_run(websocket: WebSocket, run_id: str) -> None:
+async def stream_run(
+    websocket: WebSocket,
+    run_id: str,
+    after_seq: int = Query(default=0, ge=0),
+) -> None:
     run_manager: RunManager = websocket.app.state.run_manager
-    if run_manager.get_run_status(run_id) is None:
+    if run_manager.get_run_snapshot(run_id) is None:
         await websocket.close(code=4404)
         return
 
     await websocket.accept()
 
-    # Subscribe BEFORE replaying so live events emitted during/after the DB
-    # read are buffered in the queue. We then replay DB events (each carries
-    # its own seq) and finally drain the queue while skipping any payload
-    # whose seq was already covered by the replay. This eliminates the
-    # subscribe/replay race that would otherwise drop mid-stream deltas.
     queue = await run_manager.subscribe(run_id)
-    last_replayed_seq = 0
+    last_sent_seq = max(after_seq, 0)
     try:
-        for payload in run_manager.replay_events(run_id):
-            await websocket.send_json(payload)
-            seq_value = payload.get("seq")
-            if isinstance(seq_value, int) and seq_value > last_replayed_seq:
-                last_replayed_seq = seq_value
-            if payload["type"] in {"run.completed", "run.failed"}:
-                await websocket.close()
-                return
+        snapshot = run_manager.get_run_snapshot(run_id)
+        if snapshot is None:
+            await websocket.close(code=4404)
+            return
 
-        status_value = run_manager.get_run_status(run_id)
-        if status_value in {"completed", "failed"}:
-            # Run finished while we were replaying; drain any straggler
-            # events that were published after our DB read so the client
-            # still receives the terminal frame.
-            while not queue.empty():
-                payload = queue.get_nowait()
-                seq_value = payload.get("seq")
-                if isinstance(seq_value, int) and seq_value <= last_replayed_seq:
-                    continue
-                await websocket.send_json(payload)
-                if payload["type"] in {"run.completed", "run.failed"}:
-                    break
+        await _safe_send_json(websocket, snapshot, run_id=run_id)
+
+        for payload in run_manager.replay_events(run_id, after_seq=after_seq):
+            seq_value = payload.get("seq")
+            delivered = await _safe_send_json(websocket, payload, run_id=run_id)
+            if delivered and isinstance(seq_value, int) and seq_value > last_sent_seq:
+                last_sent_seq = seq_value
+
+        snapshot = run_manager.get_run_snapshot(run_id)
+        if snapshot is None:
+            await websocket.close(code=4404)
+            return
+
+        if snapshot["status"] in {"completed", "failed"} and snapshot["last_seq"] <= last_sent_seq:
             await websocket.close()
             return
 
+        heartbeat_interval = max(1, get_settings().stream_heartbeat_interval_seconds)
         while True:
-            payload = await queue.get()
-            seq_value = payload.get("seq")
-            if isinstance(seq_value, int) and seq_value <= last_replayed_seq:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=heartbeat_interval)
+            except asyncio.TimeoutError:
+                heartbeat = {
+                    "type": "run.heartbeat",
+                    "run_id": run_id,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+                await _safe_send_json(websocket, heartbeat, run_id=run_id)
                 continue
-            await websocket.send_json(payload)
+            seq_value = payload.get("seq")
+            if isinstance(seq_value, int) and seq_value <= last_sent_seq:
+                continue
+            delivered = await _safe_send_json(websocket, payload, run_id=run_id)
+            if delivered and isinstance(seq_value, int):
+                last_sent_seq = seq_value
             if payload["type"] in {"run.completed", "run.failed"}:
                 await websocket.close()
                 break
@@ -144,3 +236,4 @@ async def stream_run(websocket: WebSocket, run_id: str) -> None:
         pass
     finally:
         await run_manager.unsubscribe(run_id, queue)
+

@@ -88,6 +88,12 @@ export interface SendMessageResponse {
   status: AgentRunStatus
 }
 
+export interface ApiErrorDetail {
+  code?: string
+  message?: string
+  run_id?: string
+}
+
 // ── Trace types ────────────────────────────────────────────────────────────────
 
 export interface AgentRun {
@@ -224,80 +230,128 @@ export interface TaskApproval {
 
 // ── WebSocket event union ──────────────────────────────────────────────────────
 
-export interface WsRunStarted {
+export interface WsEventBase {
+  seq?: number
+}
+
+export interface ToolCallPayload {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+export interface WsRunStarted extends WsEventBase {
   type: 'run.started'
   run_id: string
   conversation_id: string
 }
-export interface WsRunTurnStarted {
+export interface WsRunSnapshot extends WsEventBase {
+  type: 'run.snapshot'
+  run_id: string
+  conversation_id: string
+  status: AgentRunStatus
+  last_seq: number
+  response_message_id: string | null
+  error: string | null
+}
+export interface WsRunTurnStarted extends WsEventBase {
   type: 'run.turn.started'
   run_id: string
   turn_id: string
   round_index: number
 }
-export interface WsRunThinkingDelta {
+export interface WsRunThinkingDelta extends WsEventBase {
   type: 'run.thinking.delta'
   run_id: string
   round_index: number
   delta: string
 }
-export interface WsRunContentDelta {
+export interface WsRunContentDelta extends WsEventBase {
   type: 'run.content.delta'
   run_id: string
   round_index: number
   delta: string
 }
-export interface WsRunTurnCompleted {
+export interface WsRunAssistantMessage extends WsEventBase {
+  type: 'run.assistant.message'
+  run_id: string
+  round_index: number
+  content_text: string
+}
+export interface WsRunToolCalled extends WsEventBase {
+  type: 'run.tool.called'
+  run_id: string
+  round_index: number
+  tool_call: ToolCallPayload
+}
+export interface WsRunToolResult extends WsEventBase {
+  type: 'run.tool.result'
+  run_id: string
+  round_index: number
+  tool_call_id: string
+  tool_name: string
+  tool_result: unknown
+}
+export interface WsRunTurnCompleted extends WsEventBase {
   type: 'run.turn.completed'
   run_id: string
   turn_id: string
   round_index: number
   phase: string
 }
-export interface WsRunMessageCompleted {
+export interface WsRunMessageCompleted extends WsEventBase {
   type: 'run.message.completed'
   run_id: string
   message: Message
 }
-export interface WsRunCompleted {
+export interface WsRunCompleted extends WsEventBase {
   type: 'run.completed'
   run_id: string
   response_message_id: string
 }
-export interface WsRunFailed {
+export interface WsRunFailed extends WsEventBase {
   type: 'run.failed'
   run_id: string
   error: string
 }
-export interface WsTaskCreated {
+export interface WsTaskCreated extends WsEventBase {
   type: 'task.created'
   run_id: string
   task: Task
 }
-export interface WsTaskApprovalRequested {
+export interface WsTaskApprovalRequested extends WsEventBase {
   type: 'task.approval.requested'
   run_id: string
   task_id: string
   approval: TaskApproval
 }
-export interface WsTaskApprovalResolved {
+export interface WsTaskApprovalResolved extends WsEventBase {
   type: 'task.approval.resolved'
   run_id: string
   task_id: string
   approval: TaskApproval
 }
-export interface WsTaskArtifactRegistered {
+export interface WsTaskArtifactRegistered extends WsEventBase {
   type: 'task.artifact.registered'
   run_id: string
   task_id: string
   artifact: TaskArtifact
 }
+export interface WsRunHeartbeat extends WsEventBase {
+  type: 'run.heartbeat'
+  run_id: string
+  ts: string
+}
 
 export type WsEvent =
+  | WsRunSnapshot
   | WsRunStarted
   | WsRunTurnStarted
   | WsRunThinkingDelta
   | WsRunContentDelta
+  | WsRunAssistantMessage
+  | WsRunToolCalled
+  | WsRunToolResult
   | WsRunTurnCompleted
   | WsRunMessageCompleted
   | WsRunCompleted
@@ -306,3 +360,4 @@ export type WsEvent =
   | WsTaskApprovalRequested
   | WsTaskApprovalResolved
   | WsTaskArtifactRegistered
+  | WsRunHeartbeat

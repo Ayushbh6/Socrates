@@ -448,7 +448,9 @@ class AgentRunner:
             payload = json.loads(tool_result)
         except json.JSONDecodeError:
             return False
-        return bool(payload.get("ok"))
+        if not isinstance(payload, dict):
+            return False
+        return payload.get("ok") is True
 
     def _attachment_from_tool_result(self, *, tool_call: ToolCall, tool_result: str) -> Optional[Attachment]:
         if tool_call.name != "read_file":

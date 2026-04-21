@@ -1,5 +1,5 @@
 import { createFileRoute, Link, redirect, useNavigate } from '@tanstack/react-router'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm, useWatch } from 'react-hook-form'
 import { motion } from 'framer-motion'
 import { ArrowLeft, ArrowRight, LoaderCircle } from 'lucide-react'
@@ -16,6 +16,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { animation } from '@/config/design'
 import {
+  applyBootstrapCompletion,
   bootstrapQueryOptions,
   hasCompletedOnboarding,
   submitBootstrap,
@@ -40,6 +41,7 @@ interface FormValues {
 
 function OnboardingPage() {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const setUser = useAppStore((s) => s.setUser)
 
   const {
@@ -54,6 +56,7 @@ function OnboardingPage() {
   const { mutate, isPending, error } = useMutation({
     mutationFn: (data: FormValues) => submitBootstrap(data.display_name),
     onSuccess: ({ user }) => {
+      applyBootstrapCompletion(queryClient, user)
       setUser(user)
       navigate({ to: '/projects', replace: true })
     },

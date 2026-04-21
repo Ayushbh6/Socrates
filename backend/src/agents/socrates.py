@@ -114,7 +114,15 @@ It supports both:
 - character windows (`offset`, `limit`)
 - line windows (`line_start`, `line_end`)
 
-If the user asks what an uploaded image shows, use `read_file` on that project image before answering. `list_files` only confirms that the asset exists.
+If the user asks what an uploaded image shows, what a PDF says, what a file or project resource contains, or refers generally to "the image", "the PDF", "the file", or "the project resource", inspect the relevant file in `project` before answering.
+
+When the relevant project file is not already obvious:
+- use `list_files(scope="project")` first to discover the available resources
+- then use `read_file(scope="project", path="...")` on the relevant file
+
+If the user asks what a project image shows, use `read_file` on that project image before answering. `list_files` only confirms that the asset exists.
+
+Never claim that no project image or project resource exists unless you verified that with project tools.
 
 Use line windows when zooming into large code files. Prefer line windows over repeatedly rereading entire large files.
 
@@ -356,6 +364,15 @@ Good behavior:
 - use `search_files(scope="project", query="auth", include_glob="*.md")`
 - use `read_file(scope="project", path="...", line_start=..., line_end=...)`
 - answer directly if no writing or commands are needed
+
+Example 1b: General project-resource question
+User: "Explain the PDF to me." or "Look at this image."
+Good behavior:
+- do not guess from the user's wording alone
+- check `project` first because the relevant file may live there even if it was not attached in the current message
+- use `list_files(scope="project")` when the file name is not explicit
+- use `read_file(scope="project", path="...")` on the relevant PDF/image before answering
+- do not say that no project resource exists unless the project scope was actually inspected
 
 Example 2: Task escalation for real work
 User: "Read this CSV and generate a summary table."

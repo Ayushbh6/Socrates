@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
@@ -35,6 +35,12 @@ from .tasks import (
     serialize_task_artifact,
 )
 from .utils import to_json_compatible
+
+
+class ConversationRunInProgressError(ValueError):
+    def __init__(self, run_id: str):
+        super().__init__("Conversation already has an active run.")
+        self.run_id = run_id
 
 
 def serialize_asset(asset: Asset) -> dict[str, Any]:
@@ -183,6 +189,22 @@ def list_agent_run_turns(session: Session, run_id: str) -> list[AgentRunTurn]:
     )
 
 
+def get_active_run_for_conversation(session: Session, conversation_id: str) -> AgentRun | None:
+    get_conversation(session, conversation_id)
+    return (
+        session.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.conversation_id == conversation_id,
+                AgentRun.status.in_(("queued", "running")),
+            )
+            .order_by(AgentRun.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
 def _message_to_runtime(message: MessageRecord) -> Message | None:
     attachments = []
     for link in message.asset_links:
@@ -227,6 +249,9 @@ def create_message_and_run(
         raise ValueError("Only text input mode is supported in this slice.")
 
     conversation = get_conversation(session, conversation_id)
+    active_run = get_active_run_for_conversation(session, conversation.id)
+    if active_run is not None:
+        raise ConversationRunInProgressError(active_run.id)
     project = get_project(session, conversation.project_id)
 
     if conversation.title == NEW_CONVERSATION_PLACEHOLDER_TITLE:
@@ -307,6 +332,115 @@ def create_message_and_run(
     return user_message, run
 
 
+_DELTA_KIND_CONTENT = "content"
+_DELTA_KIND_THINKING = "thinking"
+
+
+class _DeltaCoalescer:
+    """Batches consecutive `run.content.delta` and `run.thinking.delta` events so
+    the runtime issues at most one DB commit + publish per flush window.
+
+    Each flushed event goes through the normal `_record_event` path, which
+    preserves the invariant that every event observed by a subscriber has already
+    been persisted. The wire contract is unchanged -- each flushed event is still
+    a valid delta with the same schema, just carrying a larger `delta` string.
+
+    Flush triggers:
+      * accumulated text length reaches `flush_chars`
+      * time since first append reaches `flush_ms`
+      * a different `round_index` or delta kind arrives (forced flush of prior)
+      * caller explicitly flushes (before any non-delta event or at run end)
+    """
+
+    def __init__(
+        self,
+        *,
+        record_event: Callable[..., Awaitable[None]],
+        flush_ms: int,
+        flush_chars: int,
+    ) -> None:
+        self._record_event = record_event
+        self._flush_ms = max(int(flush_ms), 0)
+        self._flush_chars = max(int(flush_chars), 1)
+        self._kind: str | None = None
+        self._round_index: int | None = None
+        self._turn: AgentRunTurn | None = None
+        self._text: str = ""
+        self._first_append_monotonic: float | None = None
+
+    async def feed(
+        self,
+        session: Session,
+        run: AgentRun,
+        *,
+        kind: str,
+        round_index: int,
+        turn: AgentRunTurn,
+        delta: str,
+    ) -> None:
+        if not delta:
+            return
+        if self._kind != kind or self._round_index != round_index:
+            await self.flush(session, run)
+            self._kind = kind
+            self._round_index = round_index
+            self._turn = turn
+            self._text = ""
+            self._first_append_monotonic = None
+        if self._first_append_monotonic is None:
+            self._first_append_monotonic = asyncio.get_running_loop().time()
+        self._turn = turn
+        self._text += delta
+        elapsed_ms = (asyncio.get_running_loop().time() - self._first_append_monotonic) * 1000.0
+        if len(self._text) >= self._flush_chars or elapsed_ms >= self._flush_ms:
+            await self.flush(session, run)
+
+    async def flush(self, session: Session, run: AgentRun) -> None:
+        if not self._text or self._kind is None or self._round_index is None:
+            self._reset()
+            return
+        kind = self._kind
+        round_index = self._round_index
+        turn = self._turn
+        delta_text = self._text
+        self._reset()
+        if kind == _DELTA_KIND_CONTENT:
+            await self._record_event(
+                session,
+                run,
+                event_type="run.content.delta",
+                payload={
+                    "type": "run.content.delta",
+                    "run_id": run.id,
+                    "round_index": round_index,
+                    "delta": delta_text,
+                },
+                turn=turn,
+                content_text=delta_text,
+            )
+        else:
+            await self._record_event(
+                session,
+                run,
+                event_type="run.thinking.delta",
+                payload={
+                    "type": "run.thinking.delta",
+                    "run_id": run.id,
+                    "round_index": round_index,
+                    "delta": delta_text,
+                },
+                turn=turn,
+                thinking_text=delta_text,
+            )
+
+    def _reset(self) -> None:
+        self._kind = None
+        self._round_index = None
+        self._turn = None
+        self._text = ""
+        self._first_append_monotonic = None
+
+
 class RunManager:
     def __init__(self):
         self._session_factory = get_session_factory()
@@ -345,13 +479,14 @@ class RunManager:
         for queue in queues:
             await queue.put(payload)
 
-    def replay_events(self, run_id: str) -> list[dict[str, Any]]:
+    def replay_events(self, run_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
         session = self._session_factory()
         try:
             records = list(
                 session.execute(
                     select(AgentEventRecord)
                     .where(AgentEventRecord.agent_run_id == run_id)
+                    .where(AgentEventRecord.sequence_no > after_seq)
                     .order_by(AgentEventRecord.sequence_no.asc())
                 ).scalars()
             )
@@ -369,6 +504,27 @@ class RunManager:
         try:
             run = session.get(AgentRun, run_id)
             return run.status if run else None
+        finally:
+            session.close()
+
+    def get_run_snapshot(self, run_id: str) -> dict[str, Any] | None:
+        session = self._session_factory()
+        try:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                return None
+            last_seq = session.execute(
+                select(func.max(AgentEventRecord.sequence_no)).where(AgentEventRecord.agent_run_id == run_id)
+            ).scalar_one()
+            return {
+                "type": "run.snapshot",
+                "run_id": run.id,
+                "conversation_id": run.conversation_id,
+                "status": run.status,
+                "last_seq": int(last_seq or 0),
+                "response_message_id": run.response_message_id,
+                "error": run.error_message,
+            }
         finally:
             session.close()
 
@@ -438,6 +594,9 @@ class RunManager:
         thinking_text: str | None = None,
         tool_call_ref: str | None = None,
     ) -> None:
+        safe_payload = to_json_compatible(payload)
+        if not isinstance(safe_payload, dict):
+            safe_payload = {"type": event_type, "run_id": run.id, "value": safe_payload}
         record = AgentEventRecord(
             agent_run_id=run.id,
             agent_run_turn_id=turn.id if turn else None,
@@ -447,11 +606,11 @@ class RunManager:
             content_text=content_text,
             thinking_text=thinking_text,
             tool_call_ref=tool_call_ref,
-            payload_json=payload,
+            payload_json=safe_payload,
         )
         session.add(record)
         session.commit()
-        outgoing = dict(payload)
+        outgoing = dict(safe_payload)
         outgoing["seq"] = record.sequence_no
         await self.publish(run.id, outgoing)
 
@@ -615,8 +774,15 @@ class RunManager:
                     runner.tool_handlers = {}
             final_event: AgentEvent | None = None
 
+            coalescer = _DeltaCoalescer(
+                record_event=self._record_event,
+                flush_ms=settings.stream_delta_flush_ms,
+                flush_chars=settings.stream_delta_flush_chars,
+            )
+
             async for event in runner.stream(request):
                 if event.type == AgentEventType.FINAL_RESPONSE:
+                    await coalescer.flush(session, run)
                     final_event = event
                     continue
 
@@ -630,38 +796,50 @@ class RunManager:
                         model=event.model,
                     )
                     if event.round_index not in seen_turns:
+                        await coalescer.flush(session, run)
                         seen_turns.add(event.round_index)
                         await self._emit_turn_started(session, run, turn)
 
-                if event.type == AgentEventType.THINKING and event.response and event.response.thinking:
-                    await self._record_event(
+                if event.type == AgentEventType.THINKING and event.response and event.response.thinking and turn is not None:
+                    await coalescer.feed(
                         session,
                         run,
-                        event_type="run.thinking.delta",
-                        payload={
-                            "type": "run.thinking.delta",
-                            "run_id": run.id,
-                            "round_index": event.round_index,
-                            "delta": event.response.thinking,
-                        },
+                        kind=_DELTA_KIND_THINKING,
+                        round_index=event.round_index,
                         turn=turn,
-                        thinking_text=event.response.thinking,
+                        delta=event.response.thinking,
                     )
-                elif event.type == AgentEventType.CONTENT and event.response and event.response.content:
+                elif event.type == AgentEventType.CONTENT and event.response and event.response.content and turn is not None:
+                    await coalescer.feed(
+                        session,
+                        run,
+                        kind=_DELTA_KIND_CONTENT,
+                        round_index=event.round_index,
+                        turn=turn,
+                        delta=event.response.content,
+                    )
+                elif (
+                    event.type == AgentEventType.ASSISTANT_MESSAGE
+                    and event.message is not None
+                    and event.message.tool_calls
+                    and event.message.content
+                ):
+                    await coalescer.flush(session, run)
                     await self._record_event(
                         session,
                         run,
-                        event_type="run.content.delta",
+                        event_type="run.assistant.message",
                         payload={
-                            "type": "run.content.delta",
+                            "type": "run.assistant.message",
                             "run_id": run.id,
                             "round_index": event.round_index,
-                            "delta": event.response.content,
+                            "content_text": event.message.content,
                         },
                         turn=turn,
-                        content_text=event.response.content,
+                        content_text=event.message.content,
                     )
                 elif event.type == AgentEventType.ERROR:
+                    await coalescer.flush(session, run)
                     await self._record_event(
                         session,
                         run,
@@ -675,6 +853,7 @@ class RunManager:
                         status="error",
                     )
                 elif event.type == AgentEventType.TOOL_CALL and event.tool_call is not None:
+                    await coalescer.flush(session, run)
                     await self._record_event(
                         session,
                         run,
@@ -693,6 +872,7 @@ class RunManager:
                         tool_call_ref=event.tool_call.id,
                     )
                 elif event.type == AgentEventType.TOOL_RESULT and event.tool_call is not None and event.tool_result is not None:
+                    await coalescer.flush(session, run)
                     await self._record_event(
                         session,
                         run,
@@ -709,6 +889,8 @@ class RunManager:
                         tool_call_ref=event.tool_call.id,
                     )
                     await self._record_tool_side_effects(session, run, event.tool_call.name)
+
+            await coalescer.flush(session, run)
 
             if final_event is None or final_event.response is None:
                 raise RuntimeError("Agent run completed without a final response.")
