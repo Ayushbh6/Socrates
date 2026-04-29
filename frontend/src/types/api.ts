@@ -337,6 +337,12 @@ export interface WsTaskArtifactRegistered extends WsEventBase {
   task_id: string
   artifact: TaskArtifact
 }
+export interface WsTaskStatusUpdated extends WsEventBase {
+  type: 'task.status.updated'
+  run_id: string
+  task_id: string
+  task: Task
+}
 export interface WsRunHeartbeat extends WsEventBase {
   type: 'run.heartbeat'
   run_id: string
@@ -360,4 +366,5 @@ export type WsEvent =
   | WsTaskApprovalRequested
   | WsTaskApprovalResolved
   | WsTaskArtifactRegistered
+  | WsTaskStatusUpdated
   | WsRunHeartbeat

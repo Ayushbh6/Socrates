@@ -113,6 +113,7 @@ function ConversationSessionPage() {
   const [pendingSelection, setPendingSelection] = useState<ConversationUpdatePayload | null>(null)
   const [optimisticUsers, setOptimisticUsers] = useState<OptimisticUserMessage[]>([])
   const [assistantTurns, setAssistantTurns] = useState<Record<string, AssistantTurnState>>({})
+  const [recentlyClosedTask, setRecentlyClosedTask] = useState<Task | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
 
   const {
@@ -154,16 +155,18 @@ function ConversationSessionPage() {
     queryFn: () => apiFetch<Task | null>(`/conversations/${conversationId}/active-task`),
   })
 
+  const taskForSummary = activeTask ?? recentlyClosedTask
+
   const { data: taskApprovals = [] } = useQuery({
-    queryKey: ['task-approvals', activeTask?.id],
-    queryFn: () => apiFetch<TaskApproval[]>(`/tasks/${activeTask?.id}/approvals`),
-    enabled: Boolean(activeTask?.id),
+    queryKey: ['task-approvals', taskForSummary?.id],
+    queryFn: () => apiFetch<TaskApproval[]>(`/tasks/${taskForSummary?.id}/approvals`),
+    enabled: Boolean(taskForSummary?.id),
   })
 
   const { data: taskArtifacts = [] } = useQuery({
-    queryKey: ['task-artifacts', activeTask?.id],
-    queryFn: () => apiFetch<TaskArtifact[]>(`/tasks/${activeTask?.id}/artifacts`),
-    enabled: Boolean(activeTask?.id),
+    queryKey: ['task-artifacts', taskForSummary?.id],
+    queryFn: () => apiFetch<TaskArtifact[]>(`/tasks/${taskForSummary?.id}/artifacts`),
+    enabled: Boolean(taskForSummary?.id),
   })
 
   const conversation = useMemo(
@@ -197,6 +200,10 @@ function ConversationSessionPage() {
   useEffect(() => {
     setActiveConversation(conversation)
   }, [conversation, setActiveConversation])
+
+  useEffect(() => {
+    setRecentlyClosedTask(null)
+  }, [conversationId])
 
   useEffect(() => {
     assistantTurnsRef.current = assistantTurns
@@ -333,6 +340,7 @@ function ConversationSessionPage() {
       }
 
       if (event.type === 'task.created') {
+        setRecentlyClosedTask(null)
         queryClient.setQueryData(['active-task', conversationId], event.task)
         queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task.id] })
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task.id] })
@@ -348,6 +356,18 @@ function ConversationSessionPage() {
       if (event.type === 'task.artifact.registered') {
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+        return
+      }
+
+      if (event.type === 'task.status.updated') {
+        if (event.task.status === 'completed' || event.task.status === 'failed') {
+          setRecentlyClosedTask(event.task)
+          queryClient.setQueryData(['active-task', conversationId], null)
+        } else {
+          queryClient.setQueryData(['active-task', conversationId], event.task)
+        }
+        queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task_id] })
+        queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
         return
       }
 
@@ -432,7 +452,7 @@ function ConversationSessionPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['task-approvals', activeTask?.id] })
+      queryClient.invalidateQueries({ queryKey: ['task-approvals', taskForSummary?.id] })
       queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
     },
   })
@@ -443,7 +463,7 @@ function ConversationSessionPage() {
         method: 'POST',
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['task-artifacts', activeTask?.id] })
+      queryClient.invalidateQueries({ queryKey: ['task-artifacts', taskForSummary?.id] })
       queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
     },
   })
@@ -592,12 +612,12 @@ function ConversationSessionPage() {
     <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-canvas">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain">
-          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-[8.75rem] pt-4 sm:px-6 sm:pb-[10.5rem] sm:pt-6 lg:px-8">
+          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-35 pt-4 sm:px-6 sm:pb-42 sm:pt-6 lg:px-8">
             {hasConversationStarted ? (
               <div className="flex flex-1 flex-col gap-5 pb-8 pt-2 sm:gap-6">
-                {activeTask ? (
+                {taskForSummary ? (
                   <TaskSummaryCard
-                    task={activeTask}
+                    task={taskForSummary}
                     approvals={taskApprovals}
                     artifacts={taskArtifacts}
                     approvalPending={resolveApproval.isPending}
@@ -645,7 +665,7 @@ function ConversationSessionPage() {
         </div>
 
         {hasUnseenBottomContent ? (
-          <div className="pointer-events-none fixed inset-x-0 bottom-[6.5rem] z-30 flex justify-center px-4 sm:bottom-[7.5rem]">
+          <div className="pointer-events-none fixed inset-x-0 bottom-26 z-30 flex justify-center px-4 sm:bottom-30">
             <button
               type="button"
               onClick={() => scrollToBottom('smooth')}
@@ -713,29 +733,98 @@ function TaskSummaryCard({
   onResolveApproval,
   onExportArtifact,
 }: TaskSummaryCardProps) {
-  const pendingApprovals = approvals.filter((approval) => approval.status === 'pending')
+  const isTerminalTask = task.status === 'completed' || task.status === 'failed'
+  const pendingApprovals = isTerminalTask ? [] : approvals.filter((approval) => approval.status === 'pending')
+  const planApprovals = pendingApprovals.filter((a) => a.approval_type.toLowerCase().includes('plan'))
+  const commandApprovals = pendingApprovals.filter((a) => !a.approval_type.toLowerCase().includes('plan'))
   const outputArtifacts = artifacts.filter((artifact) => artifact.artifact_role === 'output')
+  const taskLabel =
+    task.status === 'completed'
+      ? 'Completed task'
+      : task.status === 'failed'
+        ? 'Failed task'
+        : 'Active task'
 
   return (
     <section className="rounded-[1.4rem] border border-forest/10 bg-paper/90 p-4 shadow-[0_18px_40px_rgba(62,92,72,0.08)]">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-forest/5 pb-4">
         <div className="space-y-1">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-moss">Active task</p>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-moss">{taskLabel}</p>
           <h2 className="font-display text-xl tracking-tight text-forest">{task.title}</h2>
           <p className="max-w-2xl text-sm leading-6 text-ink-soft">{task.goal_text}</p>
         </div>
-        <div className="rounded-full bg-canvas px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-moss">
-          {task.status.replace('_', ' ')}
+        <div className="flex items-center gap-2">
+          <div
+            className={cn(
+              'rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em]',
+              task.status === 'completed'
+                ? 'bg-sage/60 text-forest'
+                : task.status === 'failed'
+                  ? 'bg-red-100 text-red-700'
+                  : 'bg-canvas text-moss',
+            )}
+          >
+            {task.status.replace('_', ' ')}
+          </div>
         </div>
       </div>
 
-      {pendingApprovals.length > 0 ? (
+      {isTerminalTask && task.result_summary ? (
+        <div className="mt-4 rounded-[1rem] border border-forest/10 bg-canvas/70 px-4 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moss">Result Summary</p>
+          <p className="mt-1 text-sm leading-6 text-ink-soft">{task.result_summary}</p>
+        </div>
+      ) : null}
+
+      {planApprovals.length > 0 ? (
+        <div className="mt-4 space-y-3 rounded-[1rem] border border-forest/15 bg-sage/10 p-4">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-3.5 text-moss" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-moss">Plan Review Required</p>
+          </div>
+          <p className="text-sm text-ink-soft">Socrates has formulated a strategy and is waiting for your review before creating a todo list and beginning work.</p>
+          {planApprovals.map((approval) => (
+            <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 rounded-[0.9rem] bg-white/90 px-4 py-4 shadow-sm">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold text-forest">Execution Plan</p>
+                <p className="max-w-2xl text-xs leading-5 text-ink-soft">
+                  Review the proposed `plan.md` in the chat history or task files.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-forest/20 text-ink-soft hover:bg-red-50 hover:text-red-700 hover:border-red-200"
+                  disabled={approvalPending}
+                  onClick={() => onResolveApproval(approval.id, false)}
+                >
+                  Reject
+                </Button>
+                <Button
+                  type="button"
+                  className="bg-forest text-white hover:bg-forest/90 shadow-md shadow-forest/10"
+                  disabled={approvalPending}
+                  onClick={() => onResolveApproval(approval.id, true)}
+                >
+                  Approve Plan
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {commandApprovals.length > 0 ? (
         <div className="mt-4 space-y-3 rounded-[1rem] border border-amber-200 bg-amber-50/80 p-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-800">Approvals needed</p>
-          {pendingApprovals.map((approval) => (
+          <div className="flex items-center gap-2">
+            <AlertCircle className="size-3.5 text-amber-700" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-800">Action Approvals</p>
+          </div>
+          {commandApprovals.map((approval) => (
             <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 rounded-[0.9rem] bg-white/80 px-3 py-3">
               <div className="space-y-1">
-                <p className="text-sm font-semibold text-forest">{approval.approval_type.replaceAll('_', ' ')}</p>
+                <p className="text-sm font-semibold text-amber-900">{approval.approval_type.replaceAll('_', ' ')}</p>
                 <p className="max-w-2xl text-xs leading-5 text-ink-soft">
                   {JSON.stringify(approval.request_json)}
                 </p>
@@ -744,14 +833,19 @@ function TaskSummaryCard({
                 <Button
                   type="button"
                   variant="outline"
-                  className="border-forest/20"
+                  className="border-amber-200 bg-transparent text-amber-800 hover:bg-amber-100"
                   disabled={approvalPending}
                   onClick={() => onResolveApproval(approval.id, false)}
                 >
                   Deny
                 </Button>
-                <Button type="button" disabled={approvalPending} onClick={() => onResolveApproval(approval.id, true)}>
-                  Approve
+                <Button
+                  type="button"
+                  className="bg-amber-600 text-white hover:bg-amber-700"
+                  disabled={approvalPending}
+                  onClick={() => onResolveApproval(approval.id, true)}
+                >
+                  Confirm
                 </Button>
               </div>
             </div>
@@ -761,20 +855,23 @@ function TaskSummaryCard({
 
       {artifacts.length > 0 ? (
         <div className="mt-4 rounded-[1rem] border border-forest/10 bg-canvas/70 p-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-moss">Artifacts</p>
-          <div className="mt-2 space-y-2">
-            {artifacts.slice(0, 6).map((artifact) => (
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-moss">Task Package & Artifacts</p>
+            <span className="text-[10px] text-ink-soft/60">Rigorous Workspace</span>
+          </div>
+          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {artifacts.slice(0, 10).map((artifact) => (
               <div
                 key={artifact.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-[0.95rem] border border-forest/10 bg-paper px-3 py-2"
+                className="flex items-center justify-between gap-2 rounded-[0.95rem] border border-forest/10 bg-paper px-3 py-2 shadow-sm"
               >
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium text-forest">{artifact.display_name}</p>
-                  <p className="text-[11px] uppercase tracking-[0.16em] text-moss">{artifact.artifact_role}</p>
+                  <p className="text-[10px] uppercase tracking-[0.14em] text-moss/70">{artifact.artifact_role}</p>
                 </div>
                 {artifact.artifact_role === 'output' ? (
                   artifact.promoted_to_asset ? (
-                    <span className="rounded-full bg-sage px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-forest">
+                    <span className="rounded-full bg-sage/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-forest">
                       Exported
                     </span>
                   ) : (
@@ -782,7 +879,7 @@ function TaskSummaryCard({
                       type="button"
                       size="sm"
                       variant="outline"
-                      className="border-forest/20"
+                      className="h-7 border-forest/20 text-[10px] uppercase tracking-wider"
                       disabled={exportPending}
                       onClick={() => onExportArtifact(artifact.id)}
                     >
@@ -796,9 +893,17 @@ function TaskSummaryCard({
         </div>
       ) : null}
 
+      {!artifacts.length && !pendingApprovals.length ? (
+        <div className="mt-4 flex items-center justify-center rounded-[1rem] border border-dashed border-forest/20 py-8">
+          <p className="text-xs text-ink-soft italic">
+            {isTerminalTask ? 'This task is closed.' : 'No artifacts or approvals yet. Socrates is formulating the task package...'}
+          </p>
+        </div>
+      ) : null}
+
       {outputArtifacts.length > 0 ? (
-        <p className="mt-3 text-xs leading-5 text-ink-soft">
-          Files written to <span className="font-semibold text-forest">outputs/</span> appear here and can be exported into project resources.
+        <p className="mt-3 text-[11px] leading-5 text-ink-soft italic">
+          Final deliverables are tracked in <span className="font-semibold text-forest">outputs/</span> and can be promoted to project resources.
         </p>
       ) : null}
     </section>
@@ -941,8 +1046,8 @@ function ConversationComposer({
             rows={1}
             placeholder="Ask Socrates..."
             className={compact
-              ? 'field-sizing-fixed min-h-[3rem] max-h-32 flex-1 resize-none rounded-[1.45rem] border-0 bg-white/82 px-4 py-[0.95rem] text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-[3.2rem] sm:rounded-[1.65rem]'
-              : 'field-sizing-fixed min-h-[7.25rem] flex-1 resize-none rounded-[1.5rem] border-0 bg-white/80 px-4 py-3 text-base text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-[9.5rem] sm:rounded-[1.8rem] sm:px-5 sm:py-4'}
+              ? 'field-sizing-fixed min-h-12 max-h-32 flex-1 resize-none rounded-[1.45rem] border-0 bg-white/82 px-4 py-[0.95rem] text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-[3.2rem] sm:rounded-[1.65rem]'
+              : 'field-sizing-fixed min-h-29 flex-1 resize-none rounded-[1.5rem] border-0 bg-white/80 px-4 py-3 text-base text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-38 sm:rounded-[1.8rem] sm:px-5 sm:py-4'}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault()
@@ -1690,7 +1795,7 @@ function RunActivityOrb({ live, failed }: { live: boolean; failed: boolean }) {
   if (live) {
     return (
       <span className="relative mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full bg-sage/55">
-        <span className="absolute size-8 rounded-full bg-[radial-gradient(circle,_rgba(143,196,170,0.78)_0%,_rgba(143,196,170,0)_72%)] blur-[6px]" />
+        <span className="absolute size-8 rounded-full bg-[radial-gradient(circle,rgba(143,196,170,0.78)_0%,rgba(143,196,170,0)_72%)] blur-[6px]" />
         <FileSearch className="relative size-4 text-forest" />
       </span>
     )
@@ -1706,8 +1811,8 @@ function RunActivityOrb({ live, failed }: { live: boolean; failed: boolean }) {
 function ThinkingOrb() {
   return (
     <span className="relative flex size-3 shrink-0 items-center justify-center">
-      <span className="absolute size-7 rounded-full bg-[radial-gradient(circle,_rgba(143,196,170,0.72)_0%,_rgba(143,196,170,0)_72%)] blur-[6px]" />
-      <span className="absolute size-4 rounded-full bg-sage/55 animate-ping [animation-duration:1.8s]" />
+      <span className="absolute size-7 rounded-full bg-[radial-gradient(circle,rgba(143,196,170,0.72)_0%,rgba(143,196,170,0)_72%)] blur-[6px]" />
+      <span className="absolute size-4 rounded-full bg-sage/55 animate-ping animation-duration-[1.8s]" />
       <span className="relative size-2.5 rounded-full bg-forest shadow-[0_0_16px_rgba(27,53,41,0.42)]" />
     </span>
   )

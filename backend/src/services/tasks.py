@@ -19,10 +19,22 @@ from ..db.models import Asset, Conversation, Project, ProjectWorkspace, Task, Ta
 from .assets import create_project_asset, resolve_asset_bytes
 from .bootstrap import get_current_user
 from .projects import get_conversation, get_project
+from .task_package import get_task_package_disk_state, parse_todo_checklist, render_task_markdown
 
 
 ACTIVE_TASK_STATUSES = {"active", "awaiting_approval"}
+TERMINAL_TASK_STATUSES = {"completed", "failed"}
+PLAN_APPROVAL_TYPE = "plan_approval"
 TASK_SUBDIRS = ("inputs", "work", "outputs", "logs")
+
+
+class TaskClosureValidationError(ValueError):
+    def __init__(self, *, error_type: str, message: str, suggestion: str, retryable: bool = True):
+        super().__init__(message)
+        self.error_type = error_type
+        self.message = message
+        self.suggestion = suggestion
+        self.retryable = retryable
 
 
 def _utc_now() -> datetime:
@@ -42,18 +54,7 @@ def _path_within(root: Path, candidate: Path) -> bool:
 
 
 def _task_brief_markdown(*, title: str, goal: str, success_criteria: str | None) -> str:
-    criteria = success_criteria.strip() if success_criteria else "Complete the task safely and summarize the result."
-    return "\n".join(
-        [
-            f"# {title.strip()}",
-            "",
-            "## Goal",
-            goal.strip(),
-            "",
-            "## Success Criteria",
-            criteria,
-        ]
-    ).strip()
+    return render_task_markdown(title=title, goal=goal, success_criteria=success_criteria).strip()
 
 
 def get_project_root(project_id: str) -> Path:
@@ -336,6 +337,93 @@ def update_task_status(session: Session, task_id: str, *, status: str, result_su
     return task
 
 
+def close_task(
+    session: Session,
+    task_id: str,
+    *,
+    status: str,
+    result_summary: str | None = None,
+) -> Task:
+    task = get_task(session, task_id)
+    _validate_task_closure(session, task=task, status=status, result_summary=result_summary)
+    return update_task_status(
+        session,
+        task_id,
+        status=status,
+        result_summary=result_summary.strip() if result_summary and result_summary.strip() else None,
+    )
+
+
+def _validate_task_closure(
+    session: Session,
+    *,
+    task: Task,
+    status: str,
+    result_summary: str | None,
+) -> None:
+    if status not in TERMINAL_TASK_STATUSES:
+        raise TaskClosureValidationError(
+            error_type="validation_error",
+            message="Task closure status must be either 'completed' or 'failed'.",
+            suggestion="Call update_task_status with status='completed' or status='failed'.",
+        )
+    if task.status in TERMINAL_TASK_STATUSES:
+        raise TaskClosureValidationError(
+            error_type="task_already_terminal",
+            message="This task is already closed and cannot be closed again.",
+            suggestion="Start or resume an active task before attempting lifecycle closure.",
+            retryable=False,
+        )
+    if task.status not in ACTIVE_TASK_STATUSES:
+        raise TaskClosureValidationError(
+            error_type="task_not_active",
+            message="Only an active task can be closed by the agent runtime.",
+            suggestion="Start or resume an active task before attempting lifecycle closure.",
+            retryable=False,
+        )
+    if status == "failed" and not (result_summary and result_summary.strip()):
+        raise TaskClosureValidationError(
+            error_type="validation_error",
+            message="Failed task closure requires a non-empty result_summary.",
+            suggestion="Explain the abandonment or unrecoverable failure in result_summary.",
+        )
+
+    state = get_task_package_disk_state(Path(task.workspace_root).resolve())
+    if not state.task.valid:
+        raise TaskClosureValidationError(
+            error_type="planning_required",
+            message="task.md must be valid before task closure.",
+            suggestion="Repair task.md so it matches the canonical task structure before closing the task.",
+        )
+    if not state.plan.valid or state.plan_fingerprint is None:
+        raise TaskClosureValidationError(
+            error_type="planning_required",
+            message="plan.md must exist and be valid before task closure.",
+            suggestion="Write a valid plan.md and obtain user approval before closing the task.",
+        )
+    if not is_plan_sha256_approved(session, task.id, state.plan_fingerprint):
+        raise TaskClosureValidationError(
+            error_type="plan_approval_required",
+            message="The current plan.md revision must be approved before task closure.",
+            suggestion="Wait for the user to approve the current plan revision before closing the task.",
+        )
+    if not state.todo.valid or state.todo.content is None:
+        raise TaskClosureValidationError(
+            error_type="todo_required",
+            message="todo.md must exist and be valid before task closure.",
+            suggestion="Create a valid todo.md checklist before closing the task.",
+        )
+    if status == "completed":
+        checklist = parse_todo_checklist(state.todo.content)
+        if not checklist.all_checked:
+            unchecked = ", ".join(item.item_id for item in checklist.unchecked_items) or "unknown"
+            raise TaskClosureValidationError(
+                error_type="todo_incomplete",
+                message=f"Task completion requires all todo.md checklist items to be checked. Unchecked items: {unchecked}.",
+                suggestion="Complete and check every todo.md item before marking the task completed.",
+            )
+
+
 def list_task_artifacts(session: Session, task_id: str) -> list[TaskArtifact]:
     get_task(session, task_id)
     return list(
@@ -509,6 +597,52 @@ def find_matching_approval(
         if json.dumps(approval.request_json, sort_keys=True) == signature:
             return approval
     return None
+
+
+def plan_approval_request_payload(*, path: str = "plan.md", sha256: str) -> dict[str, Any]:
+    return {"path": path, "sha256": sha256}
+
+
+def is_plan_sha256_approved(session: Session, task_id: str, plan_sha256: str) -> bool:
+    for approval in list(
+        session.execute(
+            select(TaskApproval)
+            .where(
+                TaskApproval.task_id == task_id,
+                TaskApproval.approval_type == PLAN_APPROVAL_TYPE,
+                TaskApproval.status == "approved",
+            )
+            .order_by(TaskApproval.created_at.desc())
+        ).scalars()
+    ):
+        if approval.request_json.get("sha256") == plan_sha256:
+            return True
+    return False
+
+
+def ensure_plan_approval_for_revision(
+    session: Session,
+    *,
+    task_id: str,
+    agent_run_id: str | None,
+    tool_execution_id: str | None,
+    plan_sha256: str,
+) -> TaskApproval | None:
+    """If the user has already approved this exact plan content, return None.
+
+    Otherwise create or reuse a pending `plan_approval` for this plan fingerprint
+    and set the task to ``awaiting_approval`` as needed.
+    """
+    if is_plan_sha256_approved(session, task_id, plan_sha256):
+        return None
+    return create_task_approval(
+        session,
+        task_id=task_id,
+        agent_run_id=agent_run_id,
+        tool_execution_id=tool_execution_id,
+        approval_type=PLAN_APPROVAL_TYPE,
+        request_json=plan_approval_request_payload(sha256=plan_sha256),
+    )
 
 
 def stage_asset_into_task(

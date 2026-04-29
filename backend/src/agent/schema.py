@@ -2,7 +2,16 @@ from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel, Field
 
-from ..core.schema import Attachment, GenConfig, InputMode, LLMResponse, Message, ToolCall, ToolDefinition, UsageStats
+from ..core.schema import (
+    Attachment,
+    GenConfig,
+    InputMode,
+    LLMResponse,
+    Message,
+    ToolCall,
+    ToolDefinition,
+    UsageStats,
+)
 
 
 class AgentConfig(BaseModel):
@@ -12,6 +21,7 @@ class AgentConfig(BaseModel):
     stop_on_first_parsed_output: bool = True
     max_tool_rounds: int = 100
     max_consecutive_failures: int = 5
+    max_parallel_tool_calls: int = 6
     force_structured_output_final_pass: bool = True
 
 

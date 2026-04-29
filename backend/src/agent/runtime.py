@@ -7,10 +7,18 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from .. import providers as _providers  # noqa: F401
 from ..core.factory import get_provider
 from ..core.interfaces import BaseProvider
-from ..core.schema import Attachment, LLMRequest, LLMResponse, Message, MessageRole, ToolCall, UsageStats
+from ..core.schema import (
+    Attachment,
+    LLMRequest,
+    LLMResponse,
+    Message,
+    MessageRole,
+    ToolCall,
+    UsageStats,
+)
 from .events import AgentEvent, AgentEventType
 from .schema import AgentRequest, AgentResult, AgentTurnTelemetry
-from .tools import ToolExecutor, ToolHandler, execute_tool_call
+from .tools import ToolExecutor, ToolHandler, build_tool_error_result, execute_tool_call
 
 
 class AgentRunner:
@@ -28,17 +36,24 @@ class AgentRunner:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(self.arun(request))
-        raise RuntimeError("AgentRunner.run() cannot be used inside an active event loop. Use await arun(...).")
+        raise RuntimeError(
+            "AgentRunner.run() cannot be used inside an active event loop. Use await arun(...)."
+        )
 
     async def arun(self, request: AgentRequest) -> AgentResult:
         final_result: Optional[AgentResult] = None
         async for event in self.stream(request):
-            if event.type == AgentEventType.FINAL_RESPONSE and event.response is not None:
+            if (
+                event.type == AgentEventType.FINAL_RESPONSE
+                and event.response is not None
+            ):
                 final_result = AgentResult(
                     final_response=event.response,
                     tool_rounds=event.response.metadata.get("agent_tool_rounds", 0),
                     tools_called=event.response.metadata.get("agent_tools_called", []),
-                    final_history=event.response.metadata.get("agent_final_history", []),
+                    final_history=event.response.metadata.get(
+                        "agent_final_history", []
+                    ),
                     provider=event.provider,
                     model=event.model,
                     usage=event.response.metadata.get("agent_usage", UsageStats()),
@@ -146,14 +161,14 @@ class AgentRunner:
                 round_failed = False
                 round_succeeded = False
                 tool_round_attachments: List[Attachment] = []
-                for tool_call in turn_response.tool_calls:
+                tool_results = await self._execute_tool_calls(
+                    turn_response.tool_calls, request=request
+                )
+                for tool_call, tool_result in tool_results:
                     all_tool_calls.append(tool_call)
-                    tool_result = await execute_tool_call(
-                        tool_call,
-                        tool_executor=self.tool_executor,
-                        tool_handlers=self.tool_handlers,
+                    attachment = self._attachment_from_tool_result(
+                        tool_call=tool_call, tool_result=tool_result
                     )
-                    attachment = self._attachment_from_tool_result(tool_call=tool_call, tool_result=tool_result)
                     history.append(
                         Message(
                             role=MessageRole.TOOL,
@@ -201,7 +216,9 @@ class AgentRunner:
                     )
                     break
 
-                active_attachments = self._merge_attachments(active_attachments, tool_round_attachments)
+                active_attachments = self._merge_attachments(
+                    active_attachments, tool_round_attachments
+                )
                 active_query = self._continue_tool_query(
                     original_query=request.query,
                     has_attachments=bool(active_attachments),
@@ -243,7 +260,9 @@ class AgentRunner:
             final_stream = provider.astream(final_request)
             try:
                 async for chunk in final_stream:
-                    structured_response = self._merge_responses(structured_response, chunk)
+                    structured_response = self._merge_responses(
+                        structured_response, chunk
+                    )
 
                     if chunk.thinking and request.agent.emit_thinking:
                         yield AgentEvent(
@@ -352,7 +371,9 @@ class AgentRunner:
             config=request.config,
         )
 
-    def _create_final_structured_request(self, request: AgentRequest, history: List[Message]) -> LLMRequest:
+    def _create_final_structured_request(
+        self, request: AgentRequest, history: List[Message]
+    ) -> LLMRequest:
         schema_json = json.dumps(
             request.response_model.model_json_schema(),
             ensure_ascii=True,
@@ -374,7 +395,9 @@ class AgentRunner:
             config=final_config,
         )
 
-    def _merge_responses(self, aggregate: Optional[LLMResponse], chunk: LLMResponse) -> LLMResponse:
+    def _merge_responses(
+        self, aggregate: Optional[LLMResponse], chunk: LLMResponse
+    ) -> LLMResponse:
         if aggregate is None:
             return LLMResponse(
                 content=chunk.content,
@@ -408,7 +431,9 @@ class AgentRunner:
             parsed=parsed,
         )
 
-    def _assistant_message_from_response(self, response: LLMResponse) -> Optional[Message]:
+    def _assistant_message_from_response(
+        self, response: LLMResponse
+    ) -> Optional[Message]:
         if not response.content and not response.thinking and not response.tool_calls:
             return None
         return Message(
@@ -425,7 +450,9 @@ class AgentRunner:
             attachments=request.attachments,
         )
 
-    def _has_initial_user_message(self, history: List[Message], request: AgentRequest) -> bool:
+    def _has_initial_user_message(
+        self, history: List[Message], request: AgentRequest
+    ) -> bool:
         return any(
             msg.role == MessageRole.USER
             and msg.content == request.query
@@ -433,7 +460,9 @@ class AgentRunner:
             for msg in history
         )
 
-    def _continue_tool_query(self, *, original_query: str, has_attachments: bool = False) -> str:
+    def _continue_tool_query(
+        self, *, original_query: str, has_attachments: bool = False
+    ) -> str:
         if has_attachments:
             return (
                 f"The user originally asked: {original_query}\n\n"
@@ -441,7 +470,45 @@ class AgentRunner:
                 "Inspect the attached image directly and answer the user's question. "
                 "Do not say that you only have raw bytes or metadata unless the attachment is actually missing."
             )
-        return "Continue using the available tool results until you are ready to answer."
+        return (
+            "Continue using the available tool results until you are ready to answer."
+        )
+
+    async def _execute_tool_calls(
+        self, tool_calls: List[ToolCall], *, request: AgentRequest
+    ) -> List[tuple[ToolCall, str]]:
+        max_calls = max(0, request.agent.max_parallel_tool_calls)
+        accepted = tool_calls[:max_calls]
+        overflow = tool_calls[max_calls:]
+
+        accepted_results = await asyncio.gather(
+            *(
+                execute_tool_call(
+                    tool_call,
+                    tool_executor=self.tool_executor,
+                    tool_handlers=self.tool_handlers,
+                )
+                for tool_call in accepted
+            )
+        )
+        results: List[tuple[ToolCall, str]] = list(zip(accepted, accepted_results))
+        for tool_call in overflow:
+            results.append(
+                (
+                    tool_call,
+                    build_tool_error_result(
+                        tool_name=tool_call.name,
+                        error_type="tool_call_limit_exceeded",
+                        message=(
+                            f"This model turn emitted more than {max_calls} tool calls. "
+                            "Only the first tool calls up to the configured limit were executed."
+                        ),
+                        retryable=True,
+                        suggestion="Continue with another turn if the skipped tool call is still needed.",
+                    ),
+                )
+            )
+        return results
 
     def _tool_result_ok(self, tool_result: str) -> bool:
         try:
@@ -452,7 +519,9 @@ class AgentRunner:
             return False
         return payload.get("ok") is True
 
-    def _attachment_from_tool_result(self, *, tool_call: ToolCall, tool_result: str) -> Optional[Attachment]:
+    def _attachment_from_tool_result(
+        self, *, tool_call: ToolCall, tool_result: str
+    ) -> Optional[Attachment]:
         if tool_call.name != "read_file":
             return None
         try:
@@ -480,7 +549,9 @@ class AgentRunner:
         return Attachment(
             mime_type=mime_type,
             content=encoded,
-            name=data.get("filename") or data.get("path") or tool_call.arguments.get("path"),
+            name=data.get("filename")
+            or data.get("path")
+            or tool_call.arguments.get("path"),
         )
 
     def _merge_attachments(

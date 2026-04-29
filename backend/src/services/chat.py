@@ -29,6 +29,7 @@ from .tasks import (
     ensure_task_input_assets,
     find_matching_approval,
     get_active_task_for_conversation,
+    get_task,
     list_task_artifacts,
     serialize_task,
     serialize_task_approval,
@@ -628,11 +629,11 @@ class RunManager:
         }
         await self._record_event(session, run, event_type="run.turn.started", payload=payload, turn=turn)
 
-    async def _record_tool_side_effects(self, session: Session, run: AgentRun, tool_name: str) -> None:
+    async def _record_tool_side_effects(
+        self, session: Session, run: AgentRun, tool_name: str, *, tool_call_id: str | None = None
+    ) -> None:
         session.refresh(run)
         if tool_name == "create_task" and run.task_id:
-            from .tasks import get_task
-
             task = get_task(session, run.task_id)
             await self._record_event(
                 session,
@@ -641,21 +642,35 @@ class RunManager:
                 payload={"type": "task.created", "run_id": run.id, "task": serialize_task(task)},
             )
         if run.task_id:
-            latest_execution = (
-                session.query(ToolExecution)
-                .filter(ToolExecution.agent_run_id == run.id)
-                .order_by(ToolExecution.created_at.desc())
-                .first()
-            )
-            approval_id = latest_execution.result_json.get("approval_id") if latest_execution is not None else None
-            approval = session.get(TaskApproval, approval_id) if approval_id else None
-            if approval is None:
-                approval = (
-                    session.query(TaskApproval)
-                    .filter(TaskApproval.task_id == run.task_id, TaskApproval.status == "pending")
-                    .order_by(TaskApproval.created_at.desc())
+            q = session.query(ToolExecution).filter(ToolExecution.agent_run_id == run.id)
+            if tool_call_id:
+                execution = (
+                    q.filter(ToolExecution.tool_call_id == tool_call_id)
+                    .order_by(ToolExecution.created_at.desc())
                     .first()
                 )
+            else:
+                execution = q.order_by(ToolExecution.created_at.desc()).first()
+            if (
+                tool_name == "update_task_status"
+                and execution is not None
+                and execution.result_json.get("status") in {"completed", "failed"}
+            ):
+                task_id = execution.task_id or run.task_id
+                task = get_task(session, task_id)
+                await self._record_event(
+                    session,
+                    run,
+                    event_type="task.status.updated",
+                    payload={
+                        "type": "task.status.updated",
+                        "run_id": run.id,
+                        "task_id": task.id,
+                        "task": serialize_task(task),
+                    },
+                )
+            approval_id = execution.result_json.get("approval_id") if execution is not None else None
+            approval = session.get(TaskApproval, approval_id) if approval_id else None
             if approval is not None:
                 await self._record_event(
                     session,
@@ -888,7 +903,9 @@ class RunManager:
                         turn=turn,
                         tool_call_ref=event.tool_call.id,
                     )
-                    await self._record_tool_side_effects(session, run, event.tool_call.name)
+                    await self._record_tool_side_effects(
+                        session, run, event.tool_call.name, tool_call_id=event.tool_call.id
+                    )
 
             await coalescer.flush(session, run)
 

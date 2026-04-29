@@ -51,25 +51,24 @@ Socrates does not get free-form filesystem access. The task workspace is structu
 
 ## Tool Surface
 
-Socrates currently uses a compact 8-tool surface:
+Socrates currently uses an 11-tool surface when command execution is available, or 10 tools when `execute_command` is unavailable:
 
 1. `list_files`
 2. `read_file`
 3. `search_files`
 4. `edit_file`
-5. `execute_command`
-6. `create_task`
-7. `write_project_note`
-8. `get_system_time`
+5. `write_file`
+6. `apply_patch`
+7. `execute_command`
+8. `create_task`
+9. `update_task_status`
+10. `write_project_note`
+11. `get_system_time`
 
-`edit_file` supports:
-- `view`
-- `create`
-- `str_replace`
-- `insert`
-- `overwrite`
-- `multi_edit`
-- `apply_patch`
+Write tools are intentionally focused:
+- `edit_file` performs exact string replacement in one file.
+- `write_file` creates or intentionally overwrites a whole file.
+- `apply_patch` applies atomic exact-context patches across one or more files.
 
 ## Safety Model
 
@@ -150,6 +149,7 @@ Socrates is already a real workspace coding agent:
 - linked workspaces are live
 - approval flow is live
 - read/search/edit/patch flow is live
+- terminal task closure is live
 - structured task artifacts and export flow are live
 
 The remaining work is hardening and iteration, not basic capability creation.
