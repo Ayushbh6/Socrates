@@ -25,8 +25,8 @@ function WelcomePage() {
 
   return (
     <PageShell>
-      <div className="flex min-h-dvh w-full flex-col items-center justify-start px-5 pb-10 pt-[clamp(4rem,16vh,9rem)] text-center sm:px-6">
-        <div className="flex w-full max-w-2xl flex-col items-center gap-5 sm:gap-6">
+      <div className="flex w-full flex-col items-center px-6 text-center">
+        <div className="flex max-w-2xl flex-col items-center gap-8">
 
           {/* Eyebrow */}
           <motion.p
@@ -43,7 +43,7 @@ function WelcomePage() {
             initial={{ opacity: 0, y: 28 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: animation.durationSlow, delay: 0.1, ease: animation.spring }}
-            className="py-2 font-display text-gradient-teal text-[clamp(4rem,10vw,7.25rem)] font-semibold leading-[1.06] tracking-tight"
+            className="font-display text-gradient-teal text-[clamp(80px,13vw,148px)] font-semibold leading-none tracking-tight"
           >
             Socrates
           </motion.h1>
@@ -70,7 +70,7 @@ function WelcomePage() {
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: animation.durationBase, delay: 0.36, ease: 'easeOut' }}
-            className="mt-2 flex flex-col items-center gap-4"
+            className="mt-4 flex flex-col items-center gap-4"
           >
             <Button
               size="lg"

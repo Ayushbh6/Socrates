@@ -19,7 +19,7 @@ export function PageShell({ children, className }: PageShellProps) {
   return (
     <div
       className={cn(
-        'relative flex min-h-dvh w-full flex-col items-center overflow-x-hidden overflow-y-auto bg-canvas text-ink',
+        'relative flex min-h-screen w-full flex-col items-center justify-center overflow-hidden bg-canvas text-ink',
         className,
       )}
     >
@@ -65,7 +65,7 @@ export function PageShell({ children, className }: PageShellProps) {
       />
 
       {/* ── Page content ─────────────────────────────────────── */}
-      <div className="relative z-10 flex min-h-dvh w-full flex-col items-center">
+      <div className="relative z-10 flex w-full flex-col items-center">
         {children}
       </div>
     </div>
