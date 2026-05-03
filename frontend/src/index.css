@@ -155,11 +155,17 @@
 html,
 body,
 #root {
-  height: 100%;
+  min-height: 100%;
+  min-height: 100dvh;
   width: 100%;
+  min-width: 100vw;
+  margin: 0;
+  background-color: var(--background);
 }
 
 body {
+  min-height: 100dvh;
+  overflow-x: hidden;
   background-color: var(--background);
   color: var(--foreground);
   font-family: var(--font-family-body);
