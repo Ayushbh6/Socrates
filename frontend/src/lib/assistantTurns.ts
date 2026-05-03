@@ -112,8 +112,8 @@ export function attachPersistedAssistantMessage(
     responseMessageId: message.id,
     status: 'completed',
     persistedMessage: message,
-    partialContent: '',
-    partialThinking: '',
+    partialContent: message.content_text?.trim() ? '' : next.partialContent,
+    partialThinking: message.thinking_text?.trim() ? '' : next.partialThinking,
     error: null,
     activity: { ...next.activity, terminal: true, failed: false },
     activityAvailable: next.activityAvailable,
@@ -222,7 +222,12 @@ export function applyAssistantTurnEvent(
     event.type === 'run.assistant.message' ||
     event.type === 'run.tool.called' ||
     event.type === 'run.tool.result' ||
-    event.type === 'run.completed'
+    event.type === 'run.completed' ||
+    event.type === 'task.worker.started' ||
+    event.type === 'task.worker.todo.updated' ||
+    event.type === 'task.worker.completed' ||
+    event.type === 'task.worker.blocked' ||
+    event.type === 'task.worker.failed'
   ) {
     updated = {
       ...updated,

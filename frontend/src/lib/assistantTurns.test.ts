@@ -166,4 +166,31 @@ describe('assistant turn helpers', () => {
     expect(afterHeartbeat.lastSeq).toBe(7)
     expect(afterHeartbeat.status).toBe('running')
   })
+
+  it('keeps streamed content visible if the run completes before message hydration', () => {
+    let state = createAssistantTurn({
+      runId: 'run-5',
+      conversationId: 'conversation-1',
+      status: 'running',
+    })
+
+    state = applyAssistantTurnEvent(state, {
+      type: 'run.content.delta',
+      run_id: 'run-5',
+      round_index: 0,
+      seq: 2,
+      delta: 'Live answer.',
+    })
+    state = applyAssistantTurnEvent(state, {
+      type: 'run.completed',
+      run_id: 'run-5',
+      response_message_id: 'assistant-5',
+      seq: 3,
+    })
+
+    expect(state.status).toBe('completed')
+    expect(state.persistedMessage).toBeNull()
+    expect(state.partialContent).toBe('Live answer.')
+    expect(shouldShowAssistantTurnFailure(state)).toBe(false)
+  })
 })

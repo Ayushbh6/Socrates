@@ -31,6 +31,11 @@ import {
   type ProviderId,
 } from '@/config/models'
 import { Button } from '@/components/ui/button'
+import {
+  ArtifactWorkspacePanel,
+  type ArtifactPanelMode,
+} from '@/components/conversation/ArtifactWorkspacePanel'
+import { WorkerTracePanel } from '@/components/conversation/WorkerTracePanel'
 import { Textarea } from '@/components/ui/textarea'
 import { useAgentStream, type AgentStreamConnectionState } from '@/hooks/useAgentStream'
 import { useStickToBottom } from '@/hooks/useStickToBottom'
@@ -56,6 +61,13 @@ import {
   hydrateRunActivity,
   type RunActivityItem,
 } from '@/lib/runActivity'
+import {
+  applyWorkerTraceEvent,
+  createWorkerTraceState,
+  getActiveWorkerTraceRun,
+  isWorkerTraceEvent,
+  type WorkerTraceState,
+} from '@/lib/workerTrace'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/stores/appStore'
 import type {
@@ -68,6 +80,8 @@ import type {
   Task,
   TaskApproval,
   TaskArtifact,
+  TaskWorkspaceFilePreview,
+  TaskWorkspaceTree,
   ThinkingLevel,
   WsEvent,
 } from '@/types/api'
@@ -113,6 +127,17 @@ function ConversationSessionPage() {
   const [pendingSelection, setPendingSelection] = useState<ConversationUpdatePayload | null>(null)
   const [optimisticUsers, setOptimisticUsers] = useState<OptimisticUserMessage[]>([])
   const [assistantTurns, setAssistantTurns] = useState<Record<string, AssistantTurnState>>({})
+  const [workerTrace, setWorkerTrace] = useState<WorkerTraceState>(() => createWorkerTraceState())
+  const [workerPanelMode, setWorkerPanelMode] = useState<'open' | 'collapsed' | 'hidden'>(() =>
+    readPersistedPanelMode(`worker-panel:${conversationId}`, 'collapsed', ['open', 'collapsed', 'hidden']),
+  )
+  const [artifactPanelMode, setArtifactPanelMode] = useState<ArtifactPanelMode>(() =>
+    readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed']),
+  )
+  const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(() =>
+    readPersistedString(`artifact-selected-path:${conversationId}`),
+  )
+  const [mobileArtifactsOpen, setMobileArtifactsOpen] = useState(false)
   const [recentlyClosedTask, setRecentlyClosedTask] = useState<Task | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
 
@@ -169,6 +194,21 @@ function ConversationSessionPage() {
     enabled: Boolean(taskForSummary?.id),
   })
 
+  const { data: taskWorkspaceTree = null } = useQuery({
+    queryKey: ['task-workspace-tree', taskForSummary?.id],
+    queryFn: () => apiFetch<TaskWorkspaceTree>(`/tasks/${taskForSummary?.id}/workspace-tree`),
+    enabled: Boolean(taskForSummary?.id),
+  })
+
+  const { data: workspacePreview = null, isFetching: workspacePreviewLoading } = useQuery({
+    queryKey: ['task-workspace-file', taskForSummary?.id, selectedWorkspacePath],
+    queryFn: () =>
+      apiFetch<TaskWorkspaceFilePreview>(
+        `/tasks/${taskForSummary?.id}/workspace-file?path=${encodeURIComponent(selectedWorkspacePath ?? '')}`,
+      ),
+    enabled: Boolean(taskForSummary?.id && selectedWorkspacePath),
+  })
+
   const conversation = useMemo(
     () => conversations.find((entry) => entry.id === conversationId) ?? null,
     [conversationId, conversations],
@@ -203,15 +243,41 @@ function ConversationSessionPage() {
 
   useEffect(() => {
     setRecentlyClosedTask(null)
+    setWorkerTrace(createWorkerTraceState())
+    setWorkerPanelMode(readPersistedPanelMode(`worker-panel:${conversationId}`, 'collapsed', ['open', 'collapsed', 'hidden'] as const))
+    setArtifactPanelMode(readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed'] as const))
+    setSelectedWorkspacePath(readPersistedString(`artifact-selected-path:${conversationId}`))
+    setMobileArtifactsOpen(false)
   }, [conversationId])
+
+  useEffect(() => {
+    writePersistedString(`worker-panel:${conversationId}`, workerPanelMode)
+  }, [conversationId, workerPanelMode])
+
+  useEffect(() => {
+    writePersistedString(`artifact-panel:${conversationId}`, artifactPanelMode)
+  }, [artifactPanelMode, conversationId])
+
+  useEffect(() => {
+    writePersistedString(`artifact-selected-path:${conversationId}`, selectedWorkspacePath)
+  }, [conversationId, selectedWorkspacePath])
 
   useEffect(() => {
     assistantTurnsRef.current = assistantTurns
   }, [assistantTurns])
 
   useEffect(() => {
+    const latestOutput = [...taskArtifacts]
+      .filter((artifact) => artifact.artifact_role === 'output')
+      .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
+    if (!latestOutput) return
+    setSelectedWorkspacePath((current) => current ?? latestOutput.relative_path)
+    setArtifactPanelMode((current) => (current === 'collapsed' ? 'open' : current))
+  }, [taskArtifacts])
+
+  useEffect(() => {
     notifyContentChanged()
-  }, [messages, optimisticUsers, assistantTurns, notifyContentChanged])
+  }, [messages, optimisticUsers, assistantTurns, workerTrace, notifyContentChanged])
 
   useEffect(() => {
     if (!activeRun) {
@@ -319,6 +385,21 @@ function ConversationSessionPage() {
         }))
       }
 
+      if (isWorkerTraceEvent(event)) {
+        setWorkerTrace((previous) => applyWorkerTraceEvent(previous, event))
+        if (
+          'task_id' in event &&
+          (
+            event.type === 'task.worker.tool.result' ||
+            event.type === 'task.worker.todo.updated' ||
+            event.type === 'task.worker.completed'
+          )
+        ) {
+          queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })
+          queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
+        }
+      }
+
       if (event.type === 'run.message.completed') {
         queryClient.setQueryData<Message[]>(['messages', conversationId], (current) => {
           const next = current ? current.filter((message) => message.id !== event.message.id) : []
@@ -344,6 +425,7 @@ function ConversationSessionPage() {
         queryClient.setQueryData(['active-task', conversationId], event.task)
         queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task.id] })
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task.id] })
+        queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task.id] })
         return
       }
 
@@ -355,7 +437,11 @@ function ConversationSessionPage() {
 
       if (event.type === 'task.artifact.registered') {
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
+        queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
+        setSelectedWorkspacePath(event.artifact.relative_path)
+        setArtifactPanelMode('open')
+        setMobileArtifactsOpen(true)
         return
       }
 
@@ -368,12 +454,16 @@ function ConversationSessionPage() {
         }
         queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
+        queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })
         return
       }
 
       if (event.type === 'run.completed') {
         setActiveRunId(null)
-        queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+        const turn = assistantTurnsRef.current[event.run_id]
+        if (!turn?.persistedMessage) {
+          queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+        }
         queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
         queryClient.invalidateQueries({ queryKey: ['conversations', projectId] })
         return
@@ -445,15 +535,30 @@ function ConversationSessionPage() {
   })
 
   const resolveApproval = useMutation({
-    mutationFn: ({ approvalId, approved }: { approvalId: string; approved: boolean }) =>
+    mutationFn: ({ approvalId, approved, autoResume }: { approvalId: string; approved: boolean; autoResume?: boolean }) =>
       apiFetch<TaskApproval>(`/task-approvals/${approvalId}`, {
         method: 'POST',
-        body: JSON.stringify({ approved }),
+        body: JSON.stringify({ approved, auto_resume: Boolean(autoResume) }),
       }),
-    onSuccess: () => {
+    onSuccess: (approval) => {
       queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
       queryClient.invalidateQueries({ queryKey: ['task-approvals', taskForSummary?.id] })
       queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+      queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
+      if (approval.resume_agent_run_id) {
+        setActiveRunId(approval.resume_agent_run_id)
+        setAssistantTurns((previous) => ({
+          ...previous,
+          [approval.resume_agent_run_id!]:
+            previous[approval.resume_agent_run_id!] ??
+            createAssistantTurn({
+              runId: approval.resume_agent_run_id!,
+              conversationId,
+              status: approval.resume_status ?? 'queued',
+              thinkingEnabled: selectedThinking !== 'off',
+            }),
+        }))
+      }
     },
   })
 
@@ -599,8 +704,27 @@ function ConversationSessionPage() {
     [assistantTurns, messages, visibleOptimisticUsers],
   )
   const activeAssistantTurn = activeRunId ? assistantTurns[activeRunId] : null
+  const activeWorkerTrace = useMemo(() => getActiveWorkerTraceRun(workerTrace), [workerTrace])
+  const pendingTaskApprovals = useMemo(
+    () =>
+      taskForSummary && taskForSummary.status !== 'completed' && taskForSummary.status !== 'failed'
+        ? taskApprovals.filter((approval) => approval.status === 'pending')
+        : [],
+    [taskApprovals, taskForSummary],
+  )
+  const hasPendingPlanApproval = Boolean(
+    taskForSummary &&
+      taskForSummary.status !== 'completed' &&
+      taskForSummary.status !== 'failed' &&
+      pendingTaskApprovals.some(
+        (approval) => approval.status === 'pending' && approval.approval_type.toLowerCase().includes('plan'),
+      ),
+  )
+  const hasPendingTaskApproval = pendingTaskApprovals.length > 0
   const isConversationLocked =
     Boolean(activeRun) ||
+    hasPendingTaskApproval ||
+    resolveApproval.isPending ||
     (activeAssistantTurn ? activeAssistantTurn.status === 'queued' || activeAssistantTurn.status === 'running' : false)
   const hasConversationStarted = timelineEntries.length > 0 || activeRunId !== null
   const preferenceError =
@@ -610,7 +734,8 @@ function ConversationSessionPage() {
 
   return (
     <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-canvas">
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain">
           <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-35 pt-4 sm:px-6 sm:pb-42 sm:pt-6 lg:px-8">
             {hasConversationStarted ? (
@@ -622,7 +747,7 @@ function ConversationSessionPage() {
                     artifacts={taskArtifacts}
                     approvalPending={resolveApproval.isPending}
                     exportPending={exportArtifact.isPending}
-                    onResolveApproval={(approvalId, approved) => resolveApproval.mutate({ approvalId, approved })}
+                    onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
                     onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
                   />
                 ) : null}
@@ -665,7 +790,7 @@ function ConversationSessionPage() {
         </div>
 
         {hasUnseenBottomContent ? (
-          <div className="pointer-events-none fixed inset-x-0 bottom-26 z-30 flex justify-center px-4 sm:bottom-30">
+          <div className="pointer-events-none absolute inset-x-0 bottom-26 z-30 flex justify-center px-4 sm:bottom-30">
             <button
               type="button"
               onClick={() => scrollToBottom('smooth')}
@@ -678,7 +803,15 @@ function ConversationSessionPage() {
           </div>
         ) : null}
 
-        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 bg-canvas px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 sm:px-4 sm:pb-5">
+        {pendingTaskApprovals.length > 0 ? (
+          <PendingApprovalDock
+            approvals={pendingTaskApprovals}
+            approvalPending={resolveApproval.isPending}
+            onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
+          />
+        ) : null}
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-canvas px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 sm:px-4 sm:pb-5">
           <div className="pointer-events-auto mx-auto w-full max-w-4xl">
             <ConversationComposer
               compact
@@ -703,12 +836,67 @@ function ConversationSessionPage() {
               settingsPending={updateConversationPreferences.isPending}
               settingsError={preferenceError}
               sendError={sendError}
+              disabledReason={
+                hasPendingPlanApproval
+                  ? 'Approve the plan or reject it to suggest changes.'
+                  : hasPendingTaskApproval
+                    ? 'Resolve the pending task approval to continue.'
+                  : null
+              }
               disabled={isConversationLocked}
               fileInputRef={fileInputRef}
               onFileSelect={(file) => uploadAsset.mutate(file)}
             />
           </div>
         </div>
+        <WorkerTracePanel
+          worker={activeWorkerTrace}
+          mode={workerPanelMode}
+          onModeChange={setWorkerPanelMode}
+        />
+        {taskForSummary ? (
+          <button
+            type="button"
+            onClick={() => {
+              setArtifactPanelMode('open')
+              setMobileArtifactsOpen(true)
+            }}
+            className="fixed bottom-28 right-4 z-30 rounded-full border border-forest/12 bg-paper/94 px-3 py-2 text-xs font-semibold text-forest shadow-lg lg:hidden"
+          >
+            Artifacts
+          </button>
+        ) : null}
+        {mobileArtifactsOpen && taskForSummary ? (
+          <ArtifactWorkspacePanel
+            mobile
+            taskId={taskForSummary.id}
+            tree={taskWorkspaceTree}
+            preview={workspacePreview}
+            artifacts={taskArtifacts}
+            selectedPath={selectedWorkspacePath}
+            mode="open"
+            loadingPreview={workspacePreviewLoading}
+            exportPending={exportArtifact.isPending}
+            onSelectPath={setSelectedWorkspacePath}
+            onModeChange={setArtifactPanelMode}
+            onCloseMobile={() => setMobileArtifactsOpen(false)}
+            onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
+          />
+        ) : null}
+        </section>
+        <ArtifactWorkspacePanel
+          taskId={taskForSummary?.id ?? null}
+          tree={taskWorkspaceTree}
+          preview={workspacePreview}
+          artifacts={taskArtifacts}
+          selectedPath={selectedWorkspacePath}
+          mode={artifactPanelMode}
+          loadingPreview={workspacePreviewLoading}
+          exportPending={exportArtifact.isPending}
+          onSelectPath={setSelectedWorkspacePath}
+          onModeChange={setArtifactPanelMode}
+          onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
+        />
       </div>
     </div>
   )
@@ -720,7 +908,7 @@ interface TaskSummaryCardProps {
   artifacts: TaskArtifact[]
   approvalPending: boolean
   exportPending: boolean
-  onResolveApproval: (approvalId: string, approved: boolean) => void
+  onResolveApproval: (approvalId: string, approved: boolean, autoResume?: boolean) => void
   onExportArtifact: (artifactId: string) => void
 }
 
@@ -736,7 +924,8 @@ function TaskSummaryCard({
   const isTerminalTask = task.status === 'completed' || task.status === 'failed'
   const pendingApprovals = isTerminalTask ? [] : approvals.filter((approval) => approval.status === 'pending')
   const planApprovals = pendingApprovals.filter((a) => a.approval_type.toLowerCase().includes('plan'))
-  const commandApprovals = pendingApprovals.filter((a) => !a.approval_type.toLowerCase().includes('plan'))
+  const completionApprovals = pendingApprovals.filter((a) => a.approval_type === 'task_completion')
+  const commandApprovals = pendingApprovals.filter((a) => !a.approval_type.toLowerCase().includes('plan') && a.approval_type !== 'task_completion')
   const outputArtifacts = artifacts.filter((artifact) => artifact.artifact_role === 'output')
   const taskLabel =
     task.status === 'completed'
@@ -799,13 +988,13 @@ function TaskSummaryCard({
                   disabled={approvalPending}
                   onClick={() => onResolveApproval(approval.id, false)}
                 >
-                  Reject
+                  Reject and suggest changes
                 </Button>
                 <Button
                   type="button"
                   className="bg-forest text-white hover:bg-forest/90 shadow-md shadow-forest/10"
                   disabled={approvalPending}
-                  onClick={() => onResolveApproval(approval.id, true)}
+                  onClick={() => onResolveApproval(approval.id, true, true)}
                 >
                   Approve Plan
                 </Button>
@@ -846,6 +1035,46 @@ function TaskSummaryCard({
                   onClick={() => onResolveApproval(approval.id, true)}
                 >
                   Confirm
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {completionApprovals.length > 0 ? (
+        <div className="mt-4 space-y-3 rounded-[1rem] border border-emerald-200 bg-emerald-50/80 p-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="size-3.5 text-emerald-700" />
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-800">Completion Approval</p>
+          </div>
+          {completionApprovals.map((approval) => (
+            <div key={approval.id} className="flex flex-wrap items-center justify-between gap-3 rounded-[0.9rem] bg-white/86 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-emerald-950">Socrates wants to mark this task completed.</p>
+                <p className="mt-1 max-w-2xl text-xs leading-5 text-ink-soft">
+                  {typeof approval.request_json.result_summary === 'string'
+                    ? approval.request_json.result_summary
+                    : 'Approve only if the delivered work is accepted.'}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-emerald-200 bg-transparent text-emerald-900 hover:bg-white"
+                  disabled={approvalPending}
+                  onClick={() => onResolveApproval(approval.id, false, true)}
+                >
+                  No
+                </Button>
+                <Button
+                  type="button"
+                  className="bg-emerald-700 text-white hover:bg-emerald-800"
+                  disabled={approvalPending}
+                  onClick={() => onResolveApproval(approval.id, true)}
+                >
+                  Yes
                 </Button>
               </div>
             </div>
@@ -910,6 +1139,89 @@ function TaskSummaryCard({
   )
 }
 
+interface PendingApprovalDockProps {
+  approvals: TaskApproval[]
+  approvalPending: boolean
+  onResolveApproval: (approvalId: string, approved: boolean, autoResume?: boolean) => void
+}
+
+function PendingApprovalDock({
+  approvals,
+  approvalPending,
+  onResolveApproval,
+}: PendingApprovalDockProps) {
+  const approval = approvals[0]
+  if (!approval) {
+    return null
+  }
+
+  const isPlan = approval.approval_type.toLowerCase().includes('plan')
+  const isCompletion = approval.approval_type === 'task_completion'
+  const summary =
+    typeof approval.request_json.result_summary === 'string'
+      ? approval.request_json.result_summary
+      : isPlan
+        ? 'Review the proposed plan before Socrates starts work.'
+        : isCompletion
+          ? 'Approve only if the delivered work is accepted.'
+          : JSON.stringify(approval.request_json)
+
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-33 z-30 px-3 sm:bottom-37 sm:px-6">
+      <div className="pointer-events-auto mx-auto flex w-full max-w-4xl flex-col gap-3 rounded-[1rem] border border-forest/12 bg-paper/96 px-4 py-3 shadow-[0_18px_48px_rgba(42,62,49,0.16)] backdrop-blur md:flex-row md:items-center md:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <div
+            className={cn(
+              'mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full',
+              isCompletion ? 'bg-emerald-100 text-emerald-700' : isPlan ? 'bg-sage/60 text-moss' : 'bg-amber-100 text-amber-700',
+            )}
+          >
+            {isCompletion ? (
+              <CheckCircle2 className="size-4" aria-hidden="true" />
+            ) : isPlan ? (
+              <Sparkles className="size-4" aria-hidden="true" />
+            ) : (
+              <AlertCircle className="size-4" aria-hidden="true" />
+            )}
+          </div>
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-moss">
+              {isCompletion ? 'Completion approval' : isPlan ? 'Plan approval' : 'Action approval'}
+            </p>
+            <p className="mt-1 line-clamp-2 text-sm leading-5 text-ink-soft">{summary}</p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="border-forest/20 bg-transparent text-ink-soft hover:bg-red-50 hover:text-red-700 hover:border-red-200"
+            disabled={approvalPending}
+            onClick={() => onResolveApproval(approval.id, false, isCompletion)}
+          >
+            {isCompletion ? 'No' : isPlan ? 'Reject' : 'Deny'}
+          </Button>
+          <Button
+            type="button"
+            className={cn(
+              'text-white shadow-md',
+              isCompletion
+                ? 'bg-emerald-700 hover:bg-emerald-800 shadow-emerald-900/10'
+                : isPlan
+                  ? 'bg-forest hover:bg-forest/90 shadow-forest/10'
+                  : 'bg-amber-600 hover:bg-amber-700 shadow-amber-900/10',
+            )}
+            disabled={approvalPending}
+            onClick={() => onResolveApproval(approval.id, true, isPlan)}
+          >
+            {isCompletion ? 'Yes' : isPlan ? 'Approve plan' : 'Confirm'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface ComposerProps {
   compact?: boolean
   register: ReturnType<typeof useForm<SendForm>>['register']
@@ -930,6 +1242,7 @@ interface ComposerProps {
   settingsPending: boolean
   settingsError: string | null
   sendError: string | null
+  disabledReason: string | null
   disabled: boolean
   fileInputRef: RefObject<HTMLInputElement | null>
   onFileSelect: (file: File) => void
@@ -955,6 +1268,7 @@ function ConversationComposer({
   settingsPending,
   settingsError,
   sendError,
+  disabledReason,
   disabled,
   fileInputRef,
   onFileSelect,
@@ -1016,6 +1330,7 @@ function ConversationComposer({
 
         {settingsError ? <p className="text-sm text-red-600">{settingsError}</p> : null}
         {sendError ? <p className="text-sm text-red-600">{sendError}</p> : null}
+        {disabledReason ? <p className="text-sm text-ink-soft">{disabledReason}</p> : null}
 
         {pendingAssets.length > 0 ? (
           <div className="flex flex-wrap gap-2">
@@ -1354,12 +1669,42 @@ function deriveThinkingStorageKey(message: { agent_run_id?: string | null }): st
   return null
 }
 
-function readPersistedCollapse(storageKey: string | null): boolean {
-  if (!storageKey || typeof window === 'undefined') return false
+function readPersistedString(storageKey: string): string | null {
+  if (typeof window === 'undefined') return null
   try {
-    return window.localStorage.getItem(storageKey) === '1'
+    const value = window.localStorage.getItem(storageKey)
+    return value?.trim() ? value : null
   } catch {
-    return false
+    return null
+  }
+}
+
+function writePersistedString(storageKey: string, value: string | null): void {
+  if (typeof window === 'undefined') return
+  try {
+    if (value?.trim()) {
+      window.localStorage.setItem(storageKey, value)
+    } else {
+      window.localStorage.removeItem(storageKey)
+    }
+  } catch {
+    // localStorage may be unavailable; panel state can safely degrade.
+  }
+}
+
+function readPersistedPanelMode<T extends string>(storageKey: string, fallback: T, allowed: readonly T[]): T {
+  const value = readPersistedString(storageKey)
+  return allowed.includes(value as T) ? (value as T) : fallback
+}
+
+function readPersistedCollapse(storageKey: string | null): boolean {
+  if (!storageKey || typeof window === 'undefined') return true
+  try {
+    const persisted = window.localStorage.getItem(storageKey)
+    if (persisted === null) return true
+    return persisted === '1'
+  } catch {
+    return true
   }
 }
 
@@ -1369,7 +1714,7 @@ function writePersistedCollapse(storageKey: string | null, collapsed: boolean): 
     if (collapsed) {
       window.localStorage.setItem(storageKey, '1')
     } else {
-      window.localStorage.removeItem(storageKey)
+      window.localStorage.setItem(storageKey, '0')
     }
   } catch {
     // localStorage may be unavailable (private mode, quota); fail silently.
@@ -1513,8 +1858,10 @@ interface AssistantTurnBubbleProps {
 
 function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubbleProps) {
   const isStreaming = turn.status === 'queued' || turn.status === 'running'
-  const displayContent = turn.persistedMessage?.content_text ?? turn.partialContent
-  const displayThinking = turn.persistedMessage?.thinking_text ?? turn.partialThinking
+  const persistedContent = turn.persistedMessage?.content_text ?? ''
+  const persistedThinking = turn.persistedMessage?.thinking_text ?? ''
+  const displayContent = persistedContent.trim().length > 0 ? persistedContent : turn.partialContent
+  const displayThinking = persistedThinking.trim().length > 0 ? persistedThinking : turn.partialThinking
   const hasContent = displayContent.trim().length > 0
   const hasThinking = displayThinking.trim().length > 0
   const showStreamingStatus = isStreaming && !hasThinking && !hasContent
@@ -1545,7 +1892,7 @@ function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubblePro
 
         {showActivityPanel ? (
           <RunActivityPanel
-            key={`${turn.runId}:${isStreaming ? 'live' : 'settled'}`}
+            key={turn.runId}
             runId={turn.runId}
             activity={turn.activity}
             isStreaming={isStreaming}
@@ -1607,7 +1954,7 @@ function RunActivityPanel({
   connectionState,
   onHydrate,
 }: RunActivityPanelProps) {
-  const [expanded, setExpanded] = useState(isStreaming)
+  const [expanded, setExpanded] = useState(false)
   const summary =
     connectionState === 'reconnecting'
       ? 'Reconnecting to live activity…'
@@ -1617,8 +1964,8 @@ function RunActivityPanel({
   const statusLabel = isStreaming ? 'Live activity' : 'Run trace'
 
   useEffect(() => {
-    setExpanded(isStreaming)
-  }, [isStreaming, runId])
+    setExpanded(false)
+  }, [runId])
 
   const toggleExpanded = useCallback(() => {
     const next = !expanded
@@ -1671,6 +2018,8 @@ function RunActivityPanel({
             activity.items.map((item) =>
               item.kind === 'narration' ? (
                 <RunNarrationRow key={`narration:${item.seq}`} item={item} />
+              ) : item.kind === 'worker' ? (
+                <RunWorkerRow key={`worker:${item.workerRunId}`} item={item} />
               ) : (
                 <RunToolRow key={`tool:${item.toolCallId}`} item={item} />
               ),
@@ -1694,6 +2043,40 @@ function RunNarrationRow({ item }: { item: Extract<RunActivityItem, { kind: 'nar
         <span>Socrates note</span>
       </div>
       <p className="mt-1.5 text-sm leading-6 text-ink">{item.text}</p>
+    </div>
+  )
+}
+
+function RunWorkerRow({ item }: { item: Extract<RunActivityItem, { kind: 'worker' }> }) {
+  const statusText =
+    item.status === 'running' ? 'Running' : item.status === 'blocked' ? 'Blocked' : item.status === 'failed' ? 'Failed' : 'Completed'
+
+  return (
+    <div className="rounded-[1.05rem] border border-forest/10 bg-sage/35 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <WorkerStatusIcon status={item.status} />
+            <p className="min-w-0 truncate text-sm font-semibold text-forest">Worker handoff</p>
+          </div>
+          <p className="mt-1 pl-6 text-xs leading-5 text-ink-soft">{item.summary}</p>
+          {item.progressLabel ? (
+            <p className="mt-0.5 pl-6 text-[11px] font-medium text-moss">{item.progressLabel}</p>
+          ) : null}
+        </div>
+        <span
+          className={cn(
+            'rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em]',
+            item.status === 'running'
+              ? 'bg-white/80 text-forest'
+              : item.status === 'failed' || item.status === 'blocked'
+                ? 'bg-red-100 text-red-700'
+                : 'bg-white/80 text-moss',
+          )}
+        >
+          {statusText}
+        </span>
+      </div>
     </div>
   )
 }
@@ -1759,6 +2142,16 @@ function RunToolRow({ item }: { item: Extract<RunActivityItem, { kind: 'tool' }>
       ) : null}
     </div>
   )
+}
+
+function WorkerStatusIcon({ status }: { status: Extract<RunActivityItem, { kind: 'worker' }>['status'] }) {
+  if (status === 'running') {
+    return <LoaderCircle className="size-4 shrink-0 animate-spin text-moss" />
+  }
+  if (status === 'failed' || status === 'blocked') {
+    return <AlertCircle className="size-4 shrink-0 text-red-600" />
+  }
+  return <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
 }
 
 function ToolStatusIcon({ status }: { status: Extract<RunActivityItem, { kind: 'tool' }>['status'] }) {

@@ -50,6 +50,9 @@ export function buildConversationTimeline(
   const persistedAssistantMessagesByRunId = new Map<string, Message>()
   const legacyAssistantMessages: Message[] = []
   const persistedUsers = messages.filter((message) => {
+    if (message.metadata?.system_generated === true) {
+      return false
+    }
     if (message.role === 'assistant') {
       if (message.agent_run_id) {
         persistedAssistantMessagesByRunId.set(message.agent_run_id, message)

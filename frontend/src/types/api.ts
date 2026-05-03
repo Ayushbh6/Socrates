@@ -214,6 +214,41 @@ export interface TaskArtifact {
   created_at: string
 }
 
+export interface TaskWorkspaceEntry {
+  path: string
+  name: string
+  parent_path: string | null
+  is_dir: boolean
+  size_bytes: number | null
+  mime_type: string | null
+  updated_at: string
+}
+
+export interface TaskWorkspaceRoot {
+  path: string
+  name: string
+  entries: TaskWorkspaceEntry[]
+}
+
+export interface TaskWorkspaceTree {
+  task_id: string
+  roots: TaskWorkspaceRoot[]
+}
+
+export interface TaskWorkspaceFilePreview {
+  task_id: string
+  path: string
+  name: string
+  mime_type: string
+  size_bytes: number
+  sha256: string
+  preview_type: 'text' | 'image' | 'binary'
+  content_text?: string | null
+  data_url?: string | null
+  encoding?: string | null
+  truncated: boolean
+}
+
 export interface TaskApproval {
   id: string
   task_id: string
@@ -226,6 +261,9 @@ export interface TaskApproval {
   requested_at: string | null
   resolved_at: string | null
   created_at: string
+  resume_agent_run_id?: string | null
+  resume_status?: AgentRunStatus | null
+  resume_error?: string | null
 }
 
 // ── WebSocket event union ──────────────────────────────────────────────────────
@@ -343,6 +381,99 @@ export interface WsTaskStatusUpdated extends WsEventBase {
   task_id: string
   task: Task
 }
+export interface WorkerTodoItemPayload {
+  id: string
+  status: string
+  text: string
+  position?: number
+  evidence?: unknown
+  reason?: string
+  recommended_action?: string
+}
+export interface WorkerTodoProgressPayload {
+  pending?: number
+  in_progress?: number
+  completed?: number
+  blocked?: number
+  skipped?: number
+  total?: number
+}
+export interface WorkerTodoUpdatePayload {
+  ok?: boolean
+  item?: WorkerTodoItemPayload
+  next_item?: WorkerTodoItemPayload | null
+  done?: boolean
+  progress?: WorkerTodoProgressPayload
+  error_type?: string
+  message?: string
+}
+export interface WorkerResultPayload {
+  status?: string
+  summary?: string
+  todo?: unknown
+  changed_files?: unknown[]
+  outputs?: unknown[]
+  verification?: unknown[]
+  blockers?: unknown[]
+  handoff_to_socrates?: string
+}
+export interface WsTaskWorkerStarted extends WsEventBase {
+  type: 'task.worker.started'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+}
+export interface WsTaskWorkerProgress extends WsEventBase {
+  type: 'task.worker.progress'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+  status?: string
+  summary?: string | null
+  todo?: unknown
+}
+export interface WsTaskWorkerToolCalled extends WsEventBase {
+  type: 'task.worker.tool.called'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+  round_index: number
+  tool_call: ToolCallPayload
+}
+export interface WsTaskWorkerToolResult extends WsEventBase {
+  type: 'task.worker.tool.result'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+  round_index: number
+  tool_call_id: string
+  tool_name: string
+  tool_result: unknown
+}
+export interface WsTaskWorkerTodoUpdated extends WsEventBase {
+  type: 'task.worker.todo.updated'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+  round_index: number
+  tool_call_id: string
+  todo: WorkerTodoUpdatePayload
+}
+export interface WsTaskWorkerWarning extends WsEventBase {
+  type: 'task.worker.warning'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+  round_index: number
+  message: string
+}
+export interface WsTaskWorkerTerminal extends WsEventBase {
+  type: 'task.worker.completed' | 'task.worker.blocked' | 'task.worker.failed'
+  run_id: string
+  task_id: string
+  worker_run_id: string | null
+  result: WorkerResultPayload
+}
 export interface WsRunHeartbeat extends WsEventBase {
   type: 'run.heartbeat'
   run_id: string
@@ -367,4 +498,11 @@ export type WsEvent =
   | WsTaskApprovalResolved
   | WsTaskArtifactRegistered
   | WsTaskStatusUpdated
+  | WsTaskWorkerStarted
+  | WsTaskWorkerProgress
+  | WsTaskWorkerToolCalled
+  | WsTaskWorkerToolResult
+  | WsTaskWorkerTodoUpdated
+  | WsTaskWorkerWarning
+  | WsTaskWorkerTerminal
   | WsRunHeartbeat

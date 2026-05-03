@@ -126,6 +126,43 @@ describe('runActivity helpers', () => {
     expect(getRunActivitySummary(state)).toBe('1 note')
   })
 
+  it('captures worker handoff progress as a compact activity row', () => {
+    let state = createRunActivityState('run-worker-parent')
+
+    state = applyRunActivityEvent(state, {
+      type: 'task.worker.started',
+      run_id: 'run-worker-parent',
+      task_id: 'task-1',
+      worker_run_id: 'worker-1',
+      seq: 2,
+    })
+    state = applyRunActivityEvent(state, {
+      type: 'task.worker.todo.updated',
+      run_id: 'run-worker-parent',
+      task_id: 'task-1',
+      worker_run_id: 'worker-1',
+      round_index: 0,
+      tool_call_id: 'todo-call-1',
+      todo: {
+        ok: true,
+        item: { id: 'T1', text: 'Write the report', status: 'in_progress' },
+        done: false,
+        progress: { completed: 0, total: 1 },
+      },
+      seq: 3,
+    })
+
+    expect(state.items).toHaveLength(1)
+    expect(state.items[0]).toMatchObject({
+      kind: 'worker',
+      workerRunId: 'worker-1',
+      status: 'running',
+      summary: 'T1: Write the report',
+      progressLabel: '0/1 resolved',
+    })
+    expect(getRunActivitySummary(state)).toBe('T1: Write the report')
+  })
+
   it('hydrates a completed run from persisted trace records', () => {
     const records: AgentRunEvent[] = [
       {

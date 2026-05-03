@@ -96,4 +96,31 @@ describe('conversation timeline', () => {
 
     expect(entries.map((entry) => entry.kind)).toEqual(['user', 'assistant'])
   })
+
+  it('hides system-generated approval resume messages while keeping their assistant turn', () => {
+    const resumeUser: Message = {
+      ...userMessage,
+      id: 'resume-user-1',
+      agent_run_id: 'resume-run-1',
+      sequence_no: 3,
+      content_text: 'The user approved the current plan through the plan approval controls.',
+      metadata: { system_generated: true, kind: 'plan_approval_resume' },
+    }
+    const resumeAssistant: Message = {
+      ...assistantMessage,
+      id: 'resume-assistant-1',
+      agent_run_id: 'resume-run-1',
+      sequence_no: 4,
+      content_text: 'Continuing after approval.',
+    }
+
+    const entries = buildConversationTimeline(
+      [resumeUser, resumeAssistant],
+      [],
+      {},
+    )
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['assistant'])
+    expect(entries[0].kind === 'assistant' && entries[0].turn.persistedMessage?.id).toBe('resume-assistant-1')
+  })
 })

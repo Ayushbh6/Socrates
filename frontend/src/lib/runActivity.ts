@@ -5,7 +5,11 @@ import type {
   WsRunFailed,
   WsRunToolCalled,
   WsRunToolResult,
+  WsTaskWorkerStarted,
+  WsTaskWorkerTerminal,
+  WsTaskWorkerTodoUpdated,
 } from '@/types/api'
+import { getWorkerProgressLabel, getWorkerTraceSummary, applyWorkerTraceEvent, createWorkerTraceState } from './workerTrace'
 
 export type RunActivityStatus = 'running' | 'completed' | 'failed'
 
@@ -29,7 +33,16 @@ export interface RunActivityToolItem {
   rawResult: unknown
 }
 
-export type RunActivityItem = RunActivityNarrationItem | RunActivityToolItem
+export interface RunActivityWorkerItem {
+  kind: 'worker'
+  seq: number
+  workerRunId: string
+  status: 'running' | 'completed' | 'blocked' | 'failed'
+  summary: string
+  progressLabel: string | null
+}
+
+export type RunActivityItem = RunActivityNarrationItem | RunActivityToolItem | RunActivityWorkerItem
 
 export interface RunActivityState {
   runId: string
@@ -51,6 +64,9 @@ type ActivityEvent =
   | WsRunToolResult
   | WsRunFailed
   | Extract<WsEvent, { type: 'run.completed' }>
+  | WsTaskWorkerStarted
+  | WsTaskWorkerTodoUpdated
+  | WsTaskWorkerTerminal
 
 interface ParsedToolPayload {
   ok: boolean
@@ -68,6 +84,11 @@ const ACTIVITY_EVENT_TYPES = new Set([
   'run.tool.result',
   'run.completed',
   'run.failed',
+  'task.worker.started',
+  'task.worker.todo.updated',
+  'task.worker.completed',
+  'task.worker.blocked',
+  'task.worker.failed',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -284,6 +305,38 @@ function insertOrUpdateToolItem(
   return updated
 }
 
+function insertOrUpdateWorkerItem(
+  items: RunActivityItem[],
+  nextItem: RunActivityWorkerItem,
+): RunActivityItem[] {
+  const existingIndex = items.findIndex(
+    (item) => item.kind === 'worker' && item.workerRunId === nextItem.workerRunId,
+  )
+  if (existingIndex === -1) {
+    return [...items, nextItem].sort((left, right) => left.seq - right.seq)
+  }
+  const existing = items[existingIndex]
+  if (existing.kind !== 'worker') return items
+  const updated = items.slice()
+  updated[existingIndex] = { ...existing, ...nextItem, seq: existing.seq }
+  return updated
+}
+
+function workerItemFromEvent(event: ActivityEvent, seq: number): RunActivityWorkerItem | null {
+  if (!event.type.startsWith('task.worker.')) return null
+  const state = applyWorkerTraceEvent(createWorkerTraceState(), event)
+  const workerRun = state.activeWorkerRunId ? state.runs[state.activeWorkerRunId] : null
+  if (!workerRun) return null
+  return {
+    kind: 'worker',
+    seq,
+    workerRunId: workerRun.workerRunId,
+    status: workerRun.status === 'idle' ? 'running' : workerRun.status,
+    summary: getWorkerTraceSummary(workerRun),
+    progressLabel: getWorkerProgressLabel(workerRun.progress),
+  }
+}
+
 export function applyRunActivityEvent(
   current: RunActivityState | undefined,
   event: ActivityEvent,
@@ -361,6 +414,11 @@ export function applyRunActivityEvent(
         resultSummary: item.resultSummary ?? event.error,
       }
     })
+  } else if (event.type.startsWith('task.worker.')) {
+    const workerItem = workerItemFromEvent(event, seq ?? Number.MAX_SAFE_INTEGER)
+    if (workerItem) {
+      items = insertOrUpdateWorkerItem(items, workerItem)
+    }
   }
 
   let seenSeqs = next.seenSeqs
@@ -459,6 +517,31 @@ export function toActivityEvent(record: AgentRunEvent): ActivityEvent | null {
     }
   }
 
+  if (type === 'task.worker.started') {
+    const workerRunId = getString(record.payload.worker_run_id)
+    const taskId = getString(record.payload.task_id)
+    if (!workerRunId || !taskId) return null
+    return { type, run_id: runId, task_id: taskId, worker_run_id: workerRunId, seq: record.sequence_no }
+  }
+
+  if (type === 'task.worker.todo.updated') {
+    const workerRunId = getString(record.payload.worker_run_id)
+    const taskId = getString(record.payload.task_id)
+    const toolCallId = getString(record.payload.tool_call_id)
+    const roundIndex = typeof record.payload.round_index === 'number' ? record.payload.round_index : 0
+    const todo = isRecord(record.payload.todo) ? record.payload.todo : null
+    if (!workerRunId || !taskId || !toolCallId || !todo) return null
+    return { type, run_id: runId, task_id: taskId, worker_run_id: workerRunId, round_index: roundIndex, tool_call_id: toolCallId, todo, seq: record.sequence_no }
+  }
+
+  if (type === 'task.worker.completed' || type === 'task.worker.blocked' || type === 'task.worker.failed') {
+    const workerRunId = getString(record.payload.worker_run_id)
+    const taskId = getString(record.payload.task_id)
+    const result = isRecord(record.payload.result) ? record.payload.result : {}
+    if (!workerRunId || !taskId) return null
+    return { type, run_id: runId, task_id: taskId, worker_run_id: workerRunId, result, seq: record.sequence_no }
+  }
+
   return null
 }
 
@@ -469,14 +552,18 @@ export function getRunActivitySummary(state: RunActivityState): string {
 
   const toolCount = state.items.filter((item) => item.kind === 'tool').length
   const narrationCount = state.items.filter((item) => item.kind === 'narration').length
+  const workerCount = state.items.filter((item) => item.kind === 'worker').length
   const latest = state.items[state.items.length - 1]
 
   if (!state.terminal) {
-    return latest.kind === 'tool' ? latest.label : latest.text
+    if (latest.kind === 'tool') return latest.label
+    if (latest.kind === 'worker') return latest.summary
+    return latest.text
   }
 
   const parts: string[] = []
   if (toolCount > 0) parts.push(`${toolCount} tool step${toolCount === 1 ? '' : 's'}`)
+  if (workerCount > 0) parts.push(`${workerCount} worker handoff${workerCount === 1 ? '' : 's'}`)
   if (narrationCount > 0) parts.push(`${narrationCount} note${narrationCount === 1 ? '' : 's'}`)
   return parts.join(' · ')
 }

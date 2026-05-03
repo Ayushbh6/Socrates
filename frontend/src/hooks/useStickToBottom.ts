@@ -48,6 +48,7 @@ export interface StickToBottomController {
 export function useStickToBottom(options: UseStickToBottomOptions = {}): StickToBottomController {
   const threshold = options.threshold ?? STICK_TO_BOTTOM_THRESHOLD_PX
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const frameRef = useRef<number | null>(null)
   const atBottomRef = useRef(true)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const [hasNewContent, setHasNewContent] = useState(false)
@@ -76,6 +77,10 @@ export function useStickToBottom(options: UseStickToBottomOptions = {}): StickTo
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = containerRef.current
     if (!el) return
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
     el.scrollTo({ top: el.scrollHeight, behavior })
     atBottomRef.current = true
     setIsAtBottom(true)
@@ -91,9 +96,14 @@ export function useStickToBottom(options: UseStickToBottomOptions = {}): StickTo
       threshold,
     })
     if (decision.shouldAutoScroll) {
-      const el = containerRef.current
-      if (el) {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+      if (frameRef.current === null) {
+        frameRef.current = window.requestAnimationFrame(() => {
+          frameRef.current = null
+          const el = containerRef.current
+          if (el) {
+            el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+          }
+        })
       }
       atBottomRef.current = true
       setIsAtBottom(true)
@@ -116,6 +126,12 @@ export function useStickToBottom(options: UseStickToBottomOptions = {}): StickTo
       el.removeEventListener('scroll', onScroll)
     }
   }, [syncAtBottomFromScroll])
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+    }
+  }, [])
 
   // Initial sync once layout is known so `isAtBottom` / `hasNewContent` start
   // consistent with the actual geometry (e.g. conversations that hydrate from
