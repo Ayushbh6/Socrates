@@ -229,12 +229,12 @@ function ProjectsHome() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex w-full min-w-0 flex-col gap-4 pb-4 sm:gap-5">
+      <div className="flex w-full flex-col gap-4 pb-4 sm:gap-5">
         <motion.section
           initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: animation.durationBase, ease: animation.spring }}
-          className="min-w-0 shrink-0 rounded-[1.5rem] border border-sage-strong/70 bg-paper/95 px-5 py-5 shadow-[0_20px_52px_rgba(62,92,72,0.07)] sm:px-7 sm:py-6 lg:rounded-[1.8rem]"
+          className="shrink-0 rounded-[2rem] border border-sage-strong/70 bg-paper/95 px-5 py-5 shadow-[0_24px_60px_rgba(62,92,72,0.08)] sm:px-8 sm:py-7"
         >
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div className="flex max-w-2xl flex-col gap-3">
@@ -242,10 +242,10 @@ function ProjectsHome() {
                 {getGreeting()}
               </p>
               <div className="flex flex-col gap-2">
-                <h1 className="py-1 font-display text-[clamp(2rem,4.2vw,4rem)] leading-[1.08] tracking-tight text-forest">
+                <h1 className="font-display text-[clamp(2rem,4.6vw,4.25rem)] leading-[0.96] tracking-tight text-forest">
                   {displayName}&rsquo;s workspace
                 </h1>
-                <p className="max-w-2xl text-[15px] leading-6 text-ink-soft sm:leading-7">
+                <p className="max-w-2xl text-[15px] leading-7 text-ink-soft">
                   Your projects are the center of Socrates. Gather a domain of thought, keep
                   every conversation inside it, and return later with the full context intact.
                 </p>
@@ -265,7 +265,7 @@ function ProjectsHome() {
         </motion.section>
 
         <section className="flex flex-col gap-4">
-          <div className="flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
+          <div className="shrink-0 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
             <div className="w-full sm:max-w-md">
               <InputGroup className="h-11 rounded-full border-sage-strong bg-paper shadow-[0_10px_30px_rgba(62,92,72,0.05)]">
                 <InputGroupAddon>
@@ -299,7 +299,7 @@ function ProjectsHome() {
             {isPending ? (
               <ProjectsLoadingState />
             ) : filteredProjects.length > 0 ? (
-              <div className="min-w-0">
+              <div className="pr-2">
                 <div className="grid grid-cols-1 gap-4">
                   {filteredProjects.map((project, index) => (
                     <ProjectCard

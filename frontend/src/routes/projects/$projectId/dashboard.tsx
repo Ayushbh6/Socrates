@@ -375,10 +375,10 @@ function ProjectDashboardPage() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-5 lg:px-8 lg:py-4">
-        <div className="mx-auto flex w-full max-w-[118rem] flex-col gap-3 pb-4 sm:gap-4">
-          <section className="shrink-0 rounded-[1.35rem] bg-paper/92 px-4 py-3 shadow-[0_18px_44px_rgba(62,92,72,0.07)] sm:px-6 sm:py-4 lg:rounded-[1.65rem]">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+      <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-4 py-4 sm:px-6 lg:px-10 lg:py-5">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden sm:gap-4">
+          <section className="shrink-0 rounded-[2rem] bg-paper/92 px-5 py-4 shadow-[0_24px_60px_rgba(62,92,72,0.08)] sm:px-7 sm:py-5">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
               <div className="flex max-w-3xl flex-col gap-4">
                 <Link
                   to="/projects"
@@ -392,11 +392,11 @@ function ProjectDashboardPage() {
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
                     Project dashboard
                   </p>
-                  <div className="flex flex-col gap-1.5">
-                    <h1 className="font-display text-[clamp(2rem,3.6vw,3.25rem)] leading-none tracking-tight text-forest">
+                  <div className="flex flex-col gap-2">
+                    <h1 className="font-display text-[clamp(2.35rem,4vw,4rem)] leading-[0.94] tracking-tight text-forest">
                       {project?.name ?? 'Project'}
                     </h1>
-                    <p className="max-w-2xl text-sm leading-5 text-ink-soft sm:text-[15px] sm:leading-6">
+                    <p className="max-w-2xl text-sm leading-6 text-ink-soft sm:text-[15px] sm:leading-7">
                       {project?.description ??
                         'Review past conversations, keep your project resources together, and start a new session whenever a new line of thought begins.'}
                     </p>
@@ -430,15 +430,15 @@ function ProjectDashboardPage() {
             />
           </section>
 
-          <div className="grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(320px,0.9fr)] xl:gap-4">
-            <section className="flex min-h-[22rem] flex-col rounded-[1.35rem] bg-white/84 shadow-[0_18px_44px_rgba(62,92,72,0.05)] lg:rounded-[1.65rem] xl:max-h-[calc(100vh-17rem)]">
-              <div className="flex shrink-0 flex-col gap-3 px-4 py-3 sm:px-5 sm:py-4">
-                <div className="flex items-center justify-between gap-3">
+          <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[1.4fr_0.95fr] xl:gap-4">
+            <section className="flex min-h-0 flex-col rounded-[2rem] bg-white/84 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
+              <div className="flex shrink-0 flex-col gap-4 px-5 py-4 sm:px-6 sm:py-5">
+                <div className="flex items-center justify-between gap-4">
                   <div className="flex flex-col gap-1">
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
                       Conversations
                     </p>
-                    <h2 className="font-display text-2xl tracking-tight text-forest sm:text-3xl">Past sessions</h2>
+                    <h2 className="font-display text-3xl tracking-tight text-forest">Past sessions</h2>
                   </div>
                   <div className="rounded-full border border-sage-strong bg-paper px-3 py-1 text-sm text-ink-soft">
                     {recentConversations.length}
@@ -464,9 +464,9 @@ function ProjectDashboardPage() {
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 px-3 pb-3 sm:px-4 sm:pb-4">
+              <div className="min-h-0 flex-1 px-4 pb-4 sm:px-5 sm:pb-5">
                 {recentConversations.length > 0 ? (
-                  <div className="h-full min-h-[15rem] overflow-hidden rounded-[1.2rem] border border-sage-strong/45 bg-paper/54 lg:rounded-[1.45rem]">
+                  <div className="h-full min-h-0 overflow-hidden rounded-[1.75rem] border border-sage-strong/45 bg-paper/54">
                     <div className="h-full overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
                       {filteredConversations.length > 0 ? (
                         <div className="flex flex-col gap-3 pb-2">
@@ -496,7 +496,7 @@ function ProjectDashboardPage() {
                                   }
                                 }}
                                 className={cn(
-                                  'group cursor-pointer rounded-[1.1rem] border border-transparent bg-white/78 px-3 py-3 text-left outline-none transition sm:px-4',
+                                  'group cursor-pointer rounded-[1.45rem] border border-transparent bg-white/78 px-4 py-4 text-left outline-none transition',
                                   'hover:border-sage-strong hover:bg-paper hover:shadow-[0_16px_36px_rgba(62,92,72,0.08)]',
                                   'focus-visible:ring-3 focus-visible:ring-ring/40',
                                 )}
@@ -570,7 +570,7 @@ function ProjectDashboardPage() {
                             <Search className="size-5" />
                           </div>
                           <div className="flex max-w-sm flex-col gap-2">
-                            <h3 className="font-display text-2xl tracking-tight text-forest">No matches</h3>
+                            <h3 className="font-display text-3xl tracking-tight text-forest">No matches</h3>
                             <p className="text-sm leading-7 text-ink-soft">
                               Try a different title, model, or thinking label.
                             </p>
@@ -580,7 +580,7 @@ function ProjectDashboardPage() {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex h-full min-h-[15rem] flex-col items-center justify-center gap-4 rounded-[1.35rem] border border-dashed border-sage-strong bg-paper/70 px-6 text-center">
+                  <div className="flex h-full min-h-[16rem] flex-col items-center justify-center gap-5 rounded-[1.75rem] border border-dashed border-sage-strong bg-paper/70 px-8 text-center">
                     <div className="flex size-16 items-center justify-center rounded-full bg-sage text-forest">
                       <MessageSquarePlus className="size-6" />
                     </div>
@@ -605,8 +605,8 @@ function ProjectDashboardPage() {
             </section>
 
             <div className="flex min-h-0 flex-col gap-3 xl:gap-4">
-              <section className="flex min-h-[20rem] flex-col rounded-[1.35rem] bg-paper/88 shadow-[0_18px_44px_rgba(62,92,72,0.05)] lg:rounded-[1.65rem] xl:max-h-[calc(100vh-17rem)]">
-                <div className="flex shrink-0 items-center border-b border-sage-strong/40 px-4 pt-4 pb-2 sm:px-5">
+              <section className="flex min-h-0 flex-1 flex-col rounded-[2rem] bg-paper/88 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
+                <div className="flex shrink-0 items-center border-b border-sage-strong/40 px-6 pt-5 pb-3">
                   <div className="flex gap-6">
                     <button
                       type="button"
@@ -640,11 +640,11 @@ function ProjectDashboardPage() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto p-3 sm:p-4">
+                <div className="min-h-0 flex-1 p-4 sm:p-5 overflow-y-auto">
                   {activeTab === 'workspace' ? (
                     <div className="flex flex-col gap-4">
                       {activeWorkspace && activeWorkspace.access_granted ? (
-                        <div className="rounded-[1.1rem] border border-sage-strong/70 bg-white/88 px-4 py-4">
+                        <div className="rounded-[1.45rem] border border-sage-strong/70 bg-white/88 px-5 py-5">
                           <div className="flex items-center gap-3">
                             <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
                               <CheckCircle2 className="size-5" />
@@ -670,7 +670,7 @@ function ProjectDashboardPage() {
                           </div>
                         </div>
                       ) : (
-                        <div className="flex flex-col gap-4 rounded-[1.1rem] border border-dashed border-sage-strong/70 bg-white/50 p-5 text-center">
+                        <div className="flex flex-col gap-4 rounded-[1.45rem] border border-dashed border-sage-strong/70 bg-white/50 p-6 text-center">
                           <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-sage/60 text-forest">
                             <FolderOpen className="size-5" />
                           </div>
@@ -736,7 +736,7 @@ function ProjectDashboardPage() {
                           {assets.map((asset) => (
                             <div
                               key={asset.id}
-                              className="group flex items-center justify-between gap-3 rounded-[1.1rem] border border-sage-strong/70 bg-white/88 px-3 py-3 transition-colors hover:border-sage-strong sm:px-4"
+                              className="group rounded-[1.45rem] border border-sage-strong/70 bg-white/88 px-4 py-3 flex items-center justify-between gap-3 transition-colors hover:border-sage-strong"
                             >
                               <div className="min-w-0 flex-1 flex items-center gap-3">
                                 <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-sage/50 text-moss">
@@ -765,7 +765,7 @@ function ProjectDashboardPage() {
                           ))}
                         </div>
                       ) : (
-                        <div className="flex min-h-[12rem] flex-1 flex-col items-center justify-center gap-4 rounded-[1.1rem] border border-dashed border-sage-strong/60 bg-white/50 p-5 text-center">
+                        <div className="flex flex-1 flex-col items-center justify-center gap-4 rounded-[1.45rem] border border-dashed border-sage-strong/60 bg-white/50 p-6 text-center min-h-[12rem]">
                           <div className="flex size-12 items-center justify-center rounded-full bg-sage/60 text-forest">
                             <ImageUp className="size-5" />
                           </div>
