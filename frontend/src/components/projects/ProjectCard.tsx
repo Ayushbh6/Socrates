@@ -45,7 +45,7 @@ export function ProjectCard({ project, index, onOpen, onRename, onDelete }: Proj
       }}
       className={cn(
         'group relative w-full cursor-pointer text-left outline-none',
-        'rounded-[1.6rem] border border-sage-strong/70 bg-paper/95 px-6 py-5 shadow-[0_16px_36px_rgba(62,92,72,0.06)] transition-all duration-200 ease-out',
+        'rounded-[1.35rem] border border-sage-strong/70 bg-paper/95 px-5 py-4 shadow-[0_16px_36px_rgba(62,92,72,0.06)] transition-all duration-200 ease-out sm:px-6 sm:py-5',
         'hover:-translate-y-0.5 hover:border-moss/40 hover:shadow-[0_22px_50px_rgba(62,92,72,0.11)]',
         'focus-visible:ring-3 focus-visible:ring-ring/40',
       )}
@@ -55,7 +55,7 @@ export function ProjectCard({ project, index, onOpen, onRename, onDelete }: Proj
           <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.24em] text-moss">
             Project
           </div>
-          <p className="pr-2 font-display text-[1.8rem] leading-none tracking-tight text-forest">
+          <p className="pr-2 py-0.5 font-display text-[1.8rem] leading-[1.08] tracking-tight text-forest">
             {project.name}
           </p>
         </div>

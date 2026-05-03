@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo, useRef, type PointerEvent } from 'react'
 import {
   Code2,
   Download,
@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type {
   TaskArtifact,
+  TaskWorkspaceEntry,
   TaskWorkspaceFilePreview,
   TaskWorkspaceRoot,
   TaskWorkspaceTree,
@@ -34,8 +35,15 @@ interface ArtifactWorkspacePanelProps {
   onModeChange: (mode: ArtifactPanelMode) => void
   onCloseMobile?: () => void
   onExportArtifact: (artifactId: string) => void
+  width?: number
+  onWidthChange?: (width: number) => void
   mobile?: boolean
 }
+
+const MIN_DESKTOP_PANEL_WIDTH = 340
+const DEFAULT_DESKTOP_PANEL_WIDTH = 430
+const HARD_MAX_DESKTOP_PANEL_WIDTH = 760
+const MIN_VISIBLE_CONVERSATION_WIDTH = 560
 
 export function ArtifactWorkspacePanel({
   taskId,
@@ -50,13 +58,59 @@ export function ArtifactWorkspacePanel({
   onModeChange,
   onCloseMobile,
   onExportArtifact,
+  width = DEFAULT_DESKTOP_PANEL_WIDTH,
+  onWidthChange,
   mobile = false,
 }: ArtifactWorkspacePanelProps) {
+  const resizeStartRef = useRef<{ pointerX: number; width: number } | null>(null)
   const artifactByPath = useMemo(
     () => new Map(artifacts.map((artifact) => [artifact.relative_path, artifact])),
     [artifacts],
   )
-  const hasFiles = Boolean(tree?.roots.some((root) => root.entries.some((entry) => !entry.is_dir)))
+  const visibleRoots = useMemo(() => {
+    if (tree?.roots.some((root) => root.entries.some((entry) => !entry.is_dir))) {
+      return tree.roots
+    }
+    return rootsFromArtifacts(artifacts)
+  }, [artifacts, tree])
+  const hasFiles = visibleRoots.some((root) => root.entries.some((entry) => !entry.is_dir))
+  const viewportWidth = typeof window === 'undefined' ? 1440 : window.innerWidth
+  const viewportSafeMax = Math.max(
+    MIN_DESKTOP_PANEL_WIDTH,
+    viewportWidth - MIN_VISIBLE_CONVERSATION_WIDTH,
+  )
+  const maxPanelWidth = Math.min(HARD_MAX_DESKTOP_PANEL_WIDTH, viewportSafeMax)
+  const clampedWidth = Math.min(maxPanelWidth, Math.max(MIN_DESKTOP_PANEL_WIDTH, width))
+
+  const onResizePointerDown = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (mobile || !onWidthChange) return
+      event.preventDefault()
+      resizeStartRef.current = { pointerX: event.clientX, width: clampedWidth }
+      event.currentTarget.setPointerCapture(event.pointerId)
+    },
+    [clampedWidth, mobile, onWidthChange],
+  )
+
+  const onResizePointerMove = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      if (!resizeStartRef.current || mobile || !onWidthChange) return
+      const delta = resizeStartRef.current.pointerX - event.clientX
+      const nextWidth = Math.min(
+        maxPanelWidth,
+        Math.max(MIN_DESKTOP_PANEL_WIDTH, resizeStartRef.current.width + delta),
+      )
+      onWidthChange(nextWidth)
+    },
+    [maxPanelWidth, mobile, onWidthChange],
+  )
+
+  const onResizePointerEnd = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    resizeStartRef.current = null
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }, [])
 
   if (!taskId) return null
 
@@ -83,10 +137,27 @@ export function ArtifactWorkspacePanel({
       className={cn(
         mobile
           ? 'fixed inset-x-0 bottom-0 z-50 max-h-[82vh] rounded-t-[1.35rem] border-t border-forest/12 bg-paper shadow-[0_-24px_80px_rgba(27,53,41,0.22)]'
-          : 'hidden h-full w-[430px] shrink-0 border-l border-forest/10 bg-paper/86 lg:flex',
+          : 'relative hidden h-full shrink-0 border-l border-forest/10 bg-paper/86 lg:flex',
         'min-w-0 flex-col overflow-hidden',
       )}
+      style={mobile ? undefined : { width: clampedWidth }}
     >
+      {!mobile ? (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize artifact panel"
+          tabIndex={0}
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerEnd}
+          onPointerCancel={onResizePointerEnd}
+          className="group absolute inset-y-0 left-0 z-20 flex w-3 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center outline-none"
+          title="Drag to resize artifacts"
+        >
+          <div className="h-16 w-1 rounded-full bg-forest/12 transition group-hover:bg-forest/36 group-focus-visible:bg-forest/36" />
+        </div>
+      ) : null}
       <div className="flex h-14 shrink-0 items-center justify-between border-b border-forest/10 px-4">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">Workspace</p>
@@ -106,7 +177,7 @@ export function ArtifactWorkspacePanel({
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(150px,0.9fr)_minmax(0,1.4fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(175px,0.82fr)_minmax(0,1.55fr)]">
         <div className="min-w-0 overflow-y-auto border-r border-forest/10 bg-canvas/44 px-3 py-3">
           {!hasFiles ? (
             <div className="rounded-[0.95rem] border border-dashed border-forest/18 px-3 py-5 text-center text-xs leading-5 text-ink-soft">
@@ -114,7 +185,7 @@ export function ArtifactWorkspacePanel({
             </div>
           ) : (
             <div className="space-y-3">
-              {tree?.roots.map((root) => (
+              {visibleRoots.map((root) => (
                 <WorkspaceRoot
                   key={root.path}
                   root={root}
@@ -136,6 +207,8 @@ export function ArtifactWorkspacePanel({
               exportPending={exportPending}
               onExportArtifact={onExportArtifact}
             />
+          ) : selectedPath ? (
+            <PreviewUnavailable path={selectedPath} artifact={artifactByPath.get(selectedPath) ?? null} />
           ) : (
             <div className="flex h-full items-center justify-center text-center">
               <div className="max-w-[220px]">
@@ -149,6 +222,32 @@ export function ArtifactWorkspacePanel({
       </div>
     </aside>
   )
+}
+
+function rootsFromArtifacts(artifacts: TaskArtifact[]): TaskWorkspaceRoot[] {
+  const now = new Date().toISOString()
+  const roots = new Map<string, TaskWorkspaceEntry[]>()
+  for (const artifact of artifacts) {
+    const [rootName] = artifact.relative_path.split('/')
+    if (!rootName) continue
+    if (!['inputs', 'work', 'outputs'].includes(rootName)) continue
+    const entries = roots.get(rootName) ?? []
+    entries.push({
+      path: artifact.relative_path,
+      name: artifact.display_name,
+      parent_path: rootName,
+      is_dir: false,
+      size_bytes: artifact.size_bytes,
+      mime_type: artifact.mime_type,
+      updated_at: artifact.created_at ?? now,
+    })
+    roots.set(rootName, entries)
+  }
+  return ['inputs', 'work', 'outputs'].map((name) => ({
+    path: name,
+    name,
+    entries: roots.get(name) ?? [],
+  }))
 }
 
 function WorkspaceRoot({
@@ -247,6 +346,27 @@ function FilePreview({
       {preview.truncated ? (
         <p className="mt-2 text-xs text-ink-soft">Preview truncated for performance.</p>
       ) : null}
+    </div>
+  )
+}
+
+function PreviewUnavailable({
+  path,
+  artifact,
+}: {
+  path: string
+  artifact: TaskArtifact | null
+}) {
+  return (
+    <div className="flex h-full items-center justify-center text-center">
+      <div className="max-w-[260px] rounded-[1rem] border border-dashed border-forest/18 bg-white/58 px-5 py-6">
+        <File className="mx-auto size-8 text-moss/75" />
+        <p className="mt-3 text-sm font-semibold text-forest">{artifact?.display_name ?? path.split('/').pop()}</p>
+        <p className="mt-1 break-all text-xs leading-5 text-ink-soft">{path}</p>
+        <p className="mt-3 text-xs leading-5 text-ink-soft">
+          Preview is unavailable until the task workspace endpoint returns this file.
+        </p>
+      </div>
     </div>
   )
 }

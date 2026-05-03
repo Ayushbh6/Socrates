@@ -134,6 +134,9 @@ function ConversationSessionPage() {
   const [artifactPanelMode, setArtifactPanelMode] = useState<ArtifactPanelMode>(() =>
     readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed']),
   )
+  const [artifactPanelWidth, setArtifactPanelWidth] = useState(() =>
+    readPersistedNumber(`artifact-panel-width:${conversationId}`, 430),
+  )
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(() =>
     readPersistedString(`artifact-selected-path:${conversationId}`),
   )
@@ -246,6 +249,7 @@ function ConversationSessionPage() {
     setWorkerTrace(createWorkerTraceState())
     setWorkerPanelMode(readPersistedPanelMode(`worker-panel:${conversationId}`, 'collapsed', ['open', 'collapsed', 'hidden'] as const))
     setArtifactPanelMode(readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed'] as const))
+    setArtifactPanelWidth(readPersistedNumber(`artifact-panel-width:${conversationId}`, 430))
     setSelectedWorkspacePath(readPersistedString(`artifact-selected-path:${conversationId}`))
     setMobileArtifactsOpen(false)
   }, [conversationId])
@@ -257,6 +261,10 @@ function ConversationSessionPage() {
   useEffect(() => {
     writePersistedString(`artifact-panel:${conversationId}`, artifactPanelMode)
   }, [artifactPanelMode, conversationId])
+
+  useEffect(() => {
+    writePersistedString(`artifact-panel-width:${conversationId}`, String(Math.round(artifactPanelWidth)))
+  }, [artifactPanelWidth, conversationId])
 
   useEffect(() => {
     writePersistedString(`artifact-selected-path:${conversationId}`, selectedWorkspacePath)
@@ -896,6 +904,8 @@ function ConversationSessionPage() {
           onSelectPath={setSelectedWorkspacePath}
           onModeChange={setArtifactPanelMode}
           onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
+          width={artifactPanelWidth}
+          onWidthChange={setArtifactPanelWidth}
         />
       </div>
     </div>
@@ -1690,6 +1700,13 @@ function writePersistedString(storageKey: string, value: string | null): void {
   } catch {
     // localStorage may be unavailable; panel state can safely degrade.
   }
+}
+
+function readPersistedNumber(storageKey: string, fallback: number): number {
+  const value = readPersistedString(storageKey)
+  if (!value) return fallback
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
 }
 
 function readPersistedPanelMode<T extends string>(storageKey: string, fallback: T, allowed: readonly T[]): T {
