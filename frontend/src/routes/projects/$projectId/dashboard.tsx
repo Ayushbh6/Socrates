@@ -375,11 +375,11 @@ function ProjectDashboardPage() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden px-4 py-4 sm:px-6 lg:px-10 lg:py-5">
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden sm:gap-4">
-          <section className="shrink-0 rounded-[2rem] bg-paper/92 px-5 py-4 shadow-[0_24px_60px_rgba(62,92,72,0.08)] sm:px-7 sm:py-5">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-              <div className="flex max-w-3xl flex-col gap-4">
+      <div className="flex min-h-0 w-full flex-1 flex-col overflow-x-hidden overflow-y-auto px-4 py-4 sm:px-6 lg:px-10 lg:py-5 xl:overflow-hidden">
+        <div className="mx-auto flex w-full max-w-[118rem] flex-col gap-4 pb-6 xl:min-h-0 xl:flex-1 xl:overflow-hidden xl:pb-0">
+          <section className="shrink-0 rounded-[1.5rem] bg-paper/92 px-4 py-4 shadow-[0_24px_60px_rgba(62,92,72,0.08)] sm:rounded-[2rem] sm:px-6 sm:py-5 lg:px-7">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+              <div className="flex max-w-3xl flex-col gap-3">
                 <Link
                   to="/projects"
                   className="inline-flex w-fit items-center gap-2 text-sm text-ink-soft transition hover:text-forest"
@@ -388,12 +388,12 @@ function ProjectDashboardPage() {
                   All projects
                 </Link>
 
-                <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-2.5">
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
                     Project dashboard
                   </p>
                   <div className="flex flex-col gap-2">
-                    <h1 className="font-display text-[clamp(2.35rem,4vw,4rem)] leading-[0.94] tracking-tight text-forest">
+                    <h1 className="font-display text-[clamp(2.15rem,4vw,4rem)] leading-[1] tracking-tight text-forest">
                       {project?.name ?? 'Project'}
                     </h1>
                     <p className="max-w-2xl text-sm leading-6 text-ink-soft sm:text-[15px] sm:leading-7">
@@ -406,7 +406,7 @@ function ProjectDashboardPage() {
 
               <div className="flex flex-col gap-3 sm:flex-row">
                 <Button
-                  className="h-11 rounded-full bg-forest px-5 text-sm text-white shadow-[0_16px_40px_rgba(27,53,41,0.18)] hover:bg-forest/92"
+                  className="h-10 rounded-full bg-forest px-5 text-sm text-white shadow-[0_16px_40px_rgba(27,53,41,0.18)] hover:bg-forest/92 sm:h-11"
                   onClick={() => startConversation.mutate()}
                   disabled={startConversation.isPending}
                 >
@@ -430,15 +430,15 @@ function ProjectDashboardPage() {
             />
           </section>
 
-          <div className="grid min-h-0 flex-1 gap-3 xl:grid-cols-[1.4fr_0.95fr] xl:gap-4">
-            <section className="flex min-h-0 flex-col rounded-[2rem] bg-white/84 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
-              <div className="flex shrink-0 flex-col gap-4 px-5 py-4 sm:px-6 sm:py-5">
+          <div className="grid flex-none gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[1.4fr_0.95fr] xl:gap-4">
+            <section className="flex h-[42rem] min-h-[34rem] max-h-[calc(100vh-7rem)] flex-col rounded-[1.5rem] bg-white/84 shadow-[0_24px_60px_rgba(62,92,72,0.06)] sm:rounded-[2rem] xl:h-auto xl:min-h-0 xl:max-h-none">
+              <div className="flex shrink-0 flex-col gap-3 px-4 py-4 sm:px-6 sm:py-5 xl:gap-4">
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex flex-col gap-1">
                     <p className="text-xs font-semibold uppercase tracking-[0.24em] text-moss">
                       Conversations
                     </p>
-                    <h2 className="font-display text-3xl tracking-tight text-forest">Past sessions</h2>
+                    <h2 className="font-display text-2xl tracking-tight text-forest sm:text-3xl">Past sessions</h2>
                   </div>
                   <div className="rounded-full border border-sage-strong bg-paper px-3 py-1 text-sm text-ink-soft">
                     {recentConversations.length}
@@ -466,7 +466,7 @@ function ProjectDashboardPage() {
 
               <div className="min-h-0 flex-1 px-4 pb-4 sm:px-5 sm:pb-5">
                 {recentConversations.length > 0 ? (
-                  <div className="h-full min-h-0 overflow-hidden rounded-[1.75rem] border border-sage-strong/45 bg-paper/54">
+                  <div className="h-full min-h-0 overflow-hidden rounded-[1.5rem] border border-sage-strong/45 bg-paper/54 sm:rounded-[1.75rem]">
                     <div className="h-full overflow-y-auto px-3 py-3 sm:px-4 sm:py-4">
                       {filteredConversations.length > 0 ? (
                         <div className="flex flex-col gap-3 pb-2">
@@ -496,7 +496,7 @@ function ProjectDashboardPage() {
                                   }
                                 }}
                                 className={cn(
-                                  'group cursor-pointer rounded-[1.45rem] border border-transparent bg-white/78 px-4 py-4 text-left outline-none transition',
+                                  'group cursor-pointer rounded-[1.25rem] border border-transparent bg-white/78 px-3.5 py-3 text-left outline-none transition sm:rounded-[1.45rem] sm:px-4 sm:py-4',
                                   'hover:border-sage-strong hover:bg-paper hover:shadow-[0_16px_36px_rgba(62,92,72,0.08)]',
                                   'focus-visible:ring-3 focus-visible:ring-ring/40',
                                 )}
@@ -556,7 +556,7 @@ function ProjectDashboardPage() {
                                     <ArrowRight className="mt-2 size-4 shrink-0 text-moss/70 transition group-hover:translate-x-0.5 group-hover:text-forest" />
                                   </div>
                                 </div>
-                                <div className="mt-3 flex items-center gap-2 text-sm text-ink-soft">
+                                <div className="mt-2 flex items-center gap-2 text-sm text-ink-soft sm:mt-3">
                                   <Clock3 className="size-3.5" />
                                   Updated {formatTimestamp(conversation.updated_at)}
                                 </div>
@@ -604,9 +604,9 @@ function ProjectDashboardPage() {
               </div>
             </section>
 
-            <div className="flex min-h-0 flex-col gap-3 xl:gap-4">
-              <section className="flex min-h-0 flex-1 flex-col rounded-[2rem] bg-paper/88 shadow-[0_24px_60px_rgba(62,92,72,0.06)]">
-                <div className="flex shrink-0 items-center border-b border-sage-strong/40 px-6 pt-5 pb-3">
+            <div className="flex min-h-0 flex-col gap-4 xl:gap-4">
+              <section className="flex h-[30rem] min-h-[24rem] max-h-[calc(100vh-9rem)] flex-1 flex-col rounded-[1.5rem] bg-paper/88 shadow-[0_24px_60px_rgba(62,92,72,0.06)] sm:rounded-[2rem] xl:h-auto xl:min-h-0 xl:max-h-none">
+                <div className="flex shrink-0 items-center border-b border-sage-strong/40 px-5 pb-3 pt-4 sm:px-6 sm:pt-5">
                   <div className="flex gap-6">
                     <button
                       type="button"
