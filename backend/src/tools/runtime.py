@@ -50,6 +50,7 @@ from . import execute_command as execute_command_tool
 from . import list_files as list_files_tool
 from . import read_file as read_file_tool
 from . import search_files as search_files_tool
+from . import start_worker as start_worker_tool
 from . import update_task_status as update_task_status_tool
 from . import write_file as write_file_tool
 from . import write_project_note as write_project_note_tool
@@ -65,6 +66,7 @@ class ToolContext:
     host_workspaces_dir: Path
     current_task: Task | None = None
     current_tool_execution_id: str | None = None
+    parent_event_sink: Callable[[dict[str, Any]], None] | None = None
 
     def refresh_task(self) -> Task | None:
         self.current_task = get_active_task_for_conversation(
@@ -93,6 +95,7 @@ class ProjectToolRuntime:
             "apply_patch": lambda **kwargs: apply_patch_tool.handle(self, **kwargs),
             "get_system_time": get_system_time,
             "create_task": lambda **kwargs: create_task_tool.handle(self, **kwargs),
+            "start_worker": lambda **kwargs: start_worker_tool.handle(self, **kwargs),
             "update_task_status": lambda **kwargs: update_task_status_tool.handle(
                 self, **kwargs
             ),
@@ -574,10 +577,10 @@ class ProjectToolRuntime:
     @staticmethod
     def _read_project_asset_text(path: Path) -> str:
         if path.suffix.lower() == ".pdf":
-            import PyPDF2
+            import pypdf
 
             with path.open("rb") as handle:
-                reader = PyPDF2.PdfReader(handle)
+                reader = pypdf.PdfReader(handle)
                 return "".join(
                     (page.extract_text() or "") + "\n" for page in reader.pages
                 )
@@ -710,11 +713,12 @@ class ProjectToolRuntime:
         env["PATH"] = str(venv_bin) + os.pathsep + env.get("PATH", "")
         return env
 
-    def _sync_task_outputs_if_needed(self) -> None:
+    def _sync_task_outputs_if_needed(self) -> list[str]:
         task = self.context.current_task or self.context.refresh_task()
         if task is None:
-            return
-        sync_task_output_artifacts(self.context.session, task=task)
+            return []
+        artifacts = sync_task_output_artifacts(self.context.session, task=task)
+        return [artifact.relative_path for artifact in artifacts]
 
     @staticmethod
     def _running_inside_docker() -> bool:

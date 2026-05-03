@@ -138,6 +138,11 @@ def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefin
             },
         ),
         ToolDefinition(
+            name="start_worker",
+            description="Start the bounded worker executor after the active task has an approved plan.md and valid todo.md. Socrates must review the worker result before answering the user.",
+            parameters={"type": "object", "properties": {}, "required": []},
+        ),
+        ToolDefinition(
             name="write_project_note",
             description="Write a small project note in chat mode. New or appended content only, maximum 10 lines.",
             parameters={
@@ -176,4 +181,68 @@ def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefin
                 },
             ),
         )
+    return definitions
+
+
+def build_worker_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefinition]:
+    definitions = [
+        tool
+        for tool in build_tool_definitions(
+            command_execution_enabled=command_execution_enabled
+        )
+        if tool.name
+        in {
+            "list_files",
+            "read_file",
+            "search_files",
+            "edit_file",
+            "write_file",
+            "apply_patch",
+            "execute_command",
+            "get_system_time",
+        }
+    ]
+    insert_at = 3
+    definitions[insert_at:insert_at] = [
+        ToolDefinition(
+            name="update_current_todo_item",
+            description="Select and update the current worker todo item. Use in_progress to claim the next item, completed with evidence after work, or blocked with reason and recommended_action when stuck. The result returns the updated item and next item.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["in_progress", "completed", "blocked"],
+                    },
+                    "evidence": {
+                        "description": "Required when status is completed. Use concrete changed paths, command results, or inspection evidence.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Required when status is blocked.",
+                    },
+                    "recommended_action": {
+                        "type": "string",
+                        "description": "Recommended Socrates action when blocked.",
+                    },
+                },
+                "required": ["status"],
+            },
+        ),
+        ToolDefinition(
+            name="skip_todo_item",
+            description="Mark a todo item skipped without deleting it. Use only when prior completed work genuinely made the item unnecessary.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "todo_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "evidence": {
+                        "description": "Optional evidence showing why the item is unnecessary.",
+                    },
+                },
+                "required": ["todo_id", "reason"],
+            },
+        ),
+    ]
     return definitions

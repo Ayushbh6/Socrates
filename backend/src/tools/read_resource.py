@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import docx
-import PyPDF2
+import pypdf
 from sqlalchemy.orm import Session
 
 from .utils import resolve_asset_by_id_or_name, resolve_asset_path
@@ -48,7 +48,7 @@ def make_read_resource(db: Session, project_id: str, uploads_dir: Path):
             # Documents & Data
             if suffix == ".pdf":
                 with open(path, "rb") as f:
-                    reader = PyPDF2.PdfReader(f)
+                    reader = pypdf.PdfReader(f)
                     extracted = []
                     current_char_count = 0
                     

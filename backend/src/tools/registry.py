@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ def get_tools_registry(
     run: AgentRun,
     uploads_dir: Path,
     host_workspaces_dir: Path,
+    parent_event_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> ProjectToolRuntime:
     context = ToolContext(
         session=db,
@@ -22,6 +24,7 @@ def get_tools_registry(
         run=run,
         uploads_dir=uploads_dir,
         host_workspaces_dir=host_workspaces_dir,
+        parent_event_sink=parent_event_sink,
     )
     context.refresh_task()
     return ProjectToolRuntime(context)

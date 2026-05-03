@@ -70,8 +70,9 @@ def handle(
     )
     stdout = result.stdout[:20000]
     stderr = result.stderr[:20000]
+    registered_outputs: list[str] = []
     if scope == "task":
-        runtime._sync_task_outputs_if_needed()
+        registered_outputs = runtime._sync_task_outputs_if_needed()
     log_workspace_action(
         runtime.context.session,
         action_type="execute_command",
@@ -90,7 +91,7 @@ def handle(
         exit_code=result.returncode,
         success=result.returncode == 0,
     )
-    return {
+    payload = {
         "argv": argv,
         "cwd": str(workdir.relative_to(base_root)),
         "stdout": stdout,
@@ -98,3 +99,6 @@ def handle(
         "exit_code": result.returncode,
         "success": result.returncode == 0,
     }
+    if registered_outputs:
+        payload["registered_outputs"] = registered_outputs
+    return payload

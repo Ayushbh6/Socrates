@@ -51,7 +51,7 @@ Socrates does not get free-form filesystem access. The task workspace is structu
 
 ## Tool Surface
 
-Socrates currently uses an 11-tool surface when command execution is available, or 10 tools when `execute_command` is unavailable:
+Socrates currently uses a 12-tool surface when command execution is available, or 11 tools when `execute_command` is unavailable:
 
 1. `list_files`
 2. `read_file`
@@ -62,8 +62,13 @@ Socrates currently uses an 11-tool surface when command execution is available, 
 7. `execute_command`
 8. `create_task`
 9. `update_task_status`
-10. `write_project_note`
-11. `get_system_time`
+10. `start_worker`
+11. `write_project_note`
+12. `get_system_time`
+
+Worker runs use a separate worker-only todo surface:
+- `update_current_todo_item`
+- `skip_todo_item`
 
 Write tools are intentionally focused:
 - `edit_file` performs exact string replacement in one file.
@@ -74,6 +79,7 @@ Write tools are intentionally focused:
 
 - Chat mode is read-only except one small `write_project_note`.
 - If real writing or command execution is needed, Socrates must create or resume a task.
+- Task work follows the planner -> approval -> todo -> worker flow: Socrates writes the plan, the user approves or rejects it through the UI, Socrates creates the todo, and `start_worker` executes the approved work.
 - Linked workspace commands require approval.
 - Destructive system commands are hard-blocked.
 - Raw host paths and internal IDs are not model-facing.
@@ -133,7 +139,13 @@ npm ci
 npm run dev
 ```
 
-The frontend proxies API traffic to the backend in development.
+Create `frontend/.env.local` with:
+
+```bash
+VITE_API_PROXY_TARGET=http://127.0.0.1:8000
+```
+
+The frontend proxies API traffic to the backend in development. Use `127.0.0.1` instead of `localhost` so the dev WebSocket target matches the backend IPv4 bind reliably on macOS.
 
 ## Project Docs
 
@@ -148,6 +160,8 @@ Socrates is already a real workspace coding agent:
 - task-backed execution is live
 - linked workspaces are live
 - approval flow is live
+- plan approval auto-resume is live
+- worker handoff and live worker trace visibility are live
 - read/search/edit/patch flow is live
 - terminal task closure is live
 - structured task artifacts and export flow are live

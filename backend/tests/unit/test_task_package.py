@@ -5,8 +5,11 @@ from backend.src.services.task_package import (
     get_package_state_after_writes,
     get_task_package_disk_state,
     parse_todo_checklist,
+    parse_worker_todo_state,
     plan_content_fingerprint,
     render_task_markdown,
+    render_worker_todo_state,
+    update_worker_todo_item,
     validate_task_package_file,
 )
 
@@ -58,6 +61,72 @@ def test_parse_todo_checklist_reports_all_checked():
 
     assert state.all_checked is True
     assert state.unchecked_items == ()
+
+
+def test_worker_todo_state_parses_and_renders_metadata():
+    state = parse_worker_todo_state(
+        "\n".join(
+            [
+                "# Todo",
+                "",
+                "## Checklist",
+                "- [x] T1: Do the work",
+                "  - Evidence: pytest passed",
+                "- [ ] T2: Verify it",
+                "  - Status: in_progress",
+                "",
+            ]
+        )
+    )
+
+    assert [item.item_id for item in state.items] == ["T1", "T2"]
+    assert [item.status for item in state.items] == ["completed", "in_progress"]
+    assert state.current_item is not None
+    assert state.current_item.item_id == "T2"
+    rendered = render_worker_todo_state(state)
+    assert "  - Status: in_progress" in rendered
+    assert "  - Evidence: pytest passed" in rendered
+    validate_task_package_file("todo.md", rendered)
+
+
+def test_worker_todo_state_rejects_two_in_progress_items():
+    with pytest.raises(TaskPackageValidationError) as exc_info:
+        parse_worker_todo_state(
+            "# Todo\n\n## Checklist\n"
+            "- [ ] T1: One\n  - Status: in_progress\n"
+            "- [ ] T2: Two\n  - Status: in_progress\n"
+        )
+
+    assert exc_info.value.error_type == "todo_in_progress_conflict"
+
+
+def test_worker_todo_state_rejects_skipped_and_blocked_without_reason():
+    with pytest.raises(TaskPackageValidationError) as skipped:
+        parse_worker_todo_state(
+            "# Todo\n\n## Checklist\n- [ ] T1: One\n  - Status: skipped\n"
+        )
+    assert skipped.value.error_type == "todo_skip_reason_required"
+
+    with pytest.raises(TaskPackageValidationError) as blocked:
+        parse_worker_todo_state(
+            "# Todo\n\n## Checklist\n- [ ] T1: One\n  - Status: blocked\n"
+        )
+    assert blocked.value.error_type == "todo_block_reason_required"
+
+
+def test_update_worker_todo_item_requires_completion_evidence():
+    state = parse_worker_todo_state("# Todo\n\n## Checklist\n- [ ] T1: Do the work\n")
+
+    in_progress = update_worker_todo_item(
+        state, item_id="T1", status="in_progress"
+    )
+    assert in_progress.current_item is not None
+    assert in_progress.current_item.status == "in_progress"
+
+    with pytest.raises(TaskPackageValidationError) as exc_info:
+        update_worker_todo_item(in_progress, item_id="T1", status="completed")
+
+    assert exc_info.value.error_type == "todo_item_evidence_required"
 
 
 def test_plan_content_fingerprint_is_deterministic():

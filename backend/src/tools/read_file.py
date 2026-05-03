@@ -80,12 +80,14 @@ def handle(
             line_start=line_start,
             line_end=line_end,
         )
+        result["sha256"] = runtime._sha256_text(content)
     else:
         chunk = content[offset : offset + limit]
         result = {
             "path": str(target.relative_to(base_root)),
             "content": chunk,
             "more_available": len(content) > offset + limit,
+            "sha256": runtime._sha256_text(content),
         }
     log_workspace_action(
         runtime.context.session,

@@ -189,8 +189,9 @@ def apply_patch_operations(
                 target.unlink()
         raise
 
+    registered_outputs: list[str] = []
     if scope == "task":
-        runtime._sync_task_outputs_if_needed()
+        registered_outputs = runtime._sync_task_outputs_if_needed()
 
     touched_paths = [plan["relative_path"] for plan in plans]
     log_workspace_action(
@@ -219,6 +220,8 @@ def apply_patch_operations(
         "updated_files": updated_files,
         "deleted_files": deleted_files,
     }
+    if registered_outputs:
+        result["registered_outputs"] = registered_outputs
     if (
         scope == "task"
         and runtime.context.current_task is not None

@@ -91,7 +91,9 @@ def handle(
             result = runtime._attach_plan_approval_extras(
                 result, target.read_text(encoding="utf-8", errors="replace")
             )
-        runtime._sync_task_outputs_if_needed()
+        registered_outputs = runtime._sync_task_outputs_if_needed()
+        if registered_outputs:
+            result["registered_outputs"] = registered_outputs
 
     log_workspace_action(
         runtime.context.session,

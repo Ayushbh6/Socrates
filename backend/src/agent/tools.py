@@ -5,6 +5,7 @@ from typing import Any, Callable, Dict, Optional
 from ..core.schema import ToolCall
 
 ToolExecutor = Callable[[ToolCall], Any]
+ToolBatchExecutor = Callable[[list[ToolCall]], Any]
 ToolHandler = Callable[..., Any]
 
 
@@ -80,7 +81,7 @@ def build_tool_error_result(
     return _serialize_payload(payload)
 
 
-def _normalize_tool_result(*, tool_name: str, result: Any) -> str:
+def normalize_tool_result(*, tool_name: str, result: Any) -> str:
     """Coerce any handler return value into a serialized canonical envelope.
 
     This is the single choke point that guarantees the agent loop only ever
@@ -98,6 +99,10 @@ def _normalize_tool_result(*, tool_name: str, result: Any) -> str:
             normalized["tool_name"] = tool_name
         return _serialize_payload(normalized)
     return build_tool_success_result(tool_name=tool_name, data=result)
+
+
+def _normalize_tool_result(*, tool_name: str, result: Any) -> str:
+    return normalize_tool_result(tool_name=tool_name, result=result)
 
 
 async def execute_tool_call(

@@ -18,7 +18,13 @@ from ..core.schema import (
 )
 from .events import AgentEvent, AgentEventType
 from .schema import AgentRequest, AgentResult, AgentTurnTelemetry
-from .tools import ToolExecutor, ToolHandler, build_tool_error_result, execute_tool_call
+from .tools import (
+    ToolBatchExecutor,
+    ToolExecutor,
+    ToolHandler,
+    build_tool_error_result,
+    execute_tool_call,
+)
 
 
 class AgentRunner:
@@ -26,9 +32,11 @@ class AgentRunner:
         self,
         *,
         tool_executor: Optional[ToolExecutor] = None,
+        tool_batch_executor: Optional[ToolBatchExecutor] = None,
         tool_handlers: Optional[Dict[str, ToolHandler]] = None,
     ):
         self.tool_executor = tool_executor
+        self.tool_batch_executor = tool_batch_executor
         self.tool_handlers = tool_handlers or {}
 
     def run(self, request: AgentRequest) -> AgentResult:
@@ -481,16 +489,36 @@ class AgentRunner:
         accepted = tool_calls[:max_calls]
         overflow = tool_calls[max_calls:]
 
-        accepted_results = await asyncio.gather(
-            *(
-                execute_tool_call(
-                    tool_call,
-                    tool_executor=self.tool_executor,
-                    tool_handlers=self.tool_handlers,
+        if self.tool_batch_executor is not None:
+            try:
+                batch_result = self.tool_batch_executor(accepted)
+                accepted_results = (
+                    await batch_result
+                    if hasattr(batch_result, "__await__")
+                    else batch_result
                 )
-                for tool_call in accepted
+            except Exception as exc:
+                accepted_results = [
+                    build_tool_error_result(
+                        tool_name=tool_call.name,
+                        error_type=exc.__class__.__name__,
+                        message=str(exc),
+                        retryable=False,
+                        suggestion="The batch tool executor failed before this tool call could complete.",
+                    )
+                    for tool_call in accepted
+                ]
+        else:
+            accepted_results = await asyncio.gather(
+                *(
+                    execute_tool_call(
+                        tool_call,
+                        tool_executor=self.tool_executor,
+                        tool_handlers=self.tool_handlers,
+                    )
+                    for tool_call in accepted
+                )
             )
-        )
         results: List[tuple[ToolCall, str]] = list(zip(accepted, accepted_results))
         for tool_call in overflow:
             results.append(
@@ -611,9 +639,14 @@ async def arun_agent(
     request: AgentRequest,
     *,
     tool_executor: Optional[ToolExecutor] = None,
+    tool_batch_executor: Optional[ToolBatchExecutor] = None,
     tool_handlers: Optional[Dict[str, ToolHandler]] = None,
 ) -> AgentResult:
-    runner = AgentRunner(tool_executor=tool_executor, tool_handlers=tool_handlers)
+    runner = AgentRunner(
+        tool_executor=tool_executor,
+        tool_batch_executor=tool_batch_executor,
+        tool_handlers=tool_handlers,
+    )
     return await runner.arun(request)
 
 
@@ -621,8 +654,13 @@ async def astream_agent(
     request: AgentRequest,
     *,
     tool_executor: Optional[ToolExecutor] = None,
+    tool_batch_executor: Optional[ToolBatchExecutor] = None,
     tool_handlers: Optional[Dict[str, ToolHandler]] = None,
 ) -> AsyncGenerator[AgentEvent, None]:
-    runner = AgentRunner(tool_executor=tool_executor, tool_handlers=tool_handlers)
+    runner = AgentRunner(
+        tool_executor=tool_executor,
+        tool_batch_executor=tool_batch_executor,
+        tool_handlers=tool_handlers,
+    )
     async for event in runner.stream(request):
         yield event

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 
 TaskPackageFile = Literal["task.md", "plan.md", "todo.md"]
@@ -15,6 +16,12 @@ PLAN_HEADINGS = ("# Plan", "## Summary", "## Approach", "## Execution Steps", "#
 TODO_HEADINGS = ("# Todo", "## Checklist")
 TODO_ITEM_PATTERN = re.compile(r"^- \[(?: |x|X)\] T\d+: \S")
 TODO_ITEM_DETAIL_PATTERN = re.compile(r"^- \[(?P<mark> |x|X)\] (?P<item_id>T\d+): (?P<text>\S.*)$")
+TODO_STATUS_PATTERN = re.compile(r"^-\s+Status:\s*(?P<status>[a-z_]+)\s*$")
+TODO_EVIDENCE_PATTERN = re.compile(r"^-\s+Evidence:\s*(?P<evidence>\S.*)$")
+TODO_BLOCKED_PATTERN = re.compile(r"^-\s+Blocked:\s*(?P<reason>\S.*)$")
+TODO_SKIPPED_PATTERN = re.compile(r"^-\s+Skipped:\s*(?P<reason>\S.*)$")
+TODO_RECOMMENDED_ACTION_PATTERN = re.compile(r"^-\s+Recommended Socrates action:\s*(?P<action>\S.*)$")
+TodoItemStatus = Literal["pending", "in_progress", "completed", "blocked", "skipped"]
 
 
 @dataclass
@@ -49,6 +56,62 @@ class TodoChecklistState:
     @property
     def all_checked(self) -> bool:
         return bool(self.items) and not self.unchecked_items
+
+
+@dataclass(frozen=True)
+class WorkerTodoItem:
+    item_id: str
+    text: str
+    status: TodoItemStatus
+    evidence: str | None = None
+    reason: str | None = None
+    recommended_action: str | None = None
+    notes: tuple[str, ...] = ()
+
+    @property
+    def checked(self) -> bool:
+        return self.status == "completed"
+
+
+@dataclass(frozen=True)
+class WorkerTodoState:
+    items: tuple[WorkerTodoItem, ...]
+
+    @property
+    def in_progress_items(self) -> tuple[WorkerTodoItem, ...]:
+        return tuple(item for item in self.items if item.status == "in_progress")
+
+    @property
+    def pending_items(self) -> tuple[WorkerTodoItem, ...]:
+        return tuple(item for item in self.items if item.status == "pending")
+
+    @property
+    def blocked_items(self) -> tuple[WorkerTodoItem, ...]:
+        return tuple(item for item in self.items if item.status == "blocked")
+
+    @property
+    def done(self) -> bool:
+        return bool(self.items) and all(
+            item.status in {"completed", "skipped"} for item in self.items
+        )
+
+    @property
+    def current_item(self) -> WorkerTodoItem | None:
+        in_progress = self.in_progress_items
+        if in_progress:
+            return in_progress[0]
+        pending = self.pending_items
+        return pending[0] if pending else None
+
+    def progress_counts(self) -> dict[str, int]:
+        return {
+            "completed": sum(1 for item in self.items if item.status == "completed"),
+            "skipped": sum(1 for item in self.items if item.status == "skipped"),
+            "blocked": sum(1 for item in self.items if item.status == "blocked"),
+            "in_progress": sum(1 for item in self.items if item.status == "in_progress"),
+            "pending": sum(1 for item in self.items if item.status == "pending"),
+            "total": len(self.items),
+        }
 
 
 def render_task_markdown(*, title: str, goal: str, success_criteria: str | None) -> str:
@@ -224,6 +287,211 @@ def parse_todo_checklist(content: str) -> TodoChecklistState:
             )
         )
     return TodoChecklistState(items=tuple(items))
+
+
+def parse_worker_todo_state(content: str) -> WorkerTodoState:
+    validate_task_package_file("todo.md", content)
+    lines = content.splitlines()
+    checklist_index = next(index for index, line in enumerate(lines) if line.strip() == "## Checklist")
+    items: list[WorkerTodoItem] = []
+    current_match: re.Match[str] | None = None
+    metadata: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_match, metadata
+        if current_match is None:
+            return
+        mark = current_match.group("mark")
+        explicit_status: str | None = None
+        evidence: str | None = None
+        reason: str | None = None
+        recommended_action: str | None = None
+        notes: list[str] = []
+        for raw_line in metadata:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if status_match := TODO_STATUS_PATTERN.match(line):
+                explicit_status = status_match.group("status")
+                continue
+            if evidence_match := TODO_EVIDENCE_PATTERN.match(line):
+                evidence = evidence_match.group("evidence")
+                continue
+            if blocked_match := TODO_BLOCKED_PATTERN.match(line):
+                reason = blocked_match.group("reason")
+                continue
+            if skipped_match := TODO_SKIPPED_PATTERN.match(line):
+                reason = skipped_match.group("reason")
+                continue
+            if action_match := TODO_RECOMMENDED_ACTION_PATTERN.match(line):
+                recommended_action = action_match.group("action")
+                continue
+            notes.append(line)
+        if explicit_status and explicit_status not in {"in_progress", "blocked", "skipped"}:
+            raise TaskPackageValidationError(
+                error_type="invalid_task_file_format",
+                message=f"todo.md has unsupported worker todo status '{explicit_status}'.",
+            )
+        if explicit_status in {"in_progress", "blocked", "skipped"}:
+            status = explicit_status
+        elif mark.lower() == "x":
+            status = "completed"
+        else:
+            status = "pending"
+        items.append(
+            WorkerTodoItem(
+                item_id=current_match.group("item_id"),
+                text=current_match.group("text"),
+                status=status,  # type: ignore[arg-type]
+                evidence=evidence,
+                reason=reason,
+                recommended_action=recommended_action,
+                notes=tuple(notes),
+            )
+        )
+        current_match = None
+        metadata = []
+
+    for raw_line in lines[checklist_index + 1 :]:
+        stripped = raw_line.strip()
+        match = TODO_ITEM_DETAIL_PATTERN.match(stripped)
+        if match is not None:
+            flush()
+            current_match = match
+            continue
+        if current_match is not None and raw_line.startswith((" ", "\t")):
+            metadata.append(stripped)
+    flush()
+    state = WorkerTodoState(items=tuple(items))
+    validate_worker_todo_state(state)
+    return state
+
+
+def validate_worker_todo_state(state: WorkerTodoState) -> None:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for item in state.items:
+        if item.item_id in seen:
+            duplicates.append(item.item_id)
+        seen.add(item.item_id)
+        if item.status == "skipped" and not (item.reason or "").strip():
+            raise TaskPackageValidationError(
+                error_type="todo_skip_reason_required",
+                message=f"{item.item_id} is skipped but does not include a skip reason.",
+            )
+        if item.status == "blocked" and not (item.reason or "").strip():
+            raise TaskPackageValidationError(
+                error_type="todo_block_reason_required",
+                message=f"{item.item_id} is blocked but does not include a blocker reason.",
+            )
+        if item.status == "completed" and item.evidence is not None and not item.evidence.strip():
+            raise TaskPackageValidationError(
+                error_type="todo_item_evidence_required",
+                message=f"{item.item_id} has an empty completion evidence line.",
+            )
+    if duplicates:
+        raise TaskPackageValidationError(
+            error_type="invalid_task_file_format",
+            message=f"todo.md has duplicate todo item IDs: {', '.join(sorted(set(duplicates)))}.",
+        )
+    if len(state.in_progress_items) > 1:
+        raise TaskPackageValidationError(
+            error_type="todo_in_progress_conflict",
+            message="todo.md cannot contain more than one in-progress item.",
+        )
+
+
+def render_worker_todo_state(state: WorkerTodoState) -> str:
+    validate_worker_todo_state(state)
+    lines = ["# Todo", "", "## Checklist"]
+    for item in state.items:
+        mark = "x" if item.status == "completed" else " "
+        lines.append(f"- [{mark}] {item.item_id}: {item.text}")
+        if item.status in {"in_progress", "blocked", "skipped"}:
+            lines.append(f"  - Status: {item.status}")
+        if item.evidence:
+            lines.append(f"  - Evidence: {item.evidence}")
+        if item.status == "blocked" and item.reason:
+            lines.append(f"  - Blocked: {item.reason}")
+        if item.status == "skipped" and item.reason:
+            lines.append(f"  - Skipped: {item.reason}")
+        if item.recommended_action:
+            lines.append(f"  - Recommended Socrates action: {item.recommended_action}")
+        lines.extend(f"  {note}" for note in item.notes)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def update_worker_todo_item(
+    state: WorkerTodoState,
+    *,
+    item_id: str,
+    status: TodoItemStatus,
+    evidence: Any | None = None,
+    reason: str | None = None,
+    recommended_action: str | None = None,
+) -> WorkerTodoState:
+    if status == "completed" and evidence is None:
+        raise TaskPackageValidationError(
+            error_type="todo_item_evidence_required",
+            message="Completing a todo item requires concrete evidence.",
+        )
+    if status == "blocked" and not (reason or "").strip():
+        raise TaskPackageValidationError(
+            error_type="todo_block_reason_required",
+            message="Blocking a todo item requires a concrete reason.",
+        )
+    if status == "skipped" and not (reason or "").strip():
+        raise TaskPackageValidationError(
+            error_type="todo_skip_reason_required",
+            message="Skipping a todo item requires an audit reason.",
+        )
+    evidence_text = _stringify_todo_metadata(evidence) if evidence is not None else None
+    updated: list[WorkerTodoItem] = []
+    found = False
+    for item in state.items:
+        if item.item_id != item_id:
+            if status == "in_progress" and item.status == "in_progress":
+                updated.append(
+                    WorkerTodoItem(
+                        item_id=item.item_id,
+                        text=item.text,
+                        status="pending",
+                        evidence=item.evidence,
+                        reason=item.reason,
+                        recommended_action=item.recommended_action,
+                        notes=item.notes,
+                    )
+                )
+            else:
+                updated.append(item)
+            continue
+        found = True
+        updated.append(
+            WorkerTodoItem(
+                item_id=item.item_id,
+                text=item.text,
+                status=status,
+                evidence=evidence_text,
+                reason=reason.strip() if reason else None,
+                recommended_action=recommended_action.strip() if recommended_action else None,
+                notes=item.notes,
+            )
+        )
+    if not found:
+        raise TaskPackageValidationError(
+            error_type="invalid_task_file_format",
+            message=f"Todo item {item_id} was not found.",
+        )
+    new_state = WorkerTodoState(items=tuple(updated))
+    validate_worker_todo_state(new_state)
+    return new_state
+
+
+def _stringify_todo_metadata(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def _validate_headed_document(*, filename: str, content: str, headings: tuple[str, ...]) -> None:

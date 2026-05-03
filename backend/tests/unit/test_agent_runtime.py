@@ -393,6 +393,77 @@ async def test_agent_runner_caps_parallel_tool_calls_and_returns_errors_for_over
 
 
 @pytest.mark.asyncio
+async def test_agent_runner_uses_batch_tool_executor_and_preserves_overflow(
+    monkeypatch,
+):
+    tool_calls = [
+        ToolCall(id=f"call_{index}", name="count_tool", arguments={"value": index})
+        for index in range(1, 8)
+    ]
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Calling tools.",
+                        tool_calls=tool_calls,
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Done.",
+                        usage=UsageStats(),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "backend.src.agent.runtime.get_provider", lambda model, **kwargs: provider
+    )
+
+    batches: list[list[str]] = []
+
+    async def batch_executor(calls: list[ToolCall]):
+        batches.append([call.id for call in calls])
+        return [
+            json.dumps(
+                {
+                    "ok": True,
+                    "tool_name": call.name,
+                    "data": {"value": call.arguments["value"]},
+                }
+            )
+            for call in calls
+        ]
+
+    runner = AgentRunner(tool_batch_executor=batch_executor)
+    request = AgentRequest(
+        model="fake/fake-model", system_prompt="sys", query="Run tools."
+    )
+
+    events = [event async for event in runner.stream(request)]
+    tool_result_events = [
+        event for event in events if event.type == AgentEventType.TOOL_RESULT
+    ]
+
+    assert batches == [[f"call_{index}" for index in range(1, 7)]]
+    assert [event.tool_call.id for event in tool_result_events] == [
+        f"call_{index}" for index in range(1, 8)
+    ]
+    assert json.loads(tool_result_events[0].tool_result)["data"]["value"] == 1
+    overflow_payload = json.loads(tool_result_events[-1].tool_result)
+    assert overflow_payload["error_type"] == "tool_call_limit_exceeded"
+
+
+@pytest.mark.asyncio
 async def test_agent_runner_uses_final_structured_output_pass(monkeypatch):
     provider = FakeProvider(
         [
