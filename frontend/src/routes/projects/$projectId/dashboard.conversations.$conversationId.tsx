@@ -198,6 +198,7 @@ function ConversationSessionPage() {
     queryKey: ['task-workspace-tree', taskForSummary?.id],
     queryFn: () => apiFetch<TaskWorkspaceTree>(`/tasks/${taskForSummary?.id}/workspace-tree`),
     enabled: Boolean(taskForSummary?.id),
+    retry: false,
   })
 
   const { data: workspacePreview = null, isFetching: workspacePreviewLoading } = useQuery({
@@ -562,17 +563,6 @@ function ConversationSessionPage() {
     },
   })
 
-  const exportArtifact = useMutation({
-    mutationFn: (artifactId: string) =>
-      apiFetch<TaskArtifact>(`/task-artifacts/${artifactId}/export`, {
-        method: 'POST',
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['task-artifacts', taskForSummary?.id] })
-      queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
-    },
-  })
-
   const applyConversationSelection = useCallback(
     (model: string, thinking: ThinkingLevel) => {
       const normalizedThinking = normalizeThinkingLevelForModel(model, thinking)
@@ -736,60 +726,59 @@ function ConversationSessionPage() {
     <div className="relative flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-canvas">
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain">
-          <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-35 pt-4 sm:px-6 sm:pb-42 sm:pt-6 lg:px-8">
-            {hasConversationStarted ? (
-              <div className="flex flex-1 flex-col gap-5 pb-8 pt-2 sm:gap-6">
-                {taskForSummary ? (
-                  <TaskSummaryCard
-                    task={taskForSummary}
-                    approvals={taskApprovals}
-                    artifacts={taskArtifacts}
-                    approvalPending={resolveApproval.isPending}
-                    exportPending={exportArtifact.isPending}
-                    onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
-                    onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
-                  />
-                ) : null}
-                {timelineEntries.map((entry) => {
-                  if (entry.kind === 'assistant') {
+          {taskForSummary ? <ActiveTaskBar task={taskForSummary} /> : null}
+          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain">
+            <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-35 pt-4 sm:px-6 sm:pb-42 sm:pt-6 lg:px-8">
+              {hasConversationStarted ? (
+                <div className="flex flex-1 flex-col gap-5 pb-8 pt-2 sm:gap-6">
+                  {taskForSummary ? (
+                    <TaskSummaryCard
+                      task={taskForSummary}
+                      approvals={taskApprovals}
+                      artifacts={taskArtifacts}
+                      approvalPending={resolveApproval.isPending}
+                      onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
+                    />
+                  ) : null}
+                  {timelineEntries.map((entry) => {
+                    if (entry.kind === 'assistant') {
+                      return (
+                        <AssistantTurnBubble
+                          key={entry.key}
+                          turn={entry.turn}
+                          onHydrateActivity={hydrateActivityForRun}
+                        />
+                      )
+                    }
+
                     return (
-                      <AssistantTurnBubble
+                      <MessageBubble
                         key={entry.key}
-                        turn={entry.turn}
-                        onHydrateActivity={hydrateActivityForRun}
+                        message={entry.message}
                       />
                     )
-                  }
-
-                  return (
-                    <MessageBubble
-                      key={entry.key}
-                      message={entry.message}
-                    />
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="flex flex-1 items-center justify-center py-8 sm:py-12">
-                <div className="flex max-w-2xl flex-col items-center gap-4 text-center">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-moss">
-                    New session
-                  </p>
-                  <h1 className="font-display text-[clamp(2.4rem,7vw,4.5rem)] leading-[0.94] tracking-tight text-forest">
-                    Where shall we begin?
-                  </h1>
-                  <p className="max-w-xl text-sm leading-7 text-ink-soft sm:text-base sm:leading-8">
-                    Start with a question, a draft thought, or an image. The conversation stays
-                    centered here while the composer remains anchored below.
-                  </p>
+                  })}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="flex flex-1 items-center justify-center py-8 sm:py-12">
+                  <div className="flex max-w-2xl flex-col items-center gap-4 text-center">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-moss">
+                      New session
+                    </p>
+                    <h1 className="font-display text-[clamp(2.4rem,7vw,4.5rem)] leading-[0.94] tracking-tight text-forest">
+                      Where shall we begin?
+                    </h1>
+                    <p className="max-w-xl text-sm leading-7 text-ink-soft sm:text-base sm:leading-8">
+                      Start with a question, a draft thought, or an image. The conversation stays
+                      centered here while the composer remains anchored below.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
 
-        {hasUnseenBottomContent ? (
+          {hasUnseenBottomContent ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-26 z-30 flex justify-center px-4 sm:bottom-30">
             <button
               type="button"
@@ -801,17 +790,17 @@ function ConversationSessionPage() {
               <span>Jump to latest</span>
             </button>
           </div>
-        ) : null}
+          ) : null}
 
-        {pendingTaskApprovals.length > 0 ? (
+          {pendingTaskApprovals.length > 0 ? (
           <PendingApprovalDock
             approvals={pendingTaskApprovals}
             approvalPending={resolveApproval.isPending}
             onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
           />
-        ) : null}
+          ) : null}
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-canvas px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 sm:px-4 sm:pb-5">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-canvas px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 sm:px-4 sm:pb-5">
           <div className="pointer-events-auto mx-auto w-full max-w-4xl">
             <ConversationComposer
               compact
@@ -848,13 +837,13 @@ function ConversationSessionPage() {
               onFileSelect={(file) => uploadAsset.mutate(file)}
             />
           </div>
-        </div>
-        <WorkerTracePanel
+          </div>
+          <WorkerTracePanel
           worker={activeWorkerTrace}
           mode={workerPanelMode}
           onModeChange={setWorkerPanelMode}
-        />
-        {taskForSummary ? (
+          />
+          {taskForSummary ? (
           <button
             type="button"
             onClick={() => {
@@ -865,38 +854,68 @@ function ConversationSessionPage() {
           >
             Artifacts
           </button>
-        ) : null}
-        {mobileArtifactsOpen && taskForSummary ? (
-          <ArtifactWorkspacePanel
-            mobile
-            taskId={taskForSummary.id}
-            tree={taskWorkspaceTree}
-            preview={workspacePreview}
-            artifacts={taskArtifacts}
-            selectedPath={selectedWorkspacePath}
-            mode="open"
-            loadingPreview={workspacePreviewLoading}
-            exportPending={exportArtifact.isPending}
-            onSelectPath={setSelectedWorkspacePath}
-            onModeChange={setArtifactPanelMode}
-            onCloseMobile={() => setMobileArtifactsOpen(false)}
-            onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
-          />
-        ) : null}
+          ) : null}
+          {mobileArtifactsOpen && taskForSummary ? (
+            <ArtifactWorkspacePanel
+              mobile
+              taskId={taskForSummary.id}
+              tree={taskWorkspaceTree}
+              preview={workspacePreview}
+              artifacts={taskArtifacts}
+              workspaceRoot={taskForSummary.workspace_root}
+              selectedPath={selectedWorkspacePath}
+              mode="open"
+              loadingPreview={workspacePreviewLoading}
+              onSelectPath={setSelectedWorkspacePath}
+              onModeChange={setArtifactPanelMode}
+              onCloseMobile={() => setMobileArtifactsOpen(false)}
+            />
+          ) : null}
         </section>
         <ArtifactWorkspacePanel
           taskId={taskForSummary?.id ?? null}
           tree={taskWorkspaceTree}
           preview={workspacePreview}
           artifacts={taskArtifacts}
+          workspaceRoot={taskForSummary?.workspace_root ?? null}
           selectedPath={selectedWorkspacePath}
           mode={artifactPanelMode}
           loadingPreview={workspacePreviewLoading}
-          exportPending={exportArtifact.isPending}
           onSelectPath={setSelectedWorkspacePath}
           onModeChange={setArtifactPanelMode}
-          onExportArtifact={(artifactId) => exportArtifact.mutate(artifactId)}
         />
+      </div>
+    </div>
+  )
+}
+
+function ActiveTaskBar({ task }: { task: Task }) {
+  const taskLabel =
+    task.status === 'completed'
+      ? 'Completed task'
+      : task.status === 'failed'
+        ? 'Failed task'
+        : 'Active task'
+
+  return (
+    <div className="z-20 shrink-0 border-b border-forest/10 bg-canvas/92 px-4 py-2 backdrop-blur sm:px-6 lg:px-8">
+      <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-moss">{taskLabel}</p>
+          <p className="truncate text-sm font-semibold text-forest">{task.title}</p>
+        </div>
+        <span
+          className={cn(
+            'shrink-0 rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.14em]',
+            task.status === 'completed'
+              ? 'bg-sage/60 text-forest'
+              : task.status === 'failed'
+                ? 'bg-red-100 text-red-700'
+                : 'bg-paper text-moss',
+          )}
+        >
+          {task.status.replace('_', ' ')}
+        </span>
       </div>
     </div>
   )
@@ -907,9 +926,7 @@ interface TaskSummaryCardProps {
   approvals: TaskApproval[]
   artifacts: TaskArtifact[]
   approvalPending: boolean
-  exportPending: boolean
   onResolveApproval: (approvalId: string, approved: boolean, autoResume?: boolean) => void
-  onExportArtifact: (artifactId: string) => void
 }
 
 function TaskSummaryCard({
@@ -917,9 +934,7 @@ function TaskSummaryCard({
   approvals,
   artifacts,
   approvalPending,
-  exportPending,
   onResolveApproval,
-  onExportArtifact,
 }: TaskSummaryCardProps) {
   const isTerminalTask = task.status === 'completed' || task.status === 'failed'
   const pendingApprovals = isTerminalTask ? [] : approvals.filter((approval) => approval.status === 'pending')
@@ -1099,22 +1114,9 @@ function TaskSummaryCard({
                   <p className="text-[10px] uppercase tracking-[0.14em] text-moss/70">{artifact.artifact_role}</p>
                 </div>
                 {artifact.artifact_role === 'output' ? (
-                  artifact.promoted_to_asset ? (
-                    <span className="rounded-full bg-sage/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-forest">
-                      Exported
-                    </span>
-                  ) : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="h-7 border-forest/20 text-[10px] uppercase tracking-wider"
-                      disabled={exportPending}
-                      onClick={() => onExportArtifact(artifact.id)}
-                    >
-                      Export
-                    </Button>
-                  )
+                  <span className="rounded-full bg-sage/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-forest">
+                    Output
+                  </span>
                 ) : null}
               </div>
             ))}
@@ -1132,7 +1134,7 @@ function TaskSummaryCard({
 
       {outputArtifacts.length > 0 ? (
         <p className="mt-3 text-[11px] leading-5 text-ink-soft italic">
-          Final deliverables are tracked in <span className="font-semibold text-forest">outputs/</span> and can be promoted to project resources.
+          Final deliverables are tracked in <span className="font-semibold text-forest">outputs/</span> and can be opened from the workspace panel.
         </p>
       ) : null}
     </section>
