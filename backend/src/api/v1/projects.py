@@ -1,7 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from ...services.chat import RunManager
+from ...services.chat import (
+    ConversationRunInProgressError,
+    RunManager,
+    create_plan_approval_resume_run,
+    create_task_completion_denial_resume_run,
+)
 from ...services.projects import (
     archive_conversation,
     archive_project,
@@ -15,6 +20,7 @@ from ...services.projects import (
 )
 from ...services.tasks import (
     create_project_workspace,
+    close_task_from_completion_approval,
     export_task_artifact_to_asset,
     get_active_task_for_conversation,
     get_task,
@@ -22,6 +28,8 @@ from ...services.tasks import (
     list_project_workspaces,
     list_task_approvals,
     list_task_artifacts,
+    list_task_workspace_tree,
+    read_task_workspace_file_preview,
     resolve_task_approval,
     serialize_task,
     serialize_task_approval,
@@ -42,6 +50,8 @@ from .schemas import (
     ResolveTaskApprovalRequest,
     TaskApprovalResponse,
     TaskArtifactResponse,
+    TaskWorkspaceFilePreviewResponse,
+    TaskWorkspaceTreeResponse,
     TaskResponse,
 )
 
@@ -297,6 +307,32 @@ def get_task_artifacts_route(task_id: str, session: Session = Depends(get_sessio
     return [TaskArtifactResponse.model_validate(serialize_task_artifact(artifact)) for artifact in artifacts]
 
 
+@router.get("/tasks/{task_id}/workspace-tree", response_model=TaskWorkspaceTreeResponse)
+def get_task_workspace_tree_route(task_id: str, session: Session = Depends(get_session_dependency)) -> TaskWorkspaceTreeResponse:
+    try:
+        tree = list_task_workspace_tree(session, task_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return TaskWorkspaceTreeResponse.model_validate(tree)
+
+
+@router.get("/tasks/{task_id}/workspace-file", response_model=TaskWorkspaceFilePreviewResponse)
+def get_task_workspace_file_route(
+    task_id: str,
+    path: str = Query(min_length=1),
+    session: Session = Depends(get_session_dependency),
+) -> TaskWorkspaceFilePreviewResponse:
+    try:
+        preview = read_task_workspace_file_preview(session, task_id, path)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return TaskWorkspaceFilePreviewResponse.model_validate(preview)
+
+
 @router.post("/task-artifacts/{artifact_id}/export", response_model=TaskArtifactResponse)
 def export_task_artifact_route(
     artifact_id: str,
@@ -327,6 +363,9 @@ async def resolve_task_approval_route(
     session: Session = Depends(get_session_dependency),
     run_manager: RunManager = Depends(get_run_manager),
 ) -> TaskApprovalResponse:
+    resume_run_id: str | None = None
+    resume_status: str | None = None
+    resume_error: str | None = None
     try:
         approval = resolve_task_approval(session, approval_id=approval_id, approved=request.approved, note=request.note)
     except LookupError as exc:
@@ -342,4 +381,47 @@ async def resolve_task_approval_route(
                 "approval": serialize_task_approval(approval),
             },
         )
-    return TaskApprovalResponse.model_validate(serialize_task_approval(approval))
+    if request.approved and approval.approval_type == "task_completion":
+        try:
+            task = close_task_from_completion_approval(session, approval_id=approval.id)
+            if approval.agent_run_id:
+                await run_manager.record_external_event(
+                    approval.agent_run_id,
+                    event_type="task.status.updated",
+                    payload={
+                        "type": "task.status.updated",
+                        "run_id": approval.agent_run_id,
+                        "task_id": task.id,
+                        "task": serialize_task(task),
+                    },
+                )
+        except (LookupError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if request.auto_resume and request.approved and approval.approval_type == "plan_approval":
+        try:
+            _, resume_run = create_plan_approval_resume_run(session, approval=approval)
+            resume_run_id = resume_run.id
+            resume_status = resume_run.status
+            await run_manager.start_run(resume_run.id)
+        except ConversationRunInProgressError as exc:
+            resume_error = str(exc)
+            resume_run_id = exc.run_id
+        except ValueError as exc:
+            resume_error = str(exc)
+    if request.auto_resume and not request.approved and approval.approval_type == "task_completion":
+        try:
+            _, resume_run = create_task_completion_denial_resume_run(session, approval=approval)
+            resume_run_id = resume_run.id
+            resume_status = resume_run.status
+            await run_manager.start_run(resume_run.id)
+        except ConversationRunInProgressError as exc:
+            resume_error = str(exc)
+            resume_run_id = exc.run_id
+        except ValueError as exc:
+            resume_error = str(exc)
+
+    payload = serialize_task_approval(approval)
+    payload["resume_agent_run_id"] = resume_run_id
+    payload["resume_status"] = resume_status
+    payload["resume_error"] = resume_error
+    return TaskApprovalResponse.model_validate(payload)

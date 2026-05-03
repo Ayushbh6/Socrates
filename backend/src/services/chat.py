@@ -15,6 +15,7 @@ from ..core.model_catalog import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, normaliz
 from ..core.schema import Attachment, GenConfig, InputMode, Message, MessageRole, ThinkingLevel
 from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project, TaskApproval, ToolExecution
 from ..db.session import get_session_factory
+from ..tools.executor import ProjectToolBatchExecutor
 from ..tools.registry import get_tools_registry
 from .assets import get_project_assets_by_ids, resolve_asset_bytes
 from .bootstrap import get_current_user
@@ -34,6 +35,7 @@ from .tasks import (
     serialize_task,
     serialize_task_approval,
     serialize_task_artifact,
+    sync_task_output_artifacts,
 )
 from .utils import to_json_compatible
 
@@ -158,6 +160,20 @@ def serialize_agent_run(run: AgentRun, *, event_count: int, turn_count: int) -> 
         "created_at": run.created_at.isoformat(),
         "event_count": event_count,
         "turn_count": turn_count,
+    }
+
+
+def _registered_output_paths_from_execution(execution: ToolExecution | None) -> set[str]:
+    if execution is None:
+        return set()
+    paths = execution.result_json.get("registered_outputs")
+    if not isinstance(paths, list):
+        return set()
+    return {
+        path
+        for path in paths
+        if isinstance(path, str)
+        and (path == "outputs" or path.startswith("outputs/"))
     }
 
 
@@ -331,6 +347,182 @@ def create_message_and_run(
     session.refresh(user_message)
     session.refresh(run)
     return user_message, run
+
+
+def create_plan_approval_resume_run(
+    session: Session,
+    *,
+    approval: TaskApproval,
+) -> tuple[MessageRecord, AgentRun]:
+    if approval.status != "approved" or approval.approval_type != "plan_approval":
+        raise ValueError("Only approved plan approvals can resume Socrates automatically.")
+
+    task = get_task(session, approval.task_id)
+    conversation = get_conversation(session, task.conversation_id)
+    active_run = get_active_run_for_conversation(session, conversation.id)
+    if active_run is not None:
+        raise ConversationRunInProgressError(active_run.id)
+    project = get_project(session, conversation.project_id)
+
+    current_user = get_current_user(session)
+    resolved_model = conversation.model or DEFAULT_MODEL
+    require_supported_model(resolved_model)
+    resolved_thinking = normalize_thinking_level(
+        resolved_model,
+        ThinkingLevel(conversation.thinking_level or DEFAULT_THINKING_LEVEL.value),
+    )
+    resolved_provider = provider_for_model(resolved_model)
+    content_text = (
+        "The user approved the current plan through the plan approval controls. "
+        "Continue the approved task workflow: create todo.md if needed, start the worker when ready, "
+        "review the worker result, and answer the user."
+    )
+
+    message = MessageRecord(
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        role=MessageRole.USER.value,
+        task_id=task.id,
+        execution_mode="task",
+        input_mode=InputMode.TEXT.value,
+        content_text=content_text,
+        status="queued",
+        sequence_no=next_message_sequence(session, conversation.id),
+        provider=resolved_provider,
+        model=resolved_model,
+        metadata_json={
+            "thinking_level": resolved_thinking.value,
+            "system_generated": True,
+            "kind": "plan_approval_resume",
+            "approval_id": approval.id,
+        },
+    )
+    session.add(message)
+    session.flush()
+
+    run = AgentRun(
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        task_id=task.id,
+        trigger_message_id=message.id,
+        status="queued",
+        execution_mode="task",
+        provider=resolved_provider,
+        model=resolved_model,
+        input_mode=InputMode.TEXT.value,
+        system_prompt_text=build_socrates_system_prompt(
+            project.default_system_prompt,
+            user_name=current_user.display_name if current_user else None,
+            project_name=project.name,
+            project_description=project.description,
+        ),
+        query_text=content_text,
+        request_json={
+            "model": resolved_model,
+            "thinking_level": resolved_thinking.value,
+            "input_mode": InputMode.TEXT.value,
+            "asset_ids": [],
+            "active_task_id": task.id,
+            "auto_resume_after_approval_id": approval.id,
+        },
+    )
+    session.add(run)
+    session.flush()
+
+    message.agent_run_id = run.id
+    task.last_agent_run_id = run.id
+    task.updated_at = datetime.now(timezone.utc)
+    conversation.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(message)
+    session.refresh(run)
+    return message, run
+
+
+def create_task_completion_denial_resume_run(
+    session: Session,
+    *,
+    approval: TaskApproval,
+) -> tuple[MessageRecord, AgentRun]:
+    if approval.status != "denied" or approval.approval_type != "task_completion":
+        raise ValueError("Only denied task completion approvals can resume Socrates automatically.")
+
+    task = get_task(session, approval.task_id)
+    conversation = get_conversation(session, task.conversation_id)
+    active_run = get_active_run_for_conversation(session, conversation.id)
+    if active_run is not None:
+        raise ConversationRunInProgressError(active_run.id)
+    project = get_project(session, conversation.project_id)
+    current_user = get_current_user(session)
+    resolved_model = conversation.model or DEFAULT_MODEL
+    require_supported_model(resolved_model)
+    resolved_thinking = normalize_thinking_level(
+        resolved_model,
+        ThinkingLevel(conversation.thinking_level or DEFAULT_THINKING_LEVEL.value),
+    )
+    resolved_provider = provider_for_model(resolved_model)
+    content_text = (
+        "The user rejected Socrates' request to mark the current task completed. "
+        "Ask the user what is still left to do, then revise the todo or continue the task as needed."
+    )
+
+    message = MessageRecord(
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        role=MessageRole.USER.value,
+        task_id=task.id,
+        execution_mode="task",
+        input_mode=InputMode.TEXT.value,
+        content_text=content_text,
+        status="queued",
+        sequence_no=next_message_sequence(session, conversation.id),
+        provider=resolved_provider,
+        model=resolved_model,
+        metadata_json={
+            "thinking_level": resolved_thinking.value,
+            "system_generated": True,
+            "kind": "task_completion_denied_resume",
+            "approval_id": approval.id,
+        },
+    )
+    session.add(message)
+    session.flush()
+
+    run = AgentRun(
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        task_id=task.id,
+        trigger_message_id=message.id,
+        status="queued",
+        execution_mode="task",
+        provider=resolved_provider,
+        model=resolved_model,
+        input_mode=InputMode.TEXT.value,
+        system_prompt_text=build_socrates_system_prompt(
+            project.default_system_prompt,
+            user_name=current_user.display_name if current_user else None,
+            project_name=project.name,
+            project_description=project.description,
+        ),
+        query_text=content_text,
+        request_json={
+            "model": resolved_model,
+            "thinking_level": resolved_thinking.value,
+            "input_mode": InputMode.TEXT.value,
+            "asset_ids": [],
+            "active_task_id": task.id,
+            "auto_resume_after_approval_id": approval.id,
+        },
+    )
+    session.add(run)
+    session.flush()
+    message.agent_run_id = run.id
+    task.last_agent_run_id = run.id
+    conversation.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(message)
+    session.refresh(run)
+    return message, run
 
 
 _DELTA_KIND_CONTENT = "content"
@@ -641,23 +833,24 @@ class RunManager:
                 event_type="task.created",
                 payload={"type": "task.created", "run_id": run.id, "task": serialize_task(task)},
             )
-        if run.task_id:
-            q = session.query(ToolExecution).filter(ToolExecution.agent_run_id == run.id)
-            if tool_call_id:
-                execution = (
-                    q.filter(ToolExecution.tool_call_id == tool_call_id)
-                    .order_by(ToolExecution.created_at.desc())
-                    .first()
-                )
-            else:
-                execution = q.order_by(ToolExecution.created_at.desc()).first()
+        q = session.query(ToolExecution).filter(ToolExecution.agent_run_id == run.id)
+        if tool_call_id:
+            execution = (
+                q.filter(ToolExecution.tool_call_id == tool_call_id)
+                .order_by(ToolExecution.created_at.desc())
+                .first()
+            )
+        else:
+            execution = q.order_by(ToolExecution.created_at.desc()).first()
+        task_id = run.task_id or (execution.task_id if execution is not None else None)
+        if task_id:
             if (
                 tool_name == "update_task_status"
                 and execution is not None
                 and execution.result_json.get("status") in {"completed", "failed"}
             ):
-                task_id = execution.task_id or run.task_id
                 task = get_task(session, task_id)
+                session.refresh(task)
                 await self._record_event(
                     session,
                     run,
@@ -679,13 +872,23 @@ class RunManager:
                     payload={
                         "type": "task.approval.requested",
                         "run_id": run.id,
-                        "task_id": run.task_id,
+                        "task_id": task_id,
                         "approval": serialize_task_approval(approval),
                     },
                 )
-            artifacts = list_task_artifacts(session, run.task_id)
-            if artifacts:
-                latest_artifact = artifacts[-1]
+            registered_output_paths = _registered_output_paths_from_execution(execution)
+            if registered_output_paths:
+                artifacts = [
+                    artifact
+                    for artifact in list_task_artifacts(session, task_id)
+                    if artifact.relative_path in registered_output_paths
+                ]
+            elif tool_name == "start_worker":
+                task = get_task(session, task_id)
+                artifacts = sync_task_output_artifacts(session, task=task)
+            else:
+                artifacts = []
+            for artifact in artifacts:
                 await self._record_event(
                     session,
                     run,
@@ -693,8 +896,8 @@ class RunManager:
                     payload={
                         "type": "task.artifact.registered",
                         "run_id": run.id,
-                        "task_id": run.task_id,
-                        "artifact": serialize_task_artifact(latest_artifact),
+                        "task_id": task_id,
+                        "artifact": serialize_task_artifact(artifact),
                     },
                 )
 
@@ -758,6 +961,26 @@ class RunManager:
             ]
 
             settings = get_settings()
+            loop = asyncio.get_running_loop()
+            parent_run_id = run.id
+
+            def parent_event_sink(payload: dict[str, Any]) -> None:
+                event_type = payload.get("type")
+                if not isinstance(event_type, str):
+                    return
+                future = asyncio.run_coroutine_threadsafe(
+                    self.record_external_event(
+                        parent_run_id,
+                        event_type=event_type,
+                        payload=payload,
+                    ),
+                    loop,
+                )
+                try:
+                    future.result(timeout=10)
+                except Exception:
+                    future.cancel()
+
             tool_runtime = get_tools_registry(
                 session,
                 project_id=conversation.project_id,
@@ -765,6 +988,7 @@ class RunManager:
                 run=run,
                 uploads_dir=settings.uploads_dir,
                 host_workspaces_dir=settings.host_workspaces_dir,
+                parent_event_sink=parent_event_sink,
             )
 
             request = AgentRequest(
@@ -779,12 +1003,26 @@ class RunManager:
                     thinking=ThinkingLevel(run.request_json.get("thinking_level", ThinkingLevel.OFF.value))
                 ),
             )
+            tool_batch_executor = ProjectToolBatchExecutor(
+                session_factory=self._session_factory,
+                project_id=conversation.project_id,
+                conversation_id=conversation.id,
+                run_id=run.id,
+                uploads_dir=settings.uploads_dir,
+                host_workspaces_dir=settings.host_workspaces_dir,
+                parent_event_sink=parent_event_sink,
+            )
             try:
-                runner = self._runner_factory(tool_executor=tool_runtime.execute)
+                runner = self._runner_factory(
+                    tool_executor=tool_runtime.execute,
+                    tool_batch_executor=tool_batch_executor,
+                )
             except TypeError:
                 runner = self._runner_factory()
                 if hasattr(runner, "tool_executor"):
                     runner.tool_executor = tool_runtime.execute
+                if hasattr(runner, "tool_batch_executor"):
+                    runner.tool_batch_executor = tool_batch_executor
                 if hasattr(runner, "tool_handlers"):
                     runner.tool_handlers = {}
             final_event: AgentEvent | None = None
@@ -913,6 +1151,15 @@ class RunManager:
                 raise RuntimeError("Agent run completed without a final response.")
 
             final_response = final_event.response
+            if not final_response.content.strip() and final_response.metadata.get("agent_tools_called"):
+                final_response = final_response.model_copy(
+                    update={
+                        "content": (
+                            "I could not complete the last requested action. "
+                            "Please review the run trace for the tool error, then tell me how you want to proceed."
+                        )
+                    }
+                )
             telemetry_items = final_response.metadata.get("agent_turn_telemetry", [])
             for telemetry in telemetry_items:
                 telemetry_data = to_json_compatible(telemetry)

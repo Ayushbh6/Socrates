@@ -9,6 +9,8 @@ from backend.src.app import create_app
 from backend.src.core.schema import LLMResponse, ToolCall, UsageStats
 from backend.src.db.models import AgentRun, TaskArtifact, ToolExecution
 from backend.src.db.session import get_session_factory
+from backend.src.services.tasks import create_task_approval
+from backend.src.services.workers import WorkerResult
 
 
 class FakeAsyncStream:
@@ -155,6 +157,86 @@ def approve_pending_plan_approval_for_task(client: TestClient, task_id: str) -> 
             assert r.status_code == 200
             return
     raise AssertionError("Expected a pending plan_approval, found none.")
+
+
+def resolve_pending_completion_approval_for_task(
+    client: TestClient, task_id: str, *, approved: bool = True, auto_resume: bool = False
+) -> dict:
+    response = client.get(f"/api/v1/tasks/{task_id}/approvals")
+    assert response.status_code == 200
+    for item in response.json():
+        if item["status"] == "pending" and item.get("approval_type") == "task_completion":
+            r = client.post(
+                f"/api/v1/task-approvals/{item['id']}",
+                json={"approved": approved, "note": "ok", "auto_resume": auto_resume},
+            )
+            assert r.status_code == 200
+            return r.json()
+    raise AssertionError("Expected a pending task_completion approval, found none.")
+
+
+def test_plan_approval_can_auto_resume_socrates(client: TestClient, monkeypatch):
+    resume_provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Continuing after plan approval.",
+                        usage=UsageStats(total_tokens=3),
+                        raw_dump={"turn": "resume"},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            }
+        ]
+    )
+    install_provider_stack(
+        monkeypatch,
+        [
+            provider_for_task_and_plan(
+                create_id="auto_resume_create",
+                plan_id="auto_resume_plan",
+                title="Auto resume task",
+                goal="Resume when the plan approval button is clicked.",
+            ),
+            resume_provider,
+        ],
+    )
+    _, conversation_id = bootstrap_user_and_project(client)
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Create a task and plan.", "asset_ids": []},
+    )
+    assert first.status_code == 202
+    drain_run_events(client, first.json()["agent_run_id"])
+
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+    approvals = client.get(f"/api/v1/tasks/{task['id']}/approvals").json()
+    approval = next(item for item in approvals if item["approval_type"] == "plan_approval")
+    resolved = client.post(
+        f"/api/v1/task-approvals/{approval['id']}",
+        json={"approved": True, "note": "ok", "auto_resume": True},
+    )
+    assert resolved.status_code == 200
+    resolved_payload = resolved.json()
+    assert resolved_payload["status"] == "approved"
+    assert resolved_payload["resume_agent_run_id"]
+
+    resume_events = drain_run_events(client, resolved_payload["resume_agent_run_id"])
+    assert resume_events[-1]["type"] == "run.completed"
+    assert resume_provider.requests
+    assert "approved the current plan" in resume_provider.requests[0].query
+
+    messages = client.get(f"/api/v1/conversations/{conversation_id}/messages")
+    assert messages.status_code == 200
+    generated_messages = [
+        message
+        for message in messages.json()
+        if message["metadata"].get("kind") == "plan_approval_resume"
+    ]
+    assert len(generated_messages) == 1
+    assert generated_messages[0]["metadata"]["system_generated"] is True
+    assert generated_messages[0]["agent_run_id"] == resolved_payload["resume_agent_run_id"]
 
 
 def drain_run_events(client: TestClient, run_id: str) -> list[dict]:
@@ -704,11 +786,7 @@ def test_execute_command_tool_not_exposed_outside_docker(
     assert response.status_code == 202
 
     run_id = response.json()["agent_run_id"]
-    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
-        while True:
-            payload = websocket.receive_json()
-            if payload["type"] in {"run.completed", "run.failed"}:
-                break
+    events = drain_run_events(client, run_id)
 
     assert provider.requests
     tool_names = [tool.name for tool in provider.requests[0].tools or []]
@@ -743,11 +821,7 @@ def test_execute_command_tool_exposed_inside_docker(client: TestClient, monkeypa
     assert response.status_code == 202
 
     run_id = response.json()["agent_run_id"]
-    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
-        while True:
-            payload = websocket.receive_json()
-            if payload["type"] in {"run.completed", "run.failed"}:
-                break
+    events = drain_run_events(client, run_id)
 
     assert provider.requests
     tool_names = [tool.name for tool in provider.requests[0].tools or []]
@@ -804,11 +878,7 @@ def test_query_attachment_is_copied_into_task_inputs(client: TestClient, monkeyp
     assert response.status_code == 202
     run_id = response.json()["agent_run_id"]
 
-    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
-        while True:
-            payload = websocket.receive_json()
-            if payload["type"] in {"run.completed", "run.failed"}:
-                break
+    events = drain_run_events(client, run_id)
 
     active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
     assert active_task.status_code == 200
@@ -1574,6 +1644,25 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
     assert Path(task["workspace_root"], "work", "script.py").exists()
     assert not Path(task["workspace_root"], "inputs", "blocked.txt").exists()
 
+    tree_response = client.get(f"/api/v1/tasks/{task['id']}/workspace-tree")
+    assert tree_response.status_code == 200
+    tree_paths = {
+        entry["path"]
+        for root in tree_response.json()["roots"]
+        for entry in root["entries"]
+        if not entry["is_dir"]
+    }
+    assert {"work/script.py", "outputs/result.txt"}.issubset(tree_paths)
+
+    preview_response = client.get(
+        f"/api/v1/tasks/{task['id']}/workspace-file",
+        params={"path": "work/script.py"},
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview["preview_type"] == "text"
+    assert "print('ok')" in preview["content_text"]
+
     export_response = client.post(
         f"/api/v1/task-artifacts/{output_artifact['id']}/export"
     )
@@ -1975,6 +2064,10 @@ def test_apply_patch_updates_work_and_creates_output_artifact(
             if payload["type"] in {"run.completed", "run.failed"}:
                 break
 
+    events_response = client.get(f"/api/v1/agent-runs/{run_id}/events")
+    assert events_response.status_code == 200
+    events = [event["payload"] for event in events_response.json()]
+
     active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
     task = active_task.json()
     assert (
@@ -1989,6 +2082,12 @@ def test_apply_patch_updates_work_and_creates_output_artifact(
         for artifact in artifacts.json()
         if artifact["relative_path"] == "outputs/summary.txt"
     )
+    artifact_events = [
+        event for event in events if event["type"] == "task.artifact.registered"
+    ]
+    assert [
+        event["artifact"]["relative_path"] for event in artifact_events
+    ] == ["outputs/summary.txt"]
     assert output_artifact["artifact_role"] == "output"
     assert (
         Path(task["workspace_root"], "outputs", "summary.txt").read_text(
@@ -2007,6 +2106,517 @@ def test_apply_patch_updates_work_and_creates_output_artifact(
         assert execution.result_json["operation"] == "apply_patch"
         assert execution.result_json["updated_files"] == ["work/source.py"]
         assert execution.result_json["created_files"] == ["outputs/summary.txt"]
+    finally:
+        session.close()
+
+
+def test_artifact_registered_event_is_limited_to_current_output_change(
+    client: TestClient, monkeypatch
+):
+    work_only_provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Writing a non-output work file.",
+                        tool_calls=[
+                            ToolCall(
+                                id="write_work_only",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "work/notes.txt",
+                                    "content": "notes\n",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Work note written.",
+                        usage=UsageStats(total_tokens=4),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    _, conversation_id, task = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_VALID_TODO,
+        extra_providers=[work_only_provider],
+    )
+    assert Path(task["workspace_root"], "outputs", "result.txt").exists()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Write a work note only.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+    events = drain_run_events(client, response.json()["agent_run_id"])
+
+    assert Path(task["workspace_root"], "work", "notes.txt").read_text(
+        encoding="utf-8"
+    ) == "notes\n"
+    artifact_events = [
+        event for event in events if event["type"] == "task.artifact.registered"
+    ]
+    assert artifact_events == []
+
+
+def test_socrates_starts_worker_and_receives_structured_result(
+    client: TestClient, monkeypatch
+):
+    p1 = provider_for_task_and_plan(
+        create_id="worker_create",
+        plan_id="worker_plan",
+        title="Worker handoff",
+        goal="Create an output through a worker.",
+    )
+    p2 = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Creating todo and starting worker.",
+                        tool_calls=[
+                            ToolCall(
+                                id="worker_todo",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "todo.md",
+                                    "content": "# Todo\n\n## Checklist\n- [ ] T1: Create worker output\n",
+                                },
+                            ),
+                            ToolCall(
+                                id="start_worker_call",
+                                name="start_worker",
+                                arguments={},
+                            ),
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="The worker created the output and completed the checklist.",
+                        usage=UsageStats(total_tokens=7),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    worker = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Marking in progress.",
+                        tool_calls=[
+                            ToolCall(
+                                id="worker_in_progress",
+                                name="update_current_todo_item",
+                                arguments={"status": "in_progress"},
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"worker_turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Writing output and completing todo.",
+                        tool_calls=[
+                            ToolCall(
+                                id="worker_output",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "outputs/worker.txt",
+                                    "content": "worker done\n",
+                                },
+                            ),
+                            ToolCall(
+                                id="worker_complete",
+                                name="update_current_todo_item",
+                                arguments={
+                                    "status": "completed",
+                                    "evidence": {
+                                        "changed_paths": ["outputs/worker.txt"],
+                                        "verification": "read output content",
+                                    },
+                                },
+                            ),
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"worker_turn": 3},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content='{"status":"completed","summary":"Created worker output.","todo":{"checked_ids":["T1"],"remaining_ids":[],"notes":[]},"changed_files":[{"scope":"task","path":"outputs/worker.txt","operation":"create"}],"outputs":[{"path":"outputs/worker.txt","description":"Worker output.","sha256":null}],"verification":[{"command":null,"exit_code":null,"summary":"Output file was written."}],"blockers":[],"handoff_to_socrates":"Worker output is ready."}',
+                        parsed=WorkerResult(
+                            status="completed",
+                            summary="Created worker output.",
+                            todo={
+                                "checked_ids": ["T1"],
+                                "remaining_ids": [],
+                                "notes": [],
+                            },
+                            changed_files=[
+                                {
+                                    "scope": "task",
+                                    "path": "outputs/worker.txt",
+                                    "operation": "create",
+                                }
+                            ],
+                            outputs=[
+                                {
+                                    "path": "outputs/worker.txt",
+                                    "description": "Worker output.",
+                                }
+                            ],
+                            verification=[
+                                {"summary": "Output file was written."}
+                            ],
+                            blockers=[],
+                            handoff_to_socrates="Worker output is ready.",
+                        ),
+                        usage=UsageStats(total_tokens=10),
+                        raw_dump={"worker_turn": 4},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    install_provider_stack(monkeypatch, [p1, p2, worker])
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Prepare worker handoff.", "asset_ids": []},
+    )
+    assert first.status_code == 202
+    drain_run_events(client, first.json()["agent_run_id"])
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+    approve_pending_plan_approval_for_task(client, task["id"])
+
+    second = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Create todo and run worker.", "asset_ids": []},
+    )
+    assert second.status_code == 202
+    events = drain_run_events(client, second.json()["agent_run_id"])
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+
+    assert Path(task["workspace_root"], "outputs", "worker.txt").read_text(
+        encoding="utf-8"
+    ) == "worker done\n"
+    todo_text = Path(task["workspace_root"], "todo.md").read_text(encoding="utf-8")
+    assert "- [x] T1: Create worker output" in todo_text
+    assert "Evidence:" in todo_text
+    event_types = [event["type"] for event in events]
+    assert "task.worker.started" in event_types
+    assert "task.worker.tool.called" in event_types
+    assert "task.worker.tool.result" in event_types
+    assert "task.worker.todo.updated" in event_types
+    assert "task.worker.completed" in event_types
+    assert event_types.index("task.worker.tool.called") < event_types.index("task.worker.completed")
+    todo_events = [event for event in events if event["type"] == "task.worker.todo.updated"]
+    assert any(event["todo"].get("item", {}).get("id") == "T1" for event in todo_events)
+    assert any(event["todo"].get("progress") for event in todo_events)
+    worker_tool_results = [event for event in events if event["type"] == "task.worker.tool.result"]
+    assert any(event["tool_result"].get("path") == "outputs/worker.txt" for event in worker_tool_results)
+
+    session = get_session_factory()()
+    try:
+        worker_run = (
+            session.query(AgentRun)
+            .filter(AgentRun.task_id == task["id"], AgentRun.execution_mode == "worker")
+            .one()
+        )
+        assert worker_run.status == "completed"
+        assert worker_run.final_parsed_json["status"] == "completed"
+        start_execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "start_worker_call")
+            .one()
+        )
+        assert start_execution.result_json["worker_result"]["status"] == "completed"
+        assert "worker_events" not in start_execution.result_json
+    finally:
+        session.close()
+
+
+def test_start_worker_rejects_any_pending_task_approval(client: TestClient, monkeypatch):
+    install_provider_stack(
+        monkeypatch,
+        [
+            provider_for_task_and_plan(
+                create_id="pending_any_create",
+                plan_id="pending_any_plan",
+                title="Pending approval",
+                goal="Try worker while another approval is pending.",
+            ),
+            FakeProvider(
+                [
+                    {
+                        "chunks": [
+                            LLMResponse(
+                                content="Write todo and try worker.",
+                                tool_calls=[
+                                    ToolCall(
+                                        id="pending_any_todo",
+                                        name="write_file",
+                                        arguments={
+                                            "scope": "task",
+                                            "path": "todo.md",
+                                            "content": "# Todo\n\n## Checklist\n- [ ] T1: Do work\n",
+                                        },
+                                    ),
+                                    ToolCall(
+                                        id="pending_any_start",
+                                        name="start_worker",
+                                        arguments={},
+                                    ),
+                                ],
+                                usage=UsageStats(),
+                                raw_dump={"turn": 1},
+                                metadata={"provider": "fake", "model": "fake-model"},
+                            )
+                        ]
+                    },
+                    {
+                        "chunks": [
+                            LLMResponse(
+                                content="Worker start was blocked by pending approval.",
+                                usage=UsageStats(total_tokens=6),
+                                raw_dump={"turn": 2},
+                                metadata={"provider": "fake", "model": "fake-model"},
+                            )
+                        ]
+                    },
+                ]
+            ),
+        ],
+    )
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Prepare plan.", "asset_ids": []},
+    )
+    assert first.status_code == 202
+    drain_run_events(client, first.json()["agent_run_id"])
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+    approve_pending_plan_approval_for_task(client, task["id"])
+
+    session = get_session_factory()()
+    try:
+        create_task_approval(
+            session,
+            task_id=task["id"],
+            agent_run_id=None,
+            tool_execution_id=None,
+            approval_type="linked_workspace_write",
+            request_json={"scope": "linked_workspace", "path": "src/app.py"},
+        )
+    finally:
+        session.close()
+
+    second = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Try worker with another approval pending.", "asset_ids": []},
+    )
+    assert second.status_code == 202
+    drain_run_events(client, second.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "pending_any_start")
+            .one()
+        )
+        assert execution.result_json["error_type"] == "approval_required"
+    finally:
+        session.close()
+
+
+def test_start_worker_requires_plan_approval(client: TestClient, monkeypatch):
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Create task.",
+                        tool_calls=[
+                            ToolCall(
+                                id="create_before_approval",
+                                name="create_task",
+                                arguments={
+                                    "title": "No approval",
+                                    "goal": "Try worker before approval.",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Write plan then incorrectly start worker.",
+                        tool_calls=[
+                            ToolCall(
+                                id="plan_before_approval",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "plan.md",
+                                    "content": STANDARD_VALID_PLAN,
+                                },
+                            ),
+                            ToolCall(
+                                id="start_before_approval",
+                                name="start_worker",
+                                arguments={},
+                            ),
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Worker start was blocked.",
+                        usage=UsageStats(total_tokens=4),
+                        raw_dump={"turn": 3},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr("backend.src.agent.runtime.get_provider", lambda *_a, **_k: provider)
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Try worker early.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+    drain_run_events(client, response.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "start_before_approval")
+            .one()
+        )
+        assert execution.result_json["error_type"] == "plan_approval_required"
+    finally:
+        session.close()
+
+
+def test_start_worker_requires_valid_todo(client: TestClient, monkeypatch):
+    install_provider_stack(
+        monkeypatch,
+        [
+            provider_for_task_and_plan(
+                create_id="todo_req_create",
+                plan_id="todo_req_plan",
+                title="Todo required",
+                goal="Try worker without todo.",
+            ),
+            FakeProvider(
+                [
+                    {
+                        "chunks": [
+                            LLMResponse(
+                                content="Try worker without todo.",
+                                tool_calls=[
+                                    ToolCall(
+                                        id="start_without_todo",
+                                        name="start_worker",
+                                        arguments={},
+                                    )
+                                ],
+                                usage=UsageStats(),
+                                raw_dump={"turn": 1},
+                                metadata={"provider": "fake", "model": "fake-model"},
+                            )
+                        ]
+                    },
+                    {
+                        "chunks": [
+                            LLMResponse(
+                                content="Worker start was blocked.",
+                                usage=UsageStats(total_tokens=4),
+                                raw_dump={"turn": 2},
+                                metadata={"provider": "fake", "model": "fake-model"},
+                            )
+                        ]
+                    },
+                ]
+            ),
+        ],
+    )
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Prepare plan.", "asset_ids": []},
+    )
+    assert first.status_code == 202
+    drain_run_events(client, first.json()["agent_run_id"])
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+    approve_pending_plan_approval_for_task(client, task["id"])
+
+    second = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Start worker without todo.", "asset_ids": []},
+    )
+    assert second.status_code == 202
+    drain_run_events(client, second.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "start_without_todo")
+            .one()
+        )
+        assert execution.result_json["error_type"] == "todo_required"
     finally:
         session.close()
 
@@ -3205,10 +3815,16 @@ def test_update_task_status_completed_closes_task_after_user_acceptance(
     events = drain_run_events(client, close_run_id)
 
     assert any(
-        event["type"] == "task.status.updated"
-        and event["task"]["status"] == "completed"
+        event["type"] == "task.approval.requested"
+        and event["approval"]["approval_type"] == "task_completion"
         for event in events
     )
+    active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
+    assert active_task.status_code == 200
+    assert active_task.json()["status"] == "awaiting_approval"
+
+    resolved = resolve_pending_completion_approval_for_task(client, task["id"])
+    assert resolved["status"] == "approved"
     active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
     assert active_task.status_code == 200
     assert active_task.json() is None
@@ -3293,7 +3909,7 @@ def test_update_task_status_completed_requires_current_user_acceptance(
 
     active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
     assert active_task.status_code == 200
-    assert active_task.json()["id"] == task["id"]
+    assert active_task.json()["status"] == "awaiting_approval"
     session = get_session_factory()()
     try:
         execution = (
@@ -3301,9 +3917,61 @@ def test_update_task_status_completed_requires_current_user_acceptance(
             .filter(ToolExecution.tool_call_id == "close_without_acceptance")
             .one()
         )
-        assert execution.result_json["error_type"] == "acceptance_required"
+        assert execution.result_json["error_type"] == "approval_required"
+        assert execution.result_json["approval_id"]
     finally:
         session.close()
+
+
+def test_task_completion_denial_auto_resumes_socrates(client: TestClient, monkeypatch):
+    _, conversation_id, task = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_COMPLETED_TODO,
+        extra_providers=[
+            provider_for_status_update(
+                call_id="completion_request",
+                status="completed",
+                summary="Ready for user acceptance.",
+            ),
+            FakeProvider(
+                [
+                    {
+                        "chunks": [
+                            LLMResponse(
+                                content="What is still left to do?",
+                                usage=UsageStats(total_tokens=5),
+                                raw_dump={"turn": "denied-resume"},
+                                metadata={"provider": "fake", "model": "fake-model"},
+                            )
+                        ]
+                    }
+                ]
+            ),
+        ],
+    )
+
+    close_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Please close this task.", "asset_ids": []},
+    )
+    assert close_response.status_code == 202
+    drain_run_events(client, close_response.json()["agent_run_id"])
+
+    resolved = resolve_pending_completion_approval_for_task(
+        client, task["id"], approved=False, auto_resume=True
+    )
+    assert resolved["status"] == "denied"
+    assert resolved["resume_agent_run_id"]
+    events = drain_run_events(client, resolved["resume_agent_run_id"])
+    assert any(
+        event["type"] == "run.message.completed"
+        and event["message"]["content_text"] == "What is still left to do?"
+        for event in events
+    )
+    active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
+    assert active_task.status_code == 200
+    assert active_task.json()["id"] == task["id"]
 
 
 def test_update_task_status_failed_closes_task_with_summary(
@@ -3411,6 +4079,7 @@ def test_terminal_task_is_not_reused_for_future_task_scoped_work(
     )
     assert close_response.status_code == 202
     drain_run_events(client, close_response.json()["agent_run_id"])
+    resolve_pending_completion_approval_for_task(client, closed_candidate["id"])
     assert (
         client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
         is None

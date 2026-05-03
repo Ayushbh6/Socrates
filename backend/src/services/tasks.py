@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,32 @@ from .task_package import get_task_package_disk_state, parse_todo_checklist, ren
 ACTIVE_TASK_STATUSES = {"active", "awaiting_approval"}
 TERMINAL_TASK_STATUSES = {"completed", "failed"}
 PLAN_APPROVAL_TYPE = "plan_approval"
+TASK_COMPLETION_APPROVAL_TYPE = "task_completion"
 TASK_SUBDIRS = ("inputs", "work", "outputs", "logs")
+VISIBLE_TASK_WORKSPACE_DIRS = ("inputs", "work", "outputs")
+TEXT_PREVIEW_EXTENSIONS = {
+    ".css",
+    ".csv",
+    ".html",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".py",
+    ".rs",
+    ".sh",
+    ".sql",
+    ".svg",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+MAX_TEXT_PREVIEW_BYTES = 200_000
+MAX_BINARY_DATA_URL_BYTES = 4_000_000
 
 
 class TaskClosureValidationError(ValueError):
@@ -35,6 +61,12 @@ class TaskClosureValidationError(ValueError):
         self.message = message
         self.suggestion = suggestion
         self.retryable = retryable
+
+
+class TaskWorkspaceFileError(ValueError):
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.message = message
 
 
 def _utc_now() -> datetime:
@@ -51,6 +83,37 @@ def _path_within(root: Path, candidate: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _normalize_task_workspace_path(path: str) -> Path:
+    cleaned = path.strip().lstrip("/")
+    if not cleaned:
+        raise TaskWorkspaceFileError("Task workspace path is required.")
+    relative = Path(cleaned)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise TaskWorkspaceFileError("Task workspace path escapes the allowed workspace.")
+    if relative.parts[0] not in VISIBLE_TASK_WORKSPACE_DIRS:
+        raise TaskWorkspaceFileError("Only inputs/, work/, and outputs/ are visible in the task workspace panel.")
+    return relative
+
+
+def _task_workspace_file(task: Task, path: str) -> tuple[Path, str]:
+    relative = _normalize_task_workspace_path(path)
+    task_root = Path(task.workspace_root).resolve()
+    target = (task_root / relative).resolve()
+    if not _path_within(task_root, target):
+        raise TaskWorkspaceFileError("Task workspace path escapes the allowed workspace.")
+    if not target.exists() or not target.is_file():
+        raise FileNotFoundError("Task workspace file not found.")
+    return target, str(relative)
+
+
+def _is_text_preview(mime_type: str, path: Path) -> bool:
+    return (
+        mime_type.startswith("text/")
+        or mime_type in {"application/json", "application/xml", "application/javascript"}
+        or path.suffix.lower() in TEXT_PREVIEW_EXTENSIONS
+    )
 
 
 def _task_brief_markdown(*, title: str, goal: str, success_criteria: str | None) -> str:
@@ -354,6 +417,53 @@ def close_task(
     )
 
 
+def task_completion_approval_request_payload(*, status: str, result_summary: str | None) -> dict[str, Any]:
+    return {
+        "status": status,
+        "result_summary": result_summary.strip() if result_summary and result_summary.strip() else "",
+    }
+
+
+def ensure_task_completion_approval(
+    session: Session,
+    *,
+    task_id: str,
+    agent_run_id: str | None,
+    tool_execution_id: str | None,
+    status: str,
+    result_summary: str | None,
+) -> TaskApproval:
+    return create_task_approval(
+        session,
+        task_id=task_id,
+        agent_run_id=agent_run_id,
+        tool_execution_id=tool_execution_id,
+        approval_type=TASK_COMPLETION_APPROVAL_TYPE,
+        request_json=task_completion_approval_request_payload(
+            status=status,
+            result_summary=result_summary,
+        ),
+    )
+
+
+def close_task_from_completion_approval(session: Session, *, approval_id: str) -> Task:
+    approval = session.get(TaskApproval, approval_id)
+    if approval is None:
+        raise LookupError("Task approval not found.")
+    if approval.approval_type != TASK_COMPLETION_APPROVAL_TYPE:
+        raise ValueError("Only task completion approvals can close tasks.")
+    if approval.status != "approved":
+        raise ValueError("Task completion approval must be approved before closing.")
+    status = str(approval.request_json.get("status") or "completed")
+    result_summary = str(approval.request_json.get("result_summary") or "")
+    return close_task(
+        session,
+        approval.task_id,
+        status=status,
+        result_summary=result_summary,
+    )
+
+
 def _validate_task_closure(
     session: Session,
     *,
@@ -433,6 +543,72 @@ def list_task_artifacts(session: Session, task_id: str) -> list[TaskArtifact]:
             .order_by(TaskArtifact.created_at.asc())
         ).scalars()
     )
+
+
+def list_task_workspace_tree(session: Session, task_id: str) -> dict[str, Any]:
+    task = get_task(session, task_id)
+    task_root = Path(task.workspace_root).resolve()
+    roots: list[dict[str, Any]] = []
+    for dirname in VISIBLE_TASK_WORKSPACE_DIRS:
+        root = (task_root / dirname).resolve()
+        entries: list[dict[str, Any]] = []
+        if root.exists():
+            for path in sorted(root.rglob("*"), key=lambda item: str(item.relative_to(task_root))):
+                relative_path = str(path.relative_to(task_root))
+                is_file = path.is_file()
+                mime_type = mimetypes.guess_type(path.name)[0] if is_file else None
+                entries.append(
+                    {
+                        "path": relative_path,
+                        "name": path.name,
+                        "parent_path": str(path.parent.relative_to(task_root)) if path.parent != task_root else None,
+                        "is_dir": path.is_dir(),
+                        "size_bytes": path.stat().st_size if is_file else None,
+                        "mime_type": mime_type,
+                        "updated_at": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+                    }
+                )
+        roots.append({"path": dirname, "name": dirname, "entries": entries})
+    return {"task_id": task.id, "roots": roots}
+
+
+def read_task_workspace_file_preview(session: Session, task_id: str, path: str) -> dict[str, Any]:
+    task = get_task(session, task_id)
+    target, relative_path = _task_workspace_file(task, path)
+    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    size_bytes = target.stat().st_size
+    base_payload: dict[str, Any] = {
+        "task_id": task.id,
+        "path": relative_path,
+        "name": target.name,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+        "sha256": _sha256_bytes(target.read_bytes()),
+    }
+    if _is_text_preview(mime_type, target):
+        raw = target.read_bytes()
+        truncated = len(raw) > MAX_TEXT_PREVIEW_BYTES
+        text = raw[:MAX_TEXT_PREVIEW_BYTES].decode("utf-8", errors="replace")
+        return {
+            **base_payload,
+            "preview_type": "text",
+            "content_text": text,
+            "encoding": "utf-8",
+            "truncated": truncated,
+        }
+    if mime_type.startswith("image/") and size_bytes <= MAX_BINARY_DATA_URL_BYTES:
+        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+        return {
+            **base_payload,
+            "preview_type": "image",
+            "data_url": f"data:{mime_type};base64,{encoded}",
+            "truncated": False,
+        }
+    return {
+        **base_payload,
+        "preview_type": "binary",
+        "truncated": False,
+    }
 
 
 def list_task_approvals(session: Session, task_id: str) -> list[TaskApproval]:
@@ -733,22 +909,35 @@ def sync_task_output_artifacts(session: Session, *, task: Task) -> list[TaskArti
     if not output_root.exists():
         return []
 
+    existing_by_path = {
+        artifact.relative_path: artifact
+        for artifact in session.execute(
+            select(TaskArtifact).where(
+                TaskArtifact.task_id == task.id,
+                TaskArtifact.artifact_role == "output",
+            )
+        ).scalars()
+    }
     artifacts: list[TaskArtifact] = []
     for path in sorted(output_root.rglob("*")):
         if not path.is_file():
             continue
+        relative_path = str(path.relative_to(task_root))
+        existing = existing_by_path.get(relative_path)
+        previous_sha = existing.sha256 if existing is not None else None
         mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         artifact = add_task_artifact(
             session,
             task=task,
-            relative_path=str(path.relative_to(task_root)),
+            relative_path=relative_path,
             artifact_role="output",
             display_name=path.name,
             mime_type=mime_type,
             path=path,
             metadata_json={"managed_output": True},
         )
-        artifacts.append(artifact)
+        if existing is None or artifact.sha256 != previous_sha:
+            artifacts.append(artifact)
     return artifacts
 
 

@@ -274,6 +274,41 @@ class TaskArtifactResponse(BaseModel):
     created_at: datetime
 
 
+class TaskWorkspaceEntryResponse(BaseModel):
+    path: str
+    name: str
+    parent_path: str | None
+    is_dir: bool
+    size_bytes: int | None
+    mime_type: str | None
+    updated_at: datetime
+
+
+class TaskWorkspaceRootResponse(BaseModel):
+    path: str
+    name: str
+    entries: list[TaskWorkspaceEntryResponse]
+
+
+class TaskWorkspaceTreeResponse(BaseModel):
+    task_id: str
+    roots: list[TaskWorkspaceRootResponse]
+
+
+class TaskWorkspaceFilePreviewResponse(BaseModel):
+    task_id: str
+    path: str
+    name: str
+    mime_type: str
+    size_bytes: int
+    sha256: str
+    preview_type: str
+    content_text: str | None = None
+    data_url: str | None = None
+    encoding: str | None = None
+    truncated: bool = False
+
+
 class TaskApprovalResponse(BaseModel):
     id: str
     task_id: str
@@ -286,8 +321,12 @@ class TaskApprovalResponse(BaseModel):
     requested_at: datetime | None
     resolved_at: datetime | None
     created_at: datetime
+    resume_agent_run_id: str | None = None
+    resume_status: str | None = None
+    resume_error: str | None = None
 
 
 class ResolveTaskApprovalRequest(BaseModel):
     approved: bool
     note: str | None = None
+    auto_resume: bool = False
