@@ -1,3 +1,5 @@
+name: socrates
+
 services:
   backend:
     build:
@@ -7,7 +9,7 @@ services:
       APP_DATA_DIR: /app-data
       HOST_WORKSPACES_DIR: /host-workspaces
     volumes:
-      - premchat_app_data:/app-data
+      - socrates_app_data:/app-data
       - ./host-workspaces:/host-workspaces
     ports:
       - "8000:8000"
@@ -24,4 +26,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  premchat_app_data:
+  socrates_app_data:
+    name: socrates_app_data
