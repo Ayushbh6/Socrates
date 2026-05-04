@@ -191,6 +191,7 @@ export interface Task {
   success_criteria_text: string | null
   brief_markdown: string
   workspace_root: string
+  workspace_host_root: string | null
   venv_path: string
   result_summary: string | null
   created_at: string

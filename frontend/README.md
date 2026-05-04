@@ -6,6 +6,8 @@ Run the full product from the repo root:
 docker compose up --build
 ```
 
+Docker persists app data in repo-local `../app-data/`, which is gitignored and mounted into the backend as `/app-data`. Artifact copy-path UI uses the host-visible `app-data/` path when available.
+
 For frontend-only development:
 
 ```bash

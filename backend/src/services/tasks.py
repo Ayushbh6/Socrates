@@ -967,6 +967,19 @@ def delete_task_workspace(task: Task) -> None:
     shutil.rmtree(task.workspace_root, ignore_errors=True)
 
 
+def _host_visible_task_workspace_root(task: Task) -> str | None:
+    settings = get_settings()
+    if settings.app_data_host_dir is None:
+        return None
+
+    workspace_root = Path(task.workspace_root).resolve()
+    try:
+        relative_root = workspace_root.relative_to(settings.app_data_dir.resolve())
+    except ValueError:
+        return None
+    return str((settings.app_data_host_dir / relative_root).resolve())
+
+
 def serialize_task(task: Task) -> dict[str, Any]:
     return {
         "id": task.id,
@@ -981,6 +994,7 @@ def serialize_task(task: Task) -> dict[str, Any]:
         "success_criteria_text": task.success_criteria_text,
         "brief_markdown": task.brief_markdown,
         "workspace_root": task.workspace_root,
+        "workspace_host_root": _host_visible_task_workspace_root(task),
         "venv_path": task.venv_path,
         "result_summary": task.result_summary,
         "created_at": task.created_at.isoformat(),

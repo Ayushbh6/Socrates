@@ -106,7 +106,7 @@ Then open:
 
 - SQLite database
 - backend migrations
-- persistent app-data volume
+- persistent repo-local `./app-data` bind mount mapped to container `/app-data`
 - managed per-project task workspaces
 - managed per-project Python environments
 - bind-mounted `./host-workspaces` root for linked workspaces

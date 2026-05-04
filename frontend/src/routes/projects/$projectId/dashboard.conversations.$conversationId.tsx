@@ -862,7 +862,7 @@ function ConversationSessionPage() {
               tree={taskWorkspaceTree}
               preview={workspacePreview}
               artifacts={taskArtifacts}
-              workspaceRoot={taskForSummary.workspace_root}
+              workspaceRoot={taskForSummary.workspace_host_root ?? taskForSummary.workspace_root}
               selectedPath={selectedWorkspacePath}
               mode="open"
               loadingPreview={workspacePreviewLoading}
@@ -877,7 +877,7 @@ function ConversationSessionPage() {
           tree={taskWorkspaceTree}
           preview={workspacePreview}
           artifacts={taskArtifacts}
-          workspaceRoot={taskForSummary?.workspace_root ?? null}
+          workspaceRoot={taskForSummary?.workspace_host_root ?? taskForSummary?.workspace_root ?? null}
           selectedPath={selectedWorkspacePath}
           mode={artifactPanelMode}
           loadingPreview={workspacePreviewLoading}

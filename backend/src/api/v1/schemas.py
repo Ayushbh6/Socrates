@@ -251,6 +251,7 @@ class TaskResponse(BaseModel):
     success_criteria_text: str | None
     brief_markdown: str
     workspace_root: str
+    workspace_host_root: str | None = None
     venv_path: str
     result_summary: str | None
     created_at: datetime

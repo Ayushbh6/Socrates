@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     app_url: Optional[str] = Field(default=None, validation_alias="APP_URL")
     app_name: str = Field(default="PremChat", validation_alias="APP_NAME")
     app_data_dir: Optional[Path] = Field(default=None, validation_alias="APP_DATA_DIR")
+    app_data_host_dir: Optional[Path] = Field(default=None, validation_alias="APP_DATA_HOST_DIR")
     database_url: Optional[str] = Field(default=None, validation_alias="DATABASE_URL")
     uploads_dir: Optional[Path] = Field(default=None, validation_alias="UPLOADS_DIR")
     logs_dir: Optional[Path] = Field(default=None, validation_alias="LOGS_DIR")
