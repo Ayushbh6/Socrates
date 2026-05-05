@@ -93,6 +93,8 @@ Write tools are intentionally focused:
 
 ### Run
 
+Make sure your ignored root `.env` contains the provider keys you want Docker to pass into the backend, such as `GEMINI_API_KEY` or `OPENROUTER_API_KEY`.
+
 ```bash
 docker compose up --build
 ```

@@ -10,6 +10,10 @@ services:
       SOCRATES_HOME_HOST: ${PWD}/app-data
       APP_DATA_DIR: /app-data
       HOST_WORKSPACES_DIR: /host-workspaces
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
     volumes:
       - ./app-data:/app-data
       - ./host-workspaces:/host-workspaces
