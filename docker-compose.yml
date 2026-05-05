@@ -6,8 +6,9 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
+      SOCRATES_HOME: /app-data
+      SOCRATES_HOME_HOST: ${PWD}/app-data
       APP_DATA_DIR: /app-data
-      APP_DATA_HOST_DIR: ${PWD}/app-data
       HOST_WORKSPACES_DIR: /host-workspaces
     volumes:
       - ./app-data:/app-data

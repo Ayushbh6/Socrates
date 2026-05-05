@@ -1,13 +1,11 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import mimetypes
 import re
 import shutil
-import subprocess
-import sys
-import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +17,7 @@ from ..core.settings import get_settings
 from ..db.models import Asset, Conversation, Project, ProjectWorkspace, Task, TaskApproval, TaskArtifact, WorkspaceAction
 from .assets import create_project_asset, resolve_asset_bytes
 from .bootstrap import get_current_user
+from .python_runtime import ensure_managed_python_runtime
 from .projects import get_conversation, get_project
 from .task_package import get_task_package_disk_state, parse_todo_checklist, render_task_markdown
 
@@ -129,7 +128,7 @@ def get_project_notes_dir(project_id: str) -> Path:
 
 
 def get_project_venv_path(project_id: str) -> Path:
-    return get_project_root(project_id) / ".venv"
+    return get_settings().socrates_python_venv
 
 
 def get_task_root(project_id: str, task_id: str) -> Path:
@@ -145,15 +144,7 @@ def ensure_project_directories(project_id: str) -> Path:
 
 def ensure_project_venv(project_id: str) -> Path:
     ensure_project_directories(project_id)
-    
-    sandbox_path = Path("/opt/agent-venv")
-    if (sandbox_path / "pyvenv.cfg").exists():
-        return sandbox_path
-        
-    venv_path = get_project_venv_path(project_id)
-    if not (venv_path / "pyvenv.cfg").exists():
-        subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True, capture_output=True, text=True)
-    return venv_path
+    return ensure_managed_python_runtime().venv_path
 
 
 def list_project_workspaces(session: Session, project_id: str) -> list[ProjectWorkspace]:
@@ -969,15 +960,15 @@ def delete_task_workspace(task: Task) -> None:
 
 def _host_visible_task_workspace_root(task: Task) -> str | None:
     settings = get_settings()
-    if settings.app_data_host_dir is None:
+    if settings.socrates_home_host is None:
         return None
 
     workspace_root = Path(task.workspace_root).resolve()
     try:
-        relative_root = workspace_root.relative_to(settings.app_data_dir.resolve())
+        relative_root = workspace_root.relative_to(settings.socrates_home.resolve())
     except ValueError:
         return None
-    return str((settings.app_data_host_dir / relative_root).resolve())
+    return str((settings.socrates_home_host / relative_root).resolve())
 
 
 def serialize_task(task: Task) -> dict[str, Any]:

@@ -107,8 +107,9 @@ Then open:
 - SQLite database
 - backend migrations
 - persistent repo-local `./app-data` bind mount mapped to container `/app-data`
+- Socrates home path settings (`SOCRATES_HOME`, runtime, projects, and Python venv paths)
 - managed per-project task workspaces
-- managed per-project Python environments
+- one managed Socrates Python environment at `SOCRATES_PYTHON_VENV`
 - bind-mounted `./host-workspaces` root for linked workspaces
 
 ## What You Can Do

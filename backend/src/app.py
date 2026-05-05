@@ -19,6 +19,8 @@ def ensure_app_directories() -> None:
         settings.uploads_dir,
         settings.logs_dir,
         settings.cache_dir,
+        settings.socrates_runtime_dir,
+        settings.socrates_python_venv.parent,
         settings.projects_dir,
         settings.host_workspaces_dir,
     ]
