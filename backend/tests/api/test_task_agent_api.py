@@ -756,7 +756,7 @@ def test_risky_command_creates_approval_and_resolution_is_traced(
     assert "task.approval.resolved" in event_types
 
 
-def test_execute_command_tool_not_exposed_outside_docker(
+def test_execute_command_tool_exposed_with_managed_python_runtime(
     client: TestClient, monkeypatch
 ):
     monkeypatch.delenv("PREMCHAT_COMMAND_SANDBOX", raising=False)
@@ -790,10 +790,10 @@ def test_execute_command_tool_not_exposed_outside_docker(
 
     assert provider.requests
     tool_names = [tool.name for tool in provider.requests[0].tools or []]
-    assert "execute_command" not in tool_names
+    assert "execute_command" in tool_names
 
 
-def test_execute_command_tool_exposed_inside_docker(client: TestClient, monkeypatch):
+def test_execute_command_tool_still_exposed_inside_docker(client: TestClient, monkeypatch):
     monkeypatch.setenv("PREMCHAT_COMMAND_SANDBOX", "docker")
     provider = FakeProvider(
         [
@@ -826,6 +826,180 @@ def test_execute_command_tool_exposed_inside_docker(client: TestClient, monkeypa
     assert provider.requests
     tool_names = [tool.name for tool in provider.requests[0].tools or []]
     assert "execute_command" in tool_names
+
+
+def test_execute_command_runs_python_through_managed_runtime(
+    client: TestClient, monkeypatch
+):
+    run1_provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="I need a task first.",
+                        tool_calls=[
+                            ToolCall(
+                                id="create_python_task",
+                                name="create_task",
+                                arguments={
+                                    "title": "Run Python",
+                                    "goal": "Run a Python script in the task workspace.",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Writing plan.",
+                        tool_calls=[
+                            ToolCall(
+                                id="write_python_plan",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "plan.md",
+                                    "content": STANDARD_VALID_PLAN,
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Plan is ready.",
+                        usage=UsageStats(total_tokens=3),
+                        raw_dump={"turn": 3},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    run2_provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Writing todo.",
+                        tool_calls=[
+                            ToolCall(
+                                id="write_python_todo",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "todo.md",
+                                    "content": STANDARD_VALID_TODO,
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Writing script.",
+                        tool_calls=[
+                            ToolCall(
+                                id="write_python_script",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "work/hello.py",
+                                    "content": "print('hello from managed runtime')\n",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Running script.",
+                        tool_calls=[
+                            ToolCall(
+                                id="run_python_script",
+                                name="execute_command",
+                                arguments={
+                                    "scope": "task",
+                                    "argv": ["python", "hello.py"],
+                                    "cwd": "work",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 3},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Script ran.",
+                        usage=UsageStats(total_tokens=3),
+                        raw_dump={"turn": 4},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    provider_stack: list[FakeProvider] = [run1_provider, run2_provider]
+
+    def get_provider_ladder(*_a, **_k) -> FakeProvider:
+        return provider_stack.pop(0)
+
+    monkeypatch.setattr("backend.src.agent.runtime.get_provider", get_provider_ladder)
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    r1 = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Create a Python task.", "asset_ids": []},
+    )
+    assert r1.status_code == 202
+    drain_run_events(client, r1.json()["agent_run_id"])
+
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+    approve_pending_plan_approval_for_task(client, task["id"])
+
+    r2 = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Run the Python script now.", "asset_ids": []},
+    )
+    assert r2.status_code == 202
+    drain_run_events(client, r2.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "run_python_script")
+            .one()
+        )
+        assert execution.result_json["success"] is True
+        assert execution.result_json["stdout"] == "hello from managed runtime\n"
+        assert execution.result_json["executed_argv"][0].endswith("/bin/python")
+    finally:
+        session.close()
 
 
 def test_query_attachment_is_copied_into_task_inputs(client: TestClient, monkeypatch):

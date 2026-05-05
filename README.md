@@ -83,7 +83,7 @@ Write tools are intentionally focused:
 - Linked workspace commands require approval.
 - Destructive system commands are hard-blocked.
 - Raw host paths and internal IDs are not model-facing.
-- Command execution is Docker-gated. No unsafe local fallback is used in normal operation.
+- Command execution uses the managed Socrates Python runtime and is Python-only in the current runtime stage.
 
 ## Quick Start
 

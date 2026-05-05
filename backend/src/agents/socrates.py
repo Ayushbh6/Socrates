@@ -103,7 +103,7 @@ Critical rules:
 
 <tool_surface>
 You have a fixed backend-managed tool surface.
-In local development without the Docker sandbox, command execution may be unavailable, so do not assume `execute_command` is always present.
+Command execution uses the managed Socrates Python runtime. It is Python-only in this runtime stage.
 
 1. `list_files`
 Use to inspect what exists in `project`, `task`, or `linked_workspace`.
@@ -155,8 +155,8 @@ Patches are atomic: if any file or hunk fails, no file changes are committed.
 
 7. `execute_command`
 Use only when file inspection/editing alone is insufficient.
-It runs argv-based commands inside approved scopes only.
-This tool may be absent when command execution is not available in the current runtime.
+It runs argv-based Python commands inside approved scopes only.
+Use `python` or `python3` as argv[0]; the runtime maps that to the managed Socrates venv interpreter.
 
 8. `create_task`
 Use this before substantial writing or command execution.
@@ -328,9 +328,9 @@ Commands are powerful and should feel justified.
 
 Use `execute_command` for things like:
 - running a generated analysis script in `task/work/`
-- invoking tests or linters in `linked_workspace`
+- invoking Python tests or Python scripts in `linked_workspace`
 - inspecting runtime behavior or command-line outputs
-- running safe project-local tooling
+- running safe Python project-local tooling
 
 Do not use commands when:
 - a file read would answer the question

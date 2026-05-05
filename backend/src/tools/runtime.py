@@ -29,6 +29,7 @@ from ..services.tasks import (
     is_plan_sha256_approved,
     sync_task_output_artifacts,
 )
+from ..services.python_runtime import ensure_managed_python_runtime
 from ..services.task_package import (
     TASK_PACKAGE_FILES,
     TaskPackageDiskState,
@@ -78,7 +79,7 @@ class ToolContext:
 class ProjectToolRuntime:
     def __init__(self, context: ToolContext):
         self.context = context
-        self._command_execution_enabled = self._running_inside_docker()
+        self._command_execution_enabled = True
         self._project_list_resources = make_list_resources(
             context.session, context.project_id
         )
@@ -705,13 +706,31 @@ class ProjectToolRuntime:
 
     def _task_command_env(self) -> dict[str, str]:
         task = self._require_task()
-        venv_bin = Path(task.venv_path) / (
-            "Scripts" if Path(task.venv_path).joinpath("Scripts").exists() else "bin"
-        )
+        status = ensure_managed_python_runtime()
+        if Path(task.venv_path) != status.venv_path:
+            task.venv_path = str(status.venv_path)
+            self.context.session.add(task)
+            self.context.session.commit()
+        venv_bin = status.python_path.parent
         env = dict(os.environ)
-        env["VIRTUAL_ENV"] = task.venv_path
+        env["VIRTUAL_ENV"] = str(status.venv_path)
         env["PATH"] = str(venv_bin) + os.pathsep + env.get("PATH", "")
         return env
+
+    def _normalize_python_command_argv(self, argv: list[str]) -> list[str] | str:
+        if not argv:
+            raise ValueError("argv must contain at least one argument.")
+        head = self._command_head(argv)
+        if head not in {"python", "python3", "python.exe"}:
+            return build_tool_error_result(
+                tool_name="execute_command",
+                error_type="command_blocked",
+                message="Only Python commands are supported in the Socrates managed runtime.",
+                retryable=False,
+                suggestion="Write a Python script in work/ and run it with argv starting with python or python3.",
+            )
+        status = ensure_managed_python_runtime()
+        return [str(status.python_path), *argv[1:]]
 
     def _sync_task_outputs_if_needed(self) -> list[str]:
         task = self.context.current_task or self.context.refresh_task()
@@ -730,7 +749,7 @@ class ProjectToolRuntime:
     def _blocked_command_reason(self, argv: list[str]) -> str | None:
         if not argv:
             return None
-        head = argv[0].lower()
+        head = self._command_head(argv)
         blocked_heads = {
             "rm",
             "sudo",
@@ -759,7 +778,7 @@ class ProjectToolRuntime:
     def _is_risky_command(self, argv: list[str]) -> tuple[bool, str]:
         if not argv:
             return False, "none"
-        head = argv[0].lower()
+        head = self._command_head(argv)
         normalized = [item.lower() for item in argv]
         joined = " ".join(normalized)
         if head in {"mv", "chmod", "chown"}:
@@ -768,21 +787,16 @@ class ProjectToolRuntime:
             return True, "network_command"
         if head in {"pip", "pip3", "npm", "pnpm", "yarn"} and "install" in normalized:
             return True, "dependency_install"
-        if (
-            len(normalized) >= 3
-            and normalized[:3] == ["python", "-m", "pip"]
-            and "install" in normalized
-        ):
-            return True, "dependency_install"
-        if (
-            len(normalized) >= 3
-            and normalized[:3] == ["python3", "-m", "pip"]
-            and "install" in normalized
-        ):
-            return True, "dependency_install"
+        if len(normalized) >= 3 and head in {"python", "python3", "python.exe"}:
+            if normalized[1:3] == ["-m", "pip"] and "install" in normalized:
+                return True, "dependency_install"
         if "git clone" in joined:
             return True, "network_command"
         return False, "none"
+
+    @staticmethod
+    def _command_head(argv: list[str]) -> str:
+        return Path(argv[0]).name.lower()
 
     def _require_approval_if_needed(
         self,

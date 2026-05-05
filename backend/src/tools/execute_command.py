@@ -19,14 +19,6 @@ def handle(
         return runtime._task_required_error(
             "execute_command", "Create a task before running commands."
         )
-    if not runtime._running_inside_docker():
-        return build_tool_error_result(
-            tool_name="execute_command",
-            error_type="sandbox_unavailable",
-            message="Command execution is disabled outside the Docker runtime sandbox.",
-            retryable=False,
-            suggestion="Run PremChat inside Docker to use command execution safely.",
-        )
     blocked_reason = runtime._blocked_command_reason(argv)
     if blocked_reason is not None:
         return build_tool_error_result(
@@ -58,6 +50,9 @@ def handle(
         )
         if lifecycle is not None:
             return lifecycle
+    normalized_argv = runtime._normalize_python_command_argv(argv)
+    if isinstance(normalized_argv, str):
+        return normalized_argv
     approval_error = runtime._require_approval_if_needed(
         scope=scope, argv=argv, cwd=str(workdir.relative_to(base_root))
     )
@@ -66,7 +61,12 @@ def handle(
 
     env = runtime._task_command_env() if scope == "task" else None
     result = subprocess.run(
-        argv, cwd=workdir, capture_output=True, text=True, timeout=timeout_sec, env=env
+        normalized_argv,
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        env=env,
     )
     stdout = result.stdout[:20000]
     stderr = result.stderr[:20000]
@@ -85,7 +85,11 @@ def handle(
         project_workspace_id=workspace_id,
         target_path=str(workdir),
         command_text=shlex.join(argv),
-        arguments_json={"cwd": cwd, "timeout_sec": timeout_sec},
+        arguments_json={
+            "cwd": cwd,
+            "timeout_sec": timeout_sec,
+            "executed_argv": normalized_argv,
+        },
         stdout_text=stdout,
         stderr_text=stderr,
         exit_code=result.returncode,
@@ -93,6 +97,7 @@ def handle(
     )
     payload = {
         "argv": argv,
+        "executed_argv": normalized_argv,
         "cwd": str(workdir.relative_to(base_root)),
         "stdout": stdout,
         "stderr": stderr,
