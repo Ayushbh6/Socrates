@@ -64,7 +64,6 @@ class ToolContext:
     conversation_id: str
     run: AgentRun
     uploads_dir: Path
-    host_workspaces_dir: Path
     current_task: Task | None = None
     current_tool_execution_id: str | None = None
     parent_event_sink: Callable[[dict[str, Any]], None] | None = None
@@ -514,11 +513,6 @@ class ProjectToolRuntime:
             ):
                 raise PermissionError("Linked workspace access has not been granted.")
             workspace_root = Path(workspace.root_path).resolve()
-            host_root = self.context.host_workspaces_dir.resolve()
-            if not _path_within(host_root, workspace_root):
-                raise PermissionError(
-                    "Linked workspace path is outside the mounted host workspaces root."
-                )
             return workspace_root, workspace.id
         raise ValueError("Unsupported workspace scope.")
 
@@ -738,13 +732,6 @@ class ProjectToolRuntime:
             return []
         artifacts = sync_task_output_artifacts(self.context.session, task=task)
         return [artifact.relative_path for artifact in artifacts]
-
-    @staticmethod
-    def _running_inside_docker() -> bool:
-        return (
-            Path("/.dockerenv").exists()
-            or os.environ.get("PREMCHAT_COMMAND_SANDBOX") == "docker"
-        )
 
     def _blocked_command_reason(self, argv: list[str]) -> str | None:
         if not argv:

@@ -4,7 +4,7 @@
 
 <p align="center">
   <img alt="Socrates banner" src="https://img.shields.io/badge/Local--First-Coding%20Agent-111827?style=for-the-badge&labelColor=0f172a" />
-  <img alt="Docker first" src="https://img.shields.io/badge/Docker-First-2563eb?style=for-the-badge&logo=docker&logoColor=white" />
+  <img alt="Native runtime" src="https://img.shields.io/badge/Native-Runtime-2563eb?style=for-the-badge" />
   <img alt="Task backed" src="https://img.shields.io/badge/Task-Backed-059669?style=for-the-badge" />
   <img alt="SQLite" src="https://img.shields.io/badge/SQLite-Persisted-7c3aed?style=for-the-badge" />
 </p>
@@ -89,14 +89,32 @@ Write tools are intentionally focused:
 
 ### Prerequisite
 
-- Docker Desktop
+- Python 3.11+
+- Node.js 20+
 
-### Run
+### Backend
 
-Make sure your ignored root `.env` contains the provider keys you want Docker to pass into the backend, such as `GEMINI_API_KEY` or `OPENROUTER_API_KEY`.
+Create an ignored `.env` or export the provider keys you want the backend to use, such as `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, or `OPENAI_API_KEY`.
 
 ```bash
-docker compose up --build
+python -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.src.app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+On Windows, activate the virtual environment with:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+### Frontend
+
+```bash
+cd frontend
+npm ci
+npm run dev
 ```
 
 Then open:
@@ -108,11 +126,14 @@ Then open:
 
 - SQLite database
 - backend migrations
-- persistent repo-local `./app-data` bind mount mapped to container `/app-data`
-- Socrates home path settings (`SOCRATES_HOME`, runtime, projects, and Python venv paths)
-- managed per-project task workspaces
+- persistent local Socrates home at `~/.socrates`
+- database at `~/.socrates/data/premchat.db`
+- uploads at `~/.socrates/files/uploads`
+- managed task workspaces under `~/.socrates/projects`
 - one managed Socrates Python environment at `SOCRATES_PYTHON_VENV`
-- bind-mounted `./host-workspaces` root for linked workspaces
+- logs and cache under `~/.socrates/logs` and `~/.socrates/cache`
+
+Socrates works in its own `~/.socrates` home and in explicit absolute linked workspace paths that the user approves. The repository itself should not contain runtime data.
 
 ## What You Can Do
 
@@ -126,6 +147,8 @@ Then open:
 ## Local Development
 
 ### Backend
+
+The backend defaults to `Path.home() / ".socrates"` on macOS, Windows, and Linux. Advanced development overrides such as `SOCRATES_HOME`, `APP_DATA_DIR`, `DATABASE_URL`, `UPLOADS_DIR`, `SOCRATES_PROJECTS_DIR`, and `SOCRATES_PYTHON_VENV` are supported, but the normal local app path is `~/.socrates`.
 
 ```bash
 python -m venv venv

@@ -33,8 +33,6 @@ class Settings(BaseSettings):
     uploads_dir: Optional[Path] = Field(default=None, validation_alias="UPLOADS_DIR")
     logs_dir: Optional[Path] = Field(default=None, validation_alias="LOGS_DIR")
     cache_dir: Optional[Path] = Field(default=None, validation_alias="CACHE_DIR")
-    host_workspaces_dir: Optional[Path] = Field(default=None, validation_alias="HOST_WORKSPACES_DIR")
-
     stream_delta_flush_ms: int = Field(default=60, validation_alias="STREAM_DELTA_FLUSH_MS")
     stream_delta_flush_chars: int = Field(default=80, validation_alias="STREAM_DELTA_FLUSH_CHARS")
     stream_heartbeat_interval_seconds: int = Field(default=15, validation_alias="STREAM_HEARTBEAT_INTERVAL_SECONDS")
@@ -50,7 +48,7 @@ class Settings(BaseSettings):
             self.socrates_home = self.app_data_dir or self._default_socrates_home()
 
         if self.app_data_dir is None:
-            self.app_data_dir = self.socrates_home / "app-data"
+            self.app_data_dir = self.socrates_home
 
         data_dir = self.app_data_dir / "data"
         if self.database_url is None:
@@ -73,9 +71,6 @@ class Settings(BaseSettings):
 
         if self.socrates_projects_dir is None:
             self.socrates_projects_dir = self.socrates_home / "projects"
-
-        if self.host_workspaces_dir is None:
-            self.host_workspaces_dir = self.socrates_home / "host-workspaces"
 
     @property
     def projects_dir(self) -> Path:

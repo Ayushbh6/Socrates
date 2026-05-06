@@ -4,7 +4,6 @@ import base64
 import hashlib
 import json
 import mimetypes
-import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,20 +157,36 @@ def list_project_workspaces(session: Session, project_id: str) -> list[ProjectWo
     )
 
 
-def _workspace_slug(label: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", label.strip().lower()).strip("-")
-    return slug or "workspace"
+def _resolve_linked_workspace_path(raw_path: str) -> Path:
+    cleaned = raw_path.strip()
+    if not cleaned:
+        raise ValueError("Workspace path is required.")
 
+    candidate = Path(cleaned).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("Workspace path must be an absolute path.")
 
-def _resolve_host_workspace_path(relative_path: str) -> Path:
-    host_root = get_settings().host_workspaces_dir.resolve()
-    normalized = Path(relative_path.strip())
-    if normalized.is_absolute():
-        return normalized.resolve()
-    resolved = (host_root / normalized).resolve()
-    if not _path_within(host_root, resolved):
-        raise ValueError("Workspace path escapes the configured host workspaces root.")
+    resolved = candidate.resolve()
+    _validate_linked_workspace_path(resolved)
     return resolved
+
+
+def _validate_linked_workspace_path(path: Path) -> None:
+    settings = get_settings()
+    socrates_home = settings.socrates_home.resolve()
+    home = Path.home().resolve()
+    filesystem_root = Path(path.anchor or path.root).resolve()
+
+    if path == filesystem_root:
+        raise ValueError("Workspace path cannot be a filesystem root.")
+    if path == home:
+        raise ValueError("Workspace path cannot be the user's home folder.")
+    if path == socrates_home or _path_within(socrates_home, path):
+        raise ValueError("Workspace path cannot be inside the Socrates runtime home.")
+    if path.exists() and not path.is_dir():
+        raise ValueError("Workspace path must point to a directory.")
+    if not path.exists():
+        raise ValueError("Workspace path must already exist.")
 
 
 def select_default_project_workspace(session: Session, project_id: str) -> ProjectWorkspace | None:
@@ -207,11 +222,9 @@ def create_project_workspace(
     cleaned_label = label.strip()
     if not cleaned_label:
         raise ValueError("Workspace label is required.")
-    resolved_relative_path = (relative_path or _workspace_slug(cleaned_label)).strip().strip("/")
-    if not resolved_relative_path:
-        raise ValueError("Workspace folder name is required.")
-    root_path = _resolve_host_workspace_path(resolved_relative_path)
-    root_path.mkdir(parents=True, exist_ok=True)
+    if relative_path is None or not relative_path.strip():
+        raise ValueError("Workspace path is required.")
+    root_path = _resolve_linked_workspace_path(relative_path)
 
     existing = (
         session.execute(

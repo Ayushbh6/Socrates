@@ -1,12 +1,15 @@
 # PremChat Frontend
 
-Run the full product from the repo root:
+Run the backend from the repo root:
 
 ```bash
-docker compose up --build
+python -m venv venv
+source venv/bin/activate
+pip install -r backend/requirements.txt
+uvicorn backend.src.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Docker persists app data in repo-local `../app-data/`, which is gitignored and mounted into the backend as `/app-data`. Artifact copy-path UI uses the host-visible `app-data/` path when available.
+Socrates persists runtime data in `~/.socrates`, outside this repository. Linked workspaces are explicit absolute paths approved by the user.
 
 For frontend-only development:
 

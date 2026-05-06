@@ -987,7 +987,6 @@ class RunManager:
                 conversation_id=conversation.id,
                 run=run,
                 uploads_dir=settings.uploads_dir,
-                host_workspaces_dir=settings.host_workspaces_dir,
                 parent_event_sink=parent_event_sink,
             )
 
@@ -1009,7 +1008,6 @@ class RunManager:
                 conversation_id=conversation.id,
                 run_id=run.id,
                 uploads_dir=settings.uploads_dir,
-                host_workspaces_dir=settings.host_workspaces_dir,
                 parent_event_sink=parent_event_sink,
             )
             try:

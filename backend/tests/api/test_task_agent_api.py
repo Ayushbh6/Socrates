@@ -569,7 +569,6 @@ def test_agent_creates_task_and_persists_active_task(client: TestClient, monkeyp
 def test_risky_command_creates_approval_and_resolution_is_traced(
     client: TestClient, monkeypatch
 ):
-    monkeypatch.setenv("PREMCHAT_COMMAND_SANDBOX", "docker")
     run1_provider = FakeProvider(
         [
             {
@@ -759,7 +758,6 @@ def test_risky_command_creates_approval_and_resolution_is_traced(
 def test_execute_command_tool_exposed_with_managed_python_runtime(
     client: TestClient, monkeypatch
 ):
-    monkeypatch.delenv("PREMCHAT_COMMAND_SANDBOX", raising=False)
     provider = FakeProvider(
         [
             {
@@ -793,8 +791,7 @@ def test_execute_command_tool_exposed_with_managed_python_runtime(
     assert "execute_command" in tool_names
 
 
-def test_execute_command_tool_still_exposed_inside_docker(client: TestClient, monkeypatch):
-    monkeypatch.setenv("PREMCHAT_COMMAND_SANDBOX", "docker")
+def test_execute_command_tool_exposed_in_native_runtime(client: TestClient, monkeypatch):
     provider = FakeProvider(
         [
             {
@@ -3060,7 +3057,7 @@ def test_apply_patch_validates_task_package_before_committing_any_file(
 
 
 def test_linked_workspace_apply_patch_requires_explicit_approval(
-    client: TestClient, monkeypatch
+    client: TestClient, monkeypatch, tmp_path
 ):
     p1l = FakeProvider(
         [
@@ -3177,11 +3174,13 @@ def test_linked_workspace_apply_patch_requires_explicit_approval(
     monkeypatch.setattr("backend.src.agent.runtime.get_provider", glh)
 
     project_id, conversation_id = bootstrap_user_and_project(client)
+    linked_root = tmp_path / "repo-patch-test"
+    linked_root.mkdir()
     workspace = client.post(
         f"/api/v1/projects/{project_id}/workspaces",
         json={
             "label": "Repo",
-            "relative_path": "repo-patch-test",
+            "relative_path": str(linked_root),
             "editor_type": "vscode",
             "is_primary": True,
             "access_granted": True,
@@ -3232,9 +3231,8 @@ def test_linked_workspace_apply_patch_requires_explicit_approval(
 
 
 def test_linked_workspace_command_requires_explicit_approval(
-    client: TestClient, monkeypatch
+    client: TestClient, monkeypatch, tmp_path
 ):
-    monkeypatch.setenv("PREMCHAT_COMMAND_SANDBOX", "docker")
     p1c = FakeProvider(
         [
             {
@@ -3344,11 +3342,13 @@ def test_linked_workspace_command_requires_explicit_approval(
     monkeypatch.setattr("backend.src.agent.runtime.get_provider", glc)
 
     project_id, conversation_id = bootstrap_user_and_project(client)
+    linked_root = tmp_path / "repo-under-test"
+    linked_root.mkdir()
     workspace = client.post(
         f"/api/v1/projects/{project_id}/workspaces",
         json={
             "label": "Repo",
-            "relative_path": "repo-under-test",
+            "relative_path": str(linked_root),
             "editor_type": "vscode",
             "is_primary": True,
             "access_granted": True,
@@ -4292,10 +4292,9 @@ def test_terminal_task_is_not_reused_for_future_task_scoped_work(
     assert new_active["status"] == "awaiting_approval"
 
 
-def test_destructive_commands_are_blocked_even_in_sandbox_mode(
+def test_destructive_commands_are_blocked_in_native_runtime(
     client: TestClient, monkeypatch
 ):
-    monkeypatch.setenv("PREMCHAT_COMMAND_SANDBOX", "docker")
     provider = FakeProvider(
         [
             {

@@ -22,7 +22,6 @@ def ensure_app_directories() -> None:
         settings.socrates_runtime_dir,
         settings.socrates_python_venv.parent,
         settings.projects_dir,
-        settings.host_workspaces_dir,
     ]
     for directory in directories:
         Path(directory).mkdir(parents=True, exist_ok=True)

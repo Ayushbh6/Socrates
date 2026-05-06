@@ -85,7 +85,6 @@ def run_worker_blocking(
     parent_run: AgentRun,
     task: Task,
     uploads_dir: Path,
-    host_workspaces_dir: Path,
     parent_event_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     _validate_worker_start(session, task=task)
@@ -105,7 +104,6 @@ def run_worker_blocking(
             parent_run=parent_run,
             handoff=handoff,
             uploads_dir=uploads_dir,
-            host_workspaces_dir=host_workspaces_dir,
             parent_event_sink=parent_event_sink,
         )
     except Exception as exc:
@@ -319,7 +317,6 @@ def _execute_worker_run(
     parent_run: AgentRun,
     handoff: dict[str, Any],
     uploads_dir: Path,
-    host_workspaces_dir: Path,
     parent_event_sink: Callable[[dict[str, Any]], None] | None,
 ) -> WorkerResult:
     worker_run.status = "running"
@@ -337,7 +334,6 @@ def _execute_worker_run(
         conversation_id=worker_run.conversation_id,
         run=worker_run,
         uploads_dir=uploads_dir,
-        host_workspaces_dir=host_workspaces_dir,
     )
     batch_executor = ProjectToolBatchExecutor(
         session_factory=get_session_factory(),
@@ -345,7 +341,6 @@ def _execute_worker_run(
         conversation_id=worker_run.conversation_id,
         run_id=worker_run.id,
         uploads_dir=uploads_dir,
-        host_workspaces_dir=host_workspaces_dir,
         registry_factory=get_worker_tools_registry,
     )
     request = AgentRequest(

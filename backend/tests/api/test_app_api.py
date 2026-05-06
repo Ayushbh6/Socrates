@@ -387,14 +387,18 @@ def test_project_rename_persists(client: TestClient):
     assert fetched.json()["name"] == "Renamed Lab"
 
 
-def test_project_workspace_registration_and_primary_switch(client: TestClient):
+def test_project_workspace_registration_and_primary_switch(client: TestClient, tmp_path):
     project_id, _ = bootstrap_user_and_project(client)
+    sandbox_root = tmp_path / "sandbox"
+    reports_root = tmp_path / "reports"
+    sandbox_root.mkdir()
+    reports_root.mkdir()
 
     created = client.post(
         f"/api/v1/projects/{project_id}/workspaces",
         json={
             "label": "Sandbox",
-            "relative_path": "sandbox",
+            "relative_path": str(sandbox_root),
             "is_primary": True,
             "access_granted": True,
         },
@@ -409,7 +413,7 @@ def test_project_workspace_registration_and_primary_switch(client: TestClient):
         f"/api/v1/projects/{project_id}/workspaces",
         json={
             "label": "Reports",
-            "relative_path": "reports",
+            "relative_path": str(reports_root),
             "is_primary": False,
             "access_granted": False,
         },
@@ -434,6 +438,23 @@ def test_project_workspace_registration_and_primary_switch(client: TestClient):
     assert payload[0]["id"] == second_workspace["id"]
     assert payload[0]["is_primary"] is True
     assert any(item["id"] == first_workspace["id"] and item["is_primary"] is False for item in payload)
+
+
+def test_project_workspace_rejects_relative_path(client: TestClient):
+    project_id, _ = bootstrap_user_and_project(client)
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/workspaces",
+        json={
+            "label": "Relative",
+            "relative_path": "sandbox",
+            "is_primary": True,
+            "access_granted": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "absolute path" in response.json()["detail"]
 
 
 def test_project_asset_and_message_stream_flow(client: TestClient):

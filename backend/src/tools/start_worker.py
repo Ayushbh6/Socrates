@@ -24,7 +24,6 @@ def handle(runtime: Any):
             parent_run=runtime.context.run,
             task=task,
             uploads_dir=settings.uploads_dir,
-            host_workspaces_dir=settings.host_workspaces_dir,
             parent_event_sink=runtime.context.parent_event_sink,
         )
     except WorkerStartError as exc:

@@ -684,7 +684,7 @@ function ProjectDashboardPage() {
                             <Input
                               value={workspacePath}
                               onChange={(e) => setWorkspacePath(e.target.value)}
-                              placeholder="/Users/name/projects/my-app"
+                              placeholder="/Users/name/projects/my-app or C:\\Users\\name\\projects\\my-app"
                               className="h-10 rounded-xl border-sage-strong bg-white/90 focus-visible:border-forest/60 focus-visible:ring-ring/20"
                             />
                             <Button
@@ -693,8 +693,9 @@ function ProjectDashboardPage() {
                               disabled={createWorkspace.isPending || !workspacePath.trim()}
                               onClick={() => {
                                 const path = workspacePath.trim()
+                                const label = path.split(/[\\/]/).filter(Boolean).pop() || 'workspace'
                                 createWorkspace.mutate({
-                                  label: path.split('/').pop() || 'workspace',
+                                  label,
                                   relativePath: path,
                                   isPrimary: true,
                                 })

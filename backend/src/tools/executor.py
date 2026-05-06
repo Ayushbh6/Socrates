@@ -27,7 +27,6 @@ class ProjectToolBatchExecutor:
         conversation_id: str,
         run_id: str,
         uploads_dir: Path,
-        host_workspaces_dir: Path,
         lock_registry: KeyedLockRegistry = GLOBAL_TOOL_LOCKS,
         registry_factory: Callable[..., Any] | None = None,
         parent_event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -37,7 +36,6 @@ class ProjectToolBatchExecutor:
         self.conversation_id = conversation_id
         self.run_id = run_id
         self.uploads_dir = uploads_dir
-        self.host_workspaces_dir = host_workspaces_dir
         self.lock_registry = lock_registry
         self.read_state = RunReadState()
         self.registry_factory = registry_factory
@@ -144,7 +142,6 @@ class ProjectToolBatchExecutor:
                 conversation_id=self.conversation_id,
                 run=run,
                 uploads_dir=self.uploads_dir,
-                host_workspaces_dir=self.host_workspaces_dir,
                 parent_event_sink=self.parent_event_sink,
             )
             planner = ToolResourcePlanner(runtime)
@@ -295,7 +292,6 @@ class ProjectToolBatchExecutor:
                 conversation_id=self.conversation_id,
                 run=run,
                 uploads_dir=self.uploads_dir,
-                host_workspaces_dir=self.host_workspaces_dir,
                 parent_event_sink=self.parent_event_sink,
             )
             return normalize_tool_result(

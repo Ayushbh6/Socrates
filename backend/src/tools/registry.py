@@ -14,7 +14,6 @@ def get_tools_registry(
     conversation_id: str,
     run: AgentRun,
     uploads_dir: Path,
-    host_workspaces_dir: Path,
     parent_event_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> ProjectToolRuntime:
     context = ToolContext(
@@ -23,7 +22,6 @@ def get_tools_registry(
         conversation_id=conversation_id,
         run=run,
         uploads_dir=uploads_dir,
-        host_workspaces_dir=host_workspaces_dir,
         parent_event_sink=parent_event_sink,
     )
     context.refresh_task()

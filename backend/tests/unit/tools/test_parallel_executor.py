@@ -25,7 +25,6 @@ def _executor(tmp_path):
         conversation_id="conversation-1",
         run_id="run-1",
         uploads_dir=tmp_path,
-        host_workspaces_dir=tmp_path,
         lock_registry=KeyedLockRegistry(),
     )
 

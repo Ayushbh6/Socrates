@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from ...core.schema import InputMode, ThinkingLevel
 
@@ -225,7 +225,12 @@ class ProjectWorkspaceResponse(BaseModel):
 
 class ProjectWorkspaceCreateRequest(BaseModel):
     label: str = Field(min_length=1, max_length=255)
-    relative_path: str | None = Field(default=None, min_length=1, max_length=255)
+    relative_path: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=2048,
+        validation_alias=AliasChoices("relative_path", "root_path"),
+    )
     editor_type: str = Field(default="vscode", min_length=1, max_length=64)
     is_primary: bool = False
     access_granted: bool = True
