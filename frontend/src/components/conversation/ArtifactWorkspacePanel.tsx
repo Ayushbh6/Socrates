@@ -152,7 +152,7 @@ export function ArtifactWorkspacePanel({
 
   if (mode === 'collapsed' && !mobile) {
     return (
-      <aside className="hidden h-full w-12 shrink-0 border-l border-forest/10 bg-paper/72 lg:flex">
+      <aside className="hidden h-full w-12 shrink-0 border-l border-forest/10 bg-paper/72 transition-[width,background-color] duration-200 ease-out motion-reduce:transition-none lg:flex">
         <button
           type="button"
           onClick={() => onModeChange('open')}
@@ -172,9 +172,9 @@ export function ArtifactWorkspacePanel({
     <aside
       className={cn(
         mobile
-          ? 'fixed inset-x-0 bottom-0 z-50 max-h-[82vh] rounded-t-[1.35rem] border-t border-forest/12 bg-paper shadow-[0_-24px_80px_rgba(27,53,41,0.22)]'
+          ? 'fixed inset-x-0 bottom-0 z-50 flex h-[82dvh] max-h-[82vh] rounded-t-[1.35rem] border-t border-forest/12 bg-paper shadow-[0_-24px_80px_rgba(27,53,41,0.22)]'
           : 'relative hidden h-full shrink-0 border-l border-forest/10 bg-paper/86 lg:flex',
-        'min-w-0 flex-col overflow-hidden',
+        'min-w-0 flex-col overflow-hidden transition-[width,transform,background-color] duration-200 ease-out motion-reduce:transition-none',
       )}
       style={mobile ? undefined : { width: panelWidth }}
     >
@@ -213,12 +213,28 @@ export function ArtifactWorkspacePanel({
         </div>
         <div className="flex items-center gap-1">
           {!mobile ? (
-            <Button type="button" variant="ghost" size="icon" className="size-8" onClick={() => onModeChange('collapsed')}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={() => onModeChange('collapsed')}
+              aria-label="Collapse artifacts panel"
+              title="Collapse artifacts panel"
+            >
               <PanelRightClose className="size-4" />
             </Button>
           ) : null}
           {mobile && onCloseMobile ? (
-            <Button type="button" variant="ghost" size="icon" className="size-8" onClick={onCloseMobile}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={onCloseMobile}
+              aria-label="Close artifacts panel"
+              title="Close artifacts panel"
+            >
               <X className="size-4" />
             </Button>
           ) : null}
@@ -229,14 +245,14 @@ export function ArtifactWorkspacePanel({
         className={cn(
           'min-h-0 flex-1',
           mobile
-            ? 'flex flex-col'
+            ? 'flex flex-col overflow-hidden'
             : 'grid grid-cols-[minmax(220px,0.32fr)_minmax(0,1fr)]',
         )}
       >
         <div
           className={cn(
-            'min-w-0 overflow-y-auto bg-canvas/38 px-3 py-3',
-            mobile ? 'max-h-[32vh] border-b border-forest/10' : 'border-r border-forest/10',
+            'min-w-0 overflow-y-auto overscroll-contain bg-canvas/38 px-3 py-3',
+            mobile ? 'max-h-[32dvh] shrink-0 border-b border-forest/10' : 'border-r border-forest/10',
           )}
         >
           {!hasFiles ? (
@@ -257,7 +273,7 @@ export function ArtifactWorkspacePanel({
           )}
         </div>
 
-        <div className="min-h-0 min-w-0 overflow-hidden bg-paper/96">
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-paper/96">
           {loadingPreview ? (
             <div className="flex h-full items-center justify-center text-sm text-ink-soft">Loading preview...</div>
           ) : preview ? (
@@ -483,7 +499,7 @@ function FilePreview({
   const fullPath = workspaceRoot ? `${workspaceRoot}/${preview.path}` : preview.path
   const [fullScreenOpen, setFullScreenOpen] = useState(false)
   return (
-    <div className="flex h-full min-w-0 flex-col">
+    <div className="flex h-full min-w-0 max-w-full flex-col overflow-hidden">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-forest/10 px-5 py-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -509,7 +525,7 @@ function FilePreview({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
         <PreviewBody preview={preview} />
       </div>
       {preview.truncated ? (
@@ -539,7 +555,7 @@ function PreviewBody({ preview, fullScreen = false }: { preview: TaskWorkspaceFi
 
   if (preview.preview_type === 'text') {
     return (
-      <pre className={cn('h-full overflow-auto bg-[#fbfcf8] font-mono text-[12.5px] leading-5 text-ink', fullScreen ? 'p-6' : 'p-5')}>
+      <pre className={cn('h-full w-full max-w-full overflow-auto overscroll-contain bg-[#fbfcf8] font-mono text-[12.5px] leading-5 whitespace-pre text-ink', fullScreen ? 'p-6' : 'p-5')}>
         <code>{preview.content_text}</code>
       </pre>
     )

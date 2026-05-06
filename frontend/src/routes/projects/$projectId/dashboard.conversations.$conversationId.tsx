@@ -99,6 +99,8 @@ interface ConversationUpdatePayload {
   thinking_level: ThinkingLevel
 }
 
+const ARTIFACT_PANEL_TOGGLE_EVENT = 'premchat:toggle-artifact-panel'
+
 function deriveInitialConversationTitle(content: string) {
   const trimmed = content.trim()
   if (!trimmed) {
@@ -106,6 +108,11 @@ function deriveInitialConversationTitle(content: string) {
   }
   const firstWord = trimmed.split(/\s+/)[0] ?? 'New conversation'
   return firstWord.length > 5 ? `${firstWord.slice(0, 5)}...` : firstWord
+}
+
+function upsertConversationTask(current: Task[] | undefined, task: Task) {
+  const next = [task, ...(current ?? []).filter((entry) => entry.id !== task.id)]
+  return next.sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))
 }
 
 function ConversationSessionPage() {
@@ -180,7 +187,12 @@ function ConversationSessionPage() {
     queryFn: () => apiFetch<Task | null>(`/conversations/${conversationId}/active-task`),
   })
 
-  const taskForSummary = activeTask ?? recentlyClosedTask
+  const { data: conversationTasks = [] } = useQuery({
+    queryKey: ['conversation-tasks', conversationId],
+    queryFn: () => apiFetch<Task[]>(`/conversations/${conversationId}/tasks`),
+  })
+
+  const taskForSummary = activeTask ?? recentlyClosedTask ?? conversationTasks[0] ?? null
 
   const { data: taskApprovals = [] } = useQuery({
     queryKey: ['task-approvals', taskForSummary?.id],
@@ -275,6 +287,25 @@ function ConversationSessionPage() {
     setSelectedWorkspacePath((current) => current ?? latestOutput.relative_path)
     setArtifactPanelMode((current) => (current === 'collapsed' ? 'open' : current))
   }, [taskArtifacts])
+
+  useEffect(() => {
+    const handleArtifactPanelToggle = (event: Event) => {
+      const detail = (event as CustomEvent<{ conversationId?: string }>).detail
+      if (detail?.conversationId && detail.conversationId !== conversationId) {
+        return
+      }
+
+      if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+        setMobileArtifactsOpen((current) => !current)
+        return
+      }
+
+      setArtifactPanelMode((current) => (current === 'open' ? 'collapsed' : 'open'))
+    }
+
+    window.addEventListener(ARTIFACT_PANEL_TOGGLE_EVENT, handleArtifactPanelToggle)
+    return () => window.removeEventListener(ARTIFACT_PANEL_TOGGLE_EVENT, handleArtifactPanelToggle)
+  }, [conversationId])
 
   useEffect(() => {
     notifyContentChanged()
@@ -424,6 +455,9 @@ function ConversationSessionPage() {
       if (event.type === 'task.created') {
         setRecentlyClosedTask(null)
         queryClient.setQueryData(['active-task', conversationId], event.task)
+        queryClient.setQueryData<Task[]>(['conversation-tasks', conversationId], (current) =>
+          upsertConversationTask(current, event.task),
+        )
         queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task.id] })
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task.id] })
         queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task.id] })
@@ -433,6 +467,7 @@ function ConversationSessionPage() {
       if (event.type === 'task.approval.requested' || event.type === 'task.approval.resolved') {
         queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
+        queryClient.invalidateQueries({ queryKey: ['conversation-tasks', conversationId] })
         return
       }
 
@@ -453,6 +488,9 @@ function ConversationSessionPage() {
         } else {
           queryClient.setQueryData(['active-task', conversationId], event.task)
         }
+        queryClient.setQueryData<Task[]>(['conversation-tasks', conversationId], (current) =>
+          upsertConversationTask(current, event.task),
+        )
         queryClient.invalidateQueries({ queryKey: ['task-approvals', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })

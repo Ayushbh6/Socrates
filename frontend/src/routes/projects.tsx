@@ -1,7 +1,7 @@
 import { createFileRoute, Link, Outlet, redirect, useRouterState } from '@tanstack/react-router'
 import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FolderOpen, Home } from 'lucide-react'
+import { FileSearch, FolderOpen, Home } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -9,7 +9,9 @@ import {
   hasCompletedOnboarding,
   meQueryOptions,
 } from '@/lib/bootstrap'
+import { apiFetch } from '@/lib/api'
 import { useAppStore } from '@/stores/appStore'
+import type { Task } from '@/types/api'
 
 export const Route = createFileRoute('/projects')({
   beforeLoad: async ({ context }) => {
@@ -30,10 +32,18 @@ function ProjectsLayout() {
   const activeProject = useAppStore((state) => state.activeProject)
   const activeConversation = useAppStore((state) => state.activeConversation)
   const pathname = useRouterState({ select: (state) => state.location.pathname })
+  const conversationRouteMatch = pathname.match(/^\/projects\/[^/]+\/dashboard\/conversations\/([^/]+)$/)
+  const routeConversationId = conversationRouteMatch?.[1] ?? null
 
   const isProjectWorkspace = /^\/projects\/[^/]+(?:\/.*)?$/.test(pathname) && pathname !== '/projects/create'
   const isProjectDashboardRoute = /^\/projects\/[^/]+\/dashboard$/.test(pathname)
   const isConversationRoute = /^\/projects\/[^/]+\/dashboard\/conversations\/[^/]+$/.test(pathname)
+  const { data: conversationTasks = [] } = useQuery({
+    queryKey: ['conversation-tasks', routeConversationId],
+    queryFn: () => apiFetch<Task[]>(`/conversations/${routeConversationId}/tasks`),
+    enabled: Boolean(routeConversationId),
+  })
+  const hasArtifactWorkspace = isConversationRoute && conversationTasks.length > 0
   const headerCta = isConversationRoute && activeProject
     ? {
         label: 'Project Dashboard',
@@ -114,6 +124,25 @@ function ProjectsLayout() {
             </div>
 
             <div className="flex items-center gap-3">
+              {hasArtifactWorkspace && routeConversationId ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className="size-10 rounded-full border-0 bg-white/74 text-moss shadow-none hover:bg-sage/90 hover:text-forest"
+                  aria-label="Toggle artifacts panel"
+                  title="Toggle artifacts panel"
+                  onClick={() => {
+                    window.dispatchEvent(
+                      new CustomEvent('premchat:toggle-artifact-panel', {
+                        detail: { conversationId: routeConversationId },
+                      }),
+                    )
+                  }}
+                >
+                  <FileSearch className="size-4" aria-hidden="true" />
+                </Button>
+              ) : null}
               <Button
                 asChild
                 variant="outline"
