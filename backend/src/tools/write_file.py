@@ -47,6 +47,13 @@ def handle(
         if approval_error is not None:
             return approval_error
 
+    if scope == "task":
+        reserved_error = runtime._reserved_task_folder_error(
+            tool_name="write_file", path=path
+        )
+        if reserved_error is not None:
+            return reserved_error
+
     target, workspace_id = runtime._resolve_edit_target(scope, path, allow_missing=True)
     existed = target.exists()
     if existed and not overwrite:

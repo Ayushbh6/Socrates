@@ -44,6 +44,13 @@ def handle(
         )
         if approval_error is not None:
             return approval_error
+    if scope == "task":
+        for item in operations:
+            reserved_error = runtime._reserved_task_folder_error(
+                tool_name="apply_patch", path=item.path
+            )
+            if reserved_error is not None:
+                return reserved_error
     return apply_patch_operations(
         runtime,
         scope=scope,

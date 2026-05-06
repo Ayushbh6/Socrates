@@ -165,7 +165,7 @@ def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefin
             -1,
             ToolDefinition(
                 name="execute_command",
-                description="Execute a Python command using argv form through the managed Socrates Python runtime in the current task workspace or approved linked workspace.",
+                description="Execute a Python command using argv form through the managed Socrates Python runtime in the current task workspace or approved linked workspace. Task commands receive SOCRATES_TASK_ROOT, SOCRATES_WORK_DIR, SOCRATES_OUTPUTS_DIR, SOCRATES_INPUTS_DIR, and SOCRATES_LOGS_DIR environment variables.",
                 parameters={
                     "type": "object",
                     "properties": {

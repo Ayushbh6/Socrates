@@ -7,7 +7,7 @@ import pytest
 
 from backend.src.app import create_app
 from backend.src.core.schema import LLMResponse, ToolCall, UsageStats
-from backend.src.db.models import AgentRun, TaskArtifact, ToolExecution
+from backend.src.db.models import AgentRun, Task, TaskArtifact, ToolExecution
 from backend.src.db.session import get_session_factory
 from backend.src.services.tasks import create_task_approval
 from backend.src.services.workers import WorkerResult
@@ -347,6 +347,73 @@ def provider_for_todo_and_work(
                         content="Work ready.",
                         usage=UsageStats(),
                         raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+
+
+def provider_for_script_and_command(
+    *,
+    write_id: str,
+    run_id: str,
+    script_path: str,
+    script_content: str,
+    argv: list[str],
+    final_content: str = "Script handled.",
+) -> FakeProvider:
+    return FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Writing script.",
+                        tool_calls=[
+                            ToolCall(
+                                id=write_id,
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": script_path,
+                                    "content": script_content,
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Running script.",
+                        tool_calls=[
+                            ToolCall(
+                                id=run_id,
+                                name="execute_command",
+                                arguments={
+                                    "scope": "task",
+                                    "argv": argv,
+                                    "cwd": "work",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content=final_content,
+                        usage=UsageStats(total_tokens=3),
+                        raw_dump={"turn": 3},
                         metadata={"provider": "fake", "model": "fake-model"},
                     )
                 ]
@@ -995,6 +1062,194 @@ def test_execute_command_runs_python_through_managed_runtime(
         assert execution.result_json["success"] is True
         assert execution.result_json["stdout"] == "hello from managed runtime\n"
         assert execution.result_json["executed_argv"][0].endswith("/bin/python")
+    finally:
+        session.close()
+
+
+def test_execute_command_exposes_task_path_environment_and_registers_outputs(
+    client: TestClient, monkeypatch
+):
+    script = "\n".join(
+        [
+            "import os",
+            "from pathlib import Path",
+            "required = ['SOCRATES_TASK_ROOT', 'SOCRATES_INPUTS_DIR', 'SOCRATES_WORK_DIR', 'SOCRATES_OUTPUTS_DIR', 'SOCRATES_LOGS_DIR']",
+            "outputs = Path(os.environ['SOCRATES_OUTPUTS_DIR'])",
+            "outputs.mkdir(parents=True, exist_ok=True)",
+            "(outputs / 'env.txt').write_text('\\n'.join(required) + '\\n', encoding='utf-8')",
+            "",
+        ]
+    )
+    _, conversation_id, _ = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_VALID_TODO,
+        extra_providers=[
+            provider_for_script_and_command(
+                write_id="write_env_script",
+                run_id="run_env_script",
+                script_path="work/env_script.py",
+                script_content=script,
+                argv=["python", "env_script.py"],
+            )
+        ],
+    )
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Run env script.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+    drain_run_events(client, response.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "run_env_script")
+            .one()
+        )
+        assert execution.result_json["success"] is True
+        assert "outputs/env.txt" in execution.result_json["registered_outputs"]
+        task = session.get(Task, execution.task_id)
+        env_file = Path(task.workspace_root, "outputs", "env.txt")
+        assert env_file.exists()
+        assert "SOCRATES_OUTPUTS_DIR" in env_file.read_text(encoding="utf-8")
+    finally:
+        session.close()
+
+
+def test_execute_command_rejects_and_removes_empty_nested_reserved_folder(
+    client: TestClient, monkeypatch
+):
+    script = "from pathlib import Path\nPath('outputs').mkdir(exist_ok=True)\n"
+    _, conversation_id, _ = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_VALID_TODO,
+        extra_providers=[
+            provider_for_script_and_command(
+                write_id="write_empty_bad_script",
+                run_id="run_empty_bad_script",
+                script_path="work/bad_empty.py",
+                script_content=script,
+                argv=["python", "bad_empty.py"],
+            )
+        ],
+    )
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Run bad empty script.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+    drain_run_events(client, response.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "run_empty_bad_script")
+            .one()
+        )
+        assert execution.result_json["error_type"] == "reserved_task_folder_created"
+        violation = execution.result_json["violations"][0]
+        assert violation["path"] == "work/outputs"
+        assert violation["safe_auto_removed"] is True
+        task = session.get(Task, execution.task_id)
+        assert not Path(task.workspace_root, "work", "outputs").exists()
+    finally:
+        session.close()
+
+
+def test_execute_command_preserves_non_empty_nested_reserved_folder_until_fixed(
+    client: TestClient, monkeypatch
+):
+    bad_script = "\n".join(
+        [
+            "from pathlib import Path",
+            "bad = Path('folder_1/output')",
+            "bad.mkdir(parents=True, exist_ok=True)",
+            "(bad / 'result.txt').write_text('recoverable\\n', encoding='utf-8')",
+            "",
+        ]
+    )
+    fix_script = "\n".join(
+        [
+            "import os",
+            "from pathlib import Path",
+            "src = Path('folder_1/output/result.txt')",
+            "dst = Path(os.environ['SOCRATES_OUTPUTS_DIR']) / 'rescued.txt'",
+            "dst.write_text(src.read_text(encoding='utf-8'), encoding='utf-8')",
+            "src.unlink()",
+            "Path('folder_1/output').rmdir()",
+            "Path('folder_1').rmdir()",
+            "",
+        ]
+    )
+    _, conversation_id, _ = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_VALID_TODO,
+        extra_providers=[
+            provider_for_script_and_command(
+                write_id="write_non_empty_bad_script",
+                run_id="run_non_empty_bad_script",
+                script_path="work/bad_non_empty.py",
+                script_content=bad_script,
+                argv=["python", "bad_non_empty.py"],
+            ),
+            provider_for_script_and_command(
+                write_id="write_fix_bad_script",
+                run_id="run_fix_bad_script",
+                script_path="work/fix_bad.py",
+                script_content=fix_script,
+                argv=["python", "fix_bad.py"],
+            ),
+        ],
+    )
+    bad_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Run bad non-empty script.", "asset_ids": []},
+    )
+    assert bad_response.status_code == 202
+    drain_run_events(client, bad_response.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        bad_execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "run_non_empty_bad_script")
+            .one()
+        )
+        assert bad_execution.result_json["error_type"] == "reserved_task_folder_created"
+        violation = bad_execution.result_json["violations"][0]
+        assert violation["path"] == "work/folder_1/output"
+        assert violation["safe_auto_removed"] is False
+        task = session.get(Task, bad_execution.task_id)
+        assert Path(task.workspace_root, "work", "folder_1", "output", "result.txt").exists()
+    finally:
+        session.close()
+
+    fix_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Fix nested reserved folder.", "asset_ids": []},
+    )
+    assert fix_response.status_code == 202
+    drain_run_events(client, fix_response.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        fix_execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "run_fix_bad_script")
+            .one()
+        )
+        assert fix_execution.result_json["success"] is True
+        assert "outputs/rescued.txt" in fix_execution.result_json["registered_outputs"]
+        task = session.get(Task, fix_execution.task_id)
+        assert not Path(task.workspace_root, "work", "folder_1").exists()
+        assert Path(task.workspace_root, "outputs", "rescued.txt").read_text(
+            encoding="utf-8"
+        ) == "recoverable\n"
     finally:
         session.close()
 
@@ -1717,12 +1972,30 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
                                 },
                             ),
                             ToolCall(
+                                id="edit_nested_reserved",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "work/outputs/blocked.txt",
+                                    "content": "nope",
+                                },
+                            ),
+                            ToolCall(
                                 id="edit_output",
                                 name="write_file",
                                 arguments={
                                     "scope": "task",
                                     "path": "outputs/result.txt",
                                     "content": "done\n",
+                                },
+                            ),
+                            ToolCall(
+                                id="edit_output_nested",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "outputs/reports/final.md",
+                                    "content": "final\n",
                                 },
                             ),
                         ],
@@ -1799,6 +2072,13 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
             .one()
         )
         assert failed_edit.result_json["error_type"] == "PermissionError"
+        failed_nested = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "edit_nested_reserved")
+            .one()
+        )
+        assert failed_nested.result_json["error_type"] == "reserved_task_folder_misuse"
+        assert failed_nested.result_json["violations"][0]["path"] == "work/outputs"
     finally:
         session.close()
 
@@ -1814,6 +2094,8 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
     assert output_artifact["promoted_to_asset"] is False
     assert Path(task["workspace_root"], "work", "script.py").exists()
     assert not Path(task["workspace_root"], "inputs", "blocked.txt").exists()
+    assert not Path(task["workspace_root"], "work", "outputs", "blocked.txt").exists()
+    assert Path(task["workspace_root"], "outputs", "reports", "final.md").exists()
 
     tree_response = client.get(f"/api/v1/tasks/{task['id']}/workspace-tree")
     assert tree_response.status_code == 200
@@ -1823,7 +2105,7 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
         for entry in root["entries"]
         if not entry["is_dir"]
     }
-    assert {"work/script.py", "outputs/result.txt"}.issubset(tree_paths)
+    assert {"work/script.py", "outputs/result.txt", "outputs/reports/final.md"}.issubset(tree_paths)
 
     preview_response = client.get(
         f"/api/v1/tasks/{task['id']}/workspace-file",
@@ -2834,7 +3116,22 @@ def test_apply_patch_cannot_write_to_task_inputs(client: TestClient, monkeypatch
                                         ]
                                     ),
                                 },
-                            )
+                            ),
+                            ToolCall(
+                                id="blocked_reserved_patch",
+                                name="apply_patch",
+                                arguments={
+                                    "scope": "task",
+                                    "patch_text": "\n".join(
+                                        [
+                                            "*** Begin Patch",
+                                            "*** Add File: work/outputs/bad.txt",
+                                            "+nope",
+                                            "*** End Patch",
+                                        ]
+                                    ),
+                                },
+                            ),
                         ],
                         usage=UsageStats(),
                         raw_dump={"turn": 2},
@@ -2880,6 +3177,15 @@ def test_apply_patch_cannot_write_to_task_inputs(client: TestClient, monkeypatch
             .one()
         )
         assert execution.result_json["error_type"] == "PermissionError"
+        reserved_execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "blocked_reserved_patch")
+            .one()
+        )
+        assert (
+            reserved_execution.result_json["error_type"]
+            == "reserved_task_folder_misuse"
+        )
     finally:
         session.close()
 
@@ -4093,6 +4399,7 @@ def test_update_task_status_completed_requires_current_user_acceptance(
         )
         assert execution.result_json["error_type"] == "approval_required"
         assert execution.result_json["approval_id"]
+        assert "not completed yet" in execution.result_json["message"]
     finally:
         session.close()
 

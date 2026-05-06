@@ -44,6 +44,15 @@ from .read_resource import make_read_resource
 from .system_time import get_system_time
 from .utils import _path_within, resolve_asset_path
 from .definitions import build_tool_definitions
+from .task_workspace_policy import (
+    ReservedTaskFolderViolation,
+    command_reserved_violation_suggestion,
+    reserved_violation_message,
+    reserved_violation_suggestion,
+    scan_task_workspace_for_reserved_folders,
+    task_path_environment,
+    validate_task_write_relative_path,
+)
 from . import apply_patch as apply_patch_tool
 from . import create_task as create_task_tool
 from . import edit_file as edit_file_tool
@@ -363,6 +372,53 @@ class ProjectToolRuntime:
             message=message,
             retryable=True,
             suggestion=suggestion,
+        )
+
+    def _reserved_task_folder_error(
+        self, *, tool_name: str, path: str
+    ) -> str | None:
+        violations = validate_task_write_relative_path(path)
+        if not violations:
+            return None
+        return build_tool_error_result(
+            tool_name=tool_name,
+            error_type="reserved_task_folder_misuse",
+            message=reserved_violation_message(violations[0]),
+            retryable=True,
+            suggestion=reserved_violation_suggestion(),
+            extra={"violations": [item.as_dict() for item in violations]},
+        )
+
+    def _reserved_task_command_error(
+        self,
+        *,
+        command_result: dict[str, Any],
+        violations: list[ReservedTaskFolderViolation],
+    ) -> str:
+        return build_tool_error_result(
+            tool_name="execute_command",
+            error_type="reserved_task_folder_created",
+            message=(
+                "The command created a nested reserved folder: "
+                f"{violations[0].path}. "
+                f"{reserved_violation_message(violations[0])}"
+            ),
+            retryable=True,
+            suggestion=command_reserved_violation_suggestion(),
+            extra={
+                "violations": [item.as_dict() for item in violations],
+                "command_result": command_result,
+            },
+        )
+
+    def _scan_task_workspace_for_reserved_folders(
+        self,
+    ) -> list[ReservedTaskFolderViolation]:
+        task = self.context.current_task or self.context.refresh_task()
+        if task is None:
+            return []
+        return scan_task_workspace_for_reserved_folders(
+            Path(task.workspace_root).resolve(), auto_remove_empty=True
         )
 
     @staticmethod
@@ -709,6 +765,7 @@ class ProjectToolRuntime:
         env = dict(os.environ)
         env["VIRTUAL_ENV"] = str(status.venv_path)
         env["PATH"] = str(venv_bin) + os.pathsep + env.get("PATH", "")
+        env.update(task_path_environment(Path(task.workspace_root)))
         return env
 
     def _normalize_python_command_argv(self, argv: list[str]) -> list[str] | str:

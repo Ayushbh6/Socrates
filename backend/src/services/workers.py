@@ -19,6 +19,7 @@ from ..core.schema import GenConfig, InputMode, ThinkingLevel
 from ..db.models import AgentEventRecord, AgentRun, Task, TaskApproval
 from ..db.session import get_session_factory
 from ..tools.executor import ProjectToolBatchExecutor
+from ..tools.task_workspace_policy import RESERVED_TASK_FOLDER_NAMES
 from ..tools.worker_runtime import get_worker_tools_registry
 from .task_package import (
     get_task_package_disk_state,
@@ -270,6 +271,15 @@ def _build_handoff(task: Task) -> dict[str, Any]:
             "allowed_task_paths": ["task.md", "plan.md", "todo.md", "work/**", "outputs/**"],
             "read_only_task_paths": ["inputs/**", "logs/**", "task.md", "plan.md"],
             "writable_task_paths": ["todo.md", "work/**", "outputs/**"],
+            "reserved_task_folder_names": sorted(RESERVED_TASK_FOLDER_NAMES),
+            "path_env_vars": {
+                "task_root": "SOCRATES_TASK_ROOT",
+                "inputs": "SOCRATES_INPUTS_DIR",
+                "work": "SOCRATES_WORK_DIR",
+                "outputs": "SOCRATES_OUTPUTS_DIR",
+                "logs": "SOCRATES_LOGS_DIR",
+            },
+            "path_warning": "Final deliverables must go to top-level outputs/. A script running from work/ must use SOCRATES_OUTPUTS_DIR instead of relative outputs/ paths.",
         },
         "execution_policy": {
             "max_tool_rounds": 100,

@@ -70,9 +70,9 @@ def handle(runtime: Any, status: str, result_summary: str):
                 "ok": False,
                 "tool_name": "update_task_status",
                 "error_type": "approval_required",
-                "message": "Socrates needs user approval before marking this task completed.",
+                "message": "The task is not completed yet. Socrates needs user approval before marking this task completed.",
                 "retryable": True,
-                "suggestion": f"Wait for approval id {approval.id} to be approved, then retry the exact same tool call.",
+                "suggestion": f"Tell the user that completion approval has been requested, wait for approval id {approval.id} to be approved, then retry the exact same tool call.",
                 "approval_id": approval.id,
             }
     try:

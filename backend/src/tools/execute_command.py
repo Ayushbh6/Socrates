@@ -73,6 +73,23 @@ def handle(
     registered_outputs: list[str] = []
     if scope == "task":
         registered_outputs = runtime._sync_task_outputs_if_needed()
+    payload = {
+        "argv": argv,
+        "executed_argv": normalized_argv,
+        "cwd": str(workdir.relative_to(base_root)),
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": result.returncode,
+        "success": result.returncode == 0,
+    }
+    if registered_outputs:
+        payload["registered_outputs"] = registered_outputs
+    reserved_violations = (
+        runtime._scan_task_workspace_for_reserved_folders()
+        if scope == "task"
+        else []
+    )
+    success = result.returncode == 0 and not reserved_violations
     log_workspace_action(
         runtime.context.session,
         action_type="execute_command",
@@ -93,17 +110,11 @@ def handle(
         stdout_text=stdout,
         stderr_text=stderr,
         exit_code=result.returncode,
-        success=result.returncode == 0,
+        success=success,
     )
-    payload = {
-        "argv": argv,
-        "executed_argv": normalized_argv,
-        "cwd": str(workdir.relative_to(base_root)),
-        "stdout": stdout,
-        "stderr": stderr,
-        "exit_code": result.returncode,
-        "success": result.returncode == 0,
-    }
-    if registered_outputs:
-        payload["registered_outputs"] = registered_outputs
+    if reserved_violations:
+        return runtime._reserved_task_command_error(
+            command_result=payload,
+            violations=reserved_violations,
+        )
     return payload

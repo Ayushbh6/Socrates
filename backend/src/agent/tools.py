@@ -1,6 +1,6 @@
 import inspect
 import json
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from ..core.schema import ToolCall
 
@@ -68,6 +68,7 @@ def build_tool_error_result(
     message: str,
     retryable: bool = False,
     suggestion: Optional[str] = None,
+    extra: Optional[Mapping[str, Any]] = None,
 ) -> str:
     payload: Dict[str, Any] = {
         "ok": False,
@@ -78,6 +79,8 @@ def build_tool_error_result(
     }
     if suggestion:
         payload["suggestion"] = suggestion
+    if extra:
+        payload.update(dict(extra))
     return _serialize_payload(payload)
 
 

@@ -32,6 +32,8 @@ def test_tool_definitions_conditionally_include_execute_command():
 
     assert "execute_command" in names
     assert len(names) == 12
+    command = next(tool for tool in definitions if tool.name == "execute_command")
+    assert "SOCRATES_OUTPUTS_DIR" in command.description
 
 
 def test_worker_tool_definitions_use_worker_allowlist():
