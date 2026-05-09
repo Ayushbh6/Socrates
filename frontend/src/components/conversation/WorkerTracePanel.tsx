@@ -69,7 +69,7 @@ export function WorkerTracePanel({ worker, mode, onModeChange, className }: Work
           type="button"
           onClick={() => onModeChange(expanded ? 'collapsed' : 'open')}
           aria-expanded={expanded}
-          className="flex w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-sage/20 sm:px-4"
+          className="flex min-h-[5.25rem] w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-sage/20 sm:px-4"
         >
           <WorkerPanelStatusIcon status={worker.status} />
           <div className="min-w-0 flex-1">
@@ -77,7 +77,7 @@ export function WorkerTracePanel({ worker, mode, onModeChange, className }: Work
               <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">Worker trace</p>
               <span
                 className={cn(
-                  'rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em]',
+                  'inline-flex min-w-[5.75rem] justify-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em]',
                   worker.status === 'running'
                     ? 'bg-sage/70 text-forest'
                     : worker.status === 'completed'
@@ -89,7 +89,7 @@ export function WorkerTracePanel({ worker, mode, onModeChange, className }: Work
               </span>
             </div>
             <p className="mt-1 line-clamp-2 text-sm leading-5 text-ink">{summary}</p>
-            {progressLabel ? <p className="mt-1 text-[11px] font-medium text-moss">{progressLabel}</p> : null}
+            <p className="mt-1 min-h-4 line-clamp-1 text-[11px] font-medium text-moss">{progressLabel}</p>
           </div>
           <span className="mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-white/70 text-moss">
             {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
@@ -105,7 +105,7 @@ export function WorkerTracePanel({ worker, mode, onModeChange, className }: Work
                   <p className="text-sm font-semibold text-forest">
                     {worker.currentItem.id}: {worker.currentItem.text}
                   </p>
-                  <p className="mt-1 text-xs capitalize text-ink-soft">{worker.currentItem.status.replaceAll('_', ' ')}</p>
+                  <p className="mt-1 line-clamp-1 text-xs capitalize text-ink-soft">{worker.currentItem.status.replaceAll('_', ' ')}</p>
                 </div>
               ) : (
                 <p className="mt-2 text-sm leading-5 text-ink-soft">
@@ -170,7 +170,7 @@ function WorkerToolRow({ tool }: { tool: WorkerTraceRun['tools'][number] }) {
             <WorkerToolStatusIcon status={tool.status} />
             <p className="min-w-0 truncate text-sm font-medium text-forest">{tool.label}</p>
           </div>
-          {tool.resultSummary ? <p className="mt-1 pl-6 text-xs leading-5 text-ink-soft">{tool.resultSummary}</p> : null}
+          {tool.resultSummary ? <p className="mt-1 line-clamp-2 pl-6 text-xs leading-5 text-ink-soft">{tool.resultSummary}</p> : null}
         </div>
         <span className="shrink-0 rounded-full bg-white/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-moss">
           {tool.status === 'running' ? 'Running' : tool.status === 'failed' ? 'Failed' : 'Done'}

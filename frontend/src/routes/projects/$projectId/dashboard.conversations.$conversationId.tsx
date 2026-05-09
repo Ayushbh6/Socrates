@@ -61,6 +61,7 @@ import {
   buildConversationTimeline,
   type OptimisticUserMessage,
 } from '@/lib/conversationTimeline'
+import { createConversationScrollSignature } from '@/lib/conversationScroll'
 import {
   getRunActivitySummary,
   hydrateRunActivity,
@@ -408,10 +409,6 @@ function ConversationSessionContent({
     window.addEventListener(ARTIFACT_PANEL_TOGGLE_EVENT, handleArtifactPanelToggle)
     return () => window.removeEventListener(ARTIFACT_PANEL_TOGGLE_EVENT, handleArtifactPanelToggle)
   }, [conversationId, handleArtifactPanelModeChange, isArtifactSheetViewport])
-
-  useEffect(() => {
-    notifyContentChanged()
-  }, [messages, optimisticUsers, assistantTurns, workerTrace, notifyContentChanged])
 
   useEffect(() => {
     if (!activeRun) {
@@ -856,12 +853,22 @@ function ConversationSessionContent({
     })
   }
 
-  const persistedIds = new Set(messages.map((message) => message.id))
-  const visibleOptimisticUsers = optimisticUsers.filter((message) => !persistedIds.has(message.id))
+  const persistedIds = useMemo(() => new Set(messages.map((message) => message.id)), [messages])
+  const visibleOptimisticUsers = useMemo(
+    () => optimisticUsers.filter((message) => !persistedIds.has(message.id)),
+    [optimisticUsers, persistedIds],
+  )
   const timelineEntries = useMemo(
     () => buildConversationTimeline(messages, visibleOptimisticUsers, assistantTurns),
     [assistantTurns, messages, visibleOptimisticUsers],
   )
+  const conversationScrollSignature = useMemo(
+    () => createConversationScrollSignature(timelineEntries),
+    [timelineEntries],
+  )
+  useEffect(() => {
+    notifyContentChanged()
+  }, [conversationScrollSignature, notifyContentChanged])
   const activeAssistantTurn = activeRunId ? assistantTurns[activeRunId] : null
   const activeWorkerTrace = useMemo(() => getActiveWorkerTraceRun(workerTrace), [workerTrace])
   useEffect(() => {
@@ -1972,20 +1979,20 @@ function ThinkingPanel({ storageKey, text, hasThinking, isStreaming, statusLabel
   const showBody = hasThinking && !collapsed
 
   return (
-    <div className="mb-3 rounded-[1.35rem] bg-sage/50 px-4 py-3.5 shadow-[0_10px_24px_rgba(62,92,72,0.05)]">
+    <div className="mb-3 min-h-[4.75rem] rounded-[1.35rem] bg-sage/50 px-4 py-3.5 shadow-[0_10px_24px_rgba(62,92,72,0.05)]">
       <button
         type="button"
         onClick={toggle}
         aria-expanded={!collapsed}
         aria-label={collapsed ? 'Expand reasoning' : 'Collapse reasoning'}
-        className="flex w-full items-center gap-2 text-left transition hover:opacity-90"
+        className="flex min-h-10 w-full items-center gap-2 text-left transition hover:opacity-90"
       >
         <ThinkingOrb />
         <div className="flex-1 min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-moss">
             {headerLabel}
           </p>
-          <p className="text-[11px] text-ink-soft/80">{statusLabel}</p>
+          <p className="line-clamp-1 min-h-4 text-[11px] text-ink-soft/80">{statusLabel}</p>
         </div>
         <span
           className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-white/40 text-moss transition hover:bg-white/70"
@@ -1995,7 +2002,7 @@ function ThinkingPanel({ storageKey, text, hasThinking, isStreaming, statusLabel
         </span>
       </button>
       {showBody ? (
-        <div className="mt-3 text-[13px] leading-6 tracking-[0.01em] text-ink-soft assistant-markdown min-w-0">
+        <div className="assistant-markdown mt-3 max-h-[min(28vh,18rem)] min-w-0 overflow-y-auto pr-1 text-[13px] leading-6 tracking-[0.01em] text-ink-soft">
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={thinkingMarkdownComponents}>
             {text}
           </ReactMarkdown>
@@ -2197,12 +2204,12 @@ function RunActivityPanel({
   }, [activity?.hydrated, expanded, isStreaming, onHydrate, runId])
 
   return (
-    <div className="mb-3 rounded-[1.4rem] bg-paper/88 px-4 py-3.5 shadow-[0_14px_32px_rgba(62,92,72,0.07)]">
+    <div className="mb-3 min-h-[5.75rem] rounded-[1.4rem] bg-paper/88 px-4 py-3.5 shadow-[0_14px_32px_rgba(62,92,72,0.07)]">
       <button
         type="button"
         onClick={toggleExpanded}
         aria-expanded={expanded}
-        className="flex w-full items-start gap-3 text-left transition hover:opacity-95"
+        className="flex min-h-[4.25rem] w-full items-start gap-3 text-left transition hover:opacity-95"
       >
         <RunActivityOrb live={isStreaming} failed={activity?.failed ?? false} />
         <div className="min-w-0 flex-1">
@@ -2223,7 +2230,7 @@ function RunActivityPanel({
               {isStreaming ? 'Streaming' : activity?.failed ? 'Failed' : 'Captured'}
             </span>
           </div>
-          <p className="mt-1 text-sm leading-6 text-ink-soft">{summary}</p>
+          <p className="mt-1 line-clamp-2 min-h-12 text-sm leading-6 text-ink-soft">{summary}</p>
         </div>
         <span
           className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-white/50 text-moss"
@@ -2234,7 +2241,7 @@ function RunActivityPanel({
       </button>
 
       {expanded ? (
-        <div className="mt-3 space-y-2.5">
+        <div className="mt-3 max-h-[min(36vh,24rem)] space-y-2.5 overflow-y-auto pr-1">
           {activity?.items.length ? (
             activity.items.map((item) =>
               item.kind === 'narration' ? (
@@ -2280,9 +2287,9 @@ function RunWorkerRow({ item }: { item: Extract<RunActivityItem, { kind: 'worker
             <WorkerStatusIcon status={item.status} />
             <p className="min-w-0 truncate text-sm font-semibold text-forest">Worker handoff</p>
           </div>
-          <p className="mt-1 pl-6 text-xs leading-5 text-ink-soft">{item.summary}</p>
+          <p className="mt-1 line-clamp-2 pl-6 text-xs leading-5 text-ink-soft">{item.summary}</p>
           {item.progressLabel ? (
-            <p className="mt-0.5 pl-6 text-[11px] font-medium text-moss">{item.progressLabel}</p>
+            <p className="mt-0.5 line-clamp-1 pl-6 text-[11px] font-medium text-moss">{item.progressLabel}</p>
           ) : null}
         </div>
         <span
@@ -2315,7 +2322,7 @@ function RunToolRow({ item }: { item: Extract<RunActivityItem, { kind: 'tool' }>
             <p className="min-w-0 truncate text-sm font-medium text-forest">{item.label}</p>
           </div>
           {item.resultSummary ? (
-            <p className="mt-1 pl-6 text-xs leading-5 text-ink-soft">{item.resultSummary}</p>
+            <p className="mt-1 line-clamp-2 pl-6 text-xs leading-5 text-ink-soft">{item.resultSummary}</p>
           ) : null}
         </div>
         <span
