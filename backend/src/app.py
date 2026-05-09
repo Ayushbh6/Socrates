@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
     ensure_app_directories()
     run_migrations()
     app.state.run_manager = RunManager()
+    await app.state.run_manager.reconcile_stale_active_runs()
     yield
 
 

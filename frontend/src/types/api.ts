@@ -4,7 +4,7 @@ export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high'
 export type InputMode = 'text' | 'voice'
 export type MessageRole = 'user' | 'assistant'
 export type MessageStatus = 'queued' | 'completed' | 'failed'
-export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed'
+export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled'
 
 export interface User {
   id: string
@@ -353,6 +353,17 @@ export interface WsRunFailed extends WsEventBase {
   run_id: string
   error: string
 }
+export interface WsRunCancelled extends WsEventBase {
+  type: 'run.cancelled'
+  run_id: string
+  reason?: string
+}
+export interface WsRunStalled extends WsEventBase {
+  type: 'run.stalled'
+  run_id: string
+  reason?: string
+  timeout_seconds?: number
+}
 export interface WsTaskCreated extends WsEventBase {
   type: 'task.created'
   run_id: string
@@ -469,7 +480,7 @@ export interface WsTaskWorkerWarning extends WsEventBase {
   message: string
 }
 export interface WsTaskWorkerTerminal extends WsEventBase {
-  type: 'task.worker.completed' | 'task.worker.blocked' | 'task.worker.failed'
+  type: 'task.worker.completed' | 'task.worker.blocked' | 'task.worker.failed' | 'task.worker.cancelled' | 'task.worker.stalled'
   run_id: string
   task_id: string
   worker_run_id: string | null
@@ -494,6 +505,8 @@ export type WsEvent =
   | WsRunMessageCompleted
   | WsRunCompleted
   | WsRunFailed
+  | WsRunCancelled
+  | WsRunStalled
   | WsTaskCreated
   | WsTaskApprovalRequested
   | WsTaskApprovalResolved

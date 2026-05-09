@@ -6,7 +6,7 @@ import type {
   WsEvent,
 } from '@/types/api'
 
-export type WorkerTraceStatus = 'idle' | 'running' | 'completed' | 'blocked' | 'failed'
+export type WorkerTraceStatus = 'idle' | 'running' | 'completed' | 'blocked' | 'failed' | 'cancelled' | 'stalled'
 export type WorkerToolStatus = 'running' | 'completed' | 'failed'
 
 export interface WorkerTraceToolRow {
@@ -52,6 +52,8 @@ const WORKER_EVENT_TYPES = new Set([
   'task.worker.completed',
   'task.worker.blocked',
   'task.worker.failed',
+  'task.worker.cancelled',
+  'task.worker.stalled',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,6 +174,8 @@ function upsertTool(tools: WorkerTraceToolRow[], nextTool: WorkerTraceToolRow) {
 function statusFromTerminalType(type: string): WorkerTraceStatus {
   if (type === 'task.worker.completed') return 'completed'
   if (type === 'task.worker.blocked') return 'blocked'
+  if (type === 'task.worker.cancelled') return 'cancelled'
+  if (type === 'task.worker.stalled') return 'stalled'
   return 'failed'
 }
 
@@ -201,7 +205,7 @@ export function applyWorkerTraceEvent(current: WorkerTraceState | undefined, eve
   } else if (event.type === 'task.worker.progress') {
     run = {
       ...run,
-      status: event.status === 'completed' || event.status === 'blocked' || event.status === 'failed'
+      status: event.status === 'completed' || event.status === 'blocked' || event.status === 'failed' || event.status === 'cancelled' || event.status === 'stalled'
         ? event.status
         : run.status === 'idle'
           ? 'running'
@@ -280,7 +284,7 @@ export function dismissWorkerTrace(current: WorkerTraceState, workerRunId: strin
 }
 
 export function isTerminalWorkerTraceStatus(status: WorkerTraceStatus | null | undefined) {
-  return status === 'completed' || status === 'blocked' || status === 'failed'
+  return status === 'completed' || status === 'blocked' || status === 'failed' || status === 'cancelled' || status === 'stalled'
 }
 
 export function isTerminalWorkerTraceRun(run: WorkerTraceRun | null | undefined) {

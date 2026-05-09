@@ -308,6 +308,36 @@ class SlowPendingRunner:
         )
 
 
+class StallingRunner:
+    async def stream(self, request):
+        yield AgentEvent(
+            type=AgentEventType.THINKING,
+            provider="fake",
+            model=request.model,
+            round_index=0,
+            response=LLMResponse(
+                content="",
+                thinking="Starting, then making no progress.",
+                usage=UsageStats(),
+                raw_dump={"chunk": 1},
+                metadata={"provider": "fake", "model": request.model},
+            ),
+        )
+        await asyncio.sleep(2)
+        yield AgentEvent(
+            type=AgentEventType.FINAL_RESPONSE,
+            provider="fake",
+            model=request.model,
+            round_index=1,
+            response=LLMResponse(
+                content="This should not be reached before the watchdog.",
+                usage=UsageStats(),
+                raw_dump={"final": True},
+                metadata={"provider": "fake", "model": request.model},
+            ),
+        )
+
+
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     app_data_dir = tmp_path / "appdata"
@@ -639,6 +669,130 @@ def test_conversation_active_run_conflict_returns_409(client: TestClient):
             payload = websocket.receive_json()
             if payload["type"] in {"run.completed", "run.failed"}:
                 break
+
+
+def test_cancel_active_run_unlocks_conversation(client: TestClient):
+    _, conversation_id = bootstrap_user_and_project(client)
+    client.app.state.run_manager._runner_factory = SlowPendingRunner
+
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "First request",
+            "asset_ids": [],
+        },
+    )
+    assert first.status_code == 202
+    run_id = first.json()["agent_run_id"]
+
+    cancelled = client.post(f"/api/v1/agent-runs/{run_id}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        seen = []
+        while True:
+            payload = websocket.receive_json()
+            seen.append(payload["type"])
+            if payload["type"] in {"run.completed", "run.failed", "run.cancelled", "run.stalled"}:
+                break
+    assert seen[-1] == "run.cancelled"
+
+    active_run_after = client.get(f"/api/v1/conversations/{conversation_id}/active-run")
+    assert active_run_after.status_code == 200
+    assert active_run_after.json() is None
+
+    client.app.state.run_manager._runner_factory = FakeRunner
+    second = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "Second request",
+            "asset_ids": [],
+        },
+    )
+    assert second.status_code == 202
+
+    session = get_session_factory()()
+    try:
+        run = session.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "cancelled"
+        trigger_message = session.get(MessageRecord, run.trigger_message_id)
+        assert trigger_message is not None
+        assert trigger_message.status == "completed"
+        events = session.query(AgentEventRecord).filter(AgentEventRecord.agent_run_id == run_id).all()
+        assert any(event.event_type == "run.cancelled" for event in events)
+    finally:
+        session.close()
+
+
+def test_stale_running_run_is_reconciled_before_locking(client: TestClient):
+    project_id, conversation_id = bootstrap_user_and_project(client)
+    session = get_session_factory()()
+    try:
+        stale_run = AgentRun(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            status="running",
+            execution_mode="chat",
+            provider="fake",
+            model="openai/gpt-5.4-mini",
+            input_mode="text",
+            system_prompt_text="system",
+            query_text="stale",
+            request_json={},
+        )
+        stale_message = MessageRecord(
+            project_id=project_id,
+            conversation_id=conversation_id,
+            agent_run=stale_run,
+            role="user",
+            input_mode="text",
+            content_text="stale",
+            status="queued",
+            sequence_no=1,
+            provider="fake",
+            model="openai/gpt-5.4-mini",
+        )
+        session.add(stale_run)
+        session.add(stale_message)
+        session.flush()
+        stale_run.trigger_message_id = stale_message.id
+        session.commit()
+        stale_run_id = stale_run.id
+    finally:
+        session.close()
+
+    active_run = client.get(f"/api/v1/conversations/{conversation_id}/active-run")
+    assert active_run.status_code == 200
+    assert active_run.json() is None
+
+    session = get_session_factory()()
+    try:
+        run = session.get(AgentRun, stale_run_id)
+        assert run is not None
+        assert run.status == "stalled"
+    finally:
+        session.close()
+
+    client.app.state.run_manager._runner_factory = FakeRunner
+    next_message = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "off",
+            "input_mode": "text",
+            "content_text": "New request",
+            "asset_ids": [],
+        },
+    )
+    assert next_message.status_code == 202
 
 
 def test_trace_endpoints_404_for_unknown_run(client: TestClient):
@@ -1075,6 +1229,61 @@ def test_stream_emits_heartbeats_while_idle(fast_heartbeat_client: TestClient):
         assert heartbeat["run_id"] == run_id
         assert isinstance(heartbeat.get("ts"), str) and heartbeat["ts"]
         assert "seq" not in heartbeat or heartbeat["seq"] is None
+
+
+@pytest.fixture
+def fast_stall_client(monkeypatch, tmp_path):
+    app_data_dir = tmp_path / "appdata"
+    monkeypatch.setenv("APP_DATA_DIR", str(app_data_dir))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'premchat.sqlite3'}")
+    monkeypatch.setenv("STREAM_HEARTBEAT_INTERVAL_SECONDS", "1")
+    monkeypatch.setenv("RUN_NO_PROGRESS_TIMEOUT_SECONDS", "1")
+
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_no_progress_watchdog_marks_run_stalled(fast_stall_client: TestClient):
+    client = fast_stall_client
+    _, conversation_id = bootstrap_user_and_project(client)
+    client.app.state.run_manager._runner_factory = StallingRunner
+
+    message_response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={
+            "model": "openai/gpt-5.4-mini",
+            "thinking_level": "low",
+            "input_mode": "text",
+            "content_text": "Start then stall.",
+            "asset_ids": [],
+        },
+    )
+    assert message_response.status_code == 202
+    run_id = message_response.json()["agent_run_id"]
+
+    received: list[dict] = []
+    with client.websocket_connect(f"/api/v1/agent-runs/{run_id}/stream") as websocket:
+        while True:
+            payload = websocket.receive_json()
+            received.append(payload)
+            if payload["type"] in {"run.completed", "run.failed", "run.cancelled", "run.stalled"}:
+                break
+
+    types = [payload["type"] for payload in received]
+    assert types[-1] == "run.stalled"
+
+    active_run_after = client.get(f"/api/v1/conversations/{conversation_id}/active-run")
+    assert active_run_after.status_code == 200
+    assert active_run_after.json() is None
+
+    session = get_session_factory()()
+    try:
+        run = session.get(AgentRun, run_id)
+        assert run is not None
+        assert run.status == "stalled"
+    finally:
+        session.close()
 
 
 def test_archive_conversation_soft_delete(client: TestClient):

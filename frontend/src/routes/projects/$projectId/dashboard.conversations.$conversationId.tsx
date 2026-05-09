@@ -14,6 +14,7 @@ import {
   Paperclip,
   Send,
   Sparkles,
+  Square,
   X,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -107,6 +108,10 @@ interface ConversationUpdatePayload {
 }
 
 const ARTIFACT_PANEL_TOGGLE_EVENT = 'premchat:toggle-artifact-panel'
+
+function isActiveRunStatus(status: AgentRun['status'] | null | undefined) {
+  return status === 'queued' || status === 'running'
+}
 
 function deriveInitialConversationTitle(content: string) {
   const trimmed = content.trim()
@@ -421,7 +426,7 @@ function ConversationSessionContent({
       ...previous,
       [activeRun.id]: hydrateAssistantTurnFromRun(activeRun, previous[activeRun.id]),
     }))
-    if (activeRun.status === 'queued' || activeRun.status === 'running') {
+    if (isActiveRunStatus(activeRun.status)) {
       setActiveRunId(activeRun.id)
     }
   }, [activeRun])
@@ -552,7 +557,7 @@ function ConversationSessionContent({
         if (event.status === 'completed') {
           queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
         }
-        if (event.status === 'completed' || event.status === 'failed') {
+        if (!isActiveRunStatus(event.status)) {
           queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
           setActiveRunId((current) => (current === event.run_id ? null : current))
         }
@@ -629,6 +634,11 @@ function ConversationSessionContent({
       }
 
       if (event.type === 'run.failed') {
+        setActiveRunId(null)
+        queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
+      }
+
+      if (event.type === 'run.cancelled' || event.type === 'run.stalled') {
         setActiveRunId(null)
         queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
       }
@@ -853,6 +863,23 @@ function ConversationSessionContent({
     })
   }
 
+  const cancelRun = useMutation({
+    mutationFn: (runId: string) =>
+      apiFetch<AgentRun>(`/agent-runs/${runId}/cancel`, {
+        method: 'POST',
+      }),
+    onSuccess: (run) => {
+      setSendError(null)
+      setActiveRunId((current) => (current === run.id ? null : current))
+      queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
+      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
+    },
+    onError: (error) => {
+      setSendError(error instanceof Error ? error.message : 'Unable to stop the current run.')
+      queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
+    },
+  })
+
   const persistedIds = useMemo(() => new Set(messages.map((message) => message.id)), [messages])
   const visibleOptimisticUsers = useMemo(
     () => optimisticUsers.filter((message) => !persistedIds.has(message.id)),
@@ -916,11 +943,12 @@ function ConversationSessionContent({
       ),
   )
   const hasPendingTaskApproval = pendingTaskApprovals.length > 0
+  const activeRunIsActive = isActiveRunStatus(activeRun?.status)
   const isConversationLocked =
-    Boolean(activeRun) ||
+    activeRunIsActive ||
     hasPendingTaskApproval ||
     resolveApproval.isPending ||
-    (activeAssistantTurn ? activeAssistantTurn.status === 'queued' || activeAssistantTurn.status === 'running' : false)
+    (activeAssistantTurn ? isActiveRunStatus(activeAssistantTurn.status) : false)
   const hasConversationStarted = timelineEntries.length > 0 || activeRunId !== null
   const preferenceError =
     updateConversationPreferences.error instanceof Error
@@ -1037,6 +1065,10 @@ function ConversationSessionContent({
               inputValue={inputValue}
               isSubmitting={isSubmitting}
               sendPending={sendMessage.isPending}
+              activeRunId={activeRunIsActive ? activeRun?.id ?? activeRunId : activeRunId}
+              activeRunPending={activeRunIsActive || Boolean(activeAssistantTurn && isActiveRunStatus(activeAssistantTurn.status))}
+              cancelPending={cancelRun.isPending}
+              onCancelRun={(runId) => cancelRun.mutate(runId)}
               uploadPending={uploadAsset.isPending}
               pendingAssets={pendingAssets}
               setPendingAssets={setPendingAssets}
@@ -1449,6 +1481,10 @@ interface ComposerProps {
   inputValue: string
   isSubmitting: boolean
   sendPending: boolean
+  activeRunId: string | null
+  activeRunPending: boolean
+  cancelPending: boolean
+  onCancelRun: (runId: string) => void
   uploadPending: boolean
   pendingAssets: Asset[]
   setPendingAssets: Dispatch<SetStateAction<Asset[]>>
@@ -1475,6 +1511,10 @@ function ConversationComposer({
   inputValue,
   isSubmitting,
   sendPending,
+  activeRunId,
+  activeRunPending,
+  cancelPending,
+  onCancelRun,
   uploadPending,
   pendingAssets,
   setPendingAssets,
@@ -1494,6 +1534,7 @@ function ConversationComposer({
 }: ComposerProps) {
   const modelOptions = getModelsForProvider(selectedProvider)
   const thinkingOptions = getThinkingOptionsForModel(selectedModel)
+  const stopDisabled = !activeRunId || cancelPending
 
   return (
     <div
@@ -1622,12 +1663,23 @@ function ConversationComposer({
             </Button>
 
             <Button
-              type="submit"
+              type={activeRunPending ? 'button' : 'submit'}
               size="icon"
-              disabled={disabled || isSubmitting || sendPending || !inputValue?.trim()}
-              className="size-10 rounded-full bg-forest text-white hover:bg-forest/92 sm:size-11"
+              disabled={activeRunPending ? stopDisabled : disabled || isSubmitting || sendPending || !inputValue?.trim()}
+              onClick={activeRunPending && activeRunId ? () => onCancelRun(activeRunId) : undefined}
+              className={cn(
+                'size-10 rounded-full text-white sm:size-11',
+                activeRunPending ? 'bg-red-600 hover:bg-red-700' : 'bg-forest hover:bg-forest/92',
+              )}
+              title={activeRunPending ? 'Stop current run' : 'Send message'}
             >
-              {sendPending ? <LoaderCircle className="animate-spin" /> : <Send />}
+              {activeRunPending
+                ? cancelPending
+                  ? <LoaderCircle className="animate-spin" />
+                  : <Square className="size-4 fill-current" />
+                : sendPending
+                  ? <LoaderCircle className="animate-spin" />
+                  : <Send />}
             </Button>
           </div>
         </div>
@@ -2098,6 +2150,12 @@ function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubblePro
   const showStreamingStatus = isStreaming && !hasThinking && !hasContent
   const showThinkingPanel = hasThinking || showStreamingStatus
   const showFailure = shouldShowAssistantTurnFailure(turn)
+  const terminalNotice =
+    !hasContent && turn.status === 'cancelled'
+      ? 'Stopped by user.'
+      : !hasContent && turn.status === 'stalled'
+        ? 'Run stalled with no progress.'
+        : null
   const thinkingStorageKey = deriveThinkingStorageKey({ agent_run_id: turn.runId })
   const showActivityPanel = shouldShowAssistantTurnActivity(turn)
   const statusLabel =
@@ -2147,7 +2205,7 @@ function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubblePro
           </div>
         ) : null}
 
-        {hasContent || showFailure ? (
+        {hasContent || showFailure || terminalNotice ? (
           <div className="rounded-[1.45rem] bg-white/88 px-4 py-3 text-sm leading-6 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.07)] sm:py-3.5">
             {hasContent ? (
               <div className="assistant-markdown min-w-0 max-w-full break-words text-sm leading-6 text-ink">
@@ -2158,6 +2216,8 @@ function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubblePro
                   {displayContent}
                 </ReactMarkdown>
               </div>
+            ) : terminalNotice ? (
+              <p className="text-xs italic text-ink-soft">{terminalNotice}</p>
             ) : (
               <p className="text-xs italic text-ink-soft">Failed to respond.</p>
             )}
@@ -2277,7 +2337,17 @@ function RunNarrationRow({ item }: { item: Extract<RunActivityItem, { kind: 'nar
 
 function RunWorkerRow({ item }: { item: Extract<RunActivityItem, { kind: 'worker' }> }) {
   const statusText =
-    item.status === 'running' ? 'Running' : item.status === 'blocked' ? 'Blocked' : item.status === 'failed' ? 'Failed' : 'Completed'
+    item.status === 'running'
+      ? 'Running'
+      : item.status === 'blocked'
+        ? 'Blocked'
+        : item.status === 'failed'
+          ? 'Failed'
+          : item.status === 'cancelled'
+            ? 'Stopped'
+            : item.status === 'stalled'
+              ? 'Stalled'
+              : 'Completed'
 
   return (
     <div className="rounded-[1.05rem] border border-forest/10 bg-sage/35 px-3.5 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]">
@@ -2297,7 +2367,7 @@ function RunWorkerRow({ item }: { item: Extract<RunActivityItem, { kind: 'worker
             'rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em]',
             item.status === 'running'
               ? 'bg-white/80 text-forest'
-              : item.status === 'failed' || item.status === 'blocked'
+              : item.status === 'failed' || item.status === 'blocked' || item.status === 'stalled'
                 ? 'bg-red-100 text-red-700'
                 : 'bg-white/80 text-moss',
           )}
@@ -2376,7 +2446,7 @@ function WorkerStatusIcon({ status }: { status: Extract<RunActivityItem, { kind:
   if (status === 'running') {
     return <LoaderCircle className="size-4 shrink-0 animate-spin text-moss" />
   }
-  if (status === 'failed' || status === 'blocked') {
+  if (status === 'failed' || status === 'blocked' || status === 'stalled') {
     return <AlertCircle className="size-4 shrink-0 text-red-600" />
   }
   return <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />

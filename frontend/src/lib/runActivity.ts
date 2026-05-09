@@ -3,6 +3,8 @@ import type {
   WsEvent,
   WsRunAssistantMessage,
   WsRunFailed,
+  WsRunCancelled,
+  WsRunStalled,
   WsRunToolCalled,
   WsRunToolResult,
   WsTaskWorkerStarted,
@@ -37,7 +39,7 @@ export interface RunActivityWorkerItem {
   kind: 'worker'
   seq: number
   workerRunId: string
-  status: 'running' | 'completed' | 'blocked' | 'failed'
+  status: 'running' | 'completed' | 'blocked' | 'failed' | 'cancelled' | 'stalled'
   summary: string
   progressLabel: string | null
 }
@@ -63,6 +65,8 @@ type ActivityEvent =
   | WsRunToolCalled
   | WsRunToolResult
   | WsRunFailed
+  | WsRunCancelled
+  | WsRunStalled
   | Extract<WsEvent, { type: 'run.completed' }>
   | WsTaskWorkerStarted
   | WsTaskWorkerTodoUpdated
@@ -84,11 +88,15 @@ const ACTIVITY_EVENT_TYPES = new Set([
   'run.tool.result',
   'run.completed',
   'run.failed',
+  'run.cancelled',
+  'run.stalled',
   'task.worker.started',
   'task.worker.todo.updated',
   'task.worker.completed',
   'task.worker.blocked',
   'task.worker.failed',
+  'task.worker.cancelled',
+  'task.worker.stalled',
 ])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -414,6 +422,18 @@ export function applyRunActivityEvent(
         resultSummary: item.resultSummary ?? event.error,
       }
     })
+  } else if (event.type === 'run.cancelled' || event.type === 'run.stalled') {
+    terminal = true
+    items = items.map((item) => {
+      if (item.kind !== 'tool' || item.status !== 'running') {
+        return item
+      }
+      return {
+        ...item,
+        status: 'failed',
+        resultSummary: item.resultSummary ?? (event.type === 'run.cancelled' ? 'Stopped by user.' : 'Run stalled with no progress.'),
+      }
+    })
   } else if (event.type.startsWith('task.worker.')) {
     const workerItem = workerItemFromEvent(event, seq ?? Number.MAX_SAFE_INTEGER)
     if (workerItem) {
@@ -517,6 +537,20 @@ export function toActivityEvent(record: AgentRunEvent): ActivityEvent | null {
     }
   }
 
+  if (type === 'run.cancelled') {
+    return { type, run_id: runId, reason: getString(record.payload.reason) ?? undefined, seq: record.sequence_no }
+  }
+
+  if (type === 'run.stalled') {
+    return {
+      type,
+      run_id: runId,
+      reason: getString(record.payload.reason) ?? undefined,
+      timeout_seconds: typeof record.payload.timeout_seconds === 'number' ? record.payload.timeout_seconds : undefined,
+      seq: record.sequence_no,
+    }
+  }
+
   if (type === 'task.worker.started') {
     const workerRunId = getString(record.payload.worker_run_id)
     const taskId = getString(record.payload.task_id)
@@ -534,7 +568,13 @@ export function toActivityEvent(record: AgentRunEvent): ActivityEvent | null {
     return { type, run_id: runId, task_id: taskId, worker_run_id: workerRunId, round_index: roundIndex, tool_call_id: toolCallId, todo, seq: record.sequence_no }
   }
 
-  if (type === 'task.worker.completed' || type === 'task.worker.blocked' || type === 'task.worker.failed') {
+  if (
+    type === 'task.worker.completed' ||
+    type === 'task.worker.blocked' ||
+    type === 'task.worker.failed' ||
+    type === 'task.worker.cancelled' ||
+    type === 'task.worker.stalled'
+  ) {
     const workerRunId = getString(record.payload.worker_run_id)
     const taskId = getString(record.payload.task_id)
     const result = isRecord(record.payload.result) ? record.payload.result : {}

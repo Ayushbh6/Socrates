@@ -194,7 +194,7 @@ function WorkerPanelStatusIcon({ status }: { status: WorkerTraceRun['status'] })
   if (status === 'running') {
     return <LoaderCircle className="mt-0.5 size-5 shrink-0 animate-spin text-moss" />
   }
-  if (status === 'failed' || status === 'blocked') {
+  if (status === 'failed' || status === 'blocked' || status === 'stalled') {
     return <AlertCircle className="mt-0.5 size-5 shrink-0 text-red-600" />
   }
   return <SquareTerminal className="mt-0.5 size-5 shrink-0 text-forest" />

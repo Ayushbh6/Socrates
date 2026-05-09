@@ -46,6 +46,41 @@ class ConversationRunInProgressError(ValueError):
         self.run_id = run_id
 
 
+ACTIVE_RUN_STATUSES = {"queued", "running"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "stalled"}
+TERMINAL_RUN_EVENT_TYPES = {
+    "run.completed",
+    "run.failed",
+    "run.cancelled",
+    "run.stalled",
+}
+TERMINAL_RUN_APPEND_EVENT_TYPES = {
+    "run.message.completed",
+    "task.approval.resolved",
+    "task.status.updated",
+}
+
+
+class RunStalledError(RuntimeError):
+    def __init__(self, timeout_seconds: int):
+        super().__init__(f"Run stalled with no progress for {timeout_seconds} seconds.")
+        self.timeout_seconds = timeout_seconds
+
+
+def is_active_run_status(status: str | None) -> bool:
+    return status in ACTIVE_RUN_STATUSES
+
+
+def is_terminal_run_status(status: str | None) -> bool:
+    return status in TERMINAL_RUN_STATUSES
+
+
+def terminal_run_event_type(status: str) -> str:
+    if status not in TERMINAL_RUN_STATUSES:
+        raise ValueError(f"Unsupported terminal run status: {status}")
+    return f"run.{status}"
+
+
 def serialize_asset(asset: Asset) -> dict[str, Any]:
     return {
         "id": asset.id,
@@ -208,18 +243,21 @@ def list_agent_run_turns(session: Session, run_id: str) -> list[AgentRunTurn]:
 
 def get_active_run_for_conversation(session: Session, conversation_id: str) -> AgentRun | None:
     get_conversation(session, conversation_id)
-    return (
+    runs = list(
         session.execute(
             select(AgentRun)
             .where(
                 AgentRun.conversation_id == conversation_id,
-                AgentRun.status.in_(("queued", "running")),
+                AgentRun.status.in_(tuple(ACTIVE_RUN_STATUSES)),
             )
             .order_by(AgentRun.created_at.desc())
         )
         .scalars()
-        .first()
     )
+    for run in runs:
+        if run.execution_mode != "worker":
+            return run
+    return runs[0] if runs else None
 
 
 def _message_to_runtime(message: MessageRecord) -> Message | None:
@@ -639,6 +677,7 @@ class RunManager:
         self._session_factory = get_session_factory()
         self._runner_factory = AgentRunner
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._cancel_events: dict[str, asyncio.Event] = {}
         self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         self._lock = asyncio.Lock()
 
@@ -647,9 +686,74 @@ class RunManager:
             task = self._tasks.get(run_id)
             if task and not task.done():
                 return
+            self._cancel_events[run_id] = asyncio.Event()
             task = asyncio.create_task(self._execute_run(run_id))
-            task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
+            task.add_done_callback(lambda _: self._forget_run_task(run_id))
             self._tasks[run_id] = task
+
+    def _forget_run_task(self, run_id: str) -> None:
+        self._tasks.pop(run_id, None)
+        self._cancel_events.pop(run_id, None)
+
+    async def live_run_ids(self) -> set[str]:
+        async with self._lock:
+            return {run_id for run_id, task in self._tasks.items() if not task.done()}
+
+    async def cancel_run(self, run_id: str) -> AgentRun:
+        async with self._lock:
+            cancel_event = self._cancel_events.get(run_id)
+            task = self._tasks.get(run_id)
+            if cancel_event is not None:
+                cancel_event.set()
+
+        session = self._session_factory()
+        try:
+            run = session.get(AgentRun, run_id)
+            if run is None:
+                raise LookupError("Agent run not found.")
+            await self._mark_run_terminal(
+                session,
+                run,
+                status="cancelled",
+                message="Stopped by user.",
+                terminal_event_payload={
+                    "type": "run.cancelled",
+                    "run_id": run.id,
+                    "reason": "user_cancelled",
+                },
+            )
+            if task and not task.done():
+                task.cancel()
+            session.refresh(run)
+            return run
+        finally:
+            session.close()
+
+    async def reconcile_stale_active_runs(self, *, conversation_id: str | None = None) -> None:
+        live_ids = await self.live_run_ids()
+        session = self._session_factory()
+        try:
+            query = select(AgentRun).where(AgentRun.status.in_(tuple(ACTIVE_RUN_STATUSES)))
+            if conversation_id is not None:
+                query = query.where(AgentRun.conversation_id == conversation_id)
+            runs = list(session.execute(query.order_by(AgentRun.created_at.asc())).scalars())
+            for run in runs:
+                parent_run_id = run.request_json.get("parent_run_id")
+                if run.id in live_ids or parent_run_id in live_ids:
+                    continue
+                await self._mark_run_terminal(
+                    session,
+                    run,
+                    status="stalled",
+                    message="Run stalled after backend restart or lost live task.",
+                    terminal_event_payload={
+                        "type": "run.stalled",
+                        "run_id": run.id,
+                        "reason": "stale_running_run",
+                    },
+                )
+        finally:
+            session.close()
 
     async def subscribe(self, run_id: str) -> asyncio.Queue[dict[str, Any]]:
         async with self._lock:
@@ -734,6 +838,12 @@ class RunManager:
             run = session.get(AgentRun, run_id)
             if run is None:
                 return
+            if (
+                is_terminal_run_status(run.status)
+                and event_type != terminal_run_event_type(run.status)
+                and event_type not in TERMINAL_RUN_APPEND_EVENT_TYPES
+            ):
+                return
             await self._record_event(
                 session,
                 run,
@@ -743,6 +853,94 @@ class RunManager:
             )
         finally:
             session.close()
+
+    async def _mark_run_terminal(
+        self,
+        session: Session,
+        run: AgentRun,
+        *,
+        status: str,
+        message: str,
+        terminal_event_payload: dict[str, Any],
+        event_status: str = "ok",
+    ) -> None:
+        if is_terminal_run_status(run.status):
+            return
+
+        await self._mark_related_worker_runs_terminal(
+            session,
+            parent_run=run,
+            status=status,
+            message=message,
+        )
+
+        run.status = status
+        run.completed_at = datetime.now(timezone.utc)
+        run.error_message = None if status == "cancelled" else message
+        trigger_message = session.get(MessageRecord, run.trigger_message_id) if run.trigger_message_id else None
+        if trigger_message is not None and trigger_message.status in {"queued", "failed"}:
+            trigger_message.status = "completed"
+            trigger_message.failed_at = None
+        session.commit()
+        await self._record_event(
+            session,
+            run,
+            event_type=terminal_run_event_type(status),
+            payload=terminal_event_payload,
+            status=event_status,
+        )
+
+    async def _mark_related_worker_runs_terminal(
+        self,
+        session: Session,
+        *,
+        parent_run: AgentRun,
+        status: str,
+        message: str,
+    ) -> None:
+        if parent_run.execution_mode == "worker":
+            return
+
+        active_workers = list(
+            session.execute(
+                select(AgentRun)
+                .where(
+                    AgentRun.conversation_id == parent_run.conversation_id,
+                    AgentRun.execution_mode == "worker",
+                    AgentRun.status.in_(tuple(ACTIVE_RUN_STATUSES)),
+                )
+                .order_by(AgentRun.created_at.asc())
+            ).scalars()
+        )
+        for worker_run in active_workers:
+            if worker_run.request_json.get("parent_run_id") != parent_run.id:
+                continue
+            worker_run.status = status
+            worker_run.completed_at = datetime.now(timezone.utc)
+            worker_run.error_message = None if status == "cancelled" else message
+            session.commit()
+            await self._record_event(
+                session,
+                parent_run,
+                event_type=f"task.worker.{status}",
+                payload={
+                    "type": f"task.worker.{status}",
+                    "run_id": parent_run.id,
+                    "task_id": worker_run.task_id,
+                    "worker_run_id": worker_run.id,
+                    "result": {
+                        "status": status,
+                        "summary": "Worker stopped by user." if status == "cancelled" else "Worker stalled with no progress.",
+                        "blockers": [
+                            {
+                                "type": status,
+                                "message": message,
+                                "recommended_socrates_action": "Ask the user whether to retry, revise the plan, or abandon the task.",
+                            }
+                        ],
+                    },
+                },
+            )
 
     def _next_event_sequence(self, session: Session, run_id: str) -> int:
         max_seq = session.execute(
@@ -787,6 +985,12 @@ class RunManager:
         thinking_text: str | None = None,
         tool_call_ref: str | None = None,
     ) -> None:
+        if (
+            is_terminal_run_status(run.status)
+            and event_type != terminal_run_event_type(run.status)
+            and event_type not in TERMINAL_RUN_APPEND_EVENT_TYPES
+        ):
+            return
         safe_payload = to_json_compatible(payload)
         if not isinstance(safe_payload, dict):
             safe_payload = {"type": event_type, "run_id": run.id, "value": safe_payload}
@@ -900,6 +1104,18 @@ class RunManager:
                         "artifact": serialize_task_artifact(artifact),
                     },
                 )
+
+    async def _stream_with_watchdog(self, run_id: str, stream: Any, timeout_seconds: int):
+        timeout = max(int(timeout_seconds), 1)
+        iterator = stream.__aiter__()
+        while True:
+            try:
+                event = await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError as exc:
+                raise RunStalledError(timeout) from exc
+            yield event
 
     async def _execute_run(self, run_id: str) -> None:
         session = self._session_factory()
@@ -1031,7 +1247,11 @@ class RunManager:
                 flush_chars=settings.stream_delta_flush_chars,
             )
 
-            async for event in runner.stream(request):
+            async for event in self._stream_with_watchdog(
+                run.id,
+                runner.stream(request),
+                settings.run_no_progress_timeout_seconds,
+            ):
                 if event.type == AgentEventType.FINAL_RESPONSE:
                     await coalescer.flush(session, run)
                     final_event = event
@@ -1158,6 +1378,9 @@ class RunManager:
                         )
                     }
                 )
+            session.refresh(run)
+            if is_terminal_run_status(run.status):
+                return
             telemetry_items = final_response.metadata.get("agent_turn_telemetry", [])
             for telemetry in telemetry_items:
                 telemetry_data = to_json_compatible(telemetry)
@@ -1250,10 +1473,45 @@ class RunManager:
                     "response_message_id": assistant_message.id,
                 },
             )
+        except asyncio.CancelledError:
+            session.rollback()
+            run = session.get(AgentRun, run_id)
+            if run is not None and not is_terminal_run_status(run.status):
+                await self._mark_run_terminal(
+                    session,
+                    run,
+                    status="cancelled",
+                    message="Stopped by user.",
+                    terminal_event_payload={
+                        "type": "run.cancelled",
+                        "run_id": run.id,
+                        "reason": "user_cancelled",
+                    },
+                )
+            raise
+        except RunStalledError as exc:
+            session.rollback()
+            run = session.get(AgentRun, run_id)
+            if run is not None:
+                await self._mark_run_terminal(
+                    session,
+                    run,
+                    status="stalled",
+                    message=str(exc),
+                    terminal_event_payload={
+                        "type": "run.stalled",
+                        "run_id": run.id,
+                        "reason": "no_progress_timeout",
+                        "timeout_seconds": exc.timeout_seconds,
+                    },
+                    event_status="error",
+                )
         except Exception as exc:
             session.rollback()
             run = session.get(AgentRun, run_id)
             if run is not None:
+                if is_terminal_run_status(run.status):
+                    return
                 run.status = "failed"
                 run.completed_at = datetime.now(timezone.utc)
                 run.error_message = str(exc)

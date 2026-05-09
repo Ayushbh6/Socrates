@@ -72,7 +72,7 @@ describe('agent stream helpers', () => {
     ).toBe(8)
   })
 
-  it('treats completed and failed run states as terminal', () => {
+  it('treats completed, failed, cancelled, and stalled run states as terminal', () => {
     expect(
       hasTerminalRunState({
         type: 'run.snapshot',
@@ -90,6 +90,26 @@ describe('agent stream helpers', () => {
         type: 'run.failed',
         run_id: 'run-1',
         error: 'Provider disconnected',
+      }),
+    ).toBe(true)
+
+    expect(
+      hasTerminalRunState({
+        type: 'run.cancelled',
+        run_id: 'run-1',
+        reason: 'user_cancelled',
+      }),
+    ).toBe(true)
+
+    expect(
+      hasTerminalRunState({
+        type: 'run.snapshot',
+        run_id: 'run-1',
+        conversation_id: 'conversation-1',
+        status: 'stalled',
+        last_seq: 9,
+        response_message_id: null,
+        error: 'Run stalled with no progress.',
       }),
     ).toBe(true)
 

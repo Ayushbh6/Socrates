@@ -66,7 +66,12 @@ export function hasTerminalRunState(event: WsEvent) {
   return (
     event.type === 'run.completed' ||
     event.type === 'run.failed' ||
-    (event.type === 'run.snapshot' && (event.status === 'completed' || event.status === 'failed'))
+    event.type === 'run.cancelled' ||
+    event.type === 'run.stalled' ||
+    (
+      event.type === 'run.snapshot' &&
+      (event.status === 'completed' || event.status === 'failed' || event.status === 'cancelled' || event.status === 'stalled')
+    )
   )
 }
 

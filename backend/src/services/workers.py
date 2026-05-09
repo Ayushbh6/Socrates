@@ -31,6 +31,13 @@ from .tasks import (
 )
 from .utils import to_json_compatible
 
+ACTIVE_RUN_STATUSES = {"queued", "running"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "stalled"}
+
+
+def _is_terminal_run_status(status: str | None) -> bool:
+    return status in TERMINAL_RUN_STATUSES
+
 
 class WorkerBlocker(BaseModel):
     type: str
@@ -111,10 +118,13 @@ def run_worker_blocking(
         session.rollback()
         worker_run = session.get(AgentRun, worker_run.id)
         if worker_run is not None:
-            worker_run.status = "failed"
-            worker_run.completed_at = datetime.now(timezone.utc)
-            worker_run.error_message = str(exc)
-            session.commit()
+            if _is_terminal_run_status(worker_run.status):
+                session.commit()
+            else:
+                worker_run.status = "failed"
+                worker_run.completed_at = datetime.now(timezone.utc)
+                worker_run.error_message = str(exc)
+                session.commit()
         failed_result = WorkerResult(
             status="failed",
             summary=str(exc),
@@ -220,7 +230,7 @@ def _validate_worker_start(session: Session, *, task: Task) -> None:
             .where(
                 AgentRun.task_id == task.id,
                 AgentRun.execution_mode == "worker",
-                AgentRun.status.in_(("queued", "running")),
+                AgentRun.status.in_(tuple(ACTIVE_RUN_STATUSES)),
             )
             .order_by(AgentRun.created_at.desc())
         )
@@ -386,6 +396,20 @@ def _execute_worker_run(
         task_id=worker_run.task_id,
         result=_coerce_worker_result(result_response),
     )
+    session.refresh(worker_run)
+    if _is_terminal_run_status(worker_run.status):
+        return WorkerResult(
+            status="failed",
+            summary=f"Worker run was already marked {worker_run.status}.",
+            blockers=[
+                WorkerBlocker(
+                    type=worker_run.status,
+                    message=worker_run.error_message or f"Worker run was marked {worker_run.status}.",
+                    recommended_socrates_action="Ask the user whether to retry, revise the plan, or abandon the task.",
+                )
+            ],
+            handoff_to_socrates=f"The worker run was already marked {worker_run.status}.",
+        )
     worker_run.status = "completed"
     worker_run.completed_at = datetime.now(timezone.utc)
     worker_run.final_response_json = to_json_compatible(result_response)
@@ -651,6 +675,9 @@ def _record_worker_event(
     status: str = "ok",
     tool_call_ref: str | None = None,
 ) -> None:
+    session.refresh(run)
+    if _is_terminal_run_status(run.status) and event_type != f"run.{run.status}":
+        return
     max_seq = session.execute(
         select(func.max(AgentEventRecord.sequence_no)).where(AgentEventRecord.agent_run_id == run.id)
     ).scalar_one()

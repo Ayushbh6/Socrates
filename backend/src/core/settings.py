@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     stream_delta_flush_ms: int = Field(default=60, validation_alias="STREAM_DELTA_FLUSH_MS")
     stream_delta_flush_chars: int = Field(default=80, validation_alias="STREAM_DELTA_FLUSH_CHARS")
     stream_heartbeat_interval_seconds: int = Field(default=15, validation_alias="STREAM_HEARTBEAT_INTERVAL_SECONDS")
+    run_no_progress_timeout_seconds: int = Field(default=300, validation_alias="RUN_NO_PROGRESS_TIMEOUT_SECONDS")
 
     model_config = SettingsConfigDict(
         env_file=_ENV_FILE,

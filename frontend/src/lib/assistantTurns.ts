@@ -36,6 +36,9 @@ function syncTerminalActivity(state: RunActivityState, status: AgentRunStatus) {
   if (status === 'failed') {
     return { ...state, terminal: true, failed: true }
   }
+  if (status === 'cancelled' || status === 'stalled') {
+    return { ...state, terminal: true }
+  }
   return state
 }
 
@@ -216,6 +219,28 @@ export function applyAssistantTurnEvent(
       ),
     }
     return updated
+  } else if (event.type === 'run.cancelled') {
+    updated = {
+      ...updated,
+      status: 'cancelled',
+      error: null,
+      activity: syncTerminalActivity(
+        applyRunActivityEvent(updated.activity, event),
+        'cancelled',
+      ),
+    }
+    return updated
+  } else if (event.type === 'run.stalled') {
+    updated = {
+      ...updated,
+      status: 'stalled',
+      error: 'Run stalled with no progress.',
+      activity: syncTerminalActivity(
+        applyRunActivityEvent(updated.activity, event),
+        'stalled',
+      ),
+    }
+    return updated
   }
 
   if (
@@ -227,7 +252,9 @@ export function applyAssistantTurnEvent(
     event.type === 'task.worker.todo.updated' ||
     event.type === 'task.worker.completed' ||
     event.type === 'task.worker.blocked' ||
-    event.type === 'task.worker.failed'
+    event.type === 'task.worker.failed' ||
+    event.type === 'task.worker.cancelled' ||
+    event.type === 'task.worker.stalled'
   ) {
     updated = {
       ...updated,

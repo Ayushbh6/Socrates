@@ -193,4 +193,41 @@ describe('assistant turn helpers', () => {
     expect(state.partialContent).toBe('Live answer.')
     expect(shouldShowAssistantTurnFailure(state)).toBe(false)
   })
+
+  it('treats cancelled and stalled runs as terminal without generic failure placeholders', () => {
+    let cancelled = createAssistantTurn({
+      runId: 'run-6',
+      conversationId: 'conversation-1',
+      status: 'running',
+    })
+    cancelled = applyAssistantTurnEvent(cancelled, {
+      type: 'run.cancelled',
+      run_id: 'run-6',
+      reason: 'user_cancelled',
+      seq: 2,
+    })
+
+    expect(cancelled.status).toBe('cancelled')
+    expect(cancelled.activity.terminal).toBe(true)
+    expect(cancelled.activity.failed).toBe(false)
+    expect(shouldShowAssistantTurnFailure(cancelled)).toBe(false)
+
+    let stalled = createAssistantTurn({
+      runId: 'run-7',
+      conversationId: 'conversation-1',
+      status: 'running',
+    })
+    stalled = applyAssistantTurnEvent(stalled, {
+      type: 'run.stalled',
+      run_id: 'run-7',
+      reason: 'no_progress_timeout',
+      timeout_seconds: 300,
+      seq: 3,
+    })
+
+    expect(stalled.status).toBe('stalled')
+    expect(stalled.activity.terminal).toBe(true)
+    expect(stalled.activity.failed).toBe(false)
+    expect(shouldShowAssistantTurnFailure(stalled)).toBe(false)
+  })
 })

@@ -399,6 +399,7 @@ async def resolve_task_approval_route(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if request.auto_resume and request.approved and approval.approval_type == "plan_approval":
         try:
+            await run_manager.reconcile_stale_active_runs(conversation_id=approval.task.conversation_id if approval.task else None)
             _, resume_run = create_plan_approval_resume_run(session, approval=approval)
             resume_run_id = resume_run.id
             resume_status = resume_run.status
@@ -410,6 +411,7 @@ async def resolve_task_approval_route(
             resume_error = str(exc)
     if request.auto_resume and not request.approved and approval.approval_type == "task_completion":
         try:
+            await run_manager.reconcile_stale_active_runs(conversation_id=approval.task.conversation_id if approval.task else None)
             _, resume_run = create_task_completion_denial_resume_run(session, approval=approval)
             resume_run_id = resume_run.id
             resume_status = resume_run.status

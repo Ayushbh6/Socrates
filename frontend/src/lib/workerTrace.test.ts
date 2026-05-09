@@ -121,8 +121,35 @@ describe('workerTrace reducer', () => {
     expect(isTerminalWorkerTraceStatus('completed')).toBe(true)
     expect(isTerminalWorkerTraceStatus('blocked')).toBe(true)
     expect(isTerminalWorkerTraceStatus('failed')).toBe(true)
+    expect(isTerminalWorkerTraceStatus('cancelled')).toBe(true)
+    expect(isTerminalWorkerTraceStatus('stalled')).toBe(true)
     expect(isTerminalWorkerTraceStatus('running')).toBe(false)
     expect(isTerminalWorkerTraceRun(active)).toBe(true)
     expect(active?.workerRunId).toBe('worker-1')
+  })
+
+  it('marks cancelled and stalled worker events as terminal', () => {
+    let state = createWorkerTraceState()
+    state = applyWorkerTraceEvent(state, {
+      type: 'task.worker.cancelled',
+      run_id: 'parent-1',
+      task_id: 'task-1',
+      worker_run_id: 'worker-1',
+      seq: 1,
+      result: { status: 'cancelled', summary: 'Worker stopped by user.' },
+    })
+    expect(getActiveWorkerTraceRun(state)?.status).toBe('cancelled')
+    expect(isTerminalWorkerTraceRun(getActiveWorkerTraceRun(state))).toBe(true)
+
+    state = applyWorkerTraceEvent(state, {
+      type: 'task.worker.stalled',
+      run_id: 'parent-2',
+      task_id: 'task-2',
+      worker_run_id: 'worker-2',
+      seq: 2,
+      result: { status: 'stalled', summary: 'Worker stalled with no progress.' },
+    })
+    expect(getActiveWorkerTraceRun(state)?.status).toBe('stalled')
+    expect(isTerminalWorkerTraceRun(getActiveWorkerTraceRun(state))).toBe(true)
   })
 })

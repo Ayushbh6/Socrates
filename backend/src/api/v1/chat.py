@@ -17,6 +17,7 @@ from ...services.chat import (
     RunManager,
     create_message_and_run,
     get_active_run_for_conversation,
+    is_terminal_run_status,
     serialize_agent_run,
     serialize_asset,
     serialize_message,
@@ -78,14 +79,41 @@ def get_messages(conversation_id: str, session: Session = Depends(get_session_de
 
 
 @router.get("/conversations/{conversation_id}/active-run", response_model=AgentRunResponse | None)
-def get_active_run(conversation_id: str, session: Session = Depends(get_session_dependency)) -> AgentRunResponse | None:
+async def get_active_run(
+    conversation_id: str,
+    session: Session = Depends(get_session_dependency),
+    run_manager: RunManager = Depends(get_run_manager),
+) -> AgentRunResponse | None:
     try:
+        await run_manager.reconcile_stale_active_runs(conversation_id=conversation_id)
         run = get_active_run_for_conversation(session, conversation_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     if run is None:
         return None
+
+    event_count = session.execute(
+        select(func.count(AgentEventRecord.id)).where(AgentEventRecord.agent_run_id == run.id)
+    ).scalar_one()
+    turn_count = session.execute(
+        select(func.count(AgentRunTurn.id)).where(AgentRunTurn.agent_run_id == run.id)
+    ).scalar_one()
+    return AgentRunResponse.model_validate(
+        serialize_agent_run(run, event_count=int(event_count or 0), turn_count=int(turn_count or 0))
+    )
+
+
+@router.post("/agent-runs/{run_id}/cancel", response_model=AgentRunResponse)
+async def cancel_agent_run(
+    run_id: str,
+    session: Session = Depends(get_session_dependency),
+    run_manager: RunManager = Depends(get_run_manager),
+) -> AgentRunResponse:
+    try:
+        run = await run_manager.cancel_run(run_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
     event_count = session.execute(
         select(func.count(AgentEventRecord.id)).where(AgentEventRecord.agent_run_id == run.id)
@@ -146,6 +174,7 @@ async def create_message(
 ) -> CreateMessageResponse:
     try:
         conversation = get_conversation(session, conversation_id)
+        await run_manager.reconcile_stale_active_runs(conversation_id=conversation.id)
         message, run = create_message_and_run(
             session,
             conversation_id=conversation.id,
@@ -207,7 +236,7 @@ async def stream_run(
             await websocket.close(code=4404)
             return
 
-        if snapshot["status"] in {"completed", "failed"} and snapshot["last_seq"] <= last_sent_seq:
+        if is_terminal_run_status(snapshot["status"]) and snapshot["last_seq"] <= last_sent_seq:
             await websocket.close()
             return
 
@@ -229,11 +258,10 @@ async def stream_run(
             delivered = await _safe_send_json(websocket, payload, run_id=run_id)
             if delivered and isinstance(seq_value, int):
                 last_sent_seq = seq_value
-            if payload["type"] in {"run.completed", "run.failed"}:
+            if payload["type"] in {"run.completed", "run.failed", "run.cancelled", "run.stalled"}:
                 await websocket.close()
                 break
     except WebSocketDisconnect:
         pass
     finally:
         await run_manager.unsubscribe(run_id, queue)
-
