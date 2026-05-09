@@ -72,7 +72,7 @@ describe('agent stream helpers', () => {
     ).toBe(8)
   })
 
-  it('treats completed, failed, cancelled, and stalled run states as terminal', () => {
+  it('treats completed, failed, blocked, cancelled, and stalled run states as terminal', () => {
     expect(
       hasTerminalRunState({
         type: 'run.snapshot',
@@ -90,6 +90,14 @@ describe('agent stream helpers', () => {
         type: 'run.failed',
         run_id: 'run-1',
         error: 'Provider disconnected',
+      }),
+    ).toBe(true)
+
+    expect(
+      hasTerminalRunState({
+        type: 'run.blocked',
+        run_id: 'run-1',
+        error: 'Worker blocked.',
       }),
     ).toBe(true)
 

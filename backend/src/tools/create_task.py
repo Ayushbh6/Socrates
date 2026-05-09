@@ -48,7 +48,7 @@ def handle(runtime: Any, title: str, goal: str, success_criteria: str | None = N
     runtime.context.session.commit()
     contract = task_package_contract()
     return {
-        "task": serialize_task(task),
+        "task": serialize_task(task, session=runtime.context.session),
         "task_package_contract": contract,
         "next_step": contract["next_step"],
     }

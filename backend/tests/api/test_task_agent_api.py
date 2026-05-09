@@ -7,7 +7,7 @@ import pytest
 
 from backend.src.app import create_app
 from backend.src.core.schema import LLMResponse, ToolCall, UsageStats
-from backend.src.db.models import AgentRun, Task, TaskArtifact, ToolExecution
+from backend.src.db.models import AgentEventRecord, AgentRun, Task, TaskArtifact, ToolExecution
 from backend.src.db.session import get_session_factory
 from backend.src.services.tasks import create_task_approval
 from backend.src.services.workers import WorkerResult
@@ -517,6 +517,81 @@ def upload_text_asset(
     )
     assert response.status_code == 201
     return response.json()["id"]
+
+
+def seed_task_run_status(task: dict, *, status: str, execution_mode: str = "task") -> str:
+    session = get_session_factory()()
+    try:
+        run = AgentRun(
+            project_id=task["project_id"],
+            conversation_id=task["conversation_id"],
+            task_id=task["id"],
+            status=status,
+            execution_mode=execution_mode,
+            provider="fake",
+            model="openai/gpt-5.4-mini",
+            input_mode="text",
+            system_prompt_text="system",
+            query_text=f"seed {status}",
+            request_json={},
+            error_message="Run stalled with no progress." if status == "stalled" else None,
+        )
+        session.add(run)
+        session.commit()
+        run_id = run.id
+    finally:
+        session.close()
+    return run_id
+
+
+def test_active_task_exposes_cancelled_and_stalled_recovery_state(
+    client: TestClient, monkeypatch
+):
+    _, conversation_id, task = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_VALID_TODO,
+    )
+
+    cancelled_run_id = seed_task_run_status(task, status="cancelled")
+    active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
+    assert active_task.status_code == 200
+    recovery = active_task.json()["recovery_state"]
+    assert recovery["kind"] == "cancelled"
+    assert recovery["source_run_id"] == cancelled_run_id
+    assert {action["id"] for action in recovery["suggested_actions"]} >= {
+        "retry_remaining_work",
+        "revise_plan",
+        "close_task_failed",
+    }
+
+    stalled_run_id = seed_task_run_status(task, status="stalled")
+    active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
+    assert active_task.status_code == 200
+    recovery = active_task.json()["recovery_state"]
+    assert recovery["kind"] == "stalled"
+    assert recovery["source_run_id"] == stalled_run_id
+    assert recovery["summary"] == "Run stalled with no progress."
+
+
+def test_active_task_exposes_output_waiting_for_acceptance_recovery_state(
+    client: TestClient, monkeypatch
+):
+    _, conversation_id, _ = prepare_task_with_todo(
+        client,
+        monkeypatch,
+        todo_content=STANDARD_VALID_TODO,
+    )
+
+    active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
+    assert active_task.status_code == 200
+    recovery = active_task.json()["recovery_state"]
+    assert recovery["kind"] == "outputs_waiting_for_acceptance"
+    assert recovery["outputs"][0]["path"] == "outputs/result.txt"
+    assert {action["id"] for action in recovery["suggested_actions"]} >= {
+        "accept_partial_output",
+        "revise_plan",
+    }
 
 
 def test_agent_creates_task_and_persists_active_task(client: TestClient, monkeypatch):
@@ -2823,6 +2898,142 @@ def test_socrates_starts_worker_and_receives_structured_result(
         session.close()
 
 
+def test_worker_completed_claim_with_unfinished_todo_persists_blocked_recovery(
+    client: TestClient, monkeypatch
+):
+    p1 = provider_for_task_and_plan(
+        create_id="worker_incomplete_create",
+        plan_id="worker_incomplete_plan",
+        title="Incomplete worker handoff",
+        goal="Worker claims completion without finishing todo.",
+    )
+    p2 = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Creating todo and starting worker.",
+                        tool_calls=[
+                            ToolCall(
+                                id="worker_incomplete_todo",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": "todo.md",
+                                    "content": "# Todo\n\n## Checklist\n- [ ] T1: Create worker output\n",
+                                },
+                            ),
+                            ToolCall(
+                                id="worker_incomplete_start",
+                                name="start_worker",
+                                arguments={},
+                            ),
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Socrates reviewed the blocked worker result.",
+                        usage=UsageStats(total_tokens=7),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    worker = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content='{"status":"completed","summary":"I am done.","todo":{"checked_ids":["T1"],"remaining_ids":[],"notes":[]},"changed_files":[],"outputs":[],"verification":[],"blockers":[],"handoff_to_socrates":"Done."}',
+                        parsed=WorkerResult(
+                            status="completed",
+                            summary="I am done.",
+                            todo={
+                                "checked_ids": ["T1"],
+                                "remaining_ids": [],
+                                "notes": [],
+                            },
+                            changed_files=[],
+                            outputs=[],
+                            verification=[],
+                            blockers=[],
+                            handoff_to_socrates="Done.",
+                        ),
+                        usage=UsageStats(total_tokens=10),
+                        raw_dump={"worker_turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    install_provider_stack(monkeypatch, [p1, p2, worker])
+
+    _, conversation_id = bootstrap_user_and_project(client)
+    first = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Prepare worker handoff.", "asset_ids": []},
+    )
+    assert first.status_code == 202
+    drain_run_events(client, first.json()["agent_run_id"])
+    task = client.get(f"/api/v1/conversations/{conversation_id}/active-task").json()
+    approve_pending_plan_approval_for_task(client, task["id"])
+
+    second = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Create todo and run worker.", "asset_ids": []},
+    )
+    assert second.status_code == 202
+    events = drain_run_events(client, second.json()["agent_run_id"])
+
+    event_types = [event["type"] for event in events]
+    assert "task.worker.blocked" in event_types
+    assert "task.worker.completed" not in event_types
+
+    active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
+    assert active_task.status_code == 200
+    recovery = active_task.json()["recovery_state"]
+    assert recovery["kind"] == "worker_blocked"
+    assert recovery["todo"]["remaining_ids"] == ["T1"]
+    assert recovery["blockers"][0]["type"] == "todo_incomplete"
+
+    session = get_session_factory()()
+    try:
+        worker_run = (
+            session.query(AgentRun)
+            .filter(AgentRun.task_id == task["id"], AgentRun.execution_mode == "worker")
+            .one()
+        )
+        assert worker_run.status == "blocked"
+        assert worker_run.final_parsed_json["status"] == "blocked"
+        assert worker_run.error_message == "Worker reported completion, but todo.md still has unfinished items."
+        start_execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "worker_incomplete_start")
+            .one()
+        )
+        assert start_execution.result_json["worker_result"]["status"] == "blocked"
+        assert (
+            session.query(AgentEventRecord)
+            .filter(
+                AgentEventRecord.agent_run_id == worker_run.id,
+                AgentEventRecord.event_type == "run.blocked",
+            )
+            .count()
+            == 1
+        )
+    finally:
+        session.close()
+
+
 def test_start_worker_rejects_any_pending_task_approval(client: TestClient, monkeypatch):
     install_provider_stack(
         monkeypatch,
@@ -4302,6 +4513,8 @@ def test_update_task_status_completed_closes_task_after_user_acceptance(
     active_task = client.get(f"/api/v1/conversations/{conversation_id}/active-task")
     assert active_task.status_code == 200
     assert active_task.json()["status"] == "awaiting_approval"
+    assert active_task.json()["recovery_state"]["kind"] == "completion_approval_pending"
+    assert active_task.json()["recovery_state"]["source_approval_id"]
 
     resolved = resolve_pending_completion_approval_for_task(client, task["id"])
     assert resolved["status"] == "approved"

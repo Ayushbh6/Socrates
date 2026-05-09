@@ -258,7 +258,7 @@ async def stream_run(
             delivered = await _safe_send_json(websocket, payload, run_id=run_id)
             if delivered and isinstance(seq_value, int):
                 last_sent_seq = seq_value
-            if payload["type"] in {"run.completed", "run.failed", "run.cancelled", "run.stalled"}:
+            if payload["type"] in {"run.completed", "run.failed", "run.blocked", "run.cancelled", "run.stalled"}:
                 await websocket.close()
                 break
     except WebSocketDisconnect:

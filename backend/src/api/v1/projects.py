@@ -275,7 +275,7 @@ def get_conversation_tasks(conversation_id: str, session: Session = Depends(get_
         tasks = list_conversation_tasks(session, conversation_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return [TaskResponse.model_validate(serialize_task(task)) for task in tasks]
+    return [TaskResponse.model_validate(serialize_task(task, session=session)) for task in tasks]
 
 
 @router.get("/conversations/{conversation_id}/active-task", response_model=TaskResponse | None)
@@ -286,7 +286,7 @@ def get_active_task_route(conversation_id: str, session: Session = Depends(get_s
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if task is None:
         return None
-    return TaskResponse.model_validate(serialize_task(task))
+    return TaskResponse.model_validate(serialize_task(task, session=session))
 
 
 @router.get("/tasks/{task_id}", response_model=TaskResponse)
@@ -295,7 +295,7 @@ def get_task_route(task_id: str, session: Session = Depends(get_session_dependen
         task = get_task(session, task_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    return TaskResponse.model_validate(serialize_task(task))
+    return TaskResponse.model_validate(serialize_task(task, session=session))
 
 
 @router.get("/tasks/{task_id}/artifacts", response_model=list[TaskArtifactResponse])
@@ -392,7 +392,7 @@ async def resolve_task_approval_route(
                         "type": "task.status.updated",
                         "run_id": approval.agent_run_id,
                         "task_id": task.id,
-                        "task": serialize_task(task),
+                        "task": serialize_task(task, session=session),
                     },
                 )
         except (LookupError, ValueError) as exc:

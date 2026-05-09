@@ -13,12 +13,29 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.settings import get_settings
-from ..db.models import Asset, Conversation, Project, ProjectWorkspace, Task, TaskApproval, TaskArtifact, WorkspaceAction
+from ..db.models import (
+    AgentEventRecord,
+    AgentRun,
+    Asset,
+    Conversation,
+    Project,
+    ProjectWorkspace,
+    Task,
+    TaskApproval,
+    TaskArtifact,
+    WorkspaceAction,
+)
 from .assets import create_project_asset, resolve_asset_bytes
 from .bootstrap import get_current_user
 from .python_runtime import ensure_managed_python_runtime
 from .projects import get_conversation, get_project
-from .task_package import get_task_package_disk_state, parse_todo_checklist, render_task_markdown
+from .task_package import (
+    TaskPackageValidationError,
+    get_task_package_disk_state,
+    parse_todo_checklist,
+    parse_worker_todo_state,
+    render_task_markdown,
+)
 
 
 ACTIVE_TASK_STATUSES = {"active", "awaiting_approval"}
@@ -27,6 +44,8 @@ PLAN_APPROVAL_TYPE = "plan_approval"
 TASK_COMPLETION_APPROVAL_TYPE = "task_completion"
 TASK_SUBDIRS = ("inputs", "work", "outputs", "logs")
 VISIBLE_TASK_WORKSPACE_DIRS = ("inputs", "work", "outputs")
+RECOVERABLE_RUN_STATUSES = {"cancelled", "stalled"}
+WORKER_BLOCKED_EVENT_TYPE = "task.worker.blocked"
 TEXT_PREVIEW_EXTENSIONS = {
     ".css",
     ".csv",
@@ -50,6 +69,30 @@ TEXT_PREVIEW_EXTENSIONS = {
 }
 MAX_TEXT_PREVIEW_BYTES = 200_000
 MAX_BINARY_DATA_URL_BYTES = 4_000_000
+
+
+RECOVERY_ACTIONS: dict[str, dict[str, str]] = {
+    "retry_remaining_work": {
+        "label": "Retry remaining work",
+        "description": "Ask Socrates to review the current task state and retry the remaining todo work.",
+    },
+    "revise_plan": {
+        "label": "Revise plan",
+        "description": "Ask Socrates to revise the plan or todo before continuing.",
+    },
+    "accept_partial_output": {
+        "label": "Accept partial output",
+        "description": "Ask Socrates to verify the partial output and request completion approval if it is acceptable.",
+    },
+    "close_task_failed": {
+        "label": "Close task as failed",
+        "description": "Ask Socrates to close the task with a clear reason if the work should stop here.",
+    },
+    "start_separate_task": {
+        "label": "Start separate task",
+        "description": "Keep this task visible while starting a separate task for the new request.",
+    },
+}
 
 
 class TaskClosureValidationError(ValueError):
@@ -984,7 +1027,255 @@ def _host_visible_task_workspace_root(task: Task) -> str | None:
     return str((settings.socrates_home_host / relative_root).resolve())
 
 
-def serialize_task(task: Task) -> dict[str, Any]:
+def _recovery_action(action_id: str) -> dict[str, str]:
+    action = RECOVERY_ACTIONS[action_id]
+    return {
+        "id": action_id,
+        "label": action["label"],
+        "description": action["description"],
+        "owner": "socrates",
+    }
+
+
+def _todo_recovery_summary(task: Task) -> dict[str, Any] | None:
+    todo_path = Path(task.workspace_root).resolve() / "todo.md"
+    if not todo_path.is_file():
+        return None
+    try:
+        state = parse_worker_todo_state(todo_path.read_text(encoding="utf-8", errors="replace"))
+    except (TaskPackageValidationError, ValueError):
+        return None
+
+    remaining_items = [item for item in state.items if item.status not in {"completed", "skipped"}]
+    blocked_items = list(state.blocked_items)
+    return {
+        "counts": state.progress_counts(),
+        "checked_ids": [item.item_id for item in state.items if item.status == "completed"],
+        "remaining_ids": [item.item_id for item in remaining_items],
+        "blocked_ids": [item.item_id for item in blocked_items],
+        "current_item_id": state.current_item.item_id if state.current_item else None,
+        "blocked_items": [
+            {
+                "id": item.item_id,
+                "text": item.text,
+                "reason": item.reason,
+                "recommended_action": item.recommended_action,
+            }
+            for item in blocked_items
+        ],
+    }
+
+
+def _output_artifact_summaries(session: Session, task: Task, *, limit: int = 5) -> list[dict[str, Any]]:
+    artifacts = list(
+        session.execute(
+            select(TaskArtifact)
+            .where(TaskArtifact.task_id == task.id, TaskArtifact.artifact_role == "output")
+            .order_by(TaskArtifact.created_at.desc())
+            .limit(limit)
+        ).scalars()
+    )
+    return [
+        {
+            "id": artifact.id,
+            "path": artifact.relative_path,
+            "display_name": artifact.display_name,
+            "mime_type": artifact.mime_type,
+            "size_bytes": artifact.size_bytes,
+            "sha256": artifact.sha256,
+            "created_at": artifact.created_at.isoformat(),
+        }
+        for artifact in artifacts
+    ]
+
+
+def _pending_completion_approval(session: Session, task: Task) -> TaskApproval | None:
+    return (
+        session.execute(
+            select(TaskApproval)
+            .where(
+                TaskApproval.task_id == task.id,
+                TaskApproval.approval_type == TASK_COMPLETION_APPROVAL_TYPE,
+                TaskApproval.status == "pending",
+            )
+            .order_by(TaskApproval.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _latest_recoverable_run(session: Session, task: Task) -> AgentRun | None:
+    return (
+        session.execute(
+            select(AgentRun)
+            .where(AgentRun.task_id == task.id, AgentRun.status.in_(tuple(RECOVERABLE_RUN_STATUSES)))
+            .order_by(AgentRun.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _latest_worker_blocked_event(session: Session, task: Task) -> AgentEventRecord | None:
+    return (
+        session.execute(
+            select(AgentEventRecord)
+            .join(AgentRun, AgentEventRecord.agent_run_id == AgentRun.id)
+            .where(
+                AgentRun.task_id == task.id,
+                AgentEventRecord.event_type == WORKER_BLOCKED_EVENT_TYPE,
+            )
+            .order_by(AgentEventRecord.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _latest_blocked_worker_run(session: Session, task: Task) -> AgentRun | None:
+    return (
+        session.execute(
+            select(AgentRun)
+            .where(
+                AgentRun.task_id == task.id,
+                AgentRun.execution_mode == "worker",
+                AgentRun.status == "blocked",
+            )
+            .order_by(AgentRun.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _worker_blocked_payload(
+    *, event: AgentEventRecord | None, worker_run: AgentRun | None
+) -> tuple[dict[str, Any], datetime] | None:
+    if event is not None:
+        payload = event.payload_json
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        return (
+            {
+                "source_run_id": payload.get("run_id") or event.agent_run_id,
+                "source_worker_run_id": payload.get("worker_run_id"),
+                "summary": result.get("summary") or "Worker blocked and needs Socrates to decide the next step.",
+                "blockers": result.get("blockers") if isinstance(result.get("blockers"), list) else [],
+            },
+            event.created_at,
+        )
+    if worker_run is not None:
+        result = worker_run.final_parsed_json if isinstance(worker_run.final_parsed_json, dict) else {}
+        return (
+            {
+                "source_run_id": worker_run.request_json.get("parent_run_id"),
+                "source_worker_run_id": worker_run.id,
+                "summary": result.get("summary") or worker_run.error_message or "Worker blocked and needs Socrates to decide the next step.",
+                "blockers": result.get("blockers") if isinstance(result.get("blockers"), list) else [],
+            },
+            worker_run.completed_at or worker_run.created_at,
+        )
+    return None
+
+
+def build_task_recovery_state(session: Session, task: Task) -> dict[str, Any] | None:
+    if task.status in TERMINAL_TASK_STATUSES:
+        return None
+
+    todo_summary = _todo_recovery_summary(task)
+    output_artifacts = _output_artifact_summaries(session, task)
+    completion_approval = _pending_completion_approval(session, task)
+    if completion_approval is not None:
+        summary = str(completion_approval.request_json.get("result_summary") or "").strip()
+        return {
+            "kind": "completion_approval_pending",
+            "title": "Waiting for acceptance",
+            "summary": summary or "Socrates has requested approval to close this task.",
+            "source_approval_id": completion_approval.id,
+            "todo": todo_summary,
+            "outputs": output_artifacts,
+            "suggested_actions": [
+                _recovery_action("accept_partial_output"),
+                _recovery_action("revise_plan"),
+            ],
+        }
+
+    blocked_payload = _worker_blocked_payload(
+        event=_latest_worker_blocked_event(session, task),
+        worker_run=_latest_blocked_worker_run(session, task),
+    )
+    recoverable_run = _latest_recoverable_run(session, task)
+
+    blocked_created_at = blocked_payload[1] if blocked_payload is not None else None
+    run_created_at = (recoverable_run.completed_at or recoverable_run.created_at) if recoverable_run is not None else None
+    if blocked_payload is not None and (run_created_at is None or blocked_created_at >= run_created_at):
+        payload = blocked_payload[0]
+        return {
+            "kind": "worker_blocked",
+            "title": "Worker needs direction",
+            "summary": payload["summary"],
+            "source_run_id": payload.get("source_run_id"),
+            "source_worker_run_id": payload.get("source_worker_run_id"),
+            "blockers": payload["blockers"],
+            "todo": todo_summary,
+            "outputs": output_artifacts,
+            "suggested_actions": [
+                _recovery_action("retry_remaining_work"),
+                _recovery_action("revise_plan"),
+                _recovery_action("accept_partial_output"),
+                _recovery_action("close_task_failed"),
+            ],
+        }
+
+    if recoverable_run is not None:
+        if recoverable_run.status == "cancelled":
+            return {
+                "kind": "cancelled",
+                "title": "Stopped by user",
+                "summary": "The last task run was stopped. The task is still available for Socrates to retry, revise, or close.",
+                "source_run_id": recoverable_run.id,
+                "todo": todo_summary,
+                "outputs": output_artifacts,
+                "suggested_actions": [
+                    _recovery_action("retry_remaining_work"),
+                    _recovery_action("revise_plan"),
+                    _recovery_action("close_task_failed"),
+                    _recovery_action("start_separate_task"),
+                ],
+            }
+        return {
+            "kind": "stalled",
+            "title": "Run stalled",
+            "summary": recoverable_run.error_message or "The backend stopped waiting because the run had no meaningful progress.",
+            "source_run_id": recoverable_run.id,
+            "todo": todo_summary,
+            "outputs": output_artifacts,
+            "suggested_actions": [
+                _recovery_action("retry_remaining_work"),
+                _recovery_action("revise_plan"),
+                _recovery_action("close_task_failed"),
+                _recovery_action("start_separate_task"),
+            ],
+        }
+
+    if output_artifacts:
+        return {
+            "kind": "outputs_waiting_for_acceptance",
+            "title": "Output waiting for review",
+            "summary": "The task has output artifacts, but it has not been accepted and closed yet.",
+            "todo": todo_summary,
+            "outputs": output_artifacts,
+            "suggested_actions": [
+                _recovery_action("accept_partial_output"),
+                _recovery_action("revise_plan"),
+                _recovery_action("close_task_failed"),
+            ],
+        }
+
+    return None
+
+
+def serialize_task(task: Task, *, session: Session | None = None) -> dict[str, Any]:
     return {
         "id": task.id,
         "project_id": task.project_id,
@@ -1005,6 +1296,7 @@ def serialize_task(task: Task) -> dict[str, Any]:
         "updated_at": task.updated_at.isoformat(),
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "failed_at": task.failed_at.isoformat() if task.failed_at else None,
+        "recovery_state": build_task_recovery_state(session, task) if session is not None else None,
     }
 
 
