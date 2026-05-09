@@ -13,7 +13,7 @@ from ..agents import build_socrates_system_prompt
 from ..core.settings import get_settings
 from ..core.model_catalog import DEFAULT_MODEL, DEFAULT_THINKING_LEVEL, normalize_thinking_level, provider_for_model, require_supported_model
 from ..core.schema import Attachment, GenConfig, InputMode, Message, MessageRole, ThinkingLevel
-from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project, TaskApproval, ToolExecution
+from ..db.models import AgentEventRecord, AgentRun, AgentRunTurn, Asset, Conversation, MessageAsset, MessageRecord, Project, Task, TaskApproval, ToolExecution
 from ..db.session import get_session_factory
 from ..tools.executor import ProjectToolBatchExecutor
 from ..tools.registry import get_tools_registry
@@ -557,6 +557,126 @@ def create_task_completion_denial_resume_run(
     session.flush()
     message.agent_run_id = run.id
     task.last_agent_run_id = run.id
+    conversation.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(message)
+    session.refresh(run)
+    return message, run
+
+
+RECOVERY_ACTION_RUN_INTENTS = {
+    "retry_remaining_work": "The user chose to retry the remaining work for this recoverable task.",
+    "revise_plan": "The user chose to revise the plan before continuing this recoverable task.",
+    "accept_partial_output": (
+        "The user chose to consider the current partial output. Inspect the available outputs, "
+        "verify whether they satisfy the task, and request normal task completion approval only if appropriate."
+    ),
+}
+
+
+def create_task_recovery_run(
+    session: Session,
+    *,
+    task: Task,
+    action_id: str,
+    recovery_state: dict[str, Any],
+    note: str | None = None,
+) -> tuple[MessageRecord, AgentRun]:
+    if action_id not in RECOVERY_ACTION_RUN_INTENTS:
+        raise ValueError(f"Recovery action '{action_id}' cannot create a Socrates run.")
+
+    conversation = get_conversation(session, task.conversation_id)
+    active_run = get_active_run_for_conversation(session, conversation.id)
+    if active_run is not None:
+        raise ConversationRunInProgressError(active_run.id)
+    project = get_project(session, conversation.project_id)
+    current_user = get_current_user(session)
+    resolved_model = conversation.model or DEFAULT_MODEL
+    require_supported_model(resolved_model)
+    resolved_thinking = normalize_thinking_level(
+        resolved_model,
+        ThinkingLevel(conversation.thinking_level or DEFAULT_THINKING_LEVEL.value),
+    )
+    resolved_provider = provider_for_model(resolved_model)
+    cleaned_note = note.strip() if note and note.strip() else None
+    recovery_kind = str(recovery_state.get("kind") or "unknown")
+    content_lines = [
+        RECOVERY_ACTION_RUN_INTENTS[action_id],
+        "",
+        f"Task id: {task.id}",
+        f"Recovery kind: {recovery_kind}",
+        f"Recovery summary: {recovery_state.get('summary') or ''}",
+        f"Requested action: {action_id}",
+    ]
+    if cleaned_note:
+        content_lines.extend(["", f"User note: {cleaned_note}"])
+    content_lines.extend(
+        [
+            "",
+            "Use the existing task package, todo.md, artifacts, and recovery_state. "
+            "Do not bypass planning, approval, worker, or completion rules.",
+        ]
+    )
+    content_text = "\n".join(content_lines)
+    recovery_context = to_json_compatible(recovery_state)
+
+    message = MessageRecord(
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        role=MessageRole.USER.value,
+        task_id=task.id,
+        execution_mode="task",
+        input_mode=InputMode.TEXT.value,
+        content_text=content_text,
+        status="queued",
+        sequence_no=next_message_sequence(session, conversation.id),
+        provider=resolved_provider,
+        model=resolved_model,
+        metadata_json={
+            "thinking_level": resolved_thinking.value,
+            "system_generated": True,
+            "kind": "task_recovery_action",
+            "action_id": action_id,
+            "recovery_kind": recovery_kind,
+        },
+    )
+    session.add(message)
+    session.flush()
+
+    run = AgentRun(
+        project_id=conversation.project_id,
+        conversation_id=conversation.id,
+        task_id=task.id,
+        trigger_message_id=message.id,
+        status="queued",
+        execution_mode="task",
+        provider=resolved_provider,
+        model=resolved_model,
+        input_mode=InputMode.TEXT.value,
+        system_prompt_text=build_socrates_system_prompt(
+            project.default_system_prompt,
+            user_name=current_user.display_name if current_user else None,
+            project_name=project.name,
+            project_description=project.description,
+        ),
+        query_text=content_text,
+        request_json={
+            "model": resolved_model,
+            "thinking_level": resolved_thinking.value,
+            "input_mode": InputMode.TEXT.value,
+            "asset_ids": [],
+            "active_task_id": task.id,
+            "recovery_action_id": action_id,
+            "recovery_kind": recovery_kind,
+            "recovery_state": recovery_context,
+            "note": cleaned_note,
+        },
+    )
+    session.add(run)
+    session.flush()
+    message.agent_run_id = run.id
+    task.last_agent_run_id = run.id
+    task.updated_at = datetime.now(timezone.utc)
     conversation.updated_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(message)

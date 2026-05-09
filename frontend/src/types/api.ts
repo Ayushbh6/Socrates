@@ -227,6 +227,20 @@ export interface TaskRecoveryState {
   suggested_actions: TaskRecoveryAction[]
 }
 
+export interface TaskRecoveryActionRequest {
+  action_id: string
+  note?: string | null
+  reason?: string | null
+}
+
+export interface TaskRecoveryActionResponse {
+  task: Task
+  action_id: string
+  message_id: string | null
+  agent_run_id: string | null
+  run_status: AgentRunStatus | null
+}
+
 export interface TaskArtifact {
   id: string
   task_id: string
