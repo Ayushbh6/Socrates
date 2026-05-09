@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useForm, useWatch } from 'react-hook-form'
@@ -41,6 +41,11 @@ import { useAgentStream, type AgentStreamConnectionState } from '@/hooks/useAgen
 import { useStickToBottom } from '@/hooks/useStickToBottom'
 import { ApiError, apiFetch } from '@/lib/api'
 import {
+  decideArtifactRegistrationAutoOpen,
+  decidePendingArtifactAutoOpen,
+} from '@/lib/artifactAutoOpen'
+import { shouldUseArtifactSheet } from '@/lib/artifactPanelLayout'
+import {
   applyAssistantTurnEvent,
   attachPersistedAssistantMessage,
   createAssistantTurn,
@@ -65,6 +70,7 @@ import {
   applyWorkerTraceEvent,
   createWorkerTraceState,
   getActiveWorkerTraceRun,
+  isTerminalWorkerTraceRun,
   isWorkerTraceEvent,
   type WorkerTraceState,
 } from '@/lib/workerTrace'
@@ -117,9 +123,28 @@ function upsertConversationTask(current: Task[] | undefined, task: Task) {
 
 function ConversationSessionPage() {
   const { projectId, conversationId } = Route.useParams()
+  return (
+    <ConversationSessionContent
+      key={conversationId}
+      projectId={projectId}
+      conversationId={conversationId}
+    />
+  )
+}
+
+interface ConversationSessionContentProps {
+  projectId: string
+  conversationId: string
+}
+
+function ConversationSessionContent({
+  projectId,
+  conversationId,
+}: ConversationSessionContentProps) {
   const queryClient = useQueryClient()
   const {
     containerRef: scrollContainerRef,
+    isAtBottom,
     hasNewContent: hasUnseenBottomContent,
     scrollToBottom,
     notifyContentChanged,
@@ -128,6 +153,15 @@ function ConversationSessionPage() {
   const selectionVersionRef = useRef(0)
   const setActiveConversation = useAppStore((state) => state.setActiveConversation)
   const assistantTurnsRef = useRef<Record<string, AssistantTurnState>>({})
+  const workerTraceRef = useRef<WorkerTraceState>(createWorkerTraceState())
+  const initialArtifactPanelMode = readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed'])
+  const initialArtifactSheetMode = readArtifactSheetMode()
+  const initialMobileArtifactsOpen = initialArtifactSheetMode && initialArtifactPanelMode === 'open'
+  const artifactPanelModeRef = useRef<ArtifactPanelMode>(initialArtifactPanelMode)
+  const artifactSheetModeRef = useRef(initialArtifactSheetMode)
+  const mobileArtifactsOpenRef = useRef(initialMobileArtifactsOpen)
+  const pendingAutoOpenArtifactPathRef = useRef<string | null>(null)
+  const manualArtifactCollapseAfterPendingRef = useRef(false)
 
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [pendingAssets, setPendingAssets] = useState<Asset[]>([])
@@ -139,12 +173,14 @@ function ConversationSessionPage() {
     readPersistedPanelMode(`worker-panel:${conversationId}`, 'collapsed', ['open', 'collapsed', 'hidden']),
   )
   const [artifactPanelMode, setArtifactPanelMode] = useState<ArtifactPanelMode>(() =>
-    readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed']),
+    initialArtifactPanelMode,
   )
   const [selectedWorkspacePath, setSelectedWorkspacePath] = useState<string | null>(() =>
     readPersistedString(`artifact-selected-path:${conversationId}`),
   )
-  const [mobileArtifactsOpen, setMobileArtifactsOpen] = useState(false)
+  const [artifactSheetMode, setArtifactSheetMode] = useState(initialArtifactSheetMode)
+  const [mobileArtifactsOpen, setMobileArtifactsOpen] = useState(initialMobileArtifactsOpen)
+  const [pendingAutoOpenArtifactPath, setPendingAutoOpenArtifactPath] = useState<string | null>(null)
   const [recentlyClosedTask, setRecentlyClosedTask] = useState<Task | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
 
@@ -206,6 +242,14 @@ function ConversationSessionPage() {
     enabled: Boolean(taskForSummary?.id),
   })
 
+  const latestOutputArtifactPath = useMemo(() => {
+    const latestOutput = [...taskArtifacts]
+      .filter((artifact) => artifact.artifact_role === 'output')
+      .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
+    return latestOutput?.relative_path ?? null
+  }, [taskArtifacts])
+  const effectiveSelectedWorkspacePath = selectedWorkspacePath ?? latestOutputArtifactPath
+
   const { data: taskWorkspaceTree = null } = useQuery({
     queryKey: ['task-workspace-tree', taskForSummary?.id],
     queryFn: () => apiFetch<TaskWorkspaceTree>(`/tasks/${taskForSummary?.id}/workspace-tree`),
@@ -214,12 +258,12 @@ function ConversationSessionPage() {
   })
 
   const { data: workspacePreview = null, isFetching: workspacePreviewLoading } = useQuery({
-    queryKey: ['task-workspace-file', taskForSummary?.id, selectedWorkspacePath],
+    queryKey: ['task-workspace-file', taskForSummary?.id, effectiveSelectedWorkspacePath],
     queryFn: () =>
       apiFetch<TaskWorkspaceFilePreview>(
-        `/tasks/${taskForSummary?.id}/workspace-file?path=${encodeURIComponent(selectedWorkspacePath ?? '')}`,
+        `/tasks/${taskForSummary?.id}/workspace-file?path=${encodeURIComponent(effectiveSelectedWorkspacePath ?? '')}`,
       ),
-    enabled: Boolean(taskForSummary?.id && selectedWorkspacePath),
+    enabled: Boolean(taskForSummary?.id && effectiveSelectedWorkspacePath),
   })
 
   const conversation = useMemo(
@@ -255,15 +299,6 @@ function ConversationSessionPage() {
   }, [conversation, setActiveConversation])
 
   useEffect(() => {
-    setRecentlyClosedTask(null)
-    setWorkerTrace(createWorkerTraceState())
-    setWorkerPanelMode(readPersistedPanelMode(`worker-panel:${conversationId}`, 'collapsed', ['open', 'collapsed', 'hidden'] as const))
-    setArtifactPanelMode(readPersistedPanelMode(`artifact-panel:${conversationId}`, 'collapsed', ['open', 'collapsed'] as const))
-    setSelectedWorkspacePath(readPersistedString(`artifact-selected-path:${conversationId}`))
-    setMobileArtifactsOpen(false)
-  }, [conversationId])
-
-  useEffect(() => {
     writePersistedString(`worker-panel:${conversationId}`, workerPanelMode)
   }, [conversationId, workerPanelMode])
 
@@ -275,18 +310,79 @@ function ConversationSessionPage() {
     writePersistedString(`artifact-selected-path:${conversationId}`, selectedWorkspacePath)
   }, [conversationId, selectedWorkspacePath])
 
+  const isArtifactSheetViewport = useCallback(() => {
+    return readArtifactSheetMode()
+  }, [])
+
+  const handleArtifactPanelModeChange = useCallback((mode: ArtifactPanelMode) => {
+    if (mode === 'collapsed' && pendingAutoOpenArtifactPathRef.current) {
+      manualArtifactCollapseAfterPendingRef.current = true
+    }
+    artifactPanelModeRef.current = mode
+    setArtifactPanelMode(mode)
+  }, [])
+
+  const handleMobileArtifactsClose = useCallback(() => {
+    if (pendingAutoOpenArtifactPathRef.current) {
+      manualArtifactCollapseAfterPendingRef.current = true
+    }
+    mobileArtifactsOpenRef.current = false
+    setMobileArtifactsOpen(false)
+  }, [])
+
   useEffect(() => {
     assistantTurnsRef.current = assistantTurns
   }, [assistantTurns])
 
   useEffect(() => {
-    const latestOutput = [...taskArtifacts]
-      .filter((artifact) => artifact.artifact_role === 'output')
-      .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0]
-    if (!latestOutput) return
-    setSelectedWorkspacePath((current) => current ?? latestOutput.relative_path)
-    setArtifactPanelMode((current) => (current === 'collapsed' ? 'open' : current))
-  }, [taskArtifacts])
+    workerTraceRef.current = workerTrace
+  }, [workerTrace])
+
+  useEffect(() => {
+    artifactPanelModeRef.current = artifactPanelMode
+  }, [artifactPanelMode])
+
+  useEffect(() => {
+    mobileArtifactsOpenRef.current = mobileArtifactsOpen
+  }, [mobileArtifactsOpen])
+
+  useEffect(() => {
+    artifactSheetModeRef.current = artifactSheetMode
+  }, [artifactSheetMode])
+
+  useEffect(() => {
+    pendingAutoOpenArtifactPathRef.current = pendingAutoOpenArtifactPath
+  }, [pendingAutoOpenArtifactPath])
+
+  useEffect(() => {
+    const handleResize = () => {
+      const nextSheetMode = readArtifactSheetMode()
+      if (nextSheetMode === artifactSheetModeRef.current) {
+        return
+      }
+
+      artifactSheetModeRef.current = nextSheetMode
+      setArtifactSheetMode(nextSheetMode)
+
+      if (nextSheetMode) {
+        if (artifactPanelModeRef.current === 'open') {
+          mobileArtifactsOpenRef.current = true
+          setMobileArtifactsOpen(true)
+        }
+        return
+      }
+
+      if (mobileArtifactsOpenRef.current) {
+        artifactPanelModeRef.current = 'open'
+        setArtifactPanelMode('open')
+        mobileArtifactsOpenRef.current = false
+        setMobileArtifactsOpen(false)
+      }
+    }
+
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
 
   useEffect(() => {
     const handleArtifactPanelToggle = (event: Event) => {
@@ -295,17 +391,23 @@ function ConversationSessionPage() {
         return
       }
 
-      if (typeof window !== 'undefined' && window.innerWidth < 1024) {
-        setMobileArtifactsOpen((current) => !current)
+      if (isArtifactSheetViewport()) {
+        setMobileArtifactsOpen((current) => {
+          if (current && pendingAutoOpenArtifactPathRef.current) {
+            manualArtifactCollapseAfterPendingRef.current = true
+          }
+          mobileArtifactsOpenRef.current = !current
+          return !current
+        })
         return
       }
 
-      setArtifactPanelMode((current) => (current === 'open' ? 'collapsed' : 'open'))
+      handleArtifactPanelModeChange(artifactPanelModeRef.current === 'open' ? 'collapsed' : 'open')
     }
 
     window.addEventListener(ARTIFACT_PANEL_TOGGLE_EVENT, handleArtifactPanelToggle)
     return () => window.removeEventListener(ARTIFACT_PANEL_TOGGLE_EVENT, handleArtifactPanelToggle)
-  }, [conversationId])
+  }, [conversationId, handleArtifactPanelModeChange, isArtifactSheetViewport])
 
   useEffect(() => {
     notifyContentChanged()
@@ -316,6 +418,8 @@ function ConversationSessionPage() {
       return
     }
 
+    // React Query is the external source of truth for run snapshots; this merges it into the incremental stream buffer.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAssistantTurns((previous) => ({
       ...previous,
       [activeRun.id]: hydrateAssistantTurnFromRun(activeRun, previous[activeRun.id]),
@@ -333,6 +437,8 @@ function ConversationSessionPage() {
       return
     }
 
+    // Persisted messages arrive from the query cache and must be attached to the local streaming turn state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setAssistantTurns((previous) => {
       let next = previous
       let changed = false
@@ -418,7 +524,11 @@ function ConversationSessionPage() {
       }
 
       if (isWorkerTraceEvent(event)) {
-        setWorkerTrace((previous) => applyWorkerTraceEvent(previous, event))
+        setWorkerTrace((previous) => {
+          const next = applyWorkerTraceEvent(previous, event)
+          workerTraceRef.current = next
+          return next
+        })
         if (
           'task_id' in event &&
           (
@@ -475,9 +585,22 @@ function ConversationSessionPage() {
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
-        setSelectedWorkspacePath(event.artifact.relative_path)
-        setArtifactPanelMode('open')
-        setMobileArtifactsOpen(true)
+        const worker = getActiveWorkerTraceRun(workerTraceRef.current)
+        const decision = decideArtifactRegistrationAutoOpen({
+          artifactPath: event.artifact.relative_path,
+          artifactPanelMode: artifactPanelModeRef.current,
+          mobileArtifactsOpen: mobileArtifactsOpenRef.current,
+          workerStatus: worker?.status,
+          isMobileViewport: isArtifactSheetViewport(),
+        })
+        manualArtifactCollapseAfterPendingRef.current = false
+        artifactPanelModeRef.current = decision.artifactPanelMode
+        mobileArtifactsOpenRef.current = decision.mobileArtifactsOpen
+        pendingAutoOpenArtifactPathRef.current = decision.pendingArtifactPath
+        setSelectedWorkspacePath(decision.selectedPath)
+        setArtifactPanelMode(decision.artifactPanelMode)
+        setMobileArtifactsOpen(decision.mobileArtifactsOpen)
+        setPendingAutoOpenArtifactPath(decision.pendingArtifactPath)
         return
       }
 
@@ -513,7 +636,7 @@ function ConversationSessionPage() {
         queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
       }
     },
-    [conversationId, projectId, queryClient],
+    [conversationId, isArtifactSheetViewport, projectId, queryClient],
   )
 
   const handleStreamConnectionChange = useCallback(
@@ -678,6 +801,11 @@ function ConversationSessionPage() {
       return
     }
 
+    if (isTerminalWorkerTraceRun(getActiveWorkerTraceRun(workerTraceRef.current))) {
+      setWorkerPanelMode('hidden')
+    }
+
+    const shouldRevealLatestTurn = isAtBottom
     const optimisticUserId = `opt-user-${Date.now()}`
 
     setSendError(null)
@@ -693,6 +821,9 @@ function ConversationSessionPage() {
         sequence_no: 9998,
       },
     ])
+    if (shouldRevealLatestTurn) {
+      window.requestAnimationFrame(() => scrollToBottom('auto'))
+    }
 
     sendMessage.mutate(data, {
       onSuccess: (response) => {
@@ -733,6 +864,35 @@ function ConversationSessionPage() {
   )
   const activeAssistantTurn = activeRunId ? assistantTurns[activeRunId] : null
   const activeWorkerTrace = useMemo(() => getActiveWorkerTraceRun(workerTrace), [workerTrace])
+  useEffect(() => {
+    const decision = decidePendingArtifactAutoOpen({
+      pendingArtifactPath: pendingAutoOpenArtifactPath,
+      artifactPanelMode,
+      mobileArtifactsOpen,
+      workerStatus: activeWorkerTrace?.status,
+      manualCollapseAfterPending: manualArtifactCollapseAfterPendingRef.current,
+      isMobileViewport: isArtifactSheetViewport(),
+    })
+
+    if (!decision) {
+      return
+    }
+
+    setSelectedWorkspacePath(decision.selectedPath)
+    artifactPanelModeRef.current = decision.artifactPanelMode
+    mobileArtifactsOpenRef.current = decision.mobileArtifactsOpen
+    pendingAutoOpenArtifactPathRef.current = decision.pendingArtifactPath
+    setArtifactPanelMode(decision.artifactPanelMode)
+    setMobileArtifactsOpen(decision.mobileArtifactsOpen)
+    setPendingAutoOpenArtifactPath(decision.pendingArtifactPath)
+    manualArtifactCollapseAfterPendingRef.current = false
+  }, [
+    activeWorkerTrace?.status,
+    artifactPanelMode,
+    isArtifactSheetViewport,
+    mobileArtifactsOpen,
+    pendingAutoOpenArtifactPath,
+  ])
   const pendingTaskApprovals = useMemo(
     () =>
       taskForSummary && taskForSummary.status !== 'completed' && taskForSummary.status !== 'failed'
@@ -766,7 +926,7 @@ function ConversationSessionPage() {
         <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
           {taskForSummary ? <ActiveTaskBar task={taskForSummary} /> : null}
           <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overscroll-contain">
-            <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 pb-35 pt-4 sm:px-6 sm:pb-42 sm:pt-6 lg:px-8">
+            <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col px-4 pb-8 pt-4 sm:px-6 sm:pt-6 lg:px-8">
               {hasConversationStarted ? (
                 <div className="flex flex-1 flex-col gap-5 pb-8 pt-2 sm:gap-6">
                   {taskForSummary ? (
@@ -816,30 +976,52 @@ function ConversationSessionPage() {
             </div>
           </div>
 
-          {hasUnseenBottomContent ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-26 z-30 flex justify-center px-4 sm:bottom-30">
-            <button
-              type="button"
-              onClick={() => scrollToBottom('smooth')}
-              className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-forest/20 bg-forest px-4 py-2 text-xs font-medium text-canvas shadow-lg shadow-forest/20 transition hover:bg-forest/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-forest/40"
-              aria-label="Jump to latest message"
-            >
-              <ArrowDown className="size-3.5" aria-hidden="true" />
-              <span>Jump to latest</span>
-            </button>
-          </div>
-          ) : null}
+          <ConversationBottomDock>
+            {(hasUnseenBottomContent || taskForSummary) ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                {hasUnseenBottomContent ? (
+                  <button
+                    type="button"
+                    onClick={() => scrollToBottom('smooth')}
+                    className="inline-flex items-center gap-2 rounded-full border border-forest/20 bg-forest px-4 py-2 text-xs font-medium text-canvas shadow-sm shadow-forest/10 transition hover:bg-forest/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-forest/40"
+                    aria-label="Jump to latest message"
+                  >
+                    <ArrowDown className="size-3.5" aria-hidden="true" />
+                    <span>Jump to latest</span>
+                  </button>
+                ) : (
+                  <span />
+                )}
+                {taskForSummary ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleArtifactPanelModeChange('open')
+                      mobileArtifactsOpenRef.current = true
+                      setMobileArtifactsOpen(true)
+                    }}
+                    className="inline-flex items-center rounded-full border border-forest/12 bg-paper/94 px-3 py-2 text-xs font-semibold text-forest shadow-sm xl:hidden"
+                  >
+                    Artifacts
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
-          {pendingTaskApprovals.length > 0 ? (
-          <PendingApprovalDock
-            approvals={pendingTaskApprovals}
-            approvalPending={resolveApproval.isPending}
-            onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
-          />
-          ) : null}
+            {pendingTaskApprovals.length > 0 ? (
+              <PendingApprovalDock
+                approvals={pendingTaskApprovals}
+                approvalPending={resolveApproval.isPending}
+                onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
+              />
+            ) : null}
 
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-canvas px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 sm:px-4 sm:pb-5">
-          <div className="pointer-events-auto mx-auto w-full max-w-4xl">
+            <WorkerTracePanel
+              worker={activeWorkerTrace}
+              mode={workerPanelMode}
+              onModeChange={setWorkerPanelMode}
+            />
+
             <ConversationComposer
               compact
               register={register}
@@ -874,25 +1056,7 @@ function ConversationSessionPage() {
               fileInputRef={fileInputRef}
               onFileSelect={(file) => uploadAsset.mutate(file)}
             />
-          </div>
-          </div>
-          <WorkerTracePanel
-          worker={activeWorkerTrace}
-          mode={workerPanelMode}
-          onModeChange={setWorkerPanelMode}
-          />
-          {taskForSummary ? (
-          <button
-            type="button"
-            onClick={() => {
-              setArtifactPanelMode('open')
-              setMobileArtifactsOpen(true)
-            }}
-            className="fixed bottom-28 right-4 z-30 rounded-full border border-forest/12 bg-paper/94 px-3 py-2 text-xs font-semibold text-forest shadow-lg lg:hidden"
-          >
-            Artifacts
-          </button>
-          ) : null}
+          </ConversationBottomDock>
           {mobileArtifactsOpen && taskForSummary ? (
             <ArtifactWorkspacePanel
               mobile
@@ -901,12 +1065,12 @@ function ConversationSessionPage() {
               preview={workspacePreview}
               artifacts={taskArtifacts}
               workspaceRoot={taskForSummary.workspace_host_root ?? taskForSummary.workspace_root}
-              selectedPath={selectedWorkspacePath}
+              selectedPath={effectiveSelectedWorkspacePath}
               mode="open"
               loadingPreview={workspacePreviewLoading}
               onSelectPath={setSelectedWorkspacePath}
-              onModeChange={setArtifactPanelMode}
-              onCloseMobile={() => setMobileArtifactsOpen(false)}
+              onModeChange={handleArtifactPanelModeChange}
+              onCloseMobile={handleMobileArtifactsClose}
             />
           ) : null}
         </section>
@@ -916,12 +1080,22 @@ function ConversationSessionPage() {
           preview={workspacePreview}
           artifacts={taskArtifacts}
           workspaceRoot={taskForSummary?.workspace_host_root ?? taskForSummary?.workspace_root ?? null}
-          selectedPath={selectedWorkspacePath}
+          selectedPath={effectiveSelectedWorkspacePath}
           mode={artifactPanelMode}
           loadingPreview={workspacePreviewLoading}
           onSelectPath={setSelectedWorkspacePath}
-          onModeChange={setArtifactPanelMode}
+          onModeChange={handleArtifactPanelModeChange}
         />
+      </div>
+    </div>
+  )
+}
+
+function ConversationBottomDock({ children }: { children: ReactNode }) {
+  return (
+    <div className="shrink-0 border-t border-forest/10 bg-canvas/96 px-2 pb-[calc(env(safe-area-inset-bottom)+0.85rem)] pt-3 shadow-[0_-16px_40px_rgba(62,92,72,0.06)] backdrop-blur sm:px-4 sm:pb-5">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-2.5">
+        {children}
       </div>
     </div>
   )
@@ -1207,56 +1381,54 @@ function PendingApprovalDock({
           : JSON.stringify(approval.request_json)
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 bottom-33 z-30 px-3 sm:bottom-37 sm:px-6">
-      <div className="pointer-events-auto mx-auto flex w-full max-w-4xl flex-col gap-3 rounded-[1rem] border border-forest/12 bg-paper/96 px-4 py-3 shadow-[0_18px_48px_rgba(42,62,49,0.16)] backdrop-blur md:flex-row md:items-center md:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <div
-            className={cn(
-              'mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full',
-              isCompletion ? 'bg-emerald-100 text-emerald-700' : isPlan ? 'bg-sage/60 text-moss' : 'bg-amber-100 text-amber-700',
-            )}
-          >
-            {isCompletion ? (
-              <CheckCircle2 className="size-4" aria-hidden="true" />
-            ) : isPlan ? (
-              <Sparkles className="size-4" aria-hidden="true" />
-            ) : (
-              <AlertCircle className="size-4" aria-hidden="true" />
-            )}
-          </div>
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-moss">
-              {isCompletion ? 'Completion approval' : isPlan ? 'Plan approval' : 'Action approval'}
-            </p>
-            <p className="mt-1 line-clamp-2 text-sm leading-5 text-ink-soft">{summary}</p>
-          </div>
+    <div className="flex w-full flex-col gap-3 rounded-[1rem] border border-forest/12 bg-paper/96 px-3 py-2.5 shadow-sm md:flex-row md:items-center md:justify-between">
+      <div className="flex min-w-0 items-center gap-3">
+        <div
+          className={cn(
+            'flex size-8 shrink-0 items-center justify-center rounded-full',
+            isCompletion ? 'bg-emerald-100 text-emerald-700' : isPlan ? 'bg-sage/60 text-moss' : 'bg-amber-100 text-amber-700',
+          )}
+        >
+          {isCompletion ? (
+            <CheckCircle2 className="size-4" aria-hidden="true" />
+          ) : isPlan ? (
+            <Sparkles className="size-4" aria-hidden="true" />
+          ) : (
+            <AlertCircle className="size-4" aria-hidden="true" />
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            className="border-forest/20 bg-transparent text-ink-soft hover:bg-red-50 hover:text-red-700 hover:border-red-200"
-            disabled={approvalPending}
-            onClick={() => onResolveApproval(approval.id, false, isCompletion)}
-          >
-            {isCompletion ? 'No' : isPlan ? 'Reject' : 'Deny'}
-          </Button>
-          <Button
-            type="button"
-            className={cn(
-              'text-white shadow-md',
-              isCompletion
-                ? 'bg-emerald-700 hover:bg-emerald-800 shadow-emerald-900/10'
-                : isPlan
-                  ? 'bg-forest hover:bg-forest/90 shadow-forest/10'
-                  : 'bg-amber-600 hover:bg-amber-700 shadow-amber-900/10',
-            )}
-            disabled={approvalPending}
-            onClick={() => onResolveApproval(approval.id, true, isPlan)}
-          >
-            {isCompletion ? 'Yes' : isPlan ? 'Approve plan' : 'Confirm'}
-          </Button>
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-moss">
+            {isCompletion ? 'Completion approval' : isPlan ? 'Plan approval' : 'Action approval'}
+          </p>
+          <p className="mt-0.5 line-clamp-1 text-xs leading-5 text-ink-soft sm:text-sm">{summary}</p>
         </div>
+      </div>
+      <div className="flex shrink-0 items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          className="h-8 border-forest/20 bg-transparent px-3 text-xs text-ink-soft hover:bg-red-50 hover:text-red-700 hover:border-red-200"
+          disabled={approvalPending}
+          onClick={() => onResolveApproval(approval.id, false, isCompletion)}
+        >
+          {isCompletion ? 'No' : isPlan ? 'Reject' : 'Deny'}
+        </Button>
+        <Button
+          type="button"
+          className={cn(
+            'h-8 px-3 text-xs text-white shadow-sm',
+            isCompletion
+              ? 'bg-emerald-700 hover:bg-emerald-800 shadow-emerald-900/10'
+              : isPlan
+                ? 'bg-forest hover:bg-forest/90 shadow-forest/10'
+                : 'bg-amber-600 hover:bg-amber-700 shadow-amber-900/10',
+          )}
+          disabled={approvalPending}
+          onClick={() => onResolveApproval(approval.id, true, isPlan)}
+        >
+          {isCompletion ? 'Yes' : isPlan ? 'Approve plan' : 'Confirm'}
+        </Button>
       </div>
     </div>
   )
@@ -1322,7 +1494,7 @@ function ConversationComposer({
         ? 'bg-transparent px-0 py-0 shadow-none sm:px-0 sm:py-0'
         : 'rounded-[1.8rem] bg-paper/94 px-4 py-4 shadow-[0_28px_80px_rgba(62,92,72,0.12)] sm:rounded-[2.25rem] sm:px-5 sm:py-5'}
     >
-      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-3">
+      <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-2.5">
         <input
           ref={fileInputRef}
           type="file"
@@ -1401,7 +1573,7 @@ function ConversationComposer({
             rows={1}
             placeholder="Ask Socrates..."
             className={compact
-              ? 'field-sizing-fixed min-h-12 max-h-32 flex-1 resize-none rounded-[1.45rem] border-0 bg-white/82 px-4 py-[0.95rem] text-sm text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-[3.2rem] sm:rounded-[1.65rem]'
+              ? 'field-sizing-fixed min-h-11 max-h-32 flex-1 resize-none rounded-[1.35rem] border-0 bg-white/82 px-4 py-3 text-sm leading-6 text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-12 sm:rounded-[1.5rem]'
               : 'field-sizing-fixed min-h-29 flex-1 resize-none rounded-[1.5rem] border-0 bg-white/80 px-4 py-3 text-base text-ink outline-none focus-visible:ring-3 focus-visible:ring-ring/20 sm:min-h-38 sm:rounded-[1.8rem] sm:px-5 sm:py-4'}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey) {
@@ -1467,8 +1639,15 @@ interface ComposerSelectProps {
 }
 
 function ComposerSelect({ compact = false, label, value, onChange, options, disabled = false }: ComposerSelectProps) {
+  const compactWidthClass =
+    label === 'Model'
+      ? 'min-w-[13rem] flex-[1_1_13rem]'
+      : label === 'Provider'
+        ? 'min-w-[7.5rem] flex-[0_0_7.5rem]'
+        : 'min-w-[7rem] flex-[0_0_7rem]'
+
   return (
-    <label className={compact ? 'relative min-w-[116px] shrink-0' : 'relative w-full sm:min-w-[140px] sm:flex-1 lg:flex-none'}>
+    <label className={compact ? cn('relative shrink-0', compactWidthClass) : 'relative w-full sm:min-w-[140px] sm:flex-1 lg:flex-none'}>
       {compact ? null : (
         <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.22em] text-moss">
           {label}
@@ -1500,22 +1679,22 @@ function ComposerSelect({ compact = false, label, value, onChange, options, disa
 
 const assistantMarkdownComponents: Components = {
   p: ({ children, ...props }) => (
-    <p className="mb-3 last:mb-0 leading-7" {...props}>
+    <p className="mb-2.5 last:mb-0 leading-6" {...props}>
       {children}
     </p>
   ),
   ul: ({ children, ...props }) => (
-    <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0" {...props}>
+    <ul className="mb-2.5 list-disc space-y-0.5 pl-5 last:mb-0" {...props}>
       {children}
     </ul>
   ),
   ol: ({ children, ...props }) => (
-    <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0" {...props}>
+    <ol className="mb-2.5 list-decimal space-y-0.5 pl-5 last:mb-0" {...props}>
       {children}
     </ol>
   ),
   li: ({ children, ...props }) => (
-    <li className="leading-7" {...props}>
+    <li className="leading-6" {...props}>
       {children}
     </li>
   ),
@@ -1560,7 +1739,7 @@ const assistantMarkdownComponents: Components = {
   },
   pre: ({ children, ...props }) => (
     <pre
-      className="mb-3 overflow-x-auto rounded-[1rem] border border-sage-strong/60 bg-paper/90 p-4 text-[13px] leading-6 last:mb-0"
+      className="mb-2.5 max-w-full overflow-x-auto rounded-[0.9rem] border border-sage-strong/60 bg-paper/90 p-3 text-[12.5px] leading-5 last:mb-0"
       {...props}
     >
       {children}
@@ -1568,19 +1747,19 @@ const assistantMarkdownComponents: Components = {
   ),
   blockquote: ({ children, ...props }) => (
     <blockquote
-      className="mb-3 border-l-4 border-moss/50 pl-4 text-ink-soft italic last:mb-0"
+      className="mb-2.5 border-l-4 border-moss/50 pl-3.5 text-ink-soft italic last:mb-0"
       {...props}
     >
       {children}
     </blockquote>
   ),
   h1: ({ children, ...props }) => (
-    <h3 className="mb-2 font-display text-xl tracking-tight text-forest" {...props}>
+    <h3 className="mb-2 font-display text-lg tracking-tight text-forest" {...props}>
       {children}
     </h3>
   ),
   h2: ({ children, ...props }) => (
-    <h3 className="mb-2 font-display text-lg tracking-tight text-forest" {...props}>
+    <h3 className="mb-2 font-display text-base tracking-tight text-forest" {...props}>
       {children}
     </h3>
   ),
@@ -1591,7 +1770,7 @@ const assistantMarkdownComponents: Components = {
   ),
   hr: () => <hr className="my-4 border-sage-strong/60" />,
   table: ({ children, ...props }) => (
-    <div className="mb-3 overflow-x-auto last:mb-0">
+    <div className="mb-2.5 max-w-full overflow-x-auto last:mb-0">
       <table className="w-full border-collapse text-left text-[13px]" {...props}>
         {children}
       </table>
@@ -1737,6 +1916,11 @@ function readPersistedPanelMode<T extends string>(storageKey: string, fallback: 
   return allowed.includes(value as T) ? (value as T) : fallback
 }
 
+function readArtifactSheetMode(): boolean {
+  if (typeof window === 'undefined') return false
+  return shouldUseArtifactSheet(window.innerWidth)
+}
+
 function readPersistedCollapse(storageKey: string | null): boolean {
   if (!storageKey || typeof window === 'undefined') return true
   try {
@@ -1836,7 +2020,7 @@ function MessageBubble({ message }: MessageBubbleProps) {
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`w-full ${isUser ? 'sm:max-w-[68%]' : 'sm:max-w-[76%]'}`}>
+      <div className={`min-w-0 max-w-full ${isUser ? 'w-full sm:max-w-[76%]' : 'w-full sm:max-w-[88%]'}`}>
         {showThinkingPanel ? (
           <ThinkingPanel
             key={thinkingStorageKey ?? message.id}
@@ -1865,15 +2049,15 @@ function MessageBubble({ message }: MessageBubbleProps) {
         <div
           className={
             isUser
-              ? 'rounded-[1.7rem] bg-forest px-5 py-4 text-sm leading-7 text-white shadow-[0_18px_40px_rgba(27,53,41,0.14)]'
-              : 'rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]'
+              ? 'rounded-[1.45rem] bg-forest px-4 py-3 text-sm leading-6 text-white shadow-[0_18px_40px_rgba(27,53,41,0.12)] sm:py-3.5'
+              : 'rounded-[1.45rem] bg-white/88 px-4 py-3 text-sm leading-6 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.07)] sm:py-3.5'
           }
         >
           {hasContent ? (
             isUser ? (
-              <p className="whitespace-pre-wrap">{displayContent}</p>
+              <p className="whitespace-pre-wrap break-words">{displayContent}</p>
             ) : (
-              <div className="assistant-markdown min-w-0 text-[15px] text-ink">
+              <div className="assistant-markdown min-w-0 max-w-full break-words text-sm leading-6 text-ink">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={assistantMarkdownComponents}
@@ -1918,7 +2102,7 @@ function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubblePro
 
   return (
     <div className="flex justify-start">
-      <div className="w-full sm:max-w-[76%]">
+      <div className="min-w-0 max-w-full w-full sm:max-w-[88%]">
         {showThinkingPanel ? (
           <ThinkingPanel
             key={thinkingStorageKey ?? turn.runId}
@@ -1957,9 +2141,9 @@ function AssistantTurnBubble({ turn, onHydrateActivity }: AssistantTurnBubblePro
         ) : null}
 
         {hasContent || showFailure ? (
-          <div className="rounded-[1.7rem] bg-white/88 px-5 py-4 text-sm leading-7 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.08)]">
+          <div className="rounded-[1.45rem] bg-white/88 px-4 py-3 text-sm leading-6 text-ink shadow-[0_18px_40px_rgba(62,92,72,0.07)] sm:py-3.5">
             {hasContent ? (
-              <div className="assistant-markdown min-w-0 text-[15px] text-ink">
+              <div className="assistant-markdown min-w-0 max-w-full break-words text-sm leading-6 text-ink">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
                   components={assistantMarkdownComponents}
@@ -1994,7 +2178,8 @@ function RunActivityPanel({
   connectionState,
   onHydrate,
 }: RunActivityPanelProps) {
-  const [expanded, setExpanded] = useState(false)
+  const [expandedState, setExpandedState] = useState(() => ({ runId, expanded: false }))
+  const expanded = expandedState.runId === runId ? expandedState.expanded : false
   const summary =
     connectionState === 'reconnecting'
       ? 'Reconnecting to live activity…'
@@ -2003,13 +2188,9 @@ function RunActivityPanel({
       : getRunActivitySummary(activity)
   const statusLabel = isStreaming ? 'Live activity' : 'Run trace'
 
-  useEffect(() => {
-    setExpanded(false)
-  }, [runId])
-
   const toggleExpanded = useCallback(() => {
     const next = !expanded
-    setExpanded(next)
+    setExpandedState({ runId, expanded: next })
     if (next && !isStreaming && !activity?.hydrated) {
       onHydrate?.(runId)
     }

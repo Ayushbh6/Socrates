@@ -6,6 +6,8 @@ import {
   dismissWorkerTrace,
   getActiveWorkerTraceRun,
   getWorkerProgressLabel,
+  isTerminalWorkerTraceRun,
+  isTerminalWorkerTraceStatus,
 } from './workerTrace'
 import type { WsTaskWorkerStarted, WsTaskWorkerTodoUpdated, WsTaskWorkerToolCalled, WsTaskWorkerToolResult } from '@/types/api'
 
@@ -102,5 +104,25 @@ describe('workerTrace reducer', () => {
 
     state = dismissWorkerTrace(state, 'worker-1')
     expect(getActiveWorkerTraceRun(state)).toBeNull()
+  })
+
+  it('detects terminal worker statuses without requiring dismissal', () => {
+    let state = createWorkerTraceState()
+    state = applyWorkerTraceEvent(state, {
+      type: 'task.worker.blocked',
+      run_id: 'parent-run',
+      task_id: 'task-1',
+      worker_run_id: 'worker-1',
+      seq: 40,
+      result: { status: 'blocked', summary: 'Needs Socrates follow-up.' },
+    })
+
+    const active = getActiveWorkerTraceRun(state)
+    expect(isTerminalWorkerTraceStatus('completed')).toBe(true)
+    expect(isTerminalWorkerTraceStatus('blocked')).toBe(true)
+    expect(isTerminalWorkerTraceStatus('failed')).toBe(true)
+    expect(isTerminalWorkerTraceStatus('running')).toBe(false)
+    expect(isTerminalWorkerTraceRun(active)).toBe(true)
+    expect(active?.workerRunId).toBe('worker-1')
   })
 })

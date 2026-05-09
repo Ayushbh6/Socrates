@@ -137,7 +137,10 @@ export function useStickToBottom(options: UseStickToBottomOptions = {}): StickTo
   // consistent with the actual geometry (e.g. conversations that hydrate from
   // a cached scroll position should not pop into "new content" on mount).
   useLayoutEffect(() => {
-    syncAtBottomFromScroll()
+    const frame = window.requestAnimationFrame(() => {
+      syncAtBottomFromScroll()
+    })
+    return () => window.cancelAnimationFrame(frame)
     // Run once on mount; `syncAtBottomFromScroll` is stable enough for this
     // purpose (it would re-run on `hasNewContent` toggles, which is fine --
     // they re-read the current scroll position without side effects).

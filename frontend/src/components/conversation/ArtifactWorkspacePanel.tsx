@@ -23,6 +23,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import {
+  DEFAULT_PANEL_WIDTH_PX,
+  MIN_CHAT_WIDTH_PX,
+  clampArtifactPanelWidth,
+  resolvePersistedArtifactPanelWidth,
+} from '@/lib/artifactPanelLayout'
 import { cn } from '@/lib/utils'
 import type {
   TaskArtifact,
@@ -33,10 +39,6 @@ import type {
 
 export type ArtifactPanelMode = 'open' | 'collapsed'
 
-const DEFAULT_PANEL_WIDTH = 720
-const MIN_PANEL_WIDTH = 460
-const MAX_PANEL_WIDTH = 1080
-const MIN_CHAT_WIDTH = 500
 const PANEL_WIDTH_STORAGE_KEY = 'artifact-workspace-panel-width-v2'
 
 type WorkspaceTreeNode = {
@@ -82,18 +84,14 @@ export function ArtifactWorkspacePanel({
   const [panelWidth, setPanelWidth] = useState(() => readPersistedPanelWidth())
 
   const clampPanelWidth = useCallback((nextWidth: number) => {
-    if (typeof window === 'undefined') {
-      return clamp(nextWidth, MIN_PANEL_WIDTH, DEFAULT_PANEL_WIDTH)
-    }
-
-    const viewportMax = Math.max(MIN_PANEL_WIDTH, window.innerWidth - MIN_CHAT_WIDTH)
-    return clamp(nextWidth, MIN_PANEL_WIDTH, Math.min(MAX_PANEL_WIDTH, viewportMax))
+    const viewportWidth = typeof window === 'undefined'
+      ? DEFAULT_PANEL_WIDTH_PX + MIN_CHAT_WIDTH_PX
+      : window.innerWidth
+    return clampArtifactPanelWidth(nextWidth, viewportWidth)
   }, [])
 
   useEffect(() => {
     if (mobile) return
-
-    setPanelWidth((current) => clampPanelWidth(current))
 
     const handleResize = () => {
       setPanelWidth((current) => {
@@ -152,7 +150,7 @@ export function ArtifactWorkspacePanel({
 
   if (mode === 'collapsed' && !mobile) {
     return (
-      <aside className="hidden h-full w-12 shrink-0 border-l border-forest/10 bg-paper/72 transition-[width,background-color] duration-200 ease-out motion-reduce:transition-none lg:flex">
+      <aside className="hidden h-full w-12 shrink-0 border-l border-forest/10 bg-paper/72 transition-[width,background-color] duration-200 ease-out motion-reduce:transition-none xl:flex">
         <button
           type="button"
           onClick={() => onModeChange('open')}
@@ -173,7 +171,7 @@ export function ArtifactWorkspacePanel({
       className={cn(
         mobile
           ? 'fixed inset-x-0 bottom-0 z-50 flex h-[82dvh] max-h-[82vh] rounded-t-[1.35rem] border-t border-forest/12 bg-paper shadow-[0_-24px_80px_rgba(27,53,41,0.22)]'
-          : 'relative hidden h-full shrink-0 border-l border-forest/10 bg-paper/86 lg:flex',
+          : 'relative hidden h-full shrink-0 border-l border-forest/10 bg-paper/86 xl:flex',
         'min-w-0 flex-col overflow-hidden transition-[width,transform,background-color] duration-200 ease-out motion-reduce:transition-none',
       )}
       style={mobile ? undefined : { width: panelWidth }}
@@ -298,24 +296,15 @@ export function ArtifactWorkspacePanel({
   )
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value))
-}
-
 function readPersistedPanelWidth() {
   if (typeof window === 'undefined') {
-    return DEFAULT_PANEL_WIDTH
+    return DEFAULT_PANEL_WIDTH_PX
   }
 
-  const stored = window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY)
-  if (stored == null) {
-    return DEFAULT_PANEL_WIDTH
-  }
-
-  const parsed = Number(stored)
-  return Number.isFinite(parsed)
-    ? clamp(parsed, MIN_PANEL_WIDTH, MAX_PANEL_WIDTH)
-    : DEFAULT_PANEL_WIDTH
+  return resolvePersistedArtifactPanelWidth(
+    window.localStorage.getItem(PANEL_WIDTH_STORAGE_KEY),
+    window.innerWidth,
+  )
 }
 
 function writePersistedPanelWidth(width: number) {

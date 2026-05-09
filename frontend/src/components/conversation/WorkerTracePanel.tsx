@@ -23,9 +23,10 @@ interface WorkerTracePanelProps {
   worker: WorkerTraceRun | null
   mode: 'open' | 'collapsed' | 'hidden'
   onModeChange: (mode: 'open' | 'collapsed' | 'hidden') => void
+  className?: string
 }
 
-export function WorkerTracePanel({ worker, mode, onModeChange }: WorkerTracePanelProps) {
+export function WorkerTracePanel({ worker, mode, onModeChange, className }: WorkerTracePanelProps) {
   useEffect(() => {
     if (worker?.status === 'running' && mode === 'hidden') {
       onModeChange('collapsed')
@@ -48,11 +49,11 @@ export function WorkerTracePanel({ worker, mode, onModeChange }: WorkerTracePane
 
   if (mode === 'hidden') {
     return (
-      <aside className="pointer-events-none fixed bottom-28 right-4 z-40 lg:bottom-6 lg:right-6">
+      <aside className={cn('flex justify-end', className)}>
         <button
           type="button"
           onClick={() => onModeChange('collapsed')}
-          className="pointer-events-auto inline-flex items-center gap-2 rounded-full border border-forest/12 bg-paper/96 px-3 py-2 text-xs font-semibold text-forest shadow-[0_18px_50px_rgba(27,53,41,0.16)] backdrop-blur transition hover:bg-white"
+          className="inline-flex items-center gap-2 rounded-full border border-forest/12 bg-paper/96 px-3 py-2 text-xs font-semibold text-forest shadow-sm transition hover:bg-white"
         >
           <PanelRightOpen className="size-3.5" />
           Worker trace
@@ -62,13 +63,13 @@ export function WorkerTracePanel({ worker, mode, onModeChange }: WorkerTracePane
   }
 
   return (
-    <aside className="pointer-events-none fixed inset-x-0 bottom-0 z-40 px-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] lg:inset-x-auto lg:bottom-6 lg:right-6 lg:w-[380px] lg:px-0 lg:pb-0">
-      <div className="pointer-events-auto overflow-hidden rounded-[1.25rem] border border-forest/12 bg-paper/96 shadow-[0_24px_80px_rgba(27,53,41,0.18)] backdrop-blur">
+    <aside className={cn('w-full', className)}>
+      <div className="overflow-hidden rounded-[1.1rem] border border-forest/12 bg-paper/96 shadow-sm">
         <button
           type="button"
           onClick={() => onModeChange(expanded ? 'collapsed' : 'open')}
           aria-expanded={expanded}
-          className="flex w-full items-start gap-3 px-4 py-3.5 text-left transition hover:bg-sage/20"
+          className="flex w-full items-start gap-3 px-3 py-3 text-left transition hover:bg-sage/20 sm:px-4"
         >
           <WorkerPanelStatusIcon status={worker.status} />
           <div className="min-w-0 flex-1">
@@ -96,7 +97,7 @@ export function WorkerTracePanel({ worker, mode, onModeChange }: WorkerTracePane
         </button>
 
         {expanded ? (
-          <div className="max-h-[58vh] overflow-y-auto border-t border-forest/10 px-4 py-3 lg:max-h-[68vh]">
+          <div className="max-h-[34vh] overflow-y-auto border-t border-forest/10 px-3 py-3 sm:max-h-[42vh] sm:px-4">
             <div className="rounded-[1rem] bg-sage/30 px-3 py-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-moss">Current todo</p>
               {worker.currentItem ? (

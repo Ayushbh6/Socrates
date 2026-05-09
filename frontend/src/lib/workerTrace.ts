@@ -279,6 +279,14 @@ export function dismissWorkerTrace(current: WorkerTraceState, workerRunId: strin
   }
 }
 
+export function isTerminalWorkerTraceStatus(status: WorkerTraceStatus | null | undefined) {
+  return status === 'completed' || status === 'blocked' || status === 'failed'
+}
+
+export function isTerminalWorkerTraceRun(run: WorkerTraceRun | null | undefined) {
+  return isTerminalWorkerTraceStatus(run?.status)
+}
+
 export function getActiveWorkerTraceRun(state: WorkerTraceState): WorkerTraceRun | null {
   if (!state.activeWorkerRunId) return null
   return state.runs[state.activeWorkerRunId] ?? null

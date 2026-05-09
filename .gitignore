@@ -15,6 +15,7 @@ backend/.venv/
 backend/.pytest_cache/
 roadmap/
 research/
+sprints/
 frontend/.next/
 frontend/out/
 .playwright-cli/
