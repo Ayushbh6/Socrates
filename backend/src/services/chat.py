@@ -47,11 +47,10 @@ class ConversationRunInProgressError(ValueError):
 
 
 ACTIVE_RUN_STATUSES = {"queued", "running"}
-TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked", "cancelled", "stalled"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "stalled"}
 TERMINAL_RUN_EVENT_TYPES = {
     "run.completed",
     "run.failed",
-    "run.blocked",
     "run.cancelled",
     "run.stalled",
 }
@@ -1036,7 +1035,7 @@ class RunManager:
                 session,
                 run,
                 event_type="task.created",
-                payload={"type": "task.created", "run_id": run.id, "task": serialize_task(task, session=session)},
+                payload={"type": "task.created", "run_id": run.id, "task": serialize_task(task)},
             )
         q = session.query(ToolExecution).filter(ToolExecution.agent_run_id == run.id)
         if tool_call_id:
@@ -1064,7 +1063,7 @@ class RunManager:
                         "type": "task.status.updated",
                         "run_id": run.id,
                         "task_id": task.id,
-                        "task": serialize_task(task, session=session),
+                        "task": serialize_task(task),
                     },
                 )
             approval_id = execution.result_json.get("approval_id") if execution is not None else None

@@ -263,7 +263,6 @@ class TaskResponse(BaseModel):
     updated_at: datetime
     completed_at: datetime | None
     failed_at: datetime | None
-    recovery_state: dict[str, Any] | None = None
 
 
 class TaskArtifactResponse(BaseModel):

@@ -536,17 +536,11 @@ function ConversationSessionContent({
           (
             event.type === 'task.worker.tool.result' ||
             event.type === 'task.worker.todo.updated' ||
-            event.type === 'task.worker.completed' ||
-            event.type === 'task.worker.blocked' ||
-            event.type === 'task.worker.failed' ||
-            event.type === 'task.worker.cancelled' ||
-            event.type === 'task.worker.stalled'
+            event.type === 'task.worker.completed'
           )
         ) {
           queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })
           queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
-          queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
-          queryClient.invalidateQueries({ queryKey: ['conversation-tasks', conversationId] })
         }
       }
 
@@ -592,8 +586,6 @@ function ConversationSessionContent({
       if (event.type === 'task.artifact.registered') {
         queryClient.invalidateQueries({ queryKey: ['task-artifacts', event.task_id] })
         queryClient.invalidateQueries({ queryKey: ['task-workspace-tree', event.task_id] })
-        queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
-        queryClient.invalidateQueries({ queryKey: ['conversation-tasks', conversationId] })
         queryClient.invalidateQueries({ queryKey: ['assets', projectId] })
         const worker = getActiveWorkerTraceRun(workerTraceRef.current)
         const decision = decideArtifactRegistrationAutoOpen({
@@ -641,7 +633,7 @@ function ConversationSessionContent({
         return
       }
 
-      if (event.type === 'run.failed' || event.type === 'run.blocked') {
+      if (event.type === 'run.failed') {
         setActiveRunId(null)
         queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
       }
@@ -1201,7 +1193,6 @@ function TaskSummaryCard({
   const completionApprovals = pendingApprovals.filter((a) => a.approval_type === 'task_completion')
   const commandApprovals = pendingApprovals.filter((a) => !a.approval_type.toLowerCase().includes('plan') && a.approval_type !== 'task_completion')
   const outputArtifacts = artifacts.filter((artifact) => artifact.artifact_role === 'output')
-  const recoveryState = task.recovery_state
   const taskLabel =
     task.status === 'completed'
       ? 'Completed task'
@@ -1238,10 +1229,6 @@ function TaskSummaryCard({
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-moss">Result Summary</p>
           <p className="mt-1 text-sm leading-6 text-ink-soft">{task.result_summary}</p>
         </div>
-      ) : null}
-
-      {!isTerminalTask && recoveryState ? (
-        <TaskRecoveryPanel recovery={recoveryState} />
       ) : null}
 
       {planApprovals.length > 0 ? (
@@ -1402,63 +1389,6 @@ function TaskSummaryCard({
         </p>
       ) : null}
     </section>
-  )
-}
-
-function TaskRecoveryPanel({ recovery }: { recovery: NonNullable<Task['recovery_state']> }) {
-  const isAlert = recovery.kind === 'stalled' || recovery.kind === 'worker_blocked'
-  const outputCount = Array.isArray(recovery.outputs) ? recovery.outputs.length : 0
-
-  return (
-    <div
-      className={cn(
-        'mt-4 rounded-[1rem] border px-4 py-3',
-        isAlert ? 'border-red-200 bg-red-50/70' : 'border-forest/10 bg-canvas/78',
-      )}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p
-            className={cn(
-              'text-[11px] font-semibold uppercase tracking-[0.18em]',
-              isAlert ? 'text-red-700' : 'text-moss',
-            )}
-          >
-            Recovery state
-          </p>
-          <p className="mt-1 text-sm font-semibold text-forest">{recovery.title}</p>
-          <p className="mt-1 text-xs leading-5 text-ink-soft">{recovery.summary}</p>
-        </div>
-        <span
-          className={cn(
-            'rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em]',
-            isAlert ? 'bg-white/80 text-red-700' : 'bg-white/80 text-moss',
-          )}
-        >
-          {recovery.kind.replaceAll('_', ' ')}
-        </span>
-      </div>
-
-      {outputCount > 0 ? (
-        <p className="mt-2 text-[11px] leading-5 text-ink-soft">
-          {outputCount} output {outputCount === 1 ? 'artifact is' : 'artifacts are'} available for review.
-        </p>
-      ) : null}
-
-      {recovery.suggested_actions.length > 0 ? (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {recovery.suggested_actions.map((action) => (
-            <span
-              key={action.id}
-              title={action.description}
-              className="rounded-full border border-forest/10 bg-paper px-2.5 py-1 text-[11px] font-medium text-forest"
-            >
-              {action.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
   )
 }
 

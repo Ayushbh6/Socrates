@@ -65,7 +65,6 @@ type ActivityEvent =
   | WsRunToolCalled
   | WsRunToolResult
   | WsRunFailed
-  | Extract<WsEvent, { type: 'run.blocked' }>
   | WsRunCancelled
   | WsRunStalled
   | Extract<WsEvent, { type: 'run.completed' }>
@@ -89,7 +88,6 @@ const ACTIVITY_EVENT_TYPES = new Set([
   'run.tool.result',
   'run.completed',
   'run.failed',
-  'run.blocked',
   'run.cancelled',
   'run.stalled',
   'task.worker.started',
@@ -411,7 +409,7 @@ export function applyRunActivityEvent(
     items = insertOrUpdateToolItem(items, resultItem)
   } else if (event.type === 'run.completed') {
     terminal = true
-  } else if (event.type === 'run.failed' || event.type === 'run.blocked') {
+  } else if (event.type === 'run.failed') {
     terminal = true
     failed = true
     items = items.map((item) => {
@@ -421,7 +419,7 @@ export function applyRunActivityEvent(
       return {
         ...item,
         status: 'failed',
-        resultSummary: item.resultSummary ?? event.error ?? 'Run blocked.',
+        resultSummary: item.resultSummary ?? event.error,
       }
     })
   } else if (event.type === 'run.cancelled' || event.type === 'run.stalled') {
@@ -535,15 +533,6 @@ export function toActivityEvent(record: AgentRunEvent): ActivityEvent | null {
       type,
       run_id: runId,
       error: getString(record.payload.error) ?? 'Run failed.',
-      seq: record.sequence_no,
-    }
-  }
-
-  if (type === 'run.blocked') {
-    return {
-      type,
-      run_id: runId,
-      error: getString(record.payload.error) ?? 'Run blocked.',
       seq: record.sequence_no,
     }
   }

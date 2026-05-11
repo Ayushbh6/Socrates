@@ -33,7 +33,7 @@ function syncTerminalActivity(state: RunActivityState, status: AgentRunStatus) {
   if (status === 'completed') {
     return { ...state, terminal: true }
   }
-  if (status === 'failed' || status === 'blocked') {
+  if (status === 'failed') {
     return { ...state, terminal: true, failed: true }
   }
   if (status === 'cancelled' || status === 'stalled') {
@@ -216,17 +216,6 @@ export function applyAssistantTurnEvent(
       activity: syncTerminalActivity(
         applyRunActivityEvent(updated.activity, event),
         'failed',
-      ),
-    }
-    return updated
-  } else if (event.type === 'run.blocked') {
-    updated = {
-      ...updated,
-      status: 'blocked',
-      error: event.error ?? 'Run blocked.',
-      activity: syncTerminalActivity(
-        applyRunActivityEvent(updated.activity, event),
-        'blocked',
       ),
     }
     return updated

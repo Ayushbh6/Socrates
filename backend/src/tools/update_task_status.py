@@ -93,7 +93,7 @@ def handle(runtime: Any, status: str, result_summary: str):
     runtime.context.current_task = None
     runtime.context.session.refresh(runtime.context.run)
     return {
-        "task": serialize_task(closed, session=runtime.context.session),
+        "task": serialize_task(closed),
         "status": closed.status,
         "result_summary": closed.result_summary,
     }

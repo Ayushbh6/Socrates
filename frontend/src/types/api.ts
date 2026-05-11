@@ -4,7 +4,7 @@ export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high'
 export type InputMode = 'text' | 'voice'
 export type MessageRole = 'user' | 'assistant'
 export type MessageStatus = 'queued' | 'completed' | 'failed'
-export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled' | 'stalled'
+export type AgentRunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'stalled'
 
 export interface User {
   id: string
@@ -198,33 +198,6 @@ export interface Task {
   updated_at: string
   completed_at: string | null
   failed_at: string | null
-  recovery_state: TaskRecoveryState | null
-}
-
-export interface TaskRecoveryAction {
-  id: 'retry_remaining_work' | 'revise_plan' | 'accept_partial_output' | 'close_task_failed' | 'start_separate_task' | string
-  label: string
-  description: string
-  owner: 'socrates' | string
-}
-
-export interface TaskRecoveryState {
-  kind:
-    | 'cancelled'
-    | 'stalled'
-    | 'worker_blocked'
-    | 'outputs_waiting_for_acceptance'
-    | 'completion_approval_pending'
-    | string
-  title: string
-  summary: string
-  source_run_id?: string | null
-  source_worker_run_id?: string | null
-  source_approval_id?: string | null
-  blockers?: unknown[]
-  todo?: unknown
-  outputs?: unknown[]
-  suggested_actions: TaskRecoveryAction[]
 }
 
 export interface TaskArtifact {
@@ -380,11 +353,6 @@ export interface WsRunFailed extends WsEventBase {
   run_id: string
   error: string
 }
-export interface WsRunBlocked extends WsEventBase {
-  type: 'run.blocked'
-  run_id: string
-  error?: string
-}
 export interface WsRunCancelled extends WsEventBase {
   type: 'run.cancelled'
   run_id: string
@@ -537,7 +505,6 @@ export type WsEvent =
   | WsRunMessageCompleted
   | WsRunCompleted
   | WsRunFailed
-  | WsRunBlocked
   | WsRunCancelled
   | WsRunStalled
   | WsTaskCreated

@@ -32,7 +32,7 @@ from .tasks import (
 from .utils import to_json_compatible
 
 ACTIVE_RUN_STATUSES = {"queued", "running"}
-TERMINAL_RUN_STATUSES = {"completed", "failed", "blocked", "cancelled", "stalled"}
+TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "stalled"}
 
 
 def _is_terminal_run_status(status: str | None) -> bool:
@@ -410,9 +410,8 @@ def _execute_worker_run(
             ],
             handoff_to_socrates=f"The worker run was already marked {worker_run.status}.",
         )
-    worker_run.status = result.status
+    worker_run.status = "completed"
     worker_run.completed_at = datetime.now(timezone.utc)
-    worker_run.error_message = result.summary if result.status in {"blocked", "failed"} else None
     worker_run.final_response_json = to_json_compatible(result_response)
     worker_run.final_parsed_json = result.model_dump()
     worker_run.aggregated_metadata_json = {
@@ -429,9 +428,8 @@ def _execute_worker_run(
     _record_worker_event(
         session,
         worker_run,
-        event_type=f"run.{result.status}",
-        payload={"type": f"run.{result.status}", "run_id": worker_run.id},
-        status="error" if result.status in {"blocked", "failed"} else "ok",
+        event_type="run.completed",
+        payload={"type": "run.completed", "run_id": worker_run.id},
     )
     return result
 
