@@ -6,8 +6,6 @@ from ...services.chat import (
     RunManager,
     create_plan_approval_resume_run,
     create_task_completion_denial_resume_run,
-    create_task_recovery_run,
-    get_active_run_for_conversation,
 )
 from ...services.projects import (
     archive_conversation,
@@ -22,7 +20,6 @@ from ...services.projects import (
 )
 from ...services.tasks import (
     create_project_workspace,
-    close_task,
     close_task_from_completion_approval,
     export_task_artifact_to_asset,
     get_active_task_for_conversation,
@@ -37,9 +34,6 @@ from ...services.tasks import (
     serialize_task,
     serialize_task_approval,
     serialize_task_artifact,
-    validate_task_recovery_action,
-    TaskClosureValidationError,
-    TaskRecoveryActionError,
     update_project_workspace,
 )
 from .dependencies import get_run_manager, get_session_dependency
@@ -56,8 +50,6 @@ from .schemas import (
     ResolveTaskApprovalRequest,
     TaskApprovalResponse,
     TaskArtifactResponse,
-    TaskRecoveryActionRequest,
-    TaskRecoveryActionResponse,
     TaskWorkspaceFilePreviewResponse,
     TaskWorkspaceTreeResponse,
     TaskResponse,
@@ -304,105 +296,6 @@ def get_task_route(task_id: str, session: Session = Depends(get_session_dependen
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return TaskResponse.model_validate(serialize_task(task, session=session))
-
-
-@router.post("/tasks/{task_id}/recovery-actions", response_model=TaskRecoveryActionResponse, status_code=status.HTTP_202_ACCEPTED)
-async def post_task_recovery_action(
-    task_id: str,
-    request: TaskRecoveryActionRequest,
-    session: Session = Depends(get_session_dependency),
-    run_manager: RunManager = Depends(get_run_manager),
-) -> TaskRecoveryActionResponse:
-    try:
-        task = get_task(session, task_id)
-        await run_manager.reconcile_stale_active_runs(conversation_id=task.conversation_id)
-        task, recovery_state = validate_task_recovery_action(session, task_id, action_id=request.action_id)
-        active_run = get_active_run_for_conversation(session, task.conversation_id)
-        if active_run is not None:
-            raise ConversationRunInProgressError(active_run.id)
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    except TaskRecoveryActionError as exc:
-        raise HTTPException(
-            status_code=exc.status_code,
-            detail={"code": exc.error_type, "message": exc.message},
-        ) from exc
-    except ConversationRunInProgressError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "conversation_run_in_progress",
-                "message": str(exc),
-                "run_id": exc.run_id,
-            },
-        ) from exc
-
-    if request.action_id == "close_task_failed":
-        reason = (request.reason or request.note or "").strip()
-        if not reason:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "reason_required", "message": "Closing a task as failed requires a reason."},
-            )
-        try:
-            closed = close_task(session, task.id, status="failed", result_summary=reason)
-        except TaskClosureValidationError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": exc.error_type, "message": exc.message, "suggestion": exc.suggestion},
-            ) from exc
-        if task.last_agent_run_id:
-            await run_manager.record_external_event(
-                task.last_agent_run_id,
-                event_type="task.status.updated",
-                payload={
-                    "type": "task.status.updated",
-                    "run_id": task.last_agent_run_id,
-                    "task_id": closed.id,
-                    "task": serialize_task(closed, session=session),
-                },
-            )
-        return TaskRecoveryActionResponse.model_validate(
-            {
-                "task": serialize_task(closed, session=session),
-                "action_id": request.action_id,
-                "message_id": None,
-                "agent_run_id": None,
-                "run_status": None,
-            }
-        )
-
-    try:
-        message, run = create_task_recovery_run(
-            session,
-            task=task,
-            action_id=request.action_id,
-            recovery_state=recovery_state,
-            note=request.note,
-        )
-    except ConversationRunInProgressError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "conversation_run_in_progress",
-                "message": str(exc),
-                "run_id": exc.run_id,
-            },
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-
-    await run_manager.start_run(run.id)
-    session.refresh(task)
-    return TaskRecoveryActionResponse.model_validate(
-        {
-            "task": serialize_task(task, session=session),
-            "action_id": request.action_id,
-            "message_id": message.id,
-            "agent_run_id": run.id,
-            "run_status": run.status,
-        }
-    )
 
 
 @router.get("/tasks/{task_id}/artifacts", response_model=list[TaskArtifactResponse])

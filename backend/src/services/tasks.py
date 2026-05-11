@@ -46,7 +46,6 @@ TASK_SUBDIRS = ("inputs", "work", "outputs", "logs")
 VISIBLE_TASK_WORKSPACE_DIRS = ("inputs", "work", "outputs")
 RECOVERABLE_RUN_STATUSES = {"cancelled", "stalled"}
 WORKER_BLOCKED_EVENT_TYPE = "task.worker.blocked"
-IMPLEMENTED_RECOVERY_ACTIONS = {"retry_remaining_work", "revise_plan", "accept_partial_output", "close_task_failed"}
 TEXT_PREVIEW_EXTENSIONS = {
     ".css",
     ".csv",
@@ -103,14 +102,6 @@ class TaskClosureValidationError(ValueError):
         self.message = message
         self.suggestion = suggestion
         self.retryable = retryable
-
-
-class TaskRecoveryActionError(ValueError):
-    def __init__(self, *, error_type: str, message: str, status_code: int = 400):
-        super().__init__(message)
-        self.error_type = error_type
-        self.message = message
-        self.status_code = status_code
 
 
 class TaskWorkspaceFileError(ValueError):
@@ -1282,59 +1273,6 @@ def build_task_recovery_state(session: Session, task: Task) -> dict[str, Any] | 
         }
 
     return None
-
-
-def validate_task_recovery_action(session: Session, task_id: str, *, action_id: str) -> tuple[Task, dict[str, Any]]:
-    task = get_task(session, task_id)
-    if task.status in TERMINAL_TASK_STATUSES:
-        raise TaskRecoveryActionError(
-            error_type="task_already_terminal",
-            message="This task is already closed and cannot run recovery actions.",
-            status_code=409,
-        )
-
-    if action_id not in RECOVERY_ACTIONS:
-        raise TaskRecoveryActionError(
-            error_type="unknown_recovery_action",
-            message=f"Unknown recovery action: {action_id}.",
-            status_code=400,
-        )
-
-    recovery_state = build_task_recovery_state(session, task)
-    if recovery_state is None:
-        raise TaskRecoveryActionError(
-            error_type="recovery_state_missing",
-            message="This task does not currently expose a recoverable state.",
-            status_code=409,
-        )
-
-    suggested_ids = {
-        str(action.get("id"))
-        for action in recovery_state.get("suggested_actions", [])
-        if isinstance(action, dict) and action.get("id")
-    }
-    if action_id not in suggested_ids:
-        raise TaskRecoveryActionError(
-            error_type="recovery_action_not_allowed",
-            message=f"Recovery action '{action_id}' is not allowed for the current task state.",
-            status_code=409,
-        )
-
-    if action_id == "start_separate_task":
-        raise TaskRecoveryActionError(
-            error_type="recovery_action_not_implemented",
-            message="Starting a separate task from recovery is not implemented in this sprint.",
-            status_code=501,
-        )
-
-    if action_id not in IMPLEMENTED_RECOVERY_ACTIONS:
-        raise TaskRecoveryActionError(
-            error_type="recovery_action_not_implemented",
-            message=f"Recovery action '{action_id}' is not implemented.",
-            status_code=501,
-        )
-
-    return task, recovery_state
 
 
 def serialize_task(task: Task, *, session: Session | None = None) -> dict[str, Any]:

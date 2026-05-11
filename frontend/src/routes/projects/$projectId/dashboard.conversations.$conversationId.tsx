@@ -88,7 +88,6 @@ import type {
   Task,
   TaskApproval,
   TaskArtifact,
-  TaskRecoveryActionResponse,
   TaskWorkspaceFilePreview,
   TaskWorkspaceTree,
   ThinkingLevel,
@@ -190,7 +189,6 @@ function ConversationSessionContent({
   const [pendingAutoOpenArtifactPath, setPendingAutoOpenArtifactPath] = useState<string | null>(null)
   const [recentlyClosedTask, setRecentlyClosedTask] = useState<Task | null>(null)
   const [sendError, setSendError] = useState<string | null>(null)
-  const [recoveryActionError, setRecoveryActionError] = useState<string | null>(null)
 
   const {
     register,
@@ -741,56 +739,6 @@ function ConversationSessionContent({
     },
   })
 
-  const runRecoveryAction = useMutation({
-    mutationFn: ({ task, actionId }: { task: Task; actionId: string }) => {
-      const recoverySummary = task.recovery_state?.summary ?? 'User chose a recovery action.'
-      const body = {
-        action_id: actionId,
-        note: `User selected ${actionId.replaceAll('_', ' ')} from the recovery panel.`,
-        reason:
-          actionId === 'close_task_failed'
-            ? `User chose to close this recoverable task as failed. Recovery context: ${recoverySummary}`
-            : null,
-      }
-      return apiFetch<TaskRecoveryActionResponse>(`/tasks/${task.id}/recovery-actions`, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
-    },
-    onSuccess: (response) => {
-      setRecoveryActionError(null)
-      queryClient.setQueryData(['active-task', conversationId], response.task.status === 'failed' || response.task.status === 'completed' ? null : response.task)
-      queryClient.setQueryData<Task[]>(['conversation-tasks', conversationId], (current) =>
-        upsertConversationTask(current, response.task),
-      )
-      queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['conversation-tasks', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['messages', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
-      if (response.agent_run_id) {
-        setActiveRunId(response.agent_run_id)
-        setAssistantTurns((previous) => ({
-          ...previous,
-          [response.agent_run_id!]:
-            previous[response.agent_run_id!] ??
-            createAssistantTurn({
-              runId: response.agent_run_id!,
-              conversationId,
-              triggerMessageId: response.message_id ?? undefined,
-              status: response.run_status ?? 'queued',
-              thinkingEnabled: selectedThinking !== 'off',
-            }),
-        }))
-      }
-    },
-    onError: (error) => {
-      const fallback = 'Unable to run that recovery action.'
-      setRecoveryActionError(error instanceof Error ? error.message : fallback)
-      queryClient.invalidateQueries({ queryKey: ['active-task', conversationId] })
-      queryClient.invalidateQueries({ queryKey: ['active-run', conversationId] })
-    },
-  })
-
   const applyConversationSelection = useCallback(
     (model: string, thinking: ThinkingLevel) => {
       const normalizedThinking = normalizeThinkingLevelForModel(model, thinking)
@@ -1031,10 +979,6 @@ function ConversationSessionContent({
                       artifacts={taskArtifacts}
                       approvalPending={resolveApproval.isPending}
                       onResolveApproval={(approvalId, approved, autoResume) => resolveApproval.mutate({ approvalId, approved, autoResume })}
-                      recoveryActionDisabled={activeRunIsActive || runRecoveryAction.isPending || resolveApproval.isPending}
-                      recoveryActionError={recoveryActionError}
-                      recoveryActionPendingId={runRecoveryAction.variables?.actionId ?? null}
-                      onRecoveryAction={(actionId) => runRecoveryAction.mutate({ task: taskForSummary, actionId })}
                     />
                   ) : null}
                   {timelineEntries.map((entry) => {
@@ -1242,10 +1186,6 @@ interface TaskSummaryCardProps {
   artifacts: TaskArtifact[]
   approvalPending: boolean
   onResolveApproval: (approvalId: string, approved: boolean, autoResume?: boolean) => void
-  recoveryActionDisabled: boolean
-  recoveryActionError: string | null
-  recoveryActionPendingId: string | null
-  onRecoveryAction: (actionId: string) => void
 }
 
 function TaskSummaryCard({
@@ -1254,10 +1194,6 @@ function TaskSummaryCard({
   artifacts,
   approvalPending,
   onResolveApproval,
-  recoveryActionDisabled,
-  recoveryActionError,
-  recoveryActionPendingId,
-  onRecoveryAction,
 }: TaskSummaryCardProps) {
   const isTerminalTask = task.status === 'completed' || task.status === 'failed'
   const pendingApprovals = isTerminalTask ? [] : approvals.filter((approval) => approval.status === 'pending')
@@ -1305,13 +1241,7 @@ function TaskSummaryCard({
       ) : null}
 
       {!isTerminalTask && recoveryState ? (
-        <TaskRecoveryPanel
-          recovery={recoveryState}
-          actionDisabled={recoveryActionDisabled}
-          actionError={recoveryActionError}
-          pendingActionId={recoveryActionPendingId}
-          onRecoveryAction={onRecoveryAction}
-        />
+        <TaskRecoveryPanel recovery={recoveryState} />
       ) : null}
 
       {planApprovals.length > 0 ? (
@@ -1475,24 +1405,9 @@ function TaskSummaryCard({
   )
 }
 
-const ENABLED_RECOVERY_ACTIONS = new Set(['retry_remaining_work', 'revise_plan', 'accept_partial_output', 'close_task_failed'])
-
-function TaskRecoveryPanel({
-  recovery,
-  actionDisabled,
-  actionError,
-  pendingActionId,
-  onRecoveryAction,
-}: {
-  recovery: NonNullable<Task['recovery_state']>
-  actionDisabled: boolean
-  actionError: string | null
-  pendingActionId: string | null
-  onRecoveryAction: (actionId: string) => void
-}) {
+function TaskRecoveryPanel({ recovery }: { recovery: NonNullable<Task['recovery_state']> }) {
   const isAlert = recovery.kind === 'stalled' || recovery.kind === 'worker_blocked'
   const outputCount = Array.isArray(recovery.outputs) ? recovery.outputs.length : 0
-  const showActionButtons = recovery.kind !== 'completion_approval_pending'
 
   return (
     <div
@@ -1530,43 +1445,18 @@ function TaskRecoveryPanel({
         </p>
       ) : null}
 
-      {showActionButtons && recovery.suggested_actions.length > 0 ? (
+      {recovery.suggested_actions.length > 0 ? (
         <div className="mt-3 flex flex-wrap gap-2">
-          {recovery.suggested_actions.map((action) => {
-            const isEnabled = ENABLED_RECOVERY_ACTIONS.has(action.id)
-            const isPending = pendingActionId === action.id
-            if (!isEnabled) {
-              return (
-                <span
-                  key={action.id}
-                  title="This recovery path is planned for a later sprint."
-                  className="rounded-full border border-forest/10 bg-paper/70 px-2.5 py-1 text-[11px] font-medium text-ink-soft"
-                >
-                  {action.label}
-                </span>
-              )
-            }
-            return (
-              <Button
-                key={action.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                title={action.description}
-                className="h-7 rounded-full border-forest/10 bg-paper px-2.5 text-[11px] font-medium text-forest hover:bg-sage/40"
-                disabled={actionDisabled}
-                onClick={() => onRecoveryAction(action.id)}
-              >
-                {isPending ? <LoaderCircle className="size-3 animate-spin" aria-hidden="true" /> : null}
-                {action.label}
-              </Button>
-            )
-          })}
+          {recovery.suggested_actions.map((action) => (
+            <span
+              key={action.id}
+              title={action.description}
+              className="rounded-full border border-forest/10 bg-paper px-2.5 py-1 text-[11px] font-medium text-forest"
+            >
+              {action.label}
+            </span>
+          ))}
         </div>
-      ) : null}
-
-      {actionError ? (
-        <p className="mt-2 text-xs leading-5 text-red-700">{actionError}</p>
       ) : null}
     </div>
   )

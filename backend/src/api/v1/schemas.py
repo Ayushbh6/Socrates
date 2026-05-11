@@ -266,20 +266,6 @@ class TaskResponse(BaseModel):
     recovery_state: dict[str, Any] | None = None
 
 
-class TaskRecoveryActionRequest(BaseModel):
-    action_id: str = Field(min_length=1, max_length=128)
-    note: str | None = Field(default=None, max_length=4000)
-    reason: str | None = Field(default=None, max_length=4000)
-
-
-class TaskRecoveryActionResponse(BaseModel):
-    task: TaskResponse
-    action_id: str
-    message_id: str | None = None
-    agent_run_id: str | None = None
-    run_status: str | None = None
-
-
 class TaskArtifactResponse(BaseModel):
     id: str
     task_id: str
