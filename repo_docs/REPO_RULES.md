@@ -263,6 +263,8 @@ The system should be able to answer:
 
 No important agent state should exist only in memory if it is needed for recovery, display, or audit.
 
+Only one active turn may run per conversation in V1. The composer must switch from send mode to stop mode while a turn is active, and return to send mode after `turn.completed`, `turn.failed`, or `turn.cancelled`.
+
 ## 16. Streaming Is Event-Based
 
 Streaming output must use typed events.

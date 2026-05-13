@@ -202,7 +202,7 @@ This repository is in the architecture and foundation phase.
 Initial docs:
 
 - [`repo_docs/REPO_STRCUTURE.md`](repo_docs/REPO_STRCUTURE.md)
-- [`repo_docs/REPO_RULEs.md`](repo_docs/REPO_RULEs.md)
+- [`repo_docs/REPO_RULES.md`](repo_docs/REPO_RULES.md)
 - [`repo_docs/DB_STRUCTURE.md`](repo_docs/DB_STRUCTURE.md)
 - [`repo_docs/PROVIDER_USAGE.md`](repo_docs/PROVIDER_USAGE.md)
 - [`repo_docs/APP_FLOW.md`](repo_docs/APP_FLOW.md)

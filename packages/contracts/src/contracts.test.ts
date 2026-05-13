@@ -1,0 +1,412 @@
+import { describe, expect, it } from "vitest"
+import {
+  apiResponseSchema,
+  approvalDecideCommandSchema,
+  approvalRequestedEventSchema,
+  approvalResolvedEventSchema,
+  chatMessageSendCommandSchema,
+  chatTurnCancelCommandSchema,
+  clientCommandSchema,
+  completeOnboardingRequestSchema,
+  completeOnboardingResponseSchema,
+  connectionReadyEventSchema,
+  contextUsageSnapshotEventSchema,
+  conversationSchema,
+  createConversationRequestSchema,
+  createConversationResponseSchema,
+  createProjectRequestSchema,
+  createProjectResponseSchema,
+  createProjectResourceRequestSchema,
+  createProjectResourceResponseSchema,
+  errorCreatedEventSchema,
+  feedbackSubmitCommandSchema,
+  getConversationResponseSchema,
+  getMeResponseSchema,
+  getProjectResponseSchema,
+  listProjectConversationsResponseSchema,
+  listProjectResourcesResponseSchema,
+  listProjectsResponseSchema,
+  messageCompletedEventSchema,
+  messageSchema,
+  patchProjectRequestSchema,
+  patchProjectResponseSchema,
+  projectResourceSchema,
+  projectSchema,
+  projectWorkspaceSchema,
+  serverEventSchema,
+  toolCallCompletedEventSchema,
+  toolCallFailedEventSchema,
+  toolCallOutputEventSchema,
+  toolCallStartedEventSchema,
+  turnCompletedEventSchema,
+  turnCancelledEventSchema,
+  turnFailedEventSchema,
+  turnStartedEventSchema,
+  userSchema,
+  agentAnswerDeltaEventSchema,
+  agentThinkingDeltaEventSchema,
+} from "./index"
+
+const timestamp = "2026-05-13T21:30:00.000Z"
+
+const user = {
+  id: "user_1",
+  displayName: "Ayush",
+  onboardingCompleted: true,
+}
+
+const project = {
+  id: "proj_1",
+  userId: "user_1",
+  name: "Socrates",
+  status: "active",
+  updatedAt: timestamp,
+}
+
+const workspace = {
+  id: "pws_1",
+  projectId: "proj_1",
+  kind: "existing_folder",
+  path: "/tmp/socrates",
+  isPrimary: true,
+  status: "active",
+}
+
+const resource = {
+  id: "pres_1",
+  projectId: "proj_1",
+  name: "README.md",
+  kind: "document",
+  source: "uploaded",
+  status: "active",
+}
+
+const conversation = {
+  id: "conv_1",
+  projectId: "proj_1",
+  title: "Build contracts",
+  status: "active",
+  updatedAt: timestamp,
+}
+
+const userMessage = {
+  id: "msg_user_1",
+  conversationId: "conv_1",
+  sessionId: "sess_1",
+  turnId: "turn_1",
+  role: "user",
+  content: "Start the sprint",
+  status: "completed",
+  createdAt: timestamp,
+}
+
+const assistantMessage = {
+  id: "msg_assistant_1",
+  conversationId: "conv_1",
+  sessionId: "sess_1",
+  turnId: "turn_1",
+  role: "assistant",
+  content: "Done.",
+  status: "completed",
+  createdAt: timestamp,
+}
+
+function envelope<TType extends string, TPayload>(type: TType, payload: TPayload) {
+  return {
+    id: `evt_${type}`,
+    type,
+    schemaVersion: 1,
+    timestamp,
+    projectId: "proj_1",
+    conversationId: "conv_1",
+    sessionId: "sess_1",
+    turnId: "turn_1",
+    actor: {
+      type: "main_agent",
+      id: "agent_main",
+      label: "Socrates",
+    },
+    payload,
+  }
+}
+
+describe("api contracts", () => {
+  it("parses successful and failed API responses", () => {
+    const schema = apiResponseSchema(getMeResponseSchema)
+
+    expect(schema.safeParse({ ok: true, data: { user } }).success).toBe(true)
+    expect(
+      schema.safeParse({
+        ok: false,
+        error: {
+          code: "not_found",
+          message: "Not found",
+        },
+      }).success,
+    ).toBe(true)
+  })
+
+  it("rejects malformed API errors", () => {
+    const schema = apiResponseSchema(getMeResponseSchema)
+
+    expect(schema.safeParse({ ok: false, error: { code: "", message: "" } }).success).toBe(false)
+  })
+})
+
+describe("entity contracts", () => {
+  it("parses core entities", () => {
+    expect(userSchema.safeParse(user).success).toBe(true)
+    expect(projectSchema.safeParse(project).success).toBe(true)
+    expect(projectWorkspaceSchema.safeParse(workspace).success).toBe(true)
+    expect(projectResourceSchema.safeParse(resource).success).toBe(true)
+    expect(conversationSchema.safeParse(conversation).success).toBe(true)
+    expect(messageSchema.safeParse(userMessage).success).toBe(true)
+  })
+
+  it("rejects missing required fields and invalid enums", () => {
+    expect(projectSchema.safeParse({ ...project, name: undefined }).success).toBe(false)
+    expect(projectWorkspaceSchema.safeParse({ ...workspace, status: "unknown" }).success).toBe(false)
+    expect(messageSchema.safeParse({ ...userMessage, role: "robot" }).success).toBe(false)
+  })
+})
+
+describe("http contracts", () => {
+  it("parses onboarding contracts", () => {
+    expect(completeOnboardingRequestSchema.safeParse({ displayName: "Ayush" }).success).toBe(true)
+    expect(completeOnboardingResponseSchema.safeParse({ user }).success).toBe(true)
+  })
+
+  it("parses project list, creation, and dashboard contracts", () => {
+    expect(
+      listProjectsResponseSchema.safeParse({
+        projects: [{ project, primaryWorkspace: workspace, conversationCount: 1, lastActivityAt: timestamp }],
+      }).success,
+    ).toBe(true)
+
+    expect(
+      createProjectRequestSchema.safeParse({
+        name: "Socrates",
+        creationMode: "existing_folder",
+        workspacePath: "/tmp/socrates",
+      }).success,
+    ).toBe(true)
+
+    expect(createProjectResponseSchema.safeParse({ project, primaryWorkspace: workspace }).success).toBe(true)
+    expect(
+      getProjectResponseSchema.safeParse({
+        project,
+        primaryWorkspace: workspace,
+        resources: [resource],
+        conversations: [conversation],
+        instructions: {
+          id: "pins_1",
+          content: "Be direct.",
+          updatedAt: timestamp,
+        },
+      }).success,
+    ).toBe(true)
+  })
+
+  it("parses project patch and resource contracts", () => {
+    expect(patchProjectRequestSchema.safeParse({ name: "Socrates v2", status: "active" }).success).toBe(true)
+    expect(patchProjectResponseSchema.safeParse({ project }).success).toBe(true)
+    expect(listProjectResourcesResponseSchema.safeParse({ resources: [resource] }).success).toBe(true)
+    expect(
+      createProjectResourceRequestSchema.safeParse({
+        name: "Docs",
+        kind: "document",
+        source: "uploaded",
+        uri: "/tmp/docs.md",
+      }).success,
+    ).toBe(true)
+    expect(createProjectResourceResponseSchema.safeParse({ resource }).success).toBe(true)
+  })
+
+  it("parses conversation creation contracts", () => {
+    expect(listProjectConversationsResponseSchema.safeParse({ conversations: [conversation] }).success).toBe(true)
+    expect(createConversationRequestSchema.safeParse({ title: "Build contracts" }).success).toBe(true)
+    expect(createConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
+    expect(getConversationResponseSchema.safeParse({ conversation, messages: [userMessage, assistantMessage] }).success).toBe(
+      true,
+    )
+  })
+
+  it("rejects invalid HTTP payloads", () => {
+    expect(completeOnboardingRequestSchema.safeParse({ displayName: "" }).success).toBe(false)
+    expect(createProjectRequestSchema.safeParse({ name: "Socrates", creationMode: "clone" }).success).toBe(false)
+  })
+})
+
+describe("websocket client command contracts", () => {
+  const runtimeConfig = {
+    providerId: "openai",
+    modelId: "gpt-5.4",
+    thinkingEnabled: true,
+    thinkingEffort: "medium",
+    approvalMode: "manual",
+    sandboxMode: "workspace_write",
+  }
+
+  const commands = [
+    chatMessageSendCommandSchema.safeParse(
+      envelope("chat.message.send", {
+        clientMessageId: "client_msg_1",
+        content: "Hello",
+        runtimeConfig,
+      }),
+    ),
+    chatTurnCancelCommandSchema.safeParse(envelope("chat.turn.cancel", { turnId: "turn_1", reason: "User stopped" })),
+    approvalDecideCommandSchema.safeParse(
+      envelope("approval.decide", { approvalId: "appr_1", decision: "approved" }),
+    ),
+    feedbackSubmitCommandSchema.safeParse(
+      envelope("feedback.submit", {
+        messageId: "msg_assistant_1",
+        turnId: "turn_1",
+        rating: "thumbs_up",
+      }),
+    ),
+  ]
+
+  it("parses every V1 client command", () => {
+    expect(commands.every((result) => result.success)).toBe(true)
+  })
+
+  it("rejects unknown command types and malformed payloads", () => {
+    expect(clientCommandSchema.safeParse(envelope("chat.unknown", {})).success).toBe(false)
+    expect(
+      clientCommandSchema.safeParse(
+        envelope("chat.message.send", {
+          clientMessageId: "client_msg_1",
+          content: "",
+          runtimeConfig,
+        }),
+      ).success,
+    ).toBe(false)
+  })
+})
+
+describe("websocket server event contracts", () => {
+  const serverEvents = [
+    connectionReadyEventSchema.safeParse(
+      envelope("connection.ready", {
+        connectionId: "conn_1",
+        serverTime: timestamp,
+      }),
+    ),
+    turnStartedEventSchema.safeParse(envelope("turn.started", { turnId: "turn_1", userMessage })),
+    agentThinkingDeltaEventSchema.safeParse(envelope("agent.thinking.delta", { text: "Considering files." })),
+    agentAnswerDeltaEventSchema.safeParse(envelope("agent.answer.delta", { messageId: "msg_assistant_1", text: "Hi" })),
+    toolCallStartedEventSchema.safeParse(
+      envelope("tool.call.started", {
+        toolCallId: "tcall_1",
+        toolName: "read_file",
+        category: "file",
+        displayName: "Reading README.md",
+        requiresApproval: false,
+      }),
+    ),
+    toolCallOutputEventSchema.safeParse(
+      envelope("tool.call.output", {
+        toolCallId: "tcall_1",
+        stream: "stdout",
+        text: "ok",
+      }),
+    ),
+    toolCallCompletedEventSchema.safeParse(
+      envelope("tool.call.completed", {
+        toolCallId: "tcall_1",
+        summary: "Explored 1 file",
+        metrics: {
+          filesRead: 1,
+        },
+      }),
+    ),
+    toolCallFailedEventSchema.safeParse(
+      envelope("tool.call.failed", {
+        toolCallId: "tcall_1",
+        error: {
+          code: "tool_failed",
+          message: "Tool failed",
+        },
+      }),
+    ),
+    approvalRequestedEventSchema.safeParse(
+      envelope("approval.requested", {
+        approvalId: "appr_1",
+        toolCallId: "tcall_1",
+        actionKind: "shell_command",
+        title: "Run command",
+        actionPreview: "pnpm test",
+        risk: "medium",
+      }),
+    ),
+    approvalResolvedEventSchema.safeParse(
+      envelope("approval.resolved", {
+        approvalId: "appr_1",
+        decision: "approved",
+      }),
+    ),
+    contextUsageSnapshotEventSchema.safeParse(
+      envelope("context.usage.snapshot", {
+        providerId: "openai",
+        modelId: "gpt-5.4",
+        contextWindowTokens: 258000,
+        contextUsedTokens: 55000,
+        contextLeftTokens: 203000,
+        contextUsedPercent: 21.3,
+      }),
+    ),
+    messageCompletedEventSchema.safeParse(
+      envelope("message.completed", {
+        message: assistantMessage,
+        usage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          reasoningTokens: 10,
+          totalTokens: 130,
+        },
+      }),
+    ),
+    turnCompletedEventSchema.safeParse(
+      envelope("turn.completed", {
+        turnId: "turn_1",
+        assistantMessageId: "msg_assistant_1",
+        summary: "Answered the user",
+      }),
+    ),
+    turnFailedEventSchema.safeParse(
+      envelope("turn.failed", {
+        turnId: "turn_1",
+        error: {
+          code: "turn_failed",
+          message: "Turn failed",
+        },
+      }),
+    ),
+    turnCancelledEventSchema.safeParse(
+      envelope("turn.cancelled", {
+        turnId: "turn_1",
+        reason: "User stopped the run",
+      }),
+    ),
+    errorCreatedEventSchema.safeParse(
+      envelope("error.created", {
+        error: {
+          code: "provider_error",
+          message: "Provider failed",
+        },
+        recoverable: true,
+      }),
+    ),
+  ]
+
+  it("parses every V1 server event", () => {
+    expect(serverEvents.every((result) => result.success)).toBe(true)
+  })
+
+  it("rejects unknown event types and malformed payloads", () => {
+    expect(serverEventSchema.safeParse(envelope("planner.future", {})).success).toBe(false)
+    expect(serverEventSchema.safeParse(envelope("tool.call.started", { toolCallId: "tcall_1" })).success).toBe(false)
+  })
+})

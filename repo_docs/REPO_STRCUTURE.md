@@ -72,7 +72,7 @@ Socrates/
     FRONTEND_BACKEND_CONTRACT.md
     PROVIDER_USAGE.md
     REPO_STRCUTURE.md
-    REPO_RULEs.md
+    REPO_RULES.md
 ```
 
 ## Package Responsibilities
@@ -357,6 +357,11 @@ agent.message.delta
 agent.message.completed
 agent.completed
 agent.failed
+
+turn.started
+turn.completed
+turn.failed
+turn.cancelled
 
 tool.started
 tool.output.delta

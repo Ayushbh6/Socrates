@@ -302,6 +302,17 @@ Composer controls:
 - Approval mode selector.
 - Send.
 
+Composer run-state behavior:
+
+```text
+no active turn -> show send arrow and allow sending
+active turn -> show stop button and block sending another query
+stop button -> send chat.turn.cancel
+turn.completed / turn.failed / turn.cancelled -> show send arrow again
+```
+
+V1 uses cancel/stop, not true pause/resume.
+
 Runtime settings are per turn:
 
 ```text
@@ -448,4 +459,3 @@ Guidelines:
 - Make project dashboards resource-aware.
 - Keep chat event-rich but visually organized.
 - Do not copy Claude/Codex visuals directly; use them only as interaction references.
-

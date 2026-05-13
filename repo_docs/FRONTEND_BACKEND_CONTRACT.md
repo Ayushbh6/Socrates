@@ -34,6 +34,7 @@ The contract must also stay expandable for later:
 5. Tool calls must emit lifecycle events so the frontend can show live progress.
 6. V1 should keep events small, but event envelopes must be future-proof.
 7. Future planner, worker, and sub-agent events should extend this event model, not replace it.
+8. Only one active turn may run per conversation at a time in V1.
 
 ## Route Contract
 
@@ -356,6 +357,12 @@ feedback.submit
 
 Starts a new turn from a user message.
 
+If the conversation already has an active turn, the backend must reject the command with error code:
+
+```text
+turn_already_active
+```
+
 ```ts
 type ChatMessageSendPayload = {
   clientMessageId: string
@@ -430,6 +437,7 @@ context.usage.snapshot
 message.completed
 turn.completed
 turn.failed
+turn.cancelled
 error.created
 ```
 
@@ -445,6 +453,15 @@ This is enough to render:
 - Context usage widget.
 - Final answer.
 - Errors.
+
+Composer rule:
+
+```text
+no active turn -> show send arrow
+active turn -> show stop button
+stop button -> send chat.turn.cancel
+turn.completed / turn.failed / turn.cancelled -> return to send arrow
+```
 
 ## Server Event Payloads
 
@@ -650,6 +667,17 @@ type TurnFailedPayload = {
 }
 ```
 
+### `turn.cancelled`
+
+Sent when a running turn is cancelled.
+
+```ts
+type TurnCancelledPayload = {
+  turnId: string
+  reason?: string
+}
+```
+
 ### `error.created`
 
 Sent for errors that should be visible in the frontend event timeline.
@@ -790,4 +818,3 @@ Recommended order:
 6. Implement conversation creation.
 7. Implement V1 chat WebSocket events.
 8. Implement tool-call events and approval events.
-
