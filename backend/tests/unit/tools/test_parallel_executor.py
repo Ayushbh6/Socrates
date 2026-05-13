@@ -58,6 +58,34 @@ def test_task_package_path_variants_are_planned_as_package_files(tmp_path):
     assert ProjectToolBatchExecutor._touches_task_package(plan) is True
 
 
+def test_write_task_package_file_is_planned_as_lifecycle_write(tmp_path):
+    task_root = tmp_path / "task"
+    task_root.mkdir()
+
+    class FakeRuntime:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                current_task=SimpleNamespace(workspace_root=str(task_root)),
+                conversation_id="conversation-1",
+                run=SimpleNamespace(id="run-1"),
+            )
+
+    planner = ToolResourcePlanner(FakeRuntime())
+    call = ToolCall(
+        id="write_todo",
+        name="write_task_package_file",
+        arguments={"file": "todo", "content": "# Todo\n\n## Checklist\n- [ ] T1: Do\n"},
+    )
+
+    plan = planner.plan(call)
+
+    assert plan.write_files[0].argument_path == "todo.md"
+    assert ProjectToolBatchExecutor._touches_task_package(plan) is True
+    assert ProjectToolBatchExecutor._group_key(
+        _executor(tmp_path), plan, lifecycle_batch=True
+    ) == ("state:conversation:conversation-1:task_lifecycle_batch",)
+
+
 @pytest.mark.asyncio
 async def test_same_file_writes_are_serialized_and_independent_failures_continue(
     tmp_path, monkeypatch

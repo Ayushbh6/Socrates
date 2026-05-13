@@ -7,6 +7,8 @@ from .utils import _path_within
 
 
 def handle(runtime: Any, scope: str, path: str = ".", pattern: str | None = None):
+    normalized_path, path_changed = runtime.normalize_path_argument(path)
+    path = normalized_path
     if scope == "project":
         prefix = "" if path in {".", ""} else path.strip()
         entries = [
@@ -22,7 +24,10 @@ def handle(runtime: Any, scope: str, path: str = ".", pattern: str | None = None
                 for entry in entries
                 if fnmatch.fnmatch(entry["filename"], pattern)
             ]
-        return {"entries": entries}
+        result = {"entries": entries}
+        if path_changed:
+            result["normalized_path"] = path
+        return result
 
     base_root, workspace_id = runtime._resolve_scope_root(scope)
     target = runtime._resolve_relative_path(base_root, path, allow_missing=False)
@@ -58,7 +63,10 @@ def handle(runtime: Any, scope: str, path: str = ".", pattern: str | None = None
         target_path=str(target),
         arguments_json={"path": path, "pattern": pattern},
     )
-    return {"entries": entries}
+    result = {"entries": entries}
+    if path_changed:
+        result["normalized_path"] = path
+    return result
 
 
 def _entry_payload(entry, base_root):

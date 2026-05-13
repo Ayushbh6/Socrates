@@ -153,7 +153,7 @@ def task_package_contract() -> dict[str, object]:
                 "checked_item_format": "- [x] T1: Describe the completed action",
             },
         },
-        "next_step": "Use edit_file to write a valid plan.md at the task root, then get user plan approval before todo.md and implementation work.",
+        "next_step": "Use write_task_package_file(file='plan') to write a valid plan.md, then get user plan approval before write_task_package_file(file='todo') and worker implementation.",
     }
 
 

@@ -17,8 +17,10 @@ def handle(
     case_sensitive: bool = False,
     regex: bool = False,
 ):
+    normalized_path, path_changed = runtime.normalize_path_argument(path)
+    path = normalized_path
     if scope == "project":
-        return runtime._search_project_assets(
+        result = runtime._search_project_assets(
             query=query,
             path=path,
             include_glob=include_glob,
@@ -28,6 +30,9 @@ def handle(
             case_sensitive=case_sensitive,
             regex=regex,
         )
+        if path_changed:
+            result["normalized_path"] = path
+        return result
 
     base_root, workspace_id = runtime._resolve_scope_root(scope)
     target = runtime._resolve_relative_path(base_root, path, allow_missing=False)
@@ -88,9 +93,12 @@ def handle(
             "regex": regex,
         },
     )
-    return {
+    result = {
         "query": query,
         "match_count": len(matches),
         "matches": matches,
         "truncated": len(matches) == max_matches,
     }
+    if path_changed:
+        result["normalized_path"] = path
+    return result

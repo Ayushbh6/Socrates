@@ -279,8 +279,9 @@ def _build_handoff(task: Task) -> dict[str, Any]:
         },
         "workspace": {
             "allowed_task_paths": ["task.md", "plan.md", "todo.md", "work/**", "outputs/**"],
-            "read_only_task_paths": ["inputs/**", "logs/**", "task.md", "plan.md"],
-            "writable_task_paths": ["todo.md", "work/**", "outputs/**"],
+            "read_only_task_paths": ["inputs/**", "logs/**", "task.md", "plan.md", "todo.md"],
+            "writable_task_paths": ["work/**", "outputs/**"],
+            "todo_progress_tools": ["update_current_todo_item", "skip_todo_item"],
             "reserved_task_folder_names": sorted(RESERVED_TASK_FOLDER_NAMES),
             "path_env_vars": {
                 "task_root": "SOCRATES_TASK_ROOT",

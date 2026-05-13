@@ -103,6 +103,7 @@ class ProjectToolBatchExecutor:
                 or plan.tool_call.name
                 in {
                     "start_worker",
+                    "write_task_package_file",
                     "update_current_todo_item",
                     "skip_todo_item",
                 }
@@ -113,6 +114,8 @@ class ProjectToolBatchExecutor:
 
     @staticmethod
     def _touches_task_package(plan: ToolResourcePlan) -> bool:
+        if plan.tool_call.name == "write_task_package_file":
+            return True
         if plan.tool_call.arguments.get("scope") != "task":
             return False
         return any(
@@ -165,6 +168,7 @@ class ProjectToolBatchExecutor:
             "write_file",
             "apply_patch",
             "execute_command",
+            "write_task_package_file",
             "update_task_status",
             "start_worker",
             "update_current_todo_item",

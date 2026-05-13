@@ -3,8 +3,8 @@ from __future__ import annotations
 from ..core.schema import ToolDefinition
 
 
-def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefinition]:
-    definitions = [
+def _read_tool_definitions() -> list[ToolDefinition]:
+    return [
         ToolDefinition(
             name="list_files",
             description="List files in project assets, the current task workspace, or the linked workspace. Supports glob patterns (e.g. '**/*.py') for recursive file discovery.",
@@ -65,6 +65,11 @@ def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefin
                 "required": ["scope", "query"],
             },
         ),
+    ]
+
+
+def _implementation_tool_definitions() -> list[ToolDefinition]:
+    return [
         ToolDefinition(
             name="edit_file",
             description="Replace exact text in one file in the current task workspace or linked workspace.",
@@ -110,6 +115,47 @@ def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefin
                     },
                 },
                 "required": ["scope", "patch_text"],
+            },
+        ),
+    ]
+
+
+def _command_tool_definition() -> ToolDefinition:
+    return ToolDefinition(
+        name="execute_command",
+        description="Execute a Python command using argv form through the managed Socrates Python runtime in the current task workspace or approved linked workspace. Task commands receive SOCRATES_TASK_ROOT, SOCRATES_WORK_DIR, SOCRATES_OUTPUTS_DIR, SOCRATES_INPUTS_DIR, and SOCRATES_LOGS_DIR environment variables.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "type": "string",
+                    "enum": ["task", "linked_workspace"],
+                },
+                "argv": {"type": "array", "items": {"type": "string"}},
+                "cwd": {"type": "string", "default": "."},
+                "timeout_sec": {"type": "integer", "default": 60},
+            },
+            "required": ["scope", "argv"],
+        },
+    )
+
+
+def _supervisor_lifecycle_definitions() -> list[ToolDefinition]:
+    return [
+        ToolDefinition(
+            name="write_task_package_file",
+            description="Create or revise a canonical task package file. The backend maps file='plan' to plan.md and file='todo' to todo.md; do not provide a path.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "enum": ["plan", "todo"],
+                        "description": "Which canonical task package file to write.",
+                    },
+                    "content": {"type": "string"},
+                },
+                "required": ["file", "content"],
             },
         ),
         ToolDefinition(
@@ -160,47 +206,23 @@ def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefin
             parameters={"type": "object", "properties": {}, "required": []},
         ),
     ]
+
+
+def build_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefinition]:
+    definitions = [
+        *_read_tool_definitions(),
+        *_supervisor_lifecycle_definitions(),
+    ]
     if command_execution_enabled:
-        definitions.insert(
-            -1,
-            ToolDefinition(
-                name="execute_command",
-                description="Execute a Python command using argv form through the managed Socrates Python runtime in the current task workspace or approved linked workspace. Task commands receive SOCRATES_TASK_ROOT, SOCRATES_WORK_DIR, SOCRATES_OUTPUTS_DIR, SOCRATES_INPUTS_DIR, and SOCRATES_LOGS_DIR environment variables.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "scope": {
-                            "type": "string",
-                            "enum": ["task", "linked_workspace"],
-                        },
-                        "argv": {"type": "array", "items": {"type": "string"}},
-                        "cwd": {"type": "string", "default": "."},
-                        "timeout_sec": {"type": "integer", "default": 60},
-                    },
-                    "required": ["scope", "argv"],
-                },
-            ),
-        )
+        names = [tool.name for tool in definitions]
+        insert_at = names.index("get_system_time")
+        definitions.insert(insert_at, _command_tool_definition())
     return definitions
 
 
 def build_worker_tool_definitions(*, command_execution_enabled: bool) -> list[ToolDefinition]:
     definitions = [
-        tool
-        for tool in build_tool_definitions(
-            command_execution_enabled=command_execution_enabled
-        )
-        if tool.name
-        in {
-            "list_files",
-            "read_file",
-            "search_files",
-            "edit_file",
-            "write_file",
-            "apply_patch",
-            "execute_command",
-            "get_system_time",
-        }
+        *_read_tool_definitions(),
     ]
     insert_at = 3
     definitions[insert_at:insert_at] = [
@@ -231,18 +253,27 @@ def build_worker_tool_definitions(*, command_execution_enabled: bool) -> list[To
         ),
         ToolDefinition(
             name="skip_todo_item",
-            description="Mark a todo item skipped without deleting it. Use only when prior completed work genuinely made the item unnecessary.",
+            description="Mark the current worker todo item skipped without deleting it. Skips the in-progress item, or the first pending item if none is in progress. Use only when prior completed work genuinely made the current item unnecessary.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "todo_id": {"type": "string"},
                     "reason": {"type": "string"},
                     "evidence": {
                         "description": "Optional evidence showing why the item is unnecessary.",
                     },
                 },
-                "required": ["todo_id", "reason"],
+                "required": ["reason"],
             },
         ),
     ]
+    definitions.extend(_implementation_tool_definitions())
+    if command_execution_enabled:
+        definitions.append(_command_tool_definition())
+    definitions.append(
+        ToolDefinition(
+            name="get_system_time",
+            description="Returns the current UTC system time and weekday.",
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+    )
     return definitions

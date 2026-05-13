@@ -15,6 +15,8 @@ def handle(
     overwrite: bool = False,
     expected_sha256: str | None = None,
 ):
+    normalized_path, path_changed = runtime.normalize_path_argument(path)
+    path = normalized_path
     if scope == "task" and runtime.context.current_task is None:
         return runtime._task_required_error(
             "write_file", "Create a task before writing files."
@@ -87,6 +89,8 @@ def handle(
         "path": str(target.relative_to(runtime._resolve_scope_root(scope)[0])),
         "operation": "overwrite" if existed else "create",
     }
+    if path_changed:
+        result["normalized_path"] = path
     if scope == "task" and runtime.context.current_task is not None:
         task_root = Path(runtime.context.current_task.workspace_root).resolve()
         rel = str(target.relative_to(task_root))

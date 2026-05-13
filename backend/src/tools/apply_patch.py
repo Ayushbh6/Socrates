@@ -25,6 +25,12 @@ def handle(
     if not patch_text.strip():
         raise ValueError("patch_text is required for apply_patch.")
     operations = parse_apply_patch_text(patch_text)
+    normalized_paths: dict[str, str] = {}
+    for item in operations:
+        normalized, changed = runtime.normalize_path_argument(item.path)
+        if changed:
+            normalized_paths[item.path] = normalized
+            item.path = normalized
     if scope == "linked_workspace":
         lifecycle = runtime._assert_full_task_lifecycle_for_linked_mutation(
             tool_name="apply_patch"
@@ -227,6 +233,8 @@ def apply_patch_operations(
         "updated_files": updated_files,
         "deleted_files": deleted_files,
     }
+    if normalized_paths:
+        result["normalized_paths"] = normalized_paths
     if registered_outputs:
         result["registered_outputs"] = registered_outputs
     if (

@@ -100,16 +100,47 @@ def test_update_current_todo_item_blocks_with_reason_and_recommended_action(tmp_
 def test_skip_todo_item_requires_reason_and_returns_next(tmp_path):
     write_todo(tmp_path, "# Todo\n\n## Checklist\n- [ ] T1: First\n- [ ] T2: Second\n")
 
-    missing_reason = skip_todo_item.handle(FakeRuntime(tmp_path), todo_id="T1", reason=" ")
+    missing_reason = skip_todo_item.handle(FakeRuntime(tmp_path), reason=" ")
     payload = error_payload(missing_reason)
     assert payload["ok"] is False
     assert payload["error_type"] == "todo_skip_reason_required"
 
     result = skip_todo_item.handle(
         FakeRuntime(tmp_path),
-        todo_id="T1",
         reason="T2 already covers this.",
     )
 
+    assert result["item"]["id"] == "T1"
+    assert result["item"]["status"] == "skipped"
+    assert result["next_item"]["id"] == "T2"
+
+
+def test_skip_todo_item_rejects_non_current_todo_id(tmp_path):
+    write_todo(tmp_path, "# Todo\n\n## Checklist\n- [ ] T1: First\n- [ ] T2: Second\n")
+
+    result = skip_todo_item.handle(
+        FakeRuntime(tmp_path),
+        todo_id="T2",
+        reason="Trying to skip ahead.",
+    )
+
+    payload = error_payload(result)
+    assert payload["ok"] is False
+    assert payload["error_type"] == "todo_item_not_current"
+    assert "current item is T1" in payload["message"]
+
+
+def test_skip_todo_item_skips_in_progress_item_before_pending(tmp_path):
+    write_todo(
+        tmp_path,
+        "# Todo\n\n## Checklist\n- [ ] T1: First\n  - Status: in_progress\n- [ ] T2: Second\n",
+    )
+
+    result = skip_todo_item.handle(
+        FakeRuntime(tmp_path),
+        reason="Covered by earlier implementation.",
+    )
+
+    assert result["item"]["id"] == "T1"
     assert result["item"]["status"] == "skipped"
     assert result["next_item"]["id"] == "T2"

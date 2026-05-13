@@ -73,6 +73,8 @@ class ToolResourcePlanner:
             return self._plan_edit_file(tool_call, args)
         if name == "write_file":
             return self._plan_write_file(tool_call, args)
+        if name == "write_task_package_file":
+            return self._plan_write_task_package_file(tool_call, args)
         if name == "apply_patch":
             return self._plan_apply_patch(tool_call, args)
         if name == "execute_command":
@@ -126,6 +128,25 @@ class ToolResourcePlanner:
             plan.prior_read_requirements.append(
                 PriorReadRequirement(resource=resource, expected_argument="expected_sha256")
             )
+        return plan
+
+    def _plan_write_task_package_file(
+        self, tool_call: ToolCall, args: dict[str, Any]
+    ) -> ToolResourcePlan:
+        plan = ToolResourcePlan(tool_call=tool_call)
+        if self.runtime.context.current_task is None:
+            return plan
+        file_value = args.get("file")
+        if file_value == "plan":
+            relative_path = "plan.md"
+        elif file_value == "todo":
+            relative_path = "todo.md"
+        else:
+            return plan
+        target = Path(self.runtime.context.current_task.workspace_root).resolve() / relative_path
+        resource = file_resource(target, relative_path)
+        plan.write_files.append(resource)
+        plan.lock_keys.add(resource.key)
         return plan
 
     def _plan_write_file(self, tool_call: ToolCall, args: dict[str, Any]) -> ToolResourcePlan:

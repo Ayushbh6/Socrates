@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import func, select
@@ -27,6 +28,7 @@ from .projects import (
     next_message_sequence,
 )
 from .tasks import (
+    TASK_COMPLETION_APPROVAL_TYPE,
     ensure_task_input_assets,
     find_matching_approval,
     get_active_task_for_conversation,
@@ -37,6 +39,7 @@ from .tasks import (
     serialize_task_artifact,
     sync_task_output_artifacts,
 )
+from .task_package import parse_worker_todo_state
 from .utils import to_json_compatible
 
 
@@ -1025,6 +1028,62 @@ class RunManager:
         }
         await self._record_event(session, run, event_type="run.turn.started", payload=payload, turn=turn)
 
+    def _guard_premature_completion_claim(
+        self, session: Session, run: AgentRun, content: str
+    ) -> str | None:
+        if run.execution_mode != "task" or not content.strip():
+            return None
+        normalized = " ".join(content.lower().split())
+        completion_phrases = (
+            "all done",
+            "everything is done",
+            "task is complete",
+            "task complete",
+            "completed the task",
+            "successfully completed",
+            "finished the task",
+            "delivered",
+        )
+        if not any(phrase in normalized for phrase in completion_phrases):
+            return None
+        task = get_active_task_for_conversation(session, run.conversation_id)
+        if task is None:
+            return None
+        pending_completion = (
+            session.execute(
+                select(func.count())
+                .select_from(TaskApproval)
+                .where(
+                    TaskApproval.task_id == task.id,
+                    TaskApproval.approval_type == TASK_COMPLETION_APPROVAL_TYPE,
+                    TaskApproval.status == "pending",
+                )
+            ).scalar_one()
+            > 0
+        )
+        if pending_completion:
+            return None
+        todo_path = Path(task.workspace_root).resolve() / "todo.md"
+        unresolved = False
+        if todo_path.is_file():
+            try:
+                todo_state = parse_worker_todo_state(
+                    todo_path.read_text(encoding="utf-8", errors="replace")
+                )
+                unresolved = not todo_state.done or bool(todo_state.blocked_items)
+            except Exception:
+                unresolved = True
+        else:
+            unresolved = True
+        if not unresolved:
+            return None
+        return (
+            "I cannot mark this as done yet. The task is still active and the "
+            "checklist is unresolved or blocked. I need to either continue through "
+            "the approved worker flow, request completion approval, or report the "
+            "blocker plainly."
+        )
+
     async def _record_tool_side_effects(
         self, session: Session, run: AgentRun, tool_name: str, *, tool_call_id: str | None = None
     ) -> None:
@@ -1377,6 +1436,13 @@ class RunManager:
                             "Please review the run trace for the tool error, then tell me how you want to proceed."
                         )
                     }
+                )
+            guarded_content = self._guard_premature_completion_claim(
+                session, run, final_response.content
+            )
+            if guarded_content is not None:
+                final_response = final_response.model_copy(
+                    update={"content": guarded_content}
                 )
             session.refresh(run)
             if is_terminal_run_status(run.status):

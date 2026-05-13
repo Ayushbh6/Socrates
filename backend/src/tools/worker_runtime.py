@@ -26,9 +26,10 @@ class WorkerToolRuntime:
             command_execution_enabled=base_runtime._command_execution_enabled
         )
         allowed = {tool.name for tool in self.definitions}
+        base_handlers = getattr(base_runtime, "_all_handlers", base_runtime.handlers)
         self.handlers: dict[str, Callable[..., Any]] = {
             name: handler
-            for name, handler in base_runtime.handlers.items()
+            for name, handler in base_handlers.items()
             if name in allowed
         }
         self.handlers["update_current_todo_item"] = (

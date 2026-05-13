@@ -13,6 +13,8 @@ from ..services.tasks import log_workspace_action
 def handle(
     runtime: Any, scope: str, argv: list[str], cwd: str = ".", timeout_sec: int = 60
 ):
+    normalized_cwd, cwd_changed = runtime.normalize_path_argument(cwd)
+    cwd = normalized_cwd
     if not argv:
         raise ValueError("argv must contain at least one argument.")
     if scope == "task" and runtime.context.current_task is None:
@@ -82,6 +84,8 @@ def handle(
         "exit_code": result.returncode,
         "success": result.returncode == 0,
     }
+    if cwd_changed:
+        payload["normalized_cwd"] = cwd
     if registered_outputs:
         payload["registered_outputs"] = registered_outputs
     reserved_violations = (

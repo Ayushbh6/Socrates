@@ -9,9 +9,7 @@ def test_tool_definitions_include_lean_edit_surface_without_command():
         "list_files",
         "read_file",
         "search_files",
-        "edit_file",
-        "write_file",
-        "apply_patch",
+        "write_task_package_file",
         "create_task",
         "update_task_status",
         "start_worker",
@@ -19,11 +17,11 @@ def test_tool_definitions_include_lean_edit_surface_without_command():
         "get_system_time",
     ]
 
-    edit_schema = next(
-        tool.parameters for tool in definitions if tool.name == "edit_file"
+    package_schema = next(
+        tool.parameters for tool in definitions if tool.name == "write_task_package_file"
     )
-    assert "operation" not in edit_schema["properties"]
-    assert edit_schema["required"] == ["scope", "path", "old_text", "new_text"]
+    assert package_schema["properties"]["file"]["enum"] == ["plan", "todo"]
+    assert package_schema["required"] == ["file", "content"]
 
 
 def test_tool_definitions_conditionally_include_execute_command():
@@ -31,7 +29,7 @@ def test_tool_definitions_conditionally_include_execute_command():
     names = [tool.name for tool in definitions]
 
     assert "execute_command" in names
-    assert len(names) == 12
+    assert len(names) == 10
     command = next(tool for tool in definitions if tool.name == "execute_command")
     assert "SOCRATES_OUTPUTS_DIR" in command.description
 
@@ -55,3 +53,6 @@ def test_worker_tool_definitions_use_worker_allowlist():
     assert "create_task" not in names
     assert "update_task_status" not in names
     assert "start_worker" not in names
+    skip_schema = next(tool.parameters for tool in definitions if tool.name == "skip_todo_item")
+    assert "todo_id" not in skip_schema["properties"]
+    assert skip_schema["required"] == ["reason"]

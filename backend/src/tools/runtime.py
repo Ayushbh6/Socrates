@@ -64,6 +64,7 @@ from . import start_worker as start_worker_tool
 from . import update_task_status as update_task_status_tool
 from . import write_file as write_file_tool
 from . import write_project_note as write_project_note_tool
+from . import write_task_package_file as write_task_package_file_tool
 
 
 @dataclass
@@ -95,7 +96,7 @@ class ProjectToolRuntime:
             context.session, context.project_id, context.uploads_dir
         )
         self.definitions = self._build_definitions()
-        self.handlers: dict[str, Callable[..., Any]] = {
+        self._all_handlers: dict[str, Callable[..., Any]] = {
             "list_files": lambda **kwargs: list_files_tool.handle(self, **kwargs),
             "read_file": lambda **kwargs: read_file_tool.handle(self, **kwargs),
             "search_files": lambda **kwargs: search_files_tool.handle(self, **kwargs),
@@ -104,6 +105,9 @@ class ProjectToolRuntime:
             "apply_patch": lambda **kwargs: apply_patch_tool.handle(self, **kwargs),
             "get_system_time": get_system_time,
             "create_task": lambda **kwargs: create_task_tool.handle(self, **kwargs),
+            "write_task_package_file": lambda **kwargs: (
+                write_task_package_file_tool.handle(self, **kwargs)
+            ),
             "start_worker": lambda **kwargs: start_worker_tool.handle(self, **kwargs),
             "update_task_status": lambda **kwargs: update_task_status_tool.handle(
                 self, **kwargs
@@ -113,14 +117,46 @@ class ProjectToolRuntime:
             ),
         }
         if self._command_execution_enabled:
-            self.handlers["execute_command"] = lambda **kwargs: (
+            self._all_handlers["execute_command"] = lambda **kwargs: (
                 execute_command_tool.handle(self, **kwargs)
             )
+        self.handlers: dict[str, Callable[..., Any]] = {
+            name: self._all_handlers[name]
+            for name in [
+                "list_files",
+                "read_file",
+                "search_files",
+                "write_task_package_file",
+                "create_task",
+                "update_task_status",
+                "start_worker",
+                "write_project_note",
+                "get_system_time",
+            ]
+            if name in self._all_handlers
+        }
+        if self._command_execution_enabled:
+            self.handlers["execute_command"] = self._all_handlers["execute_command"]
+        for name in ("write_file", "edit_file", "apply_patch"):
+            self.handlers[name] = self._supervisor_mutation_forbidden_handler(name)
 
     def _build_definitions(self) -> list[ToolDefinition]:
         return build_tool_definitions(
             command_execution_enabled=self._command_execution_enabled
         )
+
+    @staticmethod
+    def _supervisor_mutation_forbidden_handler(tool_name: str) -> Callable[..., str]:
+        def _handler(**_: Any) -> str:
+            return build_tool_error_result(
+                tool_name=tool_name,
+                error_type="permission_denied",
+                message=f"Socrates cannot call {tool_name}. Implementation writes belong to the worker. Use write_task_package_file for plan.md/todo.md only.",
+                retryable=False,
+                suggestion="Create or revise the task package with write_task_package_file, then start the worker after plan approval.",
+            )
+
+        return _handler
 
     def execute(self, tool_call: ToolCall) -> Any:
         handler = self.handlers.get(tool_call.name)
@@ -293,6 +329,7 @@ class ProjectToolRuntime:
     def _resolve_edit_target(
         self, scope: str, path: str, *, allow_missing: bool
     ) -> tuple[Path, str | None]:
+        path, _ = self.normalize_path_argument(path)
         base_root, workspace_id = self._resolve_scope_root(scope)
         target = self._resolve_relative_path(
             base_root, path, allow_missing=allow_missing
@@ -377,6 +414,7 @@ class ProjectToolRuntime:
     def _reserved_task_folder_error(
         self, *, tool_name: str, path: str
     ) -> str | None:
+        path, _ = self.normalize_path_argument(path)
         violations = validate_task_write_relative_path(path)
         if not violations:
             return None
@@ -698,6 +736,7 @@ class ProjectToolRuntime:
     def _resolve_relative_path(
         self, base_root: Path, relative_path: str, *, allow_missing: bool
     ) -> Path:
+        relative_path, _ = self.normalize_path_argument(relative_path)
         candidate = (base_root / relative_path).resolve()
         if not _path_within(base_root, candidate):
             raise ValueError("Path escapes the allowed workspace root.")
@@ -706,6 +745,7 @@ class ProjectToolRuntime:
         return candidate
 
     def _resolve_command_cwd(self, scope: str, base_root: Path, cwd: str) -> Path:
+        cwd, _ = self.normalize_path_argument(cwd)
         if scope == "task" and cwd in {".", ""}:
             cwd = "work"
         workdir = self._resolve_relative_path(base_root, cwd, allow_missing=False)
@@ -721,6 +761,23 @@ class ProjectToolRuntime:
                     "Task commands may only run from work/ or outputs/."
                 )
         return workdir
+
+    @staticmethod
+    def normalize_path_argument(path: str) -> tuple[str, bool]:
+        if not isinstance(path, str):
+            raise TypeError("Path must be a string.")
+        cleaned = path.strip()
+        changed = cleaned != path
+        wrappers = {('"', '"'), ("'", "'"), ("`", "`")}
+        while len(cleaned) >= 2 and (cleaned[0], cleaned[-1]) in wrappers:
+            cleaned = cleaned[1:-1].strip()
+            changed = True
+        while cleaned.startswith("./"):
+            cleaned = cleaned[2:]
+            changed = True
+        if cleaned == "":
+            return ".", True
+        return cleaned, changed
 
     def _validate_command_paths(
         self, *, scope: str, base_root: Path, workdir: Path, argv: list[str]

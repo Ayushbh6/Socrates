@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from backend.src.core.schema import ToolCall
+from backend.src.tools.runtime import ProjectToolRuntime
 from backend.src.tools.worker_runtime import WorkerToolRuntime
 
 
@@ -77,3 +78,11 @@ def test_worker_runtime_allows_reads_and_work_output_writes(tmp_path):
     assert read_result["ok"] is True
     assert work_result["ok"] is True
     assert output_result["ok"] is True
+
+
+def test_path_argument_normalizes_simple_wrappers():
+    for raw in ('"work/portfolio.py"', "'work/portfolio.py'", "`work/portfolio.py`", "./work/portfolio.py"):
+        assert ProjectToolRuntime.normalize_path_argument(raw) == (
+            "work/portfolio.py",
+            True,
+        )

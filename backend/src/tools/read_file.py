@@ -16,6 +16,8 @@ def handle(
     line_start: int | None = None,
     line_end: int | None = None,
 ):
+    normalized_path, path_changed = runtime.normalize_path_argument(path)
+    path = normalized_path
     if line_start is not None and line_start < 1:
         raise ValueError("line_start must be >= 1.")
     if line_end is not None and line_end != -1 and line_end < 1:
@@ -89,6 +91,8 @@ def handle(
             "more_available": len(content) > offset + limit,
             "sha256": runtime._sha256_text(content),
         }
+    if path_changed:
+        result["normalized_path"] = path
     log_workspace_action(
         runtime.context.session,
         action_type="read_file",

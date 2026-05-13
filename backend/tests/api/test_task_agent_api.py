@@ -278,10 +278,9 @@ def provider_for_task_and_plan(
                         tool_calls=[
                             ToolCall(
                                 id=plan_id,
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -318,10 +317,9 @@ def provider_for_todo_and_work(
                         tool_calls=[
                             ToolCall(
                                 id=todo_id,
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": todo_content,
                                 },
                             ),
@@ -633,6 +631,87 @@ def test_agent_creates_task_and_persists_active_task(client: TestClient, monkeyp
         session.close()
 
 
+def test_socrates_generic_write_tool_is_forbidden(client: TestClient, monkeypatch):
+    provider = FakeProvider(
+        [
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Create task.",
+                        tool_calls=[
+                            ToolCall(
+                                id="forged_create",
+                                name="create_task",
+                                arguments={
+                                    "title": "Boundary",
+                                    "goal": "Verify Socrates write boundary.",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 1},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Try forged write.",
+                        tool_calls=[
+                            ToolCall(
+                                id="forged_write",
+                                name="write_file",
+                                arguments={
+                                    "scope": "task",
+                                    "path": '"work/portfolio.py"',
+                                    "content": "print('no')\n",
+                                },
+                            )
+                        ],
+                        usage=UsageStats(),
+                        raw_dump={"turn": 2},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+            {
+                "chunks": [
+                    LLMResponse(
+                        content="Write rejected.",
+                        usage=UsageStats(),
+                        raw_dump={"turn": 3},
+                        metadata={"provider": "fake", "model": "fake-model"},
+                    )
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "backend.src.agent.runtime.get_provider", lambda model, **kwargs: provider
+    )
+    _, conversation_id = bootstrap_user_and_project(client)
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages",
+        json={"content_text": "Try forbidden Socrates write.", "asset_ids": []},
+    )
+    assert response.status_code == 202
+    drain_run_events(client, response.json()["agent_run_id"])
+
+    session = get_session_factory()()
+    try:
+        execution = (
+            session.query(ToolExecution)
+            .filter(ToolExecution.tool_call_id == "forged_write")
+            .one()
+        )
+        assert execution.result_json["error_type"] == "permission_denied"
+        task = session.query(Task).one()
+        assert not (Path(task.workspace_root) / "work" / "portfolio.py").exists()
+    finally:
+        session.close()
+
+
 def test_risky_command_creates_approval_and_resolution_is_traced(
     client: TestClient, monkeypatch
 ):
@@ -666,10 +745,9 @@ def test_risky_command_creates_approval_and_resolution_is_traced(
                         tool_calls=[
                             ToolCall(
                                 id="write_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -701,10 +779,9 @@ def test_risky_command_creates_approval_and_resolution_is_traced(
                         tool_calls=[
                             ToolCall(
                                 id="write_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -924,10 +1001,9 @@ def test_execute_command_runs_python_through_managed_runtime(
                         tool_calls=[
                             ToolCall(
                                 id="write_python_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -959,10 +1035,9 @@ def test_execute_command_runs_python_through_managed_runtime(
                         tool_calls=[
                             ToolCall(
                                 id="write_python_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             )
@@ -1533,10 +1608,9 @@ def test_task_search_files_supports_globs_and_case_controls(
                         tool_calls=[
                             ToolCall(
                                 id="wplan_s",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -1568,10 +1642,9 @@ def test_task_search_files_supports_globs_and_case_controls(
                         tool_calls=[
                             ToolCall(
                                 id="wtd_s",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -1730,10 +1803,9 @@ def test_edit_file_supports_exact_replace_and_conflict_detection(
                         tool_calls=[
                             ToolCall(
                                 id="wplan_m",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -1765,10 +1837,9 @@ def test_edit_file_supports_exact_replace_and_conflict_detection(
                         tool_calls=[
                             ToolCall(
                                 id="write_todo_m",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -1911,10 +1982,9 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
                         tool_calls=[
                             ToolCall(
                                 id="write_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -1946,10 +2016,9 @@ def test_task_edits_only_allow_work_and_outputs_and_outputs_can_be_exported(
                         tool_calls=[
                             ToolCall(
                                 id="write_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -2186,19 +2255,17 @@ def test_task_package_root_writes_are_validated(client: TestClient, monkeypatch)
                         tool_calls=[
                             ToolCall(
                                 id="invalid_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": "# Plan\n\n## Summary\nOnly a summary.\n",
                                 },
                             ),
                             ToolCall(
                                 id="valid_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": valid_plan,
                                 },
                             ),
@@ -2230,19 +2297,17 @@ def test_task_package_root_writes_are_validated(client: TestClient, monkeypatch)
                         tool_calls=[
                             ToolCall(
                                 id="invalid_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": "# Todo\n\n## Checklist\n- do the work\n",
                                 },
                             ),
                             ToolCall(
                                 id="valid_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": valid_todo,
                                 },
                             ),
@@ -2390,10 +2455,9 @@ def test_apply_patch_updates_work_and_creates_output_artifact(
                         tool_calls=[
                             ToolCall(
                                 id="wplan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -2425,10 +2489,9 @@ def test_apply_patch_updates_work_and_creates_output_artifact(
                         tool_calls=[
                             ToolCall(
                                 id="wtodo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -2643,10 +2706,9 @@ def test_socrates_starts_worker_and_receives_structured_result(
                         tool_calls=[
                             ToolCall(
                                 id="worker_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": "# Todo\n\n## Checklist\n- [ ] T1: Create worker output\n",
                                 },
                             ),
@@ -2842,10 +2904,9 @@ def test_start_worker_rejects_any_pending_task_approval(client: TestClient, monk
                                 tool_calls=[
                                     ToolCall(
                                         id="pending_any_todo",
-                                        name="write_file",
+                                        name="write_task_package_file",
                                         arguments={
-                                            "scope": "task",
-                                            "path": "todo.md",
+                                            "file": "todo",
                                             "content": "# Todo\n\n## Checklist\n- [ ] T1: Do work\n",
                                         },
                                     ),
@@ -2948,10 +3009,9 @@ def test_start_worker_requires_plan_approval(client: TestClient, monkeypatch):
                         tool_calls=[
                             ToolCall(
                                 id="plan_before_approval",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             ),
@@ -3222,10 +3282,9 @@ def test_apply_patch_validates_task_package_before_committing_any_file(
                         tool_calls=[
                             ToolCall(
                                 id="wplan_b",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -3257,10 +3316,9 @@ def test_apply_patch_validates_task_package_before_committing_any_file(
                         tool_calls=[
                             ToolCall(
                                 id="write_todo_b",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -3394,10 +3452,9 @@ def test_linked_workspace_apply_patch_requires_explicit_approval(
                         tool_calls=[
                             ToolCall(
                                 id="wpl",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -3429,10 +3486,9 @@ def test_linked_workspace_apply_patch_requires_explicit_approval(
                         tool_calls=[
                             ToolCall(
                                 id="wtl",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -3568,10 +3624,9 @@ def test_linked_workspace_command_requires_explicit_approval(
                         tool_calls=[
                             ToolCall(
                                 id="wplc",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -3603,10 +3658,9 @@ def test_linked_workspace_command_requires_explicit_approval(
                         tool_calls=[
                             ToolCall(
                                 id="wtlc",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -3738,10 +3792,9 @@ def test_todo_write_returns_plan_approval_required_without_user_approval(
                         tool_calls=[
                             ToolCall(
                                 id="g_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -3759,10 +3812,9 @@ def test_todo_write_returns_plan_approval_required_without_user_approval(
                         tool_calls=[
                             ToolCall(
                                 id="g_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             )
@@ -3847,10 +3899,9 @@ def test_work_write_returns_todo_required_after_plan_approved_without_todo(
                         tool_calls=[
                             ToolCall(
                                 id="w_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -3987,10 +4038,9 @@ def test_revised_plan_after_approval_blocks_todo_until_new_approval(
                         tool_calls=[
                             ToolCall(
                                 id="r_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
@@ -4022,20 +4072,19 @@ def test_revised_plan_after_approval_blocks_todo_until_new_approval(
                         tool_calls=[
                             ToolCall(
                                 id="r_revise",
-                                name="edit_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
-                                    "old_text": "Summary line.",
-                                    "new_text": "Revised summary line.",
+                                    "file": "plan",
+                                    "content": STANDARD_VALID_PLAN.replace(
+                                        "Summary line.", "Revised summary line."
+                                    ),
                                 },
                             ),
                             ToolCall(
                                 id="r_todo",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "todo.md",
+                                    "file": "todo",
                                     "content": STANDARD_VALID_TODO,
                                 },
                             ),
@@ -4158,10 +4207,9 @@ def test_apply_patch_cannot_add_todo_and_work_before_plan_approval(
                         tool_calls=[
                             ToolCall(
                                 id="sneak_plan",
-                                name="write_file",
+                                name="write_task_package_file",
                                 arguments={
-                                    "scope": "task",
-                                    "path": "plan.md",
+                                    "file": "plan",
                                     "content": STANDARD_VALID_PLAN,
                                 },
                             )
