@@ -85,6 +85,9 @@ Frontend code may:
 - Display messages.
 - Show tool calls.
 - Render diffs.
+- Capture voice input through approved browser APIs.
+- Trigger read-aloud playback for assistant messages.
+- Collect thumbs up/down feedback.
 - Ask for approvals.
 - Send approval decisions.
 - Send cancellation requests.
@@ -92,6 +95,7 @@ Frontend code may:
 Frontend code must not:
 
 - Call model providers directly.
+- Call transcription or text-to-speech providers directly unless the architecture explicitly chooses browser-native APIs and records that choice through contracts/events.
 - Read or write local repo files directly.
 - Run shell commands.
 - Implement agent loops.
@@ -253,13 +257,32 @@ This applies to:
 - Tool progress.
 - Shell stdout.
 - Shell stderr.
+- Transcription progress.
+- Read-aloud generation/playback status.
+- Feedback creation or updates.
 - Approval requests.
 - Patch proposals.
 - Task completion.
 
 Do not invent separate streaming formats for each feature.
 
-## 16. Add New Providers Behind The Provider Interface
+## 16. Voice, Audio, And Feedback Must Be Persisted
+
+Voice input, read-aloud output, and message feedback must use shared contracts, typed events, and database records.
+
+The required model is:
+
+```text
+voice input -> transcription -> normal user message
+read aloud -> assistant message -> audio output record
+feedback -> exact message, turn, or model call being rated
+```
+
+Do not hide these flows in frontend-only state.
+
+Do not add large sets of nullable voice/audio/feedback columns to `messages`. Use dedicated tables linked back to messages, turns, model calls, artifacts, and errors.
+
+## 17. Add New Providers Behind The Provider Interface
 
 New model providers must be added as adapters in `packages/providers`.
 
@@ -271,7 +294,7 @@ They must not leak provider-specific response shapes into:
 
 If a provider has unique capabilities, expose only the normalized subset first. Add extensions deliberately.
 
-## 17. Keep Naming Stable And Boring
+## 18. Keep Naming Stable And Boring
 
 Use predictable names.
 
@@ -289,7 +312,7 @@ WebSocketEvent
 
 Avoid clever names. The repo should be easy to navigate months later.
 
-## 18. Search Before Adding
+## 19. Search Before Adding
 
 Before adding any new:
 
@@ -304,13 +327,13 @@ Search the repo first.
 
 Use `rg` or `rg --files` before creating new abstractions.
 
-## 19. Documentation Must Track Architecture
+## 20. Documentation Must Track Architecture
 
 If package responsibilities, event contracts, approval policy, or dependency direction changes, update `repo_docs/`.
 
 Architecture docs are not decorative. They are working agreements.
 
-## 20. The Default Bias Is Reuse
+## 21. The Default Bias Is Reuse
 
 When implementing a feature, the default path is:
 
@@ -321,4 +344,3 @@ When implementing a feature, the default path is:
 5. Avoid one-off local implementations.
 
 If a one-off is unavoidable, leave a short comment explaining why it is intentionally not shared.
-

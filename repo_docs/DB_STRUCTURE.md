@@ -38,6 +38,9 @@ conversation
       model_calls
       tool_calls
       approvals
+      voice_inputs
+      audio_outputs
+      message_feedback
       errors
       usage_snapshots
       events
@@ -88,6 +91,8 @@ Examples:
 - Optional assistant visible reasoning summary if exposed and shown as a chat item.
 
 Internal tool events should not be stored only as messages. They belong in `events` and their structured tables.
+
+Voice input, read-aloud output, and feedback should attach to messages through separate tables instead of adding many nullable columns to `messages`.
 
 ### Event
 
@@ -454,6 +459,8 @@ Examples:
 - Generated files.
 - Screenshots.
 - Exported diffs.
+- Voice input recordings.
+- Generated read-aloud audio.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -461,13 +468,87 @@ Examples:
 | `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
 | `session_id` | `TEXT` | yes | FK to `sessions.id`. |
 | `turn_id` | `TEXT` | no | FK to `turns.id`. |
-| `kind` | `TEXT` | yes | `file`, `log`, `screenshot`, `diff`, `report`, etc. |
+| `kind` | `TEXT` | yes | `file`, `log`, `screenshot`, `diff`, `report`, `audio_input`, `audio_output`, etc. |
 | `path` | `TEXT` | no | Local path if artifact exists on disk. |
 | `content_hash` | `TEXT` | no | Hash for integrity/change detection. |
 | `mime_type` | `TEXT` | no | Artifact MIME type. |
 | `size_bytes` | `INTEGER` | no | Size if known. |
 | `metadata_json` | `TEXT` | no | Extra artifact metadata. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
+
+## `voice_inputs`
+
+Stores speech input that was transcribed into a normal user message.
+
+Voice input should not replace `messages`. It is the capture/transcription record that explains how a user message was created.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `voicein_...`. |
+| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
+| `session_id` | `TEXT` | yes | FK to `sessions.id`. |
+| `turn_id` | `TEXT` | no | FK to `turns.id` created from the transcript. |
+| `message_id` | `TEXT` | no | FK to `messages.id` for the final user message. |
+| `audio_artifact_id` | `TEXT` | no | FK to `artifacts.id` where `kind = audio_input`. |
+| `transcription_provider_id` | `TEXT` | no | Provider used for transcription. |
+| `transcription_model_id` | `TEXT` | no | Model used for transcription. |
+| `language` | `TEXT` | no | Detected or selected language. |
+| `transcript_text` | `TEXT` | no | Final transcript used to create the message. |
+| `raw_transcript_json` | `TEXT` | no | Raw provider transcription response. |
+| `confidence` | `REAL` | no | Provider confidence if available. |
+| `duration_ms` | `INTEGER` | no | Captured audio duration. |
+| `status` | `TEXT` | yes | `recording`, `transcribing`, `completed`, `failed`, `cancelled`. |
+| `error_id` | `TEXT` | no | FK to `errors.id`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `completed_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra voice-input metadata. |
+
+## `audio_outputs`
+
+Stores read-aloud/text-to-speech output attached to an assistant message.
+
+Read aloud should not mutate the assistant message. It is an optional output artifact generated from that message.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `audioout_...`. |
+| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
+| `session_id` | `TEXT` | yes | FK to `sessions.id`. |
+| `turn_id` | `TEXT` | no | FK to `turns.id`. |
+| `message_id` | `TEXT` | yes | FK to assistant `messages.id`. |
+| `audio_artifact_id` | `TEXT` | no | FK to `artifacts.id` where `kind = audio_output`. |
+| `provider_id` | `TEXT` | no | TTS provider id, if server-side TTS was used. |
+| `model_id` | `TEXT` | no | TTS model id, if applicable. |
+| `voice_id` | `TEXT` | no | Voice selected for playback. |
+| `source_text_hash` | `TEXT` | no | Hash of text used for audio generation. |
+| `duration_ms` | `INTEGER` | no | Generated audio duration. |
+| `status` | `TEXT` | yes | `requested`, `generating`, `ready`, `played`, `failed`, `cancelled`. |
+| `error_id` | `TEXT` | no | FK to `errors.id`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `completed_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra TTS/playback metadata. |
+
+## `message_feedback`
+
+Stores user feedback for assistant messages, turns, and model calls.
+
+Feedback should be attached to the exact thing being rated. In most UI cases this is the final assistant message, but the schema also allows linking back to the turn and model call for analytics/debugging.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `fb_...`. |
+| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
+| `session_id` | `TEXT` | yes | FK to `sessions.id`. |
+| `turn_id` | `TEXT` | no | FK to `turns.id`. |
+| `message_id` | `TEXT` | no | FK to `messages.id`, usually the assistant response. |
+| `model_call_id` | `TEXT` | no | FK to `model_calls.id` if feedback targets a specific model call. |
+| `rating` | `TEXT` | yes | `thumbs_up`, `thumbs_down`. |
+| `reason_code` | `TEXT` | no | Optional reason like `incorrect`, `unhelpful`, `too_slow`, `great`. |
+| `note` | `TEXT` | no | Optional user note. |
+| `created_by` | `TEXT` | no | User id or local user marker. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra feedback metadata. |
 
 ## `session_state`
 
@@ -539,6 +620,23 @@ approval.approved
 approval.rejected
 approval.expired
 
+voice.input.started
+voice.input.completed
+voice.input.failed
+
+transcription.started
+transcription.completed
+transcription.failed
+
+audio.output.requested
+audio.output.started
+audio.output.completed
+audio.output.played
+audio.output.failed
+
+feedback.created
+feedback.updated
+
 shell.started
 shell.stdout.delta
 shell.stderr.delta
@@ -557,6 +655,31 @@ patch.failed
 error.created
 artifact.created
 ```
+
+## Voice, Read-Aloud, And Feedback Storage
+
+Voice input, read aloud, and thumbs up/down feedback are first-class persisted flows.
+
+The correct model is:
+
+```text
+voice input
+  -> voice_inputs
+  -> transcription events
+  -> normal user message
+  -> normal turn
+
+read aloud
+  -> assistant message
+  -> audio_outputs
+  -> optional audio artifact
+
+feedback
+  -> message_feedback
+  -> exact message/turn/model call being rated
+```
+
+These should not be implemented as a few extra columns on `messages`. They have their own lifecycle, provider metadata, artifacts, errors, and replay events.
 
 ## Thinking And Reasoning Storage
 
@@ -662,6 +785,9 @@ model_usage
 tool_calls
 approvals
 errors
+voice_inputs
+audio_outputs
+message_feedback
 schema_migrations
 ```
 
@@ -677,4 +803,3 @@ patches
 artifacts
 session_state
 ```
-

@@ -79,6 +79,9 @@ It owns:
 - File tree.
 - Diff viewer.
 - Terminal output display.
+- Voice input controls.
+- Read-aloud controls.
+- Message feedback controls.
 - Approval prompts.
 - Task timeline.
 - Session views.
@@ -200,6 +203,9 @@ It owns schemas and types that cross package boundaries:
 - Approval request/decision schemas.
 - Session schemas.
 - Agent event schemas.
+- Voice input schemas.
+- Audio output schemas.
+- Feedback schemas.
 - Error payload schemas.
 
 This package is the single source of truth for contracts used by frontend, backend, core, providers, and workspace.
@@ -230,8 +236,11 @@ WebSockets are used for:
 - Streaming model text.
 - Streaming tool call lifecycle events.
 - Streaming shell stdout/stderr.
+- Streaming speech transcription progress.
+- Streaming read-aloud generation/playback status.
 - Sending approval requests to the UI.
 - Receiving approval decisions from the UI.
+- Sending message feedback from the UI.
 - Sending cancellation requests.
 - Updating session/task status.
 
@@ -248,6 +257,7 @@ HTTP is still used for simple request/response operations:
 ```text
 apps/web
   sends user message over WebSocket
+  or captures voice input and sends the transcript as a user message
 
 apps/server
   validates message using packages/contracts
@@ -263,7 +273,7 @@ apps/server
   streams typed events over WebSocket
 
 apps/web
-  renders chat, tool calls, approvals, diffs, and terminal output
+  renders chat, thinking, tool calls, approvals, diffs, terminal output, voice state, read-aloud state, and feedback controls
 ```
 
 ## Example Event Families
@@ -289,6 +299,23 @@ tool.failed
 approval.requested
 approval.decided
 approval.expired
+
+voice.input.started
+voice.input.completed
+voice.input.failed
+
+transcription.started
+transcription.completed
+transcription.failed
+
+audio.output.requested
+audio.output.started
+audio.output.completed
+audio.output.played
+audio.output.failed
+
+feedback.created
+feedback.updated
 
 shell.started
 shell.stdout.delta
@@ -348,4 +375,3 @@ packages/shared -> domain packages
 6. Create `apps/server` with WebSocket event streaming.
 7. Create `apps/web` with chat, event timeline, and approval UI.
 8. Add write/edit/patch tools after the read/search/shell flow is stable.
-

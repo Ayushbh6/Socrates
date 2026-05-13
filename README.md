@@ -17,6 +17,9 @@ Socrates should feel like a thoughtful collaborator:
 - It can run commands, read files, propose edits, and explain outcomes.
 - It can switch models and providers per query.
 - It can show thinking/reasoning separately from final responses when providers expose it.
+- It can accept voice input, transcribe it, and send it as a normal user query.
+- It can read assistant responses aloud.
+- It can collect thumbs up/down feedback on responses.
 - It can track context usage live.
 - It can store a full audit trail of every meaningful step.
 
@@ -37,6 +40,7 @@ Socrates is a local-first agent application with:
 - A polished web interface.
 - A backend agent runtime.
 - WebSocket-based live communication.
+- Voice input, read-aloud output, and feedback flows.
 - SQLite as the source of truth.
 - Provider-agnostic model access.
 - Explicit tool and approval contracts.
@@ -126,6 +130,9 @@ The database should store:
 - Model stream chunks.
 - Tool calls.
 - Approval requests and decisions.
+- Voice input and transcription records.
+- Read-aloud audio output records.
+- Message feedback.
 - Shell/file/git operations.
 - Errors.
 - Token usage.
@@ -180,4 +187,3 @@ Initial docs:
 Socrates should be built carefully from day one.
 
 Every new feature should respect the package boundaries, shared contracts, database audit model, provider abstraction, and approval system. The codebase should stay easy to reason about as it grows.
-
