@@ -1,0 +1,451 @@
+# Socrates App Flow
+
+This document defines the initial product flow, route structure, and page responsibilities for Socrates.
+
+Socrates is project-first. Users do not start with a floating global chat. They enter a project, use project resources and instructions, then create or resume conversations inside that project.
+
+## Route Summary
+
+```text
+/welcome
+/onboarding
+/projects
+/projects/new
+/projects/:projectId
+/projects/:projectId/chats/:conversationId
+```
+
+Avoid this shape:
+
+```text
+/projects/:projectId/dashboard/:dashboardId
+```
+
+The project itself is the dashboard. A separate dashboard id adds complexity without representing a real entity.
+
+## First-Run Flow
+
+```text
+open app
+  -> /welcome
+  -> check local database
+  -> if no onboarded user exists, go to /onboarding
+  -> if onboarded user exists, go to /projects
+```
+
+The first-run check should use local SQLite state, not browser-only local storage.
+
+## Returning-User Flow
+
+```text
+open app
+  -> /welcome
+  -> check local database
+  -> /projects
+```
+
+The welcome page can be brief and atmospheric. It should not become a marketing site.
+
+## `/welcome`
+
+Purpose:
+
+- Introduce Socrates.
+- Give the app a calm, polished first impression.
+- Route the user based on onboarding state.
+
+Visual direction:
+
+- Apple-inspired.
+- Minimal.
+- Airy.
+- High contrast where needed.
+- No clutter.
+- No dense feature explanation.
+
+Primary action:
+
+```text
+Open Workspace
+```
+
+Routing:
+
+```text
+if users.onboarding_completed = false or no user row exists:
+  /onboarding
+else:
+  /projects
+```
+
+## `/onboarding`
+
+Purpose:
+
+- Create the local user profile.
+- Ask the user what Socrates should call them.
+- Mark onboarding as complete.
+
+Fields:
+
+```text
+display_name
+```
+
+Submit action:
+
+```text
+Next
+```
+
+Database effects:
+
+```text
+create users row if missing
+set users.display_name
+set users.onboarding_completed = 1
+set users.onboarded_at
+```
+
+Routing after submit:
+
+```text
+/projects
+```
+
+Important:
+
+- This page should not ask for provider keys yet.
+- This page should not ask for complex preferences yet.
+- Keep it focused on the user's name.
+
+## `/projects`
+
+Purpose:
+
+- Show all projects.
+- Let the user create a project.
+- Let the user open an existing project.
+
+Primary UI:
+
+- Project list/grid.
+- Search projects.
+- New project button.
+
+Initial project creation options:
+
+```text
+Start from scratch
+Use an existing folder
+```
+
+Later options can include:
+
+```text
+Clone from GitHub
+Import project archive
+```
+
+Database reads:
+
+```text
+projects
+project_workspaces
+recent conversation/activity metadata
+```
+
+Routing:
+
+```text
+click project -> /projects/:projectId
+new project -> /projects/new
+```
+
+## `/projects/new`
+
+Purpose:
+
+- Create a project container.
+- Optionally attach a local workspace folder.
+
+Fields:
+
+```text
+name
+description
+creation_mode
+workspace_path
+```
+
+Creation modes:
+
+```text
+start_from_scratch
+existing_folder
+```
+
+Database effects:
+
+```text
+create projects row
+create project_workspaces row if a folder is selected or created
+emit project.created event
+emit project.workspace.attached event when applicable
+```
+
+Routing after creation:
+
+```text
+/projects/:projectId
+```
+
+## `/projects/:projectId`
+
+This is the project dashboard.
+
+Purpose:
+
+- Show project context.
+- Show project resources.
+- Show project instructions.
+- Show past conversations.
+- Start a new chat.
+
+Primary areas:
+
+```text
+project header
+conversation list
+resource panel
+instructions panel
+new chat composer/button
+workspace status
+```
+
+Resource panel:
+
+- Uploaded PDFs.
+- Documents.
+- Text notes.
+- Images.
+- Links.
+- Local files selected as references.
+
+Instructions panel:
+
+- Project-specific guidance.
+- Persistent instructions for conversations in this project.
+
+Conversation list:
+
+- Existing conversations in this project.
+- Last message preview.
+- Last activity time.
+- Status.
+
+Actions:
+
+```text
+Start new chat
+Open existing chat
+Add resource
+Edit instructions
+Open workspace folder
+```
+
+Routing:
+
+```text
+start new chat -> create conversation -> /projects/:projectId/chats/:conversationId
+open existing chat -> /projects/:projectId/chats/:conversationId
+back to all projects -> /projects
+```
+
+## `/projects/:projectId/chats/:conversationId`
+
+Purpose:
+
+- Main Socrates chat workspace.
+- Stream agent events over WebSocket.
+- Show thinking, answer, tool calls, approvals, artifacts, terminal output, and context usage.
+
+Primary layout:
+
+```text
+left/nav area
+  project and conversation navigation
+
+main chat area
+  user messages
+  thinking blocks
+  assistant messages
+  tool-call timeline
+  feedback controls
+  composer
+
+right panel
+  artifacts
+  diffs
+  previews
+  project resources
+  terminal output when relevant
+```
+
+Composer controls:
+
+- Text input.
+- Voice input.
+- Attach resource.
+- Model selector.
+- Thinking toggle.
+- Approval mode selector.
+- Send.
+
+Runtime settings are per turn:
+
+```text
+provider
+model
+thinking_enabled
+thinking_effort
+approval_mode
+sandbox_mode
+max_output_tokens
+temperature
+```
+
+These settings are stored in `turn_runtime_configs`.
+
+WebSocket behavior:
+
+```text
+web sends user message or transcribed voice message
+server validates event
+core starts turn
+provider streams model events
+tools emit progress events
+server streams typed events back to web
+web renders live state
+db records every event
+```
+
+## Project-Scoped Conversations
+
+Every conversation belongs to exactly one project.
+
+```text
+projects.id -> conversations.project_id
+```
+
+This keeps the app organized:
+
+```text
+Project
+  resources
+  instructions
+  conversations
+    turns
+    messages
+    events
+```
+
+Global chats should not exist in V1.
+
+## Resource Flow
+
+```text
+user adds resource
+  -> store artifact if file-backed
+  -> create project_resources row
+  -> emit project.resource.created event
+  -> resource becomes available to future project conversations
+```
+
+Resources are project-level context, not conversation-only context by default.
+
+Later, a conversation can pin or select a subset of project resources if needed.
+
+## Chat Creation Flow
+
+```text
+user clicks New chat on project dashboard
+  -> create conversations row with project_id
+  -> create sessions row if a runtime session is needed immediately
+  -> route to /projects/:projectId/chats/:conversationId
+```
+
+The first user message creates the first `turn`.
+
+## Voice Input Flow
+
+```text
+user records voice
+  -> create voice_inputs row
+  -> transcribe
+  -> create normal user message from transcript
+  -> create normal turn
+```
+
+Voice input is a message creation path, not a separate conversation type.
+
+## Read-Aloud Flow
+
+```text
+user clicks read aloud on assistant message
+  -> create audio_outputs row
+  -> generate or play audio
+  -> attach optional audio artifact
+```
+
+Read aloud is attached to an assistant message.
+
+## Feedback Flow
+
+```text
+user clicks thumbs up/down
+  -> create or update message_feedback row
+  -> emit feedback.created or feedback.updated event
+```
+
+Feedback should attach to the exact message, turn, or model call being rated.
+
+## Frontend Hooks
+
+Socrates should use its own React hooks around its own WebSocket and HTTP contracts.
+
+Initial hooks:
+
+```text
+useSocratesSocket()
+useCurrentUser()
+useOnboardingState()
+useProjects()
+useProject()
+useProjectResources()
+useProjectConversations()
+useConversation()
+useChatTurn()
+useApprovals()
+useContextUsage()
+useVoiceInput()
+useReadAloud()
+useMessageFeedback()
+```
+
+Do not make `@ai-sdk/react` the core chat state engine in V1. Socrates needs typed events richer than a normal chat stream.
+
+## Design Notes
+
+The first UI should feel calm and serious, not busy.
+
+Guidelines:
+
+- Build the actual app, not a marketing landing page.
+- Keep `/welcome` minimal and polished.
+- Keep `/onboarding` one step.
+- Make `/projects` practical and uncluttered.
+- Make project dashboards resource-aware.
+- Keep chat event-rich but visually organized.
+- Do not copy Claude/Codex visuals directly; use them only as interaction references.
+

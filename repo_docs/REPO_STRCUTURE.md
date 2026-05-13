@@ -10,7 +10,11 @@ Socrates/
     web/
       src/
         app/
+          welcome/
+          onboarding/
+          projects/
         components/
+        hooks/
         lib/
 
     server/
@@ -49,6 +53,7 @@ Socrates/
       src/
         schemas/
         events/
+        projects/
         tools/
         sessions/
         approvals/
@@ -62,6 +67,10 @@ Socrates/
         time/
 
   repo_docs/
+    APP_FLOW.md
+    DB_STRUCTURE.md
+    FRONTEND_BACKEND_CONTRACT.md
+    PROVIDER_USAGE.md
     REPO_STRCUTURE.md
     REPO_RULEs.md
 ```
@@ -74,7 +83,13 @@ The frontend application.
 
 It owns:
 
+- Welcome page.
+- Onboarding page.
+- Projects page.
+- Project dashboard.
 - Chat UI.
+- Project resource panel.
+- Project instructions panel.
 - Model and provider selector.
 - File tree.
 - Diff viewer.
@@ -95,6 +110,24 @@ It must not own:
 
 The frontend talks to the backend over HTTP and WebSockets.
 
+The frontend should use Socrates-owned hooks around Socrates HTTP and WebSocket contracts. Do not make `@ai-sdk/react` the core chat state engine in V1.
+
+Initial frontend hooks:
+
+```text
+useSocratesSocket()
+useCurrentUser()
+useOnboardingState()
+useProjects()
+useProject()
+useProjectResources()
+useProjectConversations()
+useConversation()
+useChatTurn()
+useApprovals()
+useContextUsage()
+```
+
 ### `apps/server`
 
 The backend application.
@@ -103,6 +136,8 @@ It owns:
 
 - HTTP routes.
 - WebSocket server.
+- Onboarding/user profile endpoints.
+- Project and resource endpoints.
 - Session lifecycle endpoints.
 - Request validation at the API boundary.
 - Connecting frontend requests to `packages/core`.
@@ -198,6 +233,10 @@ It owns schemas and types that cross package boundaries:
 
 - WebSocket events.
 - HTTP request/response schemas.
+- User and onboarding schemas.
+- Project schemas.
+- Project resource schemas.
+- Project instruction schemas.
 - Tool call schemas.
 - Tool result schemas.
 - Approval request/decision schemas.
@@ -246,6 +285,10 @@ WebSockets are used for:
 
 HTTP is still used for simple request/response operations:
 
+- Create/update local user profile.
+- Complete onboarding.
+- Create/list/update projects.
+- Create/list/update project resources.
 - Create session.
 - List sessions.
 - Load session.
@@ -256,7 +299,8 @@ HTTP is still used for simple request/response operations:
 
 ```text
 apps/web
-  sends user message over WebSocket
+  routes through /welcome, /onboarding, /projects, project dashboard, and project chat
+  sends user message over WebSocket only after a project conversation is selected
   or captures voice input and sends the transcript as a user message
 
 apps/server
@@ -276,6 +320,23 @@ apps/web
   renders chat, thinking, tool calls, approvals, diffs, terminal output, voice state, read-aloud state, and feedback controls
 ```
 
+## App Routes
+
+The route structure is defined in `repo_docs/APP_FLOW.md`.
+
+Initial routes:
+
+```text
+/welcome
+/onboarding
+/projects
+/projects/new
+/projects/:projectId
+/projects/:projectId/chats/:conversationId
+```
+
+The project page itself is the dashboard. Do not add a separate dashboard id unless a real dashboard entity is introduced later.
+
 ## Example Event Families
 
 The exact schemas should live in `packages/contracts/src/events`.
@@ -284,6 +345,12 @@ The exact schemas should live in `packages/contracts/src/events`.
 session.created
 session.loaded
 session.error
+
+project.created
+project.updated
+project.workspace.attached
+project.resource.created
+project.instructions.updated
 
 agent.started
 agent.message.delta

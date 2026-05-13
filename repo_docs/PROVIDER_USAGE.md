@@ -6,8 +6,9 @@ The short version:
 
 ```text
 V1:
-  Use Vercel AI SDK behind our own provider abstraction.
-  Support OpenAI, Anthropic, Google, and OpenRouter through that adapter.
+  Use AI SDK v6 provider packages behind our own provider abstraction.
+  Support OpenAI, Anthropic, Google, and OpenRouter through direct provider packages.
+  Do not use Vercel AI Gateway as the default path.
 
 V1.5:
   Add Ollama/local model support.
@@ -24,18 +25,29 @@ The rest of Socrates must never depend directly on Vercel AI SDK.
 
 Vercel AI SDK is an implementation detail inside `packages/providers`.
 
+Socrates should use direct provider packages in V1:
+
+```text
+@ai-sdk/openai
+@ai-sdk/anthropic
+@ai-sdk/google
+@openrouter/ai-sdk-provider
+```
+
+Vercel AI Gateway can be added later as an optional provider route, but it should not be the default because Socrates is local-first and should let users bring direct provider keys.
+
 ## Why Start With Vercel AI SDK
 
 Socrates needs to move quickly at the beginning.
 
-Vercel AI SDK gives us a practical v1 path for:
+AI SDK v6 provider packages give us a practical v1 path for:
 
 - Streaming text.
 - Tool calling.
 - Provider-normalized APIs.
-- OpenAI support.
-- Anthropic support.
-- Google Gemini support.
+- OpenAI support through the OpenAI provider package.
+- Anthropic support through the Anthropic provider package.
+- Google Gemini support through the Google provider package.
 - OpenRouter support through `@openrouter/ai-sdk-provider`.
 - Future compatibility with other provider packages.
 
@@ -66,7 +78,7 @@ packages/providers
   -> imports Vercel AI SDK internally
 
 Vercel AI SDK
-  -> OpenAI / Anthropic / Google / OpenRouter
+  -> direct provider packages for OpenAI / Anthropic / Google / OpenRouter
 ```
 
 The agent core should see only this:
@@ -246,6 +258,14 @@ openrouter -> AiSdkProvider in V1
 ```
 
 OpenRouter should be supported through the Vercel AI SDK OpenRouter provider package, not through a custom direct wrapper in V1.
+
+Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
+
+```text
+gateway -> AiGatewayProvider
+```
+
+It must not replace the direct provider strategy.
 
 ## V1.5 Provider Plan
 
@@ -436,4 +456,3 @@ The frontend sends selected settings to the server. The backend/core/provider la
 8. Provider routing must be centralized in `ProviderRouter`.
 9. The code must be written from day one as if Vercel AI SDK may be replaced later.
 10. If a provider feature cannot be normalized cleanly, expose it through `providerOptions` and persist raw metadata.
-

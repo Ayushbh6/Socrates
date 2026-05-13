@@ -80,6 +80,8 @@ socket.send(JSON.stringify(event))
 
 `apps/web` renders state and sends user actions. It must not decide how the agent works.
 
+The frontend should use Socrates-owned hooks around Socrates contracts and WebSocket events. Do not make `@ai-sdk/react` the core chat state engine in V1.
+
 Frontend code may:
 
 - Display messages.
@@ -115,7 +117,21 @@ Server routes must not become a dumping ground for:
 
 If a route grows complex, move the logic into the correct package.
 
-## 7. The Agent Core Must Be Provider-Agnostic
+## 7. Projects Are The Primary App Boundary
+
+All V1 conversations must belong to a project.
+
+Required shape:
+
+```text
+user -> project -> conversation -> session -> turn
+```
+
+Project resources, project instructions, conversations, sessions, artifacts, and events must remain traceable back to the owning project.
+
+Do not create global unscoped chats in V1.
+
+## 8. The Agent Core Must Be Provider-Agnostic
 
 `packages/core` must never import OpenAI, Anthropic, Gemini, Ollama, OpenRouter, LiteLLM, or Vercel AI SDK directly.
 
@@ -135,7 +151,7 @@ packages/core -> Anthropic SDK
 packages/core -> Vercel AI SDK
 ```
 
-## 8. Workspace Operations Must Go Through `packages/workspace`
+## 9. Workspace Operations Must Go Through `packages/workspace`
 
 All local file, shell, search, git, and patch operations must go through `packages/workspace`.
 
@@ -148,7 +164,7 @@ Do not run ad hoc filesystem or shell logic from:
 
 The agent-facing tool wrapper lives in `packages/core/tools`, but the implementation lives in `packages/workspace`.
 
-## 9. Tools Need Schemas, Permissions, And Ownership
+## 10. Tools Need Schemas, Permissions, And Ownership
 
 Every agent tool must define:
 
@@ -164,7 +180,7 @@ Tool definitions belong in `packages/core/tools`.
 
 Tool implementation details belong in the package that owns the capability, usually `packages/workspace`.
 
-## 10. Dangerous Actions Require Approval
+## 11. Dangerous Actions Require Approval
 
 The agent must request user approval before actions that can change the system or consume meaningful resources.
 
@@ -184,7 +200,7 @@ Read-only actions may be allowed automatically depending on policy.
 
 Approval requests and decisions must use schemas from `packages/contracts`.
 
-## 11. No Hidden Side Effects
+## 12. No Hidden Side Effects
 
 Functions should make side effects obvious from their name and package.
 
@@ -203,7 +219,7 @@ refreshProjectInfoCache()
 
 Side effects must be explicit.
 
-## 12. Prefer Small, Composable Functions
+## 13. Prefer Small, Composable Functions
 
 Reusable base functions should be small and organized by responsibility.
 
@@ -218,7 +234,7 @@ Avoid large files that mix:
 
 Split by responsibility before the file becomes difficult to reason about.
 
-## 13. Errors Must Be Structured
+## 14. Errors Must Be Structured
 
 Cross-boundary errors must use structured error payloads from `packages/contracts`.
 
@@ -231,7 +247,7 @@ Errors should include:
 - Optional details.
 - Source package when useful.
 
-## 14. Session State Must Be Explicit
+## 15. Session State Must Be Explicit
 
 Long-running agent work must be represented through explicit session/task state.
 
@@ -247,7 +263,7 @@ The system should be able to answer:
 
 No important agent state should exist only in memory if it is needed for recovery, display, or audit.
 
-## 15. Streaming Is Event-Based
+## 16. Streaming Is Event-Based
 
 Streaming output must use typed events.
 
@@ -266,7 +282,7 @@ This applies to:
 
 Do not invent separate streaming formats for each feature.
 
-## 16. Voice, Audio, And Feedback Must Be Persisted
+## 17. Voice, Audio, And Feedback Must Be Persisted
 
 Voice input, read-aloud output, and message feedback must use shared contracts, typed events, and database records.
 
@@ -282,7 +298,7 @@ Do not hide these flows in frontend-only state.
 
 Do not add large sets of nullable voice/audio/feedback columns to `messages`. Use dedicated tables linked back to messages, turns, model calls, artifacts, and errors.
 
-## 17. Add New Providers Behind The Provider Interface
+## 18. Add New Providers Behind The Provider Interface
 
 New model providers must be added as adapters in `packages/providers`.
 
@@ -294,7 +310,9 @@ They must not leak provider-specific response shapes into:
 
 If a provider has unique capabilities, expose only the normalized subset first. Add extensions deliberately.
 
-## 18. Keep Naming Stable And Boring
+V1 should use direct AI SDK provider packages behind the Socrates provider abstraction. Do not use Vercel AI Gateway as the default provider path.
+
+## 19. Keep Naming Stable And Boring
 
 Use predictable names.
 
@@ -312,7 +330,7 @@ WebSocketEvent
 
 Avoid clever names. The repo should be easy to navigate months later.
 
-## 19. Search Before Adding
+## 20. Search Before Adding
 
 Before adding any new:
 
@@ -327,13 +345,13 @@ Search the repo first.
 
 Use `rg` or `rg --files` before creating new abstractions.
 
-## 20. Documentation Must Track Architecture
+## 21. Documentation Must Track Architecture
 
 If package responsibilities, event contracts, approval policy, or dependency direction changes, update `repo_docs/`.
 
 Architecture docs are not decorative. They are working agreements.
 
-## 21. The Default Bias Is Reuse
+## 22. The Default Bias Is Reuse
 
 When implementing a feature, the default path is:
 

@@ -31,26 +31,43 @@ other tables = indexed structured views of important entities
 ## Entity Hierarchy
 
 ```text
-conversation
-  session
-    turn
-      messages
-      model_calls
-      tool_calls
-      approvals
-      voice_inputs
-      audio_outputs
-      message_feedback
-      errors
-      usage_snapshots
-      events
+user
+  project
+    project_workspaces
+    project_resources
+    project_instructions
+    conversation
+      session
+        turn
+          messages
+          model_calls
+          tool_calls
+          approvals
+          voice_inputs
+          audio_outputs
+          message_feedback
+          errors
+          usage_snapshots
+          events
 ```
 
 ## Core Concepts
 
+### User
+
+A user is the local profile for the person using Socrates.
+
+Socrates is local-first and single-user in V1, but a `users` table still gives the app a clean place to store display name, onboarding state, and user-level preferences.
+
+### Project
+
+A project is the main workspace container.
+
+Projects own resources, instructions, workspaces, and conversations. Global unscoped chats should not exist in V1.
+
 ### Conversation
 
-A conversation is the full chat thread shown in the sidebar.
+A conversation is the full chat thread shown inside a project.
 
 One conversation can have multiple sessions if the user changes workspace/runtime context later.
 
@@ -102,13 +119,106 @@ Events are append-only and ordered by `sequence` within a session. They are the 
 
 ## Tables
 
+## `users`
+
+Stores the local user profile.
+
+Socrates is single-user in V1, but this table avoids scattering profile and onboarding state across ad hoc settings files.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `user_...`. |
+| `display_name` | `TEXT` | yes | What Socrates should call the user. |
+| `onboarding_completed` | `INTEGER` | yes | Boolean as `0` or `1`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `onboarded_at` | `TEXT` | no | Set when onboarding completes. |
+| `metadata_json` | `TEXT` | no | User-level metadata and future preferences. |
+
+## `projects`
+
+Stores project containers.
+
+Projects are the primary organizing unit for Socrates. Conversations, resources, instructions, artifacts, and runtime sessions should belong to a project.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `proj_...`. |
+| `user_id` | `TEXT` | yes | FK to `users.id`. |
+| `name` | `TEXT` | yes | Project display name. |
+| `description` | `TEXT` | no | Optional project description. |
+| `status` | `TEXT` | yes | `active`, `archived`, `deleted`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `archived_at` | `TEXT` | no | Set when archived. |
+| `metadata_json` | `TEXT` | no | Project-level metadata. |
+
+## `project_workspaces`
+
+Stores local workspace folders attached to projects.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `pws_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `kind` | `TEXT` | yes | `existing_folder`, `created_folder`, `none`. |
+| `path` | `TEXT` | no | Absolute local path when a folder is attached. |
+| `git_repo_root` | `TEXT` | no | Absolute git root if detected. |
+| `git_branch` | `TEXT` | no | Current or last known branch. |
+| `git_commit` | `TEXT` | no | Current or last known commit hash. |
+| `is_primary` | `INTEGER` | yes | Boolean as `0` or `1`; one primary workspace per project. |
+| `status` | `TEXT` | yes | `active`, `missing`, `detached`, `archived`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra workspace metadata. |
+
+## `project_resources`
+
+Stores project-level resources.
+
+Resources are reusable context attached to a project, such as PDFs, documents, text notes, images, links, or selected local files.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `pres_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `artifact_id` | `TEXT` | no | FK to `artifacts.id` if file-backed. |
+| `name` | `TEXT` | yes | Display name. |
+| `kind` | `TEXT` | yes | `pdf`, `document`, `text`, `image`, `url`, `local_file`, `note`, `other`. |
+| `source` | `TEXT` | yes | `uploaded`, `linked_file`, `created_note`, `url`, `generated`. |
+| `uri` | `TEXT` | no | URL or local path reference when applicable. |
+| `status` | `TEXT` | yes | `active`, `processing`, `failed`, `archived`, `deleted`. |
+| `error_id` | `TEXT` | no | FK to `errors.id` if processing failed. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extraction/indexing metadata, tags, etc. |
+
+## `project_instructions`
+
+Stores persistent project instructions.
+
+These are the project-scoped guidance that should be included when building context for conversations in the project.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `pins_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `title` | `TEXT` | no | Optional instruction title. |
+| `content` | `TEXT` | yes | Instruction text. |
+| `status` | `TEXT` | yes | `active`, `archived`, `deleted`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra instruction metadata. |
+
 ## `conversations`
 
-Stores top-level chat threads.
+Stores project-scoped chat threads.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `conv_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `user_id` | `TEXT` | yes | FK to `users.id`, denormalized for easier queries. |
 | `title` | `TEXT` | no | Display title for sidebar. |
 | `status` | `TEXT` | yes | `active`, `archived`, `deleted`. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
@@ -124,7 +234,9 @@ Stores runtime/workspace execution contexts.
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `sess_...`. |
 | `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
-| `workspace_path` | `TEXT` | yes | Absolute path to active workspace/repo. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`, denormalized for easier queries. |
+| `project_workspace_id` | `TEXT` | no | FK to `project_workspaces.id` when a workspace is attached. |
+| `workspace_path` | `TEXT` | no | Absolute path to active workspace/repo if available. |
 | `workspace_name` | `TEXT` | no | Friendly display name. |
 | `git_repo_root` | `TEXT` | no | Absolute git root if detected. |
 | `git_branch` | `TEXT` | no | Current branch at session start or latest known branch. |
@@ -205,10 +317,11 @@ This table is append-only except for rare maintenance/migration work.
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `evt_...`. |
-| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
-| `session_id` | `TEXT` | yes | FK to `sessions.id`. |
+| `project_id` | `TEXT` | no | FK to `projects.id` when event belongs to a project. |
+| `conversation_id` | `TEXT` | no | FK to `conversations.id` when event belongs to a conversation. |
+| `session_id` | `TEXT` | no | FK to `sessions.id` when event belongs to a session. |
 | `turn_id` | `TEXT` | no | FK to `turns.id` when event belongs to a turn. |
-| `sequence` | `INTEGER` | yes | Strictly increasing per session. |
+| `sequence` | `INTEGER` | yes | Strictly increasing global event sequence. |
 | `type` | `TEXT` | yes | Stable event name like `model.answer.delta`. |
 | `source` | `TEXT` | yes | `web`, `server`, `core`, `provider`, `workspace`, `tool`, `system`. |
 | `payload_json` | `TEXT` | yes | Event payload JSON matching `packages/contracts`. |
@@ -217,7 +330,9 @@ This table is append-only except for rare maintenance/migration work.
 Suggested indexes:
 
 ```sql
-CREATE UNIQUE INDEX events_session_sequence_idx ON events(session_id, sequence);
+CREATE UNIQUE INDEX events_sequence_idx ON events(sequence);
+CREATE INDEX events_session_sequence_idx ON events(session_id, sequence);
+CREATE INDEX events_project_sequence_idx ON events(project_id, sequence);
 CREATE INDEX events_turn_sequence_idx ON events(turn_id, sequence);
 CREATE INDEX events_type_idx ON events(type);
 ```
@@ -465,8 +580,9 @@ Examples:
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `art_...`. |
-| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
-| `session_id` | `TEXT` | yes | FK to `sessions.id`. |
+| `project_id` | `TEXT` | no | FK to `projects.id` if artifact belongs to a project. |
+| `conversation_id` | `TEXT` | no | FK to `conversations.id` if artifact belongs to a conversation. |
+| `session_id` | `TEXT` | no | FK to `sessions.id` if artifact belongs to a session. |
 | `turn_id` | `TEXT` | no | FK to `turns.id`. |
 | `kind` | `TEXT` | yes | `file`, `log`, `screenshot`, `diff`, `report`, `audio_input`, `audio_output`, etc. |
 | `path` | `TEXT` | no | Local path if artifact exists on disk. |
@@ -582,8 +698,22 @@ The concrete schemas should live in `packages/contracts`.
 Initial event families:
 
 ```text
+user.created
+user.updated
+user.onboarding.completed
+
 conversation.created
 conversation.updated
+
+project.created
+project.updated
+project.archived
+project.workspace.attached
+project.workspace.detached
+project.resource.created
+project.resource.updated
+project.resource.deleted
+project.instructions.updated
 
 session.created
 session.updated
@@ -774,6 +904,11 @@ WHERE turn_id = ?;
 If implementation needs to start smaller, the non-negotiable V1 tables are:
 
 ```text
+users
+projects
+project_workspaces
+project_resources
+project_instructions
 conversations
 sessions
 turns

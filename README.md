@@ -13,6 +13,8 @@ Socrates should feel like a thoughtful collaborator:
 - It can discuss a task before acting.
 - It can plan work clearly.
 - It can inspect local context.
+- It organizes work into projects.
+- It can attach local workspaces and resources to a project.
 - It can use tools with user-approved permissions.
 - It can run commands, read files, propose edits, and explain outcomes.
 - It can switch models and providers per query.
@@ -38,6 +40,8 @@ one personal assistant
 Socrates is a local-first agent application with:
 
 - A polished web interface.
+- First-run onboarding.
+- Project-based workspaces.
 - A backend agent runtime.
 - WebSocket-based live communication.
 - Voice input, read-aloud output, and feedback flows.
@@ -73,6 +77,21 @@ packages/
   shared/       # small generic reusable utilities
 
 repo_docs/      # architecture and implementation rules
+```
+
+Initial app flow:
+
+```text
+/welcome
+  -> /onboarding on first launch
+  -> /projects for returning users
+
+/projects
+  -> /projects/new
+  -> /projects/:projectId
+
+/projects/:projectId
+  -> /projects/:projectId/chats/:conversationId
 ```
 
 The core dependency rule:
@@ -121,6 +140,11 @@ Socrates uses SQLite as the durable source of truth.
 
 The database should store:
 
+- Local user profile and onboarding state.
+- Projects.
+- Project workspaces.
+- Project resources.
+- Project instructions.
 - Conversations.
 - Sessions.
 - Turns.
@@ -181,6 +205,8 @@ Initial docs:
 - [`repo_docs/REPO_RULEs.md`](repo_docs/REPO_RULEs.md)
 - [`repo_docs/DB_STRUCTURE.md`](repo_docs/DB_STRUCTURE.md)
 - [`repo_docs/PROVIDER_USAGE.md`](repo_docs/PROVIDER_USAGE.md)
+- [`repo_docs/APP_FLOW.md`](repo_docs/APP_FLOW.md)
+- [`repo_docs/FRONTEND_BACKEND_CONTRACT.md`](repo_docs/FRONTEND_BACKEND_CONTRACT.md)
 
 ## Working Agreement
 
