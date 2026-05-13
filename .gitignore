@@ -23,4 +23,5 @@ photos/
 test_material/
 app-data/
 host-workspaces/
-repo_docs/
+!repo_docs/
+!repo_docs/*.md
