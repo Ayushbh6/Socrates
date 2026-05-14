@@ -1,0 +1,28 @@
+import Fastify from "fastify"
+import { openDatabase, runMigrations, type DatabaseHandle } from "./db/client"
+import { registerHttpRoutes } from "./routes/httpRoutes"
+import { SocratesStore } from "./services/store"
+import { registerWebSocketRoutes } from "./ws/websocket"
+
+export type BuildServerOptions = {
+  dbPath: string
+  logger?: boolean
+  databaseHandle?: DatabaseHandle
+}
+
+export const buildServer = async (options: BuildServerOptions) => {
+  const handle = options.databaseHandle ?? openDatabase(options.dbPath)
+  runMigrations(handle)
+
+  const store = new SocratesStore(handle)
+  const app = Fastify({ logger: options.logger ?? false })
+
+  app.addHook("onClose", async () => {
+    store.close()
+  })
+
+  await registerWebSocketRoutes(app, store)
+  await registerHttpRoutes(app, store)
+
+  return app
+}

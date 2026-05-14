@@ -1,0 +1,421 @@
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import Database from "better-sqlite3"
+import { afterEach, describe, expect, it } from "vitest"
+import WebSocket from "ws"
+import type { ApiResponse, Conversation, Project, ProjectResource, ServerEvent, User } from "@socrates/contracts"
+import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
+import { createId, nowIso } from "@socrates/shared"
+import { buildServer } from "../app"
+import { openDatabase, runMigrations } from "../db/client"
+
+type TestServer = Awaited<ReturnType<typeof buildServer>>
+
+const servers: TestServer[] = []
+
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map((server) => server.close()))
+})
+
+const tempDbPath = (): string => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-test-"))
+  return path.join(dir, "socrates.sqlite")
+}
+
+const buildTestServer = async (): Promise<TestServer> => {
+  const app = await buildServer({ dbPath: tempDbPath() })
+  servers.push(app)
+  return app
+}
+
+const parseResponse = <T>(payload: string): ApiResponse<T> => JSON.parse(payload) as ApiResponse<T>
+
+const onboard = async (app: TestServer, displayName = "Ayush"): Promise<User> => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/onboarding",
+    payload: { displayName },
+  })
+  const body = parseResponse<{ user: User }>(response.payload)
+  expect(body.ok).toBe(true)
+  if (!body.ok) {
+    throw new Error("Expected onboarding success")
+  }
+  return body.data.user
+}
+
+const createProject = async (app: TestServer, name = "Backend Test Project"): Promise<Project> => {
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/projects",
+    payload: {
+      name,
+      description: "A test project",
+      creationMode: "start_from_scratch",
+    },
+  })
+  const body = parseResponse<{ project: Project }>(response.payload)
+  expect(body.ok).toBe(true)
+  if (!body.ok) {
+    throw new Error("Expected project creation success")
+  }
+  return body.data.project
+}
+
+const createConversation = async (app: TestServer, projectId: string, title = "Test Chat"): Promise<Conversation> => {
+  const response = await app.inject({
+    method: "POST",
+    url: `/api/projects/${projectId}/conversations`,
+    payload: { title },
+  })
+  const body = parseResponse<{ conversation: Conversation }>(response.payload)
+  expect(body.ok).toBe(true)
+  if (!body.ok) {
+    throw new Error("Expected conversation creation success")
+  }
+  return body.data.conversation
+}
+
+const connectWebSocket = async (app: TestServer): Promise<WebSocket> => {
+  await app.listen({ host: "127.0.0.1", port: 0 })
+  const address = app.server.address()
+  if (!address || typeof address === "string") {
+    throw new Error("Could not resolve test server address")
+  }
+
+  const socket = new WebSocket(`ws://127.0.0.1:${address.port}/ws`)
+  trackedEvents.set(socket, [])
+  socket.on("message", (raw) => {
+    trackedEvents.get(socket)?.push(serverEventSchema.parse(JSON.parse(raw.toString())))
+  })
+  await new Promise<void>((resolve, reject) => {
+    socket.once("open", () => resolve())
+    socket.once("error", reject)
+  })
+  return socket
+}
+
+const trackedEvents = new WeakMap<WebSocket, ServerEvent[]>()
+
+const waitForEvent = async <T extends ServerEvent["type"]>(
+  socket: WebSocket,
+  type: T,
+): Promise<Extract<ServerEvent, { type: T }>> =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      clearInterval(interval)
+      reject(new Error(`Timed out waiting for ${type}`))
+    }, 1_000)
+
+    const interval = setInterval(() => {
+      const events = trackedEvents.get(socket) ?? []
+      const index = events.findIndex((event) => event.type === type)
+      if (index >= 0) {
+        const [event] = events.splice(index, 1)
+        clearTimeout(timer)
+        clearInterval(interval)
+        resolve(event as Extract<ServerEvent, { type: T }>)
+      }
+    }, 5)
+  })
+
+const sendCommand = (socket: WebSocket, command: unknown): void => {
+  socket.send(JSON.stringify(clientCommandSchema.parse(command)))
+}
+
+const chatMessageCommand = (projectId: string, conversationId: string, content: string) => ({
+  id: createId("evt"),
+  type: "chat.message.send",
+  schemaVersion: 1,
+  timestamp: nowIso(),
+  projectId,
+  conversationId,
+  actor: { type: "user" },
+  payload: {
+    clientMessageId: createId("msg"),
+    content,
+    runtimeConfig: {
+      providerId: "openai",
+      modelId: "gpt-test",
+      thinkingEnabled: true,
+      thinkingEffort: "medium",
+      approvalMode: "manual",
+      sandboxMode: "workspace_write",
+    },
+  },
+})
+
+describe("database migrations", () => {
+  it("creates every backend foundation table", () => {
+    const dbPath = tempDbPath()
+    const handle = openDatabase(dbPath)
+    try {
+      runMigrations(handle)
+    } finally {
+      handle.close()
+    }
+
+    const sqlite = new Database(dbPath)
+    const tables = sqlite
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all()
+      .map((row) => (row as { name: string }).name)
+    sqlite.close()
+
+    expect(tables).toEqual(
+      expect.arrayContaining([
+        "users",
+        "projects",
+        "project_workspaces",
+        "project_resources",
+        "project_instructions",
+        "conversations",
+        "sessions",
+        "turns",
+        "turn_runtime_configs",
+        "messages",
+        "events",
+        "model_calls",
+        "model_stream_chunks",
+        "model_usage",
+        "context_usage_snapshots",
+        "tool_calls",
+        "approvals",
+        "shell_commands",
+        "shell_output_chunks",
+        "file_operations",
+        "patches",
+        "errors",
+        "artifacts",
+        "voice_inputs",
+        "audio_outputs",
+        "message_feedback",
+        "session_state",
+        "schema_migrations",
+      ]),
+    )
+  })
+})
+
+describe("HTTP API", () => {
+  it("returns null user before onboarding", async () => {
+    const app = await buildTestServer()
+    const response = await app.inject({ method: "GET", url: "/api/me" })
+    const body = parseResponse<{ user: User | null }>(response.payload)
+
+    expect(response.statusCode).toBe(200)
+    expect(body).toEqual({ ok: true, data: { user: null } })
+  })
+
+  it("creates and updates the single local user during onboarding", async () => {
+    const app = await buildTestServer()
+    const created = await onboard(app, "Ayush")
+    expect(created.displayName).toBe("Ayush")
+    expect(created.onboardingCompleted).toBe(true)
+
+    const updated = await onboard(app, "Aparajit")
+    expect(updated.id).toBe(created.id)
+    expect(updated.displayName).toBe("Aparajit")
+  })
+
+  it("creates, lists, gets, and patches projects", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+
+    const project = await createProject(app)
+    expect(project.status).toBe("active")
+
+    const listResponse = await app.inject({ method: "GET", url: "/api/projects" })
+    const listBody = parseResponse<{ projects: Array<{ project: Project; conversationCount: number }> }>(listResponse.payload)
+    expect(listBody.ok).toBe(true)
+    if (listBody.ok) {
+      expect(listBody.data.projects).toHaveLength(1)
+      expect(listBody.data.projects[0]?.project.id).toBe(project.id)
+      expect(listBody.data.projects[0]?.conversationCount).toBe(0)
+    }
+
+    const getResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}` })
+    const getBody = parseResponse<{ project: Project; resources: ProjectResource[]; conversations: Conversation[] }>(
+      getResponse.payload,
+    )
+    expect(getBody.ok).toBe(true)
+    if (getBody.ok) {
+      expect(getBody.data.project.id).toBe(project.id)
+      expect(getBody.data.resources).toEqual([])
+      expect(getBody.data.conversations).toEqual([])
+    }
+
+    const patchResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/${project.id}`,
+      payload: { name: "Renamed Project" },
+    })
+    const patchBody = parseResponse<{ project: Project }>(patchResponse.payload)
+    expect(patchBody.ok).toBe(true)
+    if (patchBody.ok) {
+      expect(patchBody.data.project.name).toBe("Renamed Project")
+    }
+  })
+
+  it("creates and lists project resources", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const project = await createProject(app)
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources`,
+      payload: {
+        name: "Spec",
+        kind: "document",
+        source: "uploaded",
+      },
+    })
+    const createBody = parseResponse<{ resource: ProjectResource }>(createResponse.payload)
+    expect(createBody.ok).toBe(true)
+    if (createBody.ok) {
+      expect(createBody.data.resource.name).toBe("Spec")
+    }
+
+    const listResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/resources` })
+    const listBody = parseResponse<{ resources: ProjectResource[] }>(listResponse.payload)
+    expect(listBody.ok).toBe(true)
+    if (listBody.ok) {
+      expect(listBody.data.resources).toHaveLength(1)
+    }
+  })
+
+  it("creates, lists, and gets conversations under a project", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const project = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+
+    const listResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/conversations` })
+    const listBody = parseResponse<{ conversations: Conversation[] }>(listResponse.payload)
+    expect(listBody.ok).toBe(true)
+    if (listBody.ok) {
+      expect(listBody.data.conversations[0]?.id).toBe(conversation.id)
+    }
+
+    const getResponse = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+    })
+    const getBody = parseResponse<{ conversation: Conversation; messages: unknown[] }>(getResponse.payload)
+    expect(getBody.ok).toBe(true)
+    if (getBody.ok) {
+      expect(getBody.data.conversation.id).toBe(conversation.id)
+      expect(getBody.data.messages).toEqual([])
+    }
+  })
+
+  it("returns ApiError envelopes for invalid HTTP payloads", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        description: "Missing required name and creationMode",
+      },
+    })
+    const body = parseResponse<never>(response.payload)
+
+    expect(response.statusCode).toBe(400)
+    expect(body.ok).toBe(false)
+    if (!body.ok) {
+      expect(body.error.code).toBe("invalid_request")
+    }
+  })
+})
+
+describe("WebSocket API", () => {
+  it("emits connection.ready on connect", async () => {
+    const app = await buildTestServer()
+    const socket = await connectWebSocket(app)
+    try {
+      const ready = await waitForEvent(socket, "connection.ready")
+      expect(ready.payload.connectionId).toMatch(/^conn_/)
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("emits turn.started, message.completed, and turn.completed for chat.message.send", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const project = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Hello Socrates"))
+
+      const started = await waitForEvent(socket, "turn.started")
+      expect(started.payload.userMessage.content).toBe("Hello Socrates")
+
+      const messageCompleted = await waitForEvent(socket, "message.completed")
+      expect(messageCompleted.payload.message.role).toBe("assistant")
+
+      const turnCompleted = await waitForEvent(socket, "turn.completed")
+      expect(turnCompleted.payload.turnId).toBe(started.payload.turnId)
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("rejects a second chat.message.send while a turn is active", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const project = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "First"))
+      await waitForEvent(socket, "turn.started")
+
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Second"))
+      const error = await waitForEvent(socket, "error.created")
+      expect(error.payload.error.code).toBe("turn_already_active")
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("cancels an active turn with chat.turn.cancel", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const project = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Please stop soon"))
+      const started = await waitForEvent(socket, "turn.started")
+
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "chat.turn.cancel",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: {
+          turnId: started.payload.turnId,
+          reason: "User clicked stop",
+        },
+      })
+
+      const cancelled = await waitForEvent(socket, "turn.cancelled")
+      expect(cancelled.payload.turnId).toBe(started.payload.turnId)
+      expect(cancelled.payload.reason).toBe("User clicked stop")
+    } finally {
+      socket.close()
+    }
+  })
+})

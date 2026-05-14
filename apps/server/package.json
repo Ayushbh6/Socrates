@@ -1,0 +1,33 @@
+{
+  "name": "@socrates/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "dev": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && tsx watch src/index.ts",
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "test": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && vitest run",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/db/migrate.ts"
+  },
+  "dependencies": {
+    "@fastify/websocket": "^11.2.0",
+    "@socrates/contracts": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "better-sqlite3": "^12.10.0",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.8.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20",
+    "@types/ws": "^8.18.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0",
+    "ws": "^8.20.1"
+  }
+}
