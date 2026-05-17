@@ -30,6 +30,8 @@ import {
   messageSchema,
   patchProjectRequestSchema,
   patchProjectResponseSchema,
+  pickWorkspaceFolderRequestSchema,
+  pickWorkspaceFolderResponseSchema,
   projectResourceSchema,
   projectSchema,
   projectWorkspaceSchema,
@@ -78,6 +80,7 @@ const resource = {
   name: "README.md",
   kind: "document",
   source: "uploaded",
+  uri: "/tmp/socrates/.socrates/resources/README.md",
   status: "active",
 }
 
@@ -182,6 +185,11 @@ describe("http contracts", () => {
         projects: [{ project, primaryWorkspace: workspace, conversationCount: 1, lastActivityAt: timestamp }],
       }).success,
     ).toBe(true)
+    expect(
+      listProjectsResponseSchema.safeParse({
+        projects: [{ project, conversationCount: 1 }],
+      }).success,
+    ).toBe(false)
 
     expect(
       createProjectRequestSchema.safeParse({
@@ -192,6 +200,7 @@ describe("http contracts", () => {
     ).toBe(true)
 
     expect(createProjectResponseSchema.safeParse({ project, primaryWorkspace: workspace }).success).toBe(true)
+    expect(createProjectResponseSchema.safeParse({ project }).success).toBe(false)
     expect(
       getProjectResponseSchema.safeParse({
         project,
@@ -205,6 +214,13 @@ describe("http contracts", () => {
         },
       }).success,
     ).toBe(true)
+    expect(
+      getProjectResponseSchema.safeParse({
+        project,
+        resources: [],
+        conversations: [],
+      }).success,
+    ).toBe(false)
   })
 
   it("parses project patch and resource contracts", () => {
@@ -220,6 +236,10 @@ describe("http contracts", () => {
       }).success,
     ).toBe(true)
     expect(createProjectResourceResponseSchema.safeParse({ resource }).success).toBe(true)
+    expect(pickWorkspaceFolderRequestSchema.safeParse({ mode: "start_from_scratch" }).success).toBe(true)
+    expect(
+      pickWorkspaceFolderResponseSchema.safeParse({ path: "/tmp/socrates", folderName: "socrates" }).success,
+    ).toBe(true)
   })
 
   it("parses conversation creation contracts", () => {
@@ -234,6 +254,9 @@ describe("http contracts", () => {
   it("rejects invalid HTTP payloads", () => {
     expect(completeOnboardingRequestSchema.safeParse({ displayName: "" }).success).toBe(false)
     expect(createProjectRequestSchema.safeParse({ name: "Socrates", creationMode: "clone" }).success).toBe(false)
+    expect(createProjectRequestSchema.safeParse({ name: "Socrates", creationMode: "existing_folder" }).success).toBe(
+      false,
+    )
   })
 })
 

@@ -167,32 +167,67 @@ new project -> /projects/new
 Purpose:
 
 - Create a project container.
-- Optionally attach a local workspace folder.
+- Attach Socrates to a real local workspace folder.
+- Create the project metadata in SQLite.
+- Create the project-local Socrates scaffold inside the workspace.
 
 Fields:
 
 ```text
-name
+project title
 description
-creation_mode
-workspace_path
+workspace folder
 ```
 
-Creation modes:
+Required fields:
 
 ```text
-start_from_scratch
-existing_folder
+project title
+workspace folder
+```
+
+Optional fields:
+
+```text
+description
+```
+
+Workspace behavior:
+
+```text
+user enters project title
+user optionally enters description
+user connects any local folder through the backend/native picker or pastes an absolute path
+backend verifies the folder exists and is a directory
+backend creates <workspace>/.socrates/resources/
+```
+
+Folder selection is owned by the local backend/native bridge, not browser-only filesystem APIs. In dev V1 the frontend calls the backend picker directly instead of relying on the Next rewrite because native picker requests can be long-running. The frontend also keeps a manual absolute-path fallback.
+
+V1 invariant:
+
+```text
+Every active Socrates project must have exactly one primary local workspace folder.
 ```
 
 Database effects:
 
 ```text
 create projects row
-create project_workspaces row if a folder is selected or created
+create project_workspaces row with is_primary = 1
+store project_workspaces.path as the absolute workspace path
 emit project.created event
-emit project.workspace.attached event when applicable
+emit project.workspace.attached event
 ```
+
+Filesystem effects:
+
+```text
+create <workspace>/.socrates/
+create <workspace>/.socrates/resources/
+```
+
+Socrates should not edit the workspace root `.gitignore` in V1. Users can ignore `.socrates/` themselves if they want. A future version may offer an explicit opt-in action for that.
 
 Routing after creation:
 
@@ -231,6 +266,14 @@ Resource panel:
 - Images.
 - Links.
 - Local files selected as references.
+
+V1 uploaded files are copied by the backend into:
+
+```text
+<primary_workspace>/.socrates/resources/
+```
+
+The resulting `project_resources.uri` points to the stored local file path.
 
 Instructions panel:
 
@@ -367,13 +410,21 @@ Global chats should not exist in V1.
 
 ```text
 user adds resource
-  -> store artifact if file-backed
+  -> copy/upload file-backed resources to <workspace>/.socrates/resources/
   -> create project_resources row
   -> emit project.resource.created event
   -> resource becomes available to future project conversations
 ```
 
 Resources are project-level context, not conversation-only context by default.
+
+The default V1 resource storage location is:
+
+```text
+<primary_workspace>/.socrates/resources/
+```
+
+Do not scatter uploaded resources into arbitrary workspace folders.
 
 Later, a conversation can pin or select a subset of project resources if needed.
 

@@ -86,10 +86,33 @@ Implemented the first backend foundation:
 - Added DB bootstrap with `SOCRATES_DB_PATH` override.
 - Development DB path defaults to `app-data/socrates.sqlite`.
 - Future production/local app storage should move to `~/.socrates/socrates.sqlite`.
+- Future local app packaging must use a backend/native filesystem bridge for project workspace selection and creation.
+- Do not rely on browser-only filesystem APIs for the core project model. Socrates needs durable absolute workspace paths so the backend agent can create folders, write `.socrates/`, store resources, scan repos, and run tools.
+- Dev V1 may use a backend filesystem bridge or temporary path input. Proper local app V1 should wrap the web UI in Tauri or Electron and use native folder dialogs.
 - Added DB-backed HTTP routes for onboarding, projects, resources, and conversations.
 - Added WebSocket `/ws` skeleton that validates commands with `@socrates/contracts`, emits contract-shaped lifecycle events, enforces one active turn per conversation, supports `chat.turn.cancel`, and persists minimal feedback/error/event records.
 
 This sprint intentionally does not implement real model providers, the agent loop, workspace tools, shell execution, real approvals, or frontend UI behavior.
+
+## Project Workspace And Resource Flow Sprint
+
+Implemented the V1 project workspace flow:
+
+- Added `@socrates/workspace` for native folder picker adapters, workspace scaffold creation, and resource file storage.
+- Project creation now requires a real absolute workspace path and creates `<workspace>/.socrates/resources/`.
+- `start_from_scratch` and `existing_folder` both create a primary `project_workspaces` row.
+- Duplicate active workspace paths are rejected with `workspace_already_attached`.
+- Added `POST /api/workspaces/pick-folder` for backend/native folder selection.
+- Added `POST /api/projects/:projectId/resources/upload` for file uploads into `.socrates/resources/`.
+- The frontend `/projects/new` page now uses the backend picker/create flow and keeps a manual absolute-path fallback.
+- The dashboard resource panel uploads files through the backend and refreshes project resources from SQLite.
+
+Follow-up fix:
+
+- The `/projects/new` page was simplified to remove Start from scratch vs Use existing folder mode cards.
+- V1 project creation now asks only for project title, optional description, and a required connected folder/path.
+- The folder picker call goes directly to the local backend origin to avoid Next dev rewrite failures during long-running native OS dialogs.
+- The frontend API client now handles non-JSON/plain-text failures cleanly instead of showing raw JSON parse errors.
 
 ## Current Repo Notes
 
@@ -104,7 +127,7 @@ This sprint intentionally does not implement real model providers, the agent loo
 - Configured styling using `framer-motion`, `lucide-react`, and `shadcn/ui` mapping to a custom Apple-inspired warm cream/teal theme in `globals.css`.
 - Implemented the `/welcome` page with a seamless cream background, gradient typography, and fade-in animations.
 - Implemented the `/onboarding` page as a floating, unboxed form on the seamless cream background.
-- Implemented the `/projects` page as a minimalist list with a `ProjectSearch` component and simplified `ProjectCard`s, removing the global sidebar.
+- Implemented the `/projects` page as a minimalist list with a `ProjectSearch` component and simplified `ProjectCard`s, removing the global sidebar. Added a personalized greeting (e.g., "Welcome, {name}.") to the header after onboarding.
 - Implemented the `/projects/new` page as a clean, centered creation form.
 - Implemented the `/projects/:projectId` dashboard with a 2-column layout (Left: Dashboard Composer & Conversation List; Right: Instructions & Files Panels).
 - All UI elements have been properly compartmentalized into `apps/web/src/components/` according to `REPO_RULES`.

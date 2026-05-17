@@ -8,6 +8,8 @@ import type {
   FeedbackSubmitPayload,
   Message,
   PatchProjectRequest,
+  PickWorkspaceFolderRequest,
+  PickWorkspaceFolderResponse,
   Project,
   ProjectResource,
   ProjectWorkspace,
@@ -15,6 +17,13 @@ import type {
   User,
 } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
+import {
+  ensureWorkspaceScaffold,
+  inferResourceKind,
+  pickWorkspaceFolder,
+  storeResourceFile,
+  type WorkspaceMode,
+} from "@socrates/workspace"
 import { and, count, desc, eq, inArray } from "drizzle-orm"
 import type { DatabaseHandle } from "../db/client"
 import {
@@ -46,14 +55,14 @@ const activeTurnStatuses = ["queued", "running", "awaiting_approval"]
 
 export type ProjectListItem = {
   project: Project
-  primaryWorkspace?: ProjectWorkspace
+  primaryWorkspace: ProjectWorkspace
   conversationCount: number
   lastActivityAt?: string
 }
 
 export type ProjectDashboard = {
   project: Project
-  primaryWorkspace?: ProjectWorkspace
+  primaryWorkspace: ProjectWorkspace
   resources: ProjectResource[]
   conversations: Conversation[]
   instructions?: {
@@ -131,6 +140,10 @@ export class SocratesStore {
     return mapUser(this.mustGetUserRow(id))
   }
 
+  async pickWorkspaceFolder(input: PickWorkspaceFolderRequest): Promise<PickWorkspaceFolderResponse> {
+    return pickWorkspaceFolder(input)
+  }
+
   listProjects(): ProjectListItem[] {
     const user = this.requireUser()
     const projectRows = this.handle.db
@@ -141,7 +154,7 @@ export class SocratesStore {
       .all()
 
     return projectRows.map((projectRow) => {
-      const workspaceRow = this.getPrimaryWorkspaceRow(projectRow.id)
+      const workspaceRow = this.mustGetPrimaryWorkspaceRow(projectRow.id)
       const conversationCountRow = this.handle.db
         .select({ value: count() })
         .from(conversations)
@@ -157,17 +170,23 @@ export class SocratesStore {
 
       return {
         project: mapProject(projectRow),
-        ...(workspaceRow ? { primaryWorkspace: mapProjectWorkspace(workspaceRow) } : {}),
+        primaryWorkspace: mapProjectWorkspace(workspaceRow),
         conversationCount: conversationCountRow?.value ?? 0,
         ...(latestConversation ? { lastActivityAt: latestConversation.updatedAt } : {}),
       }
     })
   }
 
-  createProject(input: CreateProjectRequest): { project: Project; primaryWorkspace?: ProjectWorkspace } {
+  createProject(input: CreateProjectRequest): { project: Project; primaryWorkspace: ProjectWorkspace } {
     const user = this.requireUser()
     const now = nowIso()
     const projectId = createId("proj")
+    const workspaceKind = this.workspaceKindFromCreationMode(input.creationMode)
+    const scaffold = ensureWorkspaceScaffold({
+      workspacePath: input.workspacePath,
+      mode: input.creationMode,
+    })
+    this.assertWorkspacePathAvailable(scaffold.workspacePath)
 
     this.handle.db
       .insert(projects)
@@ -182,13 +201,7 @@ export class SocratesStore {
       })
       .run()
 
-    let primaryWorkspace: ProjectWorkspace | undefined
-    if (input.creationMode === "existing_folder") {
-      if (!input.workspacePath) {
-        throw new SocratesError("workspace_path_required", "workspacePath is required for existing_folder projects")
-      }
-      primaryWorkspace = this.createWorkspace(projectId, "existing_folder", input.workspacePath)
-    }
+    const primaryWorkspace = this.createWorkspace(projectId, workspaceKind, scaffold.workspacePath)
 
     this.appendEvent({
       projectId,
@@ -199,13 +212,13 @@ export class SocratesStore {
 
     return {
       project: mapProject(this.mustGetProjectRow(projectId)),
-      ...(primaryWorkspace ? { primaryWorkspace } : {}),
+      primaryWorkspace,
     }
   }
 
   getProjectDashboard(projectId: string): ProjectDashboard {
     const project = mapProject(this.mustGetProjectRow(projectId))
-    const workspaceRow = this.getPrimaryWorkspaceRow(projectId)
+    const workspaceRow = this.mustGetPrimaryWorkspaceRow(projectId)
     const resourceRows = this.handle.db.select().from(projectResources).where(eq(projectResources.projectId, projectId)).all()
     const conversationRows = this.handle.db
       .select()
@@ -223,7 +236,7 @@ export class SocratesStore {
 
     return {
       project,
-      ...(workspaceRow ? { primaryWorkspace: mapProjectWorkspace(workspaceRow) } : {}),
+      primaryWorkspace: mapProjectWorkspace(workspaceRow),
       resources: resourceRows.map(mapProjectResource),
       conversations: conversationRows.map(mapConversation),
       ...(instructionRow
@@ -293,6 +306,48 @@ export class SocratesStore {
       type: "project.resource.created",
       source: "server",
       payload: { projectId, resourceId: id },
+    })
+
+    return mapProjectResource(this.mustGetResourceRow(id))
+  }
+
+  createUploadedResource(projectId: string, input: { originalName: string; data: Buffer }): ProjectResource {
+    this.mustGetProjectRow(projectId)
+    const workspace = this.mustGetPrimaryWorkspaceRow(projectId)
+    if (!workspace.path) {
+      throw new SocratesError("project_workspace_path_missing", "Project does not have a primary workspace path", {
+        details: { projectId },
+      })
+    }
+
+    const stored = storeResourceFile({
+      workspacePath: workspace.path,
+      originalName: input.originalName,
+      data: input.data,
+    })
+    const now = nowIso()
+    const id = createId("pres")
+
+    this.handle.db
+      .insert(projectResources)
+      .values({
+        id,
+        projectId,
+        name: stored.fileName,
+        kind: inferResourceKind(stored.fileName),
+        source: "uploaded",
+        uri: stored.path,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run()
+
+    this.appendEvent({
+      projectId,
+      type: "project.resource.created",
+      source: "server",
+      payload: { projectId, resourceId: id, uri: stored.path },
     })
 
     return mapProjectResource(this.mustGetResourceRow(id))
@@ -624,7 +679,7 @@ export class SocratesStore {
     return user
   }
 
-  private createWorkspace(projectId: string, kind: "existing_folder" | "created_folder" | "none", workspacePath?: string): ProjectWorkspace {
+  private createWorkspace(projectId: string, kind: "existing_folder" | "created_folder", workspacePath: string): ProjectWorkspace {
     const now = nowIso()
     const id = createId("pws")
     this.handle.db
@@ -645,7 +700,7 @@ export class SocratesStore {
       projectId,
       type: "project.workspace.attached",
       source: "server",
-      payload: { projectId, workspaceId: id },
+      payload: { projectId, workspaceId: id, path: workspacePath },
     })
 
     const row = this.getPrimaryWorkspaceRow(projectId)
@@ -653,6 +708,25 @@ export class SocratesStore {
       throw new SocratesError("project_workspace_not_found", "Workspace was not found after creation")
     }
     return mapProjectWorkspace(row)
+  }
+
+  private workspaceKindFromCreationMode(mode: WorkspaceMode): "existing_folder" | "created_folder" {
+    return mode === "existing_folder" ? "existing_folder" : "created_folder"
+  }
+
+  private assertWorkspacePathAvailable(workspacePath: string): void {
+    const existing = this.handle.db
+      .select()
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.path, workspacePath), inArray(projectWorkspaces.status, ["active", "missing", "detached"])))
+      .limit(1)
+      .get()
+
+    if (existing) {
+      throw new SocratesError("workspace_already_attached", "This workspace folder is already attached to a project", {
+        details: { workspacePath, projectId: existing.projectId },
+      })
+    }
   }
 
   private ensureSession(projectId: string, conversationId: string): string {
@@ -756,6 +830,16 @@ export class SocratesStore {
       .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.isPrimary, true)))
       .limit(1)
       .get()
+  }
+
+  private mustGetPrimaryWorkspaceRow(projectId: string): typeof projectWorkspaces.$inferSelect {
+    const row = this.getPrimaryWorkspaceRow(projectId)
+    if (!row) {
+      throw new SocratesError("project_workspace_not_found", "Project primary workspace not found", {
+        details: { projectId },
+      })
+    }
+    return row
   }
 
   private mustGetResourceRow(id: string): typeof projectResources.$inferSelect {

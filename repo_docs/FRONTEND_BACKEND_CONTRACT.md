@@ -56,7 +56,7 @@ Route meanings:
 | `/welcome` | Entry screen and onboarding redirect | `GET /api/me` |
 | `/onboarding` | Create local user profile | `POST /api/onboarding` |
 | `/projects` | List projects | `GET /api/projects` |
-| `/projects/new` | Create project | `POST /api/projects` |
+| `/projects/new` | Create project and attach required workspace folder | `POST /api/projects` |
 | `/projects/:projectId` | Project dashboard | `GET /api/projects/:projectId` |
 | `/projects/:projectId/chats/:conversationId` | Chat workspace | HTTP load plus WebSocket stream |
 
@@ -133,6 +133,7 @@ type ProjectResource = {
   name: string
   kind: "pdf" | "document" | "text" | "image" | "url" | "local_file" | "note" | "other"
   source: "uploaded" | "linked_file" | "created_note" | "url" | "generated"
+  uri?: string
   status: "active" | "processing" | "failed" | "archived" | "deleted"
 }
 
@@ -156,6 +157,16 @@ type Message = {
 }
 ```
 
+V1 project/workspace invariant:
+
+```text
+Every active project must have one primary workspace folder.
+The project row is Socrates metadata.
+The project_workspaces row points to the real local folder.
+```
+
+`ProjectWorkspace.kind = "none"` is reserved for migration, recovery, or future non-filesystem modes. Normal V1 project creation must use `existing_folder` or `created_folder`.
+
 ## HTTP Endpoints
 
 V1 endpoints:
@@ -164,6 +175,8 @@ V1 endpoints:
 GET    /api/me
 POST   /api/onboarding
 
+POST   /api/workspaces/pick-folder
+
 GET    /api/projects
 POST   /api/projects
 GET    /api/projects/:projectId
@@ -171,6 +184,7 @@ PATCH  /api/projects/:projectId
 
 GET    /api/projects/:projectId/resources
 POST   /api/projects/:projectId/resources
+POST   /api/projects/:projectId/resources/upload
 
 GET    /api/projects/:projectId/conversations
 POST   /api/projects/:projectId/conversations
@@ -224,32 +238,88 @@ Returns projects for the local user.
 type ListProjectsResponse = {
   projects: Array<{
     project: Project
-    primaryWorkspace?: ProjectWorkspace
+    primaryWorkspace: ProjectWorkspace
     conversationCount: number
     lastActivityAt?: string
   }>
 }
 ```
 
-### `POST /api/projects`
+### `POST /api/workspaces/pick-folder`
 
-Creates a project.
+Asks the local backend to open the native folder picker.
+
+Request:
 
 ```ts
-type CreateProjectRequest = {
-  name: string
-  description?: string
-  creationMode: "start_from_scratch" | "existing_folder"
-  workspacePath?: string
+type PickWorkspaceFolderRequest = {
+  mode: "start_from_scratch" | "existing_folder"
 }
 ```
 
 Response:
 
 ```ts
+type PickWorkspaceFolderResponse = {
+  path: string
+  folderName: string
+}
+```
+
+V1 behavior:
+
+```text
+macOS -> osascript folder picker
+Windows -> PowerShell folder browser
+Linux -> zenity or kdialog when available
+unsupported/cancelled -> structured ApiError; frontend shows manual absolute path fallback
+```
+
+Frontend V1 should call this endpoint directly on the local backend origin rather than through the Next dev rewrite. Native picker requests can stay open while the OS dialog is active, and the rewrite layer may convert failures into plain text.
+
+### `POST /api/projects`
+
+Creates a project and attaches a required local workspace folder.
+
+```ts
+type CreateProjectRequest = {
+  name: string
+  description?: string
+  creationMode: "start_from_scratch" | "existing_folder"
+  workspacePath: string
+}
+```
+
+Frontend behavior:
+
+```text
+user enters required project name
+user optionally enters description
+user connects a folder through native picker or manual absolute path input
+frontend does not infer or rewrite the project name from the folder name
+frontend sends creationMode = "existing_folder" for the simplified V1 project form
+```
+
+Backend behavior:
+
+```text
+existing_folder
+  -> verify workspacePath exists and is a directory
+  -> create workspacePath/.socrates/resources/
+
+start_from_scratch
+  -> create workspacePath if missing
+  -> create workspacePath/.socrates/resources/
+```
+
+The backend must not edit the workspace root `.gitignore` in V1.
+
+Response:
+
+```ts
 type CreateProjectResponse = {
   project: Project
-  primaryWorkspace?: ProjectWorkspace
+  primaryWorkspace: ProjectWorkspace
 }
 ```
 
@@ -260,7 +330,7 @@ Loads the project dashboard.
 ```ts
 type GetProjectResponse = {
   project: Project
-  primaryWorkspace?: ProjectWorkspace
+  primaryWorkspace: ProjectWorkspace
   resources: ProjectResource[]
   conversations: Conversation[]
   instructions?: {
@@ -268,6 +338,35 @@ type GetProjectResponse = {
     content: string
     updatedAt: string
   }
+}
+```
+
+### `POST /api/projects/:projectId/resources/upload`
+
+Uploads a file into the primary workspace scaffold.
+
+Request:
+
+```text
+multipart/form-data
+field: file
+```
+
+Backend behavior:
+
+```text
+load project primary workspace
+ensure <workspace>/.socrates/resources/
+sanitize filename
+copy uploaded file into <workspace>/.socrates/resources/
+create project_resources row with source = "uploaded" and uri = stored file path
+```
+
+Response:
+
+```ts
+type CreateProjectResourceResponse = {
+  resource: ProjectResource
 }
 ```
 

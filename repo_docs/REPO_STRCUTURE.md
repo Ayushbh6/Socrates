@@ -138,6 +138,7 @@ It owns:
 - WebSocket server.
 - Onboarding/user profile endpoints.
 - Project and resource endpoints.
+- Project workspace creation/attachment orchestration.
 - Session lifecycle endpoints.
 - Request validation at the API boundary.
 - Connecting frontend requests to `packages/core`.
@@ -183,6 +184,11 @@ The local workspace capability layer.
 
 It owns the low-level implementation for:
 
+- Creating workspace folders.
+- Verifying selected workspace folders.
+- Opening native folder pickers through platform adapters.
+- Creating the `.socrates/` workspace scaffold.
+- Storing project resources under `.socrates/resources/`.
 - Reading files.
 - Writing files.
 - Listing directories.
@@ -287,8 +293,8 @@ HTTP is still used for simple request/response operations:
 
 - Create/update local user profile.
 - Complete onboarding.
-- Create/list/update projects.
-- Create/list/update project resources.
+- Create/list/update projects and required workspace attachments.
+- Create/list/update project resources stored under the primary workspace `.socrates/resources/` directory.
 - Create session.
 - List sessions.
 - Load session.

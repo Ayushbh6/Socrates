@@ -74,6 +74,7 @@ export const projectResourceSchema = z
     name: z.string().min(1),
     kind: projectResourceKindSchema,
     source: projectResourceSourceSchema,
+    uri: z.string().min(1).optional(),
     status: projectResourceStatusSchema,
   })
   .strict()
@@ -112,4 +113,3 @@ export type ProjectWorkspace = z.infer<typeof projectWorkspaceSchema>
 export type ProjectResource = z.infer<typeof projectResourceSchema>
 export type Conversation = z.infer<typeof conversationSchema>
 export type Message = z.infer<typeof messageSchema>
-

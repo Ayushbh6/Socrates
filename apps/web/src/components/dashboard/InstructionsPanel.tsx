@@ -1,7 +1,8 @@
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/Button";
+import type { GetProjectResponse } from "@socrates/contracts";
 
-export function InstructionsPanel() {
+export function InstructionsPanel({ instructions }: { instructions?: GetProjectResponse["instructions"] }) {
   return (
     <div className="border-b border-gray-200 py-6">
       <div className="flex items-center justify-between mb-2">
@@ -10,7 +11,9 @@ export function InstructionsPanel() {
           <Plus className="size-4" />
         </Button>
       </div>
-      <p className="text-sm text-brand-text-light">Add instructions to tailor Socrates's responses</p>
+      <p className="text-sm text-brand-text-light">
+        {instructions?.content ?? "Add instructions to tailor Socrates's responses"}
+      </p>
     </div>
   );
 }

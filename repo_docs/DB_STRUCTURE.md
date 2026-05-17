@@ -61,9 +61,11 @@ Socrates is local-first and single-user in V1, but a `users` table still gives t
 
 ### Project
 
-A project is the main workspace container.
+A project is the Socrates metadata container for a real local workspace folder.
 
-Projects own resources, instructions, workspaces, and conversations. Global unscoped chats should not exist in V1.
+The `projects` row is not the folder itself. It stores Socrates UI identity, description, status, history links, and ownership. The real local workspace path lives in `project_workspaces`.
+
+In V1, every active project must have exactly one primary workspace folder. Global unscoped chats should not exist in V1.
 
 ### Conversation
 
@@ -137,9 +139,11 @@ Socrates is single-user in V1, but this table avoids scattering profile and onbo
 
 ## `projects`
 
-Stores project containers.
+Stores Socrates project metadata.
 
 Projects are the primary organizing unit for Socrates. Conversations, resources, instructions, artifacts, and runtime sessions should belong to a project.
+
+The project display name can differ from the folder name. This lets users keep clean UI names even when local folders have legacy, duplicated, or awkward names.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -157,12 +161,32 @@ Projects are the primary organizing unit for Socrates. Conversations, resources,
 
 Stores local workspace folders attached to projects.
 
+V1 requires one primary workspace for every active project. The supported creation modes are:
+
+```text
+created_folder
+existing_folder
+```
+
+`none` remains in the enum for migration/recovery/future modes, but normal V1 project creation should not create active projects without a primary workspace path.
+
+When a workspace is created or attached, Socrates creates this project-local scaffold:
+
+```text
+<workspace>/.socrates/
+<workspace>/.socrates/resources/
+```
+
+Socrates should not edit the workspace root `.gitignore` in V1.
+
+For active V1 projects, `path` must be present on the primary workspace row.
+
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `pws_...`. |
 | `project_id` | `TEXT` | yes | FK to `projects.id`. |
 | `kind` | `TEXT` | yes | `existing_folder`, `created_folder`, `none`. |
-| `path` | `TEXT` | no | Absolute local path when a folder is attached. |
+| `path` | `TEXT` | no | Absolute local path. Required for active V1 primary workspaces. |
 | `git_repo_root` | `TEXT` | no | Absolute git root if detected. |
 | `git_branch` | `TEXT` | no | Current or last known branch. |
 | `git_commit` | `TEXT` | no | Current or last known commit hash. |
@@ -177,6 +201,14 @@ Stores local workspace folders attached to projects.
 Stores project-level resources.
 
 Resources are reusable context attached to a project, such as PDFs, documents, text notes, images, links, or selected local files.
+
+Uploaded file-backed resources should be stored under the primary workspace scaffold by default:
+
+```text
+<primary_workspace>/.socrates/resources/
+```
+
+The `uri` column should point to the stored resource path or linked source, depending on `source`.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |

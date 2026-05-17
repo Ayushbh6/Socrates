@@ -40,6 +40,7 @@ export const mapProjectResource = (row: ProjectResourceRow): ProjectResource => 
   name: row.name,
   kind: row.kind as ProjectResource["kind"],
   source: row.source as ProjectResource["source"],
+  ...(row.uri ? { uri: row.uri } : {}),
   status: row.status as ProjectResource["status"],
 })
 

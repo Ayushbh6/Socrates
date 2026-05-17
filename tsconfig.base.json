@@ -14,7 +14,8 @@
     "baseUrl": ".",
     "paths": {
       "@socrates/contracts": ["packages/contracts/src/index.ts"],
-      "@socrates/shared": ["packages/shared/src/index.ts"]
+      "@socrates/shared": ["packages/shared/src/index.ts"],
+      "@socrates/workspace": ["packages/workspace/src/index.ts"]
     },
     "declaration": true,
     "sourceMap": true

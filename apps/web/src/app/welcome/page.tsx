@@ -8,9 +8,13 @@ import { ArrowRight } from "lucide-react";
 
 export default function WelcomePage() {
   const router = useRouter();
-  const { user } = useCurrentUser();
+  const { user, isLoading } = useCurrentUser();
 
   const handleOpenWorkspace = () => {
+    if (isLoading) {
+      return;
+    }
+
     if (!user || !user.onboardingCompleted) {
       router.push("/onboarding");
     } else {
@@ -51,9 +55,10 @@ export default function WelcomePage() {
         {/* Button */}
         <Button
           onClick={handleOpenWorkspace}
+          disabled={isLoading}
           className="group rounded-full pl-6 pr-5 py-6 text-base"
         >
-          Open Workspace
+          {isLoading ? "Checking Workspace" : "Open Workspace"}
           <ArrowRight className="ml-2 size-4 group-hover:translate-x-1 transition-transform duration-200" />
         </Button>
       </motion.div>

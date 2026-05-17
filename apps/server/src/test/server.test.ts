@@ -4,7 +4,7 @@ import path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import type { ApiResponse, Conversation, Project, ProjectResource, ServerEvent, User } from "@socrates/contracts"
+import type { ApiResponse, Conversation, Project, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
 import { buildServer } from "../app"
@@ -22,6 +22,8 @@ const tempDbPath = (): string => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-test-"))
   return path.join(dir, "socrates.sqlite")
 }
+
+const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
 
 const buildTestServer = async (): Promise<TestServer> => {
   const app = await buildServer({ dbPath: tempDbPath() })
@@ -45,7 +47,11 @@ const onboard = async (app: TestServer, displayName = "Ayush"): Promise<User> =>
   return body.data.user
 }
 
-const createProject = async (app: TestServer, name = "Backend Test Project"): Promise<Project> => {
+const createProject = async (
+  app: TestServer,
+  name = "Backend Test Project",
+): Promise<{ project: Project; primaryWorkspace: ProjectWorkspace }> => {
+  const workspacePath = path.join(tempDir(), name.replaceAll(" ", "-"))
   const response = await app.inject({
     method: "POST",
     url: "/api/projects",
@@ -53,14 +59,15 @@ const createProject = async (app: TestServer, name = "Backend Test Project"): Pr
       name,
       description: "A test project",
       creationMode: "start_from_scratch",
+      workspacePath,
     },
   })
-  const body = parseResponse<{ project: Project }>(response.payload)
+  const body = parseResponse<{ project: Project; primaryWorkspace: ProjectWorkspace }>(response.payload)
   expect(body.ok).toBe(true)
   if (!body.ok) {
     throw new Error("Expected project creation success")
   }
-  return body.data.project
+  return body.data
 }
 
 const createConversation = async (app: TestServer, projectId: string, title = "Test Chat"): Promise<Conversation> => {
@@ -223,25 +230,34 @@ describe("HTTP API", () => {
     const app = await buildTestServer()
     await onboard(app)
 
-    const project = await createProject(app)
+    const { project, primaryWorkspace } = await createProject(app)
     expect(project.status).toBe("active")
+    expect(primaryWorkspace.path).toBeTruthy()
+    expect(fs.statSync(path.join(primaryWorkspace.path ?? "", ".socrates", "resources")).isDirectory()).toBe(true)
 
     const listResponse = await app.inject({ method: "GET", url: "/api/projects" })
-    const listBody = parseResponse<{ projects: Array<{ project: Project; conversationCount: number }> }>(listResponse.payload)
+    const listBody = parseResponse<
+      { projects: Array<{ project: Project; primaryWorkspace: ProjectWorkspace; conversationCount: number }> }
+    >(listResponse.payload)
     expect(listBody.ok).toBe(true)
     if (listBody.ok) {
       expect(listBody.data.projects).toHaveLength(1)
       expect(listBody.data.projects[0]?.project.id).toBe(project.id)
+      expect(listBody.data.projects[0]?.primaryWorkspace.id).toBe(primaryWorkspace.id)
       expect(listBody.data.projects[0]?.conversationCount).toBe(0)
     }
 
     const getResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}` })
-    const getBody = parseResponse<{ project: Project; resources: ProjectResource[]; conversations: Conversation[] }>(
-      getResponse.payload,
-    )
+    const getBody = parseResponse<{
+      project: Project
+      primaryWorkspace: ProjectWorkspace
+      resources: ProjectResource[]
+      conversations: Conversation[]
+    }>(getResponse.payload)
     expect(getBody.ok).toBe(true)
     if (getBody.ok) {
       expect(getBody.data.project.id).toBe(project.id)
+      expect(getBody.data.primaryWorkspace.id).toBe(primaryWorkspace.id)
       expect(getBody.data.resources).toEqual([])
       expect(getBody.data.conversations).toEqual([])
     }
@@ -258,10 +274,48 @@ describe("HTTP API", () => {
     }
   })
 
+  it("creates an existing-folder project and rejects duplicate workspace paths", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const workspacePath = tempDir()
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Existing Folder Project",
+        creationMode: "existing_folder",
+        workspacePath,
+      },
+    })
+    const createBody = parseResponse<{ project: Project; primaryWorkspace: ProjectWorkspace }>(createResponse.payload)
+    expect(createBody.ok).toBe(true)
+    if (createBody.ok) {
+      expect(createBody.data.primaryWorkspace.kind).toBe("existing_folder")
+      expect(fs.statSync(path.join(workspacePath, ".socrates", "resources")).isDirectory()).toBe(true)
+    }
+
+    const duplicateResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Duplicate",
+        creationMode: "existing_folder",
+        workspacePath,
+      },
+    })
+    const duplicateBody = parseResponse<never>(duplicateResponse.payload)
+    expect(duplicateResponse.statusCode).toBe(409)
+    expect(duplicateBody.ok).toBe(false)
+    if (!duplicateBody.ok) {
+      expect(duplicateBody.error.code).toBe("workspace_already_attached")
+    }
+  })
+
   it("creates and lists project resources", async () => {
     const app = await buildTestServer()
     await onboard(app)
-    const project = await createProject(app)
+    const { project } = await createProject(app)
 
     const createResponse = await app.inject({
       method: "POST",
@@ -286,10 +340,47 @@ describe("HTTP API", () => {
     }
   })
 
+  it("uploads project resources into the workspace scaffold", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const boundary = "----socrates-test-boundary"
+    const payload = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="file"; filename="Spec Draft?.md"',
+        "Content-Type: text/markdown",
+        "",
+        "hello from upload",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+    )
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources/upload`,
+      headers: {
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    })
+    const body = parseResponse<{ resource: ProjectResource }>(response.payload)
+
+    expect(body.ok).toBe(true)
+    if (body.ok) {
+      expect(body.data.resource.name).toBe("Spec_Draft_.md")
+      expect(body.data.resource.uri).toBe(
+        path.join(primaryWorkspace.path ?? "", ".socrates", "resources", "Spec_Draft_.md"),
+      )
+      expect(fs.readFileSync(body.data.resource.uri ?? "", "utf8")).toBe("hello from upload")
+    }
+  })
+
   it("creates, lists, and gets conversations under a project", async () => {
     const app = await buildTestServer()
     await onboard(app)
-    const project = await createProject(app)
+    const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
 
     const listResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/conversations` })
@@ -347,7 +438,7 @@ describe("WebSocket API", () => {
   it("emits turn.started, message.completed, and turn.completed for chat.message.send", async () => {
     const app = await buildTestServer()
     await onboard(app)
-    const project = await createProject(app)
+    const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
     const socket = await connectWebSocket(app)
     try {
@@ -370,7 +461,7 @@ describe("WebSocket API", () => {
   it("rejects a second chat.message.send while a turn is active", async () => {
     const app = await buildTestServer()
     await onboard(app)
-    const project = await createProject(app)
+    const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
     const socket = await connectWebSocket(app)
     try {
@@ -389,7 +480,7 @@ describe("WebSocket API", () => {
   it("cancels an active turn with chat.turn.cancel", async () => {
     const app = await buildTestServer()
     await onboard(app)
-    const project = await createProject(app)
+    const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
     const socket = await connectWebSocket(app)
     try {

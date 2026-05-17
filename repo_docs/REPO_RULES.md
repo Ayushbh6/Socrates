@@ -131,6 +131,19 @@ Project resources, project instructions, conversations, sessions, artifacts, and
 
 Do not create global unscoped chats in V1.
 
+Every active V1 project must have exactly one primary local workspace folder.
+
+Project rows are Socrates metadata and history. Workspace folders are the real local project surface on the user's laptop.
+
+When a project is created from scratch or attached to an existing folder, Socrates must create:
+
+```text
+<workspace>/.socrates/
+<workspace>/.socrates/resources/
+```
+
+Do not edit the workspace root `.gitignore` automatically in V1.
+
 ## 8. The Agent Core Must Be Provider-Agnostic
 
 `packages/core` must never import OpenAI, Anthropic, Gemini, Ollama, OpenRouter, LiteLLM, or Vercel AI SDK directly.
@@ -154,6 +167,10 @@ packages/core -> Vercel AI SDK
 ## 9. Workspace Operations Must Go Through `packages/workspace`
 
 All local file, shell, search, git, and patch operations must go through `packages/workspace`.
+
+Project folder creation, existing-folder verification, `.socrates/` scaffold creation, and resource file placement also belong to `packages/workspace`.
+
+Native folder picker adapters also belong to `packages/workspace`. The frontend must not rely on browser-only filesystem APIs for the core project/workspace model.
 
 Do not run ad hoc filesystem or shell logic from:
 

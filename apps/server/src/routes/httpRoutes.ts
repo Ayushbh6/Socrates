@@ -6,6 +6,7 @@ import {
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
   patchProjectRequestSchema,
+  pickWorkspaceFolderRequestSchema,
 } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
@@ -39,12 +40,18 @@ const parseParams = <T>(schema: z.ZodType<T>, params: unknown): T => {
 const handleRouteError = (error: unknown) => {
   const api = toApiError(error)
   const statusCode =
-    api.code === "invalid_request" || api.code === "invalid_route_params"
+    api.code === "invalid_request" ||
+    api.code === "invalid_route_params" ||
+    api.code === "workspace_path_not_absolute" ||
+    api.code === "workspace_path_not_directory" ||
+    api.code === "resource_file_required"
       ? 400
       : api.code.endsWith("_not_found")
         ? 404
-        : api.code === "user_not_onboarded"
+        : api.code === "user_not_onboarded" || api.code === "workspace_already_attached"
           ? 409
+          : api.code === "folder_picker_cancelled"
+            ? 499
           : 500
 
   return { statusCode, response: fail(api) }
@@ -59,6 +66,16 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
     try {
       const input = parseBody(completeOnboardingRequestSchema, request.body)
       return ok({ user: store.completeOnboarding(input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/workspaces/pick-folder", async (request, reply) => {
+    try {
+      const input = parseBody(pickWorkspaceFolderRequestSchema, request.body)
+      return ok(await store.pickWorkspaceFolder(input))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
@@ -120,6 +137,22 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(createProjectResourceRequestSchema, request.body)
       return ok({ resource: store.createResource(projectId, input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/resources/upload", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const upload = await request.file()
+      if (!upload) {
+        throw new SocratesError("resource_file_required", "Upload a file to add a project resource")
+      }
+
+      const data = await upload.toBuffer()
+      return ok({ resource: store.createUploadedResource(projectId, { originalName: upload.filename, data }) })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

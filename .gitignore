@@ -20,4 +20,5 @@ frontend/out/
 photos/
 test_material/
 app-data/
+apps/server/app-data/
 host-workspaces/

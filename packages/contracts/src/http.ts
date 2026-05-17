@@ -36,7 +36,7 @@ export const listProjectsResponseSchema = z
       z
         .object({
           project: projectSchema,
-          primaryWorkspace: projectWorkspaceSchema.optional(),
+          primaryWorkspace: projectWorkspaceSchema,
           conversationCount: z.number().int().nonnegative(),
           lastActivityAt: z.string().min(1).optional(),
         })
@@ -50,14 +50,14 @@ export const createProjectRequestSchema = z
     name: z.string().min(1),
     description: z.string().optional(),
     creationMode: z.enum(["start_from_scratch", "existing_folder"]),
-    workspacePath: z.string().min(1).optional(),
+    workspacePath: z.string().min(1),
   })
   .strict()
 
 export const createProjectResponseSchema = z
   .object({
     project: projectSchema,
-    primaryWorkspace: projectWorkspaceSchema.optional(),
+    primaryWorkspace: projectWorkspaceSchema,
   })
   .strict()
 
@@ -86,7 +86,7 @@ export const projectInstructionsSummarySchema = z
 export const getProjectResponseSchema = z
   .object({
     project: projectSchema,
-    primaryWorkspace: projectWorkspaceSchema.optional(),
+    primaryWorkspace: projectWorkspaceSchema,
     resources: z.array(projectResourceSchema),
     conversations: z.array(conversationSchema),
     instructions: projectInstructionsSummarySchema.optional(),
@@ -111,6 +111,19 @@ export const createProjectResourceRequestSchema = z
 export const createProjectResourceResponseSchema = z
   .object({
     resource: projectResourceSchema,
+  })
+  .strict()
+
+export const pickWorkspaceFolderRequestSchema = z
+  .object({
+    mode: z.enum(["start_from_scratch", "existing_folder"]),
+  })
+  .strict()
+
+export const pickWorkspaceFolderResponseSchema = z
+  .object({
+    path: z.string().min(1),
+    folderName: z.string().min(1),
   })
   .strict()
 
@@ -151,6 +164,8 @@ export type GetProjectResponse = z.infer<typeof getProjectResponseSchema>
 export type ListProjectResourcesResponse = z.infer<typeof listProjectResourcesResponseSchema>
 export type CreateProjectResourceRequest = z.infer<typeof createProjectResourceRequestSchema>
 export type CreateProjectResourceResponse = z.infer<typeof createProjectResourceResponseSchema>
+export type PickWorkspaceFolderRequest = z.infer<typeof pickWorkspaceFolderRequestSchema>
+export type PickWorkspaceFolderResponse = z.infer<typeof pickWorkspaceFolderResponseSchema>
 export type ListProjectConversationsResponse = z.infer<typeof listProjectConversationsResponseSchema>
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>

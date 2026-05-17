@@ -1,0 +1,29 @@
+{
+  "name": "@socrates/workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "test": "pnpm --filter @socrates/shared build && vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@socrates/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "vitest": "^4.0.15"
+  }
+}
