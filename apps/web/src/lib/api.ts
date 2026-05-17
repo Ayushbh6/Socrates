@@ -5,11 +5,12 @@ import {
   completeOnboardingResponseSchema,
   createConversationResponseSchema,
   createProjectResponseSchema,
-  createProjectResourceResponseSchema,
   getMeResponseSchema,
   getProjectResponseSchema,
   listProjectsResponseSchema,
   pickWorkspaceFolderResponseSchema,
+  uploadProjectResourcesResponseSchema,
+  upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
   type CompleteOnboardingRequest,
@@ -18,12 +19,14 @@ import {
   type CreateConversationResponse,
   type CreateProjectRequest,
   type CreateProjectResponse,
-  type CreateProjectResourceResponse,
   type GetMeResponse,
   type GetProjectResponse,
   type ListProjectsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
+  type UploadProjectResourcesResponse,
+  type UpsertProjectInstructionsRequest,
+  type UpsertProjectInstructionsResponse,
 } from "@socrates/contracts";
 import type { z } from "zod";
 
@@ -133,14 +136,26 @@ export const api = {
       },
     ) as Promise<CreateConversationResponse>,
 
-  uploadProjectResource: (projectId: string, file: File) => {
+  upsertProjectInstructions: (projectId: string, input: UpsertProjectInstructionsRequest) =>
+    request<typeof upsertProjectInstructionsResponseSchema>(
+      `/api/projects/${projectId}/instructions`,
+      upsertProjectInstructionsResponseSchema,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpsertProjectInstructionsResponse>,
+
+  uploadProjectResources: (projectId: string, files: File[]) => {
     const body = new FormData();
-    body.append("file", file);
+    for (const file of files) {
+      body.append("files", file);
+    }
     return uploadRequest(
       `/api/projects/${projectId}/resources/upload`,
-      createProjectResourceResponseSchema,
+      uploadProjectResourcesResponseSchema,
       body,
-    ) as Promise<CreateProjectResourceResponse>;
+    ) as Promise<UploadProjectResourcesResponse>;
   },
 };
 

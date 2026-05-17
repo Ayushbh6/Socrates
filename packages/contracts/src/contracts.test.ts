@@ -44,6 +44,9 @@ import {
   turnCancelledEventSchema,
   turnFailedEventSchema,
   turnStartedEventSchema,
+  uploadProjectResourcesResponseSchema,
+  upsertProjectInstructionsRequestSchema,
+  upsertProjectInstructionsResponseSchema,
   userSchema,
   agentAnswerDeltaEventSchema,
   agentThinkingDeltaEventSchema,
@@ -81,7 +84,16 @@ const resource = {
   kind: "document",
   source: "uploaded",
   uri: "/tmp/socrates/.socrates/resources/README.md",
+  sizeBytes: 2048,
+  mimeType: "text/markdown",
   status: "active",
+}
+
+const instructions = {
+  id: "pins_1",
+  projectId: "proj_1",
+  content: "Be direct.",
+  updatedAt: timestamp,
 }
 
 const conversation = {
@@ -207,11 +219,7 @@ describe("http contracts", () => {
         primaryWorkspace: workspace,
         resources: [resource],
         conversations: [conversation],
-        instructions: {
-          id: "pins_1",
-          content: "Be direct.",
-          updatedAt: timestamp,
-        },
+        instructions,
       }).success,
     ).toBe(true)
     expect(
@@ -236,10 +244,18 @@ describe("http contracts", () => {
       }).success,
     ).toBe(true)
     expect(createProjectResourceResponseSchema.safeParse({ resource }).success).toBe(true)
+    expect(uploadProjectResourcesResponseSchema.safeParse({ resources: [resource] }).success).toBe(true)
+    expect(projectResourceSchema.safeParse(resource).success).toBe(true)
     expect(pickWorkspaceFolderRequestSchema.safeParse({ mode: "start_from_scratch" }).success).toBe(true)
     expect(
       pickWorkspaceFolderResponseSchema.safeParse({ path: "/tmp/socrates", folderName: "socrates" }).success,
     ).toBe(true)
+  })
+
+  it("parses project instructions contracts", () => {
+    expect(upsertProjectInstructionsRequestSchema.safeParse({ content: "Use the repo docs first." }).success).toBe(true)
+    expect(upsertProjectInstructionsRequestSchema.safeParse({ content: "" }).success).toBe(false)
+    expect(upsertProjectInstructionsResponseSchema.safeParse({ instructions }).success).toBe(true)
   })
 
   it("parses conversation creation contracts", () => {

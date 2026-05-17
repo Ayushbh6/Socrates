@@ -1,10 +1,12 @@
-import type { Conversation, Message, Project, ProjectResource, ProjectWorkspace, User } from "@socrates/contracts"
-import type { conversations, messages, projectResources, projectWorkspaces, projects, users } from "./schema"
+import type { Conversation, Message, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, User } from "@socrates/contracts"
+import type { artifacts, conversations, messages, projectInstructions, projectResources, projectWorkspaces, projects, users } from "./schema"
 
 type UserRow = typeof users.$inferSelect
 type ProjectRow = typeof projects.$inferSelect
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect
 type ProjectResourceRow = typeof projectResources.$inferSelect
+type ProjectInstructionsRow = typeof projectInstructions.$inferSelect
+type ArtifactRow = typeof artifacts.$inferSelect
 type ConversationRow = typeof conversations.$inferSelect
 type MessageRow = typeof messages.$inferSelect
 
@@ -34,14 +36,23 @@ export const mapProjectWorkspace = (row: ProjectWorkspaceRow): ProjectWorkspace 
   status: row.status as ProjectWorkspace["status"],
 })
 
-export const mapProjectResource = (row: ProjectResourceRow): ProjectResource => ({
+export const mapProjectResource = (row: ProjectResourceRow, artifact?: ArtifactRow | null): ProjectResource => ({
   id: row.id,
   projectId: row.projectId,
   name: row.name,
   kind: row.kind as ProjectResource["kind"],
   source: row.source as ProjectResource["source"],
   ...(row.uri ? { uri: row.uri } : {}),
+  ...(artifact?.sizeBytes === null || artifact?.sizeBytes === undefined ? {} : { sizeBytes: artifact.sizeBytes }),
+  ...(artifact?.mimeType ? { mimeType: artifact.mimeType } : {}),
   status: row.status as ProjectResource["status"],
+})
+
+export const mapProjectInstructions = (row: ProjectInstructionsRow): ProjectInstructions => ({
+  id: row.id,
+  projectId: row.projectId,
+  content: row.content,
+  updatedAt: row.updatedAt,
 })
 
 export const mapConversation = (row: ConversationRow): Conversation => ({

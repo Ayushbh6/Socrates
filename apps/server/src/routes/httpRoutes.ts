@@ -7,10 +7,11 @@ import {
   createProjectResourceRequestSchema,
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
+  upsertProjectInstructionsRequestSchema,
 } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
-import type { SocratesStore } from "../services/store"
+import type { SocratesStore, UploadedResourceInput } from "../services/store"
 
 const projectParamsSchema = z.object({ projectId: z.string().min(1) }).strict()
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
@@ -44,7 +45,8 @@ const handleRouteError = (error: unknown) => {
     api.code === "invalid_route_params" ||
     api.code === "workspace_path_not_absolute" ||
     api.code === "workspace_path_not_directory" ||
-    api.code === "resource_file_required"
+    api.code === "resource_file_required" ||
+    api.code === "resource_upload_limit_exceeded"
       ? 400
       : api.code.endsWith("_not_found")
         ? 404
@@ -146,13 +148,37 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
   app.post("/api/projects/:projectId/resources/upload", async (request, reply) => {
     try {
       const { projectId } = parseParams(projectParamsSchema, request.params)
-      const upload = await request.file()
-      if (!upload) {
+      const uploads: UploadedResourceInput[] = []
+      for await (const upload of request.files()) {
+        if (uploads.length >= 10) {
+          throw new SocratesError("resource_upload_limit_exceeded", "Upload up to 10 files at once", {
+            details: { maxFiles: 10 },
+            recoverable: true,
+          })
+        }
+        uploads.push({
+          originalName: upload.filename,
+          data: await upload.toBuffer(),
+          mimeType: upload.mimetype,
+        })
+      }
+
+      if (uploads.length === 0) {
         throw new SocratesError("resource_file_required", "Upload a file to add a project resource")
       }
 
-      const data = await upload.toBuffer()
-      return ok({ resource: store.createUploadedResource(projectId, { originalName: upload.filename, data }) })
+      return ok({ resources: store.createUploadedResources(projectId, uploads) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.put("/api/projects/:projectId/instructions", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(upsertProjectInstructionsRequestSchema, request.body)
+      return ok({ instructions: store.upsertProjectInstructions(projectId, input) })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

@@ -134,7 +134,16 @@ type ProjectResource = {
   kind: "pdf" | "document" | "text" | "image" | "url" | "local_file" | "note" | "other"
   source: "uploaded" | "linked_file" | "created_note" | "url" | "generated"
   uri?: string
+  sizeBytes?: number
+  mimeType?: string
   status: "active" | "processing" | "failed" | "archived" | "deleted"
+}
+
+type ProjectInstructions = {
+  id: string
+  projectId: string
+  content: string
+  updatedAt: string
 }
 
 type Conversation = {
@@ -185,6 +194,8 @@ PATCH  /api/projects/:projectId
 GET    /api/projects/:projectId/resources
 POST   /api/projects/:projectId/resources
 POST   /api/projects/:projectId/resources/upload
+
+PUT    /api/projects/:projectId/instructions
 
 GET    /api/projects/:projectId/conversations
 POST   /api/projects/:projectId/conversations
@@ -333,23 +344,29 @@ type GetProjectResponse = {
   primaryWorkspace: ProjectWorkspace
   resources: ProjectResource[]
   conversations: Conversation[]
-  instructions?: {
-    id: string
-    content: string
-    updatedAt: string
-  }
+  instructions?: ProjectInstructions
 }
+```
+
+Frontend display behavior:
+
+```text
+project.description is stored in full but shown as a bounded dashboard preview
+instructions.content is stored in full but shown as a bounded panel preview
+resource previews are shown in a bounded scrollable panel
+dashboard start-chat action creates a conversation before routing to chat
 ```
 
 ### `POST /api/projects/:projectId/resources/upload`
 
-Uploads a file into the primary workspace scaffold.
+Uploads one or more files into the primary workspace scaffold.
 
 Request:
 
 ```text
 multipart/form-data
-field: file
+field: files
+max files per request: 10
 ```
 
 Backend behavior:
@@ -357,17 +374,63 @@ Backend behavior:
 ```text
 load project primary workspace
 ensure <workspace>/.socrates/resources/
-sanitize filename
-copy uploaded file into <workspace>/.socrates/resources/
-create project_resources row with source = "uploaded" and uri = stored file path
+reject requests with more than 10 files
+for each uploaded file:
+  sanitize filename
+  copy uploaded file into <workspace>/.socrates/resources/
+  create project_resources row with source = "uploaded" and uri = stored file path
 ```
 
 Response:
 
 ```ts
-type CreateProjectResourceResponse = {
-  resource: ProjectResource
+type UploadProjectResourcesResponse = {
+  resources: ProjectResource[]
 }
+```
+
+Frontend behavior:
+
+```text
+file add action opens a file picker/input
+frontend allows selecting multiple files, up to 10 at once
+after upload succeeds, append/refresh resources from the backend response
+file preview list shows filename, type/kind, and size when known
+file preview list is bounded and scrollable instead of stretching indefinitely
+```
+
+### `PUT /api/projects/:projectId/instructions`
+
+Creates or updates the active project instructions.
+
+```ts
+type UpsertProjectInstructionsRequest = {
+  content: string
+}
+
+type UpsertProjectInstructionsResponse = {
+  instructions: ProjectInstructions
+}
+```
+
+Backend behavior:
+
+```text
+load project
+if active project_instructions row exists:
+  update content and updated_at
+else:
+  create active project_instructions row
+emit project.instructions.updated event
+```
+
+Frontend behavior:
+
+```text
+instructions add/edit action opens a modal with a large textarea
+save calls PUT /api/projects/:projectId/instructions
+dashboard shows a bounded preview of saved instructions
+empty instructions show the add-instructions prompt
 ```
 
 ### `POST /api/projects/:projectId/conversations`

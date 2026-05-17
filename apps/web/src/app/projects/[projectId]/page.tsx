@@ -1,35 +1,26 @@
 "use client";
 
 import { BackLink } from "@/components/ui/BackLink";
-import { DashboardComposer } from "@/components/dashboard/DashboardComposer";
 import { ConversationList } from "@/components/dashboard/ConversationList";
 import { InstructionsPanel } from "@/components/dashboard/InstructionsPanel";
 import { FilesPanel } from "@/components/dashboard/FilesPanel";
+import { StartChatAction } from "@/components/dashboard/StartChatAction";
 import { api } from "@/lib/api";
+import { truncatePreview } from "@/lib/format";
 import type { GetProjectResponse } from "@socrates/contracts";
-import { use, useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { use, useEffect, useState } from "react";
 
 export default function ProjectDashboardPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
+  const router = useRouter();
   const [data, setData] = useState<GetProjectResponse | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploadingResource, setIsUploadingResource] = useState(false);
-
-  const loadProject = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const project = await api.getProject(projectId);
-      setData(project);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load project.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [projectId]);
+  const [isSavingInstructions, setIsSavingInstructions] = useState(false);
+  const [isStartingChat, setIsStartingChat] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -61,17 +52,56 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     };
   }, [projectId]);
 
-  const handleUploadResource = async (file: File) => {
+  const handleUploadResources = async (files: File[]) => {
     setUploadError(null);
     setIsUploadingResource(true);
 
     try {
-      await api.uploadProjectResource(projectId, file);
-      await loadProject();
+      const response = await api.uploadProjectResources(projectId, files);
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              resources: [...response.resources, ...current.resources],
+            }
+          : current,
+      );
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Could not upload file.");
+      const message = err instanceof Error ? err.message : "Could not upload files.";
+      setUploadError(message);
+      throw err;
     } finally {
       setIsUploadingResource(false);
+    }
+  };
+
+  const handleSaveInstructions = async (content: string) => {
+    setIsSavingInstructions(true);
+    try {
+      const response = await api.upsertProjectInstructions(projectId, { content });
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              instructions: response.instructions,
+            }
+          : current,
+      );
+    } finally {
+      setIsSavingInstructions(false);
+    }
+  };
+
+  const handleStartNewChat = async () => {
+    setError(null);
+    setIsStartingChat(true);
+    try {
+      const response = await api.createConversation(projectId, {});
+      router.push(`/projects/${projectId}/chats/${response.conversation.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start a new chat.");
+    } finally {
+      setIsStartingChat(false);
     }
   };
 
@@ -89,23 +119,30 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               <>
                 <h1 className="text-4xl font-serif text-brand-text-dark mb-2">{data.project.name}</h1>
                 {data.project.description && (
-                  <p className="text-brand-text-light text-base">{data.project.description}</p>
+                  <p className="line-clamp-2 max-w-2xl text-base leading-7 text-brand-text-light">
+                    {truncatePreview(data.project.description, 80)}
+                  </p>
                 )}
               </>
             )}
             
-            <DashboardComposer />
+            <StartChatAction isStarting={isStartingChat} onStart={handleStartNewChat} />
             <ConversationList projectId={projectId} conversations={data?.conversations ?? []} />
           </div>
 
           {/* Resources Column - Right (1/3 width) */}
           <div className="md:col-span-1 border border-gray-200 bg-white rounded-3xl px-6 pb-2 shadow-sm self-start">
-            <InstructionsPanel instructions={data?.instructions} />
+            <InstructionsPanel
+              instructions={data?.instructions}
+              projectName={data?.project.name ?? "this project"}
+              isSaving={isSavingInstructions}
+              onSave={handleSaveInstructions}
+            />
             {uploadError && <p className="pt-4 text-sm text-red-600">{uploadError}</p>}
             <FilesPanel
               resources={data?.resources ?? []}
               isUploading={isUploadingResource}
-              onUpload={data ? handleUploadResource : undefined}
+              onUpload={data ? handleUploadResources : undefined}
             />
           </div>
         </div>

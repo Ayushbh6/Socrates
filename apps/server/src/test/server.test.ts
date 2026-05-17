@@ -4,7 +4,7 @@ import path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import type { ApiResponse, Conversation, Project, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
+import type { ApiResponse, Conversation, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
 import { buildServer } from "../app"
@@ -348,10 +348,15 @@ describe("HTTP API", () => {
     const payload = Buffer.from(
       [
         `--${boundary}`,
-        'Content-Disposition: form-data; name="file"; filename="Spec Draft?.md"',
+        'Content-Disposition: form-data; name="files"; filename="Spec Draft?.md"',
         "Content-Type: text/markdown",
         "",
         "hello from upload",
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="files"; filename="Data.csv"',
+        "Content-Type: text/csv",
+        "",
+        "id,name\n1,Socrates",
         `--${boundary}--`,
         "",
       ].join("\r\n"),
@@ -365,15 +370,85 @@ describe("HTTP API", () => {
       },
       payload,
     })
-    const body = parseResponse<{ resource: ProjectResource }>(response.payload)
+    const body = parseResponse<{ resources: ProjectResource[] }>(response.payload)
 
     expect(body.ok).toBe(true)
     if (body.ok) {
-      expect(body.data.resource.name).toBe("Spec_Draft_.md")
-      expect(body.data.resource.uri).toBe(
+      expect(body.data.resources).toHaveLength(2)
+      expect(body.data.resources[0]?.name).toBe("Spec_Draft_.md")
+      expect(body.data.resources[0]?.mimeType).toBe("text/markdown")
+      expect(body.data.resources[0]?.sizeBytes).toBe(Buffer.byteLength("hello from upload"))
+      expect(body.data.resources[0]?.uri).toBe(
         path.join(primaryWorkspace.path ?? "", ".socrates", "resources", "Spec_Draft_.md"),
       )
-      expect(fs.readFileSync(body.data.resource.uri ?? "", "utf8")).toBe("hello from upload")
+      expect(fs.readFileSync(body.data.resources[0]?.uri ?? "", "utf8")).toBe("hello from upload")
+      expect(body.data.resources[1]?.name).toBe("Data.csv")
+      expect(body.data.resources[1]?.mimeType).toBe("text/csv")
+    }
+  })
+
+  it("rejects upload requests with more than 10 files", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project } = await createProject(app)
+    const boundary = "----socrates-test-boundary"
+    const parts = Array.from({ length: 11 }, (_, index) =>
+      [
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="files"; filename="file-${index}.txt"`,
+        "Content-Type: text/plain",
+        "",
+        `file ${index}`,
+      ].join("\r\n"),
+    )
+    const payload = Buffer.from([...parts, `--${boundary}--`, ""].join("\r\n"))
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources/upload`,
+      headers: {
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    })
+    const body = parseResponse<never>(response.payload)
+
+    expect(body.ok).toBe(false)
+    if (!body.ok) {
+      expect(body.error.code).toBe("resource_upload_limit_exceeded")
+    }
+  })
+
+  it("creates and updates project instructions", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project } = await createProject(app)
+
+    const createResponse = await app.inject({
+      method: "PUT",
+      url: `/api/projects/${project.id}/instructions`,
+      payload: { content: "Read repo_docs before answering." },
+    })
+    const createBody = parseResponse<{ instructions: ProjectInstructions }>(createResponse.payload)
+    expect(createBody.ok).toBe(true)
+
+    const updateResponse = await app.inject({
+      method: "PUT",
+      url: `/api/projects/${project.id}/instructions`,
+      payload: { content: "Read repo_docs and keep changes scoped." },
+    })
+    const updateBody = parseResponse<{ instructions: ProjectInstructions }>(updateResponse.payload)
+    expect(updateBody.ok).toBe(true)
+    if (createBody.ok && updateBody.ok) {
+      expect(updateBody.data.instructions.id).toBe(createBody.data.instructions.id)
+      expect(updateBody.data.instructions.content).toBe("Read repo_docs and keep changes scoped.")
+    }
+
+    const getResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}` })
+    const getBody = parseResponse<{ instructions?: ProjectInstructions }>(getResponse.payload)
+    expect(getBody.ok).toBe(true)
+    if (getBody.ok) {
+      expect(getBody.data.instructions?.content).toBe("Read repo_docs and keep changes scoped.")
     }
   })
 

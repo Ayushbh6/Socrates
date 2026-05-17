@@ -131,4 +131,4 @@ Follow-up fix:
 - Implemented the `/projects/new` page as a clean, centered creation form.
 - Implemented the `/projects/:projectId` dashboard with a 2-column layout (Left: Dashboard Composer & Conversation List; Right: Instructions & Files Panels).
 - All UI elements have been properly compartmentalized into `apps/web/src/components/` according to `REPO_RULES`.
-- **Note to Backend Agent:** Currently, the frontend is using mocked data hooks (e.g., `useCurrentUser` returning a mock user conforming to the `@socrates/contracts` schema). These mock contracts need to be swapped out with actual data fetches from the backend API endpoints in the future.
+- Frontend onboarding, projects, project dashboard, and resource upload flows are now wired to real backend API endpoints through `apps/web/src/lib/api.ts`.

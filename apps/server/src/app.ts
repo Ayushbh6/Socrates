@@ -26,7 +26,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   await app.register(multipart, {
     limits: {
       fileSize: 50 * 1024 * 1024,
-      files: 1,
+      files: 25,
     },
   })
   await app.register(cors, {

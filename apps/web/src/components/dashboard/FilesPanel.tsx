@@ -3,8 +3,9 @@
 import { Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import type { ProjectResource } from "@socrates/contracts";
-import type { ChangeEvent } from "react";
-import { useRef } from "react";
+import { useState } from "react";
+import { formatFileSize } from "@/lib/format";
+import { FileUploadDialog } from "./FileUploadDialog";
 
 export function FilesPanel({
   resources,
@@ -13,18 +14,9 @@ export function FilesPanel({
 }: {
   resources: ProjectResource[];
   isUploading?: boolean;
-  onUpload?: (file: File) => Promise<void>;
+  onUpload?: (files: File[]) => Promise<void>;
 }) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !onUpload) {
-      return;
-    }
-    await onUpload(file);
-  };
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
 
   return (
     <div className="py-6">
@@ -35,14 +27,14 @@ export function FilesPanel({
           variant="ghost"
           size="icon"
           disabled={!onUpload || isUploading}
-          onClick={() => inputRef.current?.click()}
+          onClick={() => setIsDialogOpen(true)}
           className="size-6 text-brand-text-light hover:text-brand-text-dark hover:bg-gray-100 rounded-full"
         >
           {isUploading ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
         </Button>
-        <input ref={inputRef} type="file" className="hidden" onChange={handleFileChange} />
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="max-h-[23rem] overflow-y-auto pr-1">
+        <div className="grid grid-cols-2 gap-3">
         {resources.length === 0 && (
           <p className="col-span-2 text-sm text-brand-text-light">No files yet.</p>
         )}
@@ -50,7 +42,8 @@ export function FilesPanel({
           <div key={resource.id} className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col justify-between">
             <div>
               <p className="text-sm font-medium text-brand-text-dark truncate">{resource.name}</p>
-              <p className="text-xs text-brand-text-light mt-1">{resource.source.replaceAll("_", " ")}</p>
+              <p className="text-xs text-brand-text-light mt-1">{resource.mimeType ?? resource.source.replaceAll("_", " ")}</p>
+              <p className="text-xs text-brand-text-light mt-1">{formatFileSize(resource.sizeBytes)}</p>
             </div>
             <div className="mt-4">
               <span className="inline-block px-2 py-1 bg-gray-100 text-gray-500 text-[10px] uppercase font-semibold rounded">
@@ -59,7 +52,15 @@ export function FilesPanel({
             </div>
           </div>
         ))}
+        </div>
       </div>
+      {isDialogOpen && onUpload && (
+        <FileUploadDialog
+          isUploading={isUploading}
+          onCancel={() => setIsDialogOpen(false)}
+          onUpload={onUpload}
+        />
+      )}
     </div>
   );
 }

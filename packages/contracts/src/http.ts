@@ -3,6 +3,7 @@ import {
   conversationSchema,
   idSchema,
   messageSchema,
+  projectInstructionsSchema,
   projectResourceKindSchema,
   projectResourceSchema,
   projectResourceSourceSchema,
@@ -78,6 +79,7 @@ export const patchProjectResponseSchema = z
 export const projectInstructionsSummarySchema = z
   .object({
     id: idSchema,
+    projectId: idSchema,
     content: z.string(),
     updatedAt: z.string().min(1),
   })
@@ -111,6 +113,24 @@ export const createProjectResourceRequestSchema = z
 export const createProjectResourceResponseSchema = z
   .object({
     resource: projectResourceSchema,
+  })
+  .strict()
+
+export const uploadProjectResourcesResponseSchema = z
+  .object({
+    resources: z.array(projectResourceSchema),
+  })
+  .strict()
+
+export const upsertProjectInstructionsRequestSchema = z
+  .object({
+    content: z.string().min(1),
+  })
+  .strict()
+
+export const upsertProjectInstructionsResponseSchema = z
+  .object({
+    instructions: projectInstructionsSchema,
   })
   .strict()
 
@@ -164,6 +184,9 @@ export type GetProjectResponse = z.infer<typeof getProjectResponseSchema>
 export type ListProjectResourcesResponse = z.infer<typeof listProjectResourcesResponseSchema>
 export type CreateProjectResourceRequest = z.infer<typeof createProjectResourceRequestSchema>
 export type CreateProjectResourceResponse = z.infer<typeof createProjectResourceResponseSchema>
+export type UploadProjectResourcesResponse = z.infer<typeof uploadProjectResourcesResponseSchema>
+export type UpsertProjectInstructionsRequest = z.infer<typeof upsertProjectInstructionsRequestSchema>
+export type UpsertProjectInstructionsResponse = z.infer<typeof upsertProjectInstructionsResponseSchema>
 export type PickWorkspaceFolderRequest = z.infer<typeof pickWorkspaceFolderRequestSchema>
 export type PickWorkspaceFolderResponse = z.infer<typeof pickWorkspaceFolderResponseSchema>
 export type ListProjectConversationsResponse = z.infer<typeof listProjectConversationsResponseSchema>

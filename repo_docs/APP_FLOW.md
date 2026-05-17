@@ -133,11 +133,10 @@ Primary UI:
 - Search projects.
 - New project button.
 
-Initial project creation options:
+Initial project creation:
 
 ```text
-Start from scratch
-Use an existing folder
+Create project -> enter project title -> optional description -> connect a local workspace folder
 ```
 
 Later options can include:
@@ -251,12 +250,19 @@ Primary areas:
 
 ```text
 project header
+centered start new chat action
 conversation list
 resource panel
 instructions panel
-new chat composer/button
 workspace status
 ```
+
+Project header:
+
+- Show the project title.
+- Show the optional project description only as a bounded preview.
+- Store the full description in SQLite, but do not render unbounded text on the dashboard.
+- The preview should fit below the project name without stretching the layout. Prefer a two-line clamp with a safe character fallback around 80 characters plus `...`.
 
 Resource panel:
 
@@ -275,10 +281,23 @@ V1 uploaded files are copied by the backend into:
 
 The resulting `project_resources.uri` points to the stored local file path.
 
+File upload behavior:
+
+- Clicking the files add action opens the file upload control.
+- Users may select up to 10 files at once.
+- The backend stores each uploaded file under the primary workspace `.socrates/resources/` folder and creates one `project_resources` row per file.
+- The file panel should show uploaded file previews with filename, type, and size when known.
+- The preview area must have a bounded height. It may show around four file previews before becoming scrollable.
+- The file panel must not grow indefinitely when a project has many resources.
+
 Instructions panel:
 
 - Project-specific guidance.
 - Persistent instructions for conversations in this project.
+- Clicking the instructions add/edit action opens a modal with a large text area.
+- Saving instructions writes the full content to `project_instructions`.
+- The dashboard panel displays only a bounded preview of saved instructions. Prefer a two-line clamp with a safe character fallback around 100 characters plus `...`.
+- Empty instructions should show the add-instructions prompt.
 
 Conversation list:
 
@@ -304,6 +323,8 @@ start new chat -> create conversation -> /projects/:projectId/chats/:conversatio
 open existing chat -> /projects/:projectId/chats/:conversationId
 back to all projects -> /projects
 ```
+
+The project dashboard must not show the full chat composer in V1. The composer belongs on `/projects/:projectId/chats/:conversationId`. The dashboard shows a centered `Start new chat` button/action instead.
 
 ## `/projects/:projectId/chats/:conversationId`
 

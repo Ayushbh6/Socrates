@@ -11,9 +11,11 @@ import type {
   PickWorkspaceFolderRequest,
   PickWorkspaceFolderResponse,
   Project,
+  ProjectInstructions,
   ProjectResource,
   ProjectWorkspace,
   RuntimeConfig,
+  UpsertProjectInstructionsRequest,
   User,
 } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
@@ -27,6 +29,7 @@ import {
 import { and, count, desc, eq, inArray } from "drizzle-orm"
 import type { DatabaseHandle } from "../db/client"
 import {
+  artifacts,
   approvals,
   conversations,
   errors,
@@ -46,6 +49,7 @@ import {
   mapConversation,
   mapMessage,
   mapProject,
+  mapProjectInstructions,
   mapProjectResource,
   mapProjectWorkspace,
   mapUser,
@@ -65,17 +69,19 @@ export type ProjectDashboard = {
   primaryWorkspace: ProjectWorkspace
   resources: ProjectResource[]
   conversations: Conversation[]
-  instructions?: {
-    id: string
-    content: string
-    updatedAt: string
-  }
+  instructions?: ProjectInstructions
 }
 
 export type CreatedTurn = {
   sessionId: string
   turnId: string
   userMessage: Message
+}
+
+export type UploadedResourceInput = {
+  originalName: string
+  data: Buffer
+  mimeType?: string
 }
 
 export class SocratesStore {
@@ -237,11 +243,9 @@ export class SocratesStore {
     return {
       project,
       primaryWorkspace: mapProjectWorkspace(workspaceRow),
-      resources: resourceRows.map(mapProjectResource),
+      resources: this.mapResourceRows(resourceRows),
       conversations: conversationRows.map(mapConversation),
-      ...(instructionRow
-        ? { instructions: { id: instructionRow.id, content: instructionRow.content, updatedAt: instructionRow.updatedAt } }
-        : {}),
+      ...(instructionRow ? { instructions: mapProjectInstructions(instructionRow) } : {}),
     }
   }
 
@@ -272,13 +276,13 @@ export class SocratesStore {
 
   listResources(projectId: string): ProjectResource[] {
     this.mustGetProjectRow(projectId)
-    return this.handle.db
+    const rows = this.handle.db
       .select()
       .from(projectResources)
       .where(eq(projectResources.projectId, projectId))
       .orderBy(desc(projectResources.updatedAt))
       .all()
-      .map(mapProjectResource)
+    return this.mapResourceRows(rows)
   }
 
   createResource(projectId: string, input: CreateProjectResourceRequest): ProjectResource {
@@ -308,10 +312,20 @@ export class SocratesStore {
       payload: { projectId, resourceId: id },
     })
 
-    return mapProjectResource(this.mustGetResourceRow(id))
+    return this.mustGetResource(id)
   }
 
-  createUploadedResource(projectId: string, input: { originalName: string; data: Buffer }): ProjectResource {
+  createUploadedResources(projectId: string, inputs: UploadedResourceInput[]): ProjectResource[] {
+    if (inputs.length === 0) {
+      throw new SocratesError("resource_file_required", "Upload at least one file to add project resources")
+    }
+    if (inputs.length > 10) {
+      throw new SocratesError("resource_upload_limit_exceeded", "Upload up to 10 files at once", {
+        details: { maxFiles: 10, receivedFiles: inputs.length },
+        recoverable: true,
+      })
+    }
+
     this.mustGetProjectRow(projectId)
     const workspace = this.mustGetPrimaryWorkspaceRow(projectId)
     if (!workspace.path) {
@@ -320,37 +334,102 @@ export class SocratesStore {
       })
     }
 
-    const stored = storeResourceFile({
-      workspacePath: workspace.path,
-      originalName: input.originalName,
-      data: input.data,
-    })
     const now = nowIso()
-    const id = createId("pres")
+    const resourceIds: string[] = []
 
-    this.handle.db
-      .insert(projectResources)
-      .values({
-        id,
-        projectId,
-        name: stored.fileName,
-        kind: inferResourceKind(stored.fileName),
-        source: "uploaded",
-        uri: stored.path,
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
+    for (const input of inputs) {
+      const stored = storeResourceFile({
+        workspacePath: workspace.path,
+        originalName: input.originalName,
+        data: input.data,
       })
-      .run()
+      const artifactId = createId("art")
+      const resourceId = createId("pres")
+
+      this.handle.db
+        .insert(artifacts)
+        .values({
+          id: artifactId,
+          projectId,
+          kind: "file",
+          path: stored.path,
+          mimeType: input.mimeType,
+          sizeBytes: input.data.byteLength,
+          createdAt: now,
+        })
+        .run()
+
+      this.handle.db
+        .insert(projectResources)
+        .values({
+          id: resourceId,
+          projectId,
+          artifactId,
+          name: stored.fileName,
+          kind: inferResourceKind(stored.fileName),
+          source: "uploaded",
+          uri: stored.path,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run()
+
+      resourceIds.push(resourceId)
+      this.appendEvent({
+        projectId,
+        type: "project.resource.created",
+        source: "server",
+        payload: { projectId, resourceId, artifactId, uri: stored.path },
+      })
+    }
+
+    return resourceIds.map((resourceId) => this.mustGetResource(resourceId))
+  }
+
+  upsertProjectInstructions(projectId: string, input: UpsertProjectInstructionsRequest): ProjectInstructions {
+    this.mustGetProjectRow(projectId)
+    const now = nowIso()
+    const existing = this.handle.db
+      .select()
+      .from(projectInstructions)
+      .where(and(eq(projectInstructions.projectId, projectId), eq(projectInstructions.status, "active")))
+      .orderBy(desc(projectInstructions.updatedAt))
+      .limit(1)
+      .get()
+
+    const id = existing?.id ?? createId("pins")
+    if (existing) {
+      this.handle.db
+        .update(projectInstructions)
+        .set({
+          content: input.content,
+          updatedAt: now,
+        })
+        .where(eq(projectInstructions.id, existing.id))
+        .run()
+    } else {
+      this.handle.db
+        .insert(projectInstructions)
+        .values({
+          id,
+          projectId,
+          content: input.content,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run()
+    }
 
     this.appendEvent({
       projectId,
-      type: "project.resource.created",
+      type: "project.instructions.updated",
       source: "server",
-      payload: { projectId, resourceId: id, uri: stored.path },
+      payload: { projectId, instructionsId: id },
     })
 
-    return mapProjectResource(this.mustGetResourceRow(id))
+    return mapProjectInstructions(this.mustGetInstructionsRow(id))
   }
 
   listConversations(projectId: string): Conversation[] {
@@ -846,6 +925,35 @@ export class SocratesStore {
     const row = this.handle.db.select().from(projectResources).where(eq(projectResources.id, id)).get()
     if (!row) {
       throw new SocratesError("project_resource_not_found", "Project resource not found", { details: { resourceId: id } })
+    }
+    return row
+  }
+
+  private mustGetResource(id: string): ProjectResource {
+    const row = this.mustGetResourceRow(id)
+    const artifact = row.artifactId
+      ? this.handle.db.select().from(artifacts).where(eq(artifacts.id, row.artifactId)).get()
+      : null
+    return mapProjectResource(row, artifact)
+  }
+
+  private mapResourceRows(rows: Array<typeof projectResources.$inferSelect>): ProjectResource[] {
+    const artifactIds = rows.flatMap((row) => (row.artifactId ? [row.artifactId] : []))
+    const artifactRows =
+      artifactIds.length > 0
+        ? this.handle.db.select().from(artifacts).where(inArray(artifacts.id, artifactIds)).all()
+        : []
+    const artifactsById = new Map(artifactRows.map((artifact) => [artifact.id, artifact]))
+
+    return rows.map((row) => mapProjectResource(row, row.artifactId ? artifactsById.get(row.artifactId) : null))
+  }
+
+  private mustGetInstructionsRow(id: string): typeof projectInstructions.$inferSelect {
+    const row = this.handle.db.select().from(projectInstructions).where(eq(projectInstructions.id, id)).get()
+    if (!row) {
+      throw new SocratesError("project_instructions_not_found", "Project instructions not found", {
+        details: { instructionsId: id },
+      })
     }
     return row
   }
