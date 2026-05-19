@@ -113,6 +113,7 @@ export const messageSchema = z
     turnId: idSchema.optional(),
     role: messageRoleSchema,
     content: z.string(),
+    reasoning: z.string().optional(),
     status: messageStatusSchema,
     createdAt: timestampSchema,
   })

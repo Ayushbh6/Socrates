@@ -170,6 +170,13 @@ Implemented the first real Socrates AI path:
 - The chat UI includes compact model and thinking controls, a stop button during active turns, separate thinking rendering, markdown rendering through `react-markdown` and `remark-gfm`, and a small glowing first-token loading indicator.
 - Backend env loading currently reads root `.env` and `apps/server/.env`.
 
+Follow-up fix:
+
+- Reasoning/thinking text is persisted as `model_stream_chunks.channel = 'reasoning'` during streaming and is also attached to completed assistant messages through `messages.metadata_json`.
+- `GET /api/projects/:projectId/conversations/:conversationId` hydrates assistant `reasoning` from stored stream chunks when older messages do not yet have reasoning metadata, so existing thinking turns remain visible after reload.
+- Completed assistant messages render thinking in a separate collapsible `Thinking` block above the final markdown answer.
+- The empty composer send control stays the same arrow button and becomes disabled/grey instead of switching to a spinner-like placeholder.
+
 Verification commands passed after this slice:
 
 ```text

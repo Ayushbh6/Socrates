@@ -10,6 +10,19 @@ type ArtifactRow = typeof artifacts.$inferSelect
 type ConversationRow = typeof conversations.$inferSelect
 type MessageRow = typeof messages.$inferSelect
 
+const parseMessageMetadata = (metadataJson: string | null): { reasoning?: string } => {
+  if (!metadataJson) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(metadataJson) as { reasoning?: unknown }
+    return typeof parsed.reasoning === "string" && parsed.reasoning.length > 0 ? { reasoning: parsed.reasoning } : {}
+  } catch {
+    return {}
+  }
+}
+
 export const mapUser = (row: UserRow): User => ({
   id: row.id,
   displayName: row.displayName,
@@ -70,6 +83,7 @@ export const mapMessage = (row: MessageRow): Message => ({
   ...(row.turnId ? { turnId: row.turnId } : {}),
   role: row.role as Message["role"],
   content: row.content,
+  ...parseMessageMetadata(row.metadataJson),
   status: row.status as Message["status"],
   createdAt: row.createdAt,
 })

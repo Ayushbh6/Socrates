@@ -186,6 +186,7 @@ const handleChatMessageSend = async (
   })
 
   let answerText = ""
+  let reasoningText = ""
   let latestUsage: ModelUsage | undefined
 
   try {
@@ -202,6 +203,7 @@ const handleChatMessageSend = async (
       }
 
       if (modelEvent.type === "model.reasoning.delta") {
+        reasoningText += modelEvent.text
         store.appendModelStreamChunk({
           modelCallId,
           turnId: created.turnId,
@@ -262,6 +264,7 @@ const handleChatMessageSend = async (
       sessionId: created.sessionId,
       turnId: created.turnId,
       content: answerText,
+      reasoning: reasoningText,
     })
     store.completeModelCall({
       modelCallId,

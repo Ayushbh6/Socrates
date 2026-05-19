@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Brain, ChevronDown, Loader2, Square, Sparkles } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, Square, Sparkles } from "lucide-react";
 import { useState } from "react";
 import type { ModelOption, ModelThinkingOption } from "@socrates/contracts";
 
@@ -148,7 +148,7 @@ export function ChatComposer({
           onClick={isSending ? onStop : undefined}
           className="absolute bottom-3 right-3 flex size-10 items-center justify-center rounded-full bg-brand-button text-white transition-colors hover:bg-opacity-90 disabled:bg-gray-200 disabled:text-gray-500"
         >
-          {isSending ? <Square className="size-4 fill-current" /> : canSend ? <ArrowUp className="size-5" /> : <Loader2 className="size-4" />}
+          {isSending ? <Square className="size-4 fill-current" /> : <ArrowUp className="size-5" />}
         </button>
       </div>
     </form>

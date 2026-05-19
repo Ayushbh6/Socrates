@@ -686,7 +686,8 @@ describe("WebSocket API", () => {
   })
 
   it("emits turn.started, message.completed, and turn.completed for chat.message.send", async () => {
-    const app = await buildTestServer()
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
     await onboard(app)
     const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
@@ -700,9 +701,37 @@ describe("WebSocket API", () => {
 
       const messageCompleted = await waitForEvent(socket, "message.completed")
       expect(messageCompleted.payload.message.role).toBe("assistant")
+      expect(messageCompleted.payload.message.reasoning).toBe("Testing.")
 
       const turnCompleted = await waitForEvent(socket, "turn.completed")
       expect(turnCompleted.payload.turnId).toBe(started.payload.turnId)
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ messages: Message[] }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.messages.find((message) => message.role === "assistant")?.reasoning).toBe("Testing.")
+      }
+
+      const sqlite = new Database(dbPath)
+      try {
+        sqlite.prepare("UPDATE messages SET metadata_json = NULL WHERE conversation_id = ? AND role = 'assistant'").run(conversation.id)
+      } finally {
+        sqlite.close()
+      }
+
+      const hydratedResponse = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const hydratedBody = parseResponse<{ messages: Message[] }>(hydratedResponse.payload)
+      expect(hydratedBody.ok).toBe(true)
+      if (hydratedBody.ok) {
+        expect(hydratedBody.data.messages.find((message) => message.role === "assistant")?.reasoning).toBe("Testing.")
+      }
     } finally {
       socket.close()
     }

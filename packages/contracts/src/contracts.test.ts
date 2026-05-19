@@ -127,6 +127,7 @@ const assistantMessage = {
   turnId: "turn_1",
   role: "assistant",
   content: "Done.",
+  reasoning: "Checked the project context.",
   status: "completed",
   createdAt: timestamp,
 }

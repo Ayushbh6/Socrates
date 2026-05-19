@@ -577,10 +577,21 @@ export class SocratesStore {
       .where(eq(messages.conversationId, conversationId))
       .orderBy(messages.createdAt)
       .all()
+    const mappedMessages = rows.map(mapMessage)
+    const missingReasoningTurnIds = mappedMessages
+      .filter((message) => message.role === "assistant" && message.turnId && !message.reasoning)
+      .map((message) => message.turnId as string)
+    const reasoningByTurnId = this.getReasoningTextByTurnIds(missingReasoningTurnIds)
 
     return {
       conversation,
-      messages: rows.map(mapMessage),
+      messages: mappedMessages.map((message) => {
+        if (message.role !== "assistant" || message.reasoning || !message.turnId) {
+          return message
+        }
+        const reasoning = reasoningByTurnId.get(message.turnId)
+        return reasoning ? { ...message, reasoning } : message
+      }),
       tokenUsage: this.getConversationTokenUsage(conversationId),
     }
   }
@@ -895,6 +906,32 @@ export class SocratesStore {
       .run()
   }
 
+  private getReasoningTextByTurnIds(turnIds: string[]): Map<string, string> {
+    const uniqueTurnIds = Array.from(new Set(turnIds))
+    if (uniqueTurnIds.length === 0) {
+      return new Map()
+    }
+
+    const placeholders = uniqueTurnIds.map(() => "?").join(", ")
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT turn_id, text
+         FROM model_stream_chunks
+         WHERE channel = 'reasoning' AND turn_id IN (${placeholders})
+         ORDER BY turn_id, sequence`,
+      )
+      .all(...uniqueTurnIds) as Array<{ turn_id: string; text: string | null }>
+
+    const reasoningByTurnId = new Map<string, string>()
+    for (const row of rows) {
+      if (!row.text) {
+        continue
+      }
+      reasoningByTurnId.set(row.turn_id, `${reasoningByTurnId.get(row.turn_id) ?? ""}${row.text}`)
+    }
+    return reasoningByTurnId
+  }
+
   completeModelCall(input: { modelCallId: string; response: unknown; usage?: StoredModelUsage }): void {
     this.handle.db
       .update(modelCalls)
@@ -941,9 +978,11 @@ export class SocratesStore {
     sessionId: string
     turnId: string
     content: string
+    reasoning?: string
   }): Message {
     const now = nowIso()
     const messageId = createId("msg")
+    const reasoning = input.reasoning?.trim()
     this.handle.db
       .insert(messages)
       .values({
@@ -954,6 +993,7 @@ export class SocratesStore {
         role: "assistant",
         content: input.content,
         contentFormat: "markdown",
+        ...(reasoning ? { metadataJson: JSON.stringify({ reasoning }) } : {}),
         status: "completed",
         createdAt: now,
         completedAt: now,

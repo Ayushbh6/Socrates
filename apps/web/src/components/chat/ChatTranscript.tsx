@@ -1,6 +1,7 @@
 "use client";
 
 import type { Message } from "@socrates/contracts";
+import { ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -24,12 +25,7 @@ export function ChatTranscript({ messages, liveThinking, liveAnswer, isStreaming
           <div className="flex justify-start">
             <div className="max-w-2xl rounded-2xl rounded-tl-sm border border-gray-200 bg-white px-4 py-3 text-sm leading-6 text-brand-text-dark shadow-sm">
               {liveThinking && (
-                <details className="mb-3 rounded-xl bg-gray-50 px-3 py-2 text-brand-text-light" open>
-                  <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-brand-teal-dark">
-                    Thinking
-                  </summary>
-                  <p className="mt-2 whitespace-pre-wrap">{liveThinking}</p>
-                </details>
+                <ThinkingBlock content={liveThinking} defaultOpen />
               )}
               {liveAnswer ? <MarkdownContent content={liveAnswer} /> : isWaitingForFirstToken ? <FirstTokenLoader /> : null}
             </div>
@@ -63,9 +59,28 @@ function MessageBubble({ message }: { message: Message }) {
             : "max-w-2xl rounded-2xl rounded-tl-sm border border-gray-200 bg-white px-4 py-3 text-sm leading-6 text-brand-text-dark shadow-sm"
         }
       >
-        {isUser ? <p className="whitespace-pre-wrap">{message.content}</p> : <MarkdownContent content={message.content} />}
+        {isUser ? (
+          <p className="whitespace-pre-wrap">{message.content}</p>
+        ) : (
+          <>
+            {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
+            <MarkdownContent content={message.content} />
+          </>
+        )}
       </div>
     </div>
+  );
+}
+
+function ThinkingBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
+  return (
+    <details className="group mb-3 rounded-xl bg-gray-50 px-3 py-2 text-brand-text-light" open={defaultOpen || undefined}>
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium uppercase tracking-wide text-brand-teal-dark">
+        <ChevronDown className="size-3 transition-transform group-open:rotate-180" />
+        Thinking
+      </summary>
+      <p className="mt-2 whitespace-pre-wrap">{content}</p>
+    </details>
   );
 }
 
