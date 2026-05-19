@@ -11,6 +11,7 @@ import {
   updateConversationRequestSchema,
   upsertProjectInstructionsRequestSchema,
 } from "@socrates/contracts"
+import { listModels } from "@socrates/core"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
 import type { SocratesStore, UploadedResourceInput } from "../services/store"
@@ -67,6 +68,8 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
   app.get("/health", async () => ok({ status: "ok" }))
 
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
+
+  app.get("/api/models", async () => ok(listModels()))
 
   app.post("/api/onboarding", async (request, reply) => {
     try {

@@ -6,9 +6,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "dev": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && tsx watch src/index.ts",
+    "dev": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm --dts --clean",
-    "test": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && vitest run",
+    "test": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && vitest run",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts"
@@ -18,9 +18,11 @@
     "@fastify/multipart": "^10.0.0",
     "@fastify/websocket": "^11.2.0",
     "@socrates/contracts": "workspace:*",
+    "@socrates/core": "workspace:^",
     "@socrates/shared": "workspace:*",
     "@socrates/workspace": "workspace:*",
     "better-sqlite3": "^12.10.0",
+    "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.8.5",
     "zod": "^3.25.76"

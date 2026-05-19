@@ -11,6 +11,7 @@ import {
   getConversationResponseSchema,
   getProjectResponseSchema,
   listProjectsResponseSchema,
+  listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
   pickWorkspaceFolderResponseSchema,
   uploadProjectResourcesResponseSchema,
@@ -31,6 +32,7 @@ import {
   type GetMeResponse,
   type GetProjectResponse,
   type ListProjectsResponse,
+  type ListModelsHttpResponse,
   type ListProjectConversationsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
@@ -43,6 +45,8 @@ import {
 import type { z } from "zod";
 
 const directApiBaseUrl = process.env.NEXT_PUBLIC_SOCRATES_API_BASE_URL ?? "http://127.0.0.1:4000";
+
+export const socratesApiBaseUrl = directApiBaseUrl;
 
 async function readJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
@@ -111,6 +115,9 @@ async function uploadRequest<TSchema extends z.ZodTypeAny>(
 
 export const api = {
   getMe: () => request<typeof getMeResponseSchema>("/api/me", getMeResponseSchema),
+
+  listModels: () =>
+    request<typeof listModelsHttpResponseSchema>("/api/models", listModelsHttpResponseSchema) as Promise<ListModelsHttpResponse>,
 
   completeOnboarding: (input: CompleteOnboardingRequest) =>
     request<typeof completeOnboardingResponseSchema>("/api/onboarding", completeOnboardingResponseSchema, {

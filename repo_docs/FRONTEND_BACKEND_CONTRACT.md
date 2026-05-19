@@ -184,6 +184,8 @@ V1 endpoints:
 GET    /api/me
 POST   /api/onboarding
 
+GET    /api/models
+
 POST   /api/workspaces/pick-folder
 
 GET    /api/projects
@@ -204,6 +206,8 @@ PATCH  /api/projects/:projectId/conversations/:conversationId
 DELETE /api/projects/:projectId/conversations/:conversationId
 POST   /api/projects/:projectId/conversations/:conversationId/messages
 ```
+
+`POST /api/projects/:projectId/conversations/:conversationId/messages` remains available as a simple no-AI persistence endpoint, but the chat UI now uses the WebSocket `chat.message.send` command for real agent turns.
 
 ### `GET /api/me`
 
@@ -242,6 +246,50 @@ Response:
 type CompleteOnboardingResponse = {
   user: User
 }
+```
+
+### `GET /api/models`
+
+Returns the backend-owned provider/model/thinking catalog.
+
+```ts
+type ProviderId = "openai" | "google" | "openrouter"
+
+type ThinkingEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+
+type ModelThinkingOption = {
+  id: string
+  label: string
+  enabled: boolean
+  effort?: ThinkingEffort
+}
+
+type ModelOption = {
+  providerId: ProviderId
+  providerLabel: string
+  modelId: string
+  label: string
+  thinkingOptions: ModelThinkingOption[]
+  defaultThinkingOptionId: string
+  contextWindowTokens?: number
+  isDefault: boolean
+}
+
+type ListModelsResponse = {
+  models: ModelOption[]
+  defaultModel: {
+    providerId: ProviderId
+    modelId: string
+    thinkingOptionId: string
+  }
+}
+```
+
+Frontend rule:
+
+```text
+render model and thinking controls from this response
+do not hardcode selectable model ids in the composer
 ```
 
 ### `GET /api/projects`
@@ -490,6 +538,12 @@ Loads one conversation and its persisted visible messages.
 type GetConversationResponse = {
   conversation: Conversation
   messages: Message[]
+  tokenUsage: {
+    totalTokens: number
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens: number
+  }
 }
 ```
 
@@ -500,6 +554,8 @@ if messages is empty:
   show centered empty-chat composer
 else:
   render transcript and pin composer to the bottom
+show tokenUsage.totalTokens next to the conversation title
+update the displayed total after completed assistant turns
 ```
 
 ### `PATCH /api/projects/:projectId/conversations/:conversationId`
@@ -555,7 +611,7 @@ This endpoint must not archive the conversation and must not set `conversations.
 
 ### `POST /api/projects/:projectId/conversations/:conversationId/messages`
 
-Persists a user message in a conversation. This is the immediate no-AI chat UI path. When agent streaming is enabled, the same store behavior should be driven by the typed `chat.message.send` WebSocket command instead of duplicating message creation logic.
+Persists a user message in a conversation without calling a model provider. This endpoint remains available for backend tests, simple persistence flows, and fallback development utilities. It is no longer the primary chat UI send path.
 
 ```ts
 type CreateConversationMessageRequest = {
@@ -592,7 +648,7 @@ first word length > 10 -> title = first 10 characters + "..."
 Frontend behavior:
 
 ```text
-send button or Enter calls this endpoint for the current no-AI UI slice
+normal chat send uses WebSocket chat.message.send, not this endpoint
 after the first message is saved, move composer from centered state to bottom state
 append the returned user message to the transcript
 refresh local conversation title from the response
@@ -602,7 +658,7 @@ refresh local conversation title from the response
 
 The chat page opens one WebSocket connection for live agent events.
 
-For the immediate no-AI conversation UI slice, user messages may be persisted through `POST /api/projects/:projectId/conversations/:conversationId/messages`. When agent execution is enabled, `chat.message.send` should become the primary send path and should reuse the same backend store logic for session, turn, message, and title updates.
+The current chat UI sends user messages through `chat.message.send`. The backend creates/reuses the session, stores the user message, creates the running turn, persists the runtime config, loads full visible conversation history, injects backend-owned Socrates prompt context, and calls `packages/core`.
 
 Suggested URL:
 
@@ -686,12 +742,14 @@ type ChatMessageSendPayload = {
     providerId: string
     modelId: string
     thinkingEnabled: boolean
-    thinkingEffort?: "none" | "low" | "medium" | "high" | "xhigh"
+    thinkingEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
     approvalMode: "manual" | "approve_all" | "read_only_auto"
     sandboxMode: "read_only" | "workspace_write" | "danger_full_access"
   }
 }
 ```
+
+Runtime settings are per turn. A user may switch provider, model, or thinking mode inside one conversation; the next `chat.message.send` uses the selected runtime config while earlier turns keep their persisted settings.
 
 ### `chat.turn.cancel`
 
@@ -768,6 +826,8 @@ This is enough to render:
 - Context usage widget.
 - Final answer.
 - Errors.
+
+The frontend shows a small waiting indicator after send while a turn is active and before the first `agent.thinking.delta` or `agent.answer.delta` arrives.
 
 Composer rule:
 

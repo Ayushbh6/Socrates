@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { apiErrorSchema } from "./api"
 import { idSchema, messageSchema, timestampSchema } from "./entities"
+import { providerIdSchema, thinkingEffortSchema } from "./models"
 
 export const schemaVersionSchema = z.literal(1)
 
@@ -48,10 +49,10 @@ export const socketEnvelopeSchema = <TType extends string, TPayload extends z.Zo
 
 export const runtimeConfigSchema = z
   .object({
-    providerId: z.string().min(1),
+    providerId: providerIdSchema,
     modelId: z.string().min(1),
     thinkingEnabled: z.boolean(),
-    thinkingEffort: z.enum(["none", "low", "medium", "high", "xhigh"]).optional(),
+    thinkingEffort: thinkingEffortSchema.optional(),
     approvalMode: z.enum(["manual", "approve_all", "read_only_auto"]),
     sandboxMode: z.enum(["read_only", "workspace_write", "danger_full_access"]),
   })
@@ -296,6 +297,7 @@ export const socketMessageSchema = z.union([clientCommandSchema, serverEventSche
 export type SchemaVersion = z.infer<typeof schemaVersionSchema>
 export type ActorRef = z.infer<typeof actorRefSchema>
 export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>
+export type ModelUsage = z.infer<typeof modelUsageSchema>
 export type ChatMessageSendPayload = z.infer<typeof chatMessageSendPayloadSchema>
 export type ChatTurnCancelPayload = z.infer<typeof chatTurnCancelPayloadSchema>
 export type ApprovalDecidePayload = z.infer<typeof approvalDecidePayloadSchema>

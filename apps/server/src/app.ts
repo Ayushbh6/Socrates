@@ -5,11 +5,13 @@ import { openDatabase, runMigrations, type DatabaseHandle } from "./db/client"
 import { registerHttpRoutes } from "./routes/httpRoutes"
 import { SocratesStore } from "./services/store"
 import { registerWebSocketRoutes } from "./ws/websocket"
+import type { SocratesAgent } from "@socrates/core"
 
 export type BuildServerOptions = {
   dbPath: string
   logger?: boolean
   databaseHandle?: DatabaseHandle
+  agent?: SocratesAgent
 }
 
 export const buildServer = async (options: BuildServerOptions) => {
@@ -33,7 +35,7 @@ export const buildServer = async (options: BuildServerOptions) => {
     origin: [/^http:\/\/127\.0\.0\.1:\d+$/, /^http:\/\/localhost:\d+$/],
   })
 
-  await registerWebSocketRoutes(app, store)
+  await registerWebSocketRoutes(app, store, options.agent)
   await registerHttpRoutes(app, store)
 
   return app

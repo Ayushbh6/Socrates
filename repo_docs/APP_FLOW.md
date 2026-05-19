@@ -340,8 +340,10 @@ Purpose:
 - Main Socrates chat workspace.
 - Show the conversation transcript.
 - Let users send messages inside a project-scoped conversation.
-- Later, stream agent events over WebSocket.
-- Later, show thinking, answer, tool calls, approvals, artifacts, terminal output, and context usage.
+- Stream agent events over WebSocket.
+- Show streamed thinking when the selected provider exposes it.
+- Show streamed final assistant answers.
+- Show the cumulative completed-turn token total next to the conversation title.
 
 Primary layout:
 
@@ -385,12 +387,16 @@ Chat states:
 - Empty conversation: no messages have been sent yet. The composer is centered in the main chat area.
 - Active conversation: once the first user message is sent, that message appears in the transcript and the composer moves to the bottom of the chat area.
 - Existing conversation: load persisted messages and keep the composer at the bottom.
-- No model selector, provider selector, thinking toggle, approval selector, or advanced agent controls should be shown in this immediate UI slice. Those controls are future chat work.
+- While a turn is waiting for the first provider token, show a small loading indicator in the assistant area.
+- Once thinking or answer text begins streaming, replace the loading indicator with the live stream.
 
 Composer controls:
 
 - Text input.
 - Send.
+- Stop while a turn is active.
+- Compact model selector rendered from `GET /api/models`.
+- Compact thinking selector rendered from the selected model's backend-owned thinking options.
 
 Composer behavior:
 
@@ -398,6 +404,8 @@ Composer behavior:
 - The send button on the right sends the message when the input has non-empty trimmed text.
 - Sending the first message creates the first session and turn for the conversation.
 - The frontend should not call any model provider directly.
+- The frontend sends `chat.message.send` over WebSocket for the real AI path.
+- The older no-AI HTTP message endpoint remains available but is not the normal chat UI send path.
 
 Composer run-state behavior:
 
@@ -436,6 +444,24 @@ tools emit progress events
 server streams typed events back to web
 web renders live state
 db records every event
+```
+
+Current V1 agent scope:
+
+```text
+enabled:
+  multi-turn model conversations
+  per-turn model and thinking selection
+  streamed thinking and answer events when exposed by provider
+  assistant markdown rendering
+  provider usage persistence
+  header token total after completed turns
+  backend-injected user/project/instruction prompt context
+
+not yet enabled:
+  workspace tools
+  approvals
+  shell/file/git/patch execution
 ```
 
 ## Project-Scoped Conversations
@@ -497,9 +523,14 @@ The first user message creates the first `session`, `turn`, and user `message`.
 ```text
 user sends first message
   -> create or reuse active session for the conversation
-  -> create turns row for the user message lifecycle
+  -> create turns row for the agent lifecycle
   -> create messages row with role = "user"
-  -> complete the turn immediately in the no-AI UI slice
+  -> create turn_runtime_configs row for selected provider/model/thinking settings
+  -> build full visible conversation history
+  -> inject user display name, project name, full project description, and full project instructions into the Socrates system prompt
+  -> stream model output through packages/core and packages/providers
+  -> create assistant message on completion
+  -> persist model_calls, model_stream_chunks, model_usage, context_usage_snapshots when a context window is known, and events
   -> update conversations.updated_at
   -> if title is still "New conversation", update it from the first word of the message
 ```

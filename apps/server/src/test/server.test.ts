@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
 import type { ApiResponse, Conversation, Message, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
+import { SocratesAgent } from "@socrates/core"
 import { createId, nowIso } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
@@ -25,10 +26,50 @@ const tempDbPath = (): string => {
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
 
-const buildTestServer = async (dbPath = tempDbPath()): Promise<TestServer> => {
-  const app = await buildServer({ dbPath })
+const buildTestServer = async (dbPath = tempDbPath(), agent = createTestAgent()): Promise<TestServer> => {
+  const app = await buildServer({ dbPath, agent })
   servers.push(app)
   return app
+}
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+const createTestAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream(request) {
+      yield { type: "model.reasoning.delta", text: "Testing." }
+      yield { type: "model.answer.delta", text: `Echo: ${request.messages.at(-1)?.content ?? ""}` }
+      await delay(100)
+      yield {
+        type: "model.completed",
+        usage: {
+          inputTokens: 4,
+          outputTokens: 3,
+          reasoningTokens: 2,
+          totalTokens: 9,
+        },
+      }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createCapturingAgent = (requests: unknown[]): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream(request) {
+      requests.push(request)
+      yield { type: "model.answer.delta", text: "Captured" }
+      yield {
+        type: "model.completed",
+        usage: {
+          inputTokens: 4,
+          outputTokens: 2,
+          totalTokens: 6,
+        },
+      }
+    },
+  }
+  return new SocratesAgent(provider)
 }
 
 const parseResponse = <T>(payload: string): ApiResponse<T> => JSON.parse(payload) as ApiResponse<T>
@@ -662,6 +703,34 @@ describe("WebSocket API", () => {
 
       const turnCompleted = await waitForEvent(socket, "turn.completed")
       expect(turnCompleted.payload.turnId).toBe(started.payload.turnId)
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("injects user, project, and project instructions into the agent prompt", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
+    await onboard(app, "Context User")
+    const { project } = await createProject(app, "Context Project")
+    await app.inject({
+      method: "PUT",
+      url: `/api/projects/${project.id}/instructions`,
+      payload: { content: "Always answer from the project instructions." },
+    })
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Use the context"))
+      await waitForEvent(socket, "message.completed")
+
+      const request = requests[0] as { system: string; messages: Array<{ content: string }> }
+      expect(request.system).toContain("Name: Context User")
+      expect(request.system).toContain("Name: Context Project")
+      expect(request.system).toContain("A test project")
+      expect(request.system).toContain("Always answer from the project instructions.")
+      expect(request.messages.at(-1)?.content).toBe("Use the context")
     } finally {
       socket.close()
     }

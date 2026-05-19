@@ -12,12 +12,15 @@ import {
   projectWorkspaceSchema,
   userSchema,
 } from "./entities"
+import { conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
 
 export const getMeResponseSchema = z
   .object({
     user: userSchema.nullable(),
   })
   .strict()
+
+export const listModelsHttpResponseSchema = listModelsResponseSchema
 
 export const completeOnboardingRequestSchema = z
   .object({
@@ -169,6 +172,7 @@ export const getConversationResponseSchema = z
   .object({
     conversation: conversationSchema,
     messages: z.array(messageSchema),
+    tokenUsage: conversationTokenUsageSchema,
   })
   .strict()
 
@@ -204,6 +208,7 @@ export const createConversationMessageResponseSchema = z
   .strict()
 
 export type GetMeResponse = z.infer<typeof getMeResponseSchema>
+export type ListModelsHttpResponse = z.infer<typeof listModelsHttpResponseSchema>
 export type CompleteOnboardingRequest = z.infer<typeof completeOnboardingRequestSchema>
 export type CompleteOnboardingResponse = z.infer<typeof completeOnboardingResponseSchema>
 export type ListProjectsResponse = z.infer<typeof listProjectsResponseSchema>

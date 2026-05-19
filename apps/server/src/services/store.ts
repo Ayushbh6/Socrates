@@ -2,6 +2,7 @@ import type {
   ChatMessageSendPayload,
   CompleteOnboardingRequest,
   Conversation,
+  ConversationTokenUsage,
   CreateConversationMessageRequest,
   CreateConversationRequest,
   CreateProjectRequest,
@@ -98,7 +99,29 @@ export type ProjectDashboard = {
 export type CreatedTurn = {
   sessionId: string
   turnId: string
+  runtimeConfigId: string
   userMessage: Message
+}
+
+type StoredModelUsage = {
+  inputTokens?: number
+  outputTokens?: number
+  reasoningTokens?: number
+  cachedInputTokens?: number
+  totalTokens?: number
+  raw?: unknown
+}
+
+export type ConversationModelMessage = {
+  role: "user" | "assistant" | "system" | "developer"
+  content: string
+}
+
+export type AgentContext = {
+  userDisplayName: string
+  projectName: string
+  projectDescription?: string
+  projectInstructions?: string
 }
 
 export type UploadedResourceInput = {
@@ -269,6 +292,25 @@ export class SocratesStore {
       resources: this.mapResourceRows(resourceRows),
       conversations: conversationRows.map(mapConversation),
       ...(instructionRow ? { instructions: mapProjectInstructions(instructionRow) } : {}),
+    }
+  }
+
+  getAgentContext(projectId: string): AgentContext {
+    const project = this.mustGetProjectRow(projectId)
+    const user = this.mustGetUserRow(project.userId)
+    const instructionRow = this.handle.db
+      .select()
+      .from(projectInstructions)
+      .where(and(eq(projectInstructions.projectId, projectId), eq(projectInstructions.status, "active")))
+      .orderBy(desc(projectInstructions.updatedAt))
+      .limit(1)
+      .get()
+
+    return {
+      userDisplayName: user.displayName,
+      projectName: project.name,
+      ...(project.description ? { projectDescription: project.description } : {}),
+      ...(instructionRow ? { projectInstructions: instructionRow.content } : {}),
     }
   }
 
@@ -524,7 +566,10 @@ export class SocratesStore {
     return mapConversation(this.mustGetConversationRow(projectId, conversationId))
   }
 
-  getConversation(projectId: string, conversationId: string): { conversation: Conversation; messages: Message[] } {
+  getConversation(
+    projectId: string,
+    conversationId: string,
+  ): { conversation: Conversation; messages: Message[]; tokenUsage: ConversationTokenUsage } {
     const conversation = mapConversation(this.mustGetConversationRow(projectId, conversationId))
     const rows = this.handle.db
       .select()
@@ -536,6 +581,7 @@ export class SocratesStore {
     return {
       conversation,
       messages: rows.map(mapMessage),
+      tokenUsage: this.getConversationTokenUsage(conversationId),
     }
   }
 
@@ -702,6 +748,11 @@ export class SocratesStore {
     payload: ChatMessageSendPayload,
   ): CreatedTurn {
     const conversation = this.mustGetConversationRow(projectId, conversationId)
+    const content = payload.content.trim()
+    if (!content) {
+      throw new SocratesError("message_content_required", "Message content is required", { recoverable: true })
+    }
+
     const activeTurn = this.getActiveTurn(conversationId)
     if (activeTurn) {
       throw new SocratesError("turn_already_active", "This conversation already has an active turn", {
@@ -714,6 +765,14 @@ export class SocratesStore {
     const sessionId = this.ensureSession(projectId, conversationId)
     const turnId = createId("turn")
     const messageId = payload.clientMessageId
+    const existingUserMessage = this.handle.db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(and(eq(messages.conversationId, conversationId), eq(messages.role, "user")))
+      .limit(1)
+      .get()
+    const shouldDeriveTitle = !existingUserMessage && conversation.title === defaultConversationTitle
+    const nextTitle = shouldDeriveTitle ? deriveConversationTitle(content) : conversation.title
 
     this.handle.db
       .insert(messages)
@@ -723,7 +782,7 @@ export class SocratesStore {
         sessionId,
         turnId,
         role: "user",
-        content: payload.content,
+        content,
         contentFormat: "markdown",
         status: "completed",
         createdAt: now,
@@ -743,8 +802,15 @@ export class SocratesStore {
       })
       .run()
 
-    this.insertRuntimeConfig(turnId, payload.runtimeConfig, now)
-    this.touchConversation(conversation.id, now)
+    const runtimeConfigId = this.insertRuntimeConfig(turnId, payload.runtimeConfig, now)
+    this.handle.db
+      .update(conversations)
+      .set({
+        ...(nextTitle ? { title: nextTitle } : {}),
+        updatedAt: now,
+      })
+      .where(and(eq(conversations.projectId, projectId), eq(conversations.id, conversationId)))
+      .run()
 
     const userMessage = mapMessage(this.mustGetMessageRow(messageId))
     this.appendEvent({
@@ -757,7 +823,257 @@ export class SocratesStore {
       payload: { turnId, userMessage },
     })
 
-    return { sessionId, turnId, userMessage }
+    return { sessionId, turnId, runtimeConfigId, userMessage }
+  }
+
+  getConversationModelMessages(projectId: string, conversationId: string): ConversationModelMessage[] {
+    this.mustGetConversationRow(projectId, conversationId)
+    return this.handle.db
+      .select()
+      .from(messages)
+      .where(and(eq(messages.conversationId, conversationId), eq(messages.status, "completed")))
+      .orderBy(messages.createdAt)
+      .all()
+      .filter((message) => ["user", "assistant", "system", "developer"].includes(message.role))
+      .map((message) => ({
+        role: message.role as ConversationModelMessage["role"],
+        content: message.content,
+      }))
+  }
+
+  createModelCall(input: {
+    conversationId: string
+    sessionId: string
+    turnId: string
+    runtimeConfigId: string
+    providerId: string
+    modelId: string
+    request: unknown
+  }): string {
+    const id = createId("mcall")
+    this.handle.db
+      .insert(modelCalls)
+      .values({
+        id,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        runtimeConfigId: input.runtimeConfigId,
+        providerId: input.providerId,
+        modelId: input.modelId,
+        status: "streaming",
+        requestJson: JSON.stringify(input.request),
+        startedAt: nowIso(),
+      })
+      .run()
+    return id
+  }
+
+  appendModelStreamChunk(input: {
+    modelCallId: string
+    turnId: string
+    channel: "reasoning" | "answer" | "metadata"
+    text?: string
+    payload?: unknown
+  }): void {
+    const row = this.handle.sqlite
+      .prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM model_stream_chunks WHERE model_call_id = ?")
+      .get(input.modelCallId) as { next_sequence: number }
+
+    this.handle.db
+      .insert(modelStreamChunks)
+      .values({
+        id: createId("chunk"),
+        modelCallId: input.modelCallId,
+        turnId: input.turnId,
+        sequence: row.next_sequence,
+        channel: input.channel,
+        text: input.text,
+        payloadJson: input.payload === undefined ? undefined : JSON.stringify(input.payload),
+        createdAt: nowIso(),
+      })
+      .run()
+  }
+
+  completeModelCall(input: { modelCallId: string; response: unknown; usage?: StoredModelUsage }): void {
+    this.handle.db
+      .update(modelCalls)
+      .set({
+        status: "completed",
+        responseJson: JSON.stringify(input.response),
+        completedAt: nowIso(),
+      })
+      .where(eq(modelCalls.id, input.modelCallId))
+      .run()
+
+    if (!input.usage) {
+      return
+    }
+
+    const call = this.handle.db.select().from(modelCalls).where(eq(modelCalls.id, input.modelCallId)).get()
+    if (!call) {
+      return
+    }
+
+    this.recordModelUsage({
+      modelCallId: input.modelCallId,
+      turnId: call.turnId,
+      providerId: call.providerId,
+      modelId: call.modelId,
+      usage: input.usage,
+    })
+  }
+
+  failModelCall(modelCallId: string, errorId?: string): void {
+    this.handle.db
+      .update(modelCalls)
+      .set({
+        status: "failed",
+        errorId,
+        completedAt: nowIso(),
+      })
+      .where(eq(modelCalls.id, modelCallId))
+      .run()
+  }
+
+  completeAgentTurn(input: {
+    conversationId: string
+    sessionId: string
+    turnId: string
+    content: string
+  }): Message {
+    const now = nowIso()
+    const messageId = createId("msg")
+    this.handle.db
+      .insert(messages)
+      .values({
+        id: messageId,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        role: "assistant",
+        content: input.content,
+        contentFormat: "markdown",
+        status: "completed",
+        createdAt: now,
+        completedAt: now,
+      })
+      .run()
+
+    this.handle.db
+      .update(turns)
+      .set({
+        assistantMessageId: messageId,
+        status: "completed",
+        completedAt: now,
+      })
+      .where(eq(turns.id, input.turnId))
+      .run()
+
+    this.handle.db.update(sessions).set({ status: "idle", updatedAt: now }).where(eq(sessions.id, input.sessionId)).run()
+    this.touchConversation(input.conversationId, now)
+
+    return mapMessage(this.mustGetMessageRow(messageId))
+  }
+
+  failTurn(input: {
+    conversationId: string
+    sessionId: string
+    turnId: string
+    code: string
+    message: string
+    details?: unknown
+  }): string {
+    const errorId = createId("err")
+    const now = nowIso()
+    this.handle.db
+      .insert(errors)
+      .values({
+        id: errorId,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        source: "provider",
+        code: input.code,
+        message: input.message,
+        detailsJson: input.details === undefined ? undefined : JSON.stringify(input.details),
+        recoverable: true,
+        createdAt: now,
+      })
+      .run()
+    this.handle.db
+      .update(turns)
+      .set({
+        status: "failed",
+        failedAt: now,
+        errorId,
+      })
+      .where(eq(turns.id, input.turnId))
+      .run()
+    this.handle.db.update(sessions).set({ status: "idle", updatedAt: now }).where(eq(sessions.id, input.sessionId)).run()
+    return errorId
+  }
+
+  recordContextUsageSnapshot(input: {
+    conversationId: string
+    sessionId: string
+    turnId: string
+    modelCallId: string
+    providerId: string
+    modelId: string
+    contextWindowTokens: number
+    contextUsedTokens: number
+  }): void {
+    const contextLeftTokens = Math.max(input.contextWindowTokens - input.contextUsedTokens, 0)
+    const contextUsedPercent =
+      input.contextWindowTokens > 0
+        ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 1000) / 10)
+        : 0
+
+    this.handle.db
+      .insert(contextUsageSnapshots)
+      .values({
+        id: createId("ctxuse"),
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        modelCallId: input.modelCallId,
+        providerId: input.providerId,
+        modelId: input.modelId,
+        contextWindowTokens: input.contextWindowTokens,
+        contextUsedTokens: input.contextUsedTokens,
+        contextLeftTokens,
+        contextUsedPercent,
+        createdAt: nowIso(),
+      })
+      .run()
+  }
+
+  getConversationTokenUsage(conversationId: string): ConversationTokenUsage {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT
+          COALESCE(SUM(COALESCE(mu.total_tokens, COALESCE(mu.input_tokens, 0) + COALESCE(mu.output_tokens, 0) + COALESCE(mu.reasoning_tokens, 0))), 0) AS total_tokens,
+          COALESCE(SUM(COALESCE(mu.input_tokens, 0)), 0) AS input_tokens,
+          COALESCE(SUM(COALESCE(mu.output_tokens, 0)), 0) AS output_tokens,
+          COALESCE(SUM(COALESCE(mu.reasoning_tokens, 0)), 0) AS reasoning_tokens
+        FROM model_usage mu
+        INNER JOIN turns t ON t.id = mu.turn_id
+        WHERE t.conversation_id = ?`,
+      )
+      .get(conversationId) as {
+      total_tokens: number | bigint
+      input_tokens: number | bigint
+      output_tokens: number | bigint
+      reasoning_tokens: number | bigint
+    }
+
+    return {
+      totalTokens: Number(row.total_tokens),
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      reasoningTokens: Number(row.reasoning_tokens),
+    }
   }
 
   completePlaceholderTurn(projectId: string, conversationId: string, turnId: string): Message | null {
@@ -1064,11 +1380,12 @@ export class SocratesStore {
     return id
   }
 
-  private insertRuntimeConfig(turnId: string, runtimeConfig: RuntimeConfig, createdAt: string): void {
+  private insertRuntimeConfig(turnId: string, runtimeConfig: RuntimeConfig, createdAt: string): string {
+    const id = createId("trc")
     this.handle.db
       .insert(turnRuntimeConfigs)
       .values({
-        id: createId("trc"),
+        id,
         turnId,
         providerId: runtimeConfig.providerId,
         modelId: runtimeConfig.modelId,
@@ -1077,6 +1394,35 @@ export class SocratesStore {
         approvalMode: runtimeConfig.approvalMode,
         sandboxMode: runtimeConfig.sandboxMode,
         createdAt,
+      })
+      .run()
+    return id
+  }
+
+  private recordModelUsage(input: {
+    modelCallId: string
+    turnId: string
+    providerId: string
+    modelId: string
+    usage: StoredModelUsage
+  }): void {
+    this.handle.db
+      .insert(modelUsage)
+      .values({
+        id: createId("usage"),
+        modelCallId: input.modelCallId,
+        turnId: input.turnId,
+        providerId: input.providerId,
+        modelId: input.modelId,
+        inputTokens: input.usage.inputTokens,
+        outputTokens: input.usage.outputTokens,
+        reasoningTokens: input.usage.reasoningTokens,
+        cachedInputTokens: input.usage.cachedInputTokens,
+        totalTokens:
+          input.usage.totalTokens ??
+          (input.usage.inputTokens ?? 0) + (input.usage.outputTokens ?? 0) + (input.usage.reasoningTokens ?? 0),
+        rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
+        createdAt: nowIso(),
       })
       .run()
   }

@@ -139,12 +139,45 @@ Project dashboard behavior:
 Conversation behavior:
 
 - Creating a conversation does not create a session.
-- The first user message creates or reuses the active session, creates a completed no-AI turn, persists a completed user message, updates `conversations.updated_at`, and derives the title if it is still `New conversation`.
+- The first user message creates or reuses the active session, creates a running agent turn, persists the user message, writes per-turn runtime config, updates `conversations.updated_at`, and derives the title if it is still `New conversation`.
 - First-message title derivation uses the first word, capped at 10 characters plus `...` when needed.
 - Later messages do not auto-rename the conversation.
 - Manual rename updates the persisted conversation title.
 - Delete is a hard delete after confirmation. It removes conversation-scoped rows and does not archive the conversation.
-- The current no-AI UI send path uses `POST /api/projects/:projectId/conversations/:conversationId/messages` and displays the persisted user message only. It does not add fake assistant responses or provider/model/runtime controls.
+- The current AI UI send path uses WebSocket `chat.message.send`. The older HTTP message endpoint remains available for no-AI persistence/fallback flows, but the normal chat UI no longer uses it.
+- Each turn can select a different provider/model/thinking mode inside the same conversation. The selected runtime config is stored in `turn_runtime_configs`.
+- The backend injects the local user display name, current project name, full project description, and full active project instructions into the Socrates system prompt before calling the model. The frontend does not assemble prompt context.
+- The backend loads full completed visible conversation history for V1 multi-turn memory.
+- Provider-reported token usage is persisted and `GET /api/projects/:projectId/conversations/:conversationId` returns cumulative token totals for the header.
+
+## Initial AI SDK Agent Sprint
+
+Implemented the first real Socrates AI path:
+
+- Added `packages/providers` with Socrates-owned `ModelProvider`, `ModelRequest`, `ModelEvent`, `ModelUsage`, `ProviderRouter`, static model catalog, and AI SDK adapter.
+- Added `packages/core` with `SocratesAgent`, prompt builder, and provider-agnostic streaming turn orchestration.
+- AI SDK imports are kept inside `packages/providers`; `apps/server`, `apps/web`, and `packages/core` do not import provider SDKs.
+- Added backend `GET /api/models` so the frontend renders provider/model/thinking options from backend-owned contracts.
+- Current V1 providers are OpenAI, Google, and OpenRouter. Anthropic is intentionally skipped for now.
+- Current default model is OpenRouter `deepseek/deepseek-v4-pro` with thinking off.
+- OpenAI thinking options: `none`, `low`, `medium`, `high`, `xhigh`; `none` is non-thinking mode.
+- Google thinking options follow the current model-specific catalog: Gemini Pro has no off/minimal option, while Flash and Flash-Lite include `minimal`.
+- OpenRouter V1 thinking UI is `off` / `on`.
+- `chat.message.send` creates/reuses the session, creates the user message and running turn, persists runtime config, loads full history, builds prompt context, and calls `packages/core`.
+- Provider reasoning deltas map to `agent.thinking.delta`; answer deltas map to `agent.answer.delta`; final assistant messages map to `message.completed`; lifecycle ends with `turn.completed` or `turn.failed`.
+- Real model rows are persisted in `model_calls`, `model_stream_chunks`, `model_usage`, `context_usage_snapshots` when context window metadata is known, and `events`.
+- The chat header shows cumulative completed-turn provider token totals after assistant responses complete.
+- The chat UI includes compact model and thinking controls, a stop button during active turns, separate thinking rendering, markdown rendering through `react-markdown` and `remark-gfm`, and a small glowing first-token loading indicator.
+- Backend env loading currently reads root `.env` and `apps/server/.env`.
+
+Verification commands passed after this slice:
+
+```text
+pnpm typecheck
+pnpm test
+pnpm build
+browser smoke with OpenAI multi-turn memory and token total update
+```
 
 Chat UI behavior:
 
@@ -165,6 +198,6 @@ Chat UI behavior:
 - Implemented the `/projects` page as a minimalist list with a `ProjectSearch` component and simplified `ProjectCard`s, removing the global sidebar. Added a personalized greeting (e.g., "Welcome, {name}.") to the header after onboarding.
 - Implemented the `/projects/new` page as a clean, centered creation form.
 - Implemented the `/projects/:projectId` dashboard with a 2-column layout (Left: project header, centered Start new chat action, and Conversation List; Right: Instructions & Files Panels).
-- Implemented the `/projects/:projectId/chats/:conversationId` chat workspace with centered empty-chat composer, bottom composer after messages, persisted user-message transcript, and collapsible project/conversation sidebar.
+- Implemented the `/projects/:projectId/chats/:conversationId` chat workspace with centered empty-chat composer, bottom composer after messages, streamed AI transcript, compact model/thinking controls, cumulative token header, first-token loading indicator, and collapsible project/conversation sidebar.
 - All UI elements have been properly compartmentalized into `apps/web/src/components/` according to `REPO_RULES`.
-- Frontend onboarding, projects, project dashboard, and resource upload flows are now wired to real backend API endpoints through `apps/web/src/lib/api.ts`.
+- Frontend onboarding, projects, project dashboard, resource upload, model catalog, conversation loading, and WebSocket chat flows are now wired to real backend APIs/contracts through `apps/web/src/lib/api.ts` and `apps/web/src/hooks/useSocratesSocket.ts`.

@@ -1,16 +1,36 @@
 "use client";
 
-import { ArrowUp, Loader2 } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, Loader2, Square, Sparkles } from "lucide-react";
 import { useState } from "react";
+import type { ModelOption, ModelThinkingOption } from "@socrates/contracts";
 
 interface ChatComposerProps {
   isSending: boolean;
+  isConnected: boolean;
+  models: ModelOption[];
+  selectedModel: ModelOption | null;
+  selectedThinkingOption: ModelThinkingOption | null;
+  onModelChange: (model: ModelOption) => void;
+  onThinkingChange: (option: ModelThinkingOption) => void;
   onSend: (content: string) => Promise<void>;
+  onStop: () => void;
 }
 
-export function ChatComposer({ isSending, onSend }: ChatComposerProps) {
+export function ChatComposer({
+  isSending,
+  isConnected,
+  models,
+  selectedModel,
+  selectedThinkingOption,
+  onModelChange,
+  onThinkingChange,
+  onSend,
+  onStop,
+}: ChatComposerProps) {
   const [content, setContent] = useState("");
-  const canSend = content.trim().length > 0 && !isSending;
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const [isThinkingMenuOpen, setIsThinkingMenuOpen] = useState(false);
+  const canSend = content.trim().length > 0 && !isSending && isConnected && Boolean(selectedModel);
 
   const handleSend = async () => {
     const nextContent = content.trim();
@@ -35,7 +55,7 @@ export function ChatComposer({ isSending, onSend }: ChatComposerProps) {
     >
       <div className="relative rounded-2xl border border-gray-200 bg-white shadow-sm">
         <textarea
-          className="block min-h-28 w-full resize-none rounded-2xl bg-white px-5 py-4 pr-16 text-base leading-7 text-brand-text-dark outline-none placeholder:text-brand-text-light focus:border-brand-teal-dark"
+          className="block min-h-28 w-full resize-none rounded-2xl bg-white px-5 py-4 pb-16 pr-16 text-base leading-7 text-brand-text-dark outline-none placeholder:text-brand-text-light focus:border-brand-teal-dark"
           placeholder="Write a message..."
           value={content}
           onChange={(event) => setContent(event.target.value)}
@@ -46,13 +66,89 @@ export function ChatComposer({ isSending, onSend }: ChatComposerProps) {
             }
           }}
         />
+        <div className="absolute bottom-3 left-3 flex items-center gap-2">
+          <div className="relative">
+            <button
+              type="button"
+              className="inline-flex h-10 max-w-52 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              onClick={() => {
+                setIsModelMenuOpen((current) => !current);
+                setIsThinkingMenuOpen(false);
+              }}
+            >
+              <Sparkles className="size-4 text-brand-teal-dark" />
+              <span className="truncate">{selectedModel?.label ?? "Model"}</span>
+              <ChevronDown className="size-4 text-brand-text-light" />
+            </button>
+            {isModelMenuOpen && (
+              <div className="absolute bottom-12 left-0 z-20 max-h-80 w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
+                {models.map((model) => (
+                  <button
+                    key={`${model.providerId}:${model.modelId}`}
+                    type="button"
+                    className={`flex w-full flex-col rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                      selectedModel?.modelId === model.modelId && selectedModel.providerId === model.providerId
+                        ? "bg-gray-100 text-brand-text-dark"
+                        : "text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark"
+                    }`}
+                    onClick={() => {
+                      onModelChange(model);
+                      setIsModelMenuOpen(false);
+                    }}
+                  >
+                    <span className="font-medium">{model.label}</span>
+                    <span className="text-xs">{model.providerLabel}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="relative">
+            <button
+              type="button"
+              className="inline-flex h-10 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              disabled={!selectedModel}
+              onClick={() => {
+                setIsThinkingMenuOpen((current) => !current);
+                setIsModelMenuOpen(false);
+              }}
+            >
+              <Brain className="size-4 text-brand-teal-dark" />
+              <span>{selectedThinkingOption?.label ?? "Thinking"}</span>
+              <ChevronDown className="size-4 text-brand-text-light" />
+            </button>
+            {isThinkingMenuOpen && selectedModel && (
+              <div className="absolute bottom-12 left-0 z-20 w-48 rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
+                {selectedModel.thinkingOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`flex w-full items-center rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                      selectedThinkingOption?.id === option.id
+                        ? "bg-gray-100 text-brand-text-dark"
+                        : "text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark"
+                    }`}
+                    onClick={() => {
+                      onThinkingChange(option);
+                      setIsThinkingMenuOpen(false);
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
         <button
-          type="submit"
-          disabled={!canSend}
-          aria-label="Send message"
+          type={isSending ? "button" : "submit"}
+          disabled={isSending ? false : !canSend}
+          aria-label={isSending ? "Stop response" : "Send message"}
+          onClick={isSending ? onStop : undefined}
           className="absolute bottom-3 right-3 flex size-10 items-center justify-center rounded-full bg-brand-button text-white transition-colors hover:bg-opacity-90 disabled:bg-gray-200 disabled:text-gray-500"
         >
-          {isSending ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-5" />}
+          {isSending ? <Square className="size-4 fill-current" /> : canSend ? <ArrowUp className="size-5" /> : <Loader2 className="size-4" />}
         </button>
       </div>
     </form>

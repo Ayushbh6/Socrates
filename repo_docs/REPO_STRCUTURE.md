@@ -139,7 +139,7 @@ Rules for chat UI files:
 - API calls should go through `apps/web/src/lib/api.ts` or Socrates-owned hooks.
 - Shared display helpers belong in `apps/web/src/lib/` only when reused.
 - Do not introduce frontend-only API payload types that duplicate `packages/contracts`.
-- The composer in this slice only owns text entry and send behavior. It must not own provider/model selection or agent runtime decisions.
+- The composer owns text entry, send/stop controls, and presentation of backend-owned model/thinking choices. It must not own provider SDK mappings or agent runtime decisions.
 
 Initial frontend hooks:
 
@@ -335,8 +335,8 @@ HTTP is still used for simple request/response operations:
 ```text
 apps/web
   routes through /welcome, /onboarding, /projects, project dashboard, and project chat
-  persists user messages through the no-AI HTTP message endpoint in the current UI slice
-  later sends user messages over WebSocket when agent execution is enabled
+  sends user messages through WebSocket `chat.message.send`
+  renders backend-owned model/thinking controls from `GET /api/models`
   or captures voice input and sends the transcript as a user message
 
 apps/server
@@ -344,7 +344,8 @@ apps/server
   forwards message to packages/core
 
 packages/core
-  runs agent loop
+  builds Socrates system prompt from backend-provided user/project/instruction context
+  runs provider-agnostic agent turn orchestration
   calls packages/providers for model streaming
   calls packages/workspace through registered tools
   emits typed events

@@ -268,9 +268,18 @@ describe("http contracts", () => {
     expect(createConversationRequestSchema.safeParse({ title: "Build contracts" }).success).toBe(true)
     expect(createConversationRequestSchema.safeParse({}).success).toBe(true)
     expect(createConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
-    expect(getConversationResponseSchema.safeParse({ conversation, messages: [userMessage, assistantMessage] }).success).toBe(
-      true,
-    )
+    expect(
+      getConversationResponseSchema.safeParse({
+        conversation,
+        messages: [userMessage, assistantMessage],
+        tokenUsage: {
+          totalTokens: 12,
+          inputTokens: 6,
+          outputTokens: 4,
+          reasoningTokens: 2,
+        },
+      }).success,
+    ).toBe(true)
     expect(updateConversationRequestSchema.safeParse({ title: "Renamed chat" }).success).toBe(true)
     expect(updateConversationRequestSchema.safeParse({ title: "" }).success).toBe(false)
     expect(updateConversationResponseSchema.safeParse({ conversation }).success).toBe(true)

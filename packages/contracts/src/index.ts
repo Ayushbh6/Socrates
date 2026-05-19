@@ -1,5 +1,5 @@
 export * from "./api"
 export * from "./entities"
 export * from "./http"
+export * from "./models"
 export * from "./websocket"
-

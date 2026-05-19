@@ -1,17 +1,17 @@
 import type { FastifyInstance } from "fastify"
 import websocket from "@fastify/websocket"
 import type { WebSocket } from "ws"
+import { createDefaultSocratesAgent, findModelOption, type SocratesAgent } from "@socrates/core"
 import {
   clientCommandSchema,
   type ClientCommand,
+  type ModelUsage,
   type ServerEvent,
   serverEventSchema,
 } from "@socrates/contracts"
 import { createId, nowIso, normalizeError, SocratesError } from "@socrates/shared"
 import { apiError } from "../http"
 import type { SocratesStore } from "../services/store"
-
-const placeholderDelayMs = 50
 
 const makeEvent = <T extends ServerEvent["type"]>(
   type: T,
@@ -48,16 +48,20 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
   return { projectId: command.projectId, conversationId: command.conversationId }
 }
 
-export const registerWebSocketRoutes = async (app: FastifyInstance, store: SocratesStore): Promise<void> => {
+export const registerWebSocketRoutes = async (
+  app: FastifyInstance,
+  store: SocratesStore,
+  agent: SocratesAgent = createDefaultSocratesAgent(),
+): Promise<void> => {
   await app.register(websocket)
 
-  const completionTimers = new Map<string, NodeJS.Timeout>()
+  const activeTurns = new Map<string, AbortController>()
 
   app.addHook("onClose", async () => {
-    for (const timer of completionTimers.values()) {
-      clearTimeout(timer)
+    for (const controller of activeTurns.values()) {
+      controller.abort()
     }
-    completionTimers.clear()
+    activeTurns.clear()
   })
 
   app.get("/ws", { websocket: true }, (socket) => {
@@ -68,7 +72,7 @@ export const registerWebSocketRoutes = async (app: FastifyInstance, store: Socra
     sendEvent(socket, ready)
 
     socket.on("message", (raw) => {
-      void handleInboundMessage(socket, store, completionTimers, raw.toString())
+      void handleInboundMessage(socket, store, agent, activeTurns, raw.toString())
     })
   })
 }
@@ -76,7 +80,8 @@ export const registerWebSocketRoutes = async (app: FastifyInstance, store: Socra
 const handleInboundMessage = async (
   socket: WebSocket,
   store: SocratesStore,
-  completionTimers: Map<string, NodeJS.Timeout>,
+  agent: SocratesAgent,
+  activeTurns: Map<string, AbortController>,
   raw: string,
 ): Promise<void> => {
   let parsedJson: unknown
@@ -105,10 +110,16 @@ const handleInboundMessage = async (
   try {
     switch (command.type) {
       case "chat.message.send":
-        handleChatMessageSend(socket, store, completionTimers, command)
+        void handleChatMessageSend(socket, store, agent, activeTurns, command).catch((error) => {
+          const normalized = normalizeError(error)
+          emitError(socket, store, apiError(normalized.code, normalized.message, { details: normalized.details }), {
+            ...idsFromCommand(command),
+            recoverable: normalized.recoverable,
+          })
+        })
         return
       case "chat.turn.cancel":
-        handleTurnCancel(socket, store, completionTimers, command)
+        handleTurnCancel(socket, store, activeTurns, command)
         return
       case "approval.decide":
         store.resolveApproval(command.payload.approvalId, command.payload.decision, command.payload.reason)
@@ -126,14 +137,17 @@ const handleInboundMessage = async (
   }
 }
 
-const handleChatMessageSend = (
+const handleChatMessageSend = async (
   socket: WebSocket,
   store: SocratesStore,
-  completionTimers: Map<string, NodeJS.Timeout>,
+  agent: SocratesAgent,
+  activeTurns: Map<string, AbortController>,
   command: Extract<ClientCommand, { type: "chat.message.send" }>,
-): void => {
+): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
   const created = store.createTurnFromUserMessage(projectId, conversationId, command.payload)
+  const abortController = new AbortController()
+  activeTurns.set(created.turnId, abortController)
 
   sendEvent(
     socket,
@@ -153,22 +167,113 @@ const handleChatMessageSend = (
     ),
   )
 
-  const timer = setTimeout(() => {
-    completionTimers.delete(created.turnId)
-    const assistantMessage = store.completePlaceholderTurn(projectId, conversationId, created.turnId)
-    if (!assistantMessage) {
-      return
+  const history = store.getConversationModelMessages(projectId, conversationId)
+  const promptContext = store.getAgentContext(projectId)
+  const modelCallId = store.createModelCall({
+    conversationId,
+    sessionId: created.sessionId,
+    turnId: created.turnId,
+    runtimeConfigId: created.runtimeConfigId,
+    providerId: command.payload.runtimeConfig.providerId,
+    modelId: command.payload.runtimeConfig.modelId,
+    request: {
+      providerId: command.payload.runtimeConfig.providerId,
+      modelId: command.payload.runtimeConfig.modelId,
+      messages: history,
+      promptContext,
+      runtimeConfig: command.payload.runtimeConfig,
+    },
+  })
+
+  let answerText = ""
+  let latestUsage: ModelUsage | undefined
+
+  try {
+    for await (const modelEvent of agent.streamTurn({
+      providerId: command.payload.runtimeConfig.providerId,
+      modelId: command.payload.runtimeConfig.modelId,
+      runtimeConfig: command.payload.runtimeConfig,
+      messages: history,
+      promptContext,
+      abortSignal: abortController.signal,
+    })) {
+      if (abortController.signal.aborted) {
+        return
+      }
+
+      if (modelEvent.type === "model.reasoning.delta") {
+        store.appendModelStreamChunk({
+          modelCallId,
+          turnId: created.turnId,
+          channel: "reasoning",
+          text: modelEvent.text,
+        })
+        const event = makeEvent(
+          "agent.thinking.delta",
+          { text: modelEvent.text },
+          {
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            actor: { type: "main_agent" },
+          },
+        )
+        appendAndSend(socket, store, event, "core")
+      }
+
+      if (modelEvent.type === "model.answer.delta") {
+        answerText += modelEvent.text
+        store.appendModelStreamChunk({
+          modelCallId,
+          turnId: created.turnId,
+          channel: "answer",
+          text: modelEvent.text,
+        })
+        const event = makeEvent(
+          "agent.answer.delta",
+          { messageId: modelCallId, text: modelEvent.text },
+          {
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            actor: { type: "main_agent" },
+          },
+        )
+        appendAndSend(socket, store, event, "core")
+      }
+
+      if (modelEvent.type === "model.usage") {
+        latestUsage = modelEvent.usage
+      }
+
+      if (modelEvent.type === "model.completed") {
+        latestUsage = modelEvent.usage ?? latestUsage
+      }
+
+      if (modelEvent.type === "model.failed") {
+        throw modelEvent.error
+      }
     }
+
+    const assistantMessage = store.completeAgentTurn({
+      conversationId,
+      sessionId: created.sessionId,
+      turnId: created.turnId,
+      content: answerText,
+    })
+    store.completeModelCall({
+      modelCallId,
+      response: { messageId: assistantMessage.id, finish: "completed" },
+      ...(latestUsage ? { usage: toStoredUsage(latestUsage) } : {}),
+    })
 
     const messageCompleted = makeEvent(
       "message.completed",
       {
         message: assistantMessage,
-        usage: {
-          inputTokens: command.payload.content.length,
-          outputTokens: assistantMessage.content.length,
-          totalTokens: command.payload.content.length + assistantMessage.content.length,
-        },
+        ...(latestUsage ? { usage: toContractUsage(latestUsage) } : {}),
       },
       {
         projectId,
@@ -178,23 +283,48 @@ const handleChatMessageSend = (
         actor: { type: "main_agent" },
       },
     )
-    store.appendEvent({
-      projectId,
-      conversationId,
-      sessionId: created.sessionId,
-      turnId: created.turnId,
-      type: "message.completed",
-      source: "server",
-      payload: messageCompleted.payload,
-    })
-    sendEvent(socket, messageCompleted)
+    appendAndSend(socket, store, messageCompleted, "core")
+
+    const tokenUsage = store.getConversationTokenUsage(conversationId)
+    const model = findModelOption(command.payload.runtimeConfig.providerId, command.payload.runtimeConfig.modelId)
+    if (model?.contextWindowTokens) {
+      store.recordContextUsageSnapshot({
+        conversationId,
+        sessionId: created.sessionId,
+        turnId: created.turnId,
+        modelCallId,
+        providerId: command.payload.runtimeConfig.providerId,
+        modelId: command.payload.runtimeConfig.modelId,
+        contextWindowTokens: model.contextWindowTokens,
+        contextUsedTokens: tokenUsage.totalTokens,
+      })
+      const contextUsage = makeEvent(
+        "context.usage.snapshot",
+        {
+          providerId: command.payload.runtimeConfig.providerId,
+          modelId: command.payload.runtimeConfig.modelId,
+          contextWindowTokens: model.contextWindowTokens,
+          contextUsedTokens: tokenUsage.totalTokens,
+          contextLeftTokens: Math.max(model.contextWindowTokens - tokenUsage.totalTokens, 0),
+          contextUsedPercent: Math.min(100, Math.round((tokenUsage.totalTokens / model.contextWindowTokens) * 1000) / 10),
+        },
+        {
+          projectId,
+          conversationId,
+          sessionId: created.sessionId,
+          turnId: created.turnId,
+          actor: { type: "main_agent" },
+        },
+      )
+      appendAndSend(socket, store, contextUsage, "core")
+    }
 
     const turnCompleted = makeEvent(
       "turn.completed",
       {
         turnId: created.turnId,
         assistantMessageId: assistantMessage.id,
-        summary: "Placeholder backend lifecycle completed.",
+        summary: "Agent response completed.",
       },
       {
         projectId,
@@ -204,33 +334,53 @@ const handleChatMessageSend = (
         actor: { type: "main_agent" },
       },
     )
-    store.appendEvent({
-      projectId,
+    appendAndSend(socket, store, turnCompleted, "core")
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      return
+    }
+    const normalized = normalizeError(error)
+    const errorId = store.failTurn({
       conversationId,
       sessionId: created.sessionId,
       turnId: created.turnId,
-      type: "turn.completed",
-      source: "server",
-      payload: turnCompleted.payload,
+      code: normalized.code,
+      message: normalized.message,
+      details: normalized.details,
     })
-    sendEvent(socket, turnCompleted)
-  }, placeholderDelayMs)
-
-  completionTimers.set(created.turnId, timer)
+    store.failModelCall(modelCallId, errorId)
+    const failed = makeEvent(
+      "turn.failed",
+      {
+        turnId: created.turnId,
+        error: apiError(normalized.code, normalized.message, { details: normalized.details }),
+      },
+      {
+        projectId,
+        conversationId,
+        sessionId: created.sessionId,
+        turnId: created.turnId,
+        actor: { type: "main_agent" },
+      },
+    )
+    appendAndSend(socket, store, failed, "core")
+  } finally {
+    activeTurns.delete(created.turnId)
+  }
 }
 
 const handleTurnCancel = (
   socket: WebSocket,
   store: SocratesStore,
-  completionTimers: Map<string, NodeJS.Timeout>,
+  activeTurns: Map<string, AbortController>,
   command: Extract<ClientCommand, { type: "chat.turn.cancel" }>,
 ): void => {
-  const cancelled = store.cancelTurn(command.payload.turnId, command.payload.reason)
-  const timer = completionTimers.get(cancelled.turnId)
-  if (timer) {
-    clearTimeout(timer)
-    completionTimers.delete(cancelled.turnId)
+  const controller = activeTurns.get(command.payload.turnId)
+  if (controller) {
+    controller.abort()
+    activeTurns.delete(command.payload.turnId)
   }
+  const cancelled = store.cancelTurn(command.payload.turnId, command.payload.reason)
 
   sendEvent(
     socket,
@@ -250,6 +400,33 @@ const handleTurnCancel = (
     ),
   )
 }
+
+const appendAndSend = (socket: WebSocket, store: SocratesStore, event: ServerEvent, source: string): void => {
+  store.appendEvent({
+    ...(event.projectId ? { projectId: event.projectId } : {}),
+    ...(event.conversationId ? { conversationId: event.conversationId } : {}),
+    ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+    ...(event.turnId ? { turnId: event.turnId } : {}),
+    type: event.type,
+    source,
+    payload: event.payload,
+  })
+  sendEvent(socket, event)
+}
+
+const toContractUsage = (usage: ModelUsage) => ({
+  ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+  ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+  ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+  ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+})
+
+const toStoredUsage = (usage: ModelUsage) => ({
+  ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+  ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+  ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+  ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+})
 
 const emitError = (
   socket: WebSocket,

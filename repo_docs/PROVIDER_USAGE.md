@@ -7,7 +7,7 @@ The short version:
 ```text
 V1:
   Use AI SDK v6 provider packages behind our own provider abstraction.
-  Support OpenAI, Anthropic, Google, and OpenRouter through direct provider packages.
+  Support OpenAI, Google, and OpenRouter through direct provider packages.
   Do not use Vercel AI Gateway as the default path.
 
 V1.5:
@@ -29,7 +29,6 @@ Socrates should use direct provider packages in V1:
 
 ```text
 @ai-sdk/openai
-@ai-sdk/anthropic
 @ai-sdk/google
 @openrouter/ai-sdk-provider
 ```
@@ -46,7 +45,6 @@ AI SDK v6 provider packages give us a practical v1 path for:
 - Tool calling.
 - Provider-normalized APIs.
 - OpenAI support through the OpenAI provider package.
-- Anthropic support through the Anthropic provider package.
 - Google Gemini support through the Google provider package.
 - OpenRouter support through `@openrouter/ai-sdk-provider`.
 - Future compatibility with other provider packages.
@@ -78,7 +76,7 @@ packages/providers
   -> imports Vercel AI SDK internally
 
 Vercel AI SDK
-  -> direct provider packages for OpenAI / Anthropic / Google / OpenRouter
+  -> direct provider packages for OpenAI / Google / OpenRouter
 ```
 
 The agent core should see only this:
@@ -229,35 +227,86 @@ It should support:
 
 ```text
 providerId = openai
-providerId = anthropic
 providerId = google
 providerId = openrouter
 ```
 
-Expected internal files:
+Current internal files:
 
 ```text
 packages/providers/
   src/
     types.ts
     ProviderRouter.ts
+    index.ts
     ai-sdk/
       AiSdkProvider.ts
-      aiSdkModelRegistry.ts
-      aiSdkUsageMapper.ts
-      aiSdkEventMapper.ts
+    modelCatalog/
+      modelCatalog.ts
 ```
 
 The provider router should select an implementation:
 
 ```text
 openai     -> AiSdkProvider in V1
-anthropic  -> AiSdkProvider in V1
 google     -> AiSdkProvider in V1
 openrouter -> AiSdkProvider in V1
 ```
 
 OpenRouter should be supported through the Vercel AI SDK OpenRouter provider package, not through a custom direct wrapper in V1.
+
+Anthropic is intentionally skipped in the current V1 implementation. It can be added later through the same `packages/providers` boundary.
+
+## V1 Model Catalog And Thinking Rules
+
+The current selectable V1 catalog is backend-owned in `packages/providers/src/modelCatalog/modelCatalog.ts` and is exposed to the frontend through `GET /api/models`.
+
+```text
+OpenAI
+  gpt-5.4-mini
+  gpt-5.4
+  gpt-5
+
+Google
+  gemini-3.1-pro-preview
+  gemini-3-flash-preview
+  gemini-3.1-flash-lite-preview
+
+OpenRouter
+  moonshotai/kimi-k2.6
+  z-ai/glm-5.1
+  qwen/qwen3.6-plus
+  deepseek/deepseek-v4-pro   default
+  deepseek/deepseek-v4-flash
+  google/gemma-4-31b-it
+```
+
+Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
+
+```text
+OpenAI:
+  none, low, medium, high, xhigh
+  none means non-thinking mode
+
+Google:
+  gemini-3.1-pro-preview -> low, medium, high
+  gemini-3-flash-preview -> minimal, low, medium, high
+  gemini-3.1-flash-lite-preview -> minimal, low, medium, high
+
+OpenRouter:
+  off, on
+```
+
+Provider mapping:
+
+```text
+OpenAI -> providerOptions.openai.reasoningEffort
+Google -> providerOptions.google.thinkingConfig.thinkingLevel
+OpenRouter on -> providerOptions.openrouter.reasoning enabled
+OpenRouter off -> no reasoning config
+```
+
+The frontend must render this catalog from the backend response. It must not hardcode model ids or provider option mappings.
 
 Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
 
@@ -443,6 +492,8 @@ frontend knows Anthropic message block format
 ```
 
 The frontend sends selected settings to the server. The backend/core/provider layers translate them.
+
+The chat composer may switch provider, model, and thinking mode between turns in the same conversation. Each user query persists its selected runtime config in `turn_runtime_configs`.
 
 ## Non-Negotiable Rules
 
