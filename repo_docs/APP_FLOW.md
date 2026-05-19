@@ -305,12 +305,19 @@ Conversation list:
 - Last message preview.
 - Last activity time.
 - Status.
+- Empty projects should continue to show the current empty state.
+- Each conversation row should include a compact `...` actions menu.
+- The row actions menu includes `Rename` and `Delete`.
+- Rename updates the persisted conversation title.
+- Delete removes the conversation and its conversation-scoped data from the database. It is not archived in the current V1 flow.
 
 Actions:
 
 ```text
 Start new chat
 Open existing chat
+Rename conversation
+Delete conversation
 Add resource
 Edit instructions
 Open workspace folder
@@ -331,8 +338,10 @@ The project dashboard must not show the full chat composer in V1. The composer b
 Purpose:
 
 - Main Socrates chat workspace.
-- Stream agent events over WebSocket.
-- Show thinking, answer, tool calls, approvals, artifacts, terminal output, and context usage.
+- Show the conversation transcript.
+- Let users send messages inside a project-scoped conversation.
+- Later, stream agent events over WebSocket.
+- Later, show thinking, answer, tool calls, approvals, artifacts, terminal output, and context usage.
 
 Primary layout:
 
@@ -356,15 +365,39 @@ right panel
   terminal output when relevant
 ```
 
+Left sidebar behavior:
+
+- The chat route includes a collapsible left sidebar.
+- The whole sidebar can be collapsed. When collapsed, it disappears completely and leaves only a small reopen button at the top-left edge of the chat workspace. Do not leave a rail, thin sidebar strip, or hidden chat text behind.
+- When expanded, the collapse control lives inside the sidebar header.
+- The sidebar header is `Projects`.
+- The sidebar lists existing projects only. Users cannot create new projects from this sidebar in V1.
+- Each project row shows the project name, a small `+` action to start a new chat in that project, and a collapse/expand control for that project's chats.
+- Clicking a project name routes to that project's dashboard.
+- Clicking the project `+` creates a conversation in that project and routes to `/projects/:projectId/chats/:conversationId`.
+- Expanding a project shows that project's conversations.
+- Clicking a conversation routes to its chat page.
+- A project with many conversations must not stretch the sidebar indefinitely. The conversation list inside an expanded project should have a bounded height and become scrollable after roughly 10 to 15 chats.
+- Sidebar state such as collapsed projects may be local UI state in V1.
+
+Chat states:
+
+- Empty conversation: no messages have been sent yet. The composer is centered in the main chat area.
+- Active conversation: once the first user message is sent, that message appears in the transcript and the composer moves to the bottom of the chat area.
+- Existing conversation: load persisted messages and keep the composer at the bottom.
+- No model selector, provider selector, thinking toggle, approval selector, or advanced agent controls should be shown in this immediate UI slice. Those controls are future chat work.
+
 Composer controls:
 
 - Text input.
-- Voice input.
-- Attach resource.
-- Model selector.
-- Thinking toggle.
-- Approval mode selector.
 - Send.
+
+Composer behavior:
+
+- Pressing Enter sends the message when the input has non-empty trimmed text.
+- The send button on the right sends the message when the input has non-empty trimmed text.
+- Sending the first message creates the first session and turn for the conversation.
+- The frontend should not call any model provider directly.
 
 Composer run-state behavior:
 
@@ -454,11 +487,50 @@ Later, a conversation can pin or select a subset of project resources if needed.
 ```text
 user clicks New chat on project dashboard
   -> create conversations row with project_id
-  -> create sessions row if a runtime session is needed immediately
+  -> title = "New conversation"
+  -> no session is created yet
   -> route to /projects/:projectId/chats/:conversationId
 ```
 
-The first user message creates the first `turn`.
+The first user message creates the first `session`, `turn`, and user `message`.
+
+```text
+user sends first message
+  -> create or reuse active session for the conversation
+  -> create turns row for the user message lifecycle
+  -> create messages row with role = "user"
+  -> complete the turn immediately in the no-AI UI slice
+  -> update conversations.updated_at
+  -> if title is still "New conversation", update it from the first word of the message
+```
+
+Conversation title behavior:
+
+- A newly created conversation starts with the persisted title `New conversation`.
+- When the first user message is sent, the backend updates the conversation title from the first word of the message.
+- If the first word is longer than 10 characters, the title uses the first 10 characters followed by `...`.
+- If the first word is 10 characters or shorter, the title is the first word as written.
+- Later user messages do not auto-rename the conversation.
+- Manual rename through the conversation row menu overrides the title.
+
+## Chat Deletion Flow
+
+```text
+user chooses Delete from a conversation row menu
+  -> confirm destructive action in the UI
+  -> delete conversation-scoped rows in a backend transaction
+  -> delete conversations row
+  -> refresh the dashboard/sidebar conversation list
+```
+
+Deleting a conversation does not delete:
+
+- The owning project.
+- Project instructions.
+- Project resources.
+- Workspace files outside conversation-scoped artifacts.
+
+V1 conversation delete is a hard delete. It does not set `conversations.status = "deleted"` and does not archive the conversation.
 
 ## Voice Input Flow
 

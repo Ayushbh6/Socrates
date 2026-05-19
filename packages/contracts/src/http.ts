@@ -172,6 +172,37 @@ export const getConversationResponseSchema = z
   })
   .strict()
 
+export const updateConversationRequestSchema = z
+  .object({
+    title: z.string().min(1),
+  })
+  .strict()
+
+export const updateConversationResponseSchema = z
+  .object({
+    conversation: conversationSchema,
+  })
+  .strict()
+
+export const deleteConversationResponseSchema = z
+  .object({
+    deletedConversationId: idSchema,
+  })
+  .strict()
+
+export const createConversationMessageRequestSchema = z
+  .object({
+    content: z.string().min(1),
+  })
+  .strict()
+
+export const createConversationMessageResponseSchema = z
+  .object({
+    conversation: conversationSchema,
+    message: messageSchema,
+  })
+  .strict()
+
 export type GetMeResponse = z.infer<typeof getMeResponseSchema>
 export type CompleteOnboardingRequest = z.infer<typeof completeOnboardingRequestSchema>
 export type CompleteOnboardingResponse = z.infer<typeof completeOnboardingResponseSchema>
@@ -193,3 +224,8 @@ export type ListProjectConversationsResponse = z.infer<typeof listProjectConvers
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
+export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>
+export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>
+export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
+export type CreateConversationMessageRequest = z.infer<typeof createConversationMessageRequestSchema>
+export type CreateConversationMessageResponse = z.infer<typeof createConversationMessageResponseSchema>

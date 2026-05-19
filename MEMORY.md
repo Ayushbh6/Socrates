@@ -25,7 +25,7 @@ Do not rely on stale chat context when the docs can answer the question.
 - The app is project-first: no global unscoped chats in V1.
 - Route flow is `/welcome -> /onboarding -> /projects -> /projects/:projectId -> /projects/:projectId/chats/:conversationId`.
 - `/projects/:projectId` is the project dashboard. There is no separate dashboard id in V1.
-- SQLite is planned as the source of truth for users, projects, conversations, turns, messages, events, tools, approvals, usage, and errors.
+- SQLite is the local source of truth for users, projects, project resources, project instructions, conversations, sessions, turns, messages, events, tools, approvals, usage, and errors.
 - WebSockets are the live event channel between frontend and backend.
 - The frontend uses Socrates-owned hooks around Socrates contracts and WebSocket events.
 - `@ai-sdk/react` is not the core chat state engine in V1.
@@ -121,6 +121,41 @@ Follow-up fix:
 - Build output under `packages/contracts/dist/` is generated and ignored.
 - `node_modules/` and package-local `node_modules/` are ignored.
 
+## Project Dashboard And Conversation Slice
+
+The current project dashboard and chat slice is implemented end to end across contracts, server, web, and SQLite.
+
+Project dashboard behavior:
+
+- `/projects/:projectId` is still the project dashboard.
+- The dashboard shows a centered `Start new chat` action instead of the full chat composer.
+- Clicking `Start new chat` creates a project-scoped conversation with title `New conversation`, then routes to `/projects/:projectId/chats/:conversationId`.
+- Project descriptions are stored in full but shown as bounded previews.
+- Project instructions are edited through a modal and persisted through `PUT /api/projects/:projectId/instructions`.
+- Saved instructions are shown as a bounded preview on the dashboard.
+- File uploads accept up to 10 files per request, store files under `<workspace>/.socrates/resources/`, persist artifact metadata, and render bounded scrollable file previews with filename, MIME/type, and size when known.
+- Dashboard conversation rows reuse the shared conversation actions menu with `Rename` and `Delete`.
+
+Conversation behavior:
+
+- Creating a conversation does not create a session.
+- The first user message creates or reuses the active session, creates a completed no-AI turn, persists a completed user message, updates `conversations.updated_at`, and derives the title if it is still `New conversation`.
+- First-message title derivation uses the first word, capped at 10 characters plus `...` when needed.
+- Later messages do not auto-rename the conversation.
+- Manual rename updates the persisted conversation title.
+- Delete is a hard delete after confirmation. It removes conversation-scoped rows and does not archive the conversation.
+- The current no-AI UI send path uses `POST /api/projects/:projectId/conversations/:conversationId/messages` and displays the persisted user message only. It does not add fake assistant responses or provider/model/runtime controls.
+
+Chat UI behavior:
+
+- `/projects/:projectId/chats/:conversationId` renders `ChatWorkspace`.
+- Empty chats show the composer centered in the main area.
+- After the first message, the user message appears in the transcript and the composer moves to the bottom.
+- Existing chats load persisted messages and keep the composer at the bottom.
+- The chat sidebar appears on chat pages only.
+- The sidebar lists existing projects, allows starting a new chat in each project with the project `+`, supports per-project conversation collapse, and bounds long conversation lists.
+- The whole sidebar is collapsible. When collapsed, it disappears completely and leaves only a small reopen button at the top-left edge of the chat workspace.
+
 ## FRONTEND AGENT LOGS
 
 - Initialized Next.js workspace in `apps/web` utilizing App Router, Tailwind CSS v4, and TypeScript.
@@ -129,6 +164,7 @@ Follow-up fix:
 - Implemented the `/onboarding` page as a floating, unboxed form on the seamless cream background.
 - Implemented the `/projects` page as a minimalist list with a `ProjectSearch` component and simplified `ProjectCard`s, removing the global sidebar. Added a personalized greeting (e.g., "Welcome, {name}.") to the header after onboarding.
 - Implemented the `/projects/new` page as a clean, centered creation form.
-- Implemented the `/projects/:projectId` dashboard with a 2-column layout (Left: Dashboard Composer & Conversation List; Right: Instructions & Files Panels).
+- Implemented the `/projects/:projectId` dashboard with a 2-column layout (Left: project header, centered Start new chat action, and Conversation List; Right: Instructions & Files Panels).
+- Implemented the `/projects/:projectId/chats/:conversationId` chat workspace with centered empty-chat composer, bottom composer after messages, persisted user-message transcript, and collapsible project/conversation sidebar.
 - All UI elements have been properly compartmentalized into `apps/web/src/components/` according to `REPO_RULES`.
 - Frontend onboarding, projects, project dashboard, and resource upload flows are now wired to real backend API endpoints through `apps/web/src/lib/api.ts`.

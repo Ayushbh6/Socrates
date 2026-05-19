@@ -2,11 +2,13 @@ import type { FastifyInstance } from "fastify"
 import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
+  createConversationMessageRequestSchema,
   createConversationRequestSchema,
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
+  updateConversationRequestSchema,
   upsertProjectInstructionsRequestSchema,
 } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
@@ -45,6 +47,8 @@ const handleRouteError = (error: unknown) => {
     api.code === "invalid_route_params" ||
     api.code === "workspace_path_not_absolute" ||
     api.code === "workspace_path_not_directory" ||
+    api.code === "conversation_title_required" ||
+    api.code === "message_content_required" ||
     api.code === "resource_file_required" ||
     api.code === "resource_upload_limit_exceeded"
       ? 400
@@ -210,6 +214,38 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
     try {
       const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
       return ok(store.getConversation(projectId, conversationId))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/projects/:projectId/conversations/:conversationId", async (request, reply) => {
+    try {
+      const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      const input = parseBody(updateConversationRequestSchema, request.body)
+      return ok({ conversation: store.updateConversationTitle(projectId, conversationId, input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.delete("/api/projects/:projectId/conversations/:conversationId", async (request, reply) => {
+    try {
+      const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      return ok(store.deleteConversation(projectId, conversationId))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/messages", async (request, reply) => {
+    try {
+      const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      const input = parseBody(createConversationMessageRequestSchema, request.body)
+      return ok(store.createConversationUserMessage(projectId, conversationId, input))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

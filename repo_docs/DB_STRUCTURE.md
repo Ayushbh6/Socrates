@@ -258,9 +258,65 @@ Stores project-scoped chat threads.
 | `archived_at` | `TEXT` | no | Set when archived. |
 | `metadata_json` | `TEXT` | no | JSON for future non-critical metadata. |
 
+V1 conversation creation behavior:
+
+```text
+create conversations row
+title defaults to "New conversation"
+do not create a session until the first user message is sent
+```
+
+V1 title behavior:
+
+```text
+first user message only
+  -> if title is still "New conversation"
+  -> derive title from the first word of the message
+  -> truncate first word to 10 characters plus "..." when needed
+```
+
+Manual rename updates `conversations.title` and `conversations.updated_at`.
+
+V1 delete behavior:
+
+```text
+conversation delete is a hard delete
+do not set conversations.status = "deleted"
+do not archive the conversation
+```
+
+Because the current schema does not rely on database-level `ON DELETE CASCADE`, the backend store must delete conversation-scoped rows in an explicit transaction before deleting the `conversations` row.
+
+Conversation deletion should remove rows tied to the conversation, including:
+
+- `messages`
+- `sessions`
+- `turns`
+- `events`
+- `turn_runtime_configs`
+- `model_calls`
+- `model_stream_chunks`
+- `model_usage`
+- `context_usage_snapshots`
+- `tool_calls`
+- `approvals`
+- `shell_commands`
+- `shell_output_chunks`
+- `file_operations`
+- `patches`
+- `artifacts` when the artifact is conversation-scoped
+- `message_feedback`
+- `voice_inputs`
+- `audio_outputs`
+- `errors`
+
+Conversation deletion must not delete the owning project, project instructions, project resources, or workspace files outside conversation-scoped artifacts.
+
 ## `sessions`
 
 Stores runtime/workspace execution contexts.
+
+Sessions are created lazily. Opening a new empty conversation should not create a session. The first user message creates or reuses the active session for that conversation.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |

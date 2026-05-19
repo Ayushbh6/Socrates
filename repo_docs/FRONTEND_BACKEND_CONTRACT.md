@@ -200,6 +200,9 @@ PUT    /api/projects/:projectId/instructions
 GET    /api/projects/:projectId/conversations
 POST   /api/projects/:projectId/conversations
 GET    /api/projects/:projectId/conversations/:conversationId
+PATCH  /api/projects/:projectId/conversations/:conversationId
+DELETE /api/projects/:projectId/conversations/:conversationId
+POST   /api/projects/:projectId/conversations/:conversationId/messages
 ```
 
 ### `GET /api/me`
@@ -355,6 +358,20 @@ project.description is stored in full but shown as a bounded dashboard preview
 instructions.content is stored in full but shown as a bounded panel preview
 resource previews are shown in a bounded scrollable panel
 dashboard start-chat action creates a conversation before routing to chat
+conversation rows show an actions menu with rename and delete
+```
+
+Chat sidebar behavior:
+
+```text
+sidebar lists existing projects from GET /api/projects
+expanded project sections list conversations from GET /api/projects/:projectId/conversations
+project + action calls POST /api/projects/:projectId/conversations
+conversation click routes to /projects/:projectId/chats/:conversationId
+whole sidebar collapse is frontend local UI state
+collapsed sidebar leaves no rail and shows only the reopen button
+project sections can be collapsed in frontend local state
+long conversation lists are bounded and scrollable in the UI
 ```
 
 ### `POST /api/projects/:projectId/resources/upload`
@@ -447,9 +464,145 @@ type CreateConversationResponse = {
 }
 ```
 
+Backend behavior:
+
+```text
+load project
+create conversations row with project_id and user_id
+if title is omitted, set title = "New conversation"
+do not create a session yet
+emit conversation.created event
+```
+
+Frontend behavior:
+
+```text
+start new chat on dashboard or sidebar calls this endpoint
+route to /projects/:projectId/chats/:conversationId
+empty conversation screen centers the composer
+```
+
+### `GET /api/projects/:projectId/conversations/:conversationId`
+
+Loads one conversation and its persisted visible messages.
+
+```ts
+type GetConversationResponse = {
+  conversation: Conversation
+  messages: Message[]
+}
+```
+
+Frontend behavior:
+
+```text
+if messages is empty:
+  show centered empty-chat composer
+else:
+  render transcript and pin composer to the bottom
+```
+
+### `PATCH /api/projects/:projectId/conversations/:conversationId`
+
+Renames a conversation.
+
+```ts
+type UpdateConversationRequest = {
+  title: string
+}
+
+type UpdateConversationResponse = {
+  conversation: Conversation
+}
+```
+
+Validation:
+
+```text
+title is trimmed
+empty title is rejected with conversation_title_required
+```
+
+Backend behavior:
+
+```text
+load conversation within project
+update conversations.title
+update conversations.updated_at
+emit conversation.updated event
+```
+
+### `DELETE /api/projects/:projectId/conversations/:conversationId`
+
+Hard-deletes a conversation.
+
+```ts
+type DeleteConversationResponse = {
+  deletedConversationId: string
+}
+```
+
+Backend behavior:
+
+```text
+load conversation within project
+delete conversation-scoped rows in one transaction
+delete conversations row
+emit conversation.deleted event before the final conversation row delete or as a project-scoped event
+```
+
+This endpoint must not archive the conversation and must not set `conversations.status = "deleted"` in the current V1 flow. It must not delete project resources, project instructions, or the owning project.
+
+### `POST /api/projects/:projectId/conversations/:conversationId/messages`
+
+Persists a user message in a conversation. This is the immediate no-AI chat UI path. When agent streaming is enabled, the same store behavior should be driven by the typed `chat.message.send` WebSocket command instead of duplicating message creation logic.
+
+```ts
+type CreateConversationMessageRequest = {
+  content: string
+}
+
+type CreateConversationMessageResponse = {
+  conversation: Conversation
+  message: Message
+}
+```
+
+Backend behavior:
+
+```text
+load conversation within project
+reject empty trimmed content with message_content_required
+create or reuse the active session for this conversation
+create a turns row for the user message lifecycle
+create messages row with role = "user" and status = "completed"
+complete the turn immediately in the no-AI UI slice so the conversation can accept another message
+update conversations.updated_at
+if the conversation title is "New conversation" and this is the first user message:
+  update the title from the first word of the message
+```
+
+Title derivation:
+
+```text
+first word length <= 10 -> title = first word
+first word length > 10 -> title = first 10 characters + "..."
+```
+
+Frontend behavior:
+
+```text
+send button or Enter calls this endpoint for the current no-AI UI slice
+after the first message is saved, move composer from centered state to bottom state
+append the returned user message to the transcript
+refresh local conversation title from the response
+```
+
 ## WebSocket Connection
 
 The chat page opens one WebSocket connection for live agent events.
+
+For the immediate no-AI conversation UI slice, user messages may be persisted through `POST /api/projects/:projectId/conversations/:conversationId/messages`. When agent execution is enabled, `chat.message.send` should become the primary send path and should reuse the same backend store logic for session, turn, message, and title updates.
 
 Suggested URL:
 

@@ -3,27 +3,39 @@
 import {
   apiResponseSchema,
   completeOnboardingResponseSchema,
+  createConversationMessageResponseSchema,
   createConversationResponseSchema,
   createProjectResponseSchema,
+  deleteConversationResponseSchema,
   getMeResponseSchema,
+  getConversationResponseSchema,
   getProjectResponseSchema,
   listProjectsResponseSchema,
+  listProjectConversationsResponseSchema,
   pickWorkspaceFolderResponseSchema,
   uploadProjectResourcesResponseSchema,
+  updateConversationResponseSchema,
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
   type CompleteOnboardingRequest,
   type CompleteOnboardingResponse,
+  type CreateConversationMessageRequest,
+  type CreateConversationMessageResponse,
   type CreateConversationRequest,
   type CreateConversationResponse,
   type CreateProjectRequest,
   type CreateProjectResponse,
+  type DeleteConversationResponse,
+  type GetConversationResponse,
   type GetMeResponse,
   type GetProjectResponse,
   type ListProjectsResponse,
+  type ListProjectConversationsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
+  type UpdateConversationRequest,
+  type UpdateConversationResponse,
   type UploadProjectResourcesResponse,
   type UpsertProjectInstructionsRequest,
   type UpsertProjectInstructionsResponse,
@@ -57,12 +69,14 @@ async function request<TSchema extends z.ZodTypeAny>(
   schema: TSchema,
   init: RequestInit = {},
 ): Promise<z.infer<TSchema>> {
+  const headers = new Headers(init.headers);
+  if (init.body && !headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...init.headers,
-    },
+    headers,
     cache: "no-store",
   });
   const json = await readJsonResponse(response);
@@ -126,6 +140,12 @@ export const api = {
   getProject: (projectId: string) =>
     request<typeof getProjectResponseSchema>(`/api/projects/${projectId}`, getProjectResponseSchema) as Promise<GetProjectResponse>,
 
+  listProjectConversations: (projectId: string) =>
+    request<typeof listProjectConversationsResponseSchema>(
+      `/api/projects/${projectId}/conversations`,
+      listProjectConversationsResponseSchema,
+    ) as Promise<ListProjectConversationsResponse>,
+
   createConversation: (projectId: string, input: CreateConversationRequest) =>
     request<typeof createConversationResponseSchema>(
       `/api/projects/${projectId}/conversations`,
@@ -135,6 +155,41 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<CreateConversationResponse>,
+
+  getConversation: (projectId: string, conversationId: string) =>
+    request<typeof getConversationResponseSchema>(
+      `/api/projects/${projectId}/conversations/${conversationId}`,
+      getConversationResponseSchema,
+    ) as Promise<GetConversationResponse>,
+
+  updateConversation: (projectId: string, conversationId: string, input: UpdateConversationRequest) =>
+    request<typeof updateConversationResponseSchema>(
+      `/api/projects/${projectId}/conversations/${conversationId}`,
+      updateConversationResponseSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpdateConversationResponse>,
+
+  deleteConversation: (projectId: string, conversationId: string) =>
+    request<typeof deleteConversationResponseSchema>(
+      `/api/projects/${projectId}/conversations/${conversationId}`,
+      deleteConversationResponseSchema,
+      {
+        method: "DELETE",
+      },
+    ) as Promise<DeleteConversationResponse>,
+
+  createConversationMessage: (projectId: string, conversationId: string, input: CreateConversationMessageRequest) =>
+    request<typeof createConversationMessageResponseSchema>(
+      `/api/projects/${projectId}/conversations/${conversationId}/messages`,
+      createConversationMessageResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<CreateConversationMessageResponse>,
 
   upsertProjectInstructions: (projectId: string, input: UpsertProjectInstructionsRequest) =>
     request<typeof upsertProjectInstructionsResponseSchema>(

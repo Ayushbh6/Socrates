@@ -21,6 +21,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   const [isUploadingResource, setIsUploadingResource] = useState(false);
   const [isSavingInstructions, setIsSavingInstructions] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
+  const [isSavingConversationAction, setIsSavingConversationAction] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -105,6 +106,42 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     }
   };
 
+  const handleRenameConversation = async (conversationId: string, title: string) => {
+    setIsSavingConversationAction(true);
+    try {
+      const response = await api.updateConversation(projectId, conversationId, { title });
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              conversations: current.conversations.map((conversation) =>
+                conversation.id === conversationId ? response.conversation : conversation,
+              ),
+            }
+          : current,
+      );
+    } finally {
+      setIsSavingConversationAction(false);
+    }
+  };
+
+  const handleDeleteConversation = async (conversationId: string) => {
+    setIsSavingConversationAction(true);
+    try {
+      await api.deleteConversation(projectId, conversationId);
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              conversations: current.conversations.filter((conversation) => conversation.id !== conversationId),
+            }
+          : current,
+      );
+    } finally {
+      setIsSavingConversationAction(false);
+    }
+  };
+
   return (
     <main className="min-h-screen bg-brand-bg py-12 px-6 flex justify-center">
       <div className="w-full max-w-5xl">
@@ -127,7 +164,13 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
             )}
             
             <StartChatAction isStarting={isStartingChat} onStart={handleStartNewChat} />
-            <ConversationList projectId={projectId} conversations={data?.conversations ?? []} />
+            <ConversationList
+              projectId={projectId}
+              conversations={data?.conversations ?? []}
+              isSavingAction={isSavingConversationAction}
+              onRename={handleRenameConversation}
+              onDelete={handleDeleteConversation}
+            />
           </div>
 
           {/* Resources Column - Right (1/3 width) */}

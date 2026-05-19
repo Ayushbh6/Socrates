@@ -13,11 +13,14 @@ import {
   contextUsageSnapshotEventSchema,
   conversationSchema,
   createConversationRequestSchema,
+  createConversationMessageRequestSchema,
+  createConversationMessageResponseSchema,
   createConversationResponseSchema,
   createProjectRequestSchema,
   createProjectResponseSchema,
   createProjectResourceRequestSchema,
   createProjectResourceResponseSchema,
+  deleteConversationResponseSchema,
   errorCreatedEventSchema,
   feedbackSubmitCommandSchema,
   getConversationResponseSchema,
@@ -45,6 +48,8 @@ import {
   turnFailedEventSchema,
   turnStartedEventSchema,
   uploadProjectResourcesResponseSchema,
+  updateConversationRequestSchema,
+  updateConversationResponseSchema,
   upsertProjectInstructionsRequestSchema,
   upsertProjectInstructionsResponseSchema,
   userSchema,
@@ -261,10 +266,18 @@ describe("http contracts", () => {
   it("parses conversation creation contracts", () => {
     expect(listProjectConversationsResponseSchema.safeParse({ conversations: [conversation] }).success).toBe(true)
     expect(createConversationRequestSchema.safeParse({ title: "Build contracts" }).success).toBe(true)
+    expect(createConversationRequestSchema.safeParse({}).success).toBe(true)
     expect(createConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
     expect(getConversationResponseSchema.safeParse({ conversation, messages: [userMessage, assistantMessage] }).success).toBe(
       true,
     )
+    expect(updateConversationRequestSchema.safeParse({ title: "Renamed chat" }).success).toBe(true)
+    expect(updateConversationRequestSchema.safeParse({ title: "" }).success).toBe(false)
+    expect(updateConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
+    expect(deleteConversationResponseSchema.safeParse({ deletedConversationId: conversation.id }).success).toBe(true)
+    expect(createConversationMessageRequestSchema.safeParse({ content: "Hello" }).success).toBe(true)
+    expect(createConversationMessageRequestSchema.safeParse({ content: "" }).success).toBe(false)
+    expect(createConversationMessageResponseSchema.safeParse({ conversation, message: userMessage }).success).toBe(true)
   })
 
   it("rejects invalid HTTP payloads", () => {

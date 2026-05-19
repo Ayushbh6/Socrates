@@ -112,6 +112,35 @@ The frontend talks to the backend over HTTP and WebSockets.
 
 The frontend should use Socrates-owned hooks around Socrates HTTP and WebSocket contracts. Do not make `@ai-sdk/react` the core chat state engine in V1.
 
+Chat UI structure:
+
+```text
+app/projects/[projectId]/chats/[conversationId]/page.tsx
+  -> route-level data loading and orchestration only
+
+components/chat/
+  ChatWorkspace
+  ChatTranscript
+  ChatComposer
+  EmptyChatState
+  ProjectChatSidebar
+  SidebarProjectSection
+  ConversationNavItem
+  ConversationActionsMenu
+  RenameConversationDialog
+  DeleteConversationDialog
+```
+
+Rules for chat UI files:
+
+- The chat route page must not become a god component.
+- Whole-sidebar collapse state can be local UI state in the chat workspace. A collapsed sidebar should disappear completely and leave only the reopen control.
+- Sidebar project collapse state can be local UI state.
+- API calls should go through `apps/web/src/lib/api.ts` or Socrates-owned hooks.
+- Shared display helpers belong in `apps/web/src/lib/` only when reused.
+- Do not introduce frontend-only API payload types that duplicate `packages/contracts`.
+- The composer in this slice only owns text entry and send behavior. It must not own provider/model selection or agent runtime decisions.
+
 Initial frontend hooks:
 
 ```text
@@ -306,7 +335,8 @@ HTTP is still used for simple request/response operations:
 ```text
 apps/web
   routes through /welcome, /onboarding, /projects, project dashboard, and project chat
-  sends user message over WebSocket only after a project conversation is selected
+  persists user messages through the no-AI HTTP message endpoint in the current UI slice
+  later sends user messages over WebSocket when agent execution is enabled
   or captures voice input and sends the transcript as a user message
 
 apps/server

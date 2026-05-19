@@ -4,7 +4,7 @@ import path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import type { ApiResponse, Conversation, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
+import type { ApiResponse, Conversation, Message, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
 import { buildServer } from "../app"
@@ -25,8 +25,8 @@ const tempDbPath = (): string => {
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
 
-const buildTestServer = async (): Promise<TestServer> => {
-  const app = await buildServer({ dbPath: tempDbPath() })
+const buildTestServer = async (dbPath = tempDbPath()): Promise<TestServer> => {
+  const app = await buildServer({ dbPath })
   servers.push(app)
   return app
 }
@@ -474,6 +474,140 @@ describe("HTTP API", () => {
     if (getBody.ok) {
       expect(getBody.data.conversation.id).toBe(conversation.id)
       expect(getBody.data.messages).toEqual([])
+    }
+  })
+
+  it("creates default conversations lazily, stores user messages, renames, and hard-deletes", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations`,
+      payload: {},
+    })
+    const createBody = parseResponse<{ conversation: Conversation }>(createResponse.payload)
+    expect(createBody.ok).toBe(true)
+    if (!createBody.ok) {
+      throw new Error("Expected default conversation creation success")
+    }
+    const conversation = createBody.data.conversation
+    expect(conversation.title).toBe("New conversation")
+
+    let sqlite = new Database(dbPath)
+    try {
+      const sessionCount = sqlite.prepare("SELECT COUNT(*) AS count FROM sessions WHERE conversation_id = ?").get(conversation.id) as {
+        count: number
+      }
+      expect(sessionCount.count).toBe(0)
+    } finally {
+      sqlite.close()
+    }
+
+    const messageResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/messages`,
+      payload: { content: "Extraordinary planning starts now" },
+    })
+    const messageBody = parseResponse<{ conversation: Conversation; message: Message }>(messageResponse.payload)
+    expect(messageBody.ok).toBe(true)
+    if (!messageBody.ok) {
+      throw new Error("Expected message creation success")
+    }
+    expect(messageBody.data.conversation.title).toBe("Extraordin...")
+    expect(messageBody.data.message.role).toBe("user")
+    expect(messageBody.data.message.content).toBe("Extraordinary planning starts now")
+
+    const secondMessageResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/messages`,
+      payload: { content: "Second message should not rename" },
+    })
+    const secondMessageBody = parseResponse<{ conversation: Conversation; message: Message }>(secondMessageResponse.payload)
+    expect(secondMessageBody.ok).toBe(true)
+    if (secondMessageBody.ok) {
+      expect(secondMessageBody.data.conversation.title).toBe("Extraordin...")
+    }
+
+    sqlite = new Database(dbPath)
+    try {
+      const row = sqlite
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM sessions WHERE conversation_id = ?) AS session_count,
+             (SELECT COUNT(*) FROM turns WHERE conversation_id = ? AND status = 'completed') AS completed_turn_count,
+             (SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND role = 'user') AS user_message_count`,
+        )
+        .get(conversation.id, conversation.id, conversation.id) as {
+        session_count: number
+        completed_turn_count: number
+        user_message_count: number
+      }
+      expect(row.session_count).toBe(1)
+      expect(row.completed_turn_count).toBe(2)
+      expect(row.user_message_count).toBe(2)
+    } finally {
+      sqlite.close()
+    }
+
+    const renameResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      payload: { title: "Manual title" },
+    })
+    const renameBody = parseResponse<{ conversation: Conversation }>(renameResponse.payload)
+    expect(renameBody.ok).toBe(true)
+    if (renameBody.ok) {
+      expect(renameBody.data.conversation.title).toBe("Manual title")
+    }
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+    })
+    const deleteBody = parseResponse<{ deletedConversationId: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+    if (deleteBody.ok) {
+      expect(deleteBody.data.deletedConversationId).toBe(conversation.id)
+    }
+
+    const getDeletedResponse = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+    })
+    expect(getDeletedResponse.statusCode).toBe(404)
+
+    const listResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/conversations` })
+    const listBody = parseResponse<{ conversations: Conversation[] }>(listResponse.payload)
+    expect(listBody.ok).toBe(true)
+    if (listBody.ok) {
+      expect(listBody.data.conversations).toEqual([])
+    }
+
+    sqlite = new Database(dbPath)
+    try {
+      const row = sqlite
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM conversations WHERE id = ?) AS conversation_count,
+             (SELECT COUNT(*) FROM sessions WHERE conversation_id = ?) AS session_count,
+             (SELECT COUNT(*) FROM turns WHERE conversation_id = ?) AS turn_count,
+             (SELECT COUNT(*) FROM messages WHERE conversation_id = ?) AS message_count`,
+        )
+        .get(conversation.id, conversation.id, conversation.id, conversation.id) as {
+        conversation_count: number
+        session_count: number
+        turn_count: number
+        message_count: number
+      }
+      expect(row.conversation_count).toBe(0)
+      expect(row.session_count).toBe(0)
+      expect(row.turn_count).toBe(0)
+      expect(row.message_count).toBe(0)
+    } finally {
+      sqlite.close()
     }
   })
 
