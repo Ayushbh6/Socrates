@@ -7,7 +7,7 @@ import WebSocket from "ws"
 import type { ApiResponse, Conversation, Message, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
-import { createId, nowIso } from "@socrates/shared"
+import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
 
@@ -66,6 +66,18 @@ const createCapturingAgent = (requests: unknown[]): SocratesAgent => {
           outputTokens: 2,
           totalTokens: 6,
         },
+      }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createFailingAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream() {
+      yield {
+        type: "model.failed",
+        error: new SocratesError("provider_failed", "Provider failed during test"),
       }
     },
   }
@@ -685,6 +697,24 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("emits error.created for invalid JSON and invalid command envelopes", async () => {
+    const app = await buildTestServer()
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+
+      socket.send("not-json")
+      const invalidJson = await waitForEvent(socket, "error.created")
+      expect(invalidJson.payload.error.code).toBe("invalid_json")
+
+      socket.send(JSON.stringify({ type: "chat.message.send" }))
+      const invalidCommand = await waitForEvent(socket, "error.created")
+      expect(invalidCommand.payload.error.code).toBe("invalid_websocket_command")
+    } finally {
+      socket.close()
+    }
+  })
+
   it("emits turn.started, message.completed, and turn.completed for chat.message.send", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
@@ -784,8 +814,50 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("emits turn.failed and does not persist an assistant message when the provider fails", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createFailingAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Please fail"))
+      const started = await waitForEvent(socket, "turn.started")
+
+      const failed = await waitForEvent(socket, "turn.failed")
+      expect(failed.payload.turnId).toBe(started.payload.turnId)
+      expect(failed.payload.error.code).toBe("provider_failed")
+
+      const sqlite = new Database(dbPath)
+      try {
+        const row = sqlite
+          .prepare(
+            `SELECT
+               (SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND role = 'assistant') AS assistant_count,
+               (SELECT COUNT(*) FROM turns WHERE id = ? AND status = 'failed') AS failed_turn_count,
+               (SELECT COUNT(*) FROM model_calls WHERE turn_id = ? AND status = 'failed') AS failed_model_call_count`,
+          )
+          .get(conversation.id, started.payload.turnId, started.payload.turnId) as {
+          assistant_count: number
+          failed_turn_count: number
+          failed_model_call_count: number
+        }
+        expect(row.assistant_count).toBe(0)
+        expect(row.failed_turn_count).toBe(1)
+        expect(row.failed_model_call_count).toBe(1)
+      } finally {
+        sqlite.close()
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
   it("cancels an active turn with chat.turn.cancel", async () => {
-    const app = await buildTestServer()
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
     await onboard(app)
     const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
@@ -812,6 +884,17 @@ describe("WebSocket API", () => {
       const cancelled = await waitForEvent(socket, "turn.cancelled")
       expect(cancelled.payload.turnId).toBe(started.payload.turnId)
       expect(cancelled.payload.reason).toBe("User clicked stop")
+
+      await delay(150)
+      const sqlite = new Database(dbPath)
+      try {
+        const row = sqlite
+          .prepare("SELECT COUNT(*) AS assistant_count FROM messages WHERE conversation_id = ? AND role = 'assistant'")
+          .get(conversation.id) as { assistant_count: number }
+        expect(row.assistant_count).toBe(0)
+      } finally {
+        sqlite.close()
+      }
     } finally {
       socket.close()
     }

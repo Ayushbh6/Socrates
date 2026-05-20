@@ -183,6 +183,14 @@ Store refactor:
 - Store implementation is split into focused domain modules under `apps/server/src/services/store/`, including user, project, resource, instruction, conversation, turn, model telemetry, event, error, approval, and feedback stores.
 - Shared store helpers and row lookups live in `apps/server/src/services/store/shared.ts`; exported store-only types live in `apps/server/src/services/store/types.ts`.
 
+WebSocket refactor:
+
+- `apps/server/src/ws/websocket.ts` is now connection setup only: register WebSocket support, own the `ActiveTurns` registry, emit `connection.ready`, and forward raw messages to the dispatcher.
+- WebSocket command parsing and dispatch live in `apps/server/src/ws/commandDispatcher.ts`.
+- Event creation/sending/error emission lives in `apps/server/src/ws/eventSender.ts`.
+- Command-specific logic lives under `apps/server/src/ws/commandHandlers/` for `chat.message.send`, `chat.turn.cancel`, `approval.decide`, and `feedback.submit`.
+- Focused server tests now cover invalid JSON, invalid WebSocket command envelopes, provider failure, and cancellation without final assistant persistence.
+
 Verification commands passed after this slice:
 
 ```text

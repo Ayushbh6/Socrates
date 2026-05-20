@@ -201,6 +201,29 @@ Rules for server store files:
 - Keep common row lookups and shared helpers in `shared.ts`.
 - Do not add new persistence methods directly into the facade unless they delegate to a domain store.
 
+WebSocket transport is split under `apps/server/src/ws/`:
+
+```text
+ws/
+  websocket.ts
+  activeTurns.ts
+  eventSender.ts
+  commandDispatcher.ts
+  commandHandlers/
+    chatMessageSend.ts
+    chatTurnCancel.ts
+    approvalDecide.ts
+    feedbackSubmit.ts
+```
+
+Rules for WebSocket files:
+
+- Keep `websocket.ts` focused on Fastify registration, connection setup, `connection.ready`, and shutdown cleanup.
+- Put command parsing and dispatch in `commandDispatcher.ts`.
+- Put typed event construction, sending, persisted event appending, and WebSocket error emission in `eventSender.ts`.
+- Put command-specific behavior in one handler file per command.
+- Keep all emitted events contract-validated through `packages/contracts`.
+
 ### `packages/core`
 
 The main agent runtime.
