@@ -177,6 +177,12 @@ Follow-up fix:
 - Completed assistant messages render thinking in a separate collapsible `Thinking` block above the final markdown answer.
 - The empty composer send control stays the same arrow button and becomes disabled/grey instead of switching to a spinner-like placeholder.
 
+Store refactor:
+
+- `apps/server/src/services/store.ts` is now a thin `SocratesStore` facade that preserves the existing public server API for HTTP routes and WebSocket handlers.
+- Store implementation is split into focused domain modules under `apps/server/src/services/store/`, including user, project, resource, instruction, conversation, turn, model telemetry, event, error, approval, and feedback stores.
+- Shared store helpers and row lookups live in `apps/server/src/services/store/shared.ts`; exported store-only types live in `apps/server/src/services/store/types.ts`.
+
 Verification commands passed after this slice:
 
 ```text

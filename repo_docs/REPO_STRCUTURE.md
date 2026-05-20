@@ -175,6 +175,32 @@ It owns:
 
 It should be a thin transport layer. Business logic belongs in packages, not routes.
 
+Server persistence is exposed through `apps/server/src/services/store.ts`, but that file should stay a facade. Store implementation belongs in small domain modules under `apps/server/src/services/store/`:
+
+```text
+store/
+  userStore.ts
+  projectStore.ts
+  resourceStore.ts
+  instructionStore.ts
+  conversationStore.ts
+  turnStore.ts
+  modelTelemetryStore.ts
+  eventStore.ts
+  errorStore.ts
+  approvalStore.ts
+  feedbackStore.ts
+  shared.ts
+  types.ts
+```
+
+Rules for server store files:
+
+- Keep `SocratesStore` as the public facade used by routes and WebSockets.
+- Put persistence behavior in the domain store that owns it.
+- Keep common row lookups and shared helpers in `shared.ts`.
+- Do not add new persistence methods directly into the facade unless they delegate to a domain store.
+
 ### `packages/core`
 
 The main agent runtime.
