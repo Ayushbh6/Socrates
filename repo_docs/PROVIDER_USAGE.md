@@ -157,7 +157,9 @@ export type ModelRequest = {
 }
 ```
 
-The response should be event-based:
+The response should be event-based.
+
+These `model.*` events are internal provider-layer events. The server translates them into public WebSocket events such as `agent.thinking.delta`, `agent.answer.delta`, `message.completed`, and `context.usage.snapshot` before emitting or persisting the frontend-facing runtime stream.
 
 ```ts
 export type ModelEvent =

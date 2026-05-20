@@ -1,8 +1,8 @@
 # Socrates Repo Structure
 
-This document is the source of truth for the initial Socrates architecture. Socrates is a local-first coding agent with a web frontend, a backend runtime, a reusable agent core, provider-agnostic model access, and a clean workspace tool layer.
+This document is the source of truth for the current Socrates repo structure. Socrates is a local-first coding agent with a web frontend, a backend runtime, a reusable agent core, provider-agnostic model access, and a clean workspace capability layer.
 
-## Target Shape
+## Current Shape
 
 ```text
 Socrates/
@@ -14,57 +14,68 @@ Socrates/
           onboarding/
           projects/
         components/
+          chat/
         hooks/
         lib/
 
     server/
       src/
         index.ts
+        app.ts
+        config.ts
+        db/
         http/
-        websocket/
         routes/
-        sessions/
+          httpRoutes.ts
+        services/
+          store.ts
+          store/
+        test/
+        ws/
+          websocket.ts
+          activeTurns.ts
+          eventSender.ts
+          commandDispatcher.ts
+          commandHandlers/
 
   packages/
     core/
       src/
         agent/
-        context/
-        tools/
-        approvals/
-        sessions/
-        events/
+        prompts/
+        test/
 
     workspace/
       src/
-        files/
-        search/
-        shell/
-        git/
-        patches/
+        index.ts
+        workspacePaths.ts
+        workspaceScaffold.ts
+        nativeFolderPicker.ts
+        resourceStorage.ts
 
     providers/
       src/
         types.ts
+        ProviderRouter.ts
         ai-sdk/
-        registry/
+        modelCatalog/
+        test/
 
     contracts/
       src/
-        schemas/
-        events/
-        projects/
-        tools/
-        sessions/
-        approvals/
+        api.ts
+        entities.ts
+        http.ts
+        models.ts
+        websocket.ts
+        contracts.test.ts
 
     shared/
       src/
-        errors/
-        ids/
-        logging/
-        result/
-        time/
+        errors.ts
+        ids.ts
+        index.ts
+        time.ts
 
   repo_docs/
     APP_FLOW.md
@@ -523,13 +534,13 @@ packages/contracts -> packages/providers
 packages/shared -> domain packages
 ```
 
-## Initial Build Order
+## Current Extension Rule
 
-1. Create monorepo scaffolding.
-2. Create `packages/contracts` with event and schema foundations.
-3. Create `packages/providers` with the tiny `ModelProvider` interface and Vercel AI SDK adapter.
-4. Create `packages/workspace` with read-only file/search tools first.
-5. Create `packages/core` with the first agent loop and tool registry.
-6. Create `apps/server` with WebSocket event streaming.
-7. Create `apps/web` with chat, event timeline, and approval UI.
-8. Add write/edit/patch tools after the read/search/shell flow is stable.
+New work should extend the existing packages rather than creating parallel paths:
+
+1. Add or update cross-boundary schemas in `packages/contracts`.
+2. Put provider-specific model behavior behind `packages/providers`.
+3. Put agent orchestration in `packages/core`.
+4. Put local filesystem, picker, resource, shell, git, and patch capabilities in `packages/workspace`.
+5. Keep `apps/server` as transport and persistence orchestration through focused route, WebSocket, and store modules.
+6. Keep `apps/web` as route, component, hook, and rendering code only.

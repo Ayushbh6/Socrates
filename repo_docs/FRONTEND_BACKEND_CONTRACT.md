@@ -4,16 +4,16 @@ This document is the handshake between the frontend and backend workstreams.
 
 Both sides must build against this contract. The backend owns persistence, agent execution, providers, tools, approvals, and WebSocket event emission. The frontend owns routes, screens, user interactions, rendering, local view state, and event presentation.
 
-The shared source of truth should eventually live in `packages/contracts` as TypeScript types and schemas. This document defines the V1 contract before implementation begins.
+The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the V1 frontend/backend contract in human-readable form and must stay aligned with those schemas.
 
 ## Contract Goals
 
-The contract must make parallel work possible:
+The contract must keep both sides aligned:
 
 ```text
-frontend can build against mocked responses and events
-backend can implement real endpoints and event streams
-both sides integrate without inventing new shapes
+frontend renders only documented responses and events
+backend emits only contract-validated responses and events
+both sides evolve by updating this document and packages/contracts together
 ```
 
 The contract must also stay expandable for later:
@@ -1173,23 +1173,14 @@ Backend must not:
 - Skip event persistence for important runtime steps.
 - Create global unscoped conversations in V1.
 
-## Mocking Agreement
+## Contract Change Rule
 
-The frontend may use mocked responses and mocked WebSocket events during early development.
+The current frontend is wired to real backend APIs and WebSocket events. Do not reintroduce frontend-only mock shapes or route-specific duplicate payload types.
 
-Mocks must match this contract exactly.
+When a field, endpoint, command, or event changes:
 
-If the frontend needs a new field or event, update this document first, then update `packages/contracts` when implementation begins.
-
-## Implementation Order
-
-Recommended order:
-
-1. Create `packages/contracts` with shared schemas and types from this document.
-2. Create HTTP route stubs that return contract-shaped responses.
-3. Create WebSocket connection with `connection.ready`.
-4. Create frontend pages against mocked or stubbed data.
-5. Implement project/onboarding persistence.
-6. Implement conversation creation.
-7. Implement V1 chat WebSocket events.
-8. Implement tool-call events and approval events.
+1. Update this document.
+2. Update `packages/contracts`.
+3. Update backend validation/emission.
+4. Update frontend consumers.
+5. Add or update focused tests for the changed contract.

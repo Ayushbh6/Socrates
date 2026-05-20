@@ -410,7 +410,7 @@ This table is append-only except for rare maintenance/migration work.
 | `session_id` | `TEXT` | no | FK to `sessions.id` when event belongs to a session. |
 | `turn_id` | `TEXT` | no | FK to `turns.id` when event belongs to a turn. |
 | `sequence` | `INTEGER` | yes | Strictly increasing global event sequence. |
-| `type` | `TEXT` | yes | Stable event name like `model.answer.delta`. |
+| `type` | `TEXT` | yes | Stable event name like `agent.answer.delta`. |
 | `source` | `TEXT` | yes | `web`, `server`, `core`, `provider`, `workspace`, `tool`, `system`. |
 | `payload_json` | `TEXT` | yes | Event payload JSON matching `packages/contracts`. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
@@ -779,11 +779,13 @@ Tracks database migrations.
 | `applied_at` | `TEXT` | yes | ISO timestamp. |
 | `checksum` | `TEXT` | no | Optional migration checksum. |
 
-## Required Event Types
+## Event Naming
 
-The concrete schemas should live in `packages/contracts`.
+The concrete public WebSocket schemas live in `packages/contracts`.
 
-Initial event families:
+Events persisted from the server's public runtime stream must use the same names as the server events emitted to the frontend. Internal provider events may use provider-facing names inside `packages/providers`, but those names should be translated before persistence or UI emission.
+
+Current persisted/public V1 event names:
 
 ```text
 user.created
@@ -814,29 +816,21 @@ turn.failed
 turn.cancelled
 
 message.created
-message.delta
 message.completed
 
-model.call.started
-model.reasoning.delta
-model.reasoning.completed
-model.answer.delta
-model.answer.completed
-model.call.completed
-model.call.failed
-model.usage.recorded
-model.context_usage.snapshot
+agent.thinking.delta
+agent.answer.delta
+context.usage.snapshot
 
 tool.call.requested
 tool.call.started
+tool.call.output
 tool.call.completed
 tool.call.failed
 tool.call.rejected
 
 approval.requested
-approval.approved
-approval.rejected
-approval.expired
+approval.resolved
 
 voice.input.started
 voice.input.completed
@@ -873,6 +867,8 @@ patch.failed
 error.created
 artifact.created
 ```
+
+Structured model-call lifecycle state is stored in `model_calls`, `model_stream_chunks`, `model_usage`, and `context_usage_snapshots`. Do not rely on `model.*` UI events for the V1 public contract.
 
 ## Voice, Read-Aloud, And Feedback Storage
 
@@ -987,9 +983,9 @@ FROM model_usage
 WHERE turn_id = ?;
 ```
 
-## Minimum V1 Tables
+## Current Created Schema
 
-If implementation needs to start smaller, the non-negotiable V1 tables are:
+The current server schema creates the full table set below. Earlier planning split these into minimum and follow-up groups; that split is no longer accurate for the current repo state.
 
 ```text
 users
@@ -1004,25 +1000,20 @@ turn_runtime_configs
 messages
 events
 model_calls
+model_stream_chunks
 model_usage
+context_usage_snapshots
 tool_calls
 approvals
-errors
-voice_inputs
-audio_outputs
-message_feedback
-schema_migrations
-```
-
-The following can be added immediately after the first working flow:
-
-```text
-model_stream_chunks
-context_usage_snapshots
 shell_commands
 shell_output_chunks
 file_operations
 patches
+errors
 artifacts
+voice_inputs
+audio_outputs
+message_feedback
 session_state
+schema_migrations
 ```

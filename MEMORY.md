@@ -76,9 +76,9 @@ turn_already_active
 
 V1 uses cancel/stop, not true pause/resume.
 
-## Backend Foundation Sprint
+## Historical Backend Foundation Sprint
 
-Implemented the first backend foundation:
+This section records the initial backend foundation. Some bullets describe the state of that early sprint, not the current full app state. The current state is summarized in later sections.
 
 - Added `@socrates/shared` for reusable IDs, timestamps, and error helpers.
 - Added `@socrates/server` with Fastify, `@fastify/websocket`, SQLite, Drizzle ORM, and Drizzle Kit migrations.
@@ -90,9 +90,9 @@ Implemented the first backend foundation:
 - Do not rely on browser-only filesystem APIs for the core project model. Socrates needs durable absolute workspace paths so the backend agent can create folders, write `.socrates/`, store resources, scan repos, and run tools.
 - Dev V1 may use a backend filesystem bridge or temporary path input. Proper local app V1 should wrap the web UI in Tauri or Electron and use native folder dialogs.
 - Added DB-backed HTTP routes for onboarding, projects, resources, and conversations.
-- Added WebSocket `/ws` skeleton that validates commands with `@socrates/contracts`, emits contract-shaped lifecycle events, enforces one active turn per conversation, supports `chat.turn.cancel`, and persists minimal feedback/error/event records.
+- Added the first WebSocket `/ws` path with command validation, contract-shaped lifecycle events, one-active-turn enforcement, `chat.turn.cancel`, and minimal feedback/error/event persistence.
 
-This sprint intentionally does not implement real model providers, the agent loop, workspace tools, shell execution, real approvals, or frontend UI behavior.
+At that point, real model providers, the agent loop, workspace tools, shell execution, real approvals, and frontend UI behavior were still future work. The current V1 AI path, frontend chat UI, store split, and WebSocket split are documented below.
 
 ## Project Workspace And Resource Flow Sprint
 
