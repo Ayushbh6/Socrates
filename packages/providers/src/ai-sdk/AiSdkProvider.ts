@@ -131,10 +131,12 @@ const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => 
   }
 }
 
-const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => ({
+export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => ({
   openrouter: {
     usage: { include: true },
-    ...(request.runtimeConfig.thinkingEnabled ? { reasoning: { enabled: true } } : {}),
+    reasoning: request.runtimeConfig.thinkingEnabled
+      ? { enabled: true, exclude: false }
+      : { effort: "none", exclude: true },
   },
 })
 

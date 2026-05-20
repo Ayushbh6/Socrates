@@ -305,7 +305,7 @@ Provider mapping:
 OpenAI -> providerOptions.openai.reasoningEffort
 Google -> providerOptions.google.thinkingConfig.thinkingLevel
 OpenRouter on -> providerOptions.openrouter.reasoning enabled
-OpenRouter off -> no reasoning config
+OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude true
 ```
 
 The frontend must render this catalog from the backend response. It must not hardcode model ids or provider option mappings.
