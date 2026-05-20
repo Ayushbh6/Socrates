@@ -1,7 +1,7 @@
 import { google, createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI, openai } from "@ai-sdk/openai"
 import { createOpenRouter, openrouter } from "@openrouter/ai-sdk-provider"
-import { streamText, type LanguageModel, type LanguageModelUsage } from "ai"
+import { smoothStream, streamText, type LanguageModel, type LanguageModelUsage } from "ai"
 import { SocratesError } from "@socrates/shared"
 import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage } from "../types"
 
@@ -21,6 +21,9 @@ export class AiSdkProvider implements ModelProvider {
           content: message.content,
         })),
         providerOptions: this.createProviderOptions(request),
+        ...(request.providerId === "openrouter"
+          ? { experimental_transform: smoothStream({ chunking: "word", delayInMs: 20 }) }
+          : {}),
         ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
       })
 

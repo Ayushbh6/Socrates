@@ -308,6 +308,8 @@ OpenRouter on -> providerOptions.openrouter.reasoning enabled
 OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude true
 ```
 
+OpenRouter streams can arrive in provider-side bursts after a long first-token delay. Socrates applies AI SDK `smoothStream` only on OpenRouter calls to re-chunk bursty text into a steadier word-level stream. This improves perceived streaming once chunks arrive; it does not reduce upstream time-to-first-token.
+
 The frontend must render this catalog from the backend response. It must not hardcode model ids or provider option mappings.
 
 Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
