@@ -163,6 +163,9 @@ Implemented the first real Socrates AI path:
 - OpenAI thinking options: `none`, `low`, `medium`, `high`, `xhigh`; `none` is non-thinking mode.
 - Google thinking options follow the current model-specific catalog: Gemini Pro has no off/minimal option, while Flash and Flash-Lite include `minimal`.
 - OpenRouter V1 thinking UI is `off` / `on`.
+- OpenRouter thinking `off` must be sent explicitly as `providerOptions.openrouter.reasoning = { effort: "none", exclude: true }`; omitting reasoning config is not enough because some OpenRouter models can still emit reasoning by default.
+- OpenRouter thinking `on` sends reasoning enabled and allows returned reasoning text.
+- OpenRouter calls use AI SDK `smoothStream` with word-level chunking to make bursty provider streams feel smoother. This improves perceived streaming after chunks arrive, but it does not reduce upstream time-to-first-token.
 - `chat.message.send` creates/reuses the session, creates the user message and running turn, persists runtime config, loads full history, builds prompt context, and calls `packages/core`.
 - Provider reasoning deltas map to `agent.thinking.delta`; answer deltas map to `agent.answer.delta`; final assistant messages map to `message.completed`; lifecycle ends with `turn.completed` or `turn.failed`.
 - Real model rows are persisted in `model_calls`, `model_stream_chunks`, `model_usage`, `context_usage_snapshots` when context window metadata is known, and `events`.
