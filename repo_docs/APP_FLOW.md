@@ -492,6 +492,8 @@ list_project_resources
 
 `list_project_resources` lists active project resources from backend records, especially uploaded files stored under `.socrates/resources/`. It accepts only `kind` and `limit`, returns filenames and metadata only, and defaults to a modest bounded list. The agent should prefer it before shell directory probing when the user asks about uploaded resources, then call `read` on the returned URI/path when content inspection is needed.
 
+Generated code belongs in the attached workspace/repo, not in `.socrates/`. When the user asks Socrates to write code or create a script/program, Socrates should use `edit` to create the file in a sensible repo location. If the location is ambiguous and the user says Socrates can decide, use the repo root for a standalone script or a small well-named folder for natural multi-file work.
+
 Between user queries, Socrates should carry forward final user/assistant dialogue, not full historical tool-call dumps. Within the current turn, tool calls and tool outputs may be passed back to the model until the final answer is reached.
 
 Provider-exposed thinking is shown and stored when available, but it is not used as semantic prompt context for later user queries.

@@ -304,11 +304,11 @@ Resource management:
 Prompt/current behavior:
 
 - The Socrates master prompt now describes local-first/project-first behavior, tool choice, context gathering before edits, approval-aware edit/bash behavior, verification expectations, `.socrates/` rules, concise user communication, and a restrained Socratic sacred-sage personality.
-- When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, the prompt has a dedicated code-generation default section. Socrates should create or edit a real workspace file with `edit`, choose a sensible path when obvious, verify when appropriate, and paste a full runnable file in chat only when the user explicitly asks for inline code or no write-capable workspace is available.
+- When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, the prompt has a dedicated code-generation default section. Socrates should create or edit a real workspace/repo file with `edit`, choose a sensible path when obvious, verify when appropriate, and paste a full runnable file in chat only when the user explicitly asks for inline code or no write-capable workspace is available.
 - Chat markdown code blocks render through a dedicated code-block UI with a language header and copy button. Block code should not reuse inline-code styling.
-- `.socrates/` is Socrates-owned project memory/runtime space.
+- `.socrates/` is Socrates-owned project memory/runtime space, not the default location for generated user code.
 - `.socrates/resources/` stores uploaded project resources today.
-- Future `.socrates/` subfolders may hold scratchpad or memory; the agent should not treat `.socrates/` as random app source unless the user asks or the current feature requires it.
+- Future `.socrates/` subfolders may hold scratchpad or memory; the agent should not treat `.socrates/` as random app source or place normal scripts/tests/app files there unless the user asks or the current feature requires Socrates internals/resource/runtime storage work.
 
 Validation commands passed after this sprint:
 
