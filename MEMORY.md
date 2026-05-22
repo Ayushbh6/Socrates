@@ -147,7 +147,7 @@ Conversation behavior:
 - The current AI UI send path uses WebSocket `chat.message.send`. The older HTTP message endpoint remains available for no-AI persistence/fallback flows, but the normal chat UI no longer uses it.
 - Each turn can select a different provider/model/thinking mode inside the same conversation. The selected runtime config is stored in `turn_runtime_configs`.
 - The backend injects the local user display name, current project name, full project description, and full active project instructions into the Socrates system prompt before calling the model. The frontend does not assemble prompt context.
-- The backend loads full completed visible conversation history for V1 multi-turn memory.
+- The backend builds model-facing chat history from prior user messages and final assistant answers, not from historical tool-call dumps or reasoning streams.
 - Provider-reported token usage is persisted and `GET /api/projects/:projectId/conversations/:conversationId` returns cumulative token totals for the header.
 
 ## Initial AI SDK Agent Sprint
@@ -166,7 +166,7 @@ Implemented the first real Socrates AI path:
 - OpenRouter thinking `off` must be sent explicitly as `providerOptions.openrouter.reasoning = { effort: "none", exclude: true }`; omitting reasoning config is not enough because some OpenRouter models can still emit reasoning by default.
 - OpenRouter thinking `on` sends reasoning enabled and allows returned reasoning text.
 - OpenRouter calls use AI SDK `smoothStream` with word-level chunking to make bursty provider streams feel smoother. This improves perceived streaming after chunks arrive, but it does not reduce upstream time-to-first-token.
-- `chat.message.send` creates/reuses the session, creates the user message and running turn, persists runtime config, loads full history, builds prompt context, and calls `packages/core`.
+- `chat.message.send` creates/reuses the session, creates the user message and running turn, persists runtime config, loads prior user/final-assistant dialogue as model history, builds prompt context, and calls `packages/core`.
 - Provider reasoning deltas map to `agent.thinking.delta`; answer deltas map to `agent.answer.delta`; final assistant messages map to `message.completed`; lifecycle ends with `turn.completed` or `turn.failed`.
 - Real model rows are persisted in `model_calls`, `model_stream_chunks`, `model_usage`, `context_usage_snapshots` when context window metadata is known, and `events`.
 - The chat header shows cumulative completed-turn provider token totals after assistant responses complete.
@@ -304,6 +304,8 @@ Resource management:
 Prompt/current behavior:
 
 - The Socrates master prompt now describes local-first/project-first behavior, tool choice, context gathering before edits, approval-aware edit/bash behavior, verification expectations, `.socrates/` rules, concise user communication, and a restrained Socratic sacred-sage personality.
+- When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, the prompt has a dedicated code-generation default section. Socrates should create or edit a real workspace file with `edit`, choose a sensible path when obvious, verify when appropriate, and paste a full runnable file in chat only when the user explicitly asks for inline code or no write-capable workspace is available.
+- Chat markdown code blocks render through a dedicated code-block UI with a language header and copy button. Block code should not reuse inline-code styling.
 - `.socrates/` is Socrates-owned project memory/runtime space.
 - `.socrates/resources/` stores uploaded project resources today.
 - Future `.socrates/` subfolders may hold scratchpad or memory; the agent should not treat `.socrates/` as random app source unless the user asks or the current feature requires it.

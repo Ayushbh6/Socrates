@@ -694,7 +694,7 @@ refresh local conversation title from the response
 
 The chat page opens one WebSocket connection for live agent events.
 
-The current chat UI sends user messages through `chat.message.send`. The backend creates/reuses the session, stores the user message, creates the running turn, persists the runtime config, loads full visible conversation history, injects backend-owned Socrates prompt context, and calls `packages/core`.
+The current chat UI sends user messages through `chat.message.send`. The backend creates/reuses the session, stores the user message, creates the running turn, persists the runtime config, loads model-facing history from prior user messages and final assistant answers, injects backend-owned Socrates prompt context, and calls `packages/core`.
 
 Suggested URL:
 
@@ -1115,6 +1115,8 @@ The frontend should render:
 - Tool completed or failed.
 - Compact aggregate summary.
 
+Assistant markdown rendering must distinguish inline code from fenced code blocks. Inline code can use compact inline styling. Fenced code blocks must render in their own readable block with stable foreground/background colors, a language label when provided, horizontal scrolling for long lines, and a copy button.
+
 V1 aggregate summary can be derived from tool events:
 
 ```text
@@ -1281,6 +1283,7 @@ Rules:
 
 - Requires approval unless the user explicitly runs a full-access mode.
 - Must show a diff or equivalent preview before applying.
+- For requests to write code, create scripts, build small programs, implement files, or build a small app/tool, the agent should treat the request as a workspace file creation/edit request. It should use `edit` by default, choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, and avoid pasting a full runnable file into chat. Inline code is appropriate only when the user explicitly asks for a snippet or when no write-capable workspace is available.
 - Precise replacements must fail with helpful errors when `oldText` matches zero times or more times than expected.
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
 - Writes outside the active project workspace are denied by default.

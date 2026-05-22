@@ -1,7 +1,8 @@
 "use client";
 
 import type { ConversationToolRun, Message } from "@socrates/contracts";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown, Copy } from "lucide-react";
+import { isValidElement, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatToolTimeline } from "./ChatToolTimeline";
@@ -125,12 +126,75 @@ function MarkdownContent({ content }: { content: string }) {
         p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
         ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
         ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
-        code: ({ children }) => <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[0.9em]">{children}</code>,
-        pre: ({ children }) => <pre className="mb-3 overflow-x-auto rounded-xl bg-gray-950 p-4 text-gray-100">{children}</pre>,
+        code: ({ className, children }) => {
+          const isBlock = typeof className === "string" && className.startsWith("language-");
+          if (isBlock) {
+            return <code className={className}>{children}</code>;
+          }
+          return <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-[0.9em] text-brand-text-dark">{children}</code>;
+        },
+        pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         strong: ({ children }) => <strong className="font-semibold text-brand-text-dark">{children}</strong>,
       }}
     >
       {content}
     </ReactMarkdown>
   );
+}
+
+function CodeBlock({ children }: { children: ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const code = extractCodeText(children).replace(/\n$/, "");
+  const language = extractCodeLanguage(children) ?? "code";
+
+  const copyCode = async () => {
+    if (!code) {
+      return;
+    }
+    await navigator.clipboard.writeText(code);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1_400);
+  };
+
+  return (
+    <div className="mb-4 overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-sm last:mb-0">
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2">
+        <span className="font-mono text-xs text-gray-300">{language}</span>
+        <button
+          type="button"
+          onClick={copyCode}
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-gray-300 transition hover:bg-white/10 hover:text-white"
+          aria-label="Copy code"
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="max-h-[34rem] overflow-auto p-4 font-mono text-[13px] leading-6 text-gray-100">
+        <code className="whitespace-pre text-gray-100">{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+function extractCodeLanguage(children: ReactNode): string | undefined {
+  if (!isValidElement(children)) {
+    return undefined;
+  }
+  const className = (children.props as { className?: string }).className;
+  const match = className?.match(/language-([^\s]+)/);
+  return match?.[1];
+}
+
+function extractCodeText(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(extractCodeText).join("");
+  }
+  if (isValidElement(node)) {
+    return extractCodeText((node.props as { children?: ReactNode }).children);
+  }
+  return "";
 }

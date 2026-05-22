@@ -560,7 +560,7 @@ user sends first message
   -> create turns row for the agent lifecycle
   -> create messages row with role = "user"
   -> create turn_runtime_configs row for selected provider/model/thinking settings
-  -> build full visible conversation history
+  -> build model history from prior user messages and final assistant answers
   -> inject user display name, project name, full project description, and full project instructions into the Socrates system prompt
   -> stream model output through packages/core and packages/providers
   -> create assistant message on completion
@@ -667,4 +667,5 @@ Guidelines:
 - Make `/projects` practical and uncluttered.
 - Make project dashboards resource-aware.
 - Keep chat event-rich but visually organized.
+- Render fenced code blocks as readable standalone blocks with language labels, copy buttons, and horizontal scrolling. Do not let inline-code styling make block code unreadable.
 - Do not copy Claude/Codex visuals directly; use them only as interaction references.
