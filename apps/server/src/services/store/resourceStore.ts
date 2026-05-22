@@ -1,18 +1,24 @@
 import type { CreateProjectResourceRequest, ProjectResource } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
-import { inferResourceKind, storeResourceFile } from "@socrates/workspace"
-import { desc, eq } from "drizzle-orm"
+import { deleteStoredResourceFile, inferResourceKind, storeResourceFile } from "@socrates/workspace"
+import { and, desc, eq, inArray } from "drizzle-orm"
 import { artifacts, projectResources } from "../../db/schema"
 import { StoreBase } from "./shared"
 import type { UploadedResourceInput } from "./types"
 
+const visibleResourceStatuses = ["active", "processing", "failed", "archived"]
+
 export class ResourceStore extends StoreBase {
-  listResources(projectId: string): ProjectResource[] {
+  listResources(projectId: string, options: { includeDeleted?: boolean } = {}): ProjectResource[] {
     this.mustGetProjectRow(projectId)
     const rows = this.handle.db
       .select()
       .from(projectResources)
-      .where(eq(projectResources.projectId, projectId))
+      .where(
+        options.includeDeleted
+          ? eq(projectResources.projectId, projectId)
+          : and(eq(projectResources.projectId, projectId), inArray(projectResources.status, visibleResourceStatuses)),
+      )
       .orderBy(desc(projectResources.updatedAt))
       .all()
     return this.mapResourceRows(rows)
@@ -118,5 +124,44 @@ export class ResourceStore extends StoreBase {
     }
 
     return resourceIds.map((resourceId) => this.mustGetResource(resourceId))
+  }
+
+  deleteResource(projectId: string, resourceId: string): string {
+    this.mustGetProjectRow(projectId)
+    const row = this.mustGetResourceRow(resourceId)
+    if (row.projectId !== projectId) {
+      throw new SocratesError("project_resource_not_found", "Project resource not found", { details: { resourceId } })
+    }
+    if (row.status === "deleted") {
+      return resourceId
+    }
+
+    const workspace = this.mustGetPrimaryWorkspaceRow(projectId)
+    let fileDeleted = false
+    let fileDeleteSkippedReason: string | undefined
+    if (row.source === "uploaded" && workspace.path) {
+      const result = deleteStoredResourceFile({
+        workspacePath: workspace.path,
+        ...(row.uri ? { resourcePath: row.uri } : {}),
+      })
+      fileDeleted = result.deleted
+      fileDeleteSkippedReason = result.skippedReason
+    }
+
+    const now = nowIso()
+    this.handle.db
+      .update(projectResources)
+      .set({ status: "deleted", updatedAt: now })
+      .where(eq(projectResources.id, resourceId))
+      .run()
+
+    this.appendEvent({
+      projectId,
+      type: "project.resource.deleted",
+      source: "server",
+      payload: { projectId, resourceId, fileDeleted, fileDeleteSkippedReason },
+    })
+
+    return resourceId
   }
 }

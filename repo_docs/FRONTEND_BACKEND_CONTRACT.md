@@ -196,6 +196,7 @@ PATCH  /api/projects/:projectId
 GET    /api/projects/:projectId/resources
 POST   /api/projects/:projectId/resources
 POST   /api/projects/:projectId/resources/upload
+DELETE /api/projects/:projectId/resources/:resourceId
 
 PUT    /api/projects/:projectId/instructions
 
@@ -464,6 +465,38 @@ file preview list shows filename, type/kind, and size when known
 file preview list is bounded and scrollable instead of stretching indefinitely
 ```
 
+### `DELETE /api/projects/:projectId/resources/:resourceId`
+
+Removes a resource from the project context.
+
+Backend behavior:
+
+```text
+verify the resource belongs to the project
+if it is an uploaded Socrates-owned file under <workspace>/.socrates/resources/:
+  delete the copied file
+mark project_resources.status = "deleted"
+append project.resource.deleted
+exclude deleted resources from project dashboard and resource list responses
+```
+
+Response:
+
+```ts
+type DeleteProjectResourceResponse = {
+  deletedResourceId: string
+}
+```
+
+Frontend behavior:
+
+```text
+show a remove control on file-card hover/focus
+ask for confirmation before deletion
+remove the card after the backend confirms success
+show the backend error if deletion fails
+```
+
 ### `PUT /api/projects/:projectId/instructions`
 
 Creates or updates the active project instructions.
@@ -538,6 +571,7 @@ Loads one conversation and its persisted visible messages.
 type GetConversationResponse = {
   conversation: Conversation
   messages: Message[]
+  toolRuns: ConversationToolRun[]
   tokenUsage: {
     totalTokens: number
     inputTokens: number
@@ -547,13 +581,15 @@ type GetConversationResponse = {
 }
 ```
 
+`toolRuns` contains persisted, bounded tool activity for completed turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
+
 Frontend behavior:
 
 ```text
 if messages is empty:
   show centered empty-chat composer
 else:
-  render transcript and pin composer to the bottom
+  render transcript, historical inline tool timeline, and pin composer to the bottom
 show tokenUsage.totalTokens next to the conversation title
 update the displayed total after completed assistant turns
 ```
@@ -892,8 +928,8 @@ Sent when a tool call begins or is registered.
 ```ts
 type ToolCallStartedPayload = {
   toolCallId: string
-  toolName: string
-  category: "file" | "search" | "shell" | "git" | "patch" | "resource" | "other"
+  toolName: "read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources"
+  category: "file" | "search" | "shell" | "git" | "patch" | "resource" | "trace" | "other"
   displayName: string
   argsPreview?: string
   requiresApproval: boolean
@@ -933,6 +969,7 @@ type ToolCallCompletedPayload = {
   toolCallId: string
   summary: string
   resultPreview?: string
+  durationMs?: number
   metrics?: {
     filesRead?: number
     filesEdited?: number
@@ -984,6 +1021,7 @@ Sent after approval or rejection.
 ```ts
 type ApprovalResolvedPayload = {
   approvalId: string
+  toolCallId?: string
   decision: "approved" | "rejected"
 }
 ```
@@ -1092,6 +1130,316 @@ turn.activity.summary
 ```
 
 Do not add that in V1 unless the derived summary becomes messy.
+
+## V1 Agent Tool Contract
+
+The initial Socrates tool surface should be broad enough for real coding work but small enough to keep model behavior predictable.
+
+Model-visible V1 tools:
+
+```text
+read
+search
+edit
+bash
+trace_retrieve
+list_project_resources
+```
+
+Do not expose separate `glob`, `grep`, `write`, `patch`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the model-visible surface should remain the six tools above.
+
+All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
+
+### `read`
+
+Reads local workspace content.
+
+Input:
+
+```ts
+type ReadToolInput = {
+  targets: Array<{
+    path: string
+    startLine?: number
+    endLine?: number
+    page?: number
+    charLimit?: number
+    recursive?: boolean
+    depth?: number
+  }>
+}
+```
+
+Output:
+
+```ts
+type ReadToolOutput = {
+  entries: Array<{
+    path: string
+    kind: "file" | "directory" | "image" | "pdf" | "document" | "presentation" | "data" | "other"
+    mimeType?: string
+    sizeBytes?: number
+    content?: string
+    children?: Array<{ path: string; kind: "file" | "directory"; sizeBytes?: number }>
+    page?: number
+    startLine?: number
+    endLine?: number
+    image?: { width: number; height: number; description?: string; text?: string }
+    truncated: boolean
+  }>
+}
+```
+
+Rules:
+
+- Default `charLimit` is 20,000 characters.
+- Normal backend per-call cap is 80,000 characters.
+- Output must include `truncated = true` when content is cut.
+- PDFs, documents, slide decks, structured data, and images must be extracted into bounded text or visual descriptions with metadata.
+- The tool must never dump a full large PDF, document, slide deck, generated file, lockfile, or binary blob into context by accident.
+- Reader implementations may use local extractors or lightweight parsing libraries. The first version should prefer practical bounded extraction over deep document-processing infrastructure.
+- For providers with native vision support, image reads may produce an image reference or attachment that the provider layer can include natively. For non-vision models, Socrates should provide OCR text, image metadata, or a generated visual description when available. If no image understanding path is available, return metadata plus a clear warning.
+
+### `search`
+
+Finds files and searches text.
+
+Input:
+
+```ts
+type SearchToolInput = {
+  mode: "files" | "text"
+  pattern: string
+  path?: string
+  include?: string
+  exclude?: string
+  fixedStrings?: boolean
+  caseSensitive?: boolean
+  before?: number
+  after?: number
+  maxResults?: number
+  maxMatchesPerFile?: number
+  respectGitIgnore?: boolean
+}
+```
+
+Output:
+
+```ts
+type SearchToolOutput = {
+  matches: Array<
+    | { kind: "path"; path: string; itemKind: "file" | "directory"; sizeBytes?: number; modifiedAt?: string }
+    | { kind: "text"; path: string; line: number; column?: number; text: string; before?: string[]; after?: string[] }
+  >
+  truncated: boolean
+}
+```
+
+Rules:
+
+- `mode = "files"` covers glob/path/name search.
+- `mode = "text"` covers grep-style regex or fixed-string search.
+- Search respects `.gitignore` by default.
+- Search ignores `.git`, dependency folders, generated outputs, binary files, and large nuisance files by default unless explicitly included.
+- Results must be bounded with clear truncation metadata.
+
+### `edit`
+
+Creates or changes files.
+
+Input:
+
+```ts
+type EditToolInput = {
+  operations: Array<
+    | { kind: "create"; path: string; content: string; createDirs?: boolean; ifExists?: "error" | "overwrite" }
+    | { kind: "overwrite"; path: string; content: string }
+    | {
+        kind: "replace"
+        path: string
+        oldText: string
+        newText: string
+        expectedOccurrences?: number
+        replaceAll?: boolean
+      }
+    | { kind: "patch"; diff: string }
+  >
+  reason?: string
+}
+```
+
+Output:
+
+```ts
+type EditToolOutput = {
+  changedFiles: Array<{ path: string; operation: "created" | "overwritten" | "edited" | "patched" }>
+  diff: string
+}
+```
+
+Rules:
+
+- Requires approval unless the user explicitly runs a full-access mode.
+- Must show a diff or equivalent preview before applying.
+- Precise replacements must fail with helpful errors when `oldText` matches zero times or more times than expected.
+- File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
+- Writes outside the active project workspace are denied by default.
+- Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
+
+### `bash`
+
+Runs shell commands from the project workspace.
+
+Input:
+
+```ts
+type BashToolInput = {
+  command: string
+  cwd?: string
+  timeoutMs?: number
+  charLimit?: number
+}
+```
+
+Output:
+
+```ts
+type BashToolOutput = {
+  command: string
+  cwd: string
+  exitCode: number | null
+  signal?: string
+  stdout: string
+  stderr: string
+  durationMs: number
+  timedOut: boolean
+  truncation: TruncationMetadata
+}
+```
+
+Rules:
+
+- Default timeout is 120,000 milliseconds.
+- Bash uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash calls in that turn and is disposed when the turn completes, fails, or is cancelled.
+- Commands run one at a time. Obvious interactive/TTY commands are rejected or time out; stdin prompt UI is not part of V1.
+- If a bash command times out, the active shell session is reset before later bash calls.
+- Command output must stream through `tool.call.output`.
+- Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
+- `cwd` must stay inside the active project workspace unless explicitly approved.
+- Read-only commands can be auto-allowed by policy.
+- Package installation, dev servers, Docker, network commands, git mutations, deletes, migrations, and commands with side effects require approval by default.
+- Destructive or credential-exfiltration patterns are denied by default.
+- `read`, `search`, and `edit` are preferred for structured file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
+- Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
+
+### `trace_retrieve`
+
+Retrieves old tool traces and execution evidence only when useful.
+
+Input:
+
+```ts
+type TraceRetrieveToolInput = {
+  query?: string
+  since?: string
+  until?: string
+  turnIds?: string[]
+  toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
+  paths?: string[]
+  includeInputs?: boolean
+  includeOutputs?: boolean
+  charLimit?: number
+}
+```
+
+Output:
+
+```ts
+type TraceRetrieveToolOutput = {
+  traces: Array<{
+    turnId: string
+    toolCallId: string
+    toolName: string
+    summary: string
+    paths?: string[]
+    command?: string
+    inputs?: unknown
+    outputs?: unknown
+    createdAt: string
+    truncated: boolean
+  }>
+}
+```
+
+Rules:
+
+- Retrieval is project-scoped by backend code, not by model-provided ids.
+- Use structured filters first: project, conversation, turn, tool name, file path, and date/time.
+- Keyword search over commands, paths, errors, and summaries is part of V1.
+- Semantic search over trace summaries and diary entries can be added later.
+- Raw tool inputs/outputs are returned only when requested and bounded by `charLimit`.
+
+### `list_project_resources`
+
+Lists project resources that Socrates already knows about, especially uploaded files stored under `<workspace>/.socrates/resources/`.
+
+Input:
+
+```ts
+type ListProjectResourcesToolInput = {
+  kind?: ProjectResource["kind"]
+  limit?: number
+}
+```
+
+Output:
+
+```ts
+type ListProjectResourcesToolOutput = {
+  resources: Array<{
+    id: string
+    name: string
+    kind: ProjectResource["kind"]
+    source: ProjectResource["source"]
+    uri?: string
+    mimeType?: string
+    sizeBytes?: number
+    status: ProjectResource["status"]
+  }>
+  summary: string
+  totalResources: number
+  truncation: TruncationMetadata
+  warnings?: string[]
+}
+```
+
+Rules:
+
+- This is read-only and may execute in parallel with `read`, `search`, and `trace_retrieve`.
+- It must use backend project resource records, not shell directory scanning.
+- Deleted resources are always excluded from the model-visible tool.
+- `limit` defaults to 25 and has a backend/schema cap of 100.
+- The model should prefer this tool before probing `.socrates/resources/` with shell commands.
+- Returned resource `uri` values should be sufficient for a follow-up `read` call when the resource is file-backed.
+
+## Context Carry-Forward Rule
+
+Within one turn, Socrates may pass current-turn tool calls and tool results back to the model until the final answer is reached.
+
+Across later user queries, Socrates should not pass the full historical tool-call dump by default. The normal model context should carry forward:
+
+```text
+previous user query
+previous final assistant answer
+new user query
+current-turn tool calls only
+```
+
+If older tool evidence is needed, the agent should call `trace_retrieve` explicitly. Full traces remain persisted in SQLite for audit and replay.
+
+Provider-exposed thinking or reasoning text is stored for UI/replay when exposed, but it is not carried forward as semantic context between later user queries. Reasoning token counts belong in usage and context accounting, not prompt history.
+
+Provider-specific opaque tool-call metadata needed to continue the current tool loop, such as Gemini thought signatures, may be carried only inside the active turn's in-memory model messages. It must not be loaded into later user turns as semantic history.
 
 ## Future Event Expansion
 

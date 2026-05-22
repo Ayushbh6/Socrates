@@ -21,6 +21,7 @@ import {
   createProjectResourceRequestSchema,
   createProjectResourceResponseSchema,
   deleteConversationResponseSchema,
+  deleteProjectResourceResponseSchema,
   errorCreatedEventSchema,
   feedbackSubmitCommandSchema,
   getConversationResponseSchema,
@@ -55,6 +56,16 @@ import {
   userSchema,
   agentAnswerDeltaEventSchema,
   agentThinkingDeltaEventSchema,
+  bashToolInputSchema,
+  editToolInputSchema,
+  listProjectResourcesToolInputSchema,
+  listProjectResourcesToolOutputSchema,
+  normalizedToolCallSchema,
+  readToolInputSchema,
+  searchToolInputSchema,
+  toolExecutionResultSchema,
+  traceRetrieveToolInputSchema,
+  conversationToolRunSchema,
 } from "./index"
 
 const timestamp = "2026-05-13T21:30:00.000Z"
@@ -251,6 +262,7 @@ describe("http contracts", () => {
     ).toBe(true)
     expect(createProjectResourceResponseSchema.safeParse({ resource }).success).toBe(true)
     expect(uploadProjectResourcesResponseSchema.safeParse({ resources: [resource] }).success).toBe(true)
+    expect(deleteProjectResourceResponseSchema.safeParse({ deletedResourceId: resource.id }).success).toBe(true)
     expect(projectResourceSchema.safeParse(resource).success).toBe(true)
     expect(pickWorkspaceFolderRequestSchema.safeParse({ mode: "start_from_scratch" }).success).toBe(true)
     expect(
@@ -273,11 +285,44 @@ describe("http contracts", () => {
       getConversationResponseSchema.safeParse({
         conversation,
         messages: [userMessage, assistantMessage],
+        toolRuns: [],
         tokenUsage: {
           totalTokens: 12,
           inputTokens: 6,
           outputTokens: 4,
           reasoningTokens: 2,
+        },
+      }).success,
+    ).toBe(true)
+    expect(
+      conversationToolRunSchema.safeParse({
+        toolCallId: "tcall_1",
+        conversationId: conversation.id,
+        sessionId: "sess_1",
+        turnId: "turn_1",
+        toolName: "bash",
+        status: "completed",
+        requiresApproval: true,
+        arguments: { command: "pwd" },
+        summary: "Command exited with code 0.",
+        durationMs: 12,
+        approval: {
+          approvalId: "appr_1",
+          status: "approved",
+          actionKind: "shell_command",
+          title: "Approve shell command",
+          actionPreview: "pwd",
+          risk: "low",
+          decision: "approved",
+        },
+        shell: {
+          command: "pwd",
+          cwd: "/tmp/socrates",
+          status: "completed",
+          exitCode: 0,
+          durationMs: 12,
+          stdout: "/tmp/socrates\n",
+          stderr: "",
         },
       }).success,
     ).toBe(true)
@@ -362,7 +407,7 @@ describe("websocket server event contracts", () => {
     toolCallStartedEventSchema.safeParse(
       envelope("tool.call.started", {
         toolCallId: "tcall_1",
-        toolName: "read_file",
+        toolName: "read",
         category: "file",
         displayName: "Reading README.md",
         requiresApproval: false,
@@ -470,5 +515,60 @@ describe("websocket server event contracts", () => {
   it("rejects unknown event types and malformed payloads", () => {
     expect(serverEventSchema.safeParse(envelope("planner.future", {})).success).toBe(false)
     expect(serverEventSchema.safeParse(envelope("tool.call.started", { toolCallId: "tcall_1" })).success).toBe(false)
+  })
+})
+
+describe("tool contracts", () => {
+  it("parses the six V1 model-visible tool inputs", () => {
+    expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000 }).success).toBe(true)
+    expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
+    expect(
+      editToolInputSchema.safeParse({
+        operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }],
+      }).success,
+    ).toBe(true)
+    expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ toolNames: ["read"], query: "README" }).success).toBe(true)
+    expect(listProjectResourcesToolInputSchema.safeParse({ kind: "pdf", limit: 10 }).success).toBe(true)
+    expect(listProjectResourcesToolInputSchema.safeParse({ source: "uploaded" }).success).toBe(false)
+    expect(
+      listProjectResourcesToolOutputSchema.safeParse({
+        resources: [
+          {
+            id: resource.id,
+            name: resource.name,
+            kind: resource.kind,
+            source: resource.source,
+            uri: resource.uri,
+            mimeType: resource.mimeType,
+            sizeBytes: resource.sizeBytes,
+            status: resource.status,
+          },
+        ],
+        summary: "Listed 1 project resources.",
+        totalResources: 1,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
+      }).success,
+    ).toBe(true)
+  })
+
+  it("rejects tools outside the V1 surface", () => {
+    expect(normalizedToolCallSchema.safeParse({ toolCallId: "tcall_1", toolName: "glob", input: {} }).success).toBe(false)
+    expect(
+      normalizedToolCallSchema.safeParse({
+        toolCallId: "tcall_1",
+        toolName: "read",
+        input: { path: "README.md" },
+        providerMetadata: { google: { thoughtSignature: "sig_1" } },
+      }).success,
+    ).toBe(true)
+    expect(
+      toolExecutionResultSchema.safeParse({
+        toolCallId: "tcall_1",
+        toolName: "read",
+        ok: false,
+        error: { code: "tool_failed", message: "Tool failed" },
+      }).success,
+    ).toBe(true)
   })
 })

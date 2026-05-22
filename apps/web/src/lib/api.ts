@@ -7,6 +7,7 @@ import {
   createConversationResponseSchema,
   createProjectResponseSchema,
   deleteConversationResponseSchema,
+  deleteProjectResourceResponseSchema,
   getMeResponseSchema,
   getConversationResponseSchema,
   getProjectResponseSchema,
@@ -28,6 +29,7 @@ import {
   type CreateProjectRequest,
   type CreateProjectResponse,
   type DeleteConversationResponse,
+  type DeleteProjectResourceResponse,
   type GetConversationResponse,
   type GetMeResponse,
   type GetProjectResponse,
@@ -219,6 +221,15 @@ export const api = {
       body,
     ) as Promise<UploadProjectResourcesResponse>;
   },
+
+  deleteProjectResource: (projectId: string, resourceId: string) =>
+    request<typeof deleteProjectResourceResponseSchema>(
+      `/api/projects/${projectId}/resources/${resourceId}`,
+      deleteProjectResourceResponseSchema,
+      {
+        method: "DELETE",
+      },
+    ) as Promise<DeleteProjectResourceResponse>,
 };
 
 export type { GetMeResponse };

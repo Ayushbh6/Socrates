@@ -31,4 +31,12 @@ describe("model catalog", () => {
     const pro = modelCatalog.find((model) => model.modelId === "gemini-3.1-pro-preview")
     expect(pro?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high"])
   })
+
+  it("marks GLM and DeepSeek models as non-vision models", () => {
+    const nonVision = modelCatalog
+      .filter((model) => model.capabilities?.vision === false)
+      .map((model) => model.modelId)
+
+    expect(nonVision).toEqual(["z-ai/glm-5.1", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+  })
 })

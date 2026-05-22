@@ -2,6 +2,7 @@ import { z } from "zod"
 import { apiErrorSchema } from "./api"
 import { idSchema, messageSchema, timestampSchema } from "./entities"
 import { providerIdSchema, thinkingEffortSchema } from "./models"
+import { toolNameSchema } from "./tools"
 
 export const schemaVersionSchema = z.literal(1)
 
@@ -131,12 +132,12 @@ export const agentAnswerDeltaPayloadSchema = z
   })
   .strict()
 
-export const toolCallCategorySchema = z.enum(["file", "search", "shell", "git", "patch", "resource", "other"])
+export const toolCallCategorySchema = z.enum(["file", "search", "shell", "git", "patch", "resource", "trace", "other"])
 
 export const toolCallStartedPayloadSchema = z
   .object({
     toolCallId: idSchema,
-    toolName: z.string().min(1),
+    toolName: toolNameSchema,
     category: toolCallCategorySchema,
     displayName: z.string().min(1),
     argsPreview: z.string().optional(),
@@ -168,6 +169,7 @@ export const toolCallCompletedPayloadSchema = z
     summary: z.string().min(1),
     resultPreview: z.string().optional(),
     metrics: toolCallMetricsSchema.optional(),
+    durationMs: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -193,6 +195,7 @@ export const approvalRequestedPayloadSchema = z
 export const approvalResolvedPayloadSchema = z
   .object({
     approvalId: idSchema,
+    toolCallId: idSchema.optional(),
     decision: z.enum(["approved", "rejected"]),
   })
   .strict()

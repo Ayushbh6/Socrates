@@ -210,6 +210,8 @@ Uploaded file-backed resources should be stored under the primary workspace scaf
 
 The `uri` column should point to the stored resource path or linked source, depending on `source`.
 
+Resource removal is a soft delete in SQLite: set `project_resources.status = "deleted"` and exclude those rows from normal project/resource responses. For uploaded resources whose `uri` points inside the owning primary workspace `.socrates/resources/` directory, the backend should also delete the copied file. Linked or external paths must not be physically deleted.
+
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `pres_...`. |
@@ -925,6 +927,65 @@ Thinking
 Response
   normal assistant answer text
 ```
+
+Context rule:
+
+```text
+Reasoning/thinking text is not carried forward as semantic prompt context between later user queries.
+```
+
+Socrates may show and persist provider-exposed reasoning for the turn where it was produced, but the next turn should normally receive the previous user message and final assistant answer, not the prior reasoning stream.
+
+## Tool Trace Retrieval
+
+Full tool calls and outputs are persisted for audit, replay, and targeted retrieval. They should not be blindly carried forward into later model context.
+
+The V1 retrieval path is the model-visible `trace_retrieve` tool. It reads from existing persisted runtime tables:
+
+```text
+tool_calls
+events
+shell_commands
+shell_output_chunks
+file_operations
+patches
+errors
+model_calls
+model_stream_chunks
+model_usage
+```
+
+Retrieval should be project-scoped by backend code and support structured filters such as conversation, turn, tool name, path, command, date/time, and error code. Keyword search over commands, file paths, summaries, and errors is part of V1. Semantic search over trace summaries and diary entries can be added later.
+
+Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
+
+## Context Assembly And Compression
+
+The normal prompt history between user queries should carry final user/assistant dialogue, not historical tool dumps.
+
+Default carry-forward shape:
+
+```text
+user_query_1
+final_answer_1
+user_query_2
+current-turn tool calls and results
+final_answer_2
+```
+
+Current-turn tool results may be passed back to the model until the final answer is reached. After the turn completes, detailed tool traces stay in SQLite and become available through `trace_retrieve`.
+
+When context pressure grows, the context builder should keep:
+
+- Recent final user/assistant dialogue.
+- Current project instructions.
+- Active task state when task tracking exists.
+- Important decisions.
+- Recent failures and blockers.
+- Relevant diary entries after the diary system exists.
+- Retrieved trace summaries only when explicitly relevant.
+
+The target hard cap for a chat prompt is 160,000 tokens. Before the next model call would exceed that cap, Socrates should compress or prune model-facing context while preserving raw history in the database.
 
 ## Context Window Tracking
 

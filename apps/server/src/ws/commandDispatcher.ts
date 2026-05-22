@@ -53,7 +53,7 @@ export const handleInboundMessage = async (
         handleTurnCancel(socket, store, activeTurns, command)
         return
       case "approval.decide":
-        handleApprovalDecide(store, command)
+        handleApprovalDecide(store, activeTurns, command)
         return
       case "feedback.submit":
         handleFeedbackSubmit(store, command)

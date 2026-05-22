@@ -13,6 +13,7 @@ import {
   userSchema,
 } from "./entities"
 import { conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
+import { toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
   .object({
@@ -125,6 +126,12 @@ export const uploadProjectResourcesResponseSchema = z
   })
   .strict()
 
+export const deleteProjectResourceResponseSchema = z
+  .object({
+    deletedResourceId: idSchema,
+  })
+  .strict()
+
 export const upsertProjectInstructionsRequestSchema = z
   .object({
     content: z.string().min(1),
@@ -168,10 +175,78 @@ export const createConversationResponseSchema = z
   })
   .strict()
 
+export const conversationToolApprovalSchema = z
+  .object({
+    approvalId: idSchema,
+    status: z.enum(["pending", "approved", "rejected"]),
+    actionKind: z.enum(["shell_command", "file_write", "patch_apply", "git_commit", "git_push", "other"]),
+    title: z.string().min(1),
+    description: z.string().optional(),
+    actionPreview: z.string(),
+    risk: z.enum(["low", "medium", "high"]).optional(),
+    decision: z.enum(["approved", "rejected"]).optional(),
+  })
+  .strict()
+
+export const conversationToolRunSchema = z
+  .object({
+    toolCallId: idSchema,
+    conversationId: idSchema,
+    sessionId: idSchema,
+    turnId: idSchema,
+    toolName: toolNameSchema,
+    status: z.enum(["running", "awaiting_approval", "completed", "failed", "rejected"]),
+    requiresApproval: z.boolean(),
+    arguments: z.unknown().optional(),
+    result: z.unknown().optional(),
+    errorId: idSchema.optional(),
+    approval: conversationToolApprovalSchema.optional(),
+    summary: z.string().optional(),
+    resultPreview: z.string().optional(),
+    startedAt: z.string().optional(),
+    completedAt: z.string().optional(),
+    durationMs: z.number().int().nonnegative().optional(),
+    shell: z
+      .object({
+        command: z.string(),
+        cwd: z.string(),
+        status: z.string(),
+        exitCode: z.number().int().nullable().optional(),
+        signal: z.string().nullable().optional(),
+        durationMs: z.number().int().nonnegative().optional(),
+        stdout: z.string(),
+        stderr: z.string(),
+        log: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    fileOperations: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            operation: z.string().min(1),
+            status: z.string().min(1),
+          })
+          .strict(),
+      )
+      .optional(),
+    patch: z
+      .object({
+        status: z.string().min(1),
+        diff: z.string(),
+        files: z.unknown().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+
 export const getConversationResponseSchema = z
   .object({
     conversation: conversationSchema,
     messages: z.array(messageSchema),
+    toolRuns: z.array(conversationToolRunSchema),
     tokenUsage: conversationTokenUsageSchema,
   })
   .strict()
@@ -221,6 +296,7 @@ export type ListProjectResourcesResponse = z.infer<typeof listProjectResourcesRe
 export type CreateProjectResourceRequest = z.infer<typeof createProjectResourceRequestSchema>
 export type CreateProjectResourceResponse = z.infer<typeof createProjectResourceResponseSchema>
 export type UploadProjectResourcesResponse = z.infer<typeof uploadProjectResourcesResponseSchema>
+export type DeleteProjectResourceResponse = z.infer<typeof deleteProjectResourceResponseSchema>
 export type UpsertProjectInstructionsRequest = z.infer<typeof upsertProjectInstructionsRequestSchema>
 export type UpsertProjectInstructionsResponse = z.infer<typeof upsertProjectInstructionsResponseSchema>
 export type PickWorkspaceFolderRequest = z.infer<typeof pickWorkspaceFolderRequestSchema>
@@ -228,6 +304,8 @@ export type PickWorkspaceFolderResponse = z.infer<typeof pickWorkspaceFolderResp
 export type ListProjectConversationsResponse = z.infer<typeof listProjectConversationsResponseSchema>
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
+export type ConversationToolApproval = z.infer<typeof conversationToolApprovalSchema>
+export type ConversationToolRun = z.infer<typeof conversationToolRunSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
 export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>
 export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>

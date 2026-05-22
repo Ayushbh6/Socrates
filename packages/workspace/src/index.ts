@@ -4,6 +4,10 @@ import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 import { SocratesError } from "@socrates/shared"
+export { createWorkspaceShellSession, runWorkspaceBash, WorkspaceShellSession } from "./tools/bashTool"
+export { editWorkspace } from "./tools/editTool"
+export { readWorkspacePath } from "./tools/readTool"
+export { searchWorkspace } from "./tools/searchTool"
 
 const execFileAsync = promisify(execFile)
 
@@ -41,6 +45,16 @@ export type StoreResourceFileInput = {
 export type StoredResourceFile = {
   path: string
   fileName: string
+}
+
+export type DeleteStoredResourceFileInput = {
+  workspacePath: string
+  resourcePath?: string
+}
+
+export type DeleteStoredResourceFileResult = {
+  deleted: boolean
+  skippedReason?: "missing_path" | "outside_resources" | "not_found"
 }
 
 const defaultCommandRunner: CommandRunner = async (command, args) => {
@@ -241,6 +255,52 @@ export const storeResourceFile = (input: StoreResourceFileInput): StoredResource
   const target = nextAvailablePath(scaffold.resourcesPath, safeName)
   fs.writeFileSync(target.path, input.data)
   return target
+}
+
+const isPathInsideDirectory = (directory: string, candidatePath: string): boolean => {
+  const relative = path.relative(directory, candidatePath)
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)
+}
+
+export const deleteStoredResourceFile = (input: DeleteStoredResourceFileInput): DeleteStoredResourceFileResult => {
+  if (!input.resourcePath) {
+    return { deleted: false, skippedReason: "missing_path" }
+  }
+  if (!path.isAbsolute(input.workspacePath)) {
+    throw new SocratesError("workspace_path_not_absolute", "Workspace path must be absolute", {
+      details: { workspacePath: input.workspacePath },
+    })
+  }
+
+  const resourcesPath = path.resolve(input.workspacePath, ".socrates", "resources")
+  const resourcePath = path.resolve(input.resourcePath)
+  if (!isPathInsideDirectory(resourcesPath, resourcePath)) {
+    return { deleted: false, skippedReason: "outside_resources" }
+  }
+
+  try {
+    const stat = fs.statSync(resourcePath)
+    if (!stat.isFile()) {
+      throw new SocratesError("resource_file_delete_failed", "Only uploaded resource files can be deleted", {
+        details: { resourcePath },
+        recoverable: true,
+      })
+    }
+    fs.rmSync(resourcePath)
+    return { deleted: true }
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException
+    if (nodeError.code === "ENOENT") {
+      return { deleted: false, skippedReason: "not_found" }
+    }
+    if (error instanceof SocratesError) {
+      throw error
+    }
+    throw new SocratesError("resource_file_delete_failed", "Could not delete the uploaded resource file", {
+      details: { resourcePath, message: nodeError.message },
+      recoverable: true,
+    })
+  }
 }
 
 export const inferResourceKind = (

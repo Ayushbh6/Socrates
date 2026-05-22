@@ -1,7 +1,7 @@
 "use client";
 
-import { ArrowUp, Brain, ChevronDown, Square, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { ArrowUp, Brain, ChevronDown, EyeOff, Square, Sparkles, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { ModelOption, ModelThinkingOption } from "@socrates/contracts";
 
 interface ChatComposerProps {
@@ -10,6 +10,7 @@ interface ChatComposerProps {
   models: ModelOption[];
   selectedModel: ModelOption | null;
   selectedThinkingOption: ModelThinkingOption | null;
+  warningResetKey?: string;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
   onSend: (content: string) => Promise<void>;
@@ -22,6 +23,7 @@ export function ChatComposer({
   models,
   selectedModel,
   selectedThinkingOption,
+  warningResetKey,
   onModelChange,
   onThinkingChange,
   onSend,
@@ -30,7 +32,16 @@ export function ChatComposer({
   const [content, setContent] = useState("");
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isThinkingMenuOpen, setIsThinkingMenuOpen] = useState(false);
+  const [dismissedVisionWarningKey, setDismissedVisionWarningKey] = useState<string | null>(null);
   const canSend = content.trim().length > 0 && !isSending && isConnected && Boolean(selectedModel);
+  const selectedModelHasNoVision = selectedModel?.capabilities?.vision === false;
+  const selectedModelKey = selectedModel ? `${selectedModel.providerId}:${selectedModel.modelId}` : "none";
+  const visionWarningKey = `${warningResetKey ?? "default"}:${selectedModelKey}`;
+  const shouldShowVisionWarning = selectedModelHasNoVision && dismissedVisionWarningKey !== visionWarningKey;
+
+  useEffect(() => {
+    setDismissedVisionWarningKey(null);
+  }, [selectedModelKey, warningResetKey]);
 
   const handleSend = async () => {
     const nextContent = content.trim();
@@ -53,6 +64,20 @@ export function ChatComposer({
         void handleSend();
       }}
     >
+      {shouldShowVisionWarning && (
+        <div className="mb-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+          <EyeOff className="mt-0.5 size-4 shrink-0" />
+          <span>{selectedModel.label} does not support vision. It can read extracted text/metadata, but it cannot directly inspect images or screenshots.</span>
+          <button
+            type="button"
+            aria-label="Dismiss vision warning"
+            onClick={() => setDismissedVisionWarningKey(visionWarningKey)}
+            className="-mr-1 ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-full text-amber-700 transition-colors hover:bg-amber-100 hover:text-amber-900"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
       <div className="relative rounded-2xl border border-gray-200 bg-white shadow-sm">
         <textarea
           className="block min-h-28 w-full resize-none rounded-2xl bg-white px-5 py-4 pb-16 pr-16 text-base leading-7 text-brand-text-dark outline-none placeholder:text-brand-text-light focus:border-brand-teal-dark"
@@ -97,7 +122,10 @@ export function ChatComposer({
                     }}
                   >
                     <span className="font-medium">{model.label}</span>
-                    <span className="text-xs">{model.providerLabel}</span>
+                    <span className="text-xs">
+                      {model.providerLabel}
+                      {model.capabilities?.vision === false ? " · no vision" : ""}
+                    </span>
                   </button>
                 ))}
               </div>

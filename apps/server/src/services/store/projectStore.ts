@@ -7,7 +7,7 @@ import type {
   ProjectResource,
   ProjectWorkspace,
 } from "@socrates/contracts"
-import { createId, nowIso } from "@socrates/shared"
+import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { ensureWorkspaceScaffold, pickWorkspaceFolder } from "@socrates/workspace"
 import { and, count, desc, eq, inArray } from "drizzle-orm"
 import { conversations, projectResources, projects } from "../../db/schema"
@@ -103,7 +103,11 @@ export class ProjectStore extends StoreBase {
   getProjectDashboard(projectId: string): ProjectDashboard {
     const project = mapProject(this.mustGetProjectRow(projectId))
     const workspaceRow = this.mustGetPrimaryWorkspaceRow(projectId)
-    const resourceRows = this.handle.db.select().from(projectResources).where(eq(projectResources.projectId, projectId)).all()
+    const resourceRows = this.handle.db
+      .select()
+      .from(projectResources)
+      .where(and(eq(projectResources.projectId, projectId), inArray(projectResources.status, ["active", "processing", "failed", "archived"])))
+      .all()
     const conversationRows = this.handle.db
       .select()
       .from(conversations)
@@ -132,6 +136,14 @@ export class ProjectStore extends StoreBase {
       ...(project.description ? { projectDescription: project.description } : {}),
       ...(instructionRow ? { projectInstructions: instructionRow.content } : {}),
     }
+  }
+
+  getPrimaryWorkspacePath(projectId: string): string {
+    const workspace = this.mustGetPrimaryWorkspaceRow(projectId)
+    if (!workspace.path) {
+      throw new SocratesError("project_workspace_path_missing", "Project primary workspace has no path", { details: { projectId } })
+    }
+    return workspace.path
   }
 
   patchProject(projectId: string, input: PatchProjectRequest): Project {

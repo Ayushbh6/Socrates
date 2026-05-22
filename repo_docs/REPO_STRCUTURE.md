@@ -43,6 +43,7 @@ Socrates/
       src/
         agent/
         prompts/
+        tools/
         test/
 
     workspace/
@@ -252,6 +253,31 @@ It owns:
 
 The core package should depend on interfaces and contracts, not hardcoded providers or UI details.
 
+V1 model-visible tools live under `packages/core/src/tools/`.
+
+Target structure:
+
+```text
+tools/
+  types.ts
+  registry.ts
+  readTool.ts
+  searchTool.ts
+  editTool.ts
+  bashTool.ts
+  traceRetrieveTool.ts
+  listProjectResourcesTool.ts
+```
+
+Rules for core tool files:
+
+- One model-visible tool per small file.
+- `registry.ts` is the only place that assembles the enabled tool set.
+- Tool argument and result schemas come from `packages/contracts`.
+- Tool files handle model-facing descriptions, schema binding, permission metadata, and calls into the owning implementation package.
+- Tool files must not contain raw filesystem, shell, git, patch, PDF, document, slide, or image parsing implementation.
+- Do not create a god `ToolRegistry` class that mixes schemas, permissions, execution, and implementation details.
+
 Example responsibility:
 
 ```text
@@ -279,6 +305,7 @@ It owns the low-level implementation for:
 - Creating the `.socrates/` workspace scaffold.
 - Storing project resources under `.socrates/resources/`.
 - Reading files.
+- Reading PDFs, documents, slide decks, images, and structured data through bounded extractors.
 - Writing files.
 - Listing directories.
 - Searching with `rg`.
@@ -287,6 +314,7 @@ It owns the low-level implementation for:
 - Cancelling commands.
 - Reading git status and diffs.
 - Applying patches.
+- Reading persisted tool traces for retrieval when requested by the core.
 
 Important distinction:
 
@@ -296,6 +324,25 @@ packages/core/tools = what the agent is allowed to call
 ```
 
 The model-facing tool definition belongs in `packages/core/tools`. The raw filesystem, shell, git, and patch implementation belongs in `packages/workspace`.
+
+The V1 model-visible tool surface is:
+
+```text
+read
+search
+edit
+bash
+trace_retrieve
+list_project_resources
+```
+
+Implementation can be split into narrower workspace files such as text readers, PDF readers, image readers, search helpers, patch helpers, shell runners, and trace readers. These are internal helpers, not separate model-visible tools.
+
+Reader implementations should stay pragmatic. The initial `read` implementation can wrap local extractors or lightweight libraries, for example text file reads, `pdftotext`-style PDF extraction when available, document/slide text extraction, CSV/JSON previews, and image metadata or OCR/description extraction. Socrates should not build a large document-processing platform before the coding-agent loop works.
+
+The `bash` implementation remains a real escape hatch. Even when a structured reader/searcher exists, approved shell commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on shell commands that overlap with `read` or `search`. Bash uses a workspace-owned non-interactive shell session that is created lazily per active turn, reused for later bash calls in that turn, and disposed when the turn completes, fails, or is cancelled.
+
+`list_project_resources` is a read-only model-visible tool, but its executor belongs to the server/store boundary because it reads project resource records. It must not scan `.socrates/resources/` with shell commands; it asks `SocratesStore` for active visible project resources and returns bounded filenames/metadata so the model can choose a follow-up `read`. The model-visible input stays intentionally small: `kind` and `limit`.
 
 ### `packages/providers`
 

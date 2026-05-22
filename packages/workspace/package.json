@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@socrates/contracts": "workspace:*",
     "@socrates/shared": "workspace:*"
   },
   "devDependencies": {

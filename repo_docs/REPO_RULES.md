@@ -197,6 +197,33 @@ Tool definitions belong in `packages/core/tools`.
 
 Tool implementation details belong in the package that owns the capability, usually `packages/workspace`.
 
+The V1 model-visible tool surface is intentionally small:
+
+```text
+read
+search
+edit
+bash
+trace_retrieve
+list_project_resources
+```
+
+Do not expose separate `glob`, `grep`, `write`, `patch`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above.
+
+Each model-visible tool must live in its own small TypeScript file under `packages/core/tools/`, with a single unified registry that exposes the enabled tools to the agent. Do not put all tools into one large class or one large mixed implementation file.
+
+The `read`, `search`, `trace_retrieve`, and `list_project_resources` tools are read-only. They may be auto-allowed when scoped to the project workspace and bounded by output limits.
+
+`list_project_resources` must use backend project resource records and should be preferred before shell probing when the user asks about uploaded project files under `.socrates/resources/`. Its model-visible input is limited to `kind` and `limit`, and its output must stay to filenames/metadata only.
+
+The `edit` tool is the only V1 model-visible file mutation tool. It must cover creating new files, overwriting files, precise multiline replacement, and patch-style edits. It must show a diff or equivalent preview and require approval unless the user explicitly runs a full-access mode.
+
+The `bash` tool is the only V1 model-visible command execution tool. It may run git, package managers, test commands, Docker, and other shell commands, but policy decides whether each command is auto-allowed, approval-gated, or denied. Destructive, network, install, git mutation, and outside-workspace commands require approval by default.
+
+The agent should prefer `read` for file/document/image inspection and `search` for file discovery or content search because those tools provide bounded structured output. This is a preference, not a hard restriction. If `read` or `search` fails or gives poor output, an approved `bash` fallback such as a local extractor, `cat`, `find`, `grep`, or `pdftotext` may still run. Do not deny a legitimate approved bash command solely because a more specialized Socrates tool exists.
+
+Tool outputs must be bounded. `read` uses a default `charLimit` of 20,000 characters, a normal backend per-call cap of 80,000 characters, and explicit truncation metadata when output is cut. Large files, PDFs, documents, slides, command outputs, and trace retrieval results must be paged or summarized instead of dumped wholesale into model context.
+
 ## 11. Dangerous Actions Require Approval
 
 The agent must request user approval before actions that can change the system or consume meaningful resources.

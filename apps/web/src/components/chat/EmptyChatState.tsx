@@ -10,6 +10,7 @@ interface EmptyChatStateProps {
   models: ModelOption[];
   selectedModel: ModelOption | null;
   selectedThinkingOption: ModelThinkingOption | null;
+  warningResetKey?: string;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
   onSend: (content: string) => Promise<void>;
@@ -23,6 +24,7 @@ export function EmptyChatState({
   models,
   selectedModel,
   selectedThinkingOption,
+  warningResetKey,
   onModelChange,
   onThinkingChange,
   onSend,
@@ -37,6 +39,7 @@ export function EmptyChatState({
         models={models}
         selectedModel={selectedModel}
         selectedThinkingOption={selectedThinkingOption}
+        warningResetKey={warningResetKey}
         onModelChange={onModelChange}
         onThinkingChange={onThinkingChange}
         onSend={onSend}

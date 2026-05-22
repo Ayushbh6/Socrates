@@ -35,6 +35,7 @@ const makeModel = (input: Omit<ModelOption, "providerLabel" | "isDefault"> & { i
   ...input,
   providerLabel: providerLabel(input.providerId),
   isDefault: input.isDefault ?? false,
+  capabilities: input.capabilities ?? { vision: true },
 })
 
 export const modelCatalog = [
@@ -99,6 +100,7 @@ export const modelCatalog = [
     modelId: "z-ai/glm-5.1",
     label: "GLM 5.1",
     contextWindowTokens: 202800,
+    capabilities: { vision: false },
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",
   }),
@@ -115,6 +117,7 @@ export const modelCatalog = [
     modelId: "deepseek/deepseek-v4-pro",
     label: "DeepSeek V4 Pro",
     contextWindowTokens: 1048576,
+    capabilities: { vision: false },
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",
     isDefault: true,
@@ -124,6 +127,7 @@ export const modelCatalog = [
     modelId: "deepseek/deepseek-v4-flash",
     label: "DeepSeek V4 Flash",
     contextWindowTokens: 1048576,
+    capabilities: { vision: false },
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",
   }),

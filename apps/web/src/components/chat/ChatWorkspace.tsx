@@ -9,6 +9,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatTranscript } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
+import { type PendingApproval, type ToolTimelineItem } from "./ToolTimelineTypes";
 
 interface ChatWorkspaceProps {
   projectId: string;
@@ -27,6 +28,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [liveThinking, setLiveThinking] = useState("");
   const [liveAnswer, setLiveAnswer] = useState("");
+  const [liveTools, setLiveTools] = useState<ToolTimelineItem[]>([]);
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,6 +67,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       if (event.type === "turn.started") {
         setActiveTurnId(event.payload.turnId);
         setIsSending(true);
+        setLiveTools([]);
+        setApprovals([]);
         setConversationData((current) => {
           const messages = current?.messages ?? [];
           const withoutDuplicate = messages.filter((message) => message.id !== event.payload.userMessage.id);
@@ -78,6 +83,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   updatedAt: event.timestamp,
                 },
                 messages: [event.payload.userMessage],
+                toolRuns: [],
                 tokenUsage: { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
               };
         });
@@ -107,11 +113,98 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "tool.call.started") {
+        setLiveTools((current) => [
+          ...current.filter((tool) => tool.toolCallId !== event.payload.toolCallId),
+          {
+            toolCallId: event.payload.toolCallId,
+            conversationId,
+            sessionId: event.sessionId ?? "live",
+            turnId: event.turnId ?? activeTurnId ?? "live",
+            toolName: event.payload.toolName,
+            displayName: event.payload.displayName,
+            category: event.payload.category,
+            status: event.payload.requiresApproval ? "awaiting_approval" : "running",
+            requiresApproval: event.payload.requiresApproval,
+            argsPreview: event.payload.argsPreview,
+            output: "",
+          },
+        ]);
+        return;
+      }
+
+      if (event.type === "tool.call.output") {
+        setLiveTools((current) =>
+          current.map((tool) =>
+            tool.toolCallId === event.payload.toolCallId
+              ? appendToolOutput(tool, event.payload.stream, event.payload.text ?? "")
+              : tool,
+          ),
+        );
+        return;
+      }
+
+      if (event.type === "tool.call.completed") {
+        setLiveTools((current) =>
+          current.map((tool) =>
+            tool.toolCallId === event.payload.toolCallId
+              ? {
+                  ...tool,
+                  status: "completed",
+                  summary: event.payload.summary,
+                  resultPreview: event.payload.resultPreview,
+                  durationMs: event.payload.durationMs,
+                }
+              : tool,
+          ),
+        );
+        return;
+      }
+
+      if (event.type === "tool.call.failed") {
+        setLiveTools((current) =>
+          current.map((tool) =>
+            tool.toolCallId === event.payload.toolCallId
+              ? { ...tool, status: "failed", error: event.payload.error.message }
+              : tool,
+          ),
+        );
+        return;
+      }
+
+      if (event.type === "approval.requested") {
+        setApprovals((current) => [
+          ...current.filter((approval) => approval.approvalId !== event.payload.approvalId),
+          { ...event.payload, status: "pending" },
+        ]);
+        return;
+      }
+
+      if (event.type === "approval.resolved") {
+        setApprovals((current) =>
+          current.map((approval) =>
+            approval.approvalId === event.payload.approvalId ? { ...approval, status: event.payload.decision } : approval,
+          ),
+        );
+        if (event.payload.toolCallId) {
+          setLiveTools((current) =>
+            current.map((tool) =>
+              tool.toolCallId === event.payload.toolCallId
+                ? { ...tool, status: event.payload.decision === "approved" ? "running" : "rejected" }
+                : tool,
+            ),
+          );
+        }
+        return;
+      }
+
       if (event.type === "turn.completed") {
         setIsSending(false);
         setActiveTurnId(null);
         setLiveAnswer("");
         setLiveThinking("");
+        setLiveTools([]);
+        setApprovals([]);
         void refreshConversation();
         return;
       }
@@ -121,6 +214,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setActiveTurnId(null);
         setLiveAnswer("");
         setLiveThinking("");
+        setLiveTools([]);
+        setApprovals([]);
         return;
       }
 
@@ -255,6 +350,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 updatedAt: new Date().toISOString(),
               },
               messages: [optimisticMessage],
+              toolRuns: [],
               tokenUsage: { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
             },
       );
@@ -276,7 +372,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             thinkingEnabled: selectedThinkingOption.enabled,
             ...(selectedThinkingOption.effort ? { thinkingEffort: selectedThinkingOption.effort } : {}),
             approvalMode: "manual",
-            sandboxMode: "read_only",
+            sandboxMode: "workspace_write",
           },
         },
       };
@@ -286,6 +382,23 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       setIsSending(false);
       throw err;
     }
+  };
+
+  const handleApprovalDecision = (approvalId: string, decision: "approved" | "rejected") => {
+    const command: ClientCommand = {
+      id: `cmd_${crypto.randomUUID()}`,
+      type: "approval.decide",
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      projectId,
+      conversationId,
+      actor: { type: "user" },
+      payload: {
+        approvalId,
+        decision,
+      },
+    };
+    sendCommand(command);
   };
 
   const handleStop = () => {
@@ -310,6 +423,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   };
 
   const messages: Message[] = conversationData?.messages ?? [];
+  const toolRuns = conversationData?.toolRuns ?? [];
   const conversationTitle = conversationData?.conversation.title ?? "New conversation";
   const tokenTotal = conversationData?.tokenUsage.totalTokens ?? 0;
   const tokenLabel = useMemo(() => `${tokenTotal.toLocaleString()} ${tokenTotal === 1 ? "token" : "tokens"}`, [tokenTotal]);
@@ -346,6 +460,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             models={models}
             selectedModel={selectedModel}
             selectedThinkingOption={selectedThinkingOption}
+            warningResetKey={conversationId}
             onModelChange={handleModelChange}
             onThinkingChange={handleThinkingChange}
             onSend={handleSend}
@@ -353,7 +468,16 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           />
         ) : (
           <>
-            <ChatTranscript messages={messages} liveThinking={liveThinking} liveAnswer={liveAnswer} isStreaming={isSending} />
+            <ChatTranscript
+              messages={messages}
+              toolRuns={toolRuns}
+              liveThinking={liveThinking}
+              liveAnswer={liveAnswer}
+              liveTools={liveTools}
+              approvals={approvals}
+              isStreaming={isSending}
+              onApprovalDecision={handleApprovalDecision}
+            />
             <div className="border-t border-gray-100 bg-white px-6 py-4">
               <div className="mx-auto max-w-3xl">
                 {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
@@ -363,6 +487,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   models={models}
                   selectedModel={selectedModel}
                   selectedThinkingOption={selectedThinkingOption}
+                  warningResetKey={conversationId}
                   onModelChange={handleModelChange}
                   onThinkingChange={handleThinkingChange}
                   onSend={handleSend}
@@ -376,3 +501,17 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     </main>
   );
 }
+
+const appendToolOutput = (
+  tool: ToolTimelineItem,
+  stream: "stdout" | "stderr" | "log" | "result",
+  text: string,
+): ToolTimelineItem => {
+  if (stream === "stdout") {
+    return { ...tool, output: `${tool.output}${text}`, stdout: `${tool.stdout ?? ""}${text}` };
+  }
+  if (stream === "stderr") {
+    return { ...tool, output: `${tool.output}${text}`, stderr: `${tool.stderr ?? ""}${text}` };
+  }
+  return { ...tool, output: `${tool.output}${text}` };
+};

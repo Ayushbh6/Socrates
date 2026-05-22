@@ -21,6 +21,12 @@ export const modelOptionSchema = z
     label: z.string().min(1),
     isDefault: z.boolean(),
     contextWindowTokens: z.number().int().positive().optional(),
+    capabilities: z
+      .object({
+        vision: z.boolean(),
+      })
+      .strict()
+      .optional(),
     thinkingOptions: z.array(modelThinkingOptionSchema).min(1),
     defaultThinkingOptionId: z.string().min(1),
   })

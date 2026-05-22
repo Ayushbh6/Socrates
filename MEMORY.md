@@ -225,3 +225,94 @@ Chat UI behavior:
 - Implemented the `/projects/:projectId/chats/:conversationId` chat workspace with centered empty-chat composer, bottom composer after messages, streamed AI transcript, compact model/thinking controls, cumulative token header, first-token loading indicator, and collapsible project/conversation sidebar.
 - All UI elements have been properly compartmentalized into `apps/web/src/components/` according to `REPO_RULES`.
 - Frontend onboarding, projects, project dashboard, resource upload, model catalog, conversation loading, and WebSocket chat flows are now wired to real backend APIs/contracts through `apps/web/src/lib/api.ts` and `apps/web/src/hooks/useSocratesSocket.ts`.
+
+## Tooling, Tool Timeline, And Resource Management Sprint
+
+Implemented the first production-grade Socrates tool loop and inline tool UI.
+
+Agent/tool runtime:
+
+- `packages/contracts/src/tools.ts` now owns shared schemas and types for Socrates tools, tool execution results, approval payloads, truncation metadata, provider metadata, and persisted tool history contracts.
+- The model-visible tool registry lives under `packages/core/src/tools/`, with one small file per tool and one unified registry.
+- The current model-visible tool surface is:
+
+```text
+read
+search
+edit
+bash
+trace_retrieve
+list_project_resources
+```
+
+- `read`, `search`, `trace_retrieve`, and `list_project_resources` are read-only and parallel-capable.
+- `edit` is serialized.
+- `bash` is serialized and does not run concurrently with `edit`.
+- `maxParallelToolCalls` defaults to `5`.
+- `maxToolCallsPerTurn` defaults to `80`; if the budget is exhausted, Socrates performs a final no-tools model call so the assistant can answer from available evidence.
+- Current-turn tool calls/results are passed back to the model until the final answer is reached.
+- Later user turns still carry forward prior user/final-assistant dialogue only; old tool calls, tool results, and reasoning are not loaded as semantic prompt history.
+- Old tool evidence is available only through `trace_retrieve`.
+
+Workspace/server implementation:
+
+- `packages/workspace/src/tools/` owns local filesystem, search, edit, and shell execution helpers.
+- `read` supports bounded file/dir/resource reads, pragmatic text/data extraction, image metadata, and truncation metadata.
+- `search` supports bounded file and text search with ignore handling.
+- `edit` supports create, overwrite, exact multiline replace, and patch-style edits with diff previews and approval policy.
+- `bash` uses one non-interactive persistent shell session per active turn, keeps `cwd`/environment across bash calls in that turn, streams output, enforces timeout/output caps, rejects or times out likely interactive commands, and resets the shell after timeout.
+- `apps/server/src/services/store/toolStore.ts` persists tool calls, shell commands/output, file operations, patches, approvals, and trace retrieval data.
+- `apps/server/src/ws/activeTurns.ts` owns active turn state, approval waiters, abort controllers, and per-turn shell session lifecycle.
+- `approval.decide` persists the decision and wakes the waiting active turn.
+
+Provider behavior:
+
+- Providers still only normalize model events. They do not execute tools.
+- The AI SDK adapter passes Socrates tool definitions to `streamText`, normalizes tool-call parts into Socrates events, and preserves opaque `providerMetadata`.
+- Gemini thought signatures are preserved as `providerMetadata.google.thoughtSignature` only inside the active same-turn tool loop and are passed back on assistant tool-call parts for Gemini continuation.
+- Gemini thought signatures are not displayed and are not loaded into later-turn semantic history.
+- OpenRouter thinking off remains explicit: `providerOptions.openrouter.reasoning = { effort: "none", exclude: true }`.
+- OpenRouter still uses AI SDK `smoothStream` for nicer burst rendering after chunks arrive; this does not reduce upstream time-to-first-token.
+
+Frontend behavior:
+
+- Chat transcripts render a Codex-style inline tool timeline instead of card-heavy separate tool panels.
+- Tool rows are collapsed by default with icon, status, concise summary, duration, and expandable details.
+- Expanded details show inputs, search snippets, read previews, edit diffs, bash command/output, trace summaries, resource lists, errors, and completion status.
+- Approval prompts render inline under the relevant tool row with adjacent Approve/Reject actions.
+- Historical `toolRuns` are returned by conversation GET and merged with live WebSocket tool events so completed tool flows reload with conversation history.
+- The chat composer shows a dismissible warning for non-vision models when image understanding is relevant; the warning resets for each new conversation or model switch back to a non-vision model.
+
+Resource management:
+
+- Project resources can be removed from the dashboard Files panel with a hover/focus `X`, confirmation, backend deletion, and local state update.
+- `DELETE /api/projects/:projectId/resources/:resourceId` marks the row deleted and removes only Socrates-owned uploaded copies inside `<workspace>/.socrates/resources/`.
+- Linked, URL, manual, or unknown-owned resources are soft-deleted only; arbitrary external paths are never physically deleted.
+- Normal project/resource listings exclude deleted resources.
+- `list_project_resources` is intentionally simple for the agent: it lists active Socrates-known project resources as filenames and metadata only.
+- `list_project_resources` model-visible inputs are only:
+
+```ts
+{
+  kind?: "pdf" | "document" | "text" | "image" | "url" | "local_file" | "note" | "other"
+  limit?: number
+}
+```
+
+- `list_project_resources` returns metadata only: `id`, `name`, `kind`, `source`, `uri`, `mimeType`, `sizeBytes`, and `status`. It never returns PDF/image/document contents; the agent must call `read` on a specific `uri` to inspect content.
+
+Prompt/current behavior:
+
+- The Socrates master prompt now describes local-first/project-first behavior, tool choice, context gathering before edits, approval-aware edit/bash behavior, verification expectations, `.socrates/` rules, concise user communication, and a restrained Socratic sacred-sage personality.
+- `.socrates/` is Socrates-owned project memory/runtime space.
+- `.socrates/resources/` stores uploaded project resources today.
+- Future `.socrates/` subfolders may hold scratchpad or memory; the agent should not treat `.socrates/` as random app source unless the user asks or the current feature requires it.
+
+Validation commands passed after this sprint:
+
+```text
+pnpm typecheck
+pnpm test
+pnpm build
+git diff --check
+```

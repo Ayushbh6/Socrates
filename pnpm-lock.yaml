@@ -216,6 +216,9 @@ importers:
 
   packages/workspace:
     dependencies:
+      '@socrates/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@socrates/shared':
         specifier: workspace:*
         version: link:../shared

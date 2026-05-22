@@ -17,6 +17,7 @@ import { apiError, fail, ok, toApiError } from "../http"
 import type { SocratesStore, UploadedResourceInput } from "../services/store"
 
 const projectParamsSchema = z.object({ projectId: z.string().min(1) }).strict()
+const resourceParamsSchema = z.object({ projectId: z.string().min(1), resourceId: z.string().min(1) }).strict()
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
 
 const parseBody = <T>(schema: z.ZodType<T>, body: unknown): T => {
@@ -175,6 +176,16 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
       }
 
       return ok({ resources: store.createUploadedResources(projectId, uploads) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.delete("/api/projects/:projectId/resources/:resourceId", async (request, reply) => {
+    try {
+      const { projectId, resourceId } = parseParams(resourceParamsSchema, request.params)
+      return ok({ deletedResourceId: store.deleteResource(projectId, resourceId) })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

@@ -84,6 +84,92 @@ const createFailingAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createPersistentBashAgent = (): SocratesAgent => {
+  let step = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_cd",
+            toolName: "bash",
+            input: { command: "mkdir -p nested && cd nested && export SOCRATES_SERVER_TEST=ok && pwd" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_state",
+            toolName: "bash",
+            input: { command: "printf \"$SOCRATES_SERVER_TEST $(basename \"$PWD\")\"" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Shell state preserved." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createApprovalToolAgent = (): SocratesAgent => {
+  let step = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_approval",
+            toolName: "bash",
+            input: { command: "printf approved > approved.txt" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Approved command ran." }
+      yield { type: "model.completed", usage: { inputTokens: 3, outputTokens: 3, totalTokens: 6 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createGeminiSignatureAgent = (requests: unknown[]): SocratesAgent => {
+  let step = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream(request) {
+      requests.push(request)
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_resources",
+            toolName: "list_project_resources",
+            input: { kind: "pdf", limit: 1 },
+            providerMetadata: { google: { thoughtSignature: "sig_gemini_1" } },
+          },
+        }
+        yield { type: "model.completed", finishReason: "tool-calls" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Resources listed." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const parseResponse = <T>(payload: string): ApiResponse<T> => JSON.parse(payload) as ApiResponse<T>
 
 const onboard = async (app: TestServer, displayName = "Ayush"): Promise<User> => {
@@ -205,6 +291,25 @@ const chatMessageCommand = (projectId: string, conversationId: string, content: 
     },
   },
 })
+
+const chatMessageCommandWithRuntime = (
+  projectId: string,
+  conversationId: string,
+  content: string,
+  runtime: Partial<ReturnType<typeof chatMessageCommand>["payload"]["runtimeConfig"]>,
+) => {
+  const command = chatMessageCommand(projectId, conversationId, content)
+  return {
+    ...command,
+    payload: {
+      ...command.payload,
+      runtimeConfig: {
+        ...command.payload.runtimeConfig,
+        ...runtime,
+      },
+    },
+  }
+}
 
 describe("database migrations", () => {
   it("creates every backend foundation table", () => {
@@ -437,6 +542,120 @@ describe("HTTP API", () => {
       expect(fs.readFileSync(body.data.resources[0]?.uri ?? "", "utf8")).toBe("hello from upload")
       expect(body.data.resources[1]?.name).toBe("Data.csv")
       expect(body.data.resources[1]?.mimeType).toBe("text/csv")
+    }
+  })
+
+  it("deletes uploaded project resources and their owned copied files", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const boundary = "----socrates-delete-boundary"
+    const payload = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="files"; filename="Delete Me.txt"',
+        "Content-Type: text/plain",
+        "",
+        "delete me",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+    )
+
+    const uploadResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources/upload`,
+      headers: {
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    })
+    const uploadBody = parseResponse<{ resources: ProjectResource[] }>(uploadResponse.payload)
+    expect(uploadBody.ok).toBe(true)
+    if (!uploadBody.ok) {
+      throw new Error("Expected upload success")
+    }
+    const resource = uploadBody.data.resources[0]
+    expect(resource).toBeDefined()
+    expect(fs.existsSync(resource?.uri ?? "")).toBe(true)
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/resources/${resource?.id}`,
+    })
+    const deleteBody = parseResponse<{ deletedResourceId: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+    if (deleteBody.ok) {
+      expect(deleteBody.data.deletedResourceId).toBe(resource?.id)
+    }
+    expect(fs.existsSync(resource?.uri ?? "")).toBe(false)
+
+    const listBody = parseResponse<{ resources: ProjectResource[] }>(
+      (await app.inject({ method: "GET", url: `/api/projects/${project.id}/resources` })).payload,
+    )
+    expect(listBody.ok).toBe(true)
+    if (listBody.ok) {
+      expect(listBody.data.resources).toHaveLength(0)
+    }
+
+    const dashboardBody = parseResponse<{ resources: ProjectResource[] }>(
+      (await app.inject({ method: "GET", url: `/api/projects/${project.id}` })).payload,
+    )
+    expect(dashboardBody.ok).toBe(true)
+    if (dashboardBody.ok) {
+      expect(dashboardBody.data.resources).toHaveLength(0)
+    }
+
+    const sqlite = new Database(dbPath)
+    try {
+      const row = sqlite.prepare("SELECT status FROM project_resources WHERE id = ?").get(resource?.id) as { status: string }
+      expect(row.status).toBe("deleted")
+    } finally {
+      sqlite.close()
+    }
+  })
+
+  it("soft-deletes linked project resources without deleting external files", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project } = await createProject(app)
+    const externalPath = path.join(tempDir(), "external.txt")
+    fs.writeFileSync(externalPath, "external")
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources`,
+      payload: {
+        name: "External",
+        kind: "local_file",
+        source: "linked_file",
+        uri: externalPath,
+      },
+    })
+    const createBody = parseResponse<{ resource: ProjectResource }>(createResponse.payload)
+    expect(createBody.ok).toBe(true)
+    if (!createBody.ok) {
+      throw new Error("Expected linked resource creation success")
+    }
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/resources/${createBody.data.resource.id}`,
+    })
+    const deleteBody = parseResponse<{ deletedResourceId: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+    if (deleteBody.ok) {
+      expect(deleteBody.data.deletedResourceId).toBe(createBody.data.resource.id)
+    }
+    expect(fs.readFileSync(externalPath, "utf8")).toBe("external")
+
+    const listBody = parseResponse<{ resources: ProjectResource[] }>(
+      (await app.inject({ method: "GET", url: `/api/projects/${project.id}/resources` })).payload,
+    )
+    expect(listBody.ok).toBe(true)
+    if (listBody.ok) {
+      expect(listBody.data.resources).toHaveLength(0)
     }
   })
 
@@ -790,6 +1009,160 @@ describe("WebSocket API", () => {
       expect(request.system).toContain("A test project")
       expect(request.system).toContain("Always answer from the project instructions.")
       expect(request.messages.at(-1)?.content).toBe("Use the context")
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("keeps Gemini thought signatures during same-turn tool continuation and lists project resources", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createGeminiSignatureAgent(requests))
+    await onboard(app)
+    const { project } = await createProject(app)
+    await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources`,
+      payload: {
+        name: "Brief.pdf",
+        kind: "pdf",
+        source: "uploaded",
+        uri: "/tmp/socrates/.socrates/resources/Brief.pdf",
+      },
+    })
+    await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources`,
+      payload: {
+        name: "Appendix.pdf",
+        kind: "pdf",
+        source: "uploaded",
+        uri: "/tmp/socrates/.socrates/resources/Appendix.pdf",
+      },
+    })
+    await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources`,
+      payload: {
+        name: "Diagram.png",
+        kind: "image",
+        source: "uploaded",
+        uri: "/tmp/socrates/.socrates/resources/Diagram.png",
+      },
+    })
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(
+        socket,
+        chatMessageCommandWithRuntime(project.id, conversation.id, "List resources", {
+          providerId: "google",
+          modelId: "gemini-3-flash-preview",
+          thinkingEnabled: true,
+          thinkingEffort: "medium",
+        }),
+      )
+      const toolCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(toolCompleted.payload.summary).toBe("Listed 1 of 2 project resources.")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const secondRequest = requests[1] as { messages: Array<{ role: string; content: unknown }> }
+      expect(JSON.stringify(secondRequest.messages)).toContain("thoughtSignature")
+      expect(JSON.stringify(secondRequest.messages)).toContain("sig_gemini_1")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ messages: Message[] }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(JSON.stringify(body.data.messages)).not.toContain("thoughtSignature")
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("reuses one persistent bash shell for tool calls in the same turn and hydrates tool history", async () => {
+    const app = await buildTestServer(tempDbPath(), createPersistentBashAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Use bash state", { approvalMode: "approve_all" }))
+      await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{
+        toolRuns: Array<{ toolCallId: string; shell?: { stdout: string; cwd: string }; durationMs?: number }>
+      }>(response.payload)
+
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.toolRuns).toHaveLength(2)
+        expect(body.data.toolRuns[1]?.toolCallId).toBe("tcall_state")
+        expect(body.data.toolRuns[1]?.shell?.stdout).toBe("ok nested")
+        expect(body.data.toolRuns[1]?.shell?.cwd.endsWith("nested")).toBe(true)
+        expect(body.data.toolRuns[1]?.durationMs).toBeGreaterThanOrEqual(0)
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("hydrates approved tool calls with approval status", async () => {
+    const app = await buildTestServer(tempDbPath(), createApprovalToolAgent())
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Run approved command"))
+      const approval = await waitForEvent(socket, "approval.requested")
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "approval.decide",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: {
+          approvalId: approval.payload.approvalId,
+          decision: "approved",
+        },
+      })
+      await waitForEvent(socket, "approval.resolved")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{
+        toolRuns: Array<{ toolCallId: string; approval?: { status: string; decision?: string }; shell?: { exitCode?: number | null } }>
+      }>(response.payload)
+
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.toolRuns[0]?.toolCallId).toBe("tcall_approval")
+        expect(body.data.toolRuns[0]?.approval?.status).toBe("approved")
+        expect(body.data.toolRuns[0]?.approval?.decision).toBe("approved")
+        expect(body.data.toolRuns[0]?.shell?.exitCode).toBe(0)
+        expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "approved.txt"), "utf8")).toBe("approved")
+      }
     } finally {
       socket.close()
     }

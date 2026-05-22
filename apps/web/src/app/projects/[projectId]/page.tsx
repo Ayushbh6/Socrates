@@ -19,6 +19,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   const [error, setError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploadingResource, setIsUploadingResource] = useState(false);
+  const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
   const [isSavingInstructions, setIsSavingInstructions] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
   const [isSavingConversationAction, setIsSavingConversationAction] = useState(false);
@@ -73,6 +74,29 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
       throw err;
     } finally {
       setIsUploadingResource(false);
+    }
+  };
+
+  const handleDeleteResource = async (resourceId: string) => {
+    setUploadError(null);
+    setDeletingResourceId(resourceId);
+
+    try {
+      const response = await api.deleteProjectResource(projectId, resourceId);
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              resources: current.resources.filter((resource) => resource.id !== response.deletedResourceId),
+            }
+          : current,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not remove file.";
+      setUploadError(message);
+      throw err;
+    } finally {
+      setDeletingResourceId(null);
     }
   };
 
@@ -185,7 +209,9 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
             <FilesPanel
               resources={data?.resources ?? []}
               isUploading={isUploadingResource}
+              deletingResourceId={deletingResourceId}
               onUpload={data ? handleUploadResources : undefined}
+              onDelete={data ? handleDeleteResource : undefined}
             />
           </div>
         </div>

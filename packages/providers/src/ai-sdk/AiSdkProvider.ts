@@ -1,7 +1,8 @@
 import { google, createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI, openai } from "@ai-sdk/openai"
 import { createOpenRouter, openrouter } from "@openrouter/ai-sdk-provider"
-import { smoothStream, streamText, type LanguageModel, type LanguageModelUsage } from "ai"
+import { smoothStream, streamText, tool, type LanguageModel, type LanguageModelUsage, type ModelMessage as AiModelMessage } from "ai"
+import type { NormalizedToolCall, ProviderMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage } from "../types"
 
@@ -11,15 +12,13 @@ type ProviderOptions = Record<string, Record<string, JsonValue>>
 export class AiSdkProvider implements ModelProvider {
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     try {
-      yield { type: "model.started" }
+      yield { type: "model.started", ...(request.modelCallId ? { modelCallId: request.modelCallId } : {}) }
 
       const result = streamText({
         model: this.createModel(request),
         system: request.system,
-        messages: request.messages.map((message) => ({
-          role: message.role === "developer" ? "system" : message.role,
-          content: message.content,
-        })),
+        messages: request.messages.map(toAiModelMessage),
+        ...(request.tools && request.tools.length > 0 ? { tools: toAiTools(request.tools) as never } : {}),
         providerOptions: this.createProviderOptions(request),
         ...(request.providerId === "openrouter"
           ? { experimental_transform: smoothStream({ chunking: "word", delayInMs: 20 }) }
@@ -33,6 +32,12 @@ export class AiSdkProvider implements ModelProvider {
         }
         if (part.type === "text-delta" && part.text) {
           yield { type: "model.answer.delta", text: part.text }
+        }
+        if (part.type === "tool-call") {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: normalizeAiSdkToolCallPart(part),
+          }
         }
         if (part.type === "finish-step") {
           yield { type: "model.usage", usage: mapUsage(part.usage) }
@@ -85,6 +90,91 @@ export class AiSdkProvider implements ModelProvider {
     }
   }
 }
+
+const toAiTools = (tools: NonNullable<ModelRequest["tools"]>) =>
+  Object.fromEntries(
+    tools.map((definition) => [
+      definition.name,
+      tool({
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+      }),
+    ]),
+  )
+
+export const normalizeAiSdkToolCallPart = (part: {
+  toolCallId: string
+  toolName: string
+  input: unknown
+  providerMetadata?: ProviderMetadata
+}): NormalizedToolCall => ({
+  toolCallId: part.toolCallId,
+  toolName: part.toolName as NormalizedToolCall["toolName"],
+  input: part.input,
+  ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}),
+})
+
+export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiModelMessage => {
+  const role = message.role === "developer" ? "system" : message.role
+  if (typeof message.content === "string") {
+    return {
+      role,
+      content: message.content,
+    } as AiModelMessage
+  }
+
+  if (role === "tool") {
+    return {
+      role: "tool",
+      content: message.content
+        .filter((part) => part.type === "tool-result")
+        .map((part) => ({
+          type: "tool-result" as const,
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          output: toToolResultOutput(part.output),
+        })),
+    } as AiModelMessage
+  }
+
+  if (role === "assistant") {
+    return {
+      role: "assistant",
+      content: message.content.map((part) => {
+        if (part.type === "text") {
+          return { type: "text" as const, text: part.text }
+        }
+        if (part.type === "tool-call") {
+          return {
+            type: "tool-call" as const,
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.input,
+            ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}),
+          }
+        }
+        return {
+          type: "tool-result" as const,
+          toolCallId: part.toolCallId,
+          toolName: part.toolName,
+          output: toToolResultOutput(part.output),
+        }
+      }),
+    } as AiModelMessage
+  }
+
+  return {
+    role,
+    content: message.content
+      .filter((part) => part.type === "text")
+      .map((part) => ({ type: "text" as const, text: part.text })),
+  } as AiModelMessage
+}
+
+const toToolResultOutput = (output: unknown) =>
+  typeof output === "string"
+    ? { type: "text" as const, value: output }
+    : { type: "json" as const, value: output === undefined ? null : (output as never) }
 
 export const mapUsage = (usage: LanguageModelUsage | undefined): ModelUsage => {
   if (!usage) {

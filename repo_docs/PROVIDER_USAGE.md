@@ -177,6 +177,39 @@ export type ModelEvent =
 
 This interface is ours. Vercel AI SDK should be adapted into this shape, not allowed to define the whole Socrates runtime.
 
+## Tool Calling Boundary
+
+Provider tool-calling must be normalized into Socrates' own tool interface before execution.
+
+The V1 model-visible tool set is:
+
+```text
+read
+search
+edit
+bash
+trace_retrieve
+list_project_resources
+```
+
+Provider-specific tool-call formats must not leak into `packages/core/tools`, `apps/server`, or `apps/web`. `packages/providers` adapts provider tool-call deltas and completions into normalized `ModelEvent` values. `packages/core` validates the normalized tool call against schemas from `packages/contracts`, checks permission policy, and dispatches through the tool registry.
+
+The provider request may include these tools, but the provider layer must treat the tool definitions as data from Socrates. It must not define filesystem, shell, git, patch, or trace behavior itself.
+
+Normalized tool calls may carry opaque provider metadata required for same-turn continuation, for example `providerMetadata.google.thoughtSignature` on Gemini function calls. Providers must preserve this metadata when normalizing tool-call parts and when converting same-turn assistant tool-call messages back into provider messages. Core may carry it only in the active in-memory turn loop; server history loading must not add old thought signatures to later prompts.
+
+Image handling depends on provider capability. Providers with native vision support may receive image inputs through the normalized message/tool-result path when the user or `read` tool supplies an image. Non-vision providers should receive bounded OCR text, image metadata, or a generated visual description when available. Provider adapters must keep this normalized so vision support does not leak provider-specific image payloads into `apps/web`, `apps/server`, or unrelated core code.
+
+## Thinking Carry-Forward Rule
+
+Provider-exposed reasoning or thinking text may be streamed as `model.reasoning.delta`, translated to `agent.thinking.delta`, displayed in the UI, and persisted for replay when exposed.
+
+It should not be carried forward as semantic prompt context between later user queries.
+
+The next user query should normally receive previous final user/assistant dialogue, selected project context, retrieved memory/trace summaries when relevant, and current-turn tool results. It should not receive old reasoning streams just because they were available.
+
+Gemini thought signatures are not user-visible thinking text. They are opaque same-turn provider metadata for tool-call continuation, and follow the same no-future-turn-history rule.
+
 ## Provider-Specific Escape Hatch
 
 The abstraction should be clean, but not naive.

@@ -286,6 +286,7 @@ File upload behavior:
 - Clicking the files add action opens the file upload control.
 - Users may select up to 10 files at once.
 - The backend stores each uploaded file under the primary workspace `.socrates/resources/` folder and creates one `project_resources` row per file.
+- Removing a resource asks for confirmation, marks the resource row as `deleted`, removes it from project context, and deletes only Socrates-owned uploaded copies inside `.socrates/resources/`.
 - The file panel should show uploaded file previews with filename, type, and size when known.
 - The preview area must have a bounded height. It may show around four file previews before becoming scrollable.
 - The file panel must not grow indefinitely when a project has many resources.
@@ -457,12 +458,45 @@ enabled:
   provider usage persistence
   header token total after completed turns
   backend-injected user/project/instruction prompt context
-
-not yet enabled:
   workspace tools
   approvals
-  shell/file/git/patch execution
+  shell/file/patch execution
+
+not yet enabled:
+  dedicated git tool
+  sub-agent/task/todo tools
 ```
+
+## Tooling And Context Management Target
+
+The first tooling phase exposes six model-visible tools:
+
+```text
+read
+search
+edit
+bash
+trace_retrieve
+list_project_resources
+```
+
+`read` handles bounded reads of files, directories, PDFs, documents, slide decks, structured data, and images. Its default `charLimit` is 20,000 characters, with a normal backend per-call cap of 80,000 characters and clear truncation metadata. The first implementation should use pragmatic local extractors or lightweight parsers rather than overbuilding a full document-processing platform.
+
+`search` handles both file discovery and grep-style text search. It respects ignore files by default, skips nuisance/generated/binary paths by default, and returns bounded results with line numbers and snippets.
+
+`edit` is the only V1 model-visible file mutation tool. It can create files, overwrite files, make precise multiline replacements, and apply patch-style edits. It requires approval unless the user explicitly runs a full-access mode.
+
+`bash` runs shell commands from the active project workspace. It uses one non-interactive shell process per active turn, so `cwd` and exported environment can persist across bash calls inside that turn. It has a default timeout of 120 seconds, streams output, persists full command output for retrieval, and relies on policy to auto-allow, approval-gate, or deny commands. It remains an approved fallback for cases where `read`, `search`, or `edit` are insufficient; Socrates should not block a legitimate approved shell command solely because a specialized tool exists.
+
+`trace_retrieve` retrieves previous tool evidence only when useful. It prevents historical tool dumps from being carried forward in every later prompt while keeping full auditability through SQLite.
+
+`list_project_resources` lists active project resources from backend records, especially uploaded files stored under `.socrates/resources/`. It accepts only `kind` and `limit`, returns filenames and metadata only, and defaults to a modest bounded list. The agent should prefer it before shell directory probing when the user asks about uploaded resources, then call `read` on the returned URI/path when content inspection is needed.
+
+Between user queries, Socrates should carry forward final user/assistant dialogue, not full historical tool-call dumps. Within the current turn, tool calls and tool outputs may be passed back to the model until the final answer is reached.
+
+Provider-exposed thinking is shown and stored when available, but it is not used as semantic prompt context for later user queries.
+
+Gemini thought signatures and similar provider-specific tool-call metadata are same-turn-only continuation metadata. They may be carried while the active run is resolving tool calls, but they must not become later-turn semantic conversation history.
 
 ## Project-Scoped Conversations
 

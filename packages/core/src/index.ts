@@ -1,3 +1,5 @@
 export { createDefaultSocratesAgent, findModelOption, listModels } from "./agent/createDefaultSocratesAgent"
-export { SocratesAgent, type SocratesAgentTurnInput } from "./agent/SocratesAgent"
+export { SocratesAgent, type SocratesAgentEvent, type SocratesAgentTurnInput } from "./agent/SocratesAgent"
 export { buildSocratesSystemPrompt, socratesBasePrompt, type SocratesPromptContext } from "./prompts/socratesPrompt"
+export { createDefaultToolRegistry, ToolRegistry } from "./tools/registry"
+export type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent } from "./tools/types"

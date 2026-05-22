@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { SocratesAgent } from "../agent/SocratesAgent"
+import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
 import type { ModelEvent, ModelProvider } from "@socrates/providers"
 
 describe("SocratesAgent", () => {
@@ -14,7 +14,7 @@ describe("SocratesAgent", () => {
     }
 
     const agent = new SocratesAgent(provider)
-    const streamed: ModelEvent[] = []
+    const streamed: SocratesAgentEvent[] = []
     for await (const event of agent.streamTurn({
       providerId: "openai",
       modelId: "gpt-5.4-mini",
@@ -34,6 +34,93 @@ describe("SocratesAgent", () => {
     expect(streamed).toEqual(events)
     expect(JSON.stringify(seen[0])).toContain("You are Socrates")
     expect(JSON.stringify(seen[0])).toContain("Hi")
+  })
+
+  it("exposes exactly the six V1 tools", () => {
+    expect(createDefaultToolRegistry().modelDefinitions().map((tool) => tool.name)).toEqual([
+      "read",
+      "search",
+      "edit",
+      "bash",
+      "trace_retrieve",
+      "list_project_resources",
+    ])
+  })
+
+  it("executes current-turn tool calls and feeds results into a final model step", async () => {
+    const seenMessages: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      async *stream(request) {
+        seenMessages.push(request.messages)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_read_1",
+              toolName: "read",
+              input: { path: "README.md" },
+              providerMetadata: { google: { thoughtSignature: "sig_1" } },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Read it." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const executors: ToolExecutors = {
+      read: async () => ({
+        path: "README.md",
+        kind: "file",
+        content: "Socrates",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 8 },
+      }),
+      search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      trace_retrieve: async () => ({ traces: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      list_project_resources: async () => ({
+        resources: [],
+        summary: "Listed 0 project resources.",
+        totalResources: 0,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
+      }),
+    }
+
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read README" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      createModelCall: () => `mcall_${calls}`,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
+    expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
+    expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
+    expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
   })
 
   it("injects user and project context into the system prompt", async () => {

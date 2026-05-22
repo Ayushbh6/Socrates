@@ -3,6 +3,7 @@ import type {
   CompleteOnboardingRequest,
   Conversation,
   ConversationTokenUsage,
+  ConversationToolRun,
   CreateConversationMessageRequest,
   CreateConversationRequest,
   CreateProjectRequest,
@@ -16,6 +17,7 @@ import type {
   ProjectInstructions,
   ProjectResource,
   ProjectWorkspace,
+  TraceRetrieveToolInput,
   UpdateConversationRequest,
   UpsertProjectInstructionsRequest,
   User,
@@ -31,6 +33,7 @@ import { ModelTelemetryStore } from "./store/modelTelemetryStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
 import type { StoreContext } from "./store/shared"
+import { ToolStore } from "./store/toolStore"
 import { TurnStore } from "./store/turnStore"
 import type {
   AgentContext,
@@ -67,6 +70,7 @@ export class SocratesStore {
   private readonly turns: TurnStore
   private readonly approvals: ApprovalStore
   private readonly feedback: FeedbackStore
+  private readonly tools: ToolStore
 
   constructor(private readonly handle: DatabaseHandle) {
     this.events = new EventStore(handle)
@@ -85,6 +89,7 @@ export class SocratesStore {
     this.turns = new TurnStore(context, this.errors)
     this.approvals = new ApprovalStore(context)
     this.feedback = new FeedbackStore(context)
+    this.tools = new ToolStore(context)
   }
 
   close(): void {
@@ -119,12 +124,16 @@ export class SocratesStore {
     return this.projects.getAgentContext(projectId)
   }
 
+  getPrimaryWorkspacePath(projectId: string): string {
+    return this.projects.getPrimaryWorkspacePath(projectId)
+  }
+
   patchProject(projectId: string, input: PatchProjectRequest): Project {
     return this.projects.patchProject(projectId, input)
   }
 
-  listResources(projectId: string): ProjectResource[] {
-    return this.resources.listResources(projectId)
+  listResources(projectId: string, options: { includeDeleted?: boolean } = {}): ProjectResource[] {
+    return this.resources.listResources(projectId, options)
   }
 
   createResource(projectId: string, input: CreateProjectResourceRequest): ProjectResource {
@@ -133,6 +142,10 @@ export class SocratesStore {
 
   createUploadedResources(projectId: string, inputs: UploadedResourceInput[]): ProjectResource[] {
     return this.resources.createUploadedResources(projectId, inputs)
+  }
+
+  deleteResource(projectId: string, resourceId: string): string {
+    return this.resources.deleteResource(projectId, resourceId)
   }
 
   upsertProjectInstructions(projectId: string, input: UpsertProjectInstructionsRequest): ProjectInstructions {
@@ -154,8 +167,12 @@ export class SocratesStore {
   getConversation(
     projectId: string,
     conversationId: string,
-  ): { conversation: Conversation; messages: Message[]; tokenUsage: ConversationTokenUsage } {
-    return this.conversations.getConversation(projectId, conversationId)
+  ): { conversation: Conversation; messages: Message[]; toolRuns: ConversationToolRun[]; tokenUsage: ConversationTokenUsage } {
+    const conversation = this.conversations.getConversation(projectId, conversationId)
+    return {
+      ...conversation,
+      toolRuns: this.tools.getConversationToolRuns(conversationId),
+    }
   }
 
   createConversationUserMessage(
@@ -258,12 +275,64 @@ export class SocratesStore {
     this.approvals.resolveApproval(approvalId, decision, reason)
   }
 
+  createApproval(input: Parameters<ApprovalStore["createApproval"]>[0]): string {
+    return this.approvals.createApproval(input)
+  }
+
+  createToolCall(input: Parameters<ToolStore["createToolCall"]>[0]): void {
+    this.tools.createToolCall(input)
+  }
+
+  attachToolApproval(toolCallId: string, approvalId: string): void {
+    this.tools.attachApproval(toolCallId, approvalId)
+  }
+
+  markToolRunning(toolCallId: string): void {
+    this.tools.markToolRunning(toolCallId)
+  }
+
+  markToolRunningByApproval(approvalId: string): void {
+    this.tools.markToolRunningByApproval(approvalId)
+  }
+
+  completeToolCall(toolCallId: string, result: unknown): void {
+    this.tools.completeToolCall(toolCallId, result)
+  }
+
+  failToolCall(toolCallId: string, errorId?: string, rejected?: boolean): void {
+    this.tools.failToolCall(toolCallId, errorId, rejected)
+  }
+
+  createShellCommand(input: Parameters<ToolStore["createShellCommand"]>[0]): string {
+    return this.tools.createShellCommand(input)
+  }
+
+  appendShellOutput(toolCallId: string, stream: "stdout" | "stderr" | "log" | "result", text: string): void {
+    this.tools.appendShellOutput(toolCallId, stream, text)
+  }
+
+  completeShellCommand(toolCallId: string, input: Parameters<ToolStore["completeShellCommand"]>[1]): void {
+    this.tools.completeShellCommand(toolCallId, input)
+  }
+
+  recordFileOperations(input: Parameters<ToolStore["recordFileOperations"]>[0]): void {
+    this.tools.recordFileOperations(input)
+  }
+
+  recordPatch(input: Parameters<ToolStore["recordPatch"]>[0]): void {
+    this.tools.recordPatch(input)
+  }
+
+  retrieveToolTraces(projectId: string, input: TraceRetrieveToolInput) {
+    return this.tools.retrieveTraces(projectId, input)
+  }
+
   submitFeedback(payload: FeedbackSubmitPayload): void {
     this.feedback.submitFeedback(payload)
   }
 
-  recordError(input: RecordErrorInput): void {
-    this.errors.recordError(input)
+  recordError(input: RecordErrorInput): string {
+    return this.errors.recordError(input)
   }
 
   appendEvent(input: StoreEventInput): void {

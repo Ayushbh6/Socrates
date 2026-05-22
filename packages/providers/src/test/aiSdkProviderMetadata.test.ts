@@ -1,0 +1,48 @@
+import { describe, expect, it } from "vitest"
+import { normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
+
+describe("AI SDK provider metadata", () => {
+  it("preserves Gemini thought signatures from streamed tool calls", () => {
+    expect(
+      normalizeAiSdkToolCallPart({
+        toolCallId: "call_1",
+        toolName: "read",
+        input: { path: "README.md" },
+        providerMetadata: { google: { thoughtSignature: "sig_1" } },
+      }),
+    ).toEqual({
+      toolCallId: "call_1",
+      toolName: "read",
+      input: { path: "README.md" },
+      providerMetadata: { google: { thoughtSignature: "sig_1" } },
+    })
+  })
+
+  it("passes provider metadata back on assistant tool-call messages", () => {
+    expect(
+      toAiModelMessage({
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call_1",
+            toolName: "read",
+            input: { path: "README.md" },
+            providerMetadata: { google: { thoughtSignature: "sig_1" } },
+          },
+        ],
+      }),
+    ).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call_1",
+          toolName: "read",
+          input: { path: "README.md" },
+          providerMetadata: { google: { thoughtSignature: "sig_1" } },
+        },
+      ],
+    })
+  })
+})

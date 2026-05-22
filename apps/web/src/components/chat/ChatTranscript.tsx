@@ -1,32 +1,54 @@
 "use client";
 
-import type { Message } from "@socrates/contracts";
+import type { ConversationToolRun, Message } from "@socrates/contracts";
 import { ChevronDown } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChatToolTimeline } from "./ChatToolTimeline";
+import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
+import { toolRunToTimelineItem } from "./ToolTimelineTypes";
 
 interface ChatTranscriptProps {
   messages: Message[];
+  toolRuns?: ConversationToolRun[];
   liveThinking?: string;
   liveAnswer?: string;
+  liveTools?: ToolTimelineItem[];
+  approvals?: PendingApproval[];
   isStreaming?: boolean;
+  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
 }
 
-export function ChatTranscript({ messages, liveThinking, liveAnswer, isStreaming }: ChatTranscriptProps) {
-  const isWaitingForFirstToken = Boolean(isStreaming && !liveThinking && !liveAnswer);
+export function ChatTranscript({
+  messages,
+  toolRuns = [],
+  liveThinking,
+  liveAnswer,
+  liveTools = [],
+  approvals = [],
+  isStreaming,
+  onApprovalDecision,
+}: ChatTranscriptProps) {
+  const isWaitingForFirstToken = Boolean(isStreaming && !liveThinking && !liveAnswer && liveTools.length === 0);
+  const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
         {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+          <MessageBubble
+            key={message.id}
+            message={message}
+            tools={message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : []}
+          />
         ))}
         {(liveThinking || liveAnswer || isStreaming) && (
           <div className="flex justify-start">
-            <div className="max-w-2xl rounded-2xl rounded-tl-sm border border-gray-200 bg-white px-4 py-3 text-sm leading-6 text-brand-text-dark shadow-sm">
+            <div className="w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
               {liveThinking && (
                 <ThinkingBlock content={liveThinking} defaultOpen />
               )}
+              <ChatToolTimeline tools={liveTools} approvals={approvals} onApprovalDecision={onApprovalDecision} />
               {liveAnswer ? <MarkdownContent content={liveAnswer} /> : isWaitingForFirstToken ? <FirstTokenLoader /> : null}
             </div>
           </div>
@@ -47,7 +69,7 @@ function FirstTokenLoader() {
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({ message, tools }: { message: Message; tools: ToolTimelineItem[] }) {
   const isUser = message.role === "user";
 
   return (
@@ -64,12 +86,23 @@ function MessageBubble({ message }: { message: Message }) {
         ) : (
           <>
             {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
+            <ChatToolTimeline tools={tools} />
             <MarkdownContent content={message.content} />
           </>
         )}
       </div>
     </div>
   );
+}
+
+function groupToolRunsByTurn(toolRuns: ConversationToolRun[]): Map<string, ToolTimelineItem[]> {
+  const grouped = new Map<string, ToolTimelineItem[]>();
+  for (const run of toolRuns) {
+    const tools = grouped.get(run.turnId) ?? [];
+    tools.push(toolRunToTimelineItem(run));
+    grouped.set(run.turnId, tools);
+  }
+  return grouped;
 }
 
 function ThinkingBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
