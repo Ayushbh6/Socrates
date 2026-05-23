@@ -1,5 +1,5 @@
 import { createId, nowIso, SocratesError } from "@socrates/shared"
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { approvals } from "../../db/schema"
 import { StoreBase } from "./shared"
 
@@ -49,6 +49,19 @@ export class ApprovalStore extends StoreBase {
         metadataJson: JSON.stringify({ reason }),
       })
       .where(eq(approvals.id, approvalId))
+      .run()
+  }
+
+  rejectPendingForTurn(turnId: string, reason?: string): void {
+    this.handle.db
+      .update(approvals)
+      .set({
+        status: "rejected",
+        decision: "rejected",
+        decidedAt: nowIso(),
+        metadataJson: JSON.stringify({ reason: reason ?? "Turn was cancelled.", cancelled: true }),
+      })
+      .where(and(eq(approvals.turnId, turnId), eq(approvals.status, "pending")))
       .run()
   }
 }

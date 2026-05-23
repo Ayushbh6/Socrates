@@ -114,6 +114,9 @@ export const messageSchema = z
     role: messageRoleSchema,
     content: z.string(),
     reasoning: z.string().optional(),
+    partial: z.boolean().optional(),
+    cancelled: z.boolean().optional(),
+    cancellationReason: z.string().optional(),
     status: messageStatusSchema,
     createdAt: timestampSchema,
   })

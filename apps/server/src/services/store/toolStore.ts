@@ -1,6 +1,6 @@
 import type { ConversationToolRun, TraceRetrieveToolInput, TraceRetrieveToolOutput, ToolName } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
-import { eq, inArray } from "drizzle-orm"
+import { and, eq, inArray } from "drizzle-orm"
 import { approvals, fileOperations, patches, shellCommands, shellOutputChunks, toolCalls } from "../../db/schema"
 import { StoreBase } from "./shared"
 
@@ -68,6 +68,15 @@ export class ToolStore extends StoreBase {
       .run()
   }
 
+  cancelOpenToolCallsForTurn(turnId: string): void {
+    const now = nowIso()
+    this.handle.db
+      .update(toolCalls)
+      .set({ status: "cancelled", completedAt: now })
+      .where(and(eq(toolCalls.turnId, turnId), inArray(toolCalls.status, ["running", "awaiting_approval"])))
+      .run()
+  }
+
   createShellCommand(input: {
     toolCallId: string
     conversationId: string
@@ -127,6 +136,29 @@ export class ToolStore extends StoreBase {
         completedAt: nowIso(),
       })
       .where(eq(shellCommands.toolCallId, toolCallId))
+      .run()
+  }
+
+  failShellCommand(toolCallId: string): void {
+    this.handle.db
+      .update(shellCommands)
+      .set({
+        status: "failed",
+        completedAt: nowIso(),
+      })
+      .where(eq(shellCommands.toolCallId, toolCallId))
+      .run()
+  }
+
+  cancelOpenShellCommandsForTurn(turnId: string): void {
+    this.handle.db
+      .update(shellCommands)
+      .set({
+        status: "cancelled",
+        signal: "SIGTERM",
+        completedAt: nowIso(),
+      })
+      .where(and(eq(shellCommands.turnId, turnId), eq(shellCommands.status, "running")))
       .run()
   }
 
@@ -374,7 +406,7 @@ const summarizeTrace = (toolName: string, resultJson: string | null): string => 
 }
 
 const normalizeToolStatus = (status: string): ConversationToolRun["status"] => {
-  if (["running", "awaiting_approval", "completed", "failed", "rejected"].includes(status)) {
+  if (["running", "awaiting_approval", "completed", "failed", "rejected", "cancelled"].includes(status)) {
     return status as ConversationToolRun["status"]
   }
   return "failed"

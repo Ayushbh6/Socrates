@@ -143,6 +143,17 @@ const assistantMessage = {
   createdAt: timestamp,
 }
 
+const cancelledPartialAssistantMessage = {
+  ...assistantMessage,
+  id: "msg_assistant_cancelled_1",
+  content: "Partial answer.",
+  reasoning: undefined,
+  partial: true,
+  cancelled: true,
+  cancellationReason: "User clicked stop",
+  status: "cancelled",
+}
+
 function envelope<TType extends string, TPayload>(type: TType, payload: TPayload) {
   return {
     id: `evt_${type}`,
@@ -193,6 +204,7 @@ describe("entity contracts", () => {
     expect(projectResourceSchema.safeParse(resource).success).toBe(true)
     expect(conversationSchema.safeParse(conversation).success).toBe(true)
     expect(messageSchema.safeParse(userMessage).success).toBe(true)
+    expect(messageSchema.safeParse(cancelledPartialAssistantMessage).success).toBe(true)
   })
 
   it("rejects missing required fields and invalid enums", () => {
@@ -301,7 +313,7 @@ describe("http contracts", () => {
         sessionId: "sess_1",
         turnId: "turn_1",
         toolName: "bash",
-        status: "completed",
+        status: "cancelled",
         requiresApproval: true,
         arguments: { command: "pwd" },
         summary: "Command exited with code 0.",

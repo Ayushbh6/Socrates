@@ -10,14 +10,31 @@ type ArtifactRow = typeof artifacts.$inferSelect
 type ConversationRow = typeof conversations.$inferSelect
 type MessageRow = typeof messages.$inferSelect
 
-const parseMessageMetadata = (metadataJson: string | null): { reasoning?: string } => {
+const parseMessageMetadata = (
+  metadataJson: string | null,
+): { reasoning?: string; partial?: boolean; cancelled?: boolean; cancellationReason?: string } => {
   if (!metadataJson) {
     return {}
   }
 
   try {
-    const parsed = JSON.parse(metadataJson) as { reasoning?: unknown }
-    return typeof parsed.reasoning === "string" && parsed.reasoning.length > 0 ? { reasoning: parsed.reasoning } : {}
+    const parsed = JSON.parse(metadataJson) as {
+      reasoning?: unknown
+      partial?: unknown
+      cancelled?: unknown
+      cancellationReason?: unknown
+      reason?: unknown
+    }
+    return {
+      ...(typeof parsed.reasoning === "string" && parsed.reasoning.length > 0 ? { reasoning: parsed.reasoning } : {}),
+      ...(parsed.partial === true ? { partial: true } : {}),
+      ...(parsed.cancelled === true ? { cancelled: true } : {}),
+      ...(typeof parsed.cancellationReason === "string"
+        ? { cancellationReason: parsed.cancellationReason }
+        : typeof parsed.reason === "string"
+          ? { cancellationReason: parsed.reason }
+          : {}),
+    }
   } catch {
     return {}
   }

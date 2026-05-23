@@ -8,6 +8,7 @@ import {
   deleteStoredResourceFile,
   editWorkspace,
   inferResourceKind,
+  inspectPythonEnvironment,
   pickWorkspaceFolder,
   readWorkspacePath,
   runWorkspaceBash,
@@ -219,6 +220,21 @@ describe("workspace tools", () => {
     }
   })
 
+  it("detects Python environment hints in the workspace root", () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "cv-venv"))
+    fs.writeFileSync(path.join(workspacePath, "cv-venv", "pyvenv.cfg"), "")
+    fs.writeFileSync(path.join(workspacePath, "requirements-dev.txt"), "")
+    fs.writeFileSync(path.join(workspacePath, "pyproject.toml"), "")
+
+    const hints = inspectPythonEnvironment(workspacePath)
+
+    expect(hints.virtualEnvironments).toContain("cv-venv/")
+    expect(hints.dependencyFiles).toContain("requirements-dev.txt")
+    expect(hints.dependencyFiles).toContain("pyproject.toml")
+    expect(hints.packageManagers).toContain("pip/venv")
+  })
+
   it("resets the persistent shell after timeout and rejects obvious interactive commands", async () => {
     const workspacePath = tempDir()
     const session = createWorkspaceShellSession(workspacePath)
@@ -229,6 +245,24 @@ describe("workspace tools", () => {
       expect(timedOut.timedOut).toBe(true)
       expect(afterTimeout.stdout).toBe("alive")
       await expect(session.run({ command: "vim README.md" })).rejects.toThrow(SocratesError)
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("rejects leading external absolute cd while allowing workspace-relative cd and external destinations", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "nested"))
+    fs.writeFileSync(path.join(workspacePath, "result.txt"), "ok")
+    const session = createWorkspaceShellSession(workspacePath)
+    try {
+      await expect(session.run({ command: "cd /Users/ayush/Test && python3 -m venv venv" })).rejects.toThrow(SocratesError)
+      const relative = await session.run({ command: "cd nested && pwd" })
+      const externalDestination = await session.run({ command: "cp ../result.txt /tmp/socrates-result-test.txt" })
+
+      expect(relative.exitCode).toBe(0)
+      expect(relative.cwd.endsWith("nested")).toBe(true)
+      expect(externalDestination.exitCode).toBe(0)
     } finally {
       session.dispose()
     }

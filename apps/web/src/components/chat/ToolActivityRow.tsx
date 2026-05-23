@@ -51,6 +51,9 @@ function iconForTool(tool: ToolTimelineItem) {
   if (tool.status === "failed" || tool.status === "rejected") {
     return CircleAlert;
   }
+  if (tool.status === "cancelled") {
+    return CircleAlert;
+  }
   if (tool.status === "awaiting_approval") {
     return Clock3;
   }
@@ -108,6 +111,9 @@ function inputString(tool: ToolTimelineItem, key: string): string | undefined {
 function statusClass(status: ToolTimelineItem["status"]) {
   if (status === "failed" || status === "rejected") {
     return { icon: "text-red-600", badge: "bg-red-50 text-red-700" };
+  }
+  if (status === "cancelled") {
+    return { icon: "text-gray-500", badge: "bg-gray-100 text-gray-600" };
   }
   if (status === "awaiting_approval") {
     return { icon: "text-amber-600", badge: "bg-amber-50 text-amber-700" };

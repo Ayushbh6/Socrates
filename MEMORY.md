@@ -192,7 +192,7 @@ WebSocket refactor:
 - WebSocket command parsing and dispatch live in `apps/server/src/ws/commandDispatcher.ts`.
 - Event creation/sending/error emission lives in `apps/server/src/ws/eventSender.ts`.
 - Command-specific logic lives under `apps/server/src/ws/commandHandlers/` for `chat.message.send`, `chat.turn.cancel`, `approval.decide`, and `feedback.submit`.
-- Focused server tests now cover invalid JSON, invalid WebSocket command envelopes, provider failure, and cancellation without final assistant persistence.
+- Focused server tests now cover invalid JSON, invalid WebSocket command envelopes, provider failure, and cancellation with partial assistant persistence.
 
 Verification commands passed after this slice:
 
@@ -261,6 +261,8 @@ Workspace/server implementation:
 - `search` supports bounded file and text search with ignore handling.
 - `edit` supports create, overwrite, exact multiline replace, and patch-style edits with diff previews and approval policy.
 - `bash` uses one non-interactive persistent shell session per active turn, keeps `cwd`/environment across bash calls in that turn, streams output, enforces timeout/output caps, rejects or times out likely interactive commands, and resets the shell after timeout.
+- `bash` already starts in the active workspace and rejects commands that begin by changing into a guessed absolute path outside that workspace. Relative workspace navigation and approved external destination paths are still allowed.
+- The backend injects compact Python environment hints into the Socrates prompt each turn. Existing project-local venvs and package-manager workflows are preferred; when no environment is detected, Socrates should ask before creating one unless the user already requested setup.
 - `apps/server/src/services/store/toolStore.ts` persists tool calls, shell commands/output, file operations, patches, approvals, and trace retrieval data.
 - `apps/server/src/ws/activeTurns.ts` owns active turn state, approval waiters, abort controllers, and per-turn shell session lifecycle.
 - `approval.decide` persists the decision and wakes the waiting active turn.
@@ -281,6 +283,7 @@ Frontend behavior:
 - Expanded details show inputs, search snippets, read previews, edit diffs, bash command/output, trace summaries, resource lists, errors, and completion status.
 - Approval prompts render inline under the relevant tool row with adjacent Approve/Reject actions.
 - Historical `toolRuns` are returned by conversation GET and merged with live WebSocket tool events so completed tool flows reload with conversation history.
+- If a turn is cancelled after assistant text streamed, that visible text is persisted as a cancelled partial assistant message, rendered with a stopped indicator, and included in later semantic history as `user_query -> partial_assistant_response -> new_user_query`. Cancelled turn tools/results/reasoning stay audit/UI-only.
 - The chat composer shows a dismissible warning for non-vision models when image understanding is relevant; the warning resets for each new conversation or model switch back to a non-vision model.
 
 Resource management:
@@ -305,6 +308,7 @@ Prompt/current behavior:
 
 - The Socrates master prompt now describes local-first/project-first behavior, tool choice, context gathering before edits, approval-aware edit/bash behavior, verification expectations, `.socrates/` rules, concise user communication, and a restrained Socratic sacred-sage personality.
 - When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, the prompt has a dedicated code-generation default section. Socrates should create or edit a real workspace/repo file with `edit`, choose a sensible path when obvious, verify when appropriate, and paste a full runnable file in chat only when the user explicitly asks for inline code or no write-capable workspace is available.
+- For generated plotting/data scripts, Socrates should save charts/artifacts to files and print their paths by default instead of using GUI-blocking display calls such as `plt.show()`, unless the user explicitly asks for an interactive window.
 - Chat markdown code blocks render through a dedicated code-block UI with a language header and copy button. Block code should not reuse inline-code styling.
 - `.socrates/` is Socrates-owned project memory/runtime space, not the default location for generated user code.
 - `.socrates/resources/` stores uploaded project resources today.

@@ -24,6 +24,7 @@ export const handleTurnCancel = (
       {
         turnId: cancelled.turnId,
         reason: command.payload.reason,
+        ...(cancelled.partialAssistantMessage ? { partialAssistantMessage: cancelled.partialAssistantMessage } : {}),
       },
       {
         projectId: cancelled.projectId,

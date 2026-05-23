@@ -246,6 +246,7 @@ export const turnCancelledPayloadSchema = z
   .object({
     turnId: idSchema,
     reason: z.string().optional(),
+    partialAssistantMessage: messageSchema.optional(),
   })
   .strict()
 

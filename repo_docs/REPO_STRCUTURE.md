@@ -49,6 +49,7 @@ Socrates/
     workspace/
       src/
         index.ts
+        pythonEnvironment.ts
         workspacePaths.ts
         workspaceScaffold.ts
         nativeFolderPicker.ts
@@ -312,6 +313,7 @@ It owns the low-level implementation for:
 - Running shell commands.
 - Streaming stdout/stderr.
 - Cancelling commands.
+- Inspecting lightweight Python environment hints for prompt context.
 - Reading git status and diffs.
 - Applying patches.
 - Reading persisted tool traces for retrieval when requested by the core.
@@ -340,7 +342,9 @@ Implementation can be split into narrower workspace files such as text readers, 
 
 Reader implementations should stay pragmatic. The initial `read` implementation can wrap local extractors or lightweight libraries, for example text file reads, `pdftotext`-style PDF extraction when available, document/slide text extraction, CSV/JSON previews, and image metadata or OCR/description extraction. Socrates should not build a large document-processing platform before the coding-agent loop works.
 
-The `bash` implementation remains a real escape hatch. Even when a structured reader/searcher exists, approved shell commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on shell commands that overlap with `read` or `search`. Bash uses a workspace-owned non-interactive shell session that is created lazily per active turn, reused for later bash calls in that turn, and disposed when the turn completes, fails, or is cancelled.
+The `bash` implementation remains a real escape hatch. Even when a structured reader/searcher exists, approved shell commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on shell commands that overlap with `read` or `search`. Bash uses a workspace-owned non-interactive shell session that is created lazily per active turn, reused for later bash calls in that turn, and disposed when the turn completes, fails, or is cancelled. Because bash already starts in the active workspace, commands that begin by changing into a guessed external absolute path are rejected with a recoverable tool error; relative workspace navigation and approved external destination arguments remain allowed.
+
+`packages/workspace/src/pythonEnvironment.ts` owns the lightweight Python environment scan. It detects common local venv folders and Python dependency-manager files so the server can inject compact per-turn prompt guidance. The agent should prefer existing project environments or detected package-manager workflows, and should ask before creating a new environment when no env exists unless the user already requested setup.
 
 `list_project_resources` is a read-only model-visible tool, but its executor belongs to the server/store boundary because it reads project resource records. It must not scan `.socrates/resources/` with shell commands; it asks `SocratesStore` for active visible project resources and returns bounded filenames/metadata so the model can choose a follow-up `read`. The model-visible input stays intentionally small: `kind` and `limit`.
 

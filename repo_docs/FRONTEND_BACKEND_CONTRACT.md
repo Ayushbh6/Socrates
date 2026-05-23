@@ -161,6 +161,9 @@ type Message = {
   turnId?: string
   role: "user" | "assistant" | "system" | "tool" | "developer"
   content: string
+  partial?: boolean
+  cancelled?: boolean
+  cancellationReason?: string
   status: "streaming" | "completed" | "failed" | "cancelled"
   createdAt: string
 }
@@ -581,7 +584,9 @@ type GetConversationResponse = {
 }
 ```
 
-`toolRuns` contains persisted, bounded tool activity for completed turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
+`toolRuns` contains persisted, bounded tool activity for completed or cancelled turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
+
+Cancelled turns may include a cancelled partial assistant message when user-visible answer text streamed before cancellation. That partial assistant message is displayed in the transcript and included in later semantic prompt history as normal visible conversation text.
 
 Frontend behavior:
 
@@ -1088,6 +1093,7 @@ Sent when a running turn is cancelled.
 type TurnCancelledPayload = {
   turnId: string
   reason?: string
+  partialAssistantMessage?: Message
 }
 ```
 
@@ -1326,6 +1332,7 @@ Rules:
 - Bash uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash calls in that turn and is disposed when the turn completes, fails, or is cancelled.
 - Commands run one at a time. Obvious interactive/TTY commands are rejected or time out; stdin prompt UI is not part of V1.
 - If a bash command times out, the active shell session is reset before later bash calls.
+- Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Bash already starts in the active workspace; use relative paths from there.
 - Command output must stream through `tool.call.output`.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
@@ -1334,6 +1341,8 @@ Rules:
 - Destructive or credential-exfiltration patterns are denied by default.
 - `read`, `search`, and `edit` are preferred for structured file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
 - Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
+
+Before Python installs/runs, the backend injects compact workspace environment hints into the agent prompt. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup.
 
 ### `trace_retrieve`
 

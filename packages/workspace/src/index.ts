@@ -8,6 +8,7 @@ export { createWorkspaceShellSession, runWorkspaceBash, WorkspaceShellSession } 
 export { editWorkspace } from "./tools/editTool"
 export { readWorkspacePath } from "./tools/readTool"
 export { searchWorkspace } from "./tools/searchTool"
+export { formatPythonEnvironmentHints, inspectPythonEnvironment, type PythonEnvironmentHints } from "./pythonEnvironment"
 
 const execFileAsync = promisify(execFile)
 

@@ -195,7 +195,7 @@ export const conversationToolRunSchema = z
     sessionId: idSchema,
     turnId: idSchema,
     toolName: toolNameSchema,
-    status: z.enum(["running", "awaiting_approval", "completed", "failed", "rejected"]),
+    status: z.enum(["running", "awaiting_approval", "completed", "failed", "rejected", "cancelled"]),
     requiresApproval: z.boolean(),
     arguments: z.unknown().optional(),
     result: z.unknown().optional(),

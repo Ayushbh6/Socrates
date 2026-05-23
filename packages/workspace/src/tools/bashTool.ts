@@ -40,6 +40,7 @@ export class WorkspaceShellSession {
     if (this.disposed) {
       throw new SocratesError("shell_session_disposed", "The shell session has already ended.")
     }
+    rejectLeadingExternalCd(input.command, this.workspacePath)
     if (interactiveCommandPattern.test(input.command)) {
       throw new SocratesError(
         "interactive_shell_command_unsupported",
@@ -282,3 +283,50 @@ const shellArgs = (shell: string): string[] => {
 }
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
+
+const leadingCdPattern = /^\s*cd\s+((?:"[^"]+")|(?:'[^']+')|(?:\S+))(?:\s*(?:&&|;|\n|$))/
+
+const rejectLeadingExternalCd = (command: string, workspacePath: string): void => {
+  const match = command.match(leadingCdPattern)
+  if (!match?.[1]) {
+    return
+  }
+  const rawTarget = match[1]
+  const target = unquoteShellToken(rawTarget)
+  if (!isExternalAbsoluteCdTarget(target, workspacePath)) {
+    return
+  }
+
+  throw new SocratesError(
+    "external_workspace_cd_rejected",
+    `Bash command rejected: Socrates already runs inside the active workspace. Do not cd into a guessed absolute workspace path; run the command relative to the active workspace instead.`,
+    {
+      details: {
+        workspacePath,
+        cdTarget: target,
+        example: "Run `python3 -m venv venv` instead of `cd /some/other/path && python3 -m venv venv`.",
+      },
+      recoverable: true,
+    },
+  )
+}
+
+const isExternalAbsoluteCdTarget = (target: string, workspacePath: string): boolean => {
+  if (target.startsWith("~")) {
+    return true
+  }
+  const isAbsolute = path.isAbsolute(target) || /^[a-zA-Z]:[\\/]/.test(target)
+  if (!isAbsolute) {
+    return false
+  }
+  const workspaceRoot = path.resolve(workspacePath)
+  const resolvedTarget = path.resolve(target)
+  return resolvedTarget !== workspaceRoot && !resolvedTarget.startsWith(`${workspaceRoot}${path.sep}`)
+}
+
+const unquoteShellToken = (token: string): string => {
+  if ((token.startsWith("'") && token.endsWith("'")) || (token.startsWith('"') && token.endsWith('"'))) {
+    return token.slice(1, -1)
+  }
+  return token
+}

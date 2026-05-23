@@ -48,6 +48,7 @@ export type AgentContext = {
   projectName: string
   projectDescription?: string
   projectInstructions?: string
+  workspaceGuidance?: string
 }
 
 export type UploadedResourceInput = {

@@ -150,6 +150,7 @@ describe("SocratesAgent", () => {
         projectName: "Socrates",
         projectDescription: "Local-first AI workspace.",
         projectInstructions: "Read repo_docs before answering.",
+        workspaceGuidance: "Python Environment Hints\n- Local virtual environments found:\n  - venv/",
       },
     })) {
       // Exhaust the stream.
@@ -160,5 +161,8 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("Name: Socrates")
     expect(request.system).toContain("Local-first AI workspace.")
     expect(request.system).toContain("Read repo_docs before answering.")
+    expect(request.system).toContain("Python Environment Hints")
+    expect(request.system).toContain("Do not hardcode or guess absolute workspace paths")
+    expect(request.system).toContain("plt.show()")
   })
 })

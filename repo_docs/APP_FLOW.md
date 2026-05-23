@@ -419,6 +419,8 @@ turn.completed / turn.failed / turn.cancelled -> show send arrow again
 
 V1 uses cancel/stop, not true pause/resume.
 
+If assistant answer text has already streamed when the user stops a turn, the backend persists that visible text as a cancelled partial assistant message. The transcript keeps showing it with a stopped indicator, and later model turns receive the semantic shape `user_query -> partial_assistant_response -> new_user_query`. Tool calls/results/reasoning from the cancelled turn remain persisted for audit/UI only.
+
 Runtime settings are per turn:
 
 ```text
@@ -487,6 +489,10 @@ list_project_resources
 `edit` is the only V1 model-visible file mutation tool. It can create files, overwrite files, make precise multiline replacements, and apply patch-style edits. It requires approval unless the user explicitly runs a full-access mode.
 
 `bash` runs shell commands from the active project workspace. It uses one non-interactive shell process per active turn, so `cwd` and exported environment can persist across bash calls inside that turn. It has a default timeout of 120 seconds, streams output, persists full command output for retrieval, and relies on policy to auto-allow, approval-gate, or deny commands. It remains an approved fallback for cases where `read`, `search`, or `edit` are insufficient; Socrates should not block a legitimate approved shell command solely because a specialized tool exists.
+
+Bash already starts in the active workspace. Commands that begin by changing into guessed absolute paths outside that workspace are rejected. Relative workspace navigation and approved external destination paths remain allowed.
+
+The backend also injects compact Python environment hints from the active workspace. Socrates should use existing project-local environments or package-manager workflows when present, ask before creating a new environment when none is found, and save generated plot artifacts to files instead of blocking on GUI display unless the user explicitly asks.
 
 `trace_retrieve` retrieves previous tool evidence only when useful. It prevents historical tool dumps from being carried forward in every later prompt while keeping full auditability through SQLite.
 

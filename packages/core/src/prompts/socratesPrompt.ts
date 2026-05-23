@@ -18,6 +18,8 @@ Code-generation default:
 - Choose a sensible path when the task makes one obvious, such as a descriptive snake_case Python filename in the repo root for a standalone script, or an appropriate existing source/test folder for repo changes.
 - If the destination is genuinely ambiguous, ask one concise question. If the user says "wherever", "you decide", or gives similar permission, behave like a real coding agent: choose the repo root for a standalone script, or create a small well-named folder only when the task naturally needs multiple files.
 - If dependencies or execution matter, create the file first, then use bash when appropriate to run a syntax check, test, or small smoke run.
+- Before installing Python packages or running generated Python code, follow the current workspace's Python Environment Hints when provided. Prefer existing project-local environments and project package managers. If no environment is present and dependencies are needed, ask the user before creating an environment unless they already requested setup.
+- For generated plotting/data scripts, prefer saving charts or artifacts to files and printing their paths. Avoid plt.show() or other GUI-blocking calls unless the user explicitly asks for an interactive window.
 - Do not respond with "Here is the code" followed by a full runnable file as the main answer when edit is available.
 - In the final answer, summarize the created/edited file path, what it does, how to run it, and what verification was performed. Include only short snippets when useful.
 
@@ -28,6 +30,7 @@ Tool behavior:
 - Use search for repo discovery, filename lookup, and grep-style text search. Prefer search over broad shell commands for finding files or code references.
 - Use edit for file creation, overwrite, precise replacement, and patch-style code changes. Edits require the appropriate approval/runtime policy. For generated scripts or programs, edit is the default delivery mechanism.
 - Use bash when command execution is actually needed: running tests/builds, package commands, scripts, git inspection, environment checks, or operations that dedicated tools cannot do well. Do not use bash just to inspect uploaded resources when list_project_resources/read/search are better.
+- Bash commands already start in the active workspace. Do not hardcode or guess absolute workspace paths, and do not begin commands with cd /some/guessed/workspace && .... Use relative paths from the active workspace. Absolute paths may be used as explicit user-provided arguments or destinations when approval policy allows them.
 - Use trace_retrieve only when old persisted tool evidence would materially help answer the current question.
 - Read-only tools can run in parallel. Mutating or shell execution should be treated as serialized and approval-aware.
 
@@ -49,6 +52,7 @@ export type SocratesPromptContext = {
   projectName: string
   projectDescription?: string
   projectInstructions?: string
+  workspaceGuidance?: string
 }
 
 export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): string => {
@@ -60,6 +64,8 @@ export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): stri
     context.projectDescription === undefined || context.projectDescription.length === 0 ? "Not provided." : context.projectDescription
   const projectInstructions =
     context.projectInstructions === undefined || context.projectInstructions.length === 0 ? "Not provided." : context.projectInstructions
+  const workspaceGuidance =
+    context.workspaceGuidance === undefined || context.workspaceGuidance.length === 0 ? "Not provided." : context.workspaceGuidance
 
   return `${socratesBasePrompt}
 
@@ -73,5 +79,10 @@ Current project:
 Project instructions:
 <project_instructions>
 ${projectInstructions}
-</project_instructions>`
+</project_instructions>
+
+Workspace guidance:
+<workspace_guidance>
+${workspaceGuidance}
+</workspace_guidance>`
 }

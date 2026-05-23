@@ -2,7 +2,7 @@ import type { WebSocket } from "ws"
 import { findModelOption, type SocratesAgent, type ToolExecutors } from "@socrates/core"
 import type { ClientCommand, ModelUsage, ProjectResource } from "@socrates/contracts"
 import { normalizeError, SocratesError } from "@socrates/shared"
-import { editWorkspace, readWorkspacePath, searchWorkspace } from "@socrates/workspace"
+import { editWorkspace, formatPythonEnvironmentHints, inspectPythonEnvironment, readWorkspacePath, searchWorkspace } from "@socrates/workspace"
 import { apiError } from "../../http"
 import type { SocratesStore } from "../../services/store"
 import type { ActiveTurns } from "../activeTurns"
@@ -45,8 +45,11 @@ export const handleChatMessageSend = async (
   )
 
   const history = store.getConversationModelMessages(projectId, conversationId)
-  const promptContext = store.getAgentContext(projectId)
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
+  const promptContext = {
+    ...store.getAgentContext(projectId),
+    workspaceGuidance: formatPythonEnvironmentHints(inspectPythonEnvironment(workspacePath)),
+  }
   const modelCallIds: string[] = []
   const latestUsageByModelCallId = new Map<string, ModelUsage>()
   let latestModelCallId: string | undefined
@@ -54,6 +57,7 @@ export const handleChatMessageSend = async (
   let answerText = ""
   let reasoningText = ""
   let latestUsage: ModelUsage | undefined
+  let lastAnswerModelCallId: string | undefined
 
   try {
     for await (const agentEvent of agent.streamTurn({
@@ -162,19 +166,25 @@ export const handleChatMessageSend = async (
 
       if (agentEvent.type === "model.answer.delta") {
         const modelCallId = agentEvent.modelCallId ?? latestModelCallId
-        answerText += agentEvent.text
         if (!modelCallId) {
           continue
         }
+        const separator =
+          lastAnswerModelCallId && lastAnswerModelCallId !== modelCallId && answerText.trim().length > 0
+            ? ensureParagraphBoundary(answerText)
+            : ""
+        const text = `${separator}${agentEvent.text}`
+        answerText += text
+        lastAnswerModelCallId = modelCallId
         store.appendModelStreamChunk({
           modelCallId,
           turnId: created.turnId,
           channel: "answer",
-          text: agentEvent.text,
+          text,
         })
         const event = makeEvent(
           "agent.answer.delta",
-          { messageId: modelCallId, text: agentEvent.text },
+          { messageId: modelCallId, text },
           {
             projectId,
             conversationId,
@@ -484,19 +494,25 @@ const createToolExecutors = (store: SocratesStore, projectId: string, activeTurn
   search: (input, context) => searchWorkspace(input, context),
   edit: (input, context) => editWorkspace(input, context),
   bash: async (input, context) => {
+    const toolCallId = context.toolCallId ?? "unknown"
     store.createShellCommand({
-      toolCallId: context.toolCallId ?? "unknown",
+      toolCallId,
       conversationId: context.conversationId,
       sessionId: context.sessionId,
       turnId: context.turnId,
       command: input.command,
       cwd: input.cwd ?? context.workspacePath,
     })
-    const output = await activeTurns.getShellSession(context.turnId, context.workspacePath).run(input, context)
-    if (output.timedOut) {
-      activeTurns.resetShellSession(context.turnId, context.workspacePath)
+    try {
+      const output = await activeTurns.getShellSession(context.turnId, context.workspacePath).run(input, context)
+      if (output.timedOut) {
+        activeTurns.resetShellSession(context.turnId, context.workspacePath)
+      }
+      return output
+    } catch (error) {
+      store.failShellCommand(toolCallId)
+      throw error
     }
-    return output
   },
   trace_retrieve: (input) => Promise.resolve(store.retrieveToolTraces(projectId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
@@ -554,6 +570,8 @@ const listProjectResourcesForTool = (
     ...(hiddenCount > 0 ? { warnings: [`${hiddenCount} resources were omitted by the output cap.`] } : {}),
   }
 }
+
+const ensureParagraphBoundary = (text: string): string => (text.endsWith("\n\n") ? "" : "\n\n")
 
 const toContractUsage = (usage: ModelUsage) => ({
   ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),

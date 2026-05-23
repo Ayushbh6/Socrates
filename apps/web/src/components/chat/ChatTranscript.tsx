@@ -87,11 +87,20 @@ function MessageBubble({ message, tools }: { message: Message; tools: ToolTimeli
         ) : (
           <>
             {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
+            {message.partial || message.cancelled ? <StoppedIndicator reason={message.cancellationReason} /> : null}
             <ChatToolTimeline tools={tools} />
             <MarkdownContent content={message.content} />
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function StoppedIndicator({ reason }: { reason?: string }) {
+  return (
+    <div className="mb-3 inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-brand-text-light">
+      Stopped{reason ? `: ${reason}` : ""}
     </div>
   );
 }

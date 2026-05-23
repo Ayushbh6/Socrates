@@ -210,7 +210,11 @@ export class TurnStore extends StoreBase {
     return mapMessage(this.mustGetMessageRow(messageId))
   }
 
-  cancelTurn(turnId: string, reason?: string): { projectId: string; conversationId: string; sessionId: string; turnId: string } {
+  cancelTurn(
+    turnId: string,
+    reason?: string,
+    partialAssistantContent?: string,
+  ): { projectId: string; conversationId: string; sessionId: string; turnId: string; partialAssistantMessage?: Message } {
     const turn = this.handle.db.select().from(turns).where(eq(turns.id, turnId)).get()
     if (!turn) {
       throw new SocratesError("turn_not_found", "Turn not found")
@@ -228,15 +232,42 @@ export class TurnStore extends StoreBase {
     }
 
     const now = nowIso()
+    const partialContent = partialAssistantContent?.trim()
+    let partialAssistantMessage: Message | undefined
+    let assistantMessageId: string | undefined
+    if (partialContent) {
+      assistantMessageId = createId("msg")
+      this.handle.db
+        .insert(messages)
+        .values({
+          id: assistantMessageId,
+          conversationId: turn.conversationId,
+          sessionId: session.id,
+          turnId,
+          role: "assistant",
+          content: partialContent,
+          contentFormat: "markdown",
+          status: "cancelled",
+          metadataJson: JSON.stringify({ partial: true, cancelled: true, cancellationReason: reason }),
+          createdAt: now,
+          completedAt: now,
+        })
+        .run()
+      partialAssistantMessage = mapMessage(this.mustGetMessageRow(assistantMessageId))
+    }
+
     this.handle.db
       .update(turns)
       .set({
         status: "cancelled",
         cancelledAt: now,
+        ...(assistantMessageId ? { assistantMessageId } : {}),
         metadataJson: JSON.stringify({ reason }),
       })
       .where(eq(turns.id, turnId))
       .run()
+    this.handle.db.update(sessions).set({ status: "idle", updatedAt: now }).where(eq(sessions.id, session.id)).run()
+    this.touchConversation(turn.conversationId, now)
 
     this.appendEvent({
       projectId: session.projectId,
@@ -253,6 +284,7 @@ export class TurnStore extends StoreBase {
       conversationId: turn.conversationId,
       sessionId: session.id,
       turnId,
+      ...(partialAssistantMessage ? { partialAssistantMessage } : {}),
     }
   }
 }

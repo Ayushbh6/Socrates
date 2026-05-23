@@ -306,13 +306,33 @@ export class ConversationStore extends StoreBase {
     return this.handle.db
       .select()
       .from(messages)
-      .where(and(eq(messages.conversationId, conversationId), eq(messages.status, "completed")))
+      .where(eq(messages.conversationId, conversationId))
       .orderBy(messages.createdAt)
       .all()
-      .filter((message) => ["user", "assistant", "system", "developer"].includes(message.role))
+      .filter((message) => {
+        if (!["user", "assistant", "system", "developer"].includes(message.role)) {
+          return false
+        }
+        if (message.status === "completed") {
+          return true
+        }
+        return message.role === "assistant" && message.status === "cancelled" && isCancelledPartialAssistant(message.metadataJson)
+      })
       .map((message) => ({
         role: message.role as ConversationModelMessage["role"],
         content: message.content,
       }))
+  }
+}
+
+const isCancelledPartialAssistant = (metadataJson: string | null): boolean => {
+  if (!metadataJson) {
+    return false
+  }
+  try {
+    const parsed = JSON.parse(metadataJson) as { partial?: unknown; cancelled?: unknown }
+    return parsed.partial === true && parsed.cancelled === true
+  } catch {
+    return false
   }
 }

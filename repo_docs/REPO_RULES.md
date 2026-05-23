@@ -220,9 +220,15 @@ The `edit` tool is the only V1 model-visible file mutation tool. It must cover c
 
 When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, Socrates should treat that as a request to create or edit a real workspace file with `edit`, not as a request for a long inline code block. This applies even for small scripts when the workspace is write-capable. Generated code belongs in the attached workspace/repo, not in `.socrates/`. Socrates should choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, optionally verify with `bash`, and summarize file path plus run instructions in the final answer. If the user says "wherever" or lets Socrates decide, use the repo root for a standalone script, or a small well-named folder only when the task naturally needs multiple files. It should paste a full runnable file in chat only when the user explicitly asks for inline code or when no write-capable workspace is available.
 
+Before installing Python packages or running generated Python code, Socrates receives backend-generated workspace environment hints. If a project-local environment or package-manager workflow is detected, it should use that instead of creating a second environment or running raw global `pip`. If no environment is detected and dependencies are needed, it should ask the user before creating a venv or installing packages unless the user already explicitly requested setup.
+
+Generated plotting/data scripts should save charts or artifacts to files and print their paths by default. Avoid GUI-blocking calls like `plt.show()` unless the user explicitly asks for an interactive window.
+
 `.socrates/` is Socrates-owned memory/runtime/resource storage. It is not the default location for user code, scripts, tests, or normal app/repo changes. The agent should edit `.socrates/` only when the user explicitly asks for Socrates internals, uploaded resources, or runtime/memory storage behavior.
 
 The `bash` tool is the only V1 model-visible command execution tool. It may run git, package managers, test commands, Docker, and other shell commands, but policy decides whether each command is auto-allowed, approval-gated, or denied. Destructive, network, install, git mutation, and outside-workspace commands require approval by default.
+
+Bash commands already start in the active workspace. Commands that begin by changing into a guessed absolute path outside the active workspace, such as `cd /Users/ayush/Test && ...`, must be rejected with a recoverable error. Relative `cd` inside the workspace and absolute paths used as explicit arguments or destinations may still be allowed by policy and approval.
 
 The agent should prefer `read` for file/document/image inspection and `search` for file discovery or content search because those tools provide bounded structured output. This is a preference, not a hard restriction. If `read` or `search` fails or gives poor output, an approved `bash` fallback such as a local extractor, `cat`, `find`, `grep`, or `pdftotext` may still run. Do not deny a legitimate approved bash command solely because a more specialized Socrates tool exists.
 
@@ -312,6 +318,8 @@ The system should be able to answer:
 No important agent state should exist only in memory if it is needed for recovery, display, or audit.
 
 Only one active turn may run per conversation in V1. The composer must switch from send mode to stop mode while a turn is active, and return to send mode after `turn.completed`, `turn.failed`, or `turn.cancelled`.
+
+When a turn is cancelled after assistant text has streamed, Socrates must persist that visible text as a cancelled partial assistant message and carry it forward in later semantic chat history. Historical tool calls, tool results, and reasoning from the cancelled turn remain audit/UI data only and are not blindly loaded into later prompts.
 
 ## 16. Streaming Is Event-Based
 

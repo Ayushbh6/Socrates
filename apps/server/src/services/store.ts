@@ -267,8 +267,17 @@ export class SocratesStore {
     return this.turns.completePlaceholderTurn(projectId, conversationId, turnId)
   }
 
-  cancelTurn(turnId: string, reason?: string): { projectId: string; conversationId: string; sessionId: string; turnId: string } {
-    return this.turns.cancelTurn(turnId, reason)
+  cancelTurn(
+    turnId: string,
+    reason?: string,
+  ): { projectId: string; conversationId: string; sessionId: string; turnId: string; partialAssistantMessage?: Message } {
+    const partialAnswer = this.modelTelemetry.getAnswerTextByTurnId(turnId)
+    const cancelled = this.turns.cancelTurn(turnId, reason, partialAnswer)
+    this.approvals.rejectPendingForTurn(turnId, reason)
+    this.tools.cancelOpenShellCommandsForTurn(turnId)
+    this.tools.cancelOpenToolCallsForTurn(turnId)
+    this.modelTelemetry.cancelOpenModelCallsForTurn(turnId)
+    return cancelled
   }
 
   resolveApproval(approvalId: string, decision: "approved" | "rejected", reason?: string): void {
@@ -313,6 +322,10 @@ export class SocratesStore {
 
   completeShellCommand(toolCallId: string, input: Parameters<ToolStore["completeShellCommand"]>[1]): void {
     this.tools.completeShellCommand(toolCallId, input)
+  }
+
+  failShellCommand(toolCallId: string): void {
+    this.tools.failShellCommand(toolCallId)
   }
 
   recordFileOperations(input: Parameters<ToolStore["recordFileOperations"]>[0]): void {

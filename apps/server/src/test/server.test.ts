@@ -72,6 +72,42 @@ const createCapturingAgent = (requests: unknown[]): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createCancellablePartialAgent = (requests: unknown[]): SocratesAgent => {
+  let call = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream(request) {
+      call += 1
+      requests.push(request)
+      if (call === 1) {
+        yield { type: "model.answer.delta", text: "Partial answer before stop." }
+        await delay(500)
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Next answer." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createApprovalWaitingAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async *stream() {
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: "tcall_waiting_bash",
+          toolName: "bash",
+          input: { command: "pip install example-package" },
+        },
+      }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createFailingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     async *stream() {
@@ -1228,9 +1264,10 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("cancels an active turn with chat.turn.cancel", async () => {
+  it("persists partial assistant text on cancel and carries it into the next turn history", async () => {
     const dbPath = tempDbPath()
-    const app = await buildTestServer(dbPath)
+    const requests: unknown[] = []
+    const app = await buildTestServer(dbPath, createCancellablePartialAgent(requests))
     await onboard(app)
     const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
@@ -1239,6 +1276,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Please stop soon"))
       const started = await waitForEvent(socket, "turn.started")
+      await waitForEvent(socket, "agent.answer.delta")
 
       sendCommand(socket, {
         id: createId("evt"),
@@ -1257,14 +1295,69 @@ describe("WebSocket API", () => {
       const cancelled = await waitForEvent(socket, "turn.cancelled")
       expect(cancelled.payload.turnId).toBe(started.payload.turnId)
       expect(cancelled.payload.reason).toBe("User clicked stop")
+      expect(cancelled.payload.partialAssistantMessage?.content).toBe("Partial answer before stop.")
+      expect(cancelled.payload.partialAssistantMessage?.status).toBe("cancelled")
+      expect(cancelled.payload.partialAssistantMessage?.partial).toBe(true)
 
       await delay(150)
+
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Continue from that"))
+      await waitForEvent(socket, "message.completed")
+
+      const secondRequest = requests[1] as { messages: Array<{ role: string; content: string }> }
+      expect(secondRequest.messages.map((message) => `${message.role}:${message.content}`)).toContain(
+        "assistant:Partial answer before stop.",
+      )
+      expect(secondRequest.messages.at(-1)).toEqual({ role: "user", content: "Continue from that" })
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("finalizes pending approvals and tool rows when a turn is cancelled", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createApprovalWaitingAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Install something"))
+      const started = await waitForEvent(socket, "turn.started")
+      await waitForEvent(socket, "approval.requested")
+
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "chat.turn.cancel",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: {
+          turnId: started.payload.turnId,
+          reason: "User clicked stop",
+        },
+      })
+      await waitForEvent(socket, "turn.cancelled")
+      await delay(100)
+
       const sqlite = new Database(dbPath)
       try {
-        const row = sqlite
-          .prepare("SELECT COUNT(*) AS assistant_count FROM messages WHERE conversation_id = ? AND role = 'assistant'")
-          .get(conversation.id) as { assistant_count: number }
-        expect(row.assistant_count).toBe(0)
+        const approval = sqlite.prepare("SELECT status, decision FROM approvals WHERE turn_id = ?").get(started.payload.turnId) as {
+          status: string
+          decision: string
+        }
+        const tool = sqlite.prepare("SELECT status FROM tool_calls WHERE turn_id = ?").get(started.payload.turnId) as {
+          status: string
+        }
+        const modelCall = sqlite.prepare("SELECT status FROM model_calls WHERE turn_id = ?").get(started.payload.turnId) as {
+          status: string
+        }
+        expect(approval).toEqual({ status: "rejected", decision: "rejected" })
+        expect(tool.status).toBe("cancelled")
+        expect(modelCall.status).toBe("cancelled")
       } finally {
         sqlite.close()
       }

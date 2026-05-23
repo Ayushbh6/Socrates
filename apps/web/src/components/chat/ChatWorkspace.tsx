@@ -210,6 +210,16 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "turn.cancelled") {
+        const partialAssistantMessage = event.payload.partialAssistantMessage;
+        if (partialAssistantMessage) {
+          setConversationData((current) => {
+            if (!current) {
+              return current;
+            }
+            const withoutDuplicate = current.messages.filter((message) => message.id !== partialAssistantMessage.id);
+            return { ...current, messages: [...withoutDuplicate, partialAssistantMessage] };
+          });
+        }
         setIsSending(false);
         setActiveTurnId(null);
         setLiveAnswer("");

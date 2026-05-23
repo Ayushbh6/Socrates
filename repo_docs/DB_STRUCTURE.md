@@ -396,7 +396,7 @@ Stores human-visible chat messages.
 | `parent_message_id` | `TEXT` | no | Optional FK to previous message. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 | `completed_at` | `TEXT` | no | Set when streaming completes. |
-| `metadata_json` | `TEXT` | no | Message metadata. |
+| `metadata_json` | `TEXT` | no | Message metadata. Completed assistant messages may store `reasoning`. Cancelled partial assistant messages store `partial: true`, `cancelled: true`, and optional `cancellationReason`. |
 
 ## `events`
 

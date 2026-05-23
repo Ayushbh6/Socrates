@@ -1,6 +1,6 @@
 import type { ConversationTokenUsage } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { contextUsageSnapshots, modelCalls, modelStreamChunks, modelUsage } from "../../db/schema"
 import { StoreBase } from "./shared"
 import type { StoredModelUsage } from "./types"
@@ -58,6 +58,37 @@ export class ModelTelemetryStore extends StoreBase {
         createdAt: nowIso(),
       })
       .run()
+  }
+
+  getAnswerTextByTurnId(turnId: string): string {
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT mc.id AS modelCallId, msc.text AS text
+         FROM model_stream_chunks msc
+         INNER JOIN model_calls mc ON mc.id = msc.model_call_id
+         WHERE msc.turn_id = ? AND msc.channel = 'answer'
+         ORDER BY mc.started_at, msc.sequence`,
+      )
+      .all(turnId) as Array<{ modelCallId: string; text: string | null }>
+
+    let text = ""
+    let lastModelCallId: string | undefined
+    for (const row of rows) {
+      if (!row.text) {
+        continue
+      }
+      if (
+        lastModelCallId &&
+        row.modelCallId !== lastModelCallId &&
+        text.trim().length > 0 &&
+        !startsWithParagraphBoundary(row.text)
+      ) {
+        text = ensureParagraphBoundary(text)
+      }
+      text += row.text
+      lastModelCallId = row.modelCallId
+    }
+    return text.trim()
   }
 
   getReasoningTextByTurnIds(turnIds: string[]): Map<string, string> {
@@ -124,6 +155,17 @@ export class ModelTelemetryStore extends StoreBase {
         completedAt: nowIso(),
       })
       .where(eq(modelCalls.id, modelCallId))
+      .run()
+  }
+
+  cancelOpenModelCallsForTurn(turnId: string): void {
+    this.handle.db
+      .update(modelCalls)
+      .set({
+        status: "cancelled",
+        completedAt: nowIso(),
+      })
+      .where(and(eq(modelCalls.turnId, turnId), eq(modelCalls.status, "streaming")))
       .run()
   }
 
@@ -217,3 +259,7 @@ export class ModelTelemetryStore extends StoreBase {
       .run()
   }
 }
+
+const ensureParagraphBoundary = (text: string): string => (text.endsWith("\n\n") ? text : `${text.trimEnd()}\n\n`)
+
+const startsWithParagraphBoundary = (text: string): boolean => /^\s*\n\s*\n/.test(text)
