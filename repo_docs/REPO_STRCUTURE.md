@@ -42,6 +42,7 @@ Socrates/
     core/
       src/
         agent/
+        context/
         prompts/
         tools/
         test/
@@ -138,6 +139,8 @@ components/chat/
   ChatWorkspace
   ChatTranscript
   ChatComposer
+  ToolDetails
+  DiffView
   EmptyChatState
   ProjectChatSidebar
   SidebarProjectSection
@@ -208,6 +211,7 @@ store/
   feedbackStore.ts
   traceStore.ts
   embeddingStore.ts
+  contextCompactionStore.ts
   shared.ts
   types.ts
 ```
@@ -218,6 +222,7 @@ Rules for server store files:
 - Put persistence behavior in the domain store that owns it.
 - Keep common row lookups and shared helpers in `shared.ts`.
 - Do not add new persistence methods directly into the facade unless they delegate to a domain store.
+- Keep append-only context compaction snapshot persistence in `contextCompactionStore.ts`; indexing completed summaries into `trace_documents` stays behind the store facade.
 
 WebSocket transport is split under `apps/server/src/ws/`:
 
@@ -252,6 +257,7 @@ It owns:
 - Tool registry.
 - Tool execution flow.
 - Context construction.
+- Context compression policy, prompts, packing, and provider-call-boundary budget checks.
 - Approval flow orchestration.
 - Session orchestration.
 - Sub-agent orchestration later.
@@ -374,14 +380,15 @@ internal retrieval index
   trace_embeddings
   trace_index_jobs
   project_embedding_configs
+  context_compaction_snapshots
 
 model-visible access
   trace_retrieve
 ```
 
-Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Rolling conversation summaries remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
+Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Completed context compaction snapshots are indexed as hidden `conversation_summary` trace evidence. Rolling conversation summaries outside compaction remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
-Context compression should be added as a provider-call-boundary concern around the agent/model loop, not as ad hoc prompt rewriting inside WebSocket handlers. `packages/core` should own the model-facing context assembly policy and budget decisions. `apps/server/src/services/store/` should own persistence and retrieval of raw rows, trace documents, summaries, and inspect handles. `packages/providers` should only execute the selected compressor/model request behind the provider interface; provider-specific compression behavior must not leak into `apps/web` or route handlers.
+Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, compressor prompt/schema, packing, and budget decisions. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `packages/providers` only executes the selected compressor/model request behind the provider interface; provider-specific compression behavior must not leak into `apps/web` or route handlers.
 
 ### `packages/providers`
 

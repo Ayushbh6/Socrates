@@ -343,6 +343,8 @@ OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude t
 
 OpenRouter streams can arrive in provider-side bursts after a long first-token delay. Socrates applies AI SDK `smoothStream` only on OpenRouter calls to re-chunk bursty text into a steadier word-level stream. This improves perceived streaming once chunks arrive; it does not reduce upstream time-to-first-token.
 
+Provider streams must not hang forever. The AI SDK adapter applies an idle stream timeout with a default of `120000` milliseconds, configurable through `SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS`. If no model event arrives before the timeout, the provider layer aborts the request and emits a structured `model.failed` event with code `model_stream_idle_timeout`, including provider/model/timeout details.
+
 The frontend must render this catalog from the backend response. It must not hardcode model ids or provider option mappings.
 
 ## Context Compressor Model Selection

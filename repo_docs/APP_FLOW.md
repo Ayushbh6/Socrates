@@ -425,7 +425,7 @@ Purpose:
 - Stream agent events over WebSocket.
 - Show streamed thinking when the selected provider exposes it.
 - Show streamed final assistant answers.
-- Show the cumulative completed-turn token total next to the conversation title.
+- Show the latest estimated model-facing context size next to the conversation title.
 
 Primary layout:
 
@@ -502,6 +502,8 @@ V1 uses cancel/stop, not true pause/resume.
 
 If assistant answer text has already streamed when the user stops a turn, the backend persists that visible text as a cancelled partial assistant message. The transcript keeps showing it with a stopped indicator, and later model turns receive the semantic shape `user_query -> partial_assistant_response -> new_user_query`. Tool calls/results/reasoning from the cancelled turn remain persisted for audit/UI only.
 
+If a running, failed, or cancelled turn has streamed text but no completed assistant message row, `GET /api/projects/:projectId/conversations/:conversationId` can return a `partialTurns` entry recovered from `model_stream_chunks`. The frontend renders that incomplete turn with recovered answer text, reasoning, and persisted historical tool runs, and it can restore stop-button state when the turn is still running after reload.
+
 Runtime settings are per turn:
 
 ```text
@@ -539,11 +541,13 @@ enabled:
   streamed thinking and answer events when exposed by provider
   assistant markdown rendering
   provider usage persistence
-  header token total after completed turns
+  header context estimate from context usage snapshots or model-call request fallback
   backend-injected user/project/instruction prompt context
   workspace tools
   approvals
   shell/file/patch execution
+  contextual compression events and hidden compaction summaries
+  incomplete-turn recovery from persisted stream chunks
 
 not yet enabled:
   dedicated git tool
@@ -656,6 +660,19 @@ after turn completion, asynchronously, for durable summaries/anchors
 
 It should not rewrite the visible transcript. It should not create fake assistant messages such as "Summary: ...". Recent real chat remains real chat schema; hidden compacted context is additional runtime context for the model.
 
+Current implementation thresholds:
+
+```text
+precompute around 110k estimated tokens
+synchronous compaction around 125k estimated tokens
+target packed context around 100k estimated tokens
+hard cap 180k estimated tokens
+```
+
+Compression is enabled by default and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`.
+
+The chat header displays the latest estimated model-facing context usage, for example `23,433 tokens`. It does not display cumulative provider token spend. Provider-reported token usage remains persisted for diagnostics and cost accounting.
+
 Example:
 
 ```text
@@ -698,7 +715,7 @@ trace_retrieve search supports lexical/exact and active project embeddings
 mode = combined merges lexical and vector evidence when embeddings are ready
 mode = semantic ranks by vector similarity when embeddings are ready
 search and inspect results include conversation provenance
-rolling conversation summaries are a later phase
+context compaction snapshots are indexed as hidden conversation_summary evidence
 ```
 
 Compressor-model selection:
@@ -709,6 +726,8 @@ fallback: OpenRouter qwen/qwen3.6-plus with thinking off
 ```
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
+
+The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. While a compaction is active, it shows only a small `Compacting conversation...` state and does not add transcript messages.
 
 When showing or answering from retrieved history, Socrates must use the returned conversation provenance. If `conversation.isCurrentConversation` is false, the answer should say the evidence came from an earlier project conversation or use `conversation.title`; it should only say "this conversation" or "current chat" when the provenance says the result is from the current conversation.
 

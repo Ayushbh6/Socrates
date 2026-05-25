@@ -404,6 +404,8 @@ Stores human-visible chat messages.
 | `completed_at` | `TEXT` | no | Set when streaming completes. |
 | `metadata_json` | `TEXT` | no | Message metadata. Completed assistant messages may store `reasoning`. Cancelled partial assistant messages store `partial: true`, `cancelled: true`, and optional `cancellationReason`. |
 
+If a turn is running, failed, or cancelled and has streamed chunks but no completed assistant `messages` row, the HTTP conversation load can recover a `partialTurns` view from `model_stream_chunks`. That recovery is response data, not a fake message row. The `messages` table remains for real visible user/assistant messages and persisted cancelled partial assistant messages.
+
 ## `events`
 
 Stores the complete chronological audit trail.
@@ -449,7 +451,7 @@ A single turn can contain multiple model calls.
 | `provider_id` | `TEXT` | yes | Provider used for this call. |
 | `model_id` | `TEXT` | yes | Model used for this call. |
 | `status` | `TEXT` | yes | `started`, `streaming`, `completed`, `failed`, `cancelled`. |
-| `request_json` | `TEXT` | yes | Full normalized request sent through `ModelProvider`. |
+| `request_json` | `TEXT` | yes | Full normalized request sent through `ModelProvider`. Current requests include local `estimatedTokens` and `contextBudgetTokens` for diagnostics and fallback context accounting. |
 | `provider_request_json` | `TEXT` | no | Provider-specific request payload if captured. |
 | `response_json` | `TEXT` | no | Final normalized response summary. |
 | `provider_response_json` | `TEXT` | no | Provider-specific final response if captured. |
@@ -500,7 +502,9 @@ Stores token usage and cost for model calls.
 
 Stores live context-window usage snapshots for the UI.
 
-This supports a Codex-like context widget showing used tokens, remaining tokens, and percent used.
+This supports context accounting around provider requests. The current chat header shows only the latest used estimate, such as `23,433 tokens`; richer remaining/percent widgets can be added later.
+
+`context_window_tokens` should represent the effective Socrates prompt budget at that call, capped by the context-compression hard cap even when the selected model advertises a larger provider context window. When no snapshot exists for an older turn, the server may estimate latest context usage from the most recent `model_calls.request_json`.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -518,6 +522,43 @@ This supports a Codex-like context widget showing used tokens, remaining tokens,
 | `compaction_status` | `TEXT` | no | `not_needed`, `recommended`, `required`, `compacted`. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Extra context accounting metadata. |
+
+## `context_compaction_snapshots`
+
+Stores append-only hidden context compaction snapshots.
+
+Compaction snapshots are runtime context, not transcript content. They summarize older same-conversation history, bulky current-turn evidence, decisions, failures, and handles, while raw messages/tools/events remain the source of truth.
+
+Exactly one completed snapshot per conversation may be marked active/latest through `active = 1`; older snapshots remain for audit and chain provenance through `previous_snapshot_id`.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `ctxcmp_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
+| `session_id` | `TEXT` | yes | FK to `sessions.id`. |
+| `turn_id` | `TEXT` | no | FK to `turns.id` when the snapshot was produced during or after a turn. |
+| `previous_snapshot_id` | `TEXT` | no | Previous snapshot in the compaction chain. |
+| `status` | `TEXT` | yes | `running`, `completed`, or `failed`. |
+| `active` | `INTEGER` | yes | Boolean. True only for the latest completed snapshot for a conversation. |
+| `reason` | `TEXT` | yes | `precompute`, `threshold`, `emergency`, or `manual`. |
+| `source_message_ids_json` | `TEXT` | yes | JSON ids for source messages included in the snapshot input. |
+| `source_turn_ids_json` | `TEXT` | yes | JSON ids for source turns included in the snapshot input. |
+| `summary_json` | `TEXT` | no | Structured compressor output. |
+| `rendered_summary` | `TEXT` | no | Hidden context block rendered from `summary_json`. |
+| `source_handles_json` | `TEXT` | no | JSON inspect/search handles for exact `trace_retrieve` fallback. |
+| `input_tokens_estimate` | `INTEGER` | no | Estimated input tokens sent to compression. |
+| `output_tokens_estimate` | `INTEGER` | no | Estimated compressor output tokens. |
+| `context_tokens_before` | `INTEGER` | yes | Estimated context tokens before compaction. |
+| `context_tokens_after` | `INTEGER` | no | Estimated context tokens after compaction. |
+| `target_tokens` | `INTEGER` | yes | Target packed-context token count. |
+| `compressor_provider_id` | `TEXT` | yes | Provider used for the compressor call. |
+| `compressor_model_id` | `TEXT` | yes | Model used for the compressor call. |
+| `usage_json` | `TEXT` | no | Compressor usage metrics, separate from normal answer usage. |
+| `error_id` | `TEXT` | no | FK to `errors.id` when failed. |
+| `started_at` | `TEXT` | yes | ISO timestamp. |
+| `completed_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra compaction metadata. |
 
 ## `tool_calls`
 
@@ -829,6 +870,9 @@ message.completed
 agent.thinking.delta
 agent.answer.delta
 context.usage.snapshot
+context.compaction.started
+context.compaction.completed
+context.compaction.failed
 
 tool.call.requested
 tool.call.started
@@ -979,6 +1023,7 @@ trace_index_jobs
 - Error and blocker summaries.
 - Turn summaries.
 - Conversation rolling summaries.
+- Context compaction summaries.
 - Verbatim anchors for exact high-value user-provided source text.
 
 Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles.
@@ -1183,7 +1228,7 @@ When context pressure grows, the context builder should keep:
 - Verbatim anchor references for exact source material that must not be summarized away.
 - Retrieved trace evidence only when explicitly relevant.
 
-The target hard cap for a chat prompt is 160,000 tokens. Before the next model call would exceed that cap, Socrates should compress or prune model-facing context while preserving raw history in the database.
+The target hard cap for a chat prompt is 180,000 estimated tokens. Before the next model call would exceed that cap, Socrates should compress or prune model-facing context while preserving raw history in the database.
 
 Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to exact source handles so `trace_retrieve` can inspect the raw message, turn, tool result, or verbatim anchor when precision matters.
 
@@ -1200,14 +1245,12 @@ The evaluation should store enough metadata to compare faithfulness, preserved d
 
 ## Context Window Tracking
 
-After each model call, Socrates should persist a context usage snapshot.
+Before each model call, Socrates estimates the assembled provider request size. When model metadata is available, Socrates persists a context usage snapshot tied to that model call.
 
-The UI should be able to show:
+The current chat header shows:
 
 ```text
-Context window:
-21% used
-55k / 258k tokens used
+23,433 tokens
 ```
 
 This data comes from:
@@ -1217,6 +1260,7 @@ This data comes from:
 - `context_usage_snapshots`
 - provider metadata where available
 - local token estimation when provider does not return exact values
+- `model_calls.request_json.estimatedTokens` / `contextBudgetTokens` as a fallback for older rows without snapshots
 
 ## Replay Query
 
@@ -1275,6 +1319,7 @@ model_calls
 model_stream_chunks
 model_usage
 context_usage_snapshots
+context_compaction_snapshots
 tool_calls
 approvals
 shell_commands

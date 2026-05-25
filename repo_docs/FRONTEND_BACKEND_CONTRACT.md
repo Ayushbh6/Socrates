@@ -763,11 +763,25 @@ type GetConversationResponse = {
   conversation: Conversation
   messages: Message[]
   toolRuns: ConversationToolRun[]
+  partialTurns?: Array<{
+    turnId: string
+    status: "running" | "failed" | "cancelled"
+    answer?: string
+    reasoning?: string
+  }>
   tokenUsage: {
     totalTokens: number
     inputTokens: number
     outputTokens: number
     reasoningTokens: number
+  }
+  contextUsage?: {
+    providerId: string
+    modelId: string
+    contextWindowTokens: number
+    contextUsedTokens: number
+    contextLeftTokens: number
+    contextUsedPercent: number
   }
 }
 ```
@@ -776,6 +790,10 @@ type GetConversationResponse = {
 
 Cancelled turns may include a cancelled partial assistant message when user-visible answer text streamed before cancellation. That partial assistant message is displayed in the transcript and included in later semantic prompt history as normal visible conversation text.
 
+`partialTurns` contains incomplete turn text recovered from persisted `model_stream_chunks` for running, failed, or cancelled turns that do not have a completed assistant message row. It lets the frontend show recovered answer text, reasoning, and historical tool runs after reload instead of making the last user query look unanswered. A returned `partialTurns` item with `status = "running"` should restore the active stop-button state.
+
+`tokenUsage` remains cumulative provider-reported usage for diagnostics and cost accounting. The chat header should use `contextUsage.contextUsedTokens` when available, not `tokenUsage.totalTokens`.
+
 Frontend behavior:
 
 ```text
@@ -783,8 +801,9 @@ if messages is empty:
   show centered empty-chat composer
 else:
   render transcript, historical inline tool timeline, and pin composer to the bottom
-show tokenUsage.totalTokens next to the conversation title
-update the displayed total after completed assistant turns
+show contextUsage.contextUsedTokens next to the conversation title as "<n> tokens"
+do not show the context hard cap or cumulative token spend in the chat header
+render partialTurns after their matching user message when no assistant message exists
 ```
 
 ### `PATCH /api/projects/:projectId/conversations/:conversationId`
@@ -1036,6 +1055,9 @@ tool.call.failed
 approval.requested
 approval.resolved
 context.usage.snapshot
+context.compaction.started
+context.compaction.completed
+context.compaction.failed
 message.completed
 turn.completed
 turn.failed
@@ -1053,6 +1075,7 @@ This is enough to render:
 - Approval prompts.
 - Tool results and failures.
 - Context usage widget.
+- Subtle compaction status.
 - Final answer.
 - Errors.
 
@@ -1231,6 +1254,45 @@ type ContextUsageSnapshotPayload = {
   contextUsedTokens: number
   contextLeftTokens: number
   contextUsedPercent: number
+}
+```
+
+The server should use the effective Socrates prompt budget for `contextWindowTokens`, capped by the compression hard cap. The frontend may show the used estimate in the header and can reserve richer widgets for later.
+
+### `context.compaction.started`
+
+Sent when Socrates starts compacting model-facing context before or after a provider call boundary.
+
+```ts
+type ContextCompactionStartedPayload = {
+  snapshotId: string
+  reason: "precompute" | "threshold" | "emergency" | "manual"
+  contextUsedTokensEstimate: number
+  targetTokens: number
+}
+```
+
+### `context.compaction.completed`
+
+Sent when a compaction snapshot has been written and the hidden runtime summary is available for future context assembly and `trace_retrieve`.
+
+```ts
+type ContextCompactionCompletedPayload = {
+  snapshotId: string
+  inputTokensEstimate: number
+  outputTokensEstimate: number
+  contextUsedTokensEstimate: number
+}
+```
+
+### `context.compaction.failed`
+
+Sent when compression fails. During an active turn, the backend fails the turn with a structured error rather than silently sending an over-budget provider request.
+
+```ts
+type ContextCompactionFailedPayload = {
+  snapshotId?: string
+  error: ApiError
 }
 ```
 

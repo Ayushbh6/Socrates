@@ -151,7 +151,8 @@ Conversation behavior:
 - Each turn can select a different provider/model/thinking mode inside the same conversation. The selected runtime config is stored in `turn_runtime_configs`.
 - The backend injects the local user display name, current project name, full project description, and full active project instructions into the Socrates system prompt before calling the model. The frontend does not assemble prompt context.
 - The backend builds model-facing chat history from prior user messages and final assistant answers, not from historical tool-call dumps or reasoning streams.
-- Provider-reported token usage is persisted and `GET /api/projects/:projectId/conversations/:conversationId` returns cumulative token totals for the header.
+- Provider-reported token usage is persisted in `model_usage` and still returned as `tokenUsage` for diagnostics.
+- `GET /api/projects/:projectId/conversations/:conversationId` also returns the latest `contextUsage` estimate for the chat header, sourced from `context_usage_snapshots` with a model-call request fallback when no snapshot exists.
 
 ## Initial AI SDK Agent Sprint
 
@@ -171,8 +172,8 @@ Implemented the first real Socrates AI path:
 - OpenRouter calls use AI SDK `smoothStream` with word-level chunking to make bursty provider streams feel smoother. This improves perceived streaming after chunks arrive, but it does not reduce upstream time-to-first-token.
 - `chat.message.send` creates/reuses the session, creates the user message and running turn, persists runtime config, loads prior user/final-assistant dialogue as model history, builds prompt context, and calls `packages/core`.
 - Provider reasoning deltas map to `agent.thinking.delta`; answer deltas map to `agent.answer.delta`; final assistant messages map to `message.completed`; lifecycle ends with `turn.completed` or `turn.failed`.
-- Real model rows are persisted in `model_calls`, `model_stream_chunks`, `model_usage`, `context_usage_snapshots` when context window metadata is known, and `events`.
-- The chat header shows cumulative completed-turn provider token totals after assistant responses complete.
+- Real model rows are persisted in `model_calls`, `model_stream_chunks`, `model_usage`, `context_usage_snapshots`, and `events`.
+- The chat header shows the latest estimated model-facing context size, such as `23,433 tokens`, not cumulative all-time provider token spend.
 - The chat UI includes compact model and thinking controls, a stop button during active turns, separate thinking rendering, markdown rendering through `react-markdown` and `remark-gfm`, and a small glowing first-token loading indicator.
 - Backend env loading currently reads root `.env` and `apps/server/.env`.
 
@@ -203,7 +204,7 @@ Verification commands passed after this slice:
 pnpm typecheck
 pnpm test
 pnpm build
-browser smoke with OpenAI multi-turn memory and token total update
+browser smoke with OpenAI multi-turn memory and context estimate update
 ```
 
 Chat UI behavior:
@@ -225,7 +226,7 @@ Chat UI behavior:
 - Implemented the `/projects` page as a minimalist list with a `ProjectSearch` component and simplified `ProjectCard`s, removing the global sidebar. Added a personalized greeting (e.g., "Welcome, {name}.") to the header after onboarding.
 - Implemented the `/projects/new` page as a clean, centered creation form.
 - Implemented the `/projects/:projectId` dashboard with a 2-column layout (Left: project header, centered Start new chat action, and Conversation List; Right: Instructions & Files Panels).
-- Implemented the `/projects/:projectId/chats/:conversationId` chat workspace with centered empty-chat composer, bottom composer after messages, streamed AI transcript, compact model/thinking controls, cumulative token header, first-token loading indicator, and collapsible project/conversation sidebar.
+- Implemented the `/projects/:projectId/chats/:conversationId` chat workspace with centered empty-chat composer, bottom composer after messages, streamed AI transcript, compact model/thinking controls, context-estimate header, first-token loading indicator, and collapsible project/conversation sidebar.
 - All UI elements have been properly compartmentalized into `apps/web/src/components/` according to `REPO_RULES`.
 - Frontend onboarding, projects, project dashboard, resource upload, model catalog, conversation loading, and WebSocket chat flows are now wired to real backend APIs/contracts through `apps/web/src/lib/api.ts` and `apps/web/src/hooks/useSocratesSocket.ts`.
 
@@ -427,3 +428,18 @@ Key decisions:
 - The locked primary compressor model is OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
 - The locked fallback compressor model is OpenRouter `qwen/qwen3.6-plus` with thinking off.
 - The compressor-model gate compares summary faithfulness, preservation of decisions/rules, usefulness of trace handles, concision, latency, and cost; the latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower output/token usage.
+
+## Context Compression, Recovery, And Diff UI Implementation
+
+Implemented the first contextual compression and recovery slice:
+
+- `packages/core/src/context/contextCompression.ts` owns provider-call-boundary context estimation, packing, compressor prompts, synchronous compaction near `125k`, precompute near `110k`, and a hard cap of `180k` estimated tokens.
+- Compression is enabled by default through the runtime path and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`. It uses OpenRouter `deepseek/deepseek-v4-flash` as the primary compressor and keeps OpenRouter `qwen/qwen3.6-plus` as fallback. Both compressor routes use explicit OpenRouter thinking off.
+- `context_compaction_snapshots` stores append-only compaction snapshots with an active/latest marker, previous snapshot id, source ids, structured summary JSON, rendered hidden context, source handles, estimates, compressor model, usage, status, timing, and errors.
+- Completed compaction snapshots are indexed into `trace_documents` as hidden `conversation_summary` evidence so `trace_retrieve` can search and inspect summary provenance without creating fake chat messages.
+- The WebSocket stream now includes typed `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed` events. The frontend renders only a subtle `Compacting conversation...` state.
+- Provider calls persist `estimatedTokens` and `contextBudgetTokens` in `model_calls.request_json`; `context_usage_snapshots` records the effective Socrates budget capped at `180k`.
+- The conversation HTTP load returns `contextUsage` for the header and optional `partialTurns` recovered from `model_stream_chunks` when a turn stopped, failed, or is still running without a completed assistant message.
+- Reloading a failed or interrupted turn now shows recovered partial assistant text, reasoning, and historical tool runs instead of making the last user query look unanswered.
+- The AI SDK provider adapter aborts idle provider streams after `SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS` or the default `120000ms`, producing a structured `model_stream_idle_timeout` error instead of hanging indefinitely.
+- Edit approval and completed tool details now prefer focused diffs derived from `edit` operations' `oldText`/`newText`, hide raw literal replacement payloads in approval UI, reject non-unified fake diff text, and render visual Codex-style diff cards through `DiffView`.
