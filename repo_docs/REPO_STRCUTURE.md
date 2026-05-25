@@ -350,6 +350,8 @@ The `bash` implementation remains a real escape hatch. Even when a structured re
 
 `trace_retrieve` is also a read-only model-visible tool, but its search corpus and inspect handles belong to the server/store boundary. The model-facing wrapper lives in `packages/core/tools`, while `apps/server/src/services/store/traceStore.ts` owns trace indexing, SQLite FTS search, and exact inspect.
 
+Structured ordinal recall also belongs in `TraceStore`. The model may pass `turnNo` and optional `role` through the same `trace_retrieve` search contract, but the backend resolves that against raw `turns` and `messages` for one precise conversation before any FTS path. Do not create separate model-visible ordinal, trace document, or embedding tools.
+
 The intended retrieval index is internal infrastructure, not a new model-visible tool surface:
 
 ```text

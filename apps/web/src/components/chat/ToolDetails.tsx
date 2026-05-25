@@ -143,6 +143,13 @@ function formatTraceResult(result: unknown): string {
   const handle = typeof record?.handle === "string" ? record.handle : "trace";
   const kind = typeof record?.kind === "string" ? record.kind : "result";
   const title = typeof record?.title === "string" ? record.title : "";
+  const messageId = typeof record?.messageId === "string" ? record.messageId : undefined;
+  const toolCallId = typeof record?.toolCallId === "string" ? record.toolCallId : undefined;
+  const turnId = typeof record?.turnId === "string" ? record.turnId : undefined;
+  const inspectArgs = record?.inspectArgs ? JSON.stringify(record.inspectArgs) : undefined;
+  const ids = [messageId ? `message ${messageId}` : undefined, toolCallId ? `tool ${toolCallId}` : undefined, turnId ? `turn ${turnId}` : undefined]
+    .filter(Boolean)
+    .join(" ");
   const body =
     typeof record?.content === "string"
       ? record.content
@@ -151,7 +158,9 @@ function formatTraceResult(result: unknown): string {
         : typeof record?.summary === "string"
           ? record.summary
           : "";
-  return `${handle} ${kind} ${title}${body ? `\n  ${body.replace(/\s+/g, " ").slice(0, 280)}` : ""}`.trim();
+  return `${handle} ${kind} ${title}${ids ? `\n  ${ids}` : ""}${inspectArgs ? `\n  inspect ${inspectArgs}` : ""}${
+    body ? `\n  ${body.replace(/\s+/g, " ").slice(0, 280)}` : ""
+  }`.trim();
 }
 
 function ResourceDetails({ tool }: { tool: ToolTimelineItem }) {

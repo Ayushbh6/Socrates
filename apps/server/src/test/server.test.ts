@@ -307,6 +307,55 @@ const sendCommand = (socket: WebSocket, command: unknown): void => {
   socket.send(JSON.stringify(clientCommandSchema.parse(command)))
 }
 
+const insertTestSession = (sqlite: Database.Database, projectId: string, conversationId: string): string => {
+  const id = createId("sess")
+  const now = nowIso()
+  sqlite
+    .prepare(
+      `INSERT INTO sessions (
+        id, conversation_id, project_id, status, created_at, updated_at
+       ) VALUES (?, ?, ?, 'idle', ?, ?)`,
+    )
+    .run(id, conversationId, projectId, now, now)
+  return id
+}
+
+const insertCompletedTestTurn = (
+  sqlite: Database.Database,
+  conversationId: string,
+  sessionId: string,
+  userContent: string,
+  assistantContent: string,
+  timestamp: string,
+): { turnId: string; userMessageId: string; assistantMessageId: string } => {
+  const turnId = createId("turn")
+  const userMessageId = createId("msg")
+  const assistantMessageId = createId("msg")
+  sqlite
+    .prepare(
+      `INSERT INTO turns (
+        id, session_id, conversation_id, user_message_id, assistant_message_id, status, started_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)`,
+    )
+    .run(turnId, sessionId, conversationId, userMessageId, assistantMessageId, timestamp, timestamp)
+  sqlite
+    .prepare(
+      `INSERT INTO messages (
+        id, conversation_id, session_id, turn_id, role, content, content_format, status, created_at, completed_at
+       ) VALUES (?, ?, ?, ?, 'user', ?, 'markdown', 'completed', ?, ?)`,
+    )
+    .run(userMessageId, conversationId, sessionId, turnId, userContent, timestamp, timestamp)
+  sqlite
+    .prepare(
+      `INSERT INTO messages (
+        id, conversation_id, session_id, turn_id, role, content, content_format, status, created_at, completed_at
+       ) VALUES (?, ?, ?, ?, 'assistant', ?, 'markdown', 'completed', ?, ?)`,
+    )
+    .run(assistantMessageId, conversationId, sessionId, turnId, assistantContent, timestamp, timestamp)
+  sqlite.prepare("UPDATE conversations SET updated_at = ? WHERE id = ?").run(timestamp, conversationId)
+  return { turnId, userMessageId, assistantMessageId }
+}
+
 const chatMessageCommand = (projectId: string, conversationId: string, content: string) => ({
   id: createId("evt"),
   type: "chat.message.send",
@@ -1095,6 +1144,120 @@ describe("WebSocket API", () => {
       }
     } finally {
       socket.close()
+    }
+  })
+
+  it("retrieves explicit turnNo matches without natural-language ordinal fallback", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const source = await createConversation(app, project.id, "Ordinal Source")
+    const live = await createConversation(app, project.id, "Ordinal Live")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, source.id)
+      insertCompletedTestTurn(handle.sqlite, source.id, sessionId, "First ordinary user message", "First assistant reply", new Date(Date.now() - 3_000).toISOString())
+      const second = insertCompletedTestTurn(
+        handle.sqlite,
+        source.id,
+        sessionId,
+        "Second user message contains BLUE-LANTERN-42.",
+        "Second assistant reply.",
+        new Date(Date.now() - 2_000).toISOString(),
+      )
+      insertCompletedTestTurn(handle.sqlite, source.id, sessionId, "Third ordinary user message", "Third assistant reply", new Date(Date.now() - 1_000).toISOString())
+
+      const ordinal = store.retrieveToolTraces(project.id, live.id, {
+        query: "what did I say in the second user message",
+        scope: "project",
+        conversationHint: "Ordinal Source",
+        turnNo: 2,
+        role: "user",
+      })
+      expect(ordinal.results[0]?.kind).toBe("message")
+      expect(ordinal.results[0]?.sourceId).toBe(second.userMessageId)
+      expect(JSON.stringify(ordinal.results[0])).toContain(`"inspectArgs":{"operation":"inspect","messageId":"${second.userMessageId}"}`)
+
+      const inspected = store.retrieveToolTraces(project.id, live.id, { operation: "inspect", messageId: second.userMessageId })
+      expect(JSON.stringify(inspected.results)).toContain("BLUE-LANTERN-42")
+
+      const lexicalOnly = store.retrieveToolTraces(project.id, live.id, {
+        query: "what did I say in the second user message",
+        scope: "project",
+        conversationHint: "Ordinal Source",
+      })
+      expect(JSON.stringify(lexicalOnly.results)).not.toContain("BLUE-LANTERN-42")
+
+      const broad = store.retrieveToolTraces(project.id, live.id, {
+        query: "second user message",
+        scope: "project",
+        turnNo: 2,
+        role: "user",
+      })
+      expect(broad.results).toHaveLength(0)
+      expect(broad.warnings?.join(" ")).toContain("requires conversationHint")
+
+      const outOfRange = store.retrieveToolTraces(project.id, live.id, {
+        query: "fifth user message",
+        scope: "project",
+        conversationHint: "Ordinal Source",
+        turnNo: 5,
+        role: "user",
+      })
+      expect(outOfRange.results).toHaveLength(0)
+      expect(outOfRange.warnings?.join(" ")).toContain("No turn number 5")
+    } finally {
+      store.close()
+    }
+  })
+
+  it("requires a precise conversation hint for broad turnNo lookup and inspects ordered conversation bundles", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const first = await createConversation(app, project.id, "Shared Ordinal")
+    const second = await createConversation(app, project.id, "Shared Ordinal")
+    const live = await createConversation(app, project.id, "Ordinal Live")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    try {
+      const firstSession = insertTestSession(handle.sqlite, project.id, first.id)
+      const secondSession = insertTestSession(handle.sqlite, project.id, second.id)
+      insertCompletedTestTurn(handle.sqlite, first.id, firstSession, "First shared source", "Assistant one", new Date(Date.now() - 5_000).toISOString())
+      insertCompletedTestTurn(handle.sqlite, second.id, secondSession, "Second shared source", "Assistant two", new Date(Date.now() - 4_000).toISOString())
+      insertCompletedTestTurn(handle.sqlite, second.id, secondSession, "Second conversation turn two", "Assistant turn two", new Date(Date.now() - 3_000).toISOString())
+      insertCompletedTestTurn(handle.sqlite, second.id, secondSession, "Second conversation turn three", "Assistant turn three", new Date(Date.now() - 2_000).toISOString())
+
+      const ambiguous = store.retrieveToolTraces(project.id, live.id, {
+        query: "first shared source",
+        scope: "project",
+        conversationHint: "Shared Ordinal",
+        turnNo: 1,
+        role: "user",
+      })
+      expect(ambiguous.results).toHaveLength(0)
+      expect(ambiguous.warnings?.join(" ")).toContain("matched multiple conversations")
+
+      const bundle = store.retrieveToolTraces(project.id, live.id, {
+        operation: "inspect",
+        conversationId: second.id,
+        startTurnNo: 2,
+        turnLimit: 2,
+      })
+      expect(bundle.results[0]?.kind).toBe("exact_source")
+      expect(JSON.stringify(bundle.results)).toContain("[turn 2")
+      expect(JSON.stringify(bundle.results)).toContain("Second conversation turn two")
+      expect(JSON.stringify(bundle.results)).toContain("[turn 3")
+      expect(JSON.stringify(bundle.results)).not.toContain("Second shared source")
+      expect(bundle.appliedFilters.startTurnNo).toBe(2)
+      expect(bundle.appliedFilters.turnLimit).toBe(2)
+    } finally {
+      store.close()
     }
   })
 

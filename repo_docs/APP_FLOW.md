@@ -503,11 +503,13 @@ agent needs older context
   -> trace_retrieve search with natural-language query, scope, and optional conversation hint
   -> backend searches indexed trace documents with scoped SQLite FTS/exact retrieval
   -> result returns compact evidence plus handles
-  -> if exact wording matters, agent calls trace_retrieve inspect on the returned handle
+  -> if exact wording matters, agent calls trace_retrieve inspect using the returned inspectArgs
   -> backend returns bounded raw message/tool/shell/patch/error text
 ```
 
 The model should not need to know opaque ids before retrieval. `conversationId`, `turnId`, `messageId`, and `toolCallId` are useful follow-up handles returned by the backend.
+
+Ordinal recall uses a stricter path. If the user asks for "the second user message" or "turn 2", Socrates must put the literal number in `turnNo` and, when relevant, set `role` to `user` or `assistant`. The backend does not parse ordinal phrases out of `query`; this avoids false positives such as matching "turn 2" against "turn 20". For project/recent searches, `turnNo` requires a `conversationHint` that resolves to exactly one conversation.
 
 Supported retrieval scopes should include:
 

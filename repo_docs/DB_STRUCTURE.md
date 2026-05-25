@@ -977,15 +977,20 @@ trace_index_jobs
 
 Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles.
 
+Structured ordinal recall is supported through `trace_retrieve` search fields, not a new table. `turnNo` counts user/Q&A turns in the resolved conversation, and optional `role` selects the user message, assistant message, or whole turn. The lookup reads exact raw `turns` and `messages` rows as the source of truth and returns inspect handles/ids; it does not backfill trace documents or infer ordinals from query text.
+
 Current retrieval combines:
 
 - Structured prefiltering by project, conversation, source kind, path, command, tool, and time.
 - Lexical search over titles, summaries, content, paths, commands, and errors.
 - Reranking that boosts exact path/title/command matches, verbatim anchors, recent relevant evidence, and high-importance source docs.
+- Exact `turnNo` lookup before FTS when the model supplies a structured ordinal selector.
 
 Semantic search over embeddings remains a later phase. Until then, `mode = "semantic"` falls back to lexical/exact retrieval with a warning.
 
 Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
+
+Inspecting a `conversationId` returns a bounded ordered conversation bundle paged with `startTurnNo` and `turnLimit`. Inspecting a returned `messageId`, `turnId`, or `toolCallId` returns exact bounded source content from trace documents when present, with raw-table fallback for exact sources.
 
 ## Trace Index Tables
 

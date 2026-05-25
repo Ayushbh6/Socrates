@@ -375,3 +375,15 @@ Implemented the retrieval-only `trace_retrieve` upgrade:
 TODO:
 
 - Later, hand verbatim-anchor selection to a faster reviewer LLM so high-value exact source text can be marked more intelligently than the current heuristic.
+
+## Trace Retrieve Precision Upgrade
+
+Implemented the `turnNo` precision upgrade for `trace_retrieve`:
+
+- Search accepts structured `turnNo` and optional `role` for ordinal recall.
+- `turnNo` counts user/Q&A turns inside the resolved conversation. `turnNo: 2, role: "user"` means the user message in the second turn.
+- There is intentionally no natural-language ordinal fallback. If Socrates puts "second user message" only in `query` and omits `turnNo`, the backend runs ordinary search.
+- Broad ordinal lookup with `scope = "recent_conversations"` or `scope = "project"` requires a `conversationHint`; ambiguous hints and out-of-range turn numbers return warnings instead of fallback results.
+- Search results now include ready-to-call `inspectArgs`, explicit source ids such as `messageId`/`toolCallId`, and raw source provenance.
+- Inspecting `conversationId` returns an ordered bounded conversation bundle using `startTurnNo` and `turnLimit`.
+- Exact inspect can fall back to raw persisted rows for returned `messageId`, `toolCallId`, or `turnId` when trace documents are absent. Raw tables remain the source of truth; this is not a trace backfill.

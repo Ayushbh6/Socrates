@@ -218,6 +218,8 @@ The `read`, `search`, `trace_retrieve`, and `list_project_resources` tools are r
 
 `conversationId`, `turnId`, `messageId`, and `toolCallId` may be accepted only as follow-up inspect handles or backend-filled context. They are not the primary model-facing retrieval interface.
 
+For ordinal recall, the model must use the structured `turnNo` search field and optional `role`. The backend must not silently infer `turnNo` from natural-language query text such as "second user message"; without `turnNo`, the call remains ordinary search. Broad ordinal lookup with `recent_conversations` or `project` requires a precise `conversationHint`, and ambiguous/out-of-range ordinal lookups must return warnings instead of falling back.
+
 Trace retrieval is search-then-inspect:
 
 ```text

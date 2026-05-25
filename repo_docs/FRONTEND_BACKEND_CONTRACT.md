@@ -1372,6 +1372,8 @@ type TraceRetrieveToolInput =
       scope?: "current_conversation" | "recent_conversations" | "project"
       conversationHint?: string
       conversationLimit?: number
+      turnNo?: number
+      role?: "user" | "assistant" | "any"
       mode?: "combined" | "exact" | "semantic"
       include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
       toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
@@ -1388,6 +1390,8 @@ type TraceRetrieveToolInput =
       turnId?: string
       messageId?: string
       toolCallId?: string
+      startTurnNo?: number
+      turnLimit?: number
       include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
       includeRaw?: boolean
       charLimit?: number
@@ -1408,7 +1412,21 @@ type TraceRetrieveToolOutput = {
         projectId: string
         conversationId?: string
         turnId?: string
+        messageId?: string
+        toolCallId?: string
         sourceId: string
+        source: {
+          table: string
+          id: string
+        }
+        inspectArgs: {
+          operation: "inspect"
+          handle?: string
+          conversationId?: string
+          turnId?: string
+          messageId?: string
+          toolCallId?: string
+        }
         title: string
         snippet?: string
         summary?: string
@@ -1423,6 +1441,8 @@ type TraceRetrieveToolOutput = {
         projectId: string
         conversationId?: string
         turnId?: string
+        messageId?: string
+        toolCallId?: string
         sourceId: string
         title: string
         content: string
@@ -1450,8 +1470,12 @@ Rules:
 - `mode = "semantic"` currently falls back to lexical/exact retrieval with a warning until embeddings are implemented.
 - `conversationHint` is a natural-language hint such as a title fragment, "two conversations ago", or "the previous chat about retrieval tools". Backend code resolves it against project conversations, titles, timestamps, and indexed summaries.
 - `conversationLimit` bounds project-wide or recent-conversation searches; default should be modest.
-- Search results must include stable handles/ids so the model can perform exact follow-up inspection without guessing ids.
+- For ordinal recall, Socrates must pass structured `turnNo` and optional `role`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn.
+- The backend must not infer ordinal intent from query text. If the query says "second user message" but `turnNo` is omitted, the call is a normal lexical/exact search.
+- `turnNo` with `recent_conversations` or `project` requires `conversationHint`. If the hint resolves to multiple conversations or the turn is out of range, return an empty result with a warning rather than falling back.
+- Search results must include stable handles/ids and ready-to-call `inspectArgs` so the model can perform exact follow-up inspection without guessing ids.
 - Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
+- `conversationId` inspect returns a bounded ordered conversation bundle. Use `startTurnNo` and `turnLimit` to page by turns.
 - Large outputs must be paged or truncated with `TruncationMetadata`.
 - Search results are compact snippets only. Exact raw content requires `operation: "inspect"` on a returned handle or id.
 - Raw messages, tool calls, model calls, events, shell output, patches, and errors remain the source of truth. Trace index rows are retrieval documents over that source data, not replacements for it.

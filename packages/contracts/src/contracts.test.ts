@@ -541,8 +541,12 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)
-    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"] }).success).toBe(true)
-    expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
+    expect(
+      traceRetrieveToolInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1", startTurnNo: 2, turnLimit: 5 }).success,
+    ).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", turnNo: 0 }).success).toBe(false)
+    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", role: "system" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ turnId: "turn_1" }).success).toBe(false)
     expect(
       traceRetrieveToolOutputSchema.safeParse({
@@ -553,7 +557,10 @@ describe("tool contracts", () => {
             projectId: project.id,
             conversationId: conversation.id,
             turnId: "turn_1",
+            messageId: "msg_1",
             sourceId: "msg_1",
+            source: { table: "messages", id: "msg_1" },
+            inspectArgs: { operation: "inspect", messageId: "msg_1" },
             title: "User message",
             snippet: "README context",
             score: 0.5,
@@ -564,6 +571,7 @@ describe("tool contracts", () => {
             projectId: project.id,
             conversationId: conversation.id,
             turnId: "turn_1",
+            messageId: "msg_1",
             sourceId: "msg_1",
             title: "User message",
             content: "Exact source",
@@ -573,7 +581,7 @@ describe("tool contracts", () => {
         ],
         totalMatches: 2,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
-        appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
+        appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined", turnNo: 2, role: "user" },
         warnings: ["Semantic trace retrieval is not indexed yet; using lexical/exact retrieval instead."],
       }).success,
     ).toBe(true)

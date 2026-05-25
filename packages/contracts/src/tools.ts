@@ -195,6 +195,9 @@ export type TraceRetrieveMode = z.infer<typeof traceRetrieveModeSchema>
 export const traceRetrieveIncludeSchema = z.enum(["messages", "summaries", "tool_calls", "shell", "files", "errors", "decisions"])
 export type TraceRetrieveInclude = z.infer<typeof traceRetrieveIncludeSchema>
 
+export const traceRetrieveRoleSchema = z.enum(["user", "assistant", "any"])
+export type TraceRetrieveRole = z.infer<typeof traceRetrieveRoleSchema>
+
 export const traceRetrieveSourceKindSchema = z.enum([
   "message",
   "tool_call",
@@ -215,6 +218,8 @@ export const traceRetrieveSearchInputSchema = z
     scope: traceRetrieveScopeSchema.optional(),
     conversationHint: z.string().min(1).optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
+    turnNo: z.number().int().positive().max(10_000).optional(),
+    role: traceRetrieveRoleSchema.optional(),
     mode: traceRetrieveModeSchema.optional(),
     include: z.array(traceRetrieveIncludeSchema).optional(),
     toolNames: z.array(toolNameSchema).optional(),
@@ -229,7 +234,7 @@ export const traceRetrieveSearchInputSchema = z
   .strict()
 export type TraceRetrieveSearchInput = z.infer<typeof traceRetrieveSearchInputSchema>
 
-export const traceRetrieveInspectInputSchema = z
+export const traceRetrieveInspectArgsSchema = z
   .object({
     operation: z.literal("inspect"),
     handle: z.string().min(1).optional(),
@@ -237,6 +242,8 @@ export const traceRetrieveInspectInputSchema = z
     turnId: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
     toolCallId: z.string().min(1).optional(),
+    startTurnNo: z.number().int().positive().max(10_000).optional(),
+    turnLimit: z.number().int().positive().max(100).optional(),
     include: z.array(traceRetrieveIncludeSchema).optional(),
     includeRaw: z.boolean().optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
@@ -245,10 +252,20 @@ export const traceRetrieveInspectInputSchema = z
   .refine((input) => Boolean(input.handle ?? input.conversationId ?? input.turnId ?? input.messageId ?? input.toolCallId), {
     message: "inspect requires handle, conversationId, turnId, messageId, or toolCallId",
   })
+export type TraceRetrieveInspectArgs = z.infer<typeof traceRetrieveInspectArgsSchema>
+
+export const traceRetrieveInspectInputSchema = traceRetrieveInspectArgsSchema
 export type TraceRetrieveInspectInput = z.infer<typeof traceRetrieveInspectInputSchema>
 
 export const traceRetrieveToolInputSchema = z.union([traceRetrieveSearchInputSchema, traceRetrieveInspectInputSchema])
 export type TraceRetrieveToolInput = z.infer<typeof traceRetrieveToolInputSchema>
+
+export const traceRetrieveSourceSchema = z
+  .object({
+    table: z.string().min(1),
+    id: z.string().min(1),
+  })
+  .strict()
 
 export const traceRetrieveAppliedFiltersSchema = z
   .object({
@@ -257,6 +274,10 @@ export const traceRetrieveAppliedFiltersSchema = z
     mode: traceRetrieveModeSchema.optional(),
     conversationLimit: z.number().int().positive().optional(),
     conversationIds: z.array(z.string().min(1)).optional(),
+    turnNo: z.number().int().positive().optional(),
+    role: traceRetrieveRoleSchema.optional(),
+    startTurnNo: z.number().int().positive().optional(),
+    turnLimit: z.number().int().positive().optional(),
     createdAfter: z.string().optional(),
     createdBefore: z.string().optional(),
     defaultDateWindowApplied: z.boolean().optional(),
@@ -271,7 +292,11 @@ export const traceRetrieveSearchResultSchema = z
     projectId: z.string().min(1),
     conversationId: z.string().min(1).optional(),
     turnId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    toolCallId: z.string().min(1).optional(),
     sourceId: z.string().min(1),
+    source: traceRetrieveSourceSchema,
+    inspectArgs: traceRetrieveInspectArgsSchema,
     title: z.string().min(1),
     snippet: z.string().optional(),
     summary: z.string().optional(),
@@ -289,15 +314,12 @@ export const traceRetrieveExactResultSchema = z
     projectId: z.string().min(1),
     conversationId: z.string().min(1).optional(),
     turnId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    toolCallId: z.string().min(1).optional(),
     sourceId: z.string().min(1),
     title: z.string().min(1),
     content: z.string(),
-    source: z
-      .object({
-        table: z.string().min(1),
-        id: z.string().min(1),
-      })
-      .strict(),
+    source: traceRetrieveSourceSchema,
     truncation: truncationMetadataSchema,
     metadata: z.unknown().optional(),
   })
