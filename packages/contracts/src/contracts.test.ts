@@ -673,7 +673,7 @@ describe("tool contracts", () => {
         totalMatches: 2,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
         appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined", turnNo: 2, role: "user" },
-        warnings: ["Semantic trace retrieval is not indexed yet; using lexical/exact retrieval instead."],
+        warnings: ["Semantic trace retrieval is not configured for this project. Use the project dashboard to enable semantic search."],
       }).success,
     ).toBe(true)
     expect(listProjectResourcesToolInputSchema.safeParse({ kind: "pdf", limit: 10 }).success).toBe(true)
