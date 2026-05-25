@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { ToolDetails } from "./ToolDetails";
 import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
+import { summarizeEditTool } from "./editPresentation";
 
 interface ToolActivityRowProps {
   tool: ToolTimelineItem;
@@ -12,7 +13,6 @@ interface ToolActivityRowProps {
 
 export function ToolActivityRow({ tool, approval, onApprovalDecision }: ToolActivityRowProps) {
   const [isOpen, setIsOpen] = useState(false);
-  const Icon = iconForTool(tool);
   const summary = useMemo(() => summarizeTool(tool), [tool]);
   const statusTone = statusClass(tool.status);
 
@@ -23,7 +23,7 @@ export function ToolActivityRow({ tool, approval, onApprovalDecision }: ToolActi
         className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-sm text-brand-text-light hover:bg-gray-50"
         onClick={() => setIsOpen((current) => !current)}
       >
-        <Icon className={`size-4 shrink-0 ${tool.status === "running" ? "animate-pulse text-brand-teal-dark" : statusTone.icon}`} />
+        <ToolIcon tool={tool} className={`size-4 shrink-0 ${tool.status === "running" ? "animate-pulse text-brand-teal-dark" : statusTone.icon}`} />
         <span className="min-w-0 flex-1 truncate">
           <span className="text-brand-text-dark">{summary}</span>
           {tool.durationMs !== undefined && <span className="ml-2 text-xs text-brand-text-light">{formatDuration(tool.durationMs)}</span>}
@@ -47,34 +47,37 @@ export function ToolActivityRow({ tool, approval, onApprovalDecision }: ToolActi
   );
 }
 
-function iconForTool(tool: ToolTimelineItem) {
+function ToolIcon({ tool, className }: { tool: ToolTimelineItem; className: string }) {
   if (tool.status === "failed" || tool.status === "rejected") {
-    return CircleAlert;
+    return <CircleAlert className={className} />;
   }
   if (tool.status === "cancelled") {
-    return CircleAlert;
+    return <CircleAlert className={className} />;
   }
   if (tool.status === "awaiting_approval") {
-    return Clock3;
+    return <Clock3 className={className} />;
   }
   switch (tool.toolName) {
     case "read":
     case "list_project_resources":
-      return FileText;
+      return <FileText className={className} />;
     case "search":
-      return Search;
+      return <Search className={className} />;
     case "edit":
-      return Pencil;
+      return <Pencil className={className} />;
     case "bash":
-      return SquareTerminal;
+      return <SquareTerminal className={className} />;
     case "trace_retrieve":
-      return Workflow;
+      return <Workflow className={className} />;
     default:
-      return Workflow;
+      return <Workflow className={className} />;
   }
 }
 
 function summarizeTool(tool: ToolTimelineItem): string {
+  if (tool.toolName === "edit") {
+    return summarizeEditTool(tool);
+  }
   if (tool.summary) {
     return tool.summary;
   }
@@ -87,9 +90,6 @@ function summarizeTool(tool: ToolTimelineItem): string {
   }
   if (tool.toolName === "search") {
     return `Searched ${inputString(tool, "query") ?? "workspace"}`;
-  }
-  if (tool.toolName === "edit") {
-    return "Edited files";
   }
   if (tool.toolName === "trace_retrieve") {
     return "Retrieved prior trace evidence";

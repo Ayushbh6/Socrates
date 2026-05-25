@@ -1,4 +1,5 @@
 import type { ToolTimelineItem } from "./ToolTimelineTypes";
+import { getEditFileSummaries, parseDiff, type DiffLine } from "./editPresentation";
 
 export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
   if (tool.toolName === "bash") {
@@ -47,21 +48,81 @@ function BashDetails({ tool }: { tool: ToolTimelineItem }) {
 }
 
 function EditDetails({ tool }: { tool: ToolTimelineItem }) {
+  const files = getEditFileSummaries(tool);
+  const diffFiles = parseDiff(tool.patch?.diff ?? tool.resultPreview ?? "");
+
   return (
     <div className="space-y-2">
-      {tool.fileOperations && tool.fileOperations.length > 0 && (
+      {files.length > 0 && (
         <div className="space-y-1 text-xs text-brand-text-light">
-          {tool.fileOperations.map((file) => (
-            <div key={`${file.operation}-${file.path}`} className="flex items-center gap-2">
-              <span className="font-medium text-brand-text-dark">{file.operation}</span>
-              <span className="truncate font-mono">{file.path}</span>
+          {files.map((file) => (
+            <div key={file.path} className="flex items-center gap-2">
+              <span className="font-medium text-brand-text-dark">{capitalize(file.operation)}</span>
+              <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+              {file.added !== undefined || file.removed !== undefined ? (
+                <span className="shrink-0 font-mono">
+                  <span className="text-emerald-600">+{file.added ?? 0}</span>{" "}
+                  <span className="text-red-500">-{file.removed ?? 0}</span>
+                </span>
+              ) : null}
             </div>
           ))}
         </div>
       )}
-      {tool.patch?.diff ? <LabeledCode label="diff" value={tool.patch.diff} tone="dark" /> : null}
-      {!tool.patch?.diff && tool.resultPreview ? <LabeledCode label="preview" value={tool.resultPreview} tone="dark" /> : null}
-      {tool.argsPreview && <LabeledCode label="input" value={tool.argsPreview} />}
+      {diffFiles.length > 0 ? (
+        <VisualDiff files={diffFiles} />
+      ) : tool.resultPreview ? (
+        <LabeledCode label="preview" value={tool.resultPreview} tone="dark" />
+      ) : null}
+    </div>
+  );
+}
+
+function VisualDiff({ files }: { files: ReturnType<typeof parseDiff> }) {
+  return (
+    <div className="space-y-3">
+      {files.map((file) => (
+        <div key={file.path} className="overflow-hidden rounded-xl border border-gray-200 bg-[#191b1f] shadow-sm">
+          <div className="flex items-center justify-between gap-3 border-b border-white/10 bg-white/5 px-3 py-2 text-xs">
+            <span className="min-w-0 truncate font-mono text-gray-100">{file.path}</span>
+            <span className="shrink-0 font-mono">
+              <span className="text-emerald-400">+{file.added}</span> <span className="text-red-400">-{file.removed}</span>
+            </span>
+          </div>
+          <div className="max-h-96 overflow-auto font-mono text-xs leading-5">
+            {file.lines.slice(0, 500).map((line, index) => (
+              <DiffRow key={`${file.path}-${index}`} line={line} />
+            ))}
+            {file.lines.length > 500 && (
+              <div className="border-t border-white/10 px-3 py-2 text-[11px] text-gray-400">
+                Showing first 500 diff lines. Full diff is still preserved in the trace.
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DiffRow({ line }: { line: DiffLine }) {
+  const style =
+    line.kind === "add"
+      ? "border-l-2 border-emerald-400 bg-emerald-500/15 text-emerald-50"
+      : line.kind === "remove"
+        ? "border-l-2 border-red-400 bg-red-500/15 text-red-50"
+        : line.kind === "hunk"
+          ? "bg-sky-500/10 text-sky-200"
+          : line.kind === "meta"
+            ? "text-gray-500"
+            : "text-gray-300";
+  const marker = line.kind === "add" ? "+" : line.kind === "remove" ? "-" : line.kind === "hunk" ? "" : " ";
+
+  return (
+    <div className={`grid grid-cols-[3.5rem_1.25rem_minmax(0,1fr)] px-2 ${style}`}>
+      <span className="select-none pr-2 text-right text-gray-500">{formatLineNumbers(line)}</span>
+      <span className="select-none text-center text-gray-400">{marker}</span>
+      <span className="whitespace-pre">{line.content || " "}</span>
     </div>
   );
 }
@@ -96,12 +157,14 @@ function ReadDetails({ tool }: { tool: ToolTimelineItem }) {
   const result = asRecord(tool.result);
   const path = getInputValue(tool, "path") ?? result?.path;
   const kind = result?.kind;
+  const pathText = typeof path === "string" ? path : undefined;
+  const kindText = typeof kind === "string" ? kind : undefined;
   const content = typeof result?.content === "string" ? result.content : tool.resultPreview;
 
   return (
     <div className="space-y-2">
-      {path && <MetaLine label="path" value={String(path)} />}
-      {kind && <MetaLine label="kind" value={String(kind)} />}
+      {pathText && <MetaLine label="path" value={pathText} />}
+      {kindText && <MetaLine label="kind" value={kindText} />}
       {content ? <LabeledCode label="content" value={content} /> : null}
       {Array.isArray(result?.entries) && result.entries.length > 0 && (
         <pre className="max-h-56 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 text-brand-text-dark">
@@ -229,8 +292,8 @@ function LabeledCode({ label, value, tone = "light" }: { label: string; value: s
   );
 }
 
-function asRecord(value: unknown): Record<string, any> | undefined {
-  return typeof value === "object" && value !== null ? (value as Record<string, any>) : undefined;
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
 }
 
 function getInputValue(tool: ToolTimelineItem, key: string): unknown {
@@ -238,19 +301,21 @@ function getInputValue(tool: ToolTimelineItem, key: string): unknown {
   return input?.[key];
 }
 
-function formatSearchMatch(match: any): string {
-  const path = match?.path ?? "unknown";
-  const line = match?.line ? `:${match.line}` : "";
-  const text = match?.text ? ` ${match.text}` : "";
+function formatSearchMatch(match: unknown): string {
+  const record = asRecord(match);
+  const path = typeof record?.path === "string" ? record.path : "unknown";
+  const line = typeof record?.line === "number" || typeof record?.line === "string" ? `:${record.line}` : "";
+  const text = typeof record?.text === "string" ? ` ${record.text}` : "";
   return `${path}${line}${text}`;
 }
 
-function formatResource(resource: any): string {
-  const name = resource?.name ?? "resource";
-  const kind = resource?.kind ? ` ${resource.kind}` : "";
-  const source = resource?.source ? ` ${resource.source}` : "";
-  const status = resource?.status ? ` ${resource.status}` : "";
-  const uri = resource?.uri ? ` ${resource.uri}` : "";
+function formatResource(resource: unknown): string {
+  const record = asRecord(resource);
+  const name = typeof record?.name === "string" ? record.name : "resource";
+  const kind = typeof record?.kind === "string" ? ` ${record.kind}` : "";
+  const source = typeof record?.source === "string" ? ` ${record.source}` : "";
+  const status = typeof record?.status === "string" ? ` ${record.status}` : "";
+  const uri = typeof record?.uri === "string" ? ` ${record.uri}` : "";
   return `${name}${kind}${source}${status}${uri}`.trim();
 }
 
@@ -259,4 +324,24 @@ function formatDuration(durationMs: number): string {
     return `${durationMs}ms`;
   }
   return `${(durationMs / 1_000).toFixed(1)}s`;
+}
+
+function formatLineNumbers(line: DiffLine): string {
+  if (line.kind === "hunk" || line.kind === "meta") {
+    return "";
+  }
+  if (line.oldLine !== undefined && line.newLine !== undefined) {
+    return `${line.oldLine}/${line.newLine}`;
+  }
+  if (line.oldLine !== undefined) {
+    return String(line.oldLine);
+  }
+  if (line.newLine !== undefined) {
+    return String(line.newLine);
+  }
+  return "";
+}
+
+function capitalize(value: string): string {
+  return value.length > 0 ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
 }

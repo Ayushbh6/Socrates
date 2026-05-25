@@ -369,7 +369,19 @@ const summarizeStoredToolRun = (
       return `Found ${result.totalMatches} ${result.totalMatches === 1 ? "match" : "matches"}.`
     }
     if ("changedFiles" in result && Array.isArray(result.changedFiles)) {
-      return `Changed ${result.changedFiles.length} ${result.changedFiles.length === 1 ? "file" : "files"}.`
+      const paths = Array.from(
+        new Set(
+          result.changedFiles
+            .map((file) => (typeof file === "object" && file !== null && "path" in file && typeof file.path === "string" ? file.path : undefined))
+            .filter((path): path is string => Boolean(path)),
+        ),
+      )
+      const onlyPath = paths[0]
+      if (paths.length === 1 && onlyPath) {
+        return `Edited ${basename(onlyPath)}.`
+      }
+      const count = paths.length || result.changedFiles.length
+      return `Edited ${count} ${count === 1 ? "file" : "files"}.`
     }
   }
   return `${toolName} completed.`
@@ -390,3 +402,5 @@ const previewStoredToolResult = (toolName: string, result: unknown, stdout: stri
 
 const truncatePreview = (text: string, charLimit: number): string =>
   text.length > charLimit ? `${text.slice(0, charLimit)}\n... truncated ...` : text
+
+const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path

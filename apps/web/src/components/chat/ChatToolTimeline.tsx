@@ -24,28 +24,31 @@ export function ChatToolTimeline({ tools, approvals = [], onApprovalDecision }: 
           onApprovalDecision={onApprovalDecision}
         />
       ))}
-      {orphanApprovals.map((approval) => (
-        <ToolActivityRow
-          key={approval.approvalId}
-          tool={{
-            toolCallId: approval.toolCallId ?? approval.approvalId,
-            conversationId: "",
-            sessionId: "",
-            turnId: "",
-            toolName: "bash",
-            displayName: "Approval",
-            category: "shell",
-            status: approval.status === "pending" ? "awaiting_approval" : approval.status === "rejected" ? "rejected" : "completed",
-            requiresApproval: true,
-            output: "",
-            summary: approval.title,
-            argsPreview: approval.actionPreview,
-            approval,
-          }}
-          approval={approval}
-          onApprovalDecision={onApprovalDecision}
-        />
-      ))}
+      {orphanApprovals.map((approval) => {
+        const isFileApproval = approval.actionKind === "file_write" || approval.actionKind === "patch_apply";
+        return (
+          <ToolActivityRow
+            key={approval.approvalId}
+            tool={{
+              toolCallId: approval.toolCallId ?? approval.approvalId,
+              conversationId: "",
+              sessionId: "",
+              turnId: "",
+              toolName: isFileApproval ? "edit" : "bash",
+              displayName: "Approval",
+              category: isFileApproval ? "patch" : "shell",
+              status: approval.status === "pending" ? "awaiting_approval" : approval.status === "rejected" ? "rejected" : "completed",
+              requiresApproval: true,
+              output: "",
+              summary: approval.title,
+              argsPreview: isFileApproval ? undefined : approval.actionPreview,
+              approval,
+            }}
+            approval={approval}
+            onApprovalDecision={onApprovalDecision}
+          />
+        );
+      })}
     </div>
   );
 }

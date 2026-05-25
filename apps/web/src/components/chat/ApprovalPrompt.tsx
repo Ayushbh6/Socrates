@@ -1,5 +1,6 @@
 import { Check, X } from "lucide-react";
 import type { PendingApproval } from "./ToolTimelineTypes";
+import { formatApprovalPreview } from "./editPresentation";
 
 interface ApprovalPromptProps {
   approval: PendingApproval;
@@ -8,6 +9,12 @@ interface ApprovalPromptProps {
 
 export function ApprovalPrompt({ approval, onApprovalDecision }: ApprovalPromptProps) {
   const isPending = approval.status === "pending";
+  const friendlyFilePreview = formatApprovalPreview(approval);
+  const shouldHideRawPreview =
+    approval.actionKind === "file_write" ||
+    approval.actionKind === "patch_apply" ||
+    approval.actionPreview.includes("oldText") ||
+    approval.actionPreview.includes("newText");
 
   return (
     <div className="mt-2 border-l border-amber-300 pl-3">
@@ -49,11 +56,24 @@ export function ApprovalPrompt({ approval, onApprovalDecision }: ApprovalPromptP
           </button>
         </div>
       </div>
-      {approval.actionPreview && (
+      {friendlyFilePreview.length > 0 ? (
+        <div className="mt-2 space-y-1 rounded-md bg-white p-2 text-xs text-brand-text-light">
+          {friendlyFilePreview.map((line) => (
+            <div key={line} className="flex items-center gap-2">
+              <span className="size-1.5 rounded-full bg-amber-400" />
+              <span>{line}</span>
+            </div>
+          ))}
+        </div>
+      ) : shouldHideRawPreview ? (
+        <div className="mt-2 rounded-md bg-white p-2 text-xs text-brand-text-light">
+          File changes are ready for review. Approve to apply them to the workspace.
+        </div>
+      ) : approval.actionPreview ? (
         <pre className="mt-2 max-h-40 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 text-brand-text-dark">
           {approval.actionPreview}
         </pre>
-      )}
+      ) : null}
     </div>
   );
 }

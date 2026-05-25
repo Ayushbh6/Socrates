@@ -2,13 +2,16 @@ import { editToolInputSchema, editToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool, ToolPolicyDecision } from "./types"
 
 const previewEdit = (input: typeof editToolInputSchema._type): string =>
-  input.operations
-    .map((operation) => {
-      if (operation.type === "patch") {
-        return operation.patch
-      }
-      return `${operation.type}: ${operation.path}`
-    })
+  Array.from(
+    new Set(
+      input.operations.map((operation) => {
+        if (operation.type === "patch") {
+          return "patch: workspace"
+        }
+        return `${operation.type}: ${operation.path}`
+      }),
+    ),
+  )
     .join("\n")
 
 const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type>["decidePolicy"] = (
@@ -46,7 +49,19 @@ export const editTool: SocratesTool<typeof editToolInputSchema._type, typeof edi
   category: "patch",
   decidePolicy: decideEditPolicy,
   execute: (input, context) => context.executors.edit(input, context),
-  summary: (output) => `${output.dryRun ? "Prepared" : "Applied"} edits to ${output.changedFiles.length} file(s).`,
+  summary: (output) => summarizeEditOutput(output),
   resultPreview: (output) => output.diff,
   metrics: (output) => ({ filesEdited: output.changedFiles.length }),
 }
+
+const summarizeEditOutput = (output: typeof editToolOutputSchema._type): string => {
+  const paths = Array.from(new Set(output.changedFiles.map((file) => file.path)))
+  const verb = output.dryRun ? "Prepared" : "Edited"
+  const onlyPath = paths[0]
+  if (paths.length === 1 && onlyPath) {
+    return `${verb} ${basename(onlyPath)}.`
+  }
+  return `${verb} ${paths.length} files.`
+}
+
+const basename = (path: string): string => path.split(/[\\/]/).pop() ?? path

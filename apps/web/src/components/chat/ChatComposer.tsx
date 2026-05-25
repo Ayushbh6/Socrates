@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowUp, Brain, ChevronDown, EyeOff, Square, Sparkles, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ModelOption, ModelThinkingOption } from "@socrates/contracts";
 
 interface ChatComposerProps {
@@ -38,10 +38,6 @@ export function ChatComposer({
   const selectedModelKey = selectedModel ? `${selectedModel.providerId}:${selectedModel.modelId}` : "none";
   const visionWarningKey = `${warningResetKey ?? "default"}:${selectedModelKey}`;
   const shouldShowVisionWarning = selectedModelHasNoVision && dismissedVisionWarningKey !== visionWarningKey;
-
-  useEffect(() => {
-    setDismissedVisionWarningKey(null);
-  }, [selectedModelKey, warningResetKey]);
 
   const handleSend = async () => {
     const nextContent = content.trim();

@@ -257,7 +257,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setError(event.type === "turn.failed" ? event.payload.error.message : event.payload.error.message);
       }
     },
-    [conversationId, projectId, refreshConversation],
+    [activeTurnId, conversationId, projectId, refreshConversation],
   );
 
   const { isConnected, sendCommand } = useSocratesSocket({
