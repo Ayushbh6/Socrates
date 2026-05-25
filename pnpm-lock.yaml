@@ -35,6 +35,9 @@ importers:
       '@socrates/core':
         specifier: workspace:^
         version: link:../../packages/core
+      '@socrates/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@socrates/shared':
         specifier: workspace:*
         version: link:../../packages/shared

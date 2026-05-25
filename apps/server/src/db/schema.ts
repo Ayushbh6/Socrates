@@ -530,6 +530,63 @@ export const traceIndexJobs = sqliteTable(
   }),
 )
 
+export const projectEmbeddingConfigs = sqliteTable(
+  "project_embedding_configs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    dimensions: integer("dimensions"),
+    credentialSource: text("credential_source").notNull(),
+    workspaceEnvFile: text("workspace_env_file"),
+    ollamaBaseUrl: text("ollama_base_url"),
+    status: text("status").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull(),
+    lastError: text("last_error"),
+    lastCheckedAt: text("last_checked_at"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    projectActiveIdx: index("project_embedding_configs_project_active_idx").on(table.projectId, table.active),
+    providerModelIdx: index("project_embedding_configs_provider_model_idx").on(table.providerId, table.modelId),
+  }),
+)
+
+export const traceEmbeddings = sqliteTable(
+  "trace_embeddings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    traceDocumentId: text("trace_document_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    dimensions: integer("dimensions").notNull(),
+    contentHash: text("content_hash").notNull(),
+    vectorJson: text("vector_json").notNull(),
+    usageJson: text("usage_json"),
+    status: text("status").notNull(),
+    errorMessage: text("error_message"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    embeddedAt: text("embedded_at"),
+  },
+  (table) => ({
+    projectProviderIdx: index("trace_embeddings_project_provider_idx").on(table.projectId, table.providerId, table.modelId, table.dimensions),
+    traceDocumentIdx: index("trace_embeddings_document_idx").on(table.traceDocumentId),
+    statusIdx: index("trace_embeddings_status_idx").on(table.projectId, table.status),
+    activeContentIdx: uniqueIndex("trace_embeddings_active_content_idx").on(
+      table.traceDocumentId,
+      table.providerId,
+      table.modelId,
+      table.dimensions,
+      table.contentHash,
+    ),
+  }),
+)
+
 export const artifacts = sqliteTable(
   "artifacts",
   {

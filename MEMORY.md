@@ -346,7 +346,7 @@ trace_index_jobs
 - Conversation summaries and compaction summaries are hidden runtime context, not fake user or assistant messages.
 - Verbatim anchors preserve exact high-value user source text such as rubrics, canonical examples, "follow this exactly" instructions, and source-of-truth pasted content.
 - Embeddings should be generated asynchronously after turns are stored. Chat turns should not wait for embedding jobs.
-- Default embedding provider can be OpenAI `text-embedding-3-small`; OpenRouter/local embeddings can be added later behind provider abstractions.
+- Embedding provider access must stay behind provider abstractions. The updated semantic phase direction is OpenAI `text-embedding-3-small` as the hosted default plus offline local embeddings through Ollama as a first-class option.
 
 Docs updated to record this planned direction:
 
@@ -370,7 +370,7 @@ Implemented the retrieval-only `trace_retrieve` upgrade:
 - `TraceStore` owns trace indexing, FTS search, exact inspect, and immediate `build_trace_documents` job processing after completed, failed, and cancelled turns.
 - Indexing is new-turn-only; there is no backfill for old DB history.
 - Deterministic trace docs cover messages, tool calls, shell output, file operations, patches, errors, turn summaries, and heuristic verbatim anchors.
-- Semantic mode falls back to lexical/exact retrieval with a warning until embeddings are implemented.
+- Semantic trace retrieval is now available when project embeddings are configured; otherwise it degrades to lexical/exact retrieval with a warning.
 
 TODO:
 
@@ -387,3 +387,22 @@ Implemented the `turnNo` precision upgrade for `trace_retrieve`:
 - Search results now include ready-to-call `inspectArgs`, explicit source ids such as `messageId`/`toolCallId`, and raw source provenance.
 - Inspecting `conversationId` returns an ordered bounded conversation bundle using `startTurnNo` and `turnLimit`.
 - Exact inspect can fall back to raw persisted rows for returned `messageId`, `toolCallId`, or `turnId` when trace documents are absent. Raw tables remain the source of truth; this is not a trace backfill.
+
+## Trace Embeddings And Semantic Retrieval Implementation
+
+Implemented the semantic trace retrieval phase:
+
+- Added `project_embedding_configs` and `trace_embeddings`, plus `embed_trace_documents` jobs through `trace_index_jobs`.
+- Added `EmbeddingProvider` in `packages/providers`, separate from the chat `ModelProvider`.
+- Supported hosted OpenAI embeddings with default model `text-embedding-3-small`.
+- Supported offline Ollama embeddings with default model `embeddinggemma` and default base URL `http://127.0.0.1:11434`.
+- Hugging Face / sentence-transformers remains an advanced future local backend after the Ollama path is stable.
+- Added project embedding HTTP endpoints for status, setup check, configure, and reindex.
+- Added a project-dashboard Semantic Search panel and modal with Online and Offline setup flows.
+- OpenAI credentials remain env-only: server env or a user-selected workspace `.env*` file. The backend reports only key presence and filenames, never secret values.
+- Socrates does not silently install Ollama or pull models. Missing Ollama setup returns explicit guidance such as `ollama pull embeddinggemma`.
+- Embedding generation is async and in-process. Configure/reindex and newly indexed turns enqueue work without blocking chat turns.
+- `trace_retrieve` keeps one model-visible tool. `mode = "combined"` merges lexical and vector evidence when embeddings are ready; `mode = "semantic"` ranks by vector similarity first.
+- `trace_retrieve` search and inspect results now include conversation provenance (`conversation.title`, status, updated time, and `isCurrentConversation`) so Socrates can name the source chat correctly and avoid calling earlier project evidence "this conversation".
+- Retrieval only compares vectors for the active project config: provider id, model id, dimensions, and current trace document content hash must match.
+- Raw messages/tools/events remain the source of truth. Embeddings are retrieval rows over `trace_documents`, not fake messages or replacement history.

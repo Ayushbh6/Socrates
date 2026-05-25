@@ -511,7 +511,7 @@ The DB should make those differences visible.
 
 Trace retrieval should support semantic search through embeddings, but embedding generation must not sit in the user-facing chat latency path.
 
-The current retrieval-only flow:
+The current trace retrieval and embedding flow:
 
 ```text
 turn completes or is cancelled
@@ -520,36 +520,49 @@ turn completes or is cancelled
   -> server enqueues trace_index_jobs
   -> trace_retrieve can use lexical search immediately
   -> trace_retrieve inspect can return exact bounded source by handle
+  -> if semantic search is configured, server enqueues embed_trace_documents
+  -> embedding runner stores trace_embeddings asynchronously
 ```
 
-The later semantic phase will add background embedding jobs and make `mode = "semantic"` prefer embedding similarity. Until then, semantic mode falls back to lexical/exact retrieval with a warning.
+The semantic phase adds background embedding jobs and makes `mode = "semantic"` prefer embedding similarity. If semantic search is not configured or the active provider is unavailable, retrieval degrades to lexical/exact behavior with a warning.
 
-Default V1 embedding provider:
+The embedding phase ships with two first-class provider choices:
 
 ```text
-providerId = openai
-modelId = text-embedding-3-small
+hosted default:
+  providerId = openai
+  modelId = text-embedding-3-small
+
+offline local:
+  providerId = ollama
+  modelId = embeddinggemma, mxbai-embed-large, nomic-embed-text, all-minilm, or another configured local embedding model
 ```
 
-OpenAI `text-embedding-3-small` is the preferred first default because it is inexpensive, stable, and has a known 1536-dimensional default embedding size. It should be configurable rather than hardcoded into the retrieval algorithm.
+OpenAI `text-embedding-3-small` is the preferred hosted default because it is inexpensive, stable, and has a known 1536-dimensional default embedding size. It is configurable and not hardcoded into the retrieval algorithm.
 
-Possible later providers:
+The local/offline path is a real supported mode, not a hack. The preferred local backend is Ollama because it can run embedding models behind a local HTTP API and avoids putting Python/Torch setup inside the main Socrates server. Socrates detects whether the local server is reachable and whether the selected embedding model is pulled. It does not silently install or download models; it shows explicit setup guidance such as `ollama pull embeddinggemma` when setup is missing.
+
+Hugging Face / sentence-transformers should be an advanced local backend after the Ollama path is stable. Good candidates include `sentence-transformers/all-mpnet-base-v2` for quality and smaller MiniLM-style models for speed. This path should run behind the same `EmbeddingProvider` interface, likely through a local Python helper/service or Hugging Face Text Embeddings Inference, rather than importing Python/Torch concerns into `apps/server`.
+
+The setup UX belongs on the project dashboard. The Semantic Search panel opens a modal that asks the user to choose Online or Offline, runs backend diagnostics, shows explicit setup guidance, saves project embedding config, and starts indexing. The frontend presents progress and errors from backend status endpoints; it must not call embedding providers directly.
+
+Possible later hosted providers:
 
 ```text
 openrouter
-local
-ollama-compatible embeddings
 ```
 
-OpenRouter currently offers cheaper embedding model options through its gateway. Socrates may add OpenRouter embeddings later, but the first implementation should favor the simpler and more stable default unless the user config chooses otherwise.
+OpenRouter may offer cheaper embedding model options through its gateway. Socrates may add OpenRouter embeddings later, but the first semantic phase should prioritize the simpler hosted default plus the fully offline local option.
 
 Provider boundary rules for embeddings:
 
 - Embedding SDK/API calls belong behind `packages/providers`.
+- Use the provider-agnostic `EmbeddingProvider` boundary separate from the chat `ModelProvider`.
 - `apps/web` must never call embedding providers.
 - `packages/core` should not import embedding SDKs.
 - `apps/server` may enqueue and coordinate embedding jobs, but provider-specific request details should stay inside the provider layer.
 - Embedding rows must store provider id, model id, dimensions, content hash, and raw metadata where useful.
+- Retrieval must never compare vectors from different embedding spaces. Query embeddings and stored `trace_embeddings` rows must match on provider id, model id, and dimensions.
 - Unchanged trace documents must not be re-embedded. Use `content_hash`.
 - Failed embedding jobs should degrade gracefully to lexical/exact retrieval.
 

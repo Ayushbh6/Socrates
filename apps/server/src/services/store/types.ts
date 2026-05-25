@@ -2,6 +2,7 @@ import type {
   Conversation,
   Message,
   Project,
+  ProjectEmbeddingStatus,
   ProjectInstructions,
   ProjectResource,
   ProjectWorkspace,
@@ -20,6 +21,7 @@ export type ProjectDashboard = {
   resources: ProjectResource[]
   conversations: Conversation[]
   instructions?: ProjectInstructions
+  embeddingStatus?: ProjectEmbeddingStatus
 }
 
 export type CreatedTurn = {

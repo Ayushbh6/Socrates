@@ -8,6 +8,8 @@ import type {
   CreateConversationRequest,
   CreateProjectRequest,
   CreateProjectResourceRequest,
+  CheckProjectEmbeddingsRequest,
+  ConfigureProjectEmbeddingsRequest,
   FeedbackSubmitPayload,
   Message,
   PatchProjectRequest,
@@ -22,11 +24,13 @@ import type {
   UpsertProjectInstructionsRequest,
   User,
 } from "@socrates/contracts"
+import { createDefaultEmbeddingProvider, type EmbeddingProvider } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
 import { ConversationStore } from "./store/conversationStore"
 import { ErrorStore, type RecordErrorInput } from "./store/errorStore"
 import { EventStore } from "./store/eventStore"
+import { EmbeddingStore } from "./store/embeddingStore"
 import { FeedbackStore } from "./store/feedbackStore"
 import { InstructionStore } from "./store/instructionStore"
 import { ModelTelemetryStore } from "./store/modelTelemetryStore"
@@ -73,8 +77,12 @@ export class SocratesStore {
   private readonly feedback: FeedbackStore
   private readonly tools: ToolStore
   private readonly traces: TraceStore
+  private readonly embeddings: EmbeddingStore
 
-  constructor(private readonly handle: DatabaseHandle) {
+  constructor(
+    private readonly handle: DatabaseHandle,
+    embeddingProvider: EmbeddingProvider = createDefaultEmbeddingProvider(),
+  ) {
     this.events = new EventStore(handle)
     const context: StoreContext = {
       handle,
@@ -92,7 +100,8 @@ export class SocratesStore {
     this.approvals = new ApprovalStore(context)
     this.feedback = new FeedbackStore(context)
     this.tools = new ToolStore(context)
-    this.traces = new TraceStore(context)
+    this.embeddings = new EmbeddingStore(context, embeddingProvider)
+    this.traces = new TraceStore(context, this.embeddings)
   }
 
   close(): void {
@@ -120,7 +129,10 @@ export class SocratesStore {
   }
 
   getProjectDashboard(projectId: string): ProjectDashboard {
-    return this.projects.getProjectDashboard(projectId)
+    return {
+      ...this.projects.getProjectDashboard(projectId),
+      embeddingStatus: this.embeddings.getStatus(projectId),
+    }
   }
 
   getAgentContext(projectId: string): AgentContext {
@@ -341,10 +353,27 @@ export class SocratesStore {
 
   indexTurnTraceDocuments(projectId: string, conversationId: string, turnId: string): void {
     this.traces.indexTurn(projectId, conversationId, turnId)
+    this.embeddings.enqueueTurn(projectId, conversationId, turnId)
   }
 
   retrieveToolTraces(projectId: string, conversationId: string, input: TraceRetrieveToolInput) {
     return this.traces.retrieve(projectId, conversationId, input)
+  }
+
+  getProjectEmbeddingStatus(projectId: string) {
+    return this.embeddings.getStatus(projectId)
+  }
+
+  checkProjectEmbeddings(projectId: string, input: CheckProjectEmbeddingsRequest) {
+    return this.embeddings.check(projectId, input)
+  }
+
+  configureProjectEmbeddings(projectId: string, input: ConfigureProjectEmbeddingsRequest) {
+    return this.embeddings.configure(projectId, input)
+  }
+
+  reindexProjectEmbeddings(projectId: string) {
+    return this.embeddings.reindex(projectId)
   }
 
   submitFeedback(payload: FeedbackSubmitPayload): void {

@@ -1,4 +1,12 @@
-import type { ModelToolDefinition, NormalizedToolCall, ProviderId, ProviderMetadata, RuntimeConfig, ThinkingEffort } from "@socrates/contracts"
+import type {
+  ModelToolDefinition,
+  NormalizedToolCall,
+  ProjectEmbeddingProvider,
+  ProviderId,
+  ProviderMetadata,
+  RuntimeConfig,
+  ThinkingEffort,
+} from "@socrates/contracts"
 
 export type ModelMessage = {
   role: "user" | "assistant" | "system" | "developer" | "tool"
@@ -43,6 +51,44 @@ export type ModelEvent =
 
 export interface ModelProvider {
   stream(request: ModelRequest): AsyncIterable<ModelEvent>
+}
+
+export type EmbeddingUsage = {
+  inputTokens?: number
+  totalTokens?: number
+  raw?: unknown
+}
+
+export type EmbeddingCheckRequest = {
+  providerId: ProjectEmbeddingProvider
+  modelId: string
+  apiKey?: string
+  baseUrl?: string
+  abortSignal?: AbortSignal
+}
+
+export type EmbeddingRequest = EmbeddingCheckRequest & {
+  values: string[]
+}
+
+export type EmbeddingResult = {
+  embeddings: number[][]
+  dimensions: number
+  usage?: EmbeddingUsage
+  raw?: unknown
+}
+
+export type EmbeddingCheckResult = {
+  ok: boolean
+  dimensions?: number
+  message: string
+  raw?: unknown
+}
+
+export interface EmbeddingProvider {
+  check(request: EmbeddingCheckRequest): Promise<EmbeddingCheckResult>
+  embedMany(request: EmbeddingRequest): Promise<EmbeddingResult>
+  embed(request: EmbeddingCheckRequest & { value: string }): Promise<EmbeddingResult>
 }
 
 export type ProviderThinkingConfig =

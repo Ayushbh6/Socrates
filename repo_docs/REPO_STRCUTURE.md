@@ -54,12 +54,15 @@ Socrates/
         workspaceScaffold.ts
         nativeFolderPicker.ts
         resourceStorage.ts
+        envFiles.ts
 
     providers/
       src/
         types.ts
         ProviderRouter.ts
+        EmbeddingProviderRouter.ts
         ai-sdk/
+        embeddings/
         modelCatalog/
         test/
 
@@ -203,6 +206,8 @@ store/
   errorStore.ts
   approvalStore.ts
   feedbackStore.ts
+  traceStore.ts
+  embeddingStore.ts
   shared.ts
   types.ts
 ```
@@ -381,7 +386,7 @@ The model provider layer.
 It owns:
 
 - The internal `ModelProvider` interface.
-- Future internal embedding provider interface.
+- Internal embedding provider interface.
 - Vercel AI SDK adapter.
 - Provider/model registry.
 - Provider config loading.
@@ -389,7 +394,23 @@ It owns:
 
 The agent core should call only the internal provider interface.
 
-Embedding generation for trace documents should also stay behind provider abstractions. Chat turns should not import or call embedding SDKs directly. The first default embedding provider can be OpenAI `text-embedding-3-small`; OpenRouter and local embedding providers can be added later behind the same boundary.
+Embedding generation for trace documents stays behind provider abstractions. Chat turns do not import or call embedding SDKs directly. The semantic phase added a provider-agnostic `EmbeddingProvider` boundary in `packages/providers`, separate from the chat `ModelProvider`.
+
+The first embedding phase supports two first-class choices:
+
+```text
+OpenAI hosted default
+  providerId = openai
+  modelId = text-embedding-3-small
+
+Offline local
+  providerId = ollama first
+  modelId = embeddinggemma, mxbai-embed-large, nomic-embed-text, all-minilm, or configured local model
+```
+
+Hugging Face / sentence-transformers can be added as an advanced local backend through the same boundary after the Ollama path is stable. `apps/server` coordinates embedding jobs, but provider-specific HTTP/API/Python details stay out of routes, WebSocket handlers, frontend code, and `packages/core`.
+
+The project dashboard owns the frontend entrypoint for this setup. It renders a state-aware Semantic Search panel that opens a modal step flow for Online vs Offline embeddings. The frontend calls backend project embedding endpoints for status, diagnostics, configuration, and reindexing; it must not call OpenAI, Ollama, Hugging Face, or local runtimes directly.
 
 Target dependency direction:
 

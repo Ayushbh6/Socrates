@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify"
 import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
+  checkProjectEmbeddingsRequestSchema,
+  configureProjectEmbeddingsRequestSchema,
   createConversationMessageRequestSchema,
   createConversationRequestSchema,
   createProjectRequestSchema,
@@ -52,7 +54,9 @@ const handleRouteError = (error: unknown) => {
     api.code === "conversation_title_required" ||
     api.code === "message_content_required" ||
     api.code === "resource_file_required" ||
-    api.code === "resource_upload_limit_exceeded"
+    api.code === "resource_upload_limit_exceeded" ||
+    api.code === "embedding_check_failed" ||
+    api.code === "workspace_env_file_not_allowed"
       ? 400
       : api.code.endsWith("_not_found")
         ? 404
@@ -126,6 +130,48 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(patchProjectRequestSchema, request.body)
       return ok({ project: store.patchProject(projectId, input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/projects/:projectId/embeddings/status", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      return ok({ status: store.getProjectEmbeddingStatus(projectId) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/embeddings/check", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(checkProjectEmbeddingsRequestSchema, request.body)
+      return ok(await store.checkProjectEmbeddings(projectId, input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/embeddings/configure", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(configureProjectEmbeddingsRequestSchema, request.body)
+      return ok({ status: await store.configureProjectEmbeddings(projectId, input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/embeddings/reindex", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      return ok({ status: store.reindexProjectEmbeddings(projectId) })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

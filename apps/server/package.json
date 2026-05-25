@@ -19,6 +19,7 @@
     "@fastify/websocket": "^11.2.0",
     "@socrates/contracts": "workspace:*",
     "@socrates/core": "workspace:^",
+    "@socrates/providers": "workspace:*",
     "@socrates/shared": "workspace:*",
     "@socrates/workspace": "workspace:*",
     "better-sqlite3": "^12.10.0",

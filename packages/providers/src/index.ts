@@ -1,4 +1,21 @@
 export { AiSdkProvider } from "./ai-sdk/AiSdkProvider"
+export { EmbeddingProviderRouter } from "./EmbeddingProviderRouter"
+export { createDefaultEmbeddingProvider } from "./embeddings/defaultEmbeddingProvider"
+export { OllamaEmbeddingProvider, normalizeBaseUrl } from "./embeddings/OllamaEmbeddingProvider"
+export { OpenAiEmbeddingProvider } from "./embeddings/OpenAiEmbeddingProvider"
 export { ProviderRouter } from "./ProviderRouter"
 export { defaultModel, findModelOption, listModels, modelCatalog } from "./modelCatalog/modelCatalog"
-export type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelRequest, ModelUsage } from "./types"
+export type {
+  EmbeddingCheckRequest,
+  EmbeddingCheckResult,
+  EmbeddingProvider,
+  EmbeddingRequest,
+  EmbeddingResult,
+  EmbeddingUsage,
+  ModelEvent,
+  ModelMessage,
+  ModelMessagePart,
+  ModelProvider,
+  ModelRequest,
+  ModelUsage,
+} from "./types"

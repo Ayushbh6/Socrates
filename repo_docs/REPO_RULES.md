@@ -218,6 +218,8 @@ The `read`, `search`, `trace_retrieve`, and `list_project_resources` tools are r
 
 `conversationId`, `turnId`, `messageId`, and `toolCallId` may be accepted only as follow-up inspect handles or backend-filled context. They are not the primary model-facing retrieval interface.
 
+Search and inspect results must include conversation provenance when the source belongs to a conversation. Socrates should use `conversation.title` as the human-readable location and must only say a source came from "this conversation" or "current chat" when `conversation.isCurrentConversation` is true.
+
 For ordinal recall, the model must use the structured `turnNo` search field and optional `role`. The backend must not silently infer `turnNo` from natural-language query text such as "second user message"; without `turnNo`, the call remains ordinary search. Broad ordinal lookup with `recent_conversations` or `project` requires a precise `conversationHint`, and ambiguous/out-of-range ordinal lookups must return warnings instead of falling back.
 
 Trace retrieval is search-then-inspect:
@@ -233,6 +235,8 @@ inspect
 ```
 
 Trace index internals such as `trace_documents`, `trace_embeddings`, and `trace_index_jobs` must not become separate model-visible tools. They are backend storage/indexing implementation details behind `trace_retrieve`.
+
+Embedding providers must follow the same boundary rules as chat providers. OpenAI hosted embeddings and offline local embeddings through Ollama or a future Hugging Face / sentence-transformers backend must live behind `packages/providers`; frontend code, routes, WebSocket handlers, and `packages/core` must not call embedding SDKs or local model runtimes directly. Socrates must not silently install or download offline embedding models; it should detect missing local setup and show explicit setup guidance.
 
 Conversation summaries, turn summaries, and verbatim anchors must preserve provenance back to raw rows. Summaries must not be stored as fake user or assistant messages. The `messages` table is for real visible chat messages only.
 

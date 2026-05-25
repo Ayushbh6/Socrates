@@ -400,6 +400,7 @@ type GetProjectResponse = {
   resources: ProjectResource[]
   conversations: Conversation[]
   instructions?: ProjectInstructions
+  embeddingStatus?: ProjectEmbeddingStatus
 }
 ```
 
@@ -411,7 +412,138 @@ instructions.content is stored in full but shown as a bounded panel preview
 resource previews are shown in a bounded scrollable panel
 dashboard start-chat action creates a conversation before routing to chat
 conversation rows show an actions menu with rename and delete
+semantic search action reflects embeddingStatus when available
 ```
+
+### Project Embeddings
+
+Implemented contract for project-scoped semantic search setup. The frontend renders setup and progress, but the backend owns provider diagnostics, API key detection, local Ollama probing, provider calls, and job creation.
+
+```ts
+type ProjectEmbeddingProvider = "openai" | "ollama"
+type ProjectEmbeddingCredentialSource = "server_env" | "workspace_env" | "none"
+
+type ProjectEmbeddingStatus = {
+  configured: boolean
+  ready: boolean
+  providerId?: ProjectEmbeddingProvider
+  modelId?: string
+  configId?: string
+  dimensions?: number
+  credentialSource?: ProjectEmbeddingCredentialSource
+  workspaceEnvFile?: string
+  ollamaBaseUrl?: string
+  status?: "ready" | "failed" | "disabled"
+  totalDocuments: number
+  indexedDocuments: number
+  pendingDocuments: number
+  failedDocuments: number
+  activeJob?: {
+    id: string
+    status: "queued" | "running" | "completed" | "failed"
+    createdAt: string
+    startedAt?: string
+    completedAt?: string
+  }
+  lastError?: string
+  updatedAt?: string
+  warnings?: string[]
+}
+```
+
+Dashboard action labels should be state-aware:
+
+```text
+not configured -> Enable semantic search
+queued/running job -> Embedding index running
+ready and indexed -> Semantic search enabled
+failed or lastError -> Fix embeddings
+```
+
+### `GET /api/projects/:projectId/embeddings/status`
+
+Returns project embedding configuration and indexing progress.
+
+```ts
+type GetProjectEmbeddingStatusResponse = {
+  status: ProjectEmbeddingStatus
+}
+```
+
+### `POST /api/projects/:projectId/embeddings/check`
+
+Runs setup diagnostics before enabling embeddings.
+
+```ts
+type CheckProjectEmbeddingsRequest =
+  {
+    providerId: "openai" | "ollama"
+    modelId?: string
+    credentialSource?: "server_env" | "workspace_env" | "none"
+    workspaceEnvFile?: string
+    ollamaBaseUrl?: string
+  }
+
+type CheckProjectEmbeddingsResponse = {
+  providerId: "openai" | "ollama"
+  modelId: string
+  ok: boolean
+  dimensions?: number
+  serverEnvAvailable?: boolean
+  workspaceEnvCandidates?: Array<{ fileName: string; hasOpenAiApiKey: boolean }>
+  selectedWorkspaceEnvFile?: string
+  message: string
+  warnings?: string[]
+}
+```
+
+Rules:
+
+- Online checks verify server `OPENAI_API_KEY` and user-triggered workspace `.env*` key presence. The backend returns only filenames and booleans, never key values.
+- Offline checks verify Ollama server reachability and selected model availability through the local Ollama HTTP API.
+- The backend must not install Ollama or pull local models silently. If setup is missing, return explicit commands such as `ollama pull embeddinggemma`.
+
+### `POST /api/projects/:projectId/embeddings/configure`
+
+Saves the project embedding configuration and optionally enqueues indexing.
+
+```ts
+type ConfigureProjectEmbeddingsRequest =
+  {
+    providerId: "openai" | "ollama"
+    modelId?: string
+    credentialSource: "server_env" | "workspace_env" | "none"
+    workspaceEnvFile?: string
+    ollamaBaseUrl?: string
+  }
+
+type ConfigureProjectEmbeddingsResponse = {
+  status: ProjectEmbeddingStatus
+}
+```
+
+### `POST /api/projects/:projectId/embeddings/reindex`
+
+Enqueues embedding jobs for trace documents missing embeddings for the configured provider/model/content hash.
+
+```ts
+type ReindexProjectEmbeddingsResponse = {
+  status: ProjectEmbeddingStatus
+}
+```
+
+Frontend modal flow:
+
+```text
+Project dashboard -> Enable semantic search
+  -> choose Online or Offline
+  -> run embeddings/check
+  -> show setup guidance or continue
+  -> configure embeddings
+  -> show status/progress from embeddings/status
+```
+
+The frontend must never call OpenAI, Ollama, Hugging Face, or sentence-transformers directly.
 
 Chat sidebar behavior:
 
@@ -1419,6 +1551,13 @@ type TraceRetrieveToolOutput = {
           table: string
           id: string
         }
+        conversation?: {
+          id: string
+          title?: string
+          status?: "active" | "archived" | "deleted"
+          updatedAt?: string
+          isCurrentConversation: boolean
+        }
         inspectArgs: {
           operation: "inspect"
           handle?: string
@@ -1432,6 +1571,8 @@ type TraceRetrieveToolOutput = {
         summary?: string
         score?: number
         preserveVerbatim?: boolean
+        turnNo?: number
+        messageRole?: "user" | "assistant" | "system" | "tool" | "developer"
         createdAt?: string
         metadata?: unknown
       }
@@ -1450,6 +1591,15 @@ type TraceRetrieveToolOutput = {
           table: string
           id: string
         }
+        conversation?: {
+          id: string
+          title?: string
+          status?: "active" | "archived" | "deleted"
+          updatedAt?: string
+          isCurrentConversation: boolean
+        }
+        turnNo?: number
+        messageRole?: "user" | "assistant" | "system" | "tool" | "developer"
         truncation: TruncationMetadata
         metadata?: unknown
       }
@@ -1462,12 +1612,15 @@ type TraceRetrieveToolOutput = {
 
 The current output shape uses `results`. The older `traces` array shape has been removed.
 
+Each result should carry source provenance for final-answer wording. `conversation.title` is the preferred human-readable location, and `conversation.isCurrentConversation` tells the agent whether it is safe to describe the evidence as coming from "this conversation" or "the current chat". If `isCurrentConversation` is false, UI and model-facing summaries should describe it as an earlier project conversation or use the conversation title.
+
 Rules:
 
 - Retrieval is project-scoped by backend code, not by model-provided ids.
-- The default search mode is `combined`: lexical/exact matching now, plus semantic embedding search when embeddings are available later.
+- The default search mode is `combined`: lexical/exact matching plus semantic embedding search when project embeddings are configured.
+- The embedding implementation supports OpenAI hosted embeddings and offline Ollama embeddings. Embedding configuration is backend-owned; the frontend must not call embedding providers or know provider SDK details.
 - `mode = "exact"` should prefer literal message text, file paths, command strings, titles, and verbatim anchors.
-- `mode = "semantic"` currently falls back to lexical/exact retrieval with a warning until embeddings are implemented.
+- `mode = "semantic"` ranks by vector similarity when the project has a ready active embedding config, and otherwise returns a warning while preserving lexical/exact retrieval behavior.
 - `conversationHint` is a natural-language hint such as a title fragment, "two conversations ago", or "the previous chat about retrieval tools". Backend code resolves it against project conversations, titles, timestamps, and indexed summaries.
 - `conversationLimit` bounds project-wide or recent-conversation searches; default should be modest.
 - For ordinal recall, Socrates must pass structured `turnNo` and optional `role`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn.

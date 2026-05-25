@@ -146,8 +146,21 @@ function formatTraceResult(result: unknown): string {
   const messageId = typeof record?.messageId === "string" ? record.messageId : undefined;
   const toolCallId = typeof record?.toolCallId === "string" ? record.toolCallId : undefined;
   const turnId = typeof record?.turnId === "string" ? record.turnId : undefined;
+  const conversation = asRecord(record?.conversation);
+  const conversationTitle = typeof conversation?.title === "string" ? conversation.title : undefined;
+  const isCurrentConversation = typeof conversation?.isCurrentConversation === "boolean" ? conversation.isCurrentConversation : undefined;
+  const turnNo = typeof record?.turnNo === "number" ? record.turnNo : undefined;
+  const messageRole = typeof record?.messageRole === "string" ? record.messageRole : undefined;
   const inspectArgs = record?.inspectArgs ? JSON.stringify(record.inspectArgs) : undefined;
   const ids = [messageId ? `message ${messageId}` : undefined, toolCallId ? `tool ${toolCallId}` : undefined, turnId ? `turn ${turnId}` : undefined]
+    .filter(Boolean)
+    .join(" ");
+  const provenance = [
+    conversationTitle ? `conversation "${conversationTitle}"` : undefined,
+    isCurrentConversation === undefined ? undefined : isCurrentConversation ? "current chat" : "earlier chat",
+    turnNo ? `turn ${turnNo}` : undefined,
+    messageRole ? `role ${messageRole}` : undefined,
+  ]
     .filter(Boolean)
     .join(" ");
   const body =
@@ -158,7 +171,7 @@ function formatTraceResult(result: unknown): string {
         : typeof record?.summary === "string"
           ? record.summary
           : "";
-  return `${handle} ${kind} ${title}${ids ? `\n  ${ids}` : ""}${inspectArgs ? `\n  inspect ${inspectArgs}` : ""}${
+  return `${handle} ${kind} ${title}${provenance ? `\n  ${provenance}` : ""}${ids ? `\n  ${ids}` : ""}${inspectArgs ? `\n  inspect ${inspectArgs}` : ""}${
     body ? `\n  ${body.replace(/\s+/g, " ").slice(0, 280)}` : ""
   }`.trim();
 }

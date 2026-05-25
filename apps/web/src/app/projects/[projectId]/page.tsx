@@ -5,6 +5,7 @@ import { ConversationList } from "@/components/dashboard/ConversationList";
 import { InstructionsPanel } from "@/components/dashboard/InstructionsPanel";
 import { FilesPanel } from "@/components/dashboard/FilesPanel";
 import { StartChatAction } from "@/components/dashboard/StartChatAction";
+import { SemanticSearchPanel } from "@/components/dashboard/SemanticSearchPanel";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
 import type { GetProjectResponse } from "@socrates/contracts";
@@ -117,6 +118,17 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     }
   };
 
+  const handleEmbeddingStatusChange = (embeddingStatus: NonNullable<GetProjectResponse["embeddingStatus"]>) => {
+    setData((current) =>
+      current
+        ? {
+            ...current,
+            embeddingStatus,
+          }
+        : current,
+    );
+  };
+
   const handleStartNewChat = async () => {
     setError(null);
     setIsStartingChat(true);
@@ -205,6 +217,13 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               isSaving={isSavingInstructions}
               onSave={handleSaveInstructions}
             />
+            {data && (
+              <SemanticSearchPanel
+                projectId={projectId}
+                status={data.embeddingStatus}
+                onStatusChange={handleEmbeddingStatusChange}
+              />
+            )}
             {uploadError && <p className="pt-4 text-sm text-red-600">{uploadError}</p>}
             <FilesPanel
               resources={data?.resources ?? []}

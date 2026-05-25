@@ -244,6 +244,7 @@ Purpose:
 - Show project resources.
 - Show project instructions.
 - Show past conversations.
+- Show semantic search / embedding setup status.
 - Start a new chat.
 
 Primary areas:
@@ -254,6 +255,7 @@ centered start new chat action
 conversation list
 resource panel
 instructions panel
+semantic search panel/action
 workspace status
 ```
 
@@ -321,6 +323,7 @@ Rename conversation
 Delete conversation
 Add resource
 Edit instructions
+Set up semantic search
 Open workspace folder
 ```
 
@@ -331,6 +334,67 @@ start new chat -> create conversation -> /projects/:projectId/chats/:conversatio
 open existing chat -> /projects/:projectId/chats/:conversationId
 back to all projects -> /projects
 ```
+
+### Project Embedding Setup Flow
+
+The project dashboard exposes project-scoped semantic search setup. This is project infrastructure, not a per-chat model selector.
+
+Dashboard action states:
+
+```text
+not configured -> Enable semantic search
+queued/running job -> Embedding index running
+ready and indexed -> Semantic search enabled
+provider unavailable or failed -> Fix embeddings
+```
+
+Clicking the dashboard action opens a modal. Prefer user-facing language such as "Enable semantic search" on the dashboard, while the modal can use the technical term "embeddings".
+
+Modal entry:
+
+```text
+Choose embedding mode
+  Online
+  Offline
+```
+
+Online flow:
+
+```text
+1. Choose hosted provider
+   OpenAI text-embedding-3-small
+2. Check API key
+   backend checks server env and user-triggered workspace .env* key presence
+3. Preview indexing
+   show trace document count / estimated work when available
+4. Start indexing
+   save project embedding config and enqueue embed_trace_documents jobs
+5. Progress
+   queued/running/completed/failed counts, lexical search still available while indexing
+```
+
+The online flow must clearly state that trace document text is sent to OpenAI for embedding generation.
+
+Offline flow:
+
+```text
+1. Choose local backend
+   Ollama recommended
+   Hugging Face / sentence-transformers advanced later
+2. Check local setup
+   backend checks Ollama server reachability and selected model availability
+3. Choose local model
+   embeddinggemma recommended initially
+   alternatives: mxbai-embed-large, nomic-embed-text, all-minilm
+4. Setup guidance
+   show exact commands such as ollama pull embeddinggemma when missing
+5. Start local indexing
+   save project embedding config and enqueue jobs
+6. Progress
+   same status surface as online
+```
+
+Socrates must not silently install Ollama or download embedding models. The offline setup flow only detects local state and shows explicit commands for the user to run.
 
 The project dashboard must not show the full chat composer in V1. The composer belongs on `/projects/:projectId/chats/:conversationId`. The dashboard shows a centered `Start new chat` button/action instead.
 
@@ -600,10 +664,23 @@ exact retrievable anchors
 Current implementation note:
 
 ```text
-trace_retrieve search is lexical/exact today
-mode = semantic falls back with a warning
-embeddings and rolling conversation summaries are later phases
+trace_retrieve search supports lexical/exact and active project embeddings
+mode = combined merges lexical and vector evidence when embeddings are ready
+mode = semantic ranks by vector similarity when embeddings are ready
+search and inspect results include conversation provenance
+rolling conversation summaries are a later phase
 ```
+
+When showing or answering from retrieved history, Socrates must use the returned conversation provenance. If `conversation.isCurrentConversation` is false, the answer should say the evidence came from an earlier project conversation or use `conversation.title`; it should only say "this conversation" or "current chat" when the provenance says the result is from the current conversation.
+
+Semantic retrieval is available through two first-class options:
+
+```text
+hosted default: OpenAI text-embedding-3-small
+offline local: Ollama embeddinggemma by default, with Hugging Face / sentence-transformers as an advanced local backend later
+```
+
+Embedding generation stays asynchronous after trace document creation. It should not block chat turns, and if the selected embedding provider is unavailable Socrates should continue with lexical/exact retrieval plus a warning.
 
 ## Project-Scoped Conversations
 

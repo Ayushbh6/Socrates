@@ -96,8 +96,122 @@ export const getProjectResponseSchema = z
     resources: z.array(projectResourceSchema),
     conversations: z.array(conversationSchema),
     instructions: projectInstructionsSummarySchema.optional(),
+    embeddingStatus: z.lazy(() => projectEmbeddingStatusSchema).optional(),
   })
   .strict()
+
+export const projectEmbeddingProviderSchema = z.enum(["openai", "ollama"])
+export type ProjectEmbeddingProvider = z.infer<typeof projectEmbeddingProviderSchema>
+
+export const projectEmbeddingCredentialSourceSchema = z.enum(["server_env", "workspace_env", "none"])
+export type ProjectEmbeddingCredentialSource = z.infer<typeof projectEmbeddingCredentialSourceSchema>
+
+export const projectEmbeddingConfigStatusSchema = z.enum(["ready", "failed", "disabled"])
+export type ProjectEmbeddingConfigStatus = z.infer<typeof projectEmbeddingConfigStatusSchema>
+
+export const projectEmbeddingJobStatusSchema = z.enum(["queued", "running", "completed", "failed"])
+export type ProjectEmbeddingJobStatus = z.infer<typeof projectEmbeddingJobStatusSchema>
+
+export const projectEmbeddingEnvCandidateSchema = z
+  .object({
+    fileName: z.string().min(1),
+    hasOpenAiApiKey: z.boolean(),
+  })
+  .strict()
+export type ProjectEmbeddingEnvCandidate = z.infer<typeof projectEmbeddingEnvCandidateSchema>
+
+export const projectEmbeddingActiveJobSchema = z
+  .object({
+    id: idSchema,
+    status: projectEmbeddingJobStatusSchema,
+    createdAt: z.string().min(1),
+    startedAt: z.string().min(1).optional(),
+    completedAt: z.string().min(1).optional(),
+  })
+  .strict()
+export type ProjectEmbeddingActiveJob = z.infer<typeof projectEmbeddingActiveJobSchema>
+
+export const projectEmbeddingStatusSchema = z
+  .object({
+    configured: z.boolean(),
+    ready: z.boolean(),
+    providerId: projectEmbeddingProviderSchema.optional(),
+    modelId: z.string().min(1).optional(),
+    configId: idSchema.optional(),
+    dimensions: z.number().int().positive().optional(),
+    credentialSource: projectEmbeddingCredentialSourceSchema.optional(),
+    workspaceEnvFile: z.string().min(1).optional(),
+    ollamaBaseUrl: z.string().min(1).optional(),
+    status: projectEmbeddingConfigStatusSchema.optional(),
+    totalDocuments: z.number().int().nonnegative(),
+    indexedDocuments: z.number().int().nonnegative(),
+    pendingDocuments: z.number().int().nonnegative(),
+    failedDocuments: z.number().int().nonnegative(),
+    activeJob: projectEmbeddingActiveJobSchema.optional(),
+    lastError: z.string().optional(),
+    updatedAt: z.string().min(1).optional(),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type ProjectEmbeddingStatus = z.infer<typeof projectEmbeddingStatusSchema>
+
+export const checkProjectEmbeddingsRequestSchema = z
+  .object({
+    providerId: projectEmbeddingProviderSchema,
+    modelId: z.string().min(1).optional(),
+    credentialSource: projectEmbeddingCredentialSourceSchema.optional(),
+    workspaceEnvFile: z.string().min(1).optional(),
+    ollamaBaseUrl: z.string().min(1).optional(),
+  })
+  .strict()
+export type CheckProjectEmbeddingsRequest = z.infer<typeof checkProjectEmbeddingsRequestSchema>
+
+export const checkProjectEmbeddingsResponseSchema = z
+  .object({
+    providerId: projectEmbeddingProviderSchema,
+    modelId: z.string().min(1),
+    ok: z.boolean(),
+    dimensions: z.number().int().positive().optional(),
+    serverEnvAvailable: z.boolean().optional(),
+    workspaceEnvCandidates: z.array(projectEmbeddingEnvCandidateSchema).optional(),
+    selectedWorkspaceEnvFile: z.string().min(1).optional(),
+    message: z.string().min(1),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type CheckProjectEmbeddingsResponse = z.infer<typeof checkProjectEmbeddingsResponseSchema>
+
+export const configureProjectEmbeddingsRequestSchema = z
+  .object({
+    providerId: projectEmbeddingProviderSchema,
+    modelId: z.string().min(1).optional(),
+    credentialSource: projectEmbeddingCredentialSourceSchema,
+    workspaceEnvFile: z.string().min(1).optional(),
+    ollamaBaseUrl: z.string().min(1).optional(),
+  })
+  .strict()
+export type ConfigureProjectEmbeddingsRequest = z.infer<typeof configureProjectEmbeddingsRequestSchema>
+
+export const configureProjectEmbeddingsResponseSchema = z
+  .object({
+    status: projectEmbeddingStatusSchema,
+  })
+  .strict()
+export type ConfigureProjectEmbeddingsResponse = z.infer<typeof configureProjectEmbeddingsResponseSchema>
+
+export const getProjectEmbeddingsStatusResponseSchema = z
+  .object({
+    status: projectEmbeddingStatusSchema,
+  })
+  .strict()
+export type GetProjectEmbeddingsStatusResponse = z.infer<typeof getProjectEmbeddingsStatusResponseSchema>
+
+export const reindexProjectEmbeddingsResponseSchema = z
+  .object({
+    status: projectEmbeddingStatusSchema,
+  })
+  .strict()
+export type ReindexProjectEmbeddingsResponse = z.infer<typeof reindexProjectEmbeddingsResponseSchema>
 
 export const listProjectResourcesResponseSchema = z
   .object({

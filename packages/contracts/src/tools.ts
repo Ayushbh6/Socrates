@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { projectResourceKindSchema, projectResourceSourceSchema, projectResourceStatusSchema } from "./entities"
+import { conversationStatusSchema, messageRoleSchema, projectResourceKindSchema, projectResourceSourceSchema, projectResourceStatusSchema } from "./entities"
 
 export const toolNameSchema = z.enum(["read", "search", "edit", "bash", "trace_retrieve", "list_project_resources"])
 export type ToolName = z.infer<typeof toolNameSchema>
@@ -267,6 +267,16 @@ export const traceRetrieveSourceSchema = z
   })
   .strict()
 
+export const traceRetrieveConversationProvenanceSchema = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(1).optional(),
+    status: conversationStatusSchema.optional(),
+    updatedAt: z.string().min(1).optional(),
+    isCurrentConversation: z.boolean(),
+  })
+  .strict()
+
 export const traceRetrieveAppliedFiltersSchema = z
   .object({
     operation: z.enum(["search", "inspect"]),
@@ -296,12 +306,15 @@ export const traceRetrieveSearchResultSchema = z
     toolCallId: z.string().min(1).optional(),
     sourceId: z.string().min(1),
     source: traceRetrieveSourceSchema,
+    conversation: traceRetrieveConversationProvenanceSchema.optional(),
     inspectArgs: traceRetrieveInspectArgsSchema,
     title: z.string().min(1),
     snippet: z.string().optional(),
     summary: z.string().optional(),
     score: z.number().optional(),
     preserveVerbatim: z.boolean().optional(),
+    turnNo: z.number().int().positive().optional(),
+    messageRole: messageRoleSchema.optional(),
     createdAt: z.string().optional(),
     metadata: z.unknown().optional(),
   })
@@ -320,6 +333,9 @@ export const traceRetrieveExactResultSchema = z
     title: z.string().min(1),
     content: z.string(),
     source: traceRetrieveSourceSchema,
+    conversation: traceRetrieveConversationProvenanceSchema.optional(),
+    turnNo: z.number().int().positive().optional(),
+    messageRole: messageRoleSchema.optional(),
     truncation: truncationMetadataSchema,
     metadata: z.unknown().optional(),
   })

@@ -4,9 +4,10 @@ import path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import type { ApiResponse, Conversation, Message, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
+import type { ApiResponse, Conversation, Message, Project, ProjectEmbeddingStatus, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
+import type { EmbeddingProvider } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
@@ -179,6 +180,35 @@ const createApprovalToolAgent = (): SocratesAgent => {
     },
   }
   return new SocratesAgent(provider)
+}
+
+const createTestEmbeddingProvider = (): EmbeddingProvider => ({
+  async check() {
+    return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
+  },
+  async embed(request) {
+    return {
+      embeddings: [testEmbeddingVector(request.value)],
+      dimensions: 3,
+    }
+  },
+  async embedMany(request) {
+    return {
+      embeddings: request.values.map(testEmbeddingVector),
+      dimensions: 3,
+    }
+  },
+})
+
+const testEmbeddingVector = (value: string): number[] => {
+  const lower = value.toLowerCase()
+  if (lower.includes("blue-lantern-42")) {
+    return [1, 0, 0]
+  }
+  if (lower.includes("ordinary")) {
+    return [0, 1, 0]
+  }
+  return [0, 0, 1]
 }
 
 const createGeminiSignatureAgent = (requests: unknown[]): SocratesAgent => {
@@ -356,6 +386,21 @@ const insertCompletedTestTurn = (
   return { turnId, userMessageId, assistantMessageId }
 }
 
+const waitForEmbeddingStatus = async (
+  store: SocratesStore,
+  projectId: string,
+  predicate: (status: ProjectEmbeddingStatus) => boolean,
+): Promise<ProjectEmbeddingStatus> => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const status = store.getProjectEmbeddingStatus(projectId)
+    if (predicate(status)) {
+      return status
+    }
+    await delay(25)
+  }
+  throw new Error("Timed out waiting for embedding status")
+}
+
 const chatMessageCommand = (projectId: string, conversationId: string, content: string) => ({
   id: createId("evt"),
   type: "chat.message.send",
@@ -441,6 +486,8 @@ describe("database migrations", () => {
         "trace_documents",
         "trace_documents_fts",
         "trace_index_jobs",
+        "project_embedding_configs",
+        "trace_embeddings",
         "artifacts",
         "voice_inputs",
         "audio_outputs",
@@ -1086,22 +1133,26 @@ describe("WebSocket API", () => {
         expect(indexed.document_count).toBeGreaterThanOrEqual(3)
         expect(indexed.fts_count).toBeGreaterThanOrEqual(indexed.document_count)
 
-        const search = store.retrieveToolTraces(project.id, conversation.id, { query: "Hello Socrates" })
+        const search = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello Socrates" })
         expect(search.appliedFilters.scope).toBe("current_conversation")
         expect(search.appliedFilters.defaultDateWindowApplied).toBe(true)
         expect(search.warnings?.join(" ")).toContain("Only viewing the current chat")
         expect(search.results.some((result) => result.kind === "message" && result.title.includes("User"))).toBe(true)
+        expect(search.results[0]?.conversation?.title).toBe(conversation.title)
+        expect(search.results[0]?.conversation?.isCurrentConversation).toBe(true)
 
         const handleResult = search.results.find((result) => result.kind === "message" && result.title.includes("User"))
         expect(handleResult).toBeDefined()
         if (handleResult) {
-          const inspected = store.retrieveToolTraces(project.id, conversation.id, { operation: "inspect", handle: handleResult.handle })
+          const inspected = await store.retrieveToolTraces(project.id, conversation.id, { operation: "inspect", handle: handleResult.handle })
           expect(inspected.results[0]?.kind).toBe("exact_source")
+          expect(inspected.results[0]?.conversation?.title).toBe(conversation.title)
+          expect(inspected.results[0]?.conversation?.isCurrentConversation).toBe(true)
           expect(JSON.stringify(inspected.results[0])).toContain("Hello Socrates")
         }
 
-        const semantic = store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic" })
-        expect(semantic.warnings?.join(" ")).toContain("Semantic trace retrieval is not indexed yet")
+        const semantic = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic" })
+        expect(semantic.warnings?.join(" ")).toContain("Semantic trace retrieval is not configured")
       } finally {
         store.close()
       }
@@ -1133,7 +1184,7 @@ describe("WebSocket API", () => {
           .get(started.payload.turnId) as { count: number }
         expect(row.count).toBeGreaterThan(0)
 
-        const search = store.retrieveToolTraces(project.id, conversation.id, {
+        const search = await store.retrieveToolTraces(project.id, conversation.id, {
           query: "canonical rubric exact assignment rules",
           mode: "exact",
           include: ["messages"],
@@ -1170,7 +1221,7 @@ describe("WebSocket API", () => {
       )
       insertCompletedTestTurn(handle.sqlite, source.id, sessionId, "Third ordinary user message", "Third assistant reply", new Date(Date.now() - 1_000).toISOString())
 
-      const ordinal = store.retrieveToolTraces(project.id, live.id, {
+      const ordinal = await store.retrieveToolTraces(project.id, live.id, {
         query: "what did I say in the second user message",
         scope: "project",
         conversationHint: "Ordinal Source",
@@ -1179,19 +1230,25 @@ describe("WebSocket API", () => {
       })
       expect(ordinal.results[0]?.kind).toBe("message")
       expect(ordinal.results[0]?.sourceId).toBe(second.userMessageId)
+      expect(ordinal.results[0]?.conversation?.title).toBe("Ordinal Source")
+      expect(ordinal.results[0]?.conversation?.isCurrentConversation).toBe(false)
+      expect(ordinal.results[0]?.turnNo).toBe(2)
+      expect(ordinal.results[0]?.messageRole).toBe("user")
       expect(JSON.stringify(ordinal.results[0])).toContain(`"inspectArgs":{"operation":"inspect","messageId":"${second.userMessageId}"}`)
 
-      const inspected = store.retrieveToolTraces(project.id, live.id, { operation: "inspect", messageId: second.userMessageId })
+      const inspected = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", messageId: second.userMessageId })
+      expect(inspected.results[0]?.conversation?.title).toBe("Ordinal Source")
+      expect(inspected.results[0]?.conversation?.isCurrentConversation).toBe(false)
       expect(JSON.stringify(inspected.results)).toContain("BLUE-LANTERN-42")
 
-      const lexicalOnly = store.retrieveToolTraces(project.id, live.id, {
+      const lexicalOnly = await store.retrieveToolTraces(project.id, live.id, {
         query: "what did I say in the second user message",
         scope: "project",
         conversationHint: "Ordinal Source",
       })
       expect(JSON.stringify(lexicalOnly.results)).not.toContain("BLUE-LANTERN-42")
 
-      const broad = store.retrieveToolTraces(project.id, live.id, {
+      const broad = await store.retrieveToolTraces(project.id, live.id, {
         query: "second user message",
         scope: "project",
         turnNo: 2,
@@ -1200,7 +1257,7 @@ describe("WebSocket API", () => {
       expect(broad.results).toHaveLength(0)
       expect(broad.warnings?.join(" ")).toContain("requires conversationHint")
 
-      const outOfRange = store.retrieveToolTraces(project.id, live.id, {
+      const outOfRange = await store.retrieveToolTraces(project.id, live.id, {
         query: "fifth user message",
         scope: "project",
         conversationHint: "Ordinal Source",
@@ -1233,7 +1290,7 @@ describe("WebSocket API", () => {
       insertCompletedTestTurn(handle.sqlite, second.id, secondSession, "Second conversation turn two", "Assistant turn two", new Date(Date.now() - 3_000).toISOString())
       insertCompletedTestTurn(handle.sqlite, second.id, secondSession, "Second conversation turn three", "Assistant turn three", new Date(Date.now() - 2_000).toISOString())
 
-      const ambiguous = store.retrieveToolTraces(project.id, live.id, {
+      const ambiguous = await store.retrieveToolTraces(project.id, live.id, {
         query: "first shared source",
         scope: "project",
         conversationHint: "Shared Ordinal",
@@ -1243,7 +1300,7 @@ describe("WebSocket API", () => {
       expect(ambiguous.results).toHaveLength(0)
       expect(ambiguous.warnings?.join(" ")).toContain("matched multiple conversations")
 
-      const bundle = store.retrieveToolTraces(project.id, live.id, {
+      const bundle = await store.retrieveToolTraces(project.id, live.id, {
         operation: "inspect",
         conversationId: second.id,
         startTurnNo: 2,
@@ -1258,6 +1315,99 @@ describe("WebSocket API", () => {
       expect(bundle.appliedFilters.turnLimit).toBe(2)
     } finally {
       store.close()
+    }
+  })
+
+  it("configures trace embeddings and uses semantic retrieval for active provider rows", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Semantic Source")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, createTestEmbeddingProvider())
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const ordinary = insertCompletedTestTurn(
+        handle.sqlite,
+        conversation.id,
+        sessionId,
+        "Ordinary setup note.",
+        "Ordinary assistant reply.",
+        new Date(Date.now() - 2_000).toISOString(),
+      )
+      const target = insertCompletedTestTurn(
+        handle.sqlite,
+        conversation.id,
+        sessionId,
+        "The durable semantic recall key is BLUE-LANTERN-42.",
+        "Remembered.",
+        new Date(Date.now() - 1_000).toISOString(),
+      )
+      store.indexTurnTraceDocuments(project.id, conversation.id, ordinary.turnId)
+      store.indexTurnTraceDocuments(project.id, conversation.id, target.turnId)
+
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "embeddinggemma",
+        credentialSource: "none",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+      })
+      const status = await waitForEmbeddingStatus(store, project.id, (current) => current.pendingDocuments === 0 && current.indexedDocuments > 0)
+      expect(status.indexedDocuments).toBeGreaterThan(0)
+
+      const semantic = await store.retrieveToolTraces(project.id, conversation.id, {
+        query: "BLUE-LANTERN-42",
+        mode: "semantic",
+        include: ["messages"],
+      })
+      expect(semantic.warnings?.join(" ") ?? "").not.toContain("not configured")
+      expect(semantic.results[0]?.kind).toBe("message")
+      expect(JSON.stringify(semantic.results[0])).toContain(target.userMessageId)
+
+      handle.sqlite
+        .prepare(
+          `INSERT INTO trace_embeddings
+            (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
+           SELECT ?, project_id, id, 'openai', 'text-embedding-3-small', 3, content_hash, '[1,0,0]', 'completed', ?, ?, ?
+           FROM trace_documents
+           WHERE source_id = ?
+           LIMIT 1`,
+        )
+        .run(createId("temb"), nowIso(), nowIso(), nowIso(), ordinary.userMessageId)
+      const stillSemantic = await store.retrieveToolTraces(project.id, conversation.id, {
+        query: "BLUE-LANTERN-42",
+        mode: "semantic",
+        include: ["messages"],
+      })
+      expect(JSON.stringify(stillSemantic.results[0])).toContain(target.userMessageId)
+    } finally {
+      store.close()
+    }
+  })
+
+  it("checks embedding setup through HTTP without exposing workspace env secrets", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    expect(primaryWorkspace.path).toBeDefined()
+    fs.writeFileSync(path.join(primaryWorkspace.path as string, ".env.local"), "OPENAI_API_KEY=sk-secret-test\n")
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/embeddings/check`,
+      payload: { providerId: "openai", modelId: "text-embedding-3-small" },
+    })
+    const body = parseResponse<{
+      ok: boolean
+      workspaceEnvCandidates?: Array<{ fileName: string; hasOpenAiApiKey: boolean }>
+    }>(response.payload)
+    expect(body.ok).toBe(true)
+    if (body.ok) {
+      expect(body.data.ok).toBe(true)
+      expect(body.data.workspaceEnvCandidates).toContainEqual({ fileName: ".env.local", hasOpenAiApiKey: true })
+      expect(JSON.stringify(body.data)).not.toContain("sk-secret-test")
     }
   })
 

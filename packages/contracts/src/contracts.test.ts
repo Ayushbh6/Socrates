@@ -6,9 +6,13 @@ import {
   approvalResolvedEventSchema,
   chatMessageSendCommandSchema,
   chatTurnCancelCommandSchema,
+  checkProjectEmbeddingsRequestSchema,
+  checkProjectEmbeddingsResponseSchema,
   clientCommandSchema,
   completeOnboardingRequestSchema,
   completeOnboardingResponseSchema,
+  configureProjectEmbeddingsRequestSchema,
+  configureProjectEmbeddingsResponseSchema,
   connectionReadyEventSchema,
   contextUsageSnapshotEventSchema,
   conversationSchema,
@@ -26,6 +30,7 @@ import {
   feedbackSubmitCommandSchema,
   getConversationResponseSchema,
   getMeResponseSchema,
+  getProjectEmbeddingsStatusResponseSchema,
   getProjectResponseSchema,
   listProjectConversationsResponseSchema,
   listProjectResourcesResponseSchema,
@@ -36,6 +41,7 @@ import {
   patchProjectResponseSchema,
   pickWorkspaceFolderRequestSchema,
   pickWorkspaceFolderResponseSchema,
+  reindexProjectEmbeddingsResponseSchema,
   projectResourceSchema,
   projectSchema,
   projectWorkspaceSchema,
@@ -118,6 +124,29 @@ const conversation = {
   projectId: "proj_1",
   title: "Build contracts",
   status: "active",
+  updatedAt: timestamp,
+}
+
+const embeddingStatus = {
+  configured: true,
+  ready: true,
+  providerId: "ollama",
+  modelId: "embeddinggemma",
+  configId: "embcfg_1",
+  dimensions: 768,
+  credentialSource: "none",
+  ollamaBaseUrl: "http://127.0.0.1:11434",
+  status: "ready",
+  totalDocuments: 10,
+  indexedDocuments: 8,
+  pendingDocuments: 2,
+  failedDocuments: 0,
+  activeJob: {
+    id: "tjob_1",
+    status: "running",
+    createdAt: timestamp,
+    startedAt: timestamp,
+  },
   updatedAt: timestamp,
 }
 
@@ -281,6 +310,50 @@ describe("http contracts", () => {
     expect(
       pickWorkspaceFolderResponseSchema.safeParse({ path: "/tmp/socrates", folderName: "socrates" }).success,
     ).toBe(true)
+    expect(
+      getProjectResponseSchema.safeParse({
+        project,
+        primaryWorkspace: workspace,
+        resources: [resource],
+        conversations: [conversation],
+        instructions,
+        embeddingStatus,
+      }).success,
+    ).toBe(true)
+  })
+
+  it("parses project embedding HTTP contracts", () => {
+    expect(checkProjectEmbeddingsRequestSchema.safeParse({ providerId: "openai", modelId: "text-embedding-3-small" }).success).toBe(true)
+    expect(
+      checkProjectEmbeddingsRequestSchema.safeParse({
+        providerId: "ollama",
+        credentialSource: "none",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+      }).success,
+    ).toBe(true)
+    expect(checkProjectEmbeddingsRequestSchema.safeParse({ providerId: "huggingface" }).success).toBe(false)
+    expect(
+      checkProjectEmbeddingsResponseSchema.safeParse({
+        providerId: "openai",
+        modelId: "text-embedding-3-small",
+        ok: true,
+        dimensions: 1536,
+        serverEnvAvailable: false,
+        workspaceEnvCandidates: [{ fileName: ".env.local", hasOpenAiApiKey: true }],
+        message: "Checked.",
+      }).success,
+    ).toBe(true)
+    expect(
+      configureProjectEmbeddingsRequestSchema.safeParse({
+        providerId: "openai",
+        modelId: "text-embedding-3-small",
+        credentialSource: "workspace_env",
+        workspaceEnvFile: ".env.local",
+      }).success,
+    ).toBe(true)
+    expect(configureProjectEmbeddingsResponseSchema.safeParse({ status: embeddingStatus }).success).toBe(true)
+    expect(getProjectEmbeddingsStatusResponseSchema.safeParse({ status: embeddingStatus }).success).toBe(true)
+    expect(reindexProjectEmbeddingsResponseSchema.safeParse({ status: embeddingStatus }).success).toBe(true)
   })
 
   it("parses project instructions contracts", () => {
@@ -560,10 +633,19 @@ describe("tool contracts", () => {
             messageId: "msg_1",
             sourceId: "msg_1",
             source: { table: "messages", id: "msg_1" },
+            conversation: {
+              id: conversation.id,
+              title: "Trace source",
+              status: "active",
+              updatedAt: "2026-05-25T00:00:00.000Z",
+              isCurrentConversation: false,
+            },
             inspectArgs: { operation: "inspect", messageId: "msg_1" },
             title: "User message",
             snippet: "README context",
             score: 0.5,
+            turnNo: 2,
+            messageRole: "user",
           },
           {
             handle: "tdoc_2",
@@ -576,6 +658,15 @@ describe("tool contracts", () => {
             title: "User message",
             content: "Exact source",
             source: { table: "messages", id: "msg_1" },
+            conversation: {
+              id: conversation.id,
+              title: "Trace source",
+              status: "active",
+              updatedAt: "2026-05-25T00:00:00.000Z",
+              isCurrentConversation: true,
+            },
+            turnNo: 2,
+            messageRole: "user",
             truncation: { truncated: false, charLimit: 20_000, returnedLength: 12 },
           },
         ],

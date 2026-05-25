@@ -2,7 +2,9 @@
 
 import {
   apiResponseSchema,
+  checkProjectEmbeddingsResponseSchema,
   completeOnboardingResponseSchema,
+  configureProjectEmbeddingsResponseSchema,
   createConversationMessageResponseSchema,
   createConversationResponseSchema,
   createProjectResponseSchema,
@@ -10,18 +12,24 @@ import {
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
   getConversationResponseSchema,
+  getProjectEmbeddingsStatusResponseSchema,
   getProjectResponseSchema,
   listProjectsResponseSchema,
   listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
   pickWorkspaceFolderResponseSchema,
+  reindexProjectEmbeddingsResponseSchema,
   uploadProjectResourcesResponseSchema,
   updateConversationResponseSchema,
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
+  type CheckProjectEmbeddingsRequest,
+  type CheckProjectEmbeddingsResponse,
   type CompleteOnboardingRequest,
   type CompleteOnboardingResponse,
+  type ConfigureProjectEmbeddingsRequest,
+  type ConfigureProjectEmbeddingsResponse,
   type CreateConversationMessageRequest,
   type CreateConversationMessageResponse,
   type CreateConversationRequest,
@@ -32,12 +40,14 @@ import {
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
   type GetMeResponse,
+  type GetProjectEmbeddingsStatusResponse,
   type GetProjectResponse,
   type ListProjectsResponse,
   type ListModelsHttpResponse,
   type ListProjectConversationsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
+  type ReindexProjectEmbeddingsResponse,
   type UpdateConversationRequest,
   type UpdateConversationResponse,
   type UploadProjectResourcesResponse,
@@ -148,6 +158,41 @@ export const api = {
 
   getProject: (projectId: string) =>
     request<typeof getProjectResponseSchema>(`/api/projects/${projectId}`, getProjectResponseSchema) as Promise<GetProjectResponse>,
+
+  getProjectEmbeddingStatus: (projectId: string) =>
+    request<typeof getProjectEmbeddingsStatusResponseSchema>(
+      `/api/projects/${projectId}/embeddings/status`,
+      getProjectEmbeddingsStatusResponseSchema,
+    ) as Promise<GetProjectEmbeddingsStatusResponse>,
+
+  checkProjectEmbeddings: (projectId: string, input: CheckProjectEmbeddingsRequest) =>
+    request<typeof checkProjectEmbeddingsResponseSchema>(
+      `/api/projects/${projectId}/embeddings/check`,
+      checkProjectEmbeddingsResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<CheckProjectEmbeddingsResponse>,
+
+  configureProjectEmbeddings: (projectId: string, input: ConfigureProjectEmbeddingsRequest) =>
+    request<typeof configureProjectEmbeddingsResponseSchema>(
+      `/api/projects/${projectId}/embeddings/configure`,
+      configureProjectEmbeddingsResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<ConfigureProjectEmbeddingsResponse>,
+
+  reindexProjectEmbeddings: (projectId: string) =>
+    request<typeof reindexProjectEmbeddingsResponseSchema>(
+      `/api/projects/${projectId}/embeddings/reindex`,
+      reindexProjectEmbeddingsResponseSchema,
+      {
+        method: "POST",
+      },
+    ) as Promise<ReindexProjectEmbeddingsResponse>,
 
   listProjectConversations: (projectId: string) =>
     request<typeof listProjectConversationsResponseSchema>(

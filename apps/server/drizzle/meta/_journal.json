@@ -15,6 +15,13 @@
       "when": 1779734400000,
       "tag": "0001_trace_retrieval_index",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1779820800000,
+      "tag": "0002_trace_embeddings",
+      "breakpoints": true
     }
   ]
 }

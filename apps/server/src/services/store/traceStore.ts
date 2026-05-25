@@ -26,6 +26,7 @@ import {
   traceIndexJobs,
 } from "../../db/schema"
 import { StoreBase } from "./shared"
+import type { TraceQueryEmbeddingResult } from "./embeddingStore"
 
 const DEFAULT_LIMIT = 8
 const DEFAULT_CHAR_LIMIT = 20_000
@@ -56,6 +57,18 @@ type SearchRow = TraceDocumentRow & {
   score: number | null
 }
 
+type ConversationProvenance = {
+  id: string
+  title?: string
+  status?: "active" | "archived" | "deleted"
+  updatedAt?: string
+  isCurrentConversation: boolean
+}
+
+type TraceEmbeddingQueryProvider = {
+  embedTraceQuery(projectId: string, query: string): Promise<TraceQueryEmbeddingResult>
+}
+
 type MessageOrdinalRow = {
   id: string
   conversationId: string
@@ -66,6 +79,13 @@ type MessageOrdinalRow = {
   status: string
   createdAt: string
   completedAt: string | null
+}
+
+type ConversationRow = {
+  id: string
+  title: string | null
+  status: string
+  updatedAt: string
 }
 
 type TurnOrdinalRow = {
@@ -101,6 +121,13 @@ const traceDocumentSelect = `td.id AS id,
   td.updated_at AS updatedAt`
 
 export class TraceStore extends StoreBase {
+  constructor(
+    context: ConstructorParameters<typeof StoreBase>[0],
+    private readonly embeddingQueryProvider?: TraceEmbeddingQueryProvider,
+  ) {
+    super(context)
+  }
+
   indexTurn(projectId: string, conversationId: string, turnId: string): void {
     const now = nowIso()
     const jobId = createId("tjob")
@@ -148,7 +175,7 @@ export class TraceStore extends StoreBase {
     }
   }
 
-  retrieve(projectId: string, currentConversationId: string, input: TraceRetrieveToolInput): TraceRetrieveToolOutput {
+  async retrieve(projectId: string, currentConversationId: string, input: TraceRetrieveToolInput): Promise<TraceRetrieveToolOutput> {
     if (input.operation === "inspect") {
       return this.inspect(projectId, currentConversationId, input)
     }
@@ -178,11 +205,11 @@ export class TraceStore extends StoreBase {
     return docs.length
   }
 
-  private search(
+  private async search(
     projectId: string,
     currentConversationId: string,
     input: TraceRetrieveSearchInput,
-  ): TraceRetrieveToolOutput {
+  ): Promise<TraceRetrieveToolOutput> {
     const scope = input.scope ?? "current_conversation"
     const mode = input.mode ?? "combined"
     const limit = input.limit ?? DEFAULT_LIMIT
@@ -203,9 +230,6 @@ export class TraceStore extends StoreBase {
     } else if (defaultDateWindowApplied) {
       warnings.push(`Only viewing trace evidence from the past 3 days. Use conversationHint or date filters to widen.`)
     }
-    if (mode === "semantic") {
-      warnings.push(`Semantic trace retrieval is not indexed yet; using lexical/exact retrieval instead.`)
-    }
     if (input.includeRaw) {
       warnings.push(`Search returns compact snippets only. Use operation="inspect" with a returned handle for exact source text.`)
     }
@@ -222,20 +246,58 @@ export class TraceStore extends StoreBase {
       })
     }
 
-    const rows = this.searchTraceDocuments(projectId, {
-      query: input.query,
-      mode,
-      conversationIds,
-      include,
-      toolNames: input.toolNames,
-      paths: input.paths,
-      command: input.command,
-      createdAfter,
-      createdBefore,
-      limit,
-    })
+    const lexicalRows =
+      mode === "semantic"
+        ? []
+        : this.searchTraceDocuments(projectId, {
+            query: input.query,
+            mode,
+            conversationIds,
+            include,
+            toolNames: input.toolNames,
+            paths: input.paths,
+            command: input.command,
+            createdAfter,
+            createdBefore,
+            limit,
+          })
+    const semanticRows =
+      mode === "combined" || mode === "semantic"
+        ? await this.searchSemanticTraceDocuments(projectId, {
+            query: input.query,
+            conversationIds,
+            include,
+            toolNames: input.toolNames,
+            paths: input.paths,
+            command: input.command,
+            createdAfter,
+            createdBefore,
+            limit,
+            warnings,
+          })
+        : []
+    const rows =
+      mode === "semantic"
+        ? semanticRows
+        : mergeSearchRows([...lexicalRows, ...semanticRows], limit)
 
-    const results = rows.map((row) => this.searchResultFromTraceRow(row, input))
+    const fallbackRows =
+      mode === "semantic" && rows.length === 0
+        ? this.searchTraceDocuments(projectId, {
+            query: input.query,
+            mode,
+            conversationIds,
+            include,
+            toolNames: input.toolNames,
+            paths: input.paths,
+            command: input.command,
+            createdAfter,
+            createdBefore,
+            limit,
+          })
+        : rows
+
+    const results = fallbackRows.map((row) => this.searchResultFromTraceRow(row, input, currentConversationId))
 
     const text = JSON.stringify(results)
     return {
@@ -285,6 +347,9 @@ export class TraceStore extends StoreBase {
         title: doc.title,
         content: truncated.text,
         source: { table: doc.sourceTable, id: doc.sourceId },
+        ...(doc.conversationId ? { conversation: this.conversationProvenance(projectId, currentConversationId, doc.conversationId) } : {}),
+        ...(doc.turnId && doc.conversationId ? { turnNo: this.findTurnNo(projectId, doc.conversationId, doc.turnId) } : {}),
+        ...(doc.sourceTable === "messages" ? { messageRole: this.messageRoleForDocument(doc) } : {}),
         truncation: {
           truncated: truncated.truncated,
           charLimit,
@@ -310,7 +375,7 @@ export class TraceStore extends StoreBase {
     }
   }
 
-  private searchResultFromTraceRow(row: SearchRow, input: TraceRetrieveSearchInput) {
+  private searchResultFromTraceRow(row: SearchRow, input: TraceRetrieveSearchInput, currentConversationId: string) {
     return {
       handle: row.handle,
       kind: normalizeResultKind(row.sourceKind),
@@ -321,12 +386,15 @@ export class TraceStore extends StoreBase {
       ...(row.sourceTable === "tool_calls" ? { toolCallId: row.sourceId } : {}),
       sourceId: row.sourceId,
       source: { table: row.sourceTable, id: row.sourceId },
+      ...(row.conversationId ? { conversation: this.conversationProvenance(row.projectId, currentConversationId, row.conversationId) } : {}),
       inspectArgs: inspectArgsForSource(row.handle, row.sourceTable, row.sourceId, row.turnId),
       title: row.title,
       snippet: makeSnippet(row.content, input.query),
       ...(row.summary ? { summary: row.summary } : {}),
       score: scoreTraceRow(row, { query: input.query, command: input.command, paths: input.paths }),
       ...(row.preserveVerbatim ? { preserveVerbatim: true } : {}),
+      ...(row.turnId && row.conversationId ? { turnNo: this.findTurnNo(row.projectId, row.conversationId, row.turnId) } : {}),
+      ...(row.sourceTable === "messages" ? { messageRole: this.messageRoleForDocument(row) } : {}),
       createdAt: row.createdAt,
       ...(row.metadataJson ? { metadata: parseJson(row.metadataJson) } : {}),
     }
@@ -364,12 +432,12 @@ export class TraceStore extends StoreBase {
       } else if (input.role === "user" || input.role === "assistant") {
         const message = this.findMessageForTurnRole(projectId, turn.id, input.role)
         if (message) {
-          results = [this.searchResultFromRawMessage(projectId, input, message, input.turnNo as number)]
+          results = [this.searchResultFromRawMessage(projectId, currentConversationId, input, message, input.turnNo as number)]
         } else {
           warnings.push(`Turn number ${input.turnNo} has no ${input.role} message in the resolved conversation.`)
         }
       } else {
-        results = [this.searchResultFromRawTurn(projectId, input, turn, input.turnNo as number)]
+        results = [this.searchResultFromRawTurn(projectId, currentConversationId, input, turn, input.turnNo as number)]
       }
     }
 
@@ -761,7 +829,13 @@ export class TraceStore extends StoreBase {
       .get(projectId, turnId, role) as MessageOrdinalRow | undefined
   }
 
-  private searchResultFromRawMessage(projectId: string, input: TraceRetrieveSearchInput, row: MessageOrdinalRow, turnNo: number) {
+  private searchResultFromRawMessage(
+    projectId: string,
+    currentConversationId: string,
+    input: TraceRetrieveSearchInput,
+    row: MessageOrdinalRow,
+    turnNo: number,
+  ) {
     const traceDoc = this.findTraceDocumentForSource(projectId, "messages", row.id)
     const handle = traceDoc?.handle ?? `message:${row.id}`
     return {
@@ -773,17 +847,20 @@ export class TraceStore extends StoreBase {
       messageId: row.id,
       sourceId: row.id,
       source: { table: "messages", id: row.id },
+      conversation: this.conversationProvenance(projectId, currentConversationId, row.conversationId),
       inspectArgs: { operation: "inspect" as const, messageId: row.id },
       title: `${capitalize(row.role)} message in turn ${turnNo}`,
       snippet: makeSnippet(row.content, input.query),
       summary: summarizeText(row.content, 240),
       score: 0,
+      turnNo,
+      ...(messageRole(row.role) ? { messageRole: messageRole(row.role) } : {}),
       createdAt: row.createdAt,
       metadata: { role: row.role, status: row.status, turnNo },
     }
   }
 
-  private searchResultFromRawTurn(projectId: string, input: TraceRetrieveSearchInput, row: TurnOrdinalRow, turnNo: number) {
+  private searchResultFromRawTurn(projectId: string, currentConversationId: string, input: TraceRetrieveSearchInput, row: TurnOrdinalRow, turnNo: number) {
     const traceDoc = this.findTraceDocumentForSource(projectId, "turns", row.id)
     const content = this.buildTurnBundle(projectId, row.id, input.include)
     const handle = traceDoc?.handle ?? `turn:${row.id}`
@@ -795,14 +872,68 @@ export class TraceStore extends StoreBase {
       turnId: row.id,
       sourceId: row.id,
       source: { table: "turns", id: row.id },
+      conversation: this.conversationProvenance(projectId, currentConversationId, row.conversationId),
       inspectArgs: { operation: "inspect" as const, turnId: row.id },
       title: `Turn ${turnNo}`,
       snippet: makeSnippet(content, input.query),
       summary: summarizeText(content, 300),
       score: 0,
+      turnNo,
       createdAt: row.startedAt,
       metadata: { status: row.status, turnNo },
     }
+  }
+
+  private conversationProvenance(
+    projectId: string,
+    currentConversationId: string,
+    conversationId: string,
+  ): ConversationProvenance {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT id, title, status, updated_at AS updatedAt
+         FROM conversations
+         WHERE project_id = ? AND id = ?
+         LIMIT 1`,
+      )
+      .get(projectId, conversationId) as ConversationRow | undefined
+    if (!row) {
+      return { id: conversationId, isCurrentConversation: conversationId === currentConversationId }
+    }
+    const status = conversationStatus(row.status)
+    return {
+      id: row.id,
+      ...(row.title ? { title: row.title } : {}),
+      ...(status ? { status } : {}),
+      updatedAt: row.updatedAt,
+      isCurrentConversation: row.id === currentConversationId,
+    }
+  }
+
+  private findTurnNo(projectId: string, conversationId: string, turnId: string): number | undefined {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT ordered.turn_no AS turnNo
+         FROM (
+           SELECT t.id, ROW_NUMBER() OVER (ORDER BY t.started_at ASC, t.id ASC) AS turn_no
+           FROM turns t
+           INNER JOIN conversations c ON c.id = t.conversation_id
+           WHERE c.project_id = ? AND t.conversation_id = ? AND t.user_message_id IS NOT NULL
+         ) ordered
+         WHERE ordered.id = ?
+         LIMIT 1`,
+      )
+      .get(projectId, conversationId, turnId) as { turnNo: number } | undefined
+    return row?.turnNo
+  }
+
+  private messageRoleForDocument(doc: Pick<TraceDocumentRow, "metadataJson">): "user" | "assistant" | "system" | "tool" | "developer" | undefined {
+    const metadata = parseJson(doc.metadataJson)
+    if (!metadata || typeof metadata !== "object") {
+      return undefined
+    }
+    const role = (metadata as { role?: unknown }).role
+    return typeof role === "string" ? messageRole(role) : undefined
   }
 
   private findTraceDocumentForSource(projectId: string, sourceTable: string, sourceId: string): TraceDocumentRow | undefined {
@@ -883,6 +1014,129 @@ export class TraceStore extends StoreBase {
     }
 
     params.push(input.limit)
+    return this.handle.sqlite
+      .prepare(
+        `SELECT ${traceDocumentSelect}, NULL AS score
+         FROM trace_documents td
+         WHERE ${where.join(" AND ")}
+         ORDER BY td.preserve_verbatim DESC, td.created_at DESC
+         LIMIT ?`,
+      )
+      .all(...params) as SearchRow[]
+  }
+
+  private async searchSemanticTraceDocuments(
+    projectId: string,
+    input: {
+      query: string
+      conversationIds: string[]
+      include: TraceRetrieveInclude[] | undefined
+      toolNames: string[] | undefined
+      paths: string[] | undefined
+      command: string | undefined
+      createdAfter: string | undefined
+      createdBefore: string | undefined
+      limit: number
+      warnings: string[]
+    },
+  ): Promise<SearchRow[]> {
+    if (!this.embeddingQueryProvider) {
+      input.warnings.push(`Semantic trace retrieval is not available in this server process; using lexical/exact retrieval instead.`)
+      return []
+    }
+
+    const queryEmbedding = await this.embeddingQueryProvider.embedTraceQuery(projectId, input.query)
+    if (!queryEmbedding.ready || !queryEmbedding.embedding || !queryEmbedding.providerId || !queryEmbedding.modelId || !queryEmbedding.dimensions) {
+      input.warnings.push(...(queryEmbedding.warnings ?? [`Semantic trace retrieval is not ready; using lexical/exact retrieval instead.`]))
+      return []
+    }
+
+    const candidates = this.searchTraceDocumentCandidates(projectId, input, Math.max(input.limit * 25, 200))
+    if (candidates.length === 0) {
+      return []
+    }
+    const ids = candidates.map((candidate) => candidate.id)
+    const embeddingRows = this.handle.sqlite
+      .prepare(
+        `SELECT trace_document_id AS traceDocumentId, content_hash AS contentHash, vector_json AS vectorJson
+         FROM trace_embeddings
+         WHERE provider_id = ?
+           AND model_id = ?
+           AND dimensions = ?
+           AND status = 'completed'
+           AND trace_document_id IN (${ids.map(() => "?").join(", ")})`,
+      )
+      .all(queryEmbedding.providerId, queryEmbedding.modelId, queryEmbedding.dimensions, ...ids) as Array<{
+      traceDocumentId: string
+      contentHash: string
+      vectorJson: string
+    }>
+    const embeddingByDocument = new Map(embeddingRows.map((row) => [row.traceDocumentId, row]))
+    return candidates
+      .flatMap((candidate) => {
+        const embeddingRow = embeddingByDocument.get(candidate.id)
+        if (!embeddingRow || embeddingRow.contentHash !== candidate.contentHash) {
+          return []
+        }
+        const vector = parseNumberVector(embeddingRow.vectorJson)
+        if (!vector || vector.length !== queryEmbedding.embedding?.length) {
+          return []
+        }
+        return [{ ...candidate, score: 1 - cosineSimilarity(queryEmbedding.embedding, vector) }]
+      })
+      .sort((left, right) => scoreTraceRow(left, { query: input.query, command: input.command, paths: input.paths }) - scoreTraceRow(right, { query: input.query, command: input.command, paths: input.paths }))
+      .slice(0, input.limit)
+  }
+
+  private searchTraceDocumentCandidates(
+    projectId: string,
+    input: {
+      conversationIds: string[]
+      include: TraceRetrieveInclude[] | undefined
+      toolNames: string[] | undefined
+      paths: string[] | undefined
+      command: string | undefined
+      createdAfter: string | undefined
+      createdBefore: string | undefined
+    },
+    limit: number,
+  ): SearchRow[] {
+    const params: unknown[] = [projectId]
+    const where = ["td.project_id = ?"]
+    if (input.conversationIds.length > 0) {
+      where.push(`td.conversation_id IN (${input.conversationIds.map(() => "?").join(", ")})`)
+      params.push(...input.conversationIds)
+    }
+    const sourceKinds = sourceKindsForInclude(input.include)
+    if (sourceKinds.length > 0) {
+      where.push(`td.source_kind IN (${sourceKinds.map(() => "?").join(", ")})`)
+      params.push(...sourceKinds)
+    }
+    if (input.createdAfter) {
+      where.push("td.created_at >= ?")
+      params.push(input.createdAfter)
+    }
+    if (input.createdBefore) {
+      where.push("td.created_at <= ?")
+      params.push(input.createdBefore)
+    }
+    if (input.toolNames && input.toolNames.length > 0) {
+      where.push(`td.metadata_json LIKE ?`)
+      params.push(`%"toolName"%`)
+      where.push(`(${input.toolNames.map(() => "td.metadata_json LIKE ?").join(" OR ")})`)
+      params.push(...input.toolNames.map((toolName) => `%"${toolName}"%`))
+    }
+    if (input.paths && input.paths.length > 0) {
+      where.push(`(${input.paths.map(() => "td.metadata_json LIKE ? OR td.content LIKE ? OR td.title LIKE ?").join(" OR ")})`)
+      for (const path of input.paths) {
+        params.push(`%${path}%`, `%${path}%`, `%${path}%`)
+      }
+    }
+    if (input.command) {
+      where.push("(td.metadata_json LIKE ? OR td.content LIKE ? OR td.title LIKE ?)")
+      params.push(`%${input.command}%`, `%${input.command}%`, `%${input.command}%`)
+    }
+    params.push(limit)
     return this.handle.sqlite
       .prepare(
         `SELECT ${traceDocumentSelect}, NULL AS score
@@ -1349,6 +1603,12 @@ const normalizeResultKind = (value: string): TraceRetrieveSourceKind => {
   return "message"
 }
 
+const messageRole = (value: string): "user" | "assistant" | "system" | "tool" | "developer" | undefined =>
+  value === "user" || value === "assistant" || value === "system" || value === "tool" || value === "developer" ? value : undefined
+
+const conversationStatus = (value: string): "active" | "archived" | "deleted" | undefined =>
+  value === "active" || value === "archived" || value === "deleted" ? value : undefined
+
 const inspectArgsForSource = (handle: string, sourceTable: string, sourceId: string, turnId: string | null) => {
   if (sourceTable === "messages") {
     return { operation: "inspect" as const, messageId: sourceId }
@@ -1374,6 +1634,54 @@ const scoreTraceRow = (row: SearchRow, input: { query: string; command: string |
     score -= 1
   }
   return Math.round(score * 1000) / 1000
+}
+
+const mergeSearchRows = (rows: SearchRow[], limit: number): SearchRow[] => {
+  const bestById = new Map<string, SearchRow>()
+  for (const row of rows) {
+    const existing = bestById.get(row.id)
+    if (!existing || (row.score ?? 0) < (existing.score ?? 0)) {
+      bestById.set(row.id, row)
+    }
+  }
+  return [...bestById.values()]
+    .sort((left, right) => {
+      const scoreDelta = (left.score ?? 0) - (right.score ?? 0)
+      if (scoreDelta !== 0) {
+        return scoreDelta
+      }
+      if (left.preserveVerbatim !== right.preserveVerbatim) {
+        return left.preserveVerbatim ? -1 : 1
+      }
+      return right.createdAt.localeCompare(left.createdAt)
+    })
+    .slice(0, limit)
+}
+
+const parseNumberVector = (value: string): number[] | undefined => {
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "number") ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const cosineSimilarity = (left: number[], right: number[]): number => {
+  let dot = 0
+  let leftNorm = 0
+  let rightNorm = 0
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index] ?? 0
+    const b = right[index] ?? 0
+    dot += a * b
+    leftNorm += a * a
+    rightNorm += b * b
+  }
+  if (leftNorm === 0 || rightNorm === 0) {
+    return 0
+  }
+  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm))
 }
 
 const countBy = (values: string[]): Record<string, number> =>
