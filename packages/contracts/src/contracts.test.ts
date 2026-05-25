@@ -35,6 +35,8 @@ import {
   getMeResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
   getProjectResponseSchema,
+  inspectWorkspaceRequestSchema,
+  inspectWorkspaceResponseSchema,
   listProjectConversationsResponseSchema,
   listProjectResourcesResponseSchema,
   listProjectsResponseSchema,
@@ -60,6 +62,8 @@ import {
   uploadProjectResourcesResponseSchema,
   updateConversationRequestSchema,
   updateConversationResponseSchema,
+  updateProjectWorkspaceRequestSchema,
+  updateProjectWorkspaceResponseSchema,
   upsertProjectInstructionsRequestSchema,
   upsertProjectInstructionsResponseSchema,
   userSchema,
@@ -270,6 +274,7 @@ describe("http contracts", () => {
         name: "Socrates",
         creationMode: "existing_folder",
         workspacePath: "/tmp/socrates",
+        scaffoldAction: "use_existing",
       }).success,
     ).toBe(true)
 
@@ -313,6 +318,25 @@ describe("http contracts", () => {
     expect(
       pickWorkspaceFolderResponseSchema.safeParse({ path: "/tmp/socrates", folderName: "socrates" }).success,
     ).toBe(true)
+    expect(inspectWorkspaceRequestSchema.safeParse({ workspacePath: "/tmp/socrates" }).success).toBe(true)
+    expect(
+      inspectWorkspaceResponseSchema.safeParse({
+        workspacePath: "/tmp/socrates",
+        folderName: "socrates",
+        exists: true,
+        isDirectory: true,
+        hasSocratesDir: true,
+        hasResourcesDir: false,
+      }).success,
+    ).toBe(true)
+    expect(
+      updateProjectWorkspaceRequestSchema.safeParse({
+        workspacePath: "/tmp/socrates-v2",
+        creationMode: "existing_folder",
+        scaffoldAction: "reset",
+      }).success,
+    ).toBe(true)
+    expect(updateProjectWorkspaceResponseSchema.safeParse({ primaryWorkspace: workspace, resources: [resource] }).success).toBe(true)
     expect(
       getProjectResponseSchema.safeParse({
         project,

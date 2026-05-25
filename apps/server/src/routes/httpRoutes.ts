@@ -8,8 +8,10 @@ import {
   createConversationRequestSchema,
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
+  inspectWorkspaceRequestSchema,
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
+  updateProjectWorkspaceRequestSchema,
   updateConversationRequestSchema,
   upsertProjectInstructionsRequestSchema,
 } from "@socrates/contracts"
@@ -60,7 +62,11 @@ const handleRouteError = (error: unknown) => {
       ? 400
       : api.code.endsWith("_not_found")
         ? 404
-        : api.code === "user_not_onboarded" || api.code === "workspace_already_attached"
+        : api.code === "user_not_onboarded" ||
+            api.code === "workspace_already_attached" ||
+            api.code === "workspace_scaffold_action_required" ||
+            api.code === "project_workspace_has_active_turn" ||
+            api.code === "project_workspace_same_path_reset_denied"
           ? 409
           : api.code === "folder_picker_cancelled"
             ? 499
@@ -90,6 +96,16 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
     try {
       const input = parseBody(pickWorkspaceFolderRequestSchema, request.body)
       return ok(await store.pickWorkspaceFolder(input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/workspaces/inspect", async (request, reply) => {
+    try {
+      const input = parseBody(inspectWorkspaceRequestSchema, request.body)
+      return ok(store.inspectWorkspace(input))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
@@ -130,6 +146,17 @@ export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesSt
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(patchProjectRequestSchema, request.body)
       return ok({ project: store.patchProject(projectId, input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/projects/:projectId/workspace", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(updateProjectWorkspaceRequestSchema, request.body)
+      return ok(store.updateProjectWorkspace(projectId, input))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

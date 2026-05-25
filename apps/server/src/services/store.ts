@@ -19,6 +19,8 @@ import type {
   FeedbackSubmitPayload,
   Message,
   PatchProjectRequest,
+  InspectWorkspaceRequest,
+  InspectWorkspaceResponse,
   PickWorkspaceFolderRequest,
   PickWorkspaceFolderResponse,
   Project,
@@ -26,6 +28,8 @@ import type {
   ProjectResource,
   ProjectWorkspace,
   TraceRetrieveToolInput,
+  UpdateProjectWorkspaceRequest,
+  UpdateProjectWorkspaceResponse,
   UpdateConversationRequest,
   UpsertProjectInstructionsRequest,
   User,
@@ -129,6 +133,10 @@ export class SocratesStore {
     return this.projects.pickWorkspaceFolder(input)
   }
 
+  inspectWorkspace(input: InspectWorkspaceRequest): InspectWorkspaceResponse {
+    return this.projects.inspectWorkspace(input)
+  }
+
   listProjects(): ProjectListItem[] {
     return this.projects.listProjects()
   }
@@ -154,6 +162,10 @@ export class SocratesStore {
 
   patchProject(projectId: string, input: PatchProjectRequest): Project {
     return this.projects.patchProject(projectId, input)
+  }
+
+  updateProjectWorkspace(projectId: string, input: UpdateProjectWorkspaceRequest): UpdateProjectWorkspaceResponse {
+    return this.projects.updateProjectWorkspace(projectId, input)
   }
 
   listResources(projectId: string, options: { includeDeleted?: boolean } = {}): ProjectResource[] {

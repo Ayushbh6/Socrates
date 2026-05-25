@@ -2,7 +2,8 @@
 
 import { Button } from "@/components/ui/Button";
 import { ApiClientError, api } from "@/lib/api";
-import { FolderOpen, Loader2 } from "lucide-react";
+import { WorkspaceConnectionDialog } from "@/components/dashboard/WorkspaceConnectionDialog";
+import { FolderOpen } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
@@ -16,32 +17,10 @@ export default function NewProjectPage() {
   const [description, setDescription] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [folderName, setFolderName] = useState("");
+  const [scaffoldAction, setScaffoldAction] = useState<"use_existing" | "reset" | undefined>();
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isPickingFolder, setIsPickingFolder] = useState(false);
-
-  const handlePickFolder = async () => {
-    setError(null);
-    setIsPickingFolder(true);
-
-    try {
-      const picked = await api.pickWorkspaceFolder({ mode: "existing_folder" });
-      setWorkspacePath(picked.path);
-      setFolderName(picked.folderName);
-    } catch (err) {
-      if (err instanceof ApiClientError && err.error.code === "folder_picker_cancelled") {
-        return;
-      }
-      setError(err instanceof Error ? err.message : "Could not open the folder picker.");
-    } finally {
-      setIsPickingFolder(false);
-    }
-  };
-
-  const handleManualPathChange = (value: string) => {
-    setWorkspacePath(value);
-    setFolderName(folderNameFromPath(value));
-  };
+  const [isWorkspaceDialogOpen, setIsWorkspaceDialogOpen] = useState(false);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -66,10 +45,16 @@ export default function NewProjectPage() {
         description: description.trim() || undefined,
         creationMode: "existing_folder",
         workspacePath: trimmedWorkspacePath,
+        ...(scaffoldAction ? { scaffoldAction } : {}),
       });
       router.push(`/projects/${data.project.id}`);
       router.refresh();
     } catch (err) {
+      if (err instanceof ApiClientError && err.error.code === "workspace_scaffold_action_required") {
+        setIsWorkspaceDialogOpen(true);
+        setError("Confirm how Socrates should handle the existing .socrates folder.");
+        return;
+      }
       setError(err instanceof Error ? err.message : "Could not create project.");
     } finally {
       setIsSubmitting(false);
@@ -114,26 +99,22 @@ export default function NewProjectPage() {
                   <p className="mt-1 truncate text-xs text-brand-text-light">
                     {workspacePath || "Socrates will create .socrates/resources inside this folder."}
                   </p>
+                  {scaffoldAction && (
+                    <p className="mt-1 text-xs text-brand-text-light">
+                      Existing .socrates choice: {scaffoldAction === "use_existing" ? "use existing" : "delete and create fresh"}
+                    </p>
+                  )}
                 </div>
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={handlePickFolder}
-                  disabled={isPickingFolder}
+                  onClick={() => setIsWorkspaceDialogOpen(true)}
                   className="h-10 shrink-0 rounded-xl"
                 >
-                  {isPickingFolder ? <Loader2 className="mr-2 size-4 animate-spin" /> : <FolderOpen className="mr-2 size-4" />}
-                  {isPickingFolder ? "Opening" : "Connect folder"}
+                  <FolderOpen className="mr-2 size-4" />
+                  {workspacePath ? "Edit folder" : "Connect folder"}
                 </Button>
               </div>
-              <textarea
-                rows={workspacePath ? 2 : 1}
-                aria-label="Workspace folder path"
-                placeholder="Or paste an absolute folder path"
-                value={workspacePath}
-                onChange={(event) => handleManualPathChange(event.target.value)}
-                className="mt-4 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-sm leading-relaxed outline-none transition-colors focus:border-brand-teal-dark"
-              />
             </div>
           </div>
 
@@ -150,6 +131,22 @@ export default function NewProjectPage() {
             </Button>
           </div>
         </form>
+        {isWorkspaceDialogOpen && (
+          <WorkspaceConnectionDialog
+            title="Connect workspace"
+            description="Choose the local folder Socrates should use for this project."
+            initialPath={workspacePath}
+            isSaving={false}
+            submitLabel="Use this folder"
+            onCancel={() => setIsWorkspaceDialogOpen(false)}
+            onSave={async ({ workspacePath: selectedPath, scaffoldAction: selectedAction }) => {
+              setWorkspacePath(selectedPath);
+              setFolderName(folderNameFromPath(selectedPath));
+              setScaffoldAction(selectedAction);
+              setIsWorkspaceDialogOpen(false);
+            }}
+          />
+        )}
       </div>
     </main>
   );

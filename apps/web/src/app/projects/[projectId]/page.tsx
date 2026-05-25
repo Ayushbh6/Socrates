@@ -6,6 +6,7 @@ import { InstructionsPanel } from "@/components/dashboard/InstructionsPanel";
 import { FilesPanel } from "@/components/dashboard/FilesPanel";
 import { StartChatAction } from "@/components/dashboard/StartChatAction";
 import { SemanticSearchPanel } from "@/components/dashboard/SemanticSearchPanel";
+import { WorkspacePanel } from "@/components/dashboard/WorkspacePanel";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
 import type { GetProjectResponse } from "@socrates/contracts";
@@ -24,6 +25,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   const [isSavingInstructions, setIsSavingInstructions] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
   const [isSavingConversationAction, setIsSavingConversationAction] = useState(false);
+  const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -129,6 +131,29 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     );
   };
 
+  const handleSaveWorkspace = async (input: { workspacePath: string; scaffoldAction?: "use_existing" | "reset" }) => {
+    setIsSavingWorkspace(true);
+    setUploadError(null);
+    try {
+      const response = await api.updateProjectWorkspace(projectId, {
+        workspacePath: input.workspacePath,
+        creationMode: "existing_folder",
+        ...(input.scaffoldAction ? { scaffoldAction: input.scaffoldAction } : {}),
+      });
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              primaryWorkspace: response.primaryWorkspace,
+              resources: response.resources,
+            }
+          : current,
+      );
+    } finally {
+      setIsSavingWorkspace(false);
+    }
+  };
+
   const handleStartNewChat = async () => {
     setError(null);
     setIsStartingChat(true);
@@ -211,6 +236,11 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
 
           {/* Resources Column - Right (1/3 width) */}
           <div className="md:col-span-1 border border-gray-200 bg-white rounded-3xl px-6 pb-2 shadow-sm self-start">
+            <WorkspacePanel
+              workspace={data?.primaryWorkspace}
+              isSaving={isSavingWorkspace}
+              onSave={handleSaveWorkspace}
+            />
             <InstructionsPanel
               instructions={data?.instructions}
               projectName={data?.project.name ?? "this project"}

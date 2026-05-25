@@ -14,6 +14,7 @@ export { formatPythonEnvironmentHints, inspectPythonEnvironment, type PythonEnvi
 const execFileAsync = promisify(execFile)
 
 export type WorkspaceMode = "start_from_scratch" | "existing_folder"
+export type WorkspaceScaffoldAction = "use_existing" | "reset"
 
 export type CommandResult = {
   stdout: string
@@ -38,6 +39,15 @@ export type WorkspaceScaffold = {
   resourcesPath: string
 }
 
+export type WorkspaceInspection = {
+  workspacePath: string
+  folderName: string
+  exists: boolean
+  isDirectory: boolean
+  hasSocratesDir: boolean
+  hasResourcesDir: boolean
+}
+
 export type StoreResourceFileInput = {
   workspacePath: string
   originalName: string
@@ -47,6 +57,11 @@ export type StoreResourceFileInput = {
 export type StoredResourceFile = {
   path: string
   fileName: string
+}
+
+export type CopyStoredResourceFileInput = {
+  targetWorkspacePath: string
+  sourcePath: string
 }
 
 export type DeleteStoredResourceFileInput = {
@@ -172,6 +187,8 @@ export const pickWorkspaceFolder = async (
 export const ensureWorkspaceScaffold = (input: {
   workspacePath: string
   mode: WorkspaceMode
+  scaffoldAction?: WorkspaceScaffoldAction
+  requireActionForExistingSocrates?: boolean
 }): WorkspaceScaffold => {
   if (!path.isAbsolute(input.workspacePath)) {
     throw new SocratesError("workspace_path_not_absolute", "Workspace path must be absolute", {
@@ -195,6 +212,19 @@ export const ensureWorkspaceScaffold = (input: {
 
     const socratesPath = path.join(workspacePath, ".socrates")
     const resourcesPath = path.join(socratesPath, "resources")
+    const hasSocratesDir = isDirectory(socratesPath)
+
+    if (hasSocratesDir && input.requireActionForExistingSocrates && !input.scaffoldAction) {
+      throw new SocratesError("workspace_scaffold_action_required", "This folder already has a .socrates directory", {
+        details: inspectWorkspacePath({ workspacePath }),
+        recoverable: true,
+      })
+    }
+
+    if (input.scaffoldAction === "reset" && hasSocratesDir) {
+      fs.rmSync(socratesPath, { recursive: true, force: true })
+    }
+
     fs.mkdirSync(resourcesPath, { recursive: true })
 
     return {
@@ -226,6 +256,29 @@ export const ensureWorkspaceScaffold = (input: {
   }
 }
 
+export const inspectWorkspacePath = (input: { workspacePath: string }): WorkspaceInspection => {
+  if (!path.isAbsolute(input.workspacePath)) {
+    throw new SocratesError("workspace_path_not_absolute", "Workspace path must be absolute", {
+      details: { workspacePath: input.workspacePath },
+    })
+  }
+
+  const workspacePath = path.resolve(input.workspacePath)
+  const exists = fs.existsSync(workspacePath)
+  const isDirectoryPath = exists && isDirectory(workspacePath)
+  const socratesPath = path.join(workspacePath, ".socrates")
+  const resourcesPath = path.join(socratesPath, "resources")
+
+  return {
+    workspacePath,
+    folderName: folderNameFromPath(workspacePath),
+    exists,
+    isDirectory: isDirectoryPath,
+    hasSocratesDir: isDirectoryPath && isDirectory(socratesPath),
+    hasResourcesDir: isDirectoryPath && isDirectory(resourcesPath),
+  }
+}
+
 const sanitizeFileName = (fileName: string): string => {
   const parsed = path.parse(fileName)
   const base = parsed.name.replaceAll(/[^a-zA-Z0-9._-]/g, "_").replaceAll(/_+/g, "_") || "resource"
@@ -252,6 +305,7 @@ export const storeResourceFile = (input: StoreResourceFileInput): StoredResource
   const scaffold = ensureWorkspaceScaffold({
     workspacePath: input.workspacePath,
     mode: "existing_folder",
+    scaffoldAction: "use_existing",
   })
   const safeName = sanitizeFileName(input.originalName)
   const target = nextAvailablePath(scaffold.resourcesPath, safeName)
@@ -259,9 +313,36 @@ export const storeResourceFile = (input: StoreResourceFileInput): StoredResource
   return target
 }
 
+export const copyStoredResourceFile = (input: CopyStoredResourceFileInput): StoredResourceFile => {
+  const scaffold = ensureWorkspaceScaffold({
+    workspacePath: input.targetWorkspacePath,
+    mode: "existing_folder",
+    scaffoldAction: "use_existing",
+  })
+  const sourcePath = path.resolve(input.sourcePath)
+  const stat = fs.statSync(sourcePath)
+  if (!stat.isFile()) {
+    throw new SocratesError("resource_file_copy_failed", "Only file resources can be copied", {
+      details: { sourcePath },
+      recoverable: true,
+    })
+  }
+  const target = nextAvailablePath(scaffold.resourcesPath, sanitizeFileName(path.basename(sourcePath)))
+  fs.copyFileSync(sourcePath, target.path)
+  return target
+}
+
 const isPathInsideDirectory = (directory: string, candidatePath: string): boolean => {
   const relative = path.relative(directory, candidatePath)
   return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)
+}
+
+const isDirectory = (candidatePath: string): boolean => {
+  try {
+    return fs.statSync(candidatePath).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 export const deleteStoredResourceFile = (input: DeleteStoredResourceFileInput): DeleteStoredResourceFileResult => {

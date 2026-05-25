@@ -190,11 +190,13 @@ POST   /api/onboarding
 GET    /api/models
 
 POST   /api/workspaces/pick-folder
+POST   /api/workspaces/inspect
 
 GET    /api/projects
 POST   /api/projects
 GET    /api/projects/:projectId
 PATCH  /api/projects/:projectId
+PATCH  /api/projects/:projectId/workspace
 
 GET    /api/projects/:projectId/resources
 POST   /api/projects/:projectId/resources
@@ -343,6 +345,27 @@ unsupported/cancelled -> structured ApiError; frontend shows manual absolute pat
 
 Frontend V1 should call this endpoint directly on the local backend origin rather than through the Next dev rewrite. Native picker requests can stay open while the OS dialog is active, and the rewrite layer may convert failures into plain text.
 
+### `POST /api/workspaces/inspect`
+
+Checks a folder before attaching it to a project.
+
+```ts
+type InspectWorkspaceRequest = {
+  workspacePath: string
+}
+
+type InspectWorkspaceResponse = {
+  workspacePath: string
+  folderName: string
+  exists: boolean
+  isDirectory: boolean
+  hasSocratesDir: boolean
+  hasResourcesDir: boolean
+}
+```
+
+This endpoint must not create, delete, or modify files. It exists so the frontend can show a confirmation when a selected folder already contains `.socrates`.
+
 ### `POST /api/projects`
 
 Creates a project and attaches a required local workspace folder.
@@ -353,6 +376,7 @@ type CreateProjectRequest = {
   description?: string
   creationMode: "start_from_scratch" | "existing_folder"
   workspacePath: string
+  scaffoldAction?: "use_existing" | "reset"
 }
 ```
 
@@ -371,11 +395,13 @@ Backend behavior:
 ```text
 existing_folder
   -> verify workspacePath exists and is a directory
-  -> create workspacePath/.socrates/resources/
+  -> if workspacePath/.socrates exists and scaffoldAction is missing, return workspace_scaffold_action_required
+  -> if scaffoldAction = "use_existing", keep workspacePath/.socrates and ensure resources exists
+  -> if scaffoldAction = "reset", delete only workspacePath/.socrates and recreate resources
 
 start_from_scratch
   -> create workspacePath if missing
-  -> create workspacePath/.socrates/resources/
+  -> use the same .socrates handling when the path already exists
 ```
 
 The backend must not edit the workspace root `.gitignore` in V1.
@@ -387,6 +413,36 @@ type CreateProjectResponse = {
   project: Project
   primaryWorkspace: ProjectWorkspace
 }
+```
+
+### `PATCH /api/projects/:projectId/workspace`
+
+Updates a project's active workspace connection.
+
+```ts
+type UpdateProjectWorkspaceRequest = {
+  workspacePath: string
+  creationMode: "existing_folder"
+  scaffoldAction?: "use_existing" | "reset"
+}
+
+type UpdateProjectWorkspaceResponse = {
+  primaryWorkspace: ProjectWorkspace
+  resources: ProjectResource[]
+}
+```
+
+Backend behavior:
+
+```text
+block if any turn in the project is queued, running, or awaiting approval
+require scaffoldAction when the new folder already has .socrates
+keep exactly one active primary workspace row
+mark the old primary workspace detached and insert a new active primary row
+copy active uploaded resources from old .socrates/resources to the new .socrates/resources
+update copied uploaded resource URIs and artifact paths
+leave linked/external resources unchanged
+emit project.workspace.detached and project.workspace.attached
 ```
 
 ### `GET /api/projects/:projectId`

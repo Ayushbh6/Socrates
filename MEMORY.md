@@ -102,7 +102,10 @@ Implemented the V1 project workspace flow:
 - Project creation now requires a real absolute workspace path and creates `<workspace>/.socrates/resources/`.
 - `start_from_scratch` and `existing_folder` both create a primary `project_workspaces` row.
 - Duplicate active workspace paths are rejected with `workspace_already_attached`.
+- Project workspace connections are editable from the project dashboard while preserving one active primary workspace. When a new folder already contains `.socrates`, Socrates requires the user to choose whether to use the existing scaffold or delete/recreate that selected folder's `.socrates`.
+- Workspace switching copies active uploaded resources from the old `.socrates/resources/` folder into the new one and updates resource/artifact paths. Linked and external resources are left unchanged.
 - Added `POST /api/workspaces/pick-folder` for backend/native folder selection.
+- Added workspace inspection and update contracts so folder attachment can detect existing `.socrates` before mutating the filesystem.
 - Added `POST /api/projects/:projectId/resources/upload` for file uploads into `.socrates/resources/`.
 - The frontend `/projects/new` page now uses the backend picker/create flow and keeps a manual absolute-path fallback.
 - The dashboard resource panel uploads files through the backend and refreshes project resources from SQLite.

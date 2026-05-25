@@ -56,6 +56,7 @@ export const createProjectRequestSchema = z
     description: z.string().optional(),
     creationMode: z.enum(["start_from_scratch", "existing_folder"]),
     workspacePath: z.string().min(1),
+    scaffoldAction: z.enum(["use_existing", "reset"]).optional(),
   })
   .strict()
 
@@ -271,6 +272,38 @@ export const pickWorkspaceFolderResponseSchema = z
   })
   .strict()
 
+export const inspectWorkspaceRequestSchema = z
+  .object({
+    workspacePath: z.string().min(1),
+  })
+  .strict()
+
+export const inspectWorkspaceResponseSchema = z
+  .object({
+    workspacePath: z.string().min(1),
+    folderName: z.string().min(1),
+    exists: z.boolean(),
+    isDirectory: z.boolean(),
+    hasSocratesDir: z.boolean(),
+    hasResourcesDir: z.boolean(),
+  })
+  .strict()
+
+export const updateProjectWorkspaceRequestSchema = z
+  .object({
+    workspacePath: z.string().min(1),
+    creationMode: z.literal("existing_folder"),
+    scaffoldAction: z.enum(["use_existing", "reset"]).optional(),
+  })
+  .strict()
+
+export const updateProjectWorkspaceResponseSchema = z
+  .object({
+    primaryWorkspace: projectWorkspaceSchema,
+    resources: z.array(projectResourceSchema),
+  })
+  .strict()
+
 export const listProjectConversationsResponseSchema = z
   .object({
     conversations: z.array(conversationSchema),
@@ -415,6 +448,10 @@ export type UpsertProjectInstructionsRequest = z.infer<typeof upsertProjectInstr
 export type UpsertProjectInstructionsResponse = z.infer<typeof upsertProjectInstructionsResponseSchema>
 export type PickWorkspaceFolderRequest = z.infer<typeof pickWorkspaceFolderRequestSchema>
 export type PickWorkspaceFolderResponse = z.infer<typeof pickWorkspaceFolderResponseSchema>
+export type InspectWorkspaceRequest = z.infer<typeof inspectWorkspaceRequestSchema>
+export type InspectWorkspaceResponse = z.infer<typeof inspectWorkspaceResponseSchema>
+export type UpdateProjectWorkspaceRequest = z.infer<typeof updateProjectWorkspaceRequestSchema>
+export type UpdateProjectWorkspaceResponse = z.infer<typeof updateProjectWorkspaceResponseSchema>
 export type ListProjectConversationsResponse = z.infer<typeof listProjectConversationsResponseSchema>
 export type CreateConversationRequest = z.infer<typeof createConversationRequestSchema>
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>

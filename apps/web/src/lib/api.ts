@@ -14,12 +14,14 @@ import {
   getConversationResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
   getProjectResponseSchema,
+  inspectWorkspaceResponseSchema,
   listProjectsResponseSchema,
   listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
   uploadProjectResourcesResponseSchema,
+  updateProjectWorkspaceResponseSchema,
   updateConversationResponseSchema,
   upsertProjectInstructionsResponseSchema,
   type ApiError,
@@ -42,12 +44,16 @@ import {
   type GetMeResponse,
   type GetProjectEmbeddingsStatusResponse,
   type GetProjectResponse,
+  type InspectWorkspaceRequest,
+  type InspectWorkspaceResponse,
   type ListProjectsResponse,
   type ListModelsHttpResponse,
   type ListProjectConversationsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
   type ReindexProjectEmbeddingsResponse,
+  type UpdateProjectWorkspaceRequest,
+  type UpdateProjectWorkspaceResponse,
   type UpdateConversationRequest,
   type UpdateConversationResponse,
   type UploadProjectResourcesResponse,
@@ -156,8 +162,28 @@ export const api = {
       },
     ) as Promise<PickWorkspaceFolderResponse>,
 
+  inspectWorkspace: (input: InspectWorkspaceRequest) =>
+    request<typeof inspectWorkspaceResponseSchema>(
+      `${directApiBaseUrl}/api/workspaces/inspect`,
+      inspectWorkspaceResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<InspectWorkspaceResponse>,
+
   getProject: (projectId: string) =>
     request<typeof getProjectResponseSchema>(`/api/projects/${projectId}`, getProjectResponseSchema) as Promise<GetProjectResponse>,
+
+  updateProjectWorkspace: (projectId: string, input: UpdateProjectWorkspaceRequest) =>
+    request<typeof updateProjectWorkspaceResponseSchema>(
+      `/api/projects/${projectId}/workspace`,
+      updateProjectWorkspaceResponseSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpdateProjectWorkspaceResponse>,
 
   getProjectEmbeddingStatus: (projectId: string) =>
     request<typeof getProjectEmbeddingsStatusResponseSchema>(

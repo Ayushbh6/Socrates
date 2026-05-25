@@ -198,7 +198,9 @@ user enters project title
 user optionally enters description
 user connects any local folder through the backend/native picker or pastes an absolute path
 backend verifies the folder exists and is a directory
-backend creates <workspace>/.socrates/resources/
+backend inspects whether <workspace>/.socrates already exists
+if .socrates exists, frontend asks whether to use it or delete/create fresh
+backend creates or preserves <workspace>/.socrates/resources/ according to that choice
 ```
 
 Folder selection is owned by the local backend/native bridge, not browser-only filesystem APIs. In dev V1 the frontend calls the backend picker directly instead of relying on the Next rewrite because native picker requests can be long-running. The frontend also keeps a manual absolute-path fallback.
@@ -225,6 +227,8 @@ Filesystem effects:
 create <workspace>/.socrates/
 create <workspace>/.socrates/resources/
 ```
+
+If the selected folder already contains `.socrates`, Socrates must not silently reuse or delete it. The frontend shows a modal with `Use existing` as the default safe action and `Delete and create fresh` as the destructive action. `Use existing` keeps existing `.socrates` contents and appends future resources. `Delete and create fresh` deletes only that selected folder's `.socrates` directory and recreates `.socrates/resources/`.
 
 Socrates should not edit the workspace root `.gitignore` in V1. Users can ignore `.socrates/` themselves if they want. A future version may offer an explicit opt-in action for that.
 
@@ -325,6 +329,7 @@ Add resource
 Edit instructions
 Set up semantic search
 Open workspace folder
+Edit workspace connection
 ```
 
 Routing:
@@ -333,6 +338,18 @@ Routing:
 start new chat -> create conversation -> /projects/:projectId/chats/:conversationId
 open existing chat -> /projects/:projectId/chats/:conversationId
 back to all projects -> /projects
+```
+
+Workspace editing:
+
+```text
+project dashboard -> Workspace panel -> Edit
+user picks or pastes a new absolute folder path
+backend/frontend inspect for an existing .socrates directory
+user chooses Use existing or Delete and create fresh when needed
+backend blocks the switch if any turn in the project is active
+backend detaches the old primary workspace and creates one new active primary workspace
+backend copies active uploaded resources from old .socrates/resources to the new workspace
 ```
 
 ### Project Embedding Setup Flow

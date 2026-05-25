@@ -714,6 +714,167 @@ describe("HTTP API", () => {
     }
   })
 
+  it("inspects workspaces and requires explicit action for an existing .socrates folder", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const workspacePath = tempDir()
+    const markerPath = path.join(workspacePath, ".socrates", "keep.txt")
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true })
+    fs.writeFileSync(markerPath, "keep")
+
+    const inspectResponse = await app.inject({
+      method: "POST",
+      url: "/api/workspaces/inspect",
+      payload: { workspacePath },
+    })
+    const inspectBody = parseResponse<{
+      workspacePath: string
+      folderName: string
+      exists: boolean
+      isDirectory: boolean
+      hasSocratesDir: boolean
+      hasResourcesDir: boolean
+    }>(inspectResponse.payload)
+    expect(inspectBody.ok).toBe(true)
+    if (inspectBody.ok) {
+      expect(inspectBody.data.hasSocratesDir).toBe(true)
+      expect(inspectBody.data.hasResourcesDir).toBe(false)
+    }
+
+    const missingActionResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Existing Socrates",
+        creationMode: "existing_folder",
+        workspacePath,
+      },
+    })
+    const missingActionBody = parseResponse<never>(missingActionResponse.payload)
+    expect(missingActionResponse.statusCode).toBe(409)
+    expect(missingActionBody.ok).toBe(false)
+    if (!missingActionBody.ok) {
+      expect(missingActionBody.error.code).toBe("workspace_scaffold_action_required")
+    }
+
+    const createResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Use Existing Socrates",
+        creationMode: "existing_folder",
+        workspacePath,
+        scaffoldAction: "use_existing",
+      },
+    })
+    const createBody = parseResponse<{ project: Project; primaryWorkspace: ProjectWorkspace }>(createResponse.payload)
+    expect(createBody.ok).toBe(true)
+    expect(fs.readFileSync(markerPath, "utf8")).toBe("keep")
+    expect(fs.statSync(path.join(workspacePath, ".socrates", "resources")).isDirectory()).toBe(true)
+  })
+
+  it("updates a project workspace, copies uploaded resources, and detaches the old workspace", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const boundary = "----socrates-workspace-switch-boundary"
+    const payload = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="files"; filename="Keep Me.txt"',
+        "Content-Type: text/plain",
+        "",
+        "copy me",
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+    )
+    const uploadResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/resources/upload`,
+      headers: {
+        "content-type": `multipart/form-data; boundary=${boundary}`,
+      },
+      payload,
+    })
+    const uploadBody = parseResponse<{ resources: ProjectResource[] }>(uploadResponse.payload)
+    expect(uploadBody.ok).toBe(true)
+    if (!uploadBody.ok) {
+      throw new Error("Expected upload success")
+    }
+    const oldResourcePath = uploadBody.data.resources[0]?.uri ?? ""
+    const newWorkspacePath = tempDir()
+    fs.mkdirSync(path.join(newWorkspacePath, ".socrates"), { recursive: true })
+
+    const updateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/${project.id}/workspace`,
+      payload: {
+        workspacePath: newWorkspacePath,
+        creationMode: "existing_folder",
+        scaffoldAction: "use_existing",
+      },
+    })
+    const updateBody = parseResponse<{ primaryWorkspace: ProjectWorkspace; resources: ProjectResource[] }>(updateResponse.payload)
+    expect(updateBody.ok).toBe(true)
+    if (!updateBody.ok) {
+      throw new Error("Expected workspace update success")
+    }
+    expect(updateBody.data.primaryWorkspace.path).toBe(newWorkspacePath)
+    const copiedResource = updateBody.data.resources.find((resource) => resource.id === uploadBody.data.resources[0]?.id)
+    expect(copiedResource?.uri).toBe(path.join(newWorkspacePath, ".socrates", "resources", "Keep_Me.txt"))
+    expect(fs.readFileSync(copiedResource?.uri ?? "", "utf8")).toBe("copy me")
+    expect(fs.readFileSync(oldResourcePath, "utf8")).toBe("copy me")
+
+    const sqlite = new Database(dbPath)
+    try {
+      const rows = sqlite
+        .prepare("SELECT id, path, is_primary, status FROM project_workspaces WHERE project_id = ? ORDER BY created_at")
+        .all(project.id) as Array<{ id: string; path: string; is_primary: number; status: string }>
+      expect(rows).toHaveLength(2)
+      expect(rows.find((row) => row.id === primaryWorkspace.id)?.status).toBe("detached")
+      expect(rows.find((row) => row.path === newWorkspacePath)?.is_primary).toBe(1)
+    } finally {
+      sqlite.close()
+    }
+  })
+
+  it("blocks workspace updates while a project turn is active", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+
+    const sqlite = new Database(dbPath)
+    try {
+      const sessionId = insertTestSession(sqlite, project.id, conversation.id)
+      sqlite
+        .prepare(
+          "INSERT INTO turns (id, session_id, conversation_id, status, started_at) VALUES (?, ?, ?, 'running', ?)",
+        )
+        .run(createId("turn"), sessionId, conversation.id, nowIso())
+    } finally {
+      sqlite.close()
+    }
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/${project.id}/workspace`,
+      payload: {
+        workspacePath: tempDir(),
+        creationMode: "existing_folder",
+      },
+    })
+    const body = parseResponse<never>(response.payload)
+    expect(response.statusCode).toBe(409)
+    expect(body.ok).toBe(false)
+    if (!body.ok) {
+      expect(body.error.code).toBe("project_workspace_has_active_turn")
+    }
+  })
+
   it("creates and lists project resources", async () => {
     const app = await buildTestServer()
     await onboard(app)

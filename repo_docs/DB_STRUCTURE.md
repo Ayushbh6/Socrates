@@ -181,6 +181,10 @@ Socrates should not edit the workspace root `.gitignore` in V1.
 
 For active V1 projects, `path` must be present on the primary workspace row.
 
+Workspace paths can be changed from the project dashboard. A change must preserve exactly one active primary workspace: mark the old primary row `detached` with `is_primary = 0`, then insert a new `active` row with `is_primary = 1`. Workspace switching is blocked while any turn in the project is queued, running, or awaiting approval.
+
+When attaching a folder that already contains `.socrates`, the backend requires an explicit scaffold action. `use_existing` preserves the directory and ensures `.socrates/resources/`; `reset` deletes only that selected folder's `.socrates` directory before recreating `.socrates/resources/`.
+
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `pws_...`. |
@@ -209,6 +213,8 @@ Uploaded file-backed resources should be stored under the primary workspace scaf
 ```
 
 The `uri` column should point to the stored resource path or linked source, depending on `source`.
+
+When the primary workspace changes, active uploaded resources whose `uri` points inside the old primary workspace `.socrates/resources/` directory should be copied into the new primary workspace `.socrates/resources/`, with `project_resources.uri` and the artifact path updated to the copied file. Linked or external resource paths are not copied or rewritten.
 
 Resource removal is a soft delete in SQLite: set `project_resources.status = "deleted"` and exclude those rows from normal project/resource responses. For uploaded resources whose `uri` points inside the owning primary workspace `.socrates/resources/` directory, the backend should also delete the copied file. Linked or external paths must not be physically deleted.
 

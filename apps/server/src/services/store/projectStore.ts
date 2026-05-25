@@ -1,18 +1,23 @@
+import path from "node:path"
 import type {
   CreateProjectRequest,
+  InspectWorkspaceRequest,
+  InspectWorkspaceResponse,
   PatchProjectRequest,
   PickWorkspaceFolderRequest,
   PickWorkspaceFolderResponse,
   Project,
   ProjectResource,
   ProjectWorkspace,
+  UpdateProjectWorkspaceRequest,
+  UpdateProjectWorkspaceResponse,
 } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
-import { ensureWorkspaceScaffold, pickWorkspaceFolder } from "@socrates/workspace"
+import { copyStoredResourceFile, ensureWorkspaceScaffold, inspectWorkspacePath, pickWorkspaceFolder } from "@socrates/workspace"
 import { and, count, desc, eq, inArray } from "drizzle-orm"
-import { conversations, projectResources, projects } from "../../db/schema"
+import { artifacts, conversations, projectResources, projects, projectWorkspaces, turns } from "../../db/schema"
 import { mapConversation, mapProject, mapProjectInstructions, mapProjectWorkspace } from "../../db/mappers"
-import { StoreBase } from "./shared"
+import { activeTurnStatuses, StoreBase } from "./shared"
 import type { AgentContext, ProjectDashboard, ProjectListItem } from "./types"
 import type { InstructionStore } from "./instructionStore"
 
@@ -26,6 +31,10 @@ export class ProjectStore extends StoreBase {
 
   async pickWorkspaceFolder(input: PickWorkspaceFolderRequest): Promise<PickWorkspaceFolderResponse> {
     return pickWorkspaceFolder(input)
+  }
+
+  inspectWorkspace(input: InspectWorkspaceRequest): InspectWorkspaceResponse {
+    return inspectWorkspacePath(input)
   }
 
   listProjects(): ProjectListItem[] {
@@ -66,11 +75,15 @@ export class ProjectStore extends StoreBase {
     const now = nowIso()
     const projectId = createId("proj")
     const workspaceKind = this.workspaceKindFromCreationMode(input.creationMode)
+    if (path.isAbsolute(input.workspacePath)) {
+      this.assertWorkspacePathAvailable(path.resolve(input.workspacePath))
+    }
     const scaffold = ensureWorkspaceScaffold({
       workspacePath: input.workspacePath,
       mode: input.creationMode,
+      ...(input.scaffoldAction ? { scaffoldAction: input.scaffoldAction } : {}),
+      requireActionForExistingSocrates: true,
     })
-    this.assertWorkspacePathAvailable(scaffold.workspacePath)
 
     this.handle.db
       .insert(projects)
@@ -170,4 +183,146 @@ export class ProjectStore extends StoreBase {
 
     return mapProject(this.mustGetProjectRow(projectId))
   }
+
+  updateProjectWorkspace(projectId: string, input: UpdateProjectWorkspaceRequest): UpdateProjectWorkspaceResponse {
+    this.mustGetProjectRow(projectId)
+    this.assertNoActiveProjectTurns(projectId)
+
+    const oldWorkspace = this.mustGetPrimaryWorkspaceRow(projectId)
+    const normalizedNewPath = path.resolve(input.workspacePath)
+    if (oldWorkspace.path === normalizedNewPath && input.scaffoldAction === "reset") {
+      throw new SocratesError("project_workspace_same_path_reset_denied", "Choose a different workspace before resetting .socrates", {
+        details: { projectId, workspacePath: normalizedNewPath },
+        recoverable: true,
+      })
+    }
+
+    const scaffold = ensureWorkspaceScaffold({
+      workspacePath: input.workspacePath,
+      mode: input.creationMode,
+      ...(input.scaffoldAction ? { scaffoldAction: input.scaffoldAction } : {}),
+      requireActionForExistingSocrates: true,
+    })
+
+    if (oldWorkspace.path !== scaffold.workspacePath) {
+      this.assertWorkspacePathAvailableForUpdate(projectId, scaffold.workspacePath)
+    }
+
+    const now = nowIso()
+    const copiedResources = oldWorkspace.path
+      ? this.copyUploadedResourcesToWorkspace(projectId, oldWorkspace.path, scaffold.workspacePath, now)
+      : []
+
+    let primaryWorkspace: ProjectWorkspace
+    if (oldWorkspace.path === scaffold.workspacePath) {
+      this.handle.db.update(projectWorkspaces).set({ updatedAt: now }).where(eq(projectWorkspaces.id, oldWorkspace.id)).run()
+      primaryWorkspace = mapProjectWorkspace(this.mustGetPrimaryWorkspaceRow(projectId))
+    } else {
+      this.handle.db
+        .update(projectWorkspaces)
+        .set({ status: "detached", isPrimary: false, updatedAt: now })
+        .where(eq(projectWorkspaces.id, oldWorkspace.id))
+        .run()
+      this.appendEvent({
+        projectId,
+        type: "project.workspace.detached",
+        source: "server",
+        payload: { projectId, workspaceId: oldWorkspace.id, path: oldWorkspace.path },
+      })
+      primaryWorkspace = this.createWorkspace(projectId, "existing_folder", scaffold.workspacePath)
+    }
+
+    this.handle.db.update(projects).set({ updatedAt: now }).where(eq(projects.id, projectId)).run()
+
+    return {
+      primaryWorkspace,
+      resources: copiedResources.length > 0 ? copiedResources : this.currentResourceList(projectId),
+    }
+  }
+
+  private assertNoActiveProjectTurns(projectId: string): void {
+    const activeTurn = this.handle.db
+      .select({ id: turns.id })
+      .from(turns)
+      .innerJoin(conversations, eq(turns.conversationId, conversations.id))
+      .where(and(eq(conversations.projectId, projectId), inArray(turns.status, activeTurnStatuses)))
+      .limit(1)
+      .get()
+
+    if (activeTurn) {
+      throw new SocratesError("project_workspace_has_active_turn", "Workspace cannot be changed while a turn is active", {
+        details: { projectId, turnId: activeTurn.id },
+        recoverable: true,
+      })
+    }
+  }
+
+  private assertWorkspacePathAvailableForUpdate(projectId: string, workspacePath: string): void {
+    const existing = this.handle.db
+      .select()
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.path, workspacePath), inArray(projectWorkspaces.status, ["active", "missing", "detached"])))
+      .limit(1)
+      .get()
+
+    if (existing && existing.projectId !== projectId) {
+      throw new SocratesError("workspace_already_attached", "This workspace folder is already attached to a project", {
+        details: { workspacePath, projectId: existing.projectId },
+      })
+    }
+    if (existing && existing.projectId === projectId && existing.status !== "detached") {
+      throw new SocratesError("workspace_already_attached", "This workspace folder is already attached to this project", {
+        details: { workspacePath, projectId },
+      })
+    }
+  }
+
+  private copyUploadedResourcesToWorkspace(
+    projectId: string,
+    oldWorkspacePath: string,
+    newWorkspacePath: string,
+    now: string,
+  ): ProjectResource[] {
+    const oldResourcesPath = path.resolve(oldWorkspacePath, ".socrates", "resources")
+    const resourceRows = this.handle.db
+      .select()
+      .from(projectResources)
+      .where(and(eq(projectResources.projectId, projectId), eq(projectResources.source, "uploaded"), eq(projectResources.status, "active")))
+      .all()
+
+    for (const resource of resourceRows) {
+      if (!resource.uri || !isPathInsideDirectory(oldResourcesPath, resource.uri)) {
+        continue
+      }
+
+      const copied = copyStoredResourceFile({
+        sourcePath: resource.uri,
+        targetWorkspacePath: newWorkspacePath,
+      })
+      this.handle.db
+        .update(projectResources)
+        .set({ uri: copied.path, updatedAt: now })
+        .where(eq(projectResources.id, resource.id))
+        .run()
+      if (resource.artifactId) {
+        this.handle.db.update(artifacts).set({ path: copied.path }).where(eq(artifacts.id, resource.artifactId)).run()
+      }
+    }
+
+    return this.currentResourceList(projectId)
+  }
+
+  private currentResourceList(projectId: string): ProjectResource[] {
+    const resourceRows = this.handle.db
+      .select()
+      .from(projectResources)
+      .where(and(eq(projectResources.projectId, projectId), inArray(projectResources.status, ["active", "processing", "failed", "archived"])))
+      .all()
+    return this.mapResourceRows(resourceRows)
+  }
+}
+
+const isPathInsideDirectory = (directory: string, candidatePath: string): boolean => {
+  const relative = path.relative(path.resolve(directory), path.resolve(candidatePath))
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)
 }

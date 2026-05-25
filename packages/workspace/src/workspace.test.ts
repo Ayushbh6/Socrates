@@ -4,10 +4,12 @@ import path from "node:path"
 import { describe, expect, it } from "vitest"
 import { SocratesError } from "@socrates/shared"
 import {
+  copyStoredResourceFile,
   ensureWorkspaceScaffold,
   deleteStoredResourceFile,
   editWorkspace,
   inferResourceKind,
+  inspectWorkspacePath,
   inspectPythonEnvironment,
   pickWorkspaceFolder,
   readWorkspacePath,
@@ -28,6 +30,74 @@ describe("workspace scaffold", () => {
     expect(scaffold.workspacePath).toBe(workspacePath)
     expect(fs.statSync(path.join(workspacePath, ".socrates")).isDirectory()).toBe(true)
     expect(fs.statSync(path.join(workspacePath, ".socrates", "resources")).isDirectory()).toBe(true)
+  })
+
+  it("inspects workspace scaffold state without creating files", () => {
+    const workspacePath = tempDir()
+
+    const before = inspectWorkspacePath({ workspacePath })
+    expect(before.exists).toBe(true)
+    expect(before.isDirectory).toBe(true)
+    expect(before.hasSocratesDir).toBe(false)
+    expect(before.hasResourcesDir).toBe(false)
+    expect(fs.existsSync(path.join(workspacePath, ".socrates"))).toBe(false)
+
+    fs.mkdirSync(path.join(workspacePath, ".socrates"))
+    const after = inspectWorkspacePath({ workspacePath })
+    expect(after.hasSocratesDir).toBe(true)
+    expect(after.hasResourcesDir).toBe(false)
+  })
+
+  it("requires explicit scaffold action when an existing .socrates folder is protected", () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, ".socrates"))
+
+    expect(() =>
+      ensureWorkspaceScaffold({
+        workspacePath,
+        mode: "existing_folder",
+        requireActionForExistingSocrates: true,
+      }),
+    ).toThrow(SocratesError)
+  })
+
+  it("uses existing .socrates content when requested", () => {
+    const workspacePath = tempDir()
+    const markerPath = path.join(workspacePath, ".socrates", "keep.txt")
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true })
+    fs.writeFileSync(markerPath, "keep")
+
+    ensureWorkspaceScaffold({
+      workspacePath,
+      mode: "existing_folder",
+      scaffoldAction: "use_existing",
+      requireActionForExistingSocrates: true,
+    })
+
+    expect(fs.readFileSync(markerPath, "utf8")).toBe("keep")
+    expect(fs.statSync(path.join(workspacePath, ".socrates", "resources")).isDirectory()).toBe(true)
+  })
+
+  it("resets only the selected workspace .socrates folder when requested", () => {
+    const workspacePath = tempDir()
+    const otherWorkspacePath = tempDir()
+    const oldMarkerPath = path.join(workspacePath, ".socrates", "old.txt")
+    const otherMarkerPath = path.join(otherWorkspacePath, ".socrates", "old.txt")
+    fs.mkdirSync(path.dirname(oldMarkerPath), { recursive: true })
+    fs.mkdirSync(path.dirname(otherMarkerPath), { recursive: true })
+    fs.writeFileSync(oldMarkerPath, "old")
+    fs.writeFileSync(otherMarkerPath, "other")
+
+    ensureWorkspaceScaffold({
+      workspacePath,
+      mode: "existing_folder",
+      scaffoldAction: "reset",
+      requireActionForExistingSocrates: true,
+    })
+
+    expect(fs.existsSync(oldMarkerPath)).toBe(false)
+    expect(fs.statSync(path.join(workspacePath, ".socrates", "resources")).isDirectory()).toBe(true)
+    expect(fs.readFileSync(otherMarkerPath, "utf8")).toBe("other")
   })
 
   it("rejects relative workspace paths", () => {
@@ -59,6 +129,19 @@ describe("resource files", () => {
     expect(stored.fileName).toBe("My_Draft_.md")
     expect(stored.path).toBe(path.join(workspacePath, ".socrates", "resources", "My_Draft_.md"))
     expect(fs.readFileSync(stored.path, "utf8")).toBe("hello")
+  })
+
+  it("copies stored resource files into a target workspace without overwriting", () => {
+    const sourcePath = path.join(tempDir(), "notes.txt")
+    const targetWorkspacePath = tempDir()
+    fs.writeFileSync(sourcePath, "one")
+    ensureWorkspaceScaffold({ workspacePath: targetWorkspacePath, mode: "existing_folder" })
+    fs.writeFileSync(path.join(targetWorkspacePath, ".socrates", "resources", "notes.txt"), "existing")
+
+    const copied = copyStoredResourceFile({ sourcePath, targetWorkspacePath })
+
+    expect(copied.fileName).toBe("notes-2.txt")
+    expect(fs.readFileSync(copied.path, "utf8")).toBe("one")
   })
 
   it("avoids overwriting duplicate resource filenames", () => {
