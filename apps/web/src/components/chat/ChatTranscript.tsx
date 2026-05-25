@@ -1,6 +1,6 @@
 "use client";
 
-import type { ConversationToolRun, Message } from "@socrates/contracts";
+import type { ConversationPartialTurn, ConversationToolRun, Message } from "@socrates/contracts";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { isValidElement, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
@@ -12,6 +12,7 @@ import { toolRunToTimelineItem } from "./ToolTimelineTypes";
 interface ChatTranscriptProps {
   messages: Message[];
   toolRuns?: ConversationToolRun[];
+  partialTurns?: ConversationPartialTurn[];
   liveThinking?: string;
   liveAnswer?: string;
   liveTools?: ToolTimelineItem[];
@@ -24,6 +25,7 @@ interface ChatTranscriptProps {
 export function ChatTranscript({
   messages,
   toolRuns = [],
+  partialTurns = [],
   liveThinking,
   liveAnswer,
   liveTools = [],
@@ -34,17 +36,31 @@ export function ChatTranscript({
 }: ChatTranscriptProps) {
   const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !liveThinking && !liveAnswer && liveTools.length === 0);
   const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
+  const assistantTurnIds = new Set(
+    messages.filter((message) => message.role === "assistant" && message.turnId).map((message) => message.turnId as string),
+  );
+  const partialTurnsByTurn = new Map(partialTurns.map((turn) => [turn.turnId, turn]));
 
   return (
     <div className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
-        {messages.map((message) => (
-          <MessageBubble
-            key={message.id}
-            message={message}
-            tools={message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : []}
-          />
-        ))}
+        {messages.map((message) => {
+          const tools =
+            message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : [];
+          const shouldRenderIncompleteTurn =
+            message.role === "user" && message.turnId && !assistantTurnIds.has(message.turnId);
+          const incompleteTurn = shouldRenderIncompleteTurn ? partialTurnsByTurn.get(message.turnId as string) : undefined;
+          const incompleteTools = shouldRenderIncompleteTurn ? historicalToolsByTurn.get(message.turnId as string) ?? [] : [];
+
+          return (
+            <div key={message.id} className="contents">
+              <MessageBubble message={message} tools={tools} />
+              {shouldRenderIncompleteTurn ? (
+                <IncompleteTurnBubble turn={incompleteTurn} tools={incompleteTools} />
+              ) : null}
+            </div>
+          );
+        })}
         {(liveThinking || liveAnswer || isStreaming || isCompacting) && (
           <div className="flex justify-start">
             <div className="w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
@@ -56,6 +72,35 @@ export function ChatTranscript({
               {liveAnswer ? <MarkdownContent content={liveAnswer} /> : isWaitingForFirstToken ? <FirstTokenLoader /> : null}
             </div>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function IncompleteTurnBubble({ turn, tools }: { turn?: ConversationPartialTurn; tools: ToolTimelineItem[] }) {
+  if (!turn && tools.length === 0) {
+    return null;
+  }
+
+  const hasPartialText = Boolean(turn?.answer || turn?.reasoning);
+  const label =
+    turn?.status === "running"
+      ? "Interrupted turn"
+      : turn?.status === "failed"
+        ? "Stopped: turn failed before final answer"
+        : "Stopped before final answer";
+
+  return (
+    <div className="flex justify-start">
+      <div className="w-full max-w-3xl rounded-2xl rounded-tl-sm border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-6 text-brand-text-dark">
+        <StoppedIndicator reason={label} />
+        {turn?.reasoning ? <ThinkingBlock content={turn.reasoning} /> : null}
+        <ChatToolTimeline tools={tools} />
+        {turn?.answer ? (
+          <MarkdownContent content={turn.answer} />
+        ) : hasPartialText ? null : (
+          <p className="text-brand-text-light">No assistant text was streamed before this turn stopped.</p>
         )}
       </div>
     </div>

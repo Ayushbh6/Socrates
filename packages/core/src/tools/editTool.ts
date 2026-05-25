@@ -1,5 +1,5 @@
 import { editToolInputSchema, editToolOutputSchema } from "@socrates/contracts"
-import type { SocratesTool, ToolPolicyDecision } from "./types"
+import type { SocratesTool } from "./types"
 
 const previewEdit = (input: typeof editToolInputSchema._type): string =>
   Array.from(
@@ -14,10 +14,10 @@ const previewEdit = (input: typeof editToolInputSchema._type): string =>
   )
     .join("\n")
 
-const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type>["decidePolicy"] = (
+const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type>["decidePolicy"] = async (
   input,
   context,
-): ToolPolicyDecision => {
+) => {
   if (context.runtimeConfig.sandboxMode === "read_only" || context.runtimeConfig.approvalMode === "read_only_auto") {
     return { type: "denied", reason: "File edits are not allowed in read-only mode." }
   }
@@ -26,13 +26,15 @@ const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof ed
     return { type: "auto" }
   }
 
+  const preview = await context.executors.edit({ ...input, dryRun: true }, context)
+
   return {
     type: "approval_required",
     request: {
       actionKind: input.operations.some((operation) => operation.type === "patch") ? "patch_apply" : "file_write",
       title: "Approve file edit",
       description: "Socrates wants to modify files in the active project workspace.",
-      actionPreview: previewEdit(input),
+      actionPreview: preview.diff.trim().length > 0 ? preview.diff : previewEdit(input),
       risk: "medium",
     },
   }

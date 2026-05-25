@@ -12,7 +12,7 @@ import {
   projectWorkspaceSchema,
   userSchema,
 } from "./entities"
-import { conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
+import { conversationContextUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
 import { toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
@@ -389,12 +389,23 @@ export const conversationToolRunSchema = z
   })
   .strict()
 
+export const conversationPartialTurnSchema = z
+  .object({
+    turnId: idSchema,
+    status: z.enum(["running", "failed", "cancelled"]),
+    answer: z.string().optional(),
+    reasoning: z.string().optional(),
+  })
+  .strict()
+
 export const getConversationResponseSchema = z
   .object({
     conversation: conversationSchema,
     messages: z.array(messageSchema),
     toolRuns: z.array(conversationToolRunSchema),
+    partialTurns: z.array(conversationPartialTurnSchema).optional(),
     tokenUsage: conversationTokenUsageSchema,
+    contextUsage: conversationContextUsageSchema.optional(),
   })
   .strict()
 
@@ -457,6 +468,7 @@ export type CreateConversationRequest = z.infer<typeof createConversationRequest
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type ConversationToolApproval = z.infer<typeof conversationToolApprovalSchema>
 export type ConversationToolRun = z.infer<typeof conversationToolRunSchema>
+export type ConversationPartialTurn = z.infer<typeof conversationPartialTurnSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
 export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>
 export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>

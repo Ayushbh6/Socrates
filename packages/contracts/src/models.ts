@@ -54,9 +54,21 @@ export const conversationTokenUsageSchema = z
   })
   .strict()
 
+export const conversationContextUsageSchema = z
+  .object({
+    providerId: z.string().min(1),
+    modelId: z.string().min(1),
+    contextWindowTokens: z.number().int().nonnegative(),
+    contextUsedTokens: z.number().int().nonnegative(),
+    contextLeftTokens: z.number().int().nonnegative(),
+    contextUsedPercent: z.number().min(0).max(100),
+  })
+  .strict()
+
 export type ProviderId = z.infer<typeof providerIdSchema>
 export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>
 export type ModelThinkingOption = z.infer<typeof modelThinkingOptionSchema>
 export type ModelOption = z.infer<typeof modelOptionSchema>
 export type ListModelsResponse = z.infer<typeof listModelsResponseSchema>
 export type ConversationTokenUsage = z.infer<typeof conversationTokenUsageSchema>
+export type ConversationContextUsage = z.infer<typeof conversationContextUsageSchema>

@@ -38,7 +38,7 @@ export function summarizeEditTool(tool: ToolTimelineItem): string {
 export function getEditFileSummaries(tool: ToolTimelineItem): EditFileSummary[] {
   const files = new Map<string, EditFileSummary>();
 
-  for (const file of parseDiff(tool.patch?.diff ?? tool.resultPreview ?? "")) {
+  for (const file of getPreferredEditDiffFiles(tool)) {
     files.set(file.path, {
       path: file.path,
       operation: "edited",
@@ -84,8 +84,16 @@ export function getEditFileSummaries(tool: ToolTimelineItem): EditFileSummary[] 
   return [...files.values()].sort((left, right) => left.path.localeCompare(right.path));
 }
 
+export function getPreferredEditDiffFiles(tool: ToolTimelineItem): DiffFile[] {
+  const operationDiffs = getDiffFilesFromInputOperations(tool.arguments);
+  if (operationDiffs.length > 0) {
+    return operationDiffs;
+  }
+  return parseDiff(tool.patch?.diff ?? tool.resultPreview ?? "");
+}
+
 export function parseDiff(diff: string): DiffFile[] {
-  if (!diff.trim()) {
+  if (!looksLikeUnifiedDiff(diff)) {
     return [];
   }
 
@@ -172,7 +180,7 @@ export function parseDiff(diff: string): DiffFile[] {
     current.lines.push({ kind: "meta", content: rawLine });
   }
 
-  return [...files.values()].filter((file) => file.lines.length > 0 || file.added > 0 || file.removed > 0);
+  return [...files.values()].filter((file) => file.lines.some((line) => line.kind !== "meta") || file.added > 0 || file.removed > 0);
 }
 
 export function formatApprovalPreview(approval: PendingApproval): string[] {
@@ -235,6 +243,111 @@ function getInputOperations(argumentsValue: unknown): Array<{ path: string | und
     })
     .filter((operation): operation is { path: string | undefined; type: string } => operation !== undefined);
 }
+
+function getDiffFilesFromInputOperations(argumentsValue: unknown): DiffFile[] {
+  const operations = getRawInputOperations(argumentsValue);
+  return operations
+    .map((operation, index) => diffFileFromOperation(operation, index))
+    .filter((file): file is DiffFile => Boolean(file));
+}
+
+function diffFileFromOperation(operation: RawInputOperation, index: number): DiffFile | undefined {
+  if (!operation.path || typeof operation.oldText !== "string" || typeof operation.newText !== "string") {
+    return undefined;
+  }
+
+  const lines = createFocusedSnippetDiff(operation.oldText, operation.newText);
+  const added = lines.filter((line) => line.kind === "add").length;
+  const removed = lines.filter((line) => line.kind === "remove").length;
+  if (lines.length === 0 && added === 0 && removed === 0) {
+    return undefined;
+  }
+
+  return {
+    path: operation.path,
+    added,
+    removed,
+    lines: [{ kind: "hunk", content: `@@ edit ${index + 1} @@` }, ...lines],
+  };
+}
+
+function createFocusedSnippetDiff(oldText: string, newText: string): DiffLine[] {
+  const oldLines = splitLines(oldText);
+  const newLines = splitLines(newText);
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const contextBeforeStart = Math.max(0, prefix - 2);
+  const oldChangeEnd = oldLines.length - suffix;
+  const newChangeEnd = newLines.length - suffix;
+  const contextAfterEndOld = Math.min(oldLines.length, oldChangeEnd + 2);
+
+  const rows: DiffLine[] = [];
+  for (let index = contextBeforeStart; index < prefix; index += 1) {
+    rows.push({ kind: "context", content: oldLines[index] ?? "", oldLine: index + 1, newLine: index + 1 });
+  }
+  for (let index = prefix; index < oldChangeEnd; index += 1) {
+    rows.push({ kind: "remove", content: oldLines[index] ?? "", oldLine: index + 1 });
+  }
+  for (let index = prefix; index < newChangeEnd; index += 1) {
+    rows.push({ kind: "add", content: newLines[index] ?? "", newLine: index + 1 });
+  }
+  for (let index = oldChangeEnd; index < contextAfterEndOld; index += 1) {
+    const newLine = index + (newLines.length - oldLines.length);
+    rows.push({ kind: "context", content: oldLines[index] ?? "", oldLine: index + 1, newLine: newLine + 1 });
+  }
+
+  return rows;
+}
+
+function splitLines(value: string): string[] {
+  return value.replace(/\r\n/g, "\n").split("\n");
+}
+
+function getRawInputOperations(argumentsValue: unknown): RawInputOperation[] {
+  if (typeof argumentsValue !== "object" || argumentsValue === null || !("operations" in argumentsValue)) {
+    return [];
+  }
+  const operations = (argumentsValue as { operations?: unknown }).operations;
+  if (!Array.isArray(operations)) {
+    return [];
+  }
+  return operations
+    .map((operation) => (typeof operation === "object" && operation !== null ? (operation as Record<string, unknown>) : undefined))
+    .filter((operation): operation is Record<string, unknown> => Boolean(operation))
+    .map((operation) => ({
+      type: typeof operation.type === "string" ? operation.type : "edited",
+      path: typeof operation.path === "string" ? operation.path : undefined,
+      oldText: typeof operation.oldText === "string" ? operation.oldText : undefined,
+      newText: typeof operation.newText === "string" ? operation.newText : undefined,
+    }));
+}
+
+function looksLikeUnifiedDiff(value: string): boolean {
+  if (!value.trim()) {
+    return false;
+  }
+  const lines = value.split(/\r?\n/);
+  return lines.some((line) => line.startsWith("--- ")) && lines.some((line) => line.startsWith("+++ "));
+}
+
+type RawInputOperation = {
+  type: string;
+  path?: string;
+  oldText?: string;
+  newText?: string;
+};
 
 function normalizeDiffPath(path: string): string | undefined {
   const cleaned = path.trim().replace(/^"|"$/g, "");

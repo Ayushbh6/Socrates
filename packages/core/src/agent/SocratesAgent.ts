@@ -36,6 +36,7 @@ export type SocratesAgentTurnInput = {
     modelId: string
     runtimeConfig: RuntimeConfig
     messages: ModelMessage[]
+    estimatedTokens: number
     promptContext?: SocratesPromptContext
     tools: ModelToolDefinition[]
   }) => string
@@ -109,6 +110,7 @@ export class SocratesAgent {
         modelId: input.modelId,
         runtimeConfig: input.runtimeConfig,
         messages: preparedContext.messages,
+        estimatedTokens: preparedContext.estimatedTokens,
         tools,
         ...(input.promptContext ? { promptContext: input.promptContext } : {}),
       })
@@ -291,19 +293,19 @@ export class SocratesAgent {
       return toolErrorResult(toolCall, error)
     }
 
-    const policy = tool.decidePolicy(parsed.data, context)
-    queue.push({
-      type: "tool.call.started",
-      toolCallId: toolCall.toolCallId,
-      toolName: tool.name,
-      category: tool.category,
-      displayName: tool.name,
-      argsPreview: previewJson(parsed.data),
-      input: parsed.data,
-      requiresApproval: policy.type === "approval_required",
-    })
-
     try {
+      const policy = await tool.decidePolicy(parsed.data, context)
+      queue.push({
+        type: "tool.call.started",
+        toolCallId: toolCall.toolCallId,
+        toolName: tool.name,
+        category: tool.category,
+        displayName: tool.name,
+        argsPreview: previewJson(parsed.data),
+        input: parsed.data,
+        requiresApproval: policy.type === "approval_required",
+      })
+
       if (policy.type === "denied") {
         throw new SocratesError("tool_denied", policy.reason)
       }

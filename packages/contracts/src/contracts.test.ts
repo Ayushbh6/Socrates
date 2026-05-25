@@ -399,11 +399,27 @@ describe("http contracts", () => {
         conversation,
         messages: [userMessage, assistantMessage],
         toolRuns: [],
+        partialTurns: [
+          {
+            turnId: "turn_interrupted",
+            status: "running",
+            answer: "Partial answer recovered from stream chunks.",
+            reasoning: "Recovered reasoning.",
+          },
+        ],
         tokenUsage: {
           totalTokens: 12,
           inputTokens: 6,
           outputTokens: 4,
           reasoningTokens: 2,
+        },
+        contextUsage: {
+          providerId: "openrouter",
+          modelId: "deepseek/deepseek-v4-pro",
+          contextWindowTokens: 180000,
+          contextUsedTokens: 42000,
+          contextLeftTokens: 138000,
+          contextUsedPercent: 23.3,
         },
       }).success,
     ).toBe(true)

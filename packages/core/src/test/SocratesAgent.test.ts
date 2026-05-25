@@ -128,6 +128,93 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
   })
 
+  it("includes dry-run edit diff in approval requests before applying the edit", async () => {
+    let calls = 0
+    const provider: ModelProvider = {
+      async *stream() {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_edit_1",
+              toolName: "edit",
+              input: { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Edited." }
+        yield { type: "model.completed" }
+      },
+    }
+    const approvals: string[] = []
+    const editDryRuns: boolean[] = []
+    const executors: ToolExecutors = {
+      read: async () => ({
+        path: "README.md",
+        kind: "file",
+        content: "",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+      }),
+      search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      edit: async (input) => {
+        editDryRuns.push(input.dryRun === true)
+        return {
+          changedFiles: [{ path: "README.md", operation: "edited" }],
+          diff: "--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n-old\n+new",
+          dryRun: input.dryRun ?? false,
+          truncation: { truncated: false, charLimit: 20_000, returnedLength: 57 },
+        }
+      },
+      bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      trace_retrieve: async () => ({
+        results: [],
+        totalMatches: 0,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+        appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
+      }),
+      list_project_resources: async () => ({
+        resources: [],
+        summary: "Listed 0 project resources.",
+        totalResources: 0,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
+      }),
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Edit README" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async (request) => {
+        approvals.push(request.actionPreview)
+        return { decision: "approved" }
+      },
+    })) {
+      // Drain stream.
+    }
+
+    expect(editDryRuns).toEqual([true, false])
+    expect(approvals[0]).toContain("-old")
+    expect(approvals[0]).toContain("+new")
+  })
+
   it("injects user and project context into the system prompt", async () => {
     const seen: unknown[] = []
     const provider: ModelProvider = {

@@ -92,6 +92,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "context.usage.snapshot") {
+        setConversationData((current) => (current ? { ...current, contextUsage: event.payload } : current));
+        return;
+      }
+
       if (event.type === "agent.thinking.delta") {
         setLiveThinking((current) => `${current}${event.payload.text}`);
         return;
@@ -231,15 +236,19 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "turn.cancelled") {
         const partialAssistantMessage = event.payload.partialAssistantMessage;
-        if (partialAssistantMessage) {
-          setConversationData((current) => {
-            if (!current) {
-              return current;
-            }
-            const withoutDuplicate = current.messages.filter((message) => message.id !== partialAssistantMessage.id);
-            return { ...current, messages: [...withoutDuplicate, partialAssistantMessage] };
-          });
-        }
+        setConversationData((current) => {
+          if (!current) {
+            return current;
+          }
+          const nextPartialTurns = (current.partialTurns ?? []).map((turn) =>
+            turn.turnId === event.payload.turnId ? { ...turn, status: "cancelled" as const } : turn,
+          );
+          if (!partialAssistantMessage) {
+            return { ...current, partialTurns: nextPartialTurns };
+          }
+          const withoutDuplicate = current.messages.filter((message) => message.id !== partialAssistantMessage.id);
+          return { ...current, messages: [...withoutDuplicate, partialAssistantMessage], partialTurns: nextPartialTurns };
+        });
         setIsSending(false);
         setActiveTurnId(null);
         setLiveAnswer("");
@@ -255,6 +264,13 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setActiveTurnId(null);
         setIsCompacting(false);
         setError(event.type === "turn.failed" ? event.payload.error.message : event.payload.error.message);
+        if (event.type === "turn.failed") {
+          setLiveAnswer("");
+          setLiveThinking("");
+          setLiveTools([]);
+          setApprovals([]);
+          void refreshConversation();
+        }
       }
     },
     [activeTurnId, conversationId, projectId, refreshConversation],
@@ -286,6 +302,14 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
         if (isMounted) {
           setConversationData(conversation);
+          const reloadActiveTurn = conversation.partialTurns?.find((turn) => turn.status === "running")?.turnId ?? null;
+          setActiveTurnId(reloadActiveTurn);
+          setIsSending(Boolean(reloadActiveTurn));
+          setLiveAnswer("");
+          setLiveThinking("");
+          setLiveTools([]);
+          setApprovals([]);
+          setIsCompacting(false);
           setSidebarProjects(projectConversations);
           setModels(modelsResponse.models);
           const defaultModel =
@@ -457,9 +481,15 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
   const messages: Message[] = conversationData?.messages ?? [];
   const toolRuns = conversationData?.toolRuns ?? [];
+  const partialTurns = conversationData?.partialTurns ?? [];
   const conversationTitle = conversationData?.conversation.title ?? "New conversation";
-  const tokenTotal = conversationData?.tokenUsage.totalTokens ?? 0;
-  const tokenLabel = useMemo(() => `${tokenTotal.toLocaleString()} ${tokenTotal === 1 ? "token" : "tokens"}`, [tokenTotal]);
+  const contextUsage = conversationData?.contextUsage;
+  const tokenLabel = useMemo(() => {
+    if (contextUsage) {
+      return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
+    }
+    return null;
+  }, [contextUsage]);
 
   return (
     <main className="flex h-screen bg-brand-bg">
@@ -479,7 +509,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           }`}
         >
           <h1 className="truncate text-sm font-medium text-brand-text-dark">{conversationTitle}</h1>
-          <span className="ml-4 shrink-0 font-mono text-xs text-brand-text-light">{tokenLabel}</span>
+          {tokenLabel ? <span className="ml-4 shrink-0 font-mono text-xs text-brand-text-light">{tokenLabel}</span> : null}
         </header>
         {isLoading ? (
           <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
@@ -504,6 +534,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             <ChatTranscript
               messages={messages}
               toolRuns={toolRuns}
+              partialTurns={partialTurns}
               liveThinking={liveThinking}
               liveAnswer={liveAnswer}
               liveTools={liveTools}

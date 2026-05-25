@@ -11,6 +11,7 @@ type ProviderOptions = Record<string, Record<string, JsonValue>>
 
 export class AiSdkProvider implements ModelProvider {
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
+    const streamTimeout = createStreamTimeout(request)
     try {
       yield { type: "model.started", ...(request.modelCallId ? { modelCallId: request.modelCallId } : {}) }
 
@@ -23,10 +24,11 @@ export class AiSdkProvider implements ModelProvider {
         ...(request.providerId === "openrouter"
           ? { experimental_transform: smoothStream({ chunking: "word", delayInMs: 20 }) }
           : {}),
-        ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
+        abortSignal: streamTimeout.signal,
       })
 
       for await (const part of result.fullStream) {
+        streamTimeout.refresh()
         if (part.type === "reasoning-delta" && part.text) {
           yield { type: "model.reasoning.delta", text: part.text }
         }
@@ -54,7 +56,9 @@ export class AiSdkProvider implements ModelProvider {
         }
       }
     } catch (error) {
-      yield { type: "model.failed", error: normalizeProviderError(error) }
+      yield { type: "model.failed", error: streamTimeout.timeoutError ?? normalizeProviderError(error) }
+    } finally {
+      streamTimeout.dispose()
     }
   }
 
@@ -88,6 +92,58 @@ export class AiSdkProvider implements ModelProvider {
       case "openrouter":
         return createOpenRouterProviderOptions(request)
     }
+  }
+}
+
+const DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS = 120_000
+
+const createStreamTimeout = (request: ModelRequest): {
+  signal: AbortSignal
+  timeoutError: SocratesError | undefined
+  refresh: () => void
+  dispose: () => void
+} => {
+  const timeoutMs = Number(process.env.SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS ?? DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS)
+  const controller = new AbortController()
+  let timeoutError: SocratesError | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const abortFromParent = () => controller.abort(request.abortSignal?.reason)
+  const refresh = () => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || controller.signal.aborted) {
+      return
+    }
+    timer = setTimeout(() => {
+      timeoutError = new SocratesError("model_stream_idle_timeout", "Model provider stream timed out without new output.", {
+        details: { providerId: request.providerId, modelId: request.modelId, idleTimeoutMs: timeoutMs },
+        recoverable: true,
+      })
+      controller.abort(timeoutError)
+    }, timeoutMs)
+  }
+
+  if (request.abortSignal?.aborted) {
+    abortFromParent()
+  } else {
+    request.abortSignal?.addEventListener("abort", abortFromParent, { once: true })
+    refresh()
+  }
+
+  return {
+    signal: controller.signal,
+    get timeoutError() {
+      return timeoutError
+    },
+    refresh,
+    dispose: () => {
+      if (timer) {
+        clearTimeout(timer)
+      }
+      request.abortSignal?.removeEventListener("abort", abortFromParent)
+    },
   }
 }
 

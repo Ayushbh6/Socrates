@@ -1,5 +1,7 @@
 import type {
   Conversation,
+  ConversationContextUsage,
+  ConversationPartialTurn,
   ConversationTokenUsage,
   CreateConversationMessageRequest,
   CreateConversationRequest,
@@ -117,7 +119,13 @@ export class ConversationStore extends StoreBase {
   getConversation(
     projectId: string,
     conversationId: string,
-  ): { conversation: Conversation; messages: Message[]; tokenUsage: ConversationTokenUsage } {
+  ): {
+    conversation: Conversation
+    messages: Message[]
+    partialTurns?: ConversationPartialTurn[]
+    tokenUsage: ConversationTokenUsage
+    contextUsage?: ConversationContextUsage
+  } {
     const conversation = mapConversation(this.mustGetConversationRow(projectId, conversationId))
     const rows = this.handle.db
       .select()
@@ -131,6 +139,8 @@ export class ConversationStore extends StoreBase {
       .map((message) => message.turnId as string)
     const reasoningByTurnId = this.modelTelemetry.getReasoningTextByTurnIds(missingReasoningTurnIds)
 
+    const contextUsage = this.modelTelemetry.getLatestConversationContextUsage(conversationId)
+    const partialTurns = this.getIncompleteTurnStreams(conversationId)
     return {
       conversation,
       messages: mappedMessages.map((message) => {
@@ -140,8 +150,41 @@ export class ConversationStore extends StoreBase {
         const reasoning = reasoningByTurnId.get(message.turnId)
         return reasoning ? { ...message, reasoning } : message
       }),
+      ...(partialTurns.length > 0 ? { partialTurns } : {}),
       tokenUsage: this.modelTelemetry.getConversationTokenUsage(conversationId),
+      ...(contextUsage ? { contextUsage } : {}),
     }
+  }
+
+  private getIncompleteTurnStreams(conversationId: string): ConversationPartialTurn[] {
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT id, status
+         FROM turns
+         WHERE conversation_id = ?
+           AND assistant_message_id IS NULL
+           AND status IN ('running', 'failed', 'cancelled')
+         ORDER BY started_at`,
+      )
+      .all(conversationId) as Array<{ id: string; status: "running" | "failed" | "cancelled" }>
+
+    if (rows.length === 0) {
+      return []
+    }
+
+    const reasoningByTurnId = this.modelTelemetry.getReasoningTextByTurnIds(rows.map((row) => row.id))
+    return rows
+      .map((row) => {
+        const answer = this.modelTelemetry.getAnswerTextByTurnId(row.id)
+        const reasoning = reasoningByTurnId.get(row.id)?.trim()
+        return {
+          turnId: row.id,
+          status: row.status,
+          ...(answer ? { answer } : {}),
+          ...(reasoning ? { reasoning } : {}),
+        }
+      })
+      .filter((turn) => turn.answer || turn.reasoning)
   }
 
   createConversationUserMessage(

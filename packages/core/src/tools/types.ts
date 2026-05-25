@@ -82,7 +82,7 @@ export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
     commandsRun?: number
     searchesRun?: number
   }
-  decidePolicy: (input: TInput, context: ToolRuntimeContext) => ToolPolicyDecision
+  decidePolicy: (input: TInput, context: ToolRuntimeContext) => ToolPolicyDecision | Promise<ToolPolicyDecision>
   execute: (
     input: TInput,
     context: ToolRuntimeContext & {

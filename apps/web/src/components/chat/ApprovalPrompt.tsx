@@ -1,6 +1,7 @@
 import { Check, X } from "lucide-react";
 import type { PendingApproval } from "./ToolTimelineTypes";
-import { formatApprovalPreview } from "./editPresentation";
+import { DiffView } from "./DiffView";
+import { formatApprovalPreview, parseDiff } from "./editPresentation";
 
 interface ApprovalPromptProps {
   approval: PendingApproval;
@@ -10,6 +11,7 @@ interface ApprovalPromptProps {
 export function ApprovalPrompt({ approval, onApprovalDecision }: ApprovalPromptProps) {
   const isPending = approval.status === "pending";
   const friendlyFilePreview = formatApprovalPreview(approval);
+  const diffFiles = parseDiff(approval.actionPreview);
   const shouldHideRawPreview =
     approval.actionKind === "file_write" ||
     approval.actionKind === "patch_apply" ||
@@ -56,7 +58,11 @@ export function ApprovalPrompt({ approval, onApprovalDecision }: ApprovalPromptP
           </button>
         </div>
       </div>
-      {friendlyFilePreview.length > 0 ? (
+      {diffFiles.length > 0 ? (
+        <div className="mt-3">
+          <DiffView files={diffFiles} />
+        </div>
+      ) : friendlyFilePreview.length > 0 ? (
         <div className="mt-2 space-y-1 rounded-md bg-white p-2 text-xs text-brand-text-light">
           {friendlyFilePreview.map((line) => (
             <div key={line} className="flex items-center gap-2">

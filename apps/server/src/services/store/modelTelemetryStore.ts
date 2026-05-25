@@ -1,9 +1,11 @@
-import type { ConversationTokenUsage } from "@socrates/contracts"
+import type { ConversationContextUsage, ConversationTokenUsage } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
 import { and, eq } from "drizzle-orm"
 import { contextUsageSnapshots, modelCalls, modelStreamChunks, modelUsage } from "../../db/schema"
 import { StoreBase } from "./shared"
 import type { StoredModelUsage } from "./types"
+
+const DEFAULT_CONTEXT_BUDGET_TOKENS = 180_000
 
 export class ModelTelemetryStore extends StoreBase {
   createModelCall(input: {
@@ -178,6 +180,7 @@ export class ModelTelemetryStore extends StoreBase {
     modelId: string
     contextWindowTokens: number
     contextUsedTokens: number
+    metadata?: Record<string, unknown>
   }): void {
     const contextLeftTokens = Math.max(input.contextWindowTokens - input.contextUsedTokens, 0)
     const contextUsedPercent =
@@ -199,9 +202,77 @@ export class ModelTelemetryStore extends StoreBase {
         contextUsedTokens: input.contextUsedTokens,
         contextLeftTokens,
         contextUsedPercent,
+        metadataJson: input.metadata === undefined ? undefined : JSON.stringify(input.metadata),
         createdAt: nowIso(),
       })
       .run()
+  }
+
+  getLatestConversationContextUsage(conversationId: string): ConversationContextUsage | undefined {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT provider_id, model_id, context_window_tokens, context_used_tokens, context_left_tokens, context_used_percent
+         FROM context_usage_snapshots
+         WHERE conversation_id = ?
+           AND json_extract(COALESCE(metadata_json, '{}'), '$.source') = 'model_context_estimate'
+         ORDER BY created_at DESC
+         LIMIT 1`,
+      )
+      .get(conversationId) as
+      | {
+          provider_id: string
+          model_id: string
+          context_window_tokens: number | bigint
+          context_used_tokens: number | bigint
+          context_left_tokens: number | bigint
+          context_used_percent: number
+        }
+      | undefined
+
+    if (!row) {
+      return this.estimateLatestConversationContextUsage(conversationId)
+    }
+
+    return {
+      providerId: row.provider_id,
+      modelId: row.model_id,
+      contextWindowTokens: Number(row.context_window_tokens),
+      contextUsedTokens: Number(row.context_used_tokens),
+      contextLeftTokens: Number(row.context_left_tokens),
+      contextUsedPercent: row.context_used_percent,
+    }
+  }
+
+  private estimateLatestConversationContextUsage(conversationId: string): ConversationContextUsage | undefined {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT provider_id, model_id, request_json
+         FROM model_calls
+         WHERE conversation_id = ?
+         ORDER BY started_at DESC
+         LIMIT 1`,
+      )
+      .get(conversationId) as { provider_id: string; model_id: string; request_json: string } | undefined
+
+    if (!row) {
+      return undefined
+    }
+
+    const estimate = estimateRequestTokens(row.request_json)
+    const contextWindowTokens = estimate.contextBudgetTokens ?? DEFAULT_CONTEXT_BUDGET_TOKENS
+    const contextUsedTokens = Math.min(estimate.estimatedTokens, contextWindowTokens)
+    const contextLeftTokens = Math.max(contextWindowTokens - contextUsedTokens, 0)
+    const contextUsedPercent =
+      contextWindowTokens > 0 ? Math.min(100, Math.round((contextUsedTokens / contextWindowTokens) * 1000) / 10) : 0
+
+    return {
+      providerId: row.provider_id,
+      modelId: row.model_id,
+      contextWindowTokens,
+      contextUsedTokens,
+      contextLeftTokens,
+      contextUsedPercent,
+    }
   }
 
   getConversationTokenUsage(conversationId: string): ConversationTokenUsage {
@@ -257,6 +328,27 @@ export class ModelTelemetryStore extends StoreBase {
         createdAt: nowIso(),
       })
       .run()
+  }
+}
+
+const estimateRequestTokens = (requestJson: string): { estimatedTokens: number; contextBudgetTokens?: number } => {
+  try {
+    const parsed = JSON.parse(requestJson) as {
+      estimatedTokens?: unknown
+      contextBudgetTokens?: unknown
+    }
+    const estimatedTokens =
+      typeof parsed.estimatedTokens === "number" && Number.isFinite(parsed.estimatedTokens)
+        ? Math.max(0, Math.ceil(parsed.estimatedTokens))
+        : Math.max(0, Math.ceil(requestJson.length / 4))
+    return {
+      estimatedTokens,
+      ...(typeof parsed.contextBudgetTokens === "number" && Number.isFinite(parsed.contextBudgetTokens)
+        ? { contextBudgetTokens: Math.max(1, Math.ceil(parsed.contextBudgetTokens)) }
+        : {}),
+    }
+  } catch {
+    return { estimatedTokens: Math.max(0, Math.ceil(requestJson.length / 4)) }
   }
 }
 

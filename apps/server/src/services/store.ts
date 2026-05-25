@@ -8,6 +8,8 @@ import type {
   ChatMessageSendPayload,
   CompleteOnboardingRequest,
   Conversation,
+  ConversationContextUsage,
+  ConversationPartialTurn,
   ConversationTokenUsage,
   ConversationToolRun,
   CreateConversationMessageRequest,
@@ -203,7 +205,14 @@ export class SocratesStore {
   getConversation(
     projectId: string,
     conversationId: string,
-  ): { conversation: Conversation; messages: Message[]; toolRuns: ConversationToolRun[]; tokenUsage: ConversationTokenUsage } {
+  ): {
+    conversation: Conversation
+    messages: Message[]
+    toolRuns: ConversationToolRun[]
+    partialTurns?: ConversationPartialTurn[]
+    tokenUsage: ConversationTokenUsage
+    contextUsage?: ConversationContextUsage
+  } {
     const conversation = this.conversations.getConversation(projectId, conversationId)
     return {
       ...conversation,
@@ -291,6 +300,7 @@ export class SocratesStore {
     modelId: string
     contextWindowTokens: number
     contextUsedTokens: number
+    metadata?: Record<string, unknown>
   }): void {
     this.modelTelemetry.recordContextUsageSnapshot(input)
   }

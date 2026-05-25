@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws"
 import {
+  DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
   findModelOption,
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
@@ -20,6 +21,8 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
   }
   return { projectId: command.projectId, conversationId: command.conversationId }
 }
+
+const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.hardCapTokens
 
 export const handleChatMessageSend = async (
   socket: WebSocket,
@@ -92,6 +95,8 @@ export const handleChatMessageSend = async (
           request: {
             providerId: modelRequest.providerId,
             modelId: modelRequest.modelId,
+            estimatedTokens: modelRequest.estimatedTokens,
+            contextBudgetTokens,
             messages: modelRequest.messages,
             promptContext: modelRequest.promptContext,
             runtimeConfig: modelRequest.runtimeConfig,
@@ -100,6 +105,20 @@ export const handleChatMessageSend = async (
         })
         modelCallIds.push(modelCallId)
         latestModelCallId = modelCallId
+        const model = findModelOption(modelRequest.providerId, modelRequest.modelId)
+        if (model?.contextWindowTokens) {
+          sendContextUsageSnapshot(socket, store, {
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            modelCallId,
+            providerId: modelRequest.providerId,
+            modelId: modelRequest.modelId,
+            contextWindowTokens: Math.min(model.contextWindowTokens, contextBudgetTokens),
+            contextUsedTokens: modelRequest.estimatedTokens,
+          })
+        }
         return modelCallId
       },
       requestApproval: async (request) => {
@@ -424,40 +443,6 @@ export const handleChatMessageSend = async (
     )
     appendAndSend(socket, store, messageCompleted, "core")
 
-    const tokenUsage = store.getConversationTokenUsage(conversationId)
-    const model = findModelOption(command.payload.runtimeConfig.providerId, command.payload.runtimeConfig.modelId)
-    if (model?.contextWindowTokens) {
-      store.recordContextUsageSnapshot({
-        conversationId,
-        sessionId: created.sessionId,
-        turnId: created.turnId,
-        modelCallId: modelCallIds.at(-1) ?? "",
-        providerId: command.payload.runtimeConfig.providerId,
-        modelId: command.payload.runtimeConfig.modelId,
-        contextWindowTokens: model.contextWindowTokens,
-        contextUsedTokens: tokenUsage.totalTokens,
-      })
-      const contextUsage = makeEvent(
-        "context.usage.snapshot",
-        {
-          providerId: command.payload.runtimeConfig.providerId,
-          modelId: command.payload.runtimeConfig.modelId,
-          contextWindowTokens: model.contextWindowTokens,
-          contextUsedTokens: tokenUsage.totalTokens,
-          contextLeftTokens: Math.max(model.contextWindowTokens - tokenUsage.totalTokens, 0),
-          contextUsedPercent: Math.min(100, Math.round((tokenUsage.totalTokens / model.contextWindowTokens) * 1000) / 10),
-        },
-        {
-          projectId,
-          conversationId,
-          sessionId: created.sessionId,
-          turnId: created.turnId,
-          actor: { type: "main_agent" },
-        },
-      )
-      appendAndSend(socket, store, contextUsage, "core")
-    }
-
     const turnCompleted = makeEvent(
       "turn.completed",
       {
@@ -621,6 +606,60 @@ const sendContextCompactionEvent = (
       {
         ...context,
         actor: { type: "system" },
+      },
+    ),
+    "core",
+  )
+}
+
+const sendContextUsageSnapshot = (
+  socket: WebSocket,
+  store: SocratesStore,
+  input: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId: string
+    modelCallId: string
+    providerId: string
+    modelId: string
+    contextWindowTokens: number
+    contextUsedTokens: number
+  },
+): void => {
+  const contextLeftTokens = Math.max(input.contextWindowTokens - input.contextUsedTokens, 0)
+  const contextUsedPercent =
+    input.contextWindowTokens > 0 ? Math.min(100, Math.round((input.contextUsedTokens / input.contextWindowTokens) * 1000) / 10) : 0
+  store.recordContextUsageSnapshot({
+    conversationId: input.conversationId,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    modelCallId: input.modelCallId,
+    providerId: input.providerId,
+    modelId: input.modelId,
+    contextWindowTokens: input.contextWindowTokens,
+    contextUsedTokens: input.contextUsedTokens,
+    metadata: { source: "model_context_estimate" },
+  })
+  appendAndSend(
+    socket,
+    store,
+    makeEvent(
+      "context.usage.snapshot",
+      {
+        providerId: input.providerId,
+        modelId: input.modelId,
+        contextWindowTokens: input.contextWindowTokens,
+        contextUsedTokens: input.contextUsedTokens,
+        contextLeftTokens,
+        contextUsedPercent,
+      },
+      {
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        actor: { type: "main_agent" },
       },
     ),
     "core",

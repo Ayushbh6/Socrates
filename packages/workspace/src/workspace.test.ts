@@ -299,6 +299,23 @@ describe("workspace tools", () => {
     expect(result.diff).toContain("plt.savefig('strategy_vs_bh.png')")
   })
 
+  it("returns a focused unified diff for small replacement edits", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "strategy.py"), ["alpha", "beta", "gamma", "delta", "omega"].join("\n"))
+
+    const result = await editWorkspace(
+      {
+        operations: [{ type: "replace", path: "strategy.py", oldText: "delta", newText: "delta = 42" }],
+      },
+      { workspacePath },
+    )
+
+    expect(result.diff).toContain("@@ -1,5 +1,5 @@")
+    expect(result.diff).toContain("-delta")
+    expect(result.diff).toContain("+delta = 42")
+    expect(result.diff).not.toContain("-alpha\n-beta\n-gamma")
+  })
+
   it("runs shell commands with bounded output", async () => {
     const workspacePath = tempDir()
     const result = await runWorkspaceBash({ command: "printf hello", charLimit: 3 }, { workspacePath })
