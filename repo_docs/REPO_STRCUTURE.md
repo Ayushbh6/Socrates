@@ -371,13 +371,15 @@ raw runtime tables
 
 internal retrieval index
   trace_documents
+  trace_embeddings
   trace_index_jobs
+  project_embedding_configs
 
 model-visible access
   trace_retrieve
 ```
 
-Trace indexing jobs are server/store work. The current retrieval-only slice builds deterministic trace documents immediately after turns complete, fail, or are cancelled. Embedding and rolling-summary jobs remain later phases. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
+Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Rolling conversation summaries remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
 ### `packages/providers`
 
