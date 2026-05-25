@@ -348,6 +348,31 @@ The `bash` implementation remains a real escape hatch. Even when a structured re
 
 `list_project_resources` is a read-only model-visible tool, but its executor belongs to the server/store boundary because it reads project resource records. It must not scan `.socrates/resources/` with shell commands; it asks `SocratesStore` for active visible project resources and returns bounded filenames/metadata so the model can choose a follow-up `read`. The model-visible input stays intentionally small: `kind` and `limit`.
 
+`trace_retrieve` is also a read-only model-visible tool, but its search corpus and inspect handles belong to the server/store boundary. The model-facing wrapper lives in `packages/core/tools`, while `apps/server/src/services/store/toolStore.ts` and future trace-index store modules own the DB retrieval implementation.
+
+The intended retrieval index is internal infrastructure, not a new model-visible tool surface:
+
+```text
+raw runtime tables
+  messages
+  tool_calls
+  shell_commands
+  file_operations
+  patches
+  errors
+  events
+
+internal retrieval index
+  trace_documents
+  trace_embeddings
+  trace_index_jobs
+
+model-visible access
+  trace_retrieve
+```
+
+Trace indexing jobs should be server/store work. They may build deterministic trace documents immediately after turns complete, then enqueue asynchronous embedding or summarization jobs. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
+
 ### `packages/providers`
 
 The model provider layer.
@@ -355,12 +380,15 @@ The model provider layer.
 It owns:
 
 - The internal `ModelProvider` interface.
+- Future internal embedding provider interface.
 - Vercel AI SDK adapter.
 - Provider/model registry.
 - Provider config loading.
 - Future LiteLLM, Ollama, OpenRouter, OpenAI, Anthropic, or Gemini direct adapters if needed.
 
 The agent core should call only the internal provider interface.
+
+Embedding generation for trace documents should also stay behind provider abstractions. Chat turns should not import or call embedding SDKs directly. The first default embedding provider can be OpenAI `text-embedding-3-small`; OpenRouter and local embedding providers can be added later behind the same boundary.
 
 Target dependency direction:
 
@@ -595,3 +623,5 @@ New work should extend the existing packages rather than creating parallel paths
 4. Put local filesystem, picker, resource, shell, git, and patch capabilities in `packages/workspace`.
 5. Keep `apps/server` as transport and persistence orchestration through focused route, WebSocket, and store modules.
 6. Keep `apps/web` as route, component, hook, and rendering code only.
+7. Keep trace indexing, trace document persistence, inspect-handle resolution, and conversation-history retrieval in `apps/server/src/services/store/` or focused server-side indexing modules.
+8. Keep embedding generation behind `packages/providers`; do not call embedding provider SDKs directly from routes, WebSocket handlers, or frontend code.

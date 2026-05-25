@@ -494,7 +494,38 @@ Bash already starts in the active workspace. Commands that begin by changing int
 
 The backend also injects compact Python environment hints from the active workspace. Socrates should use existing project-local environments or package-manager workflows when present, ask before creating a new environment when none is found, and save generated plot artifacts to files instead of blocking on GUI display unless the user explicitly asks.
 
-`trace_retrieve` retrieves previous tool evidence only when useful. It prevents historical tool dumps from being carried forward in every later prompt while keeping full auditability through SQLite.
+`trace_retrieve` retrieves previous conversation and execution evidence only when useful. It prevents historical tool dumps from being carried forward in every later prompt while keeping full auditability through SQLite.
+
+The intended trace retrieval flow is search first, exact inspection second:
+
+```text
+agent needs older context
+  -> trace_retrieve search with natural-language query, scope, and optional conversation hint
+  -> backend searches indexed trace documents with lexical and semantic retrieval
+  -> result returns compact evidence plus handles
+  -> if exact wording matters, agent calls trace_retrieve inspect on the returned handle
+  -> backend returns bounded raw message/tool/shell/patch/error text
+```
+
+The model should not need to know opaque ids before retrieval. `conversationId`, `turnId`, `messageId`, and `toolCallId` are useful follow-up handles returned by the backend.
+
+Supported retrieval scopes should include:
+
+```text
+current_conversation
+recent_conversations
+project
+```
+
+Conversation hints should be natural language, for example:
+
+```text
+"the previous conversation about retrieval tools"
+"two conversations ago"
+"the chat named assignment rubric"
+```
+
+Backend code resolves those hints against project conversations, titles, timestamps, summaries, and indexed trace documents.
 
 `list_project_resources` lists active project resources from backend records, especially uploaded files stored under `.socrates/resources/`. It accepts only `kind` and `limit`, returns filenames and metadata only, and defaults to a modest bounded list. The agent should prefer it before shell directory probing when the user asks about uploaded resources, then call `read` on the returned URI/path when content inspection is needed.
 
@@ -505,6 +536,64 @@ Between user queries, Socrates should carry forward final user/assistant dialogu
 Provider-exposed thinking is shown and stored when available, but it is not used as semantic prompt context for later user queries.
 
 Gemini thought signatures and similar provider-specific tool-call metadata are same-turn-only continuation metadata. They may be carried while the active run is resolving tool calls, but they must not become later-turn semantic conversation history.
+
+## Compaction And Exact Source Recall
+
+When conversation context grows too large, Socrates should compact hidden runtime context without mutating the visible transcript.
+
+Bad behavior:
+
+```text
+append "Summary: ..." as a fake user or assistant message
+replace exact source text with vague summary only
+lose access to a user's canonical pasted rules or rubric
+```
+
+Correct behavior:
+
+```text
+raw messages/events/tools stay in SQLite
+visible chat messages stay visible messages only
+context builder includes hidden summaries when needed
+trace_retrieve can inspect exact source handles
+```
+
+The context builder should keep recent visible user/assistant messages exact while older turns are represented by compact hidden summaries. When exact older content matters, summaries should point to inspectable handles.
+
+Example:
+
+```text
+Turn 2:
+  user pastes a long rubric and says "use this format throughout"
+
+Later compaction:
+  hidden context summary says:
+    "The canonical question-writing rubric was provided in Turn 2.
+     It is high-priority and must be followed exactly.
+     Retrieve exact source handle msg_... before generating final questions."
+
+trace index:
+  stores exact rubric chunks as verbatim anchors
+```
+
+Verbatim anchors are exact preserved chunks for high-value source material. They should be created when the user provides:
+
+- Rubrics.
+- Canonical examples.
+- "Follow this exactly" instructions.
+- "Use this throughout" guidance.
+- Source-of-truth copied text.
+- Long user messages likely to be referenced repeatedly.
+
+This gives Socrates three context levels:
+
+```text
+recent exact messages
+compact hidden summaries
+exact retrievable anchors
+```
+
+`trace_retrieve` is the bridge between compact summaries and raw evidence. Broad search can find likely relevant history; exact inspection can open the one message, turn, tool call, or shell output needed to avoid RAG noise.
 
 ## Project-Scoped Conversations
 

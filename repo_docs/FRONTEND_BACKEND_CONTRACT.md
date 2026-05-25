@@ -1346,50 +1346,154 @@ Before Python installs/runs, the backend injects compact workspace environment h
 
 ### `trace_retrieve`
 
-Retrieves old tool traces and execution evidence only when useful.
+Retrieves older Socrates conversation and execution evidence only when useful. This is a hybrid retrieval tool over project history, not a raw database id lookup.
+
+The model-visible interface should stay high-level. Socrates should normally search by natural-language intent, scope, conversation hint, tool kind, path, command, or desired evidence type. Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` are follow-up handles returned by search results, not values the model is expected to know before retrieval.
+
+`trace_retrieve` supports two conceptual operations:
+
+```text
+search
+  broad retrieval over indexed history
+  returns compact evidence, snippets, scores, and handles
+
+inspect
+  exact bounded retrieval by returned handle/id
+  returns raw source text or exact tool evidence when precision matters
+```
 
 Input:
 
 ```ts
-type TraceRetrieveToolInput = {
-  query?: string
-  since?: string
-  until?: string
-  turnIds?: string[]
+type TraceRetrieveToolInput =
+  | {
+      operation?: "search"
+      query: string
+      scope?: "current_conversation" | "recent_conversations" | "project"
+      conversationHint?: string
+      conversationLimit?: number
+      mode?: "combined" | "exact" | "semantic"
+      include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
+      toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
+      paths?: string[]
+      command?: string
+      limit?: number
+      includeRaw?: boolean
+      charLimit?: number
+    }
+  | {
+      operation: "inspect"
+      handle?: string
+      conversationId?: string
+      turnId?: string
+      messageId?: string
+      toolCallId?: string
+      include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
+      includeRaw?: boolean
+      charLimit?: number
+    }
+}
+```
+
+Current implementation note:
+
+```ts
+type CurrentTraceRetrieveToolInput = {
+  conversationId?: string
+  turnId?: string
   toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
-  paths?: string[]
-  includeInputs?: boolean
-  includeOutputs?: boolean
+  path?: string
+  command?: string
+  query?: string
+  includeRaw?: boolean
+  limit?: number
   charLimit?: number
 }
 ```
+
+The current schema is a temporary V0. It validates the persistence path, but it is too id-first for the intended agent behavior. The next implementation should migrate to the search/inspect shape above.
 
 Output:
 
 ```ts
 type TraceRetrieveToolOutput = {
-  traces: Array<{
-    turnId: string
-    toolCallId: string
-    toolName: string
-    summary: string
-    paths?: string[]
-    command?: string
-    inputs?: unknown
-    outputs?: unknown
-    createdAt: string
-    truncated: boolean
-  }>
+  results: Array<
+    | {
+        handle: string
+        kind: "message" | "tool_call" | "shell" | "file" | "patch" | "error" | "turn_summary" | "conversation_summary" | "verbatim_anchor"
+        projectId: string
+        conversationId?: string
+        turnId?: string
+        sourceId: string
+        title: string
+        snippet?: string
+        summary?: string
+        score?: number
+        preserveVerbatim?: boolean
+        createdAt?: string
+        metadata?: unknown
+      }
+    | {
+        handle: string
+        kind: "exact_source"
+        projectId: string
+        conversationId?: string
+        turnId?: string
+        sourceId: string
+        title: string
+        content: string
+        source: {
+          table: string
+          id: string
+        }
+        truncation: TruncationMetadata
+        metadata?: unknown
+      }
+  >
+  totalMatches: number
+  truncation: TruncationMetadata
+  warnings?: string[]
 }
 ```
+
+Current implementation note:
+
+```ts
+type CurrentTraceRetrieveToolOutput = {
+  traces: Array<{
+    toolCallId: string
+    turnId: string
+    conversationId: string
+    toolName: string
+    status: string
+    summary: string
+    arguments?: unknown
+    result?: unknown
+    startedAt?: string
+    completedAt?: string
+  }>
+  totalMatches: number
+  truncation: TruncationMetadata
+  warnings?: string[]
+}
+```
+
+The current output shape should be migrated from `traces` to search/inspect `results` when the indexed retrieval layer lands.
 
 Rules:
 
 - Retrieval is project-scoped by backend code, not by model-provided ids.
-- Use structured filters first: project, conversation, turn, tool name, file path, and date/time.
-- Keyword search over commands, paths, errors, and summaries is part of V1.
-- Semantic search over trace summaries and diary entries can be added later.
-- Raw tool inputs/outputs are returned only when requested and bounded by `charLimit`.
+- The default search mode is `combined`: lexical/exact matching plus semantic embedding search when embeddings are available.
+- `mode = "exact"` should prefer literal message text, file paths, command strings, titles, and verbatim anchors.
+- `mode = "semantic"` should prefer embedding similarity over trace documents.
+- `conversationHint` is a natural-language hint such as a title fragment, "two conversations ago", or "the previous chat about retrieval tools". Backend code resolves it against project conversations, titles, timestamps, and indexed summaries.
+- `conversationLimit` bounds project-wide or recent-conversation searches; default should be modest.
+- Search results must include stable handles/ids so the model can perform exact follow-up inspection without guessing ids.
+- Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
+- Large outputs must be paged or truncated with `TruncationMetadata`.
+- Raw messages, tool calls, model calls, events, shell output, patches, and errors remain the source of truth. Trace index rows are retrieval documents over that source data, not replacements for it.
+- Conversation summaries and verbatim anchors must not be inserted as fake user messages.
+- Verbatim anchors preserve exact high-value source chunks such as rubrics, user-provided rules, "use this throughout" instructions, canonical examples, or source-of-truth pasted text.
 
 ### `list_project_resources`
 
@@ -1447,7 +1551,9 @@ new user query
 current-turn tool calls only
 ```
 
-If older tool evidence is needed, the agent should call `trace_retrieve` explicitly. Full traces remain persisted in SQLite for audit and replay.
+If older conversation or execution evidence is needed, the agent should call `trace_retrieve` explicitly. Full raw history remains persisted in SQLite for audit and replay.
+
+`trace_retrieve` is also the exact-source fallback for compacted context. Context summaries may point to handles such as a prior message, turn, tool call, or verbatim anchor. When exact wording matters, the agent should inspect the handle before answering.
 
 Provider-exposed thinking or reasoning text is stored for UI/replay when exposed, but it is not carried forward as semantic context between later user queries. Reasoning token counts belong in usage and context accounting, not prompt history.
 

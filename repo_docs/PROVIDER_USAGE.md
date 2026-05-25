@@ -507,6 +507,63 @@ AiSdkProvider behavior vs direct provider wrapper behavior
 
 The DB should make those differences visible.
 
+## Embedding Provider Plan
+
+Trace retrieval should support semantic search through embeddings, but embedding generation must not sit in the user-facing chat latency path.
+
+The intended flow:
+
+```text
+turn completes or is cancelled
+  -> raw messages, tool calls, events, shell output, patches, errors are persisted
+  -> server creates trace_documents
+  -> server enqueues trace_index_jobs
+  -> background worker embeds pending trace_documents
+  -> trace_retrieve can use lexical search immediately
+  -> trace_retrieve adds semantic search once embeddings are available
+```
+
+Default V1 embedding provider:
+
+```text
+providerId = openai
+modelId = text-embedding-3-small
+```
+
+OpenAI `text-embedding-3-small` is the preferred first default because it is inexpensive, stable, and has a known 1536-dimensional default embedding size. It should be configurable rather than hardcoded into the retrieval algorithm.
+
+Possible later providers:
+
+```text
+openrouter
+local
+ollama-compatible embeddings
+```
+
+OpenRouter currently offers cheaper embedding model options through its gateway. Socrates may add OpenRouter embeddings later, but the first implementation should favor the simpler and more stable default unless the user config chooses otherwise.
+
+Provider boundary rules for embeddings:
+
+- Embedding SDK/API calls belong behind `packages/providers`.
+- `apps/web` must never call embedding providers.
+- `packages/core` should not import embedding SDKs.
+- `apps/server` may enqueue and coordinate embedding jobs, but provider-specific request details should stay inside the provider layer.
+- Embedding rows must store provider id, model id, dimensions, content hash, and raw metadata where useful.
+- Unchanged trace documents must not be re-embedded. Use `content_hash`.
+- Failed embedding jobs should degrade gracefully to lexical/exact retrieval.
+
+Embedding content should be built from `trace_documents`, not from arbitrary raw event dumps. Good embedding inputs include:
+
+- Message chunks.
+- Turn summaries.
+- Conversation summaries.
+- Verbatim anchors.
+- Tool-call summaries.
+- Shell command outcome summaries.
+- Patch/error summaries.
+
+Do not embed old provider reasoning streams as semantic conversation memory by default. Provider-exposed reasoning can remain available for UI/replay, but it should not become later-turn semantic prompt history unless a future explicit policy changes that.
+
 ## Frontend Implications
 
 The frontend should use provider ids and model ids from Socrates contracts/config.
@@ -544,3 +601,4 @@ The chat composer may switch provider, model, and thinking mode between turns in
 8. Provider routing must be centralized in `ProviderRouter`.
 9. The code must be written from day one as if Vercel AI SDK may be replaced later.
 10. If a provider feature cannot be normalized cleanly, expose it through `providerOptions` and persist raw metadata.
+11. Embedding provider access must follow the same boundary as text providers: provider-specific behavior behind `packages/providers`, no frontend/provider SDK leakage.

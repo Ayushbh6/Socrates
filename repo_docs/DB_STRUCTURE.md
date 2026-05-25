@@ -938,11 +938,12 @@ Socrates may show and persist provider-exposed reasoning for the turn where it w
 
 ## Tool Trace Retrieval
 
-Full tool calls and outputs are persisted for audit, replay, and targeted retrieval. They should not be blindly carried forward into later model context.
+Full messages, tool calls, model calls, events, shell output, patches, errors, and outputs are persisted for audit, replay, and targeted retrieval. They should not be blindly carried forward into later model context.
 
-The V1 retrieval path is the model-visible `trace_retrieve` tool. It reads from existing persisted runtime tables:
+The model-visible retrieval path is the `trace_retrieve` tool. The intended implementation is a hybrid search/inspect layer over an internal trace index. Raw runtime tables remain the source of truth:
 
 ```text
+messages
 tool_calls
 events
 shell_commands
@@ -955,9 +956,144 @@ model_stream_chunks
 model_usage
 ```
 
-Retrieval should be project-scoped by backend code and support structured filters such as conversation, turn, tool name, path, command, date/time, and error code. Keyword search over commands, file paths, summaries, and errors is part of V1. Semantic search over trace summaries and diary entries can be added later.
+The index layer should create retrieval documents from those source tables:
+
+```text
+trace_documents
+trace_embeddings
+trace_index_jobs
+```
+
+`trace_documents` are not model-visible tools. They are the canonical searchable corpus behind `trace_retrieve`. They contain bounded, provenance-linked chunks such as:
+
+- User message chunks.
+- Assistant response chunks.
+- Tool-call summaries.
+- Shell command outcomes and important output excerpts.
+- Edit/patch summaries.
+- Error and blocker summaries.
+- Turn summaries.
+- Conversation rolling summaries.
+- Verbatim anchors for exact high-value user-provided source text.
+
+Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles.
+
+Hybrid retrieval should combine:
+
+- Structured prefiltering by project, conversation, source kind, path, command, tool, and time.
+- Lexical search over titles, summaries, content, paths, commands, and errors.
+- Semantic search over embeddings when available.
+- Reranking that boosts exact path/title/command matches, verbatim anchors, recent relevant evidence, and high-importance source docs.
 
 Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
+
+## Trace Index Tables
+
+The trace index tables are planned follow-up schema additions for semantic and exact retrieval. They should be added before replacing the current `tool_calls`-only retrieval implementation.
+
+## `trace_documents`
+
+Stores bounded retrieval documents derived from raw Socrates history.
+
+The source data remains in the original tables. `trace_documents` stores searchable text, summaries, metadata, and provenance so retrieval can be fast and scope-aware without dumping raw event logs into prompts.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `tdoc_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`; all retrieval is project-scoped. |
+| `conversation_id` | `TEXT` | no | FK to `conversations.id` when document belongs to a conversation. |
+| `turn_id` | `TEXT` | no | FK to `turns.id` when document belongs to a turn. |
+| `source_kind` | `TEXT` | yes | `message`, `tool_call`, `shell_command`, `file_operation`, `patch`, `error`, `turn_summary`, `conversation_summary`, `verbatim_anchor`, etc. |
+| `source_table` | `TEXT` | yes | Original table name such as `messages` or `tool_calls`. |
+| `source_id` | `TEXT` | yes | Original row id. |
+| `handle` | `TEXT` | yes | Stable inspect handle returned by `trace_retrieve`. |
+| `title` | `TEXT` | yes | Human-readable title for retrieval results. |
+| `summary` | `TEXT` | no | Compact summary. Deterministic first, model-generated only when needed. |
+| `content` | `TEXT` | yes | Searchable text chunk or exact preserved content. |
+| `content_hash` | `TEXT` | yes | Hash used to avoid redundant re-indexing and re-embedding. |
+| `importance` | `TEXT` | no | `low`, `normal`, `high`, `critical`. |
+| `preserve_verbatim` | `INTEGER` | yes | Boolean. True for exact source chunks that must not be summarized away. |
+| `chunk_index` | `INTEGER` | no | Chunk order for multi-chunk source rows. |
+| `token_count_estimate` | `INTEGER` | no | Local token estimate for context budgeting. |
+| `metadata_json` | `TEXT` | no | Tags, paths, commands, files, scores, title hints, etc. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+
+Suggested indexes:
+
+```sql
+CREATE INDEX trace_documents_project_created_idx ON trace_documents(project_id, created_at);
+CREATE INDEX trace_documents_conversation_created_idx ON trace_documents(conversation_id, created_at);
+CREATE INDEX trace_documents_turn_idx ON trace_documents(turn_id);
+CREATE INDEX trace_documents_source_idx ON trace_documents(source_table, source_id);
+CREATE UNIQUE INDEX trace_documents_handle_idx ON trace_documents(handle);
+CREATE INDEX trace_documents_kind_idx ON trace_documents(source_kind);
+```
+
+SQLite FTS should be considered for lexical search over `title`, `summary`, `content`, and metadata-derived text.
+
+## `trace_embeddings`
+
+Stores semantic embeddings for `trace_documents`.
+
+Embeddings should be generated asynchronously. Chat turns must not wait for embedding jobs to finish. Lexical/exact retrieval should work immediately after trace documents are created.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `temb_...`. |
+| `trace_document_id` | `TEXT` | yes | FK to `trace_documents.id`. |
+| `provider_id` | `TEXT` | yes | Embedding provider, e.g. `openai`, `openrouter`, `local`. |
+| `model_id` | `TEXT` | yes | Embedding model id, e.g. `text-embedding-3-small`. |
+| `dimensions` | `INTEGER` | yes | Vector dimension. |
+| `embedding_json` | `TEXT` | yes | Vector storage for SQLite V1; can move to a vector extension later. |
+| `content_hash` | `TEXT` | yes | Matches the embedded `trace_documents.content_hash`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Provider raw metadata, batch id, latency, etc. |
+
+Suggested indexes:
+
+```sql
+CREATE INDEX trace_embeddings_document_idx ON trace_embeddings(trace_document_id);
+CREATE INDEX trace_embeddings_provider_model_idx ON trace_embeddings(provider_id, model_id);
+CREATE UNIQUE INDEX trace_embeddings_document_model_hash_idx ON trace_embeddings(trace_document_id, provider_id, model_id, content_hash);
+```
+
+## `trace_index_jobs`
+
+Tracks asynchronous indexing and embedding work.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `tjob_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `conversation_id` | `TEXT` | no | FK to `conversations.id` when job is conversation-scoped. |
+| `turn_id` | `TEXT` | no | FK to `turns.id` when job indexes one turn. |
+| `job_kind` | `TEXT` | yes | `build_trace_documents`, `embed_trace_documents`, `summarize_turn`, `summarize_conversation`. |
+| `status` | `TEXT` | yes | `queued`, `running`, `completed`, `failed`, `cancelled`. |
+| `attempts` | `INTEGER` | yes | Retry count. |
+| `error_id` | `TEXT` | no | FK to `errors.id` if failed. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `started_at` | `TEXT` | no | ISO timestamp. |
+| `completed_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Job parameters, changed source ids, output counts. |
+
+Trace indexing flow:
+
+```text
+turn completes or is cancelled
+  -> raw tables are already persisted
+  -> enqueue trace_index_jobs.build_trace_documents
+  -> build deterministic trace_documents from new messages/tools/events
+  -> enqueue trace_index_jobs.embed_trace_documents
+  -> embed unchanged/new docs only when content_hash needs it
+```
+
+Summaries:
+
+- Deterministic summaries should be generated first for common tool traces and command outcomes.
+- Model-generated summaries may be used later for long assistant messages, large tool outputs, noisy shell output, multi-tool turns, and rolling conversation summaries.
+- Summary rows must preserve provenance through `source_table`, `source_id`, `conversation_id`, and `turn_id`.
+- Verbatim anchors preserve exact user-provided source text and should be returned or inspected when exact wording matters.
 
 ## Context Assembly And Compression
 
@@ -982,10 +1118,13 @@ When context pressure grows, the context builder should keep:
 - Active task state when task tracking exists.
 - Important decisions.
 - Recent failures and blockers.
-- Relevant diary entries after the diary system exists.
-- Retrieved trace summaries only when explicitly relevant.
+- Relevant conversation summaries and turn summaries from `trace_documents`.
+- Verbatim anchor references for exact source material that must not be summarized away.
+- Retrieved trace evidence only when explicitly relevant.
 
 The target hard cap for a chat prompt is 160,000 tokens. Before the next model call would exceed that cap, Socrates should compress or prune model-facing context while preserving raw history in the database.
+
+Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to exact source handles so `trace_retrieve` can inspect the raw message, turn, tool result, or verbatim anchor when precision matters.
 
 ## Context Window Tracking
 
@@ -1077,4 +1216,12 @@ audio_outputs
 message_feedback
 session_state
 schema_migrations
+```
+
+Planned trace retrieval schema additions:
+
+```text
+trace_documents
+trace_embeddings
+trace_index_jobs
 ```

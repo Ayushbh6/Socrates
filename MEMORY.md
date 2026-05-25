@@ -322,3 +322,39 @@ pnpm test
 pnpm build
 git diff --check
 ```
+
+## Trace Retrieval And Context Indexing Planning
+
+Planned the next `trace_retrieve` direction before implementation.
+
+Key decisions:
+
+- `trace_retrieve` should evolve from V0 tool-call lookup into hybrid search/inspect retrieval over Socrates history.
+- The model-facing interface should be high-level: natural-language `query`, scope, conversation hint, evidence type, tool name, path, command, and returned handles.
+- Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` should be follow-up handles returned by search or backend-filled context, not values the model must know upfront.
+- Retrieval should support broad search first, then exact bounded inspect of a returned handle when precision matters.
+- The backend should introduce an internal trace index layer:
+
+```text
+trace_documents
+trace_embeddings
+trace_index_jobs
+```
+
+- `trace_documents` are the canonical searchable corpus behind `trace_retrieve`, derived from raw DB history such as messages, tool calls, shell output, patches, errors, events, turn summaries, conversation summaries, and verbatim anchors.
+- Raw DB tables remain the source of truth. Trace documents and summaries do not replace raw messages/tools/events.
+- Conversation summaries and compaction summaries are hidden runtime context, not fake user or assistant messages.
+- Verbatim anchors preserve exact high-value user source text such as rubrics, canonical examples, "follow this exactly" instructions, and source-of-truth pasted content.
+- Embeddings should be generated asynchronously after turns are stored. Chat turns should not wait for embedding jobs.
+- Default embedding provider can be OpenAI `text-embedding-3-small`; OpenRouter/local embeddings can be added later behind provider abstractions.
+
+Docs updated to record this planned direction:
+
+```text
+repo_docs/FRONTEND_BACKEND_CONTRACT.md
+repo_docs/DB_STRUCTURE.md
+repo_docs/APP_FLOW.md
+repo_docs/REPO_STRCUTURE.md
+repo_docs/PROVIDER_USAGE.md
+repo_docs/REPO_RULES.md
+```

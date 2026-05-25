@@ -214,6 +214,28 @@ Each model-visible tool must live in its own small TypeScript file under `packag
 
 The `read`, `search`, `trace_retrieve`, and `list_project_resources` tools are read-only. They may be auto-allowed when scoped to the project workspace and bounded by output limits.
 
+`trace_retrieve` must stay high-level and intent-based. The model should search by query, scope, conversation hint, evidence type, tool name, path, command, or returned handle. It should not be expected to know opaque database ids before retrieval.
+
+`conversationId`, `turnId`, `messageId`, and `toolCallId` may be accepted only as follow-up inspect handles or backend-filled context. They are not the primary model-facing retrieval interface.
+
+Trace retrieval is search-then-inspect:
+
+```text
+search
+  natural-language, scoped, hybrid retrieval
+  returns compact evidence plus handles
+
+inspect
+  exact bounded retrieval by returned handle/id
+  returns raw source text or exact tool evidence
+```
+
+Trace index internals such as `trace_documents`, `trace_embeddings`, and `trace_index_jobs` must not become separate model-visible tools. They are backend storage/indexing implementation details behind `trace_retrieve`.
+
+Conversation summaries, turn summaries, and verbatim anchors must preserve provenance back to raw rows. Summaries must not be stored as fake user or assistant messages. The `messages` table is for real visible chat messages only.
+
+Verbatim anchors should preserve exact high-value user source material such as rubrics, canonical examples, "use this throughout" instructions, and pasted source-of-truth text. When exact wording matters, Socrates should inspect the anchor/raw message rather than rely only on semantic retrieval snippets.
+
 `list_project_resources` must use backend project resource records and should be preferred before shell probing when the user asks about uploaded project files under `.socrates/resources/`. Its model-visible input is limited to `kind` and `limit`, and its output must stay to filenames/metadata only.
 
 The `edit` tool is the only V1 model-visible file mutation tool. It must cover creating new files, overwriting files, precise multiline replacement, and patch-style edits. It must show a diff or equivalent preview and require approval unless the user explicitly runs a full-access mode.
