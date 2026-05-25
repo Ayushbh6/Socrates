@@ -30,6 +30,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [liveAnswer, setLiveAnswer] = useState("");
   const [liveTools, setLiveTools] = useState<ToolTimelineItem[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,6 +68,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       if (event.type === "turn.started") {
         setActiveTurnId(event.payload.turnId);
         setIsSending(true);
+        setIsCompacting(false);
         setLiveTools([]);
         setApprovals([]);
         setConversationData((current) => {
@@ -100,6 +102,22 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "context.compaction.started") {
+        setIsCompacting(true);
+        return;
+      }
+
+      if (event.type === "context.compaction.completed") {
+        setIsCompacting(false);
+        return;
+      }
+
+      if (event.type === "context.compaction.failed") {
+        setIsCompacting(false);
+        setError(event.payload.error.message);
+        return;
+      }
+
       if (event.type === "message.completed") {
         setConversationData((current) => {
           if (!current) {
@@ -110,6 +128,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         });
         setLiveAnswer("");
         setLiveThinking("");
+        setIsCompacting(false);
         return;
       }
 
@@ -205,6 +224,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setLiveThinking("");
         setLiveTools([]);
         setApprovals([]);
+        setIsCompacting(false);
         void refreshConversation();
         return;
       }
@@ -226,12 +246,14 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setLiveThinking("");
         setLiveTools([]);
         setApprovals([]);
+        setIsCompacting(false);
         return;
       }
 
       if (event.type === "turn.failed" || event.type === "error.created") {
         setIsSending(false);
         setActiveTurnId(null);
+        setIsCompacting(false);
         setError(event.type === "turn.failed" ? event.payload.error.message : event.payload.error.message);
       }
     },
@@ -334,6 +356,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setError(null);
     setLiveAnswer("");
     setLiveThinking("");
+    setIsCompacting(false);
     const clientMessageId = `msg_${crypto.randomUUID()}`;
     try {
       const optimisticMessage: Message = {
@@ -486,6 +509,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               liveTools={liveTools}
               approvals={approvals}
               isStreaming={isSending}
+              isCompacting={isCompacting}
               onApprovalDecision={handleApprovalDecision}
             />
             <div className="border-t border-gray-100 bg-white px-6 py-4">

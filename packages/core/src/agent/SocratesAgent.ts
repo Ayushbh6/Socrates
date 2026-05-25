@@ -9,6 +9,12 @@ import {
 } from "@socrates/contracts"
 import { createId, normalizeError, SocratesError } from "@socrates/shared"
 import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
+import {
+  prepareContextForModelCall,
+  precomputeContextSnapshot,
+  type ContextCompactionLifecycleEvent,
+  type ContextCompressionRuntime,
+} from "../context/contextCompression"
 import { buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolRuntimeContext } from "../tools/types"
@@ -34,18 +40,41 @@ export type SocratesAgentTurnInput = {
     tools: ModelToolDefinition[]
   }) => string
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  contextCompression?: ContextCompressionRuntime
   maxToolCallsPerTurn?: number
   maxParallelToolCalls?: number
   abortSignal?: AbortSignal
 }
 
-export type SocratesAgentEvent = ModelEvent | ToolLifecycleEvent
+export type SocratesAgentContextPrecomputeInput = {
+  providerId: ProviderId
+  modelId: string
+  runtimeConfig: RuntimeConfig
+  messages: ModelMessage[]
+  promptContext?: SocratesPromptContext
+  contextCompression: ContextCompressionRuntime
+}
+
+export type SocratesAgentEvent = ModelEvent | ToolLifecycleEvent | ContextCompactionLifecycleEvent
 
 export class SocratesAgent {
   constructor(
     private readonly provider: ModelProvider,
     private readonly toolRegistry: ToolRegistry = createDefaultToolRegistry(),
   ) {}
+
+  async precomputeContext(input: SocratesAgentContextPrecomputeInput): Promise<ContextCompactionLifecycleEvent[]> {
+    const system = buildSocratesSystemPrompt(input.promptContext)
+    return precomputeContextSnapshot({
+      provider: this.provider,
+      providerId: input.providerId,
+      modelId: input.modelId,
+      runtimeConfig: input.runtimeConfig,
+      system,
+      messages: input.messages,
+      compression: input.contextCompression,
+    })
+  }
 
   async *streamTurn(input: SocratesAgentTurnInput): AsyncIterable<SocratesAgentEvent> {
     const system = buildSocratesSystemPrompt(input.promptContext)
@@ -57,11 +86,29 @@ export class SocratesAgent {
 
     for (let step = 0; ; step += 1) {
       const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions()
+      const preparedContext = await prepareContextForModelCall({
+        provider: this.provider,
+        providerId: input.providerId,
+        modelId: input.modelId,
+        runtimeConfig: input.runtimeConfig,
+        system,
+        messages,
+        ...(input.contextCompression ? { compression: input.contextCompression } : {}),
+      })
+      for (const event of preparedContext.compactionEvents) {
+        yield event
+        if (event.type === "context.compaction.failed") {
+          throw event.error
+        }
+      }
+      if (input.abortSignal?.aborted) {
+        return
+      }
       const modelCallId = input.createModelCall?.({
         providerId: input.providerId,
         modelId: input.modelId,
         runtimeConfig: input.runtimeConfig,
-        messages,
+        messages: preparedContext.messages,
         tools,
         ...(input.promptContext ? { promptContext: input.promptContext } : {}),
       })
@@ -73,7 +120,7 @@ export class SocratesAgent {
         providerId: input.providerId,
         modelId: input.modelId,
         system,
-        messages,
+        messages: preparedContext.messages,
         runtimeConfig: input.runtimeConfig,
         tools,
         ...(modelCallId ? { modelCallId } : {}),

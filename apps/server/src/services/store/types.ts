@@ -43,6 +43,8 @@ export type StoredModelUsage = {
 export type ConversationModelMessage = {
   role: "user" | "assistant" | "system" | "developer"
   content: string
+  id?: string
+  turnId?: string
 }
 
 export type AgentContext = {

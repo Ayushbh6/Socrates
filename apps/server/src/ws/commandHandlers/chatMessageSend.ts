@@ -1,5 +1,11 @@
 import type { WebSocket } from "ws"
-import { findModelOption, type SocratesAgent, type ToolExecutors } from "@socrates/core"
+import {
+  findModelOption,
+  type ContextCompactionLifecycleEvent,
+  type ContextCompressionRuntime,
+  type SocratesAgent,
+  type ToolExecutors,
+} from "@socrates/core"
 import type { ClientCommand, ModelUsage, ProjectResource } from "@socrates/contracts"
 import { normalizeError, SocratesError } from "@socrates/shared"
 import { editWorkspace, formatPythonEnvironmentHints, inspectPythonEnvironment, readWorkspacePath, searchWorkspace } from "@socrates/workspace"
@@ -72,6 +78,7 @@ export const handleChatMessageSend = async (
       promptContext,
       workspacePath,
       toolExecutors: createToolExecutors(store, projectId, activeTurns),
+      contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
       maxToolCallsPerTurn: 80,
       createModelCall: (modelRequest) => {
@@ -130,6 +137,20 @@ export const handleChatMessageSend = async (
       },
       abortSignal: abortController.signal,
     })) {
+      if (
+        agentEvent.type === "context.compaction.started" ||
+        agentEvent.type === "context.compaction.completed" ||
+        agentEvent.type === "context.compaction.failed"
+      ) {
+        sendContextCompactionEvent(socket, store, agentEvent, {
+          projectId,
+          conversationId,
+          sessionId: created.sessionId,
+          turnId: created.turnId,
+        })
+        continue
+      }
+
       if (abortController.signal.aborted) {
         return
       }
@@ -454,6 +475,24 @@ export const handleChatMessageSend = async (
     )
     appendAndSend(socket, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
+
+    const postTurnHistory = store.getConversationModelMessages(projectId, conversationId)
+    const postTurnCompactionEvents = await agent.precomputeContext({
+      providerId: command.payload.runtimeConfig.providerId,
+      modelId: command.payload.runtimeConfig.modelId,
+      runtimeConfig: command.payload.runtimeConfig,
+      messages: postTurnHistory,
+      promptContext,
+      contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
+    })
+    for (const event of postTurnCompactionEvents) {
+      sendContextCompactionEvent(socket, store, event, {
+        projectId,
+        conversationId,
+        sessionId: created.sessionId,
+        turnId: created.turnId,
+      })
+    }
   } catch (error) {
     if (abortController.signal.aborted) {
       return
@@ -518,6 +557,97 @@ const createToolExecutors = (store: SocratesStore, projectId: string, activeTurn
   },
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
+})
+
+const sendContextCompactionEvent = (
+  socket: WebSocket,
+  store: SocratesStore,
+  agentEvent: ContextCompactionLifecycleEvent,
+  context: { projectId: string; conversationId: string; sessionId: string; turnId: string },
+): void => {
+  if (agentEvent.type === "context.compaction.started") {
+    appendAndSend(
+      socket,
+      store,
+      makeEvent(
+        "context.compaction.started",
+        {
+          snapshotId: agentEvent.snapshotId,
+          reason: agentEvent.reason,
+          contextUsedTokensEstimate: agentEvent.contextUsedTokensEstimate,
+          targetTokens: agentEvent.targetTokens,
+        },
+        {
+          ...context,
+          actor: { type: "system" },
+        },
+      ),
+      "core",
+    )
+    return
+  }
+
+  if (agentEvent.type === "context.compaction.completed") {
+    appendAndSend(
+      socket,
+      store,
+      makeEvent(
+        "context.compaction.completed",
+        {
+          snapshotId: agentEvent.snapshotId,
+          inputTokensEstimate: agentEvent.inputTokensEstimate,
+          outputTokensEstimate: agentEvent.outputTokensEstimate,
+          contextUsedTokensEstimate: agentEvent.contextUsedTokensEstimate,
+        },
+        {
+          ...context,
+          actor: { type: "system" },
+        },
+      ),
+      "core",
+    )
+    return
+  }
+
+  appendAndSend(
+    socket,
+    store,
+    makeEvent(
+      "context.compaction.failed",
+      {
+        ...(agentEvent.snapshotId ? { snapshotId: agentEvent.snapshotId } : {}),
+        error: apiError(agentEvent.error.code, agentEvent.error.message, { details: agentEvent.error.details }),
+      },
+      {
+        ...context,
+        actor: { type: "system" },
+      },
+    ),
+    "core",
+  )
+}
+
+const createContextCompressionRuntime = (
+  store: SocratesStore,
+  projectId: string,
+  conversationId: string,
+  sessionId: string,
+  turnId: string,
+): ContextCompressionRuntime => ({
+  enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
+  getLatestSnapshot: () => store.getLatestContextCompactionSnapshot(conversationId),
+  startSnapshot: (input) =>
+    store.startContextCompactionSnapshot({
+      ...input,
+      projectId,
+      conversationId,
+      sessionId,
+      turnId,
+    }),
+  completeSnapshot: (input) => store.completeContextCompactionSnapshot(input),
+  failSnapshot: (input) => {
+    store.failContextCompactionSnapshot(input)
+  },
 })
 
 const listProjectResourcesForTool = (

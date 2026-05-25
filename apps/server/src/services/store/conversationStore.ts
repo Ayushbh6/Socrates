@@ -321,6 +321,8 @@ export class ConversationStore extends StoreBase {
       .map((message) => ({
         role: message.role as ConversationModelMessage["role"],
         content: message.content,
+        id: message.id,
+        ...(message.turnId ? { turnId: message.turnId } : {}),
       }))
   }
 }

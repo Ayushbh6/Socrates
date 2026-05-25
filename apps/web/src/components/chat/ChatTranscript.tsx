@@ -17,6 +17,7 @@ interface ChatTranscriptProps {
   liveTools?: ToolTimelineItem[];
   approvals?: PendingApproval[];
   isStreaming?: boolean;
+  isCompacting?: boolean;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
 }
 
@@ -28,9 +29,10 @@ export function ChatTranscript({
   liveTools = [],
   approvals = [],
   isStreaming,
+  isCompacting,
   onApprovalDecision,
 }: ChatTranscriptProps) {
-  const isWaitingForFirstToken = Boolean(isStreaming && !liveThinking && !liveAnswer && liveTools.length === 0);
+  const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !liveThinking && !liveAnswer && liveTools.length === 0);
   const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
 
   return (
@@ -43,18 +45,31 @@ export function ChatTranscript({
             tools={message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : []}
           />
         ))}
-        {(liveThinking || liveAnswer || isStreaming) && (
+        {(liveThinking || liveAnswer || isStreaming || isCompacting) && (
           <div className="flex justify-start">
             <div className="w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
               {liveThinking && (
                 <ThinkingBlock content={liveThinking} defaultOpen />
               )}
               <ChatToolTimeline tools={liveTools} approvals={approvals} onApprovalDecision={onApprovalDecision} />
+              {isCompacting ? <CompactionLoader /> : null}
               {liveAnswer ? <MarkdownContent content={liveAnswer} /> : isWaitingForFirstToken ? <FirstTokenLoader /> : null}
             </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function CompactionLoader() {
+  return (
+    <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-teal-100 bg-teal-50 px-3 py-1.5 text-xs font-medium text-brand-teal-dark">
+      <span className="relative flex size-2">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-teal-dark opacity-25" />
+        <span className="relative inline-flex size-2 rounded-full bg-brand-teal-dark" />
+      </span>
+      Compacting conversation...
     </div>
   );
 }

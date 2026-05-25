@@ -317,6 +317,43 @@ export const contextUsageSnapshots = sqliteTable(
   }),
 )
 
+export const contextCompactionSnapshots = sqliteTable(
+  "context_compaction_snapshots",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    turnId: text("turn_id"),
+    previousSnapshotId: text("previous_snapshot_id"),
+    status: text("status").notNull(),
+    active: integer("active", { mode: "boolean" }).notNull(),
+    reason: text("reason").notNull(),
+    sourceMessageIdsJson: text("source_message_ids_json").notNull(),
+    sourceTurnIdsJson: text("source_turn_ids_json").notNull(),
+    summaryJson: text("summary_json"),
+    renderedSummary: text("rendered_summary"),
+    sourceHandlesJson: text("source_handles_json"),
+    inputTokensEstimate: integer("input_tokens_estimate"),
+    outputTokensEstimate: integer("output_tokens_estimate"),
+    contextTokensBefore: integer("context_tokens_before").notNull(),
+    contextTokensAfter: integer("context_tokens_after"),
+    targetTokens: integer("target_tokens").notNull(),
+    compressorProviderId: text("compressor_provider_id").notNull(),
+    compressorModelId: text("compressor_model_id").notNull(),
+    usageJson: text("usage_json"),
+    errorId: text("error_id"),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    conversationActiveIdx: index("context_compaction_conversation_active_idx").on(table.conversationId, table.active),
+    turnIdx: index("context_compaction_turn_idx").on(table.turnId),
+    statusIdx: index("context_compaction_status_idx").on(table.status),
+  }),
+)
+
 export const toolCalls = sqliteTable(
   "tool_calls",
   {

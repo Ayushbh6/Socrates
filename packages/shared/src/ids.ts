@@ -16,6 +16,7 @@ export type IdPrefix =
   | "chunk"
   | "usage"
   | "ctxuse"
+  | "ctxcmp"
   | "tcall"
   | "appr"
   | "sh"

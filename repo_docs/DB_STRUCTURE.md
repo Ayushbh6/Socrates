@@ -1164,6 +1164,8 @@ final_answer_2
 
 Current-turn tool results may be passed back to the model until the final answer is reached. After the turn completes, detailed tool traces stay in SQLite and become available through `trace_retrieve`.
 
+Compression should run at provider-call boundaries. A tool can stream and persist large output, but that output only becomes model context when Socrates sends the next provider request. Before each provider request, the context assembler should decide whether to keep evidence exact, compact it, or replace it with a summary plus inspect handles.
+
 When context pressure grows, the context builder should keep:
 
 - Recent final user/assistant dialogue.
@@ -1178,6 +1180,17 @@ When context pressure grows, the context builder should keep:
 The target hard cap for a chat prompt is 160,000 tokens. Before the next model call would exceed that cap, Socrates should compress or prune model-facing context while preserving raw history in the database.
 
 Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to exact source handles so `trace_retrieve` can inspect the raw message, turn, tool result, or verbatim anchor when precision matters.
+
+Recent visible messages must remain represented as real role-typed chat messages in the provider request. Hidden compacted context is an additional runtime context layer for older same-conversation material, bulky current-turn tool evidence, important decisions, and trace handles. Previous conversations should not be automatically inserted into every prompt; they should enter through `trace_retrieve` or explicit project-level summaries when relevant.
+
+Compressor model selection:
+
+```text
+primary: OpenRouter deepseek/deepseek-v4-flash, thinking off
+fallback: OpenRouter qwen/qwen3.6-plus, thinking off
+```
+
+The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, trace-handle quality, output length, latency, and cost. The latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower token usage; Qwen remains the runtime fallback. Compression outputs remain summaries and handles over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
 
 ## Context Window Tracking
 

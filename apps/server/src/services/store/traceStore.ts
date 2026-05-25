@@ -175,6 +175,49 @@ export class TraceStore extends StoreBase {
     }
   }
 
+  indexCompactionSnapshot(input: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId?: string
+    snapshotId: string
+    renderedSummary: string
+    sourceHandles: Array<Record<string, unknown>>
+  }): void {
+    const now = nowIso()
+    const context: TraceTurnContext = {
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      sessionId: input.sessionId,
+      turnId: input.turnId ?? input.snapshotId,
+      status: "completed",
+      startedAt: now,
+      completedAt: now,
+      failedAt: null,
+      cancelledAt: null,
+      errorId: null,
+      title: "Context compaction summary",
+    }
+    this.insertTraceDocument(
+      makeTraceDocument({
+        context,
+        sourceKind: "conversation_summary",
+        sourceTable: "context_compaction_snapshots",
+        sourceId: input.snapshotId,
+        title: "Context compaction summary",
+        summary: summarizeText(input.renderedSummary, 240),
+        content: input.renderedSummary,
+        importance: "high",
+        metadata: {
+          hidden: true,
+          sessionId: input.sessionId,
+          snapshotId: input.snapshotId,
+          sourceHandles: input.sourceHandles,
+        },
+      }),
+    )
+  }
+
   async retrieve(projectId: string, currentConversationId: string, input: TraceRetrieveToolInput): Promise<TraceRetrieveToolOutput> {
     if (input.operation === "inspect") {
       return this.inspect(projectId, currentConversationId, input)
@@ -1426,7 +1469,14 @@ const makeSyntheticSourceDocument = (
     projectId,
     conversationId,
     turnId: turnId ?? null,
-    sourceKind: sourceTable === "messages" ? "message" : sourceTable === "tool_calls" ? "tool_call" : "turn_summary",
+    sourceKind:
+      sourceTable === "messages"
+        ? "message"
+        : sourceTable === "tool_calls"
+          ? "tool_call"
+          : sourceTable === "context_compaction_snapshots"
+            ? "conversation_summary"
+            : "turn_summary",
     sourceTable,
     sourceId,
     handle: `${sourceTable}:${sourceId}`,

@@ -345,6 +345,43 @@ OpenRouter streams can arrive in provider-side bursts after a long first-token d
 
 The frontend must render this catalog from the backend response. It must not hardcode model ids or provider option mappings.
 
+## Context Compressor Model Selection
+
+The locked primary compressor is:
+
+```text
+providerId = openrouter
+modelId = deepseek/deepseek-v4-flash
+thinking = off
+```
+
+The locked fallback compressor is:
+
+```text
+providerId = openrouter
+modelId = qwen/qwen3.6-plus
+thinking = off
+```
+
+Both compressor routes must use OpenRouter thinking off explicitly:
+
+```text
+providerOptions.openrouter.reasoning = { effort: "none", exclude: true }
+```
+
+The local/release evaluation gate should continue to run both models on the same compression fixtures and score:
+
+- Faithfulness to source messages and tool evidence.
+- Preservation of decisions, rules, blockers, and unresolved tasks.
+- Correct inclusion of `trace_retrieve` inspect handles for exact recall.
+- Concision under a target token budget.
+- Latency and cost.
+- Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
+
+The current evaluation selected `deepseek/deepseek-v4-flash` because both candidates preserved all required facts and DeepSeek used fewer output/total tokens. `qwen/qwen3.6-plus` remains the runtime fallback if the primary compressor call fails.
+
+The compressor model is an internal runtime choice. The frontend should not hardcode or expose compressor provider mappings unless a later settings surface is explicitly designed.
+
 Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
 
 ```text

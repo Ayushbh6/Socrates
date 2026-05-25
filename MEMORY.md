@@ -406,3 +406,21 @@ Implemented the semantic trace retrieval phase:
 - `trace_retrieve` search and inspect results now include conversation provenance (`conversation.title`, status, updated time, and `isCurrentConversation`) so Socrates can name the source chat correctly and avoid calling earlier project evidence "this conversation".
 - Retrieval only compares vectors for the active project config: provider id, model id, dimensions, and current trace document content hash must match.
 - Raw messages/tools/events remain the source of truth. Embeddings are retrieval rows over `trace_documents`, not fake messages or replacement history.
+
+## Context Compression Planning
+
+Planned the next context-management phase after the `trace_retrieve` upgrade.
+
+Key decisions:
+
+- Compression should happen at provider-call boundaries, not literally in the middle of a running tool call.
+- The same mechanism covers both long conversations and long single-turn tasks: before each model call, Socrates assembles the best model-facing context under budget.
+- Recent visible user/assistant messages should remain in normal chat-message schema, not be flattened into a summary blob.
+- Current active-turn provider/tool protocol must stay valid; older or bulky current-turn tool evidence can be compacted into hidden runtime context with exact inspect handles.
+- Older same-conversation material should become hidden compacted context with provenance and `trace_retrieve` inspect handles.
+- Previous conversations should not be automatically included in every prompt; they come in through `trace_retrieve` or explicit project/context summaries when relevant.
+- Raw messages, tool calls, shell output, patches, errors, and events remain in SQLite as the source of truth. Compaction changes only what is sent to the model.
+- Compaction summaries must not be fake user or assistant messages.
+- The locked primary compressor model is OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
+- The locked fallback compressor model is OpenRouter `qwen/qwen3.6-plus` with thinking off.
+- The compressor-model gate compares summary faithfulness, preservation of decisions/rules, usefulness of trace handles, concision, latency, and cost; the latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower output/token usage.

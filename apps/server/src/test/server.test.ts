@@ -476,6 +476,7 @@ describe("database migrations", () => {
         "model_stream_chunks",
         "model_usage",
         "context_usage_snapshots",
+        "context_compaction_snapshots",
         "tool_calls",
         "approvals",
         "shell_commands",
@@ -496,6 +497,113 @@ describe("database migrations", () => {
         "schema_migrations",
       ]),
     )
+  })
+})
+
+describe("context compaction persistence", () => {
+  it("chains active snapshots and exposes completed summaries through trace_retrieve", async () => {
+    const dbPath = tempDbPath()
+    const handle = openDatabase(dbPath)
+    runMigrations(handle)
+    const store = new SocratesStore(handle)
+    const now = nowIso()
+    const userId = createId("user")
+    const projectId = createId("proj")
+    const workspaceId = createId("pws")
+    const conversationId = createId("conv")
+    const sessionId = createId("sess")
+    const turnId = createId("turn")
+    const firstSnapshotId = createId("ctxcmp")
+    const secondSnapshotId = createId("ctxcmp")
+
+    try {
+      handle.sqlite
+        .prepare("INSERT INTO users (id, display_name, onboarding_completed, created_at, updated_at) VALUES (?, ?, 1, ?, ?)")
+        .run(userId, "Ayush", now, now)
+      handle.sqlite
+        .prepare("INSERT INTO projects (id, user_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
+        .run(projectId, userId, "Compression Test", now, now)
+      handle.sqlite
+        .prepare(
+          "INSERT INTO project_workspaces (id, project_id, kind, path, is_primary, status, created_at, updated_at) VALUES (?, ?, 'existing_folder', ?, 1, 'active', ?, ?)",
+        )
+        .run(workspaceId, projectId, tempDir(), now, now)
+      handle.sqlite
+        .prepare("INSERT INTO conversations (id, project_id, user_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)")
+        .run(conversationId, projectId, userId, "Compression Chat", now, now)
+      handle.sqlite
+        .prepare("INSERT INTO sessions (id, conversation_id, project_id, status, created_at, updated_at) VALUES (?, ?, ?, 'idle', ?, ?)")
+        .run(sessionId, conversationId, projectId, now, now)
+
+      store.startContextCompactionSnapshot({
+        snapshotId: firstSnapshotId,
+        projectId,
+        conversationId,
+        sessionId,
+        turnId,
+        reason: "threshold",
+        contextTokensEstimate: 126000,
+        targetTokens: 100000,
+        compressorProviderId: "openrouter",
+        compressorModelId: "deepseek/deepseek-v4-flash",
+        sourceMessageIds: ["msg_old_1"],
+        sourceTurnIds: ["turn_old_1"],
+      })
+      store.completeContextCompactionSnapshot({
+        snapshotId: firstSnapshotId,
+        summary: { decisions: ["alpha decision"] },
+        renderedSummary: "alpha decision from first compacted summary",
+        sourceHandles: [{ messageId: "msg_old_1" }],
+        inputTokensEstimate: 126000,
+        outputTokensEstimate: 1200,
+        contextTokensAfter: 95000,
+        usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+      })
+      store.startContextCompactionSnapshot({
+        snapshotId: secondSnapshotId,
+        previousSnapshotId: firstSnapshotId,
+        projectId,
+        conversationId,
+        sessionId,
+        turnId,
+        reason: "threshold",
+        contextTokensEstimate: 130000,
+        targetTokens: 100000,
+        compressorProviderId: "openrouter",
+        compressorModelId: "qwen/qwen3.6-plus",
+        sourceMessageIds: ["msg_old_2"],
+        sourceTurnIds: ["turn_old_2"],
+      })
+      store.completeContextCompactionSnapshot({
+        snapshotId: secondSnapshotId,
+        summary: { decisions: ["beta decision"] },
+        renderedSummary: "beta decision from second compacted summary",
+        sourceHandles: [{ messageId: "msg_old_2" }],
+        inputTokensEstimate: 130000,
+        outputTokensEstimate: 1300,
+        contextTokensAfter: 96000,
+      })
+
+      const latest = store.getLatestContextCompactionSnapshot(conversationId)
+      expect(latest?.snapshotId).toBe(secondSnapshotId)
+      expect(latest?.previousSnapshotId).toBe(firstSnapshotId)
+
+      const activeRows = handle.sqlite
+        .prepare("SELECT id, active FROM context_compaction_snapshots WHERE conversation_id = ? ORDER BY started_at")
+        .all(conversationId) as Array<{ id: string; active: number }>
+      expect(activeRows).toEqual([
+        { id: firstSnapshotId, active: 0 },
+        { id: secondSnapshotId, active: 1 },
+      ])
+
+      const search = await store.retrieveToolTraces(projectId, conversationId, {
+        query: "beta decision",
+        include: ["summaries"],
+      })
+      expect(search.results.some((result) => result.kind === "conversation_summary" && result.sourceId === secondSnapshotId)).toBe(true)
+    } finally {
+      store.close()
+    }
   })
 })
 
@@ -1717,7 +1825,7 @@ describe("WebSocket API", () => {
       expect(secondRequest.messages.map((message) => `${message.role}:${message.content}`)).toContain(
         "assistant:Partial answer before stop.",
       )
-      expect(secondRequest.messages.at(-1)).toEqual({ role: "user", content: "Continue from that" })
+      expect(secondRequest.messages.at(-1)).toMatchObject({ role: "user", content: "Continue from that" })
     } finally {
       socket.close()
     }

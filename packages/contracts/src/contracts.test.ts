@@ -14,6 +14,9 @@ import {
   configureProjectEmbeddingsRequestSchema,
   configureProjectEmbeddingsResponseSchema,
   connectionReadyEventSchema,
+  contextCompactionCompletedEventSchema,
+  contextCompactionFailedEventSchema,
+  contextCompactionStartedEventSchema,
   contextUsageSnapshotEventSchema,
   conversationSchema,
   createConversationRequestSchema,
@@ -548,6 +551,31 @@ describe("websocket server event contracts", () => {
         contextUsedTokens: 55000,
         contextLeftTokens: 203000,
         contextUsedPercent: 21.3,
+      }),
+    ),
+    contextCompactionStartedEventSchema.safeParse(
+      envelope("context.compaction.started", {
+        snapshotId: "ctxcmp_1",
+        reason: "threshold",
+        contextUsedTokensEstimate: 126000,
+        targetTokens: 100000,
+      }),
+    ),
+    contextCompactionCompletedEventSchema.safeParse(
+      envelope("context.compaction.completed", {
+        snapshotId: "ctxcmp_1",
+        inputTokensEstimate: 126000,
+        outputTokensEstimate: 1800,
+        contextUsedTokensEstimate: 96000,
+      }),
+    ),
+    contextCompactionFailedEventSchema.safeParse(
+      envelope("context.compaction.failed", {
+        snapshotId: "ctxcmp_1",
+        error: {
+          code: "context_compaction_failed",
+          message: "Compressor failed",
+        },
       }),
     ),
     messageCompletedEventSchema.safeParse(

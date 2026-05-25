@@ -626,6 +626,19 @@ trace_retrieve can inspect exact source handles
 
 The context builder should keep recent visible user/assistant messages exact while older turns are represented by compact hidden summaries. When exact older content matters, summaries should point to inspectable handles.
 
+Compression applies to both common long-chat growth and long single-turn work. A conversation such as `Q1/A1 ... Q70/A70` should keep recent Q/A pairs as normal `user` and `assistant` messages while older Q/A pairs move into hidden compacted context. A single large task should use the same mechanism before the next model call: keep the current user request and latest critical evidence exact when possible, but compact older current-turn tool outputs into hidden evidence capsules with exact inspect handles.
+
+Compression should run only at safe provider-call boundaries:
+
+```text
+before first model call in a turn
+after a batch of tool results, before the next model call
+before a final no-tools answer when tool budget is exhausted
+after turn completion, asynchronously, for durable summaries/anchors
+```
+
+It should not rewrite the visible transcript. It should not create fake assistant messages such as "Summary: ...". Recent real chat remains real chat schema; hidden compacted context is additional runtime context for the model.
+
 Example:
 
 ```text
@@ -670,6 +683,15 @@ mode = semantic ranks by vector similarity when embeddings are ready
 search and inspect results include conversation provenance
 rolling conversation summaries are a later phase
 ```
+
+Compressor-model selection:
+
+```text
+primary: OpenRouter deepseek/deepseek-v4-flash with thinking off
+fallback: OpenRouter qwen/qwen3.6-plus with thinking off
+```
+
+The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
 
 When showing or answering from retrieved history, Socrates must use the returned conversation provenance. If `conversation.isCurrentConversation` is false, the answer should say the evidence came from an earlier project conversation or use `conversation.title`; it should only say "this conversation" or "current chat" when the provenance says the result is from the current conversation.
 

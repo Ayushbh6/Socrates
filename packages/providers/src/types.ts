@@ -11,6 +11,8 @@ import type {
 export type ModelMessage = {
   role: "user" | "assistant" | "system" | "developer" | "tool"
   content: ModelMessageContent
+  id?: string
+  turnId?: string
 }
 
 export type ModelMessageContent = string | ModelMessagePart[]

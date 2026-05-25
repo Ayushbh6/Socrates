@@ -211,6 +211,31 @@ export const contextUsageSnapshotPayloadSchema = z
   })
   .strict()
 
+export const contextCompactionStartedPayloadSchema = z
+  .object({
+    snapshotId: idSchema,
+    reason: z.enum(["precompute", "threshold", "emergency", "manual"]),
+    contextUsedTokensEstimate: z.number().int().nonnegative(),
+    targetTokens: z.number().int().positive(),
+  })
+  .strict()
+
+export const contextCompactionCompletedPayloadSchema = z
+  .object({
+    snapshotId: idSchema,
+    inputTokensEstimate: z.number().int().nonnegative(),
+    outputTokensEstimate: z.number().int().nonnegative(),
+    contextUsedTokensEstimate: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const contextCompactionFailedPayloadSchema = z
+  .object({
+    snapshotId: idSchema.optional(),
+    error: apiErrorSchema,
+  })
+  .strict()
+
 export const modelUsageSchema = z
   .object({
     inputTokens: z.number().int().nonnegative().optional(),
@@ -271,6 +296,18 @@ export const contextUsageSnapshotEventSchema = socketEnvelopeSchema(
   "context.usage.snapshot",
   contextUsageSnapshotPayloadSchema,
 )
+export const contextCompactionStartedEventSchema = socketEnvelopeSchema(
+  "context.compaction.started",
+  contextCompactionStartedPayloadSchema,
+)
+export const contextCompactionCompletedEventSchema = socketEnvelopeSchema(
+  "context.compaction.completed",
+  contextCompactionCompletedPayloadSchema,
+)
+export const contextCompactionFailedEventSchema = socketEnvelopeSchema(
+  "context.compaction.failed",
+  contextCompactionFailedPayloadSchema,
+)
 export const messageCompletedEventSchema = socketEnvelopeSchema("message.completed", messageCompletedPayloadSchema)
 export const turnCompletedEventSchema = socketEnvelopeSchema("turn.completed", turnCompletedPayloadSchema)
 export const turnFailedEventSchema = socketEnvelopeSchema("turn.failed", turnFailedPayloadSchema)
@@ -289,6 +326,9 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   approvalRequestedEventSchema,
   approvalResolvedEventSchema,
   contextUsageSnapshotEventSchema,
+  contextCompactionStartedEventSchema,
+  contextCompactionCompletedEventSchema,
+  contextCompactionFailedEventSchema,
   messageCompletedEventSchema,
   turnCompletedEventSchema,
   turnFailedEventSchema,

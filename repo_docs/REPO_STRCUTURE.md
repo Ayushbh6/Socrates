@@ -381,6 +381,8 @@ model-visible access
 
 Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Rolling conversation summaries remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
+Context compression should be added as a provider-call-boundary concern around the agent/model loop, not as ad hoc prompt rewriting inside WebSocket handlers. `packages/core` should own the model-facing context assembly policy and budget decisions. `apps/server/src/services/store/` should own persistence and retrieval of raw rows, trace documents, summaries, and inspect handles. `packages/providers` should only execute the selected compressor/model request behind the provider interface; provider-specific compression behavior must not leak into `apps/web` or route handlers.
+
 ### `packages/providers`
 
 The model provider layer.

@@ -1,4 +1,10 @@
 import type {
+  CompleteCompactionSnapshotInput,
+  ContextCompactionSummary,
+  FailCompactionSnapshotInput,
+  StartCompactionSnapshotInput,
+} from "@socrates/core"
+import type {
   ChatMessageSendPayload,
   CompleteOnboardingRequest,
   Conversation,
@@ -27,6 +33,7 @@ import type {
 import { createDefaultEmbeddingProvider, type EmbeddingProvider } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
+import { ContextCompactionStore } from "./store/contextCompactionStore"
 import { ConversationStore } from "./store/conversationStore"
 import { ErrorStore, type RecordErrorInput } from "./store/errorStore"
 import { EventStore } from "./store/eventStore"
@@ -78,6 +85,7 @@ export class SocratesStore {
   private readonly tools: ToolStore
   private readonly traces: TraceStore
   private readonly embeddings: EmbeddingStore
+  private readonly contextCompactions: ContextCompactionStore
 
   constructor(
     private readonly handle: DatabaseHandle,
@@ -102,6 +110,7 @@ export class SocratesStore {
     this.tools = new ToolStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider)
     this.traces = new TraceStore(context, this.embeddings)
+    this.contextCompactions = new ContextCompactionStore(context, this.errors)
   }
 
   close(): void {
@@ -272,6 +281,27 @@ export class SocratesStore {
     contextUsedTokens: number
   }): void {
     this.modelTelemetry.recordContextUsageSnapshot(input)
+  }
+
+  getLatestContextCompactionSnapshot(conversationId: string): ContextCompactionSummary | undefined {
+    return this.contextCompactions.getLatestActive(conversationId)
+  }
+
+  startContextCompactionSnapshot(
+    input: StartCompactionSnapshotInput & { projectId: string; conversationId: string; sessionId: string; turnId: string },
+  ): void {
+    this.contextCompactions.start(input)
+  }
+
+  completeContextCompactionSnapshot(input: CompleteCompactionSnapshotInput): void {
+    const completed = this.contextCompactions.complete(input)
+    if (completed) {
+      this.traces.indexCompactionSnapshot(completed)
+    }
+  }
+
+  failContextCompactionSnapshot(input: FailCompactionSnapshotInput): string {
+    return this.contextCompactions.fail(input)
   }
 
   getConversationTokenUsage(conversationId: string): ConversationTokenUsage {

@@ -1691,6 +1691,8 @@ new user query
 current-turn tool calls only
 ```
 
+When the context grows too large, compression happens before a provider request is sent. This includes both long conversations and long single-turn tasks. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles.
+
 If older conversation or execution evidence is needed, the agent should call `trace_retrieve` explicitly. Full raw history remains persisted in SQLite for audit and replay.
 
 `trace_retrieve` is also the exact-source fallback for compacted context. Context summaries may point to handles such as a prior message, turn, tool call, or verbatim anchor. When exact wording matters, the agent should inspect the handle before answering.
@@ -1698,6 +1700,8 @@ If older conversation or execution evidence is needed, the agent should call `tr
 Provider-exposed thinking or reasoning text is stored for UI/replay when exposed, but it is not carried forward as semantic context between later user queries. Reasoning token counts belong in usage and context accounting, not prompt history.
 
 Provider-specific opaque tool-call metadata needed to continue the current tool loop, such as Gemini thought signatures, may be carried only inside the active turn's in-memory model messages. It must not be loaded into later user turns as semantic history.
+
+Compression outputs must not be written as visible `messages`. If the frontend loads conversation history through HTTP, it should continue to receive real user and assistant messages plus persisted tool runs, not hidden compaction summaries as fake chat turns.
 
 ## Future Event Expansion
 
