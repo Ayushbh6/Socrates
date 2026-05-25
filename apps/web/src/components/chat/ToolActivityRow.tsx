@@ -92,7 +92,7 @@ function summarizeTool(tool: ToolTimelineItem): string {
     return "Edited files";
   }
   if (tool.toolName === "trace_retrieve") {
-    return "Retrieved prior tool traces";
+    return "Retrieved prior trace evidence";
   }
   if (tool.toolName === "list_project_resources") {
     return "Listed project resources";

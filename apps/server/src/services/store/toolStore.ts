@@ -1,4 +1,4 @@
-import type { ConversationToolRun, TraceRetrieveToolInput, TraceRetrieveToolOutput, ToolName } from "@socrates/contracts"
+import type { ConversationToolRun, ToolName } from "@socrates/contracts"
 import { createId, nowIso } from "@socrates/shared"
 import { and, eq, inArray } from "drizzle-orm"
 import { approvals, fileOperations, patches, shellCommands, shellOutputChunks, toolCalls } from "../../db/schema"
@@ -214,87 +214,6 @@ export class ToolStore extends StoreBase {
       .run()
   }
 
-  retrieveTraces(projectId: string, input: TraceRetrieveToolInput): TraceRetrieveToolOutput {
-    const conditions = ["c.project_id = ?"]
-    const params: unknown[] = [projectId]
-    if (input.conversationId) {
-      conditions.push("tc.conversation_id = ?")
-      params.push(input.conversationId)
-    }
-    if (input.turnId) {
-      conditions.push("tc.turn_id = ?")
-      params.push(input.turnId)
-    }
-    if (input.toolNames && input.toolNames.length > 0) {
-      conditions.push(`tc.tool_name IN (${input.toolNames.map(() => "?").join(", ")})`)
-      params.push(...input.toolNames)
-    }
-
-    params.push(input.limit ?? 10)
-    const rows = (this.handle.sqlite
-      .prepare(
-        `SELECT
-           tc.id AS id,
-           tc.conversation_id AS conversationId,
-           tc.session_id AS sessionId,
-           tc.turn_id AS turnId,
-           tc.model_call_id AS modelCallId,
-           tc.tool_name AS toolName,
-           tc.status AS status,
-           tc.arguments_json AS argumentsJson,
-           tc.result_json AS resultJson,
-           tc.error_id AS errorId,
-           tc.requires_approval AS requiresApproval,
-           tc.approval_id AS approvalId,
-           tc.started_at AS startedAt,
-           tc.completed_at AS completedAt,
-           tc.metadata_json AS metadataJson
-         FROM tool_calls tc
-         INNER JOIN conversations c ON c.id = tc.conversation_id
-         WHERE ${conditions.join(" AND ")}
-         ORDER BY tc.started_at DESC
-         LIMIT ?`,
-      )
-      .all(...params) as Array<typeof toolCalls.$inferSelect>)
-      .filter((row) => {
-        const haystack = `${row.toolName} ${row.argumentsJson} ${row.resultJson ?? ""}`.toLowerCase()
-        if (input.query && !haystack.includes(input.query.toLowerCase())) {
-          return false
-        }
-        if (input.command && !haystack.includes(input.command.toLowerCase())) {
-          return false
-        }
-        if (input.path && !haystack.includes(input.path.toLowerCase())) {
-          return false
-        }
-        return true
-      })
-
-    const traces = rows.map((row) => ({
-      toolCallId: row.id,
-      turnId: row.turnId,
-      conversationId: row.conversationId,
-      toolName: row.toolName,
-      status: row.status,
-      summary: summarizeTrace(row.toolName, row.resultJson),
-      ...(input.includeRaw ? { arguments: parseJson(row.argumentsJson), result: parseJson(row.resultJson) } : {}),
-      ...(row.startedAt ? { startedAt: row.startedAt } : {}),
-      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
-    }))
-    const text = JSON.stringify(traces)
-    const charLimit = input.charLimit ?? 20_000
-    return {
-      traces,
-      totalMatches: traces.length,
-      truncation: {
-        truncated: text.length > charLimit,
-        charLimit,
-        originalLength: text.length,
-        returnedLength: Math.min(text.length, charLimit),
-      },
-    }
-  }
-
   getConversationToolRuns(conversationId: string): ConversationToolRun[] {
     const toolRows = this.handle.db
       .select()
@@ -395,14 +314,6 @@ const parseJson = (text: string | null): unknown => {
   } catch {
     return text
   }
-}
-
-const summarizeTrace = (toolName: string, resultJson: string | null): string => {
-  const result = parseJson(resultJson)
-  if (typeof result === "object" && result && "summary" in result && typeof result.summary === "string") {
-    return result.summary
-  }
-  return resultJson ? `${toolName} completed.` : `${toolName} did not produce a stored result.`
 }
 
 const normalizeToolStatus = (status: string): ConversationToolRun["status"] => {

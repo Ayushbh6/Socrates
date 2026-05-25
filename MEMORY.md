@@ -358,3 +358,20 @@ repo_docs/REPO_STRCUTURE.md
 repo_docs/PROVIDER_USAGE.md
 repo_docs/REPO_RULES.md
 ```
+
+## Trace Retrieval Search/Inspect Implementation
+
+Implemented the retrieval-only `trace_retrieve` upgrade:
+
+- Replaced the V0 `traces` output with search/inspect `results`.
+- Search accepts natural `query`, scope, conversation hints, evidence filters, tool/path/command filters, date filters, and bounded limits.
+- Inspect accepts returned handles or ids and returns exact bounded source content.
+- Added `trace_documents` and `trace_index_jobs`, plus internal SQLite FTS for lexical trace search.
+- `TraceStore` owns trace indexing, FTS search, exact inspect, and immediate `build_trace_documents` job processing after completed, failed, and cancelled turns.
+- Indexing is new-turn-only; there is no backfill for old DB history.
+- Deterministic trace docs cover messages, tool calls, shell output, file operations, patches, errors, turn summaries, and heuristic verbatim anchors.
+- Semantic mode falls back to lexical/exact retrieval with a warning until embeddings are implemented.
+
+TODO:
+
+- Later, hand verbatim-anchor selection to a faster reviewer LLM so high-value exact source text can be marked more intelligently than the current heuristic.

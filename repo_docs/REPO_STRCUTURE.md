@@ -348,7 +348,7 @@ The `bash` implementation remains a real escape hatch. Even when a structured re
 
 `list_project_resources` is a read-only model-visible tool, but its executor belongs to the server/store boundary because it reads project resource records. It must not scan `.socrates/resources/` with shell commands; it asks `SocratesStore` for active visible project resources and returns bounded filenames/metadata so the model can choose a follow-up `read`. The model-visible input stays intentionally small: `kind` and `limit`.
 
-`trace_retrieve` is also a read-only model-visible tool, but its search corpus and inspect handles belong to the server/store boundary. The model-facing wrapper lives in `packages/core/tools`, while `apps/server/src/services/store/toolStore.ts` and future trace-index store modules own the DB retrieval implementation.
+`trace_retrieve` is also a read-only model-visible tool, but its search corpus and inspect handles belong to the server/store boundary. The model-facing wrapper lives in `packages/core/tools`, while `apps/server/src/services/store/traceStore.ts` owns trace indexing, SQLite FTS search, and exact inspect.
 
 The intended retrieval index is internal infrastructure, not a new model-visible tool surface:
 
@@ -364,14 +364,13 @@ raw runtime tables
 
 internal retrieval index
   trace_documents
-  trace_embeddings
   trace_index_jobs
 
 model-visible access
   trace_retrieve
 ```
 
-Trace indexing jobs should be server/store work. They may build deterministic trace documents immediately after turns complete, then enqueue asynchronous embedding or summarization jobs. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
+Trace indexing jobs are server/store work. The current retrieval-only slice builds deterministic trace documents immediately after turns complete, fail, or are cancelled. Embedding and rolling-summary jobs remain later phases. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
 ### `packages/providers`
 

@@ -511,17 +511,18 @@ The DB should make those differences visible.
 
 Trace retrieval should support semantic search through embeddings, but embedding generation must not sit in the user-facing chat latency path.
 
-The intended flow:
+The current retrieval-only flow:
 
 ```text
 turn completes or is cancelled
   -> raw messages, tool calls, events, shell output, patches, errors are persisted
   -> server creates trace_documents
   -> server enqueues trace_index_jobs
-  -> background worker embeds pending trace_documents
   -> trace_retrieve can use lexical search immediately
-  -> trace_retrieve adds semantic search once embeddings are available
+  -> trace_retrieve inspect can return exact bounded source by handle
 ```
+
+The later semantic phase will add background embedding jobs and make `mode = "semantic"` prefer embedding similarity. Until then, semantic mode falls back to lexical/exact retrieval with a warning.
 
 Default V1 embedding provider:
 

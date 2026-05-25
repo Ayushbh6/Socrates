@@ -82,7 +82,12 @@ describe("SocratesAgent", () => {
       search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
-      trace_retrieve: async () => ({ traces: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      trace_retrieve: async () => ({
+        results: [],
+        totalMatches: 0,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+        appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
+      }),
       list_project_resources: async () => ({
         resources: [],
         summary: "Listed 0 project resources.",

@@ -1395,23 +1395,7 @@ type TraceRetrieveToolInput =
 }
 ```
 
-Current implementation note:
-
-```ts
-type CurrentTraceRetrieveToolInput = {
-  conversationId?: string
-  turnId?: string
-  toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
-  path?: string
-  command?: string
-  query?: string
-  includeRaw?: boolean
-  limit?: number
-  charLimit?: number
-}
-```
-
-The current schema is a temporary V0. It validates the persistence path, but it is too id-first for the intended agent behavior. The next implementation should migrate to the search/inspect shape above.
+The current schema is the search/inspect shape above. Older id-first lookup inputs are intentionally not part of the primary model-facing interface.
 
 Output:
 
@@ -1456,41 +1440,20 @@ type TraceRetrieveToolOutput = {
 }
 ```
 
-Current implementation note:
-
-```ts
-type CurrentTraceRetrieveToolOutput = {
-  traces: Array<{
-    toolCallId: string
-    turnId: string
-    conversationId: string
-    toolName: string
-    status: string
-    summary: string
-    arguments?: unknown
-    result?: unknown
-    startedAt?: string
-    completedAt?: string
-  }>
-  totalMatches: number
-  truncation: TruncationMetadata
-  warnings?: string[]
-}
-```
-
-The current output shape should be migrated from `traces` to search/inspect `results` when the indexed retrieval layer lands.
+The current output shape uses `results`. The older `traces` array shape has been removed.
 
 Rules:
 
 - Retrieval is project-scoped by backend code, not by model-provided ids.
-- The default search mode is `combined`: lexical/exact matching plus semantic embedding search when embeddings are available.
+- The default search mode is `combined`: lexical/exact matching now, plus semantic embedding search when embeddings are available later.
 - `mode = "exact"` should prefer literal message text, file paths, command strings, titles, and verbatim anchors.
-- `mode = "semantic"` should prefer embedding similarity over trace documents.
+- `mode = "semantic"` currently falls back to lexical/exact retrieval with a warning until embeddings are implemented.
 - `conversationHint` is a natural-language hint such as a title fragment, "two conversations ago", or "the previous chat about retrieval tools". Backend code resolves it against project conversations, titles, timestamps, and indexed summaries.
 - `conversationLimit` bounds project-wide or recent-conversation searches; default should be modest.
 - Search results must include stable handles/ids so the model can perform exact follow-up inspection without guessing ids.
 - Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
 - Large outputs must be paged or truncated with `TruncationMetadata`.
+- Search results are compact snippets only. Exact raw content requires `operation: "inspect"` on a returned handle or id.
 - Raw messages, tool calls, model calls, events, shell output, patches, and errors remain the source of truth. Trace index rows are retrieval documents over that source data, not replacements for it.
 - Conversation summaries and verbatim anchors must not be inserted as fake user messages.
 - Verbatim anchors preserve exact high-value source chunks such as rubrics, user-provided rules, "use this throughout" instructions, canonical examples, or source-of-truth pasted text.

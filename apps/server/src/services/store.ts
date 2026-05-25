@@ -33,6 +33,7 @@ import { ModelTelemetryStore } from "./store/modelTelemetryStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
 import type { StoreContext } from "./store/shared"
+import { TraceStore } from "./store/traceStore"
 import { ToolStore } from "./store/toolStore"
 import { TurnStore } from "./store/turnStore"
 import type {
@@ -71,6 +72,7 @@ export class SocratesStore {
   private readonly approvals: ApprovalStore
   private readonly feedback: FeedbackStore
   private readonly tools: ToolStore
+  private readonly traces: TraceStore
 
   constructor(private readonly handle: DatabaseHandle) {
     this.events = new EventStore(handle)
@@ -90,6 +92,7 @@ export class SocratesStore {
     this.approvals = new ApprovalStore(context)
     this.feedback = new FeedbackStore(context)
     this.tools = new ToolStore(context)
+    this.traces = new TraceStore(context)
   }
 
   close(): void {
@@ -336,8 +339,12 @@ export class SocratesStore {
     this.tools.recordPatch(input)
   }
 
-  retrieveToolTraces(projectId: string, input: TraceRetrieveToolInput) {
-    return this.tools.retrieveTraces(projectId, input)
+  indexTurnTraceDocuments(projectId: string, conversationId: string, turnId: string): void {
+    this.traces.indexTurn(projectId, conversationId, turnId)
+  }
+
+  retrieveToolTraces(projectId: string, conversationId: string, input: TraceRetrieveToolInput) {
+    return this.traces.retrieve(projectId, conversationId, input)
   }
 
   submitFeedback(payload: FeedbackSubmitPayload): void {

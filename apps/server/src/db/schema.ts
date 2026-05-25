@@ -474,6 +474,62 @@ export const errors = sqliteTable(
   }),
 )
 
+export const traceDocuments = sqliteTable(
+  "trace_documents",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id"),
+    turnId: text("turn_id"),
+    sourceKind: text("source_kind").notNull(),
+    sourceTable: text("source_table").notNull(),
+    sourceId: text("source_id").notNull(),
+    handle: text("handle").notNull(),
+    title: text("title").notNull(),
+    summary: text("summary"),
+    content: text("content").notNull(),
+    contentHash: text("content_hash").notNull(),
+    importance: text("importance"),
+    preserveVerbatim: integer("preserve_verbatim", { mode: "boolean" }).notNull(),
+    chunkIndex: integer("chunk_index"),
+    tokenCountEstimate: integer("token_count_estimate"),
+    metadataJson: text("metadata_json"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => ({
+    projectCreatedIdx: index("trace_documents_project_created_idx").on(table.projectId, table.createdAt),
+    conversationCreatedIdx: index("trace_documents_conversation_created_idx").on(table.conversationId, table.createdAt),
+    turnIdx: index("trace_documents_turn_idx").on(table.turnId),
+    sourceIdx: index("trace_documents_source_idx").on(table.sourceTable, table.sourceId),
+    handleIdx: uniqueIndex("trace_documents_handle_idx").on(table.handle),
+    kindIdx: index("trace_documents_kind_idx").on(table.sourceKind),
+  }),
+)
+
+export const traceIndexJobs = sqliteTable(
+  "trace_index_jobs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id"),
+    turnId: text("turn_id"),
+    jobKind: text("job_kind").notNull(),
+    status: text("status").notNull(),
+    attempts: integer("attempts").notNull(),
+    errorId: text("error_id"),
+    createdAt: text("created_at").notNull(),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    projectStatusIdx: index("trace_index_jobs_project_status_idx").on(table.projectId, table.status),
+    turnIdx: index("trace_index_jobs_turn_idx").on(table.turnId),
+    kindStatusIdx: index("trace_index_jobs_kind_status_idx").on(table.jobKind, table.status),
+  }),
+)
+
 export const artifacts = sqliteTable(
   "artifacts",
   {

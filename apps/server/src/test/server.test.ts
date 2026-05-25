@@ -10,6 +10,7 @@ import { SocratesAgent } from "@socrates/core"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
+import { SocratesStore } from "../services/store"
 
 type TestServer = Awaited<ReturnType<typeof buildServer>>
 
@@ -388,6 +389,9 @@ describe("database migrations", () => {
         "file_operations",
         "patches",
         "errors",
+        "trace_documents",
+        "trace_documents_fts",
+        "trace_index_jobs",
         "artifacts",
         "voice_inputs",
         "audio_outputs",
@@ -1017,6 +1021,78 @@ describe("WebSocket API", () => {
       if (hydratedBody.ok) {
         expect(hydratedBody.data.messages.find((message) => message.role === "assistant")?.reasoning).toBe("Testing.")
       }
+
+      const handle = openDatabase(dbPath)
+      const store = new SocratesStore(handle)
+      try {
+        const indexed = handle.sqlite
+          .prepare(
+            `SELECT
+               (SELECT COUNT(*) FROM trace_index_jobs WHERE turn_id = ? AND status = 'completed') AS completed_jobs,
+               (SELECT COUNT(*) FROM trace_documents WHERE turn_id = ?) AS document_count,
+               (SELECT COUNT(*) FROM trace_documents_fts) AS fts_count`,
+          )
+          .get(started.payload.turnId, started.payload.turnId) as { completed_jobs: number; document_count: number; fts_count: number }
+        expect(indexed.completed_jobs).toBe(1)
+        expect(indexed.document_count).toBeGreaterThanOrEqual(3)
+        expect(indexed.fts_count).toBeGreaterThanOrEqual(indexed.document_count)
+
+        const search = store.retrieveToolTraces(project.id, conversation.id, { query: "Hello Socrates" })
+        expect(search.appliedFilters.scope).toBe("current_conversation")
+        expect(search.appliedFilters.defaultDateWindowApplied).toBe(true)
+        expect(search.warnings?.join(" ")).toContain("Only viewing the current chat")
+        expect(search.results.some((result) => result.kind === "message" && result.title.includes("User"))).toBe(true)
+
+        const handleResult = search.results.find((result) => result.kind === "message" && result.title.includes("User"))
+        expect(handleResult).toBeDefined()
+        if (handleResult) {
+          const inspected = store.retrieveToolTraces(project.id, conversation.id, { operation: "inspect", handle: handleResult.handle })
+          expect(inspected.results[0]?.kind).toBe("exact_source")
+          expect(JSON.stringify(inspected.results[0])).toContain("Hello Socrates")
+        }
+
+        const semantic = store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic" })
+        expect(semantic.warnings?.join(" ")).toContain("Semantic trace retrieval is not indexed yet")
+      } finally {
+        store.close()
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("creates verbatim anchors for long canonical user source text", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const rubric = `Canonical rubric. Follow this exactly and use this throughout.\n${"Every question must preserve the source wording and assignment rules. ".repeat(40)}`
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, rubric))
+      const started = await waitForEvent(socket, "turn.started")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const handle = openDatabase(dbPath)
+      const store = new SocratesStore(handle)
+      try {
+        const row = handle.sqlite
+          .prepare("SELECT COUNT(*) AS count FROM trace_documents WHERE turn_id = ? AND source_kind = 'verbatim_anchor' AND preserve_verbatim = 1")
+          .get(started.payload.turnId) as { count: number }
+        expect(row.count).toBeGreaterThan(0)
+
+        const search = store.retrieveToolTraces(project.id, conversation.id, {
+          query: "canonical rubric exact assignment rules",
+          mode: "exact",
+          include: ["messages"],
+        })
+        expect(search.results.some((result) => result.kind === "verbatim_anchor" && result.preserveVerbatim)).toBe(true)
+      } finally {
+        store.close()
+      }
     } finally {
       socket.close()
     }
@@ -1246,16 +1322,22 @@ describe("WebSocket API", () => {
             `SELECT
                (SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND role = 'assistant') AS assistant_count,
                (SELECT COUNT(*) FROM turns WHERE id = ? AND status = 'failed') AS failed_turn_count,
-               (SELECT COUNT(*) FROM model_calls WHERE turn_id = ? AND status = 'failed') AS failed_model_call_count`,
+               (SELECT COUNT(*) FROM model_calls WHERE turn_id = ? AND status = 'failed') AS failed_model_call_count,
+               (SELECT COUNT(*) FROM trace_index_jobs WHERE turn_id = ? AND status = 'completed') AS completed_trace_jobs,
+               (SELECT COUNT(*) FROM trace_documents WHERE turn_id = ? AND source_kind = 'error') AS trace_error_count`,
           )
-          .get(conversation.id, started.payload.turnId, started.payload.turnId) as {
+          .get(conversation.id, started.payload.turnId, started.payload.turnId, started.payload.turnId, started.payload.turnId) as {
           assistant_count: number
           failed_turn_count: number
           failed_model_call_count: number
+          completed_trace_jobs: number
+          trace_error_count: number
         }
         expect(row.assistant_count).toBe(0)
         expect(row.failed_turn_count).toBe(1)
         expect(row.failed_model_call_count).toBe(1)
+        expect(row.completed_trace_jobs).toBe(1)
+        expect(row.trace_error_count).toBe(1)
       } finally {
         sqlite.close()
       }
@@ -1300,6 +1382,20 @@ describe("WebSocket API", () => {
       expect(cancelled.payload.partialAssistantMessage?.partial).toBe(true)
 
       await delay(150)
+      const sqlite = new Database(dbPath)
+      try {
+        const row = sqlite
+          .prepare(
+            `SELECT
+               (SELECT COUNT(*) FROM trace_index_jobs WHERE turn_id = ? AND status = 'completed') AS completed_trace_jobs,
+               (SELECT COUNT(*) FROM trace_documents WHERE turn_id = ? AND source_kind = 'message') AS trace_message_count`,
+          )
+          .get(started.payload.turnId, started.payload.turnId) as { completed_trace_jobs: number; trace_message_count: number }
+        expect(row.completed_trace_jobs).toBe(1)
+        expect(row.trace_message_count).toBeGreaterThanOrEqual(2)
+      } finally {
+        sqlite.close()
+      }
 
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Continue from that"))
       await waitForEvent(socket, "message.completed")

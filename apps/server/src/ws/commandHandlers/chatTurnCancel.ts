@@ -16,6 +16,7 @@ export const handleTurnCancel = (
     activeTurns.delete(command.payload.turnId)
   }
   const cancelled = store.cancelTurn(command.payload.turnId, command.payload.reason)
+  store.indexTurnTraceDocuments(cancelled.projectId, cancelled.conversationId, cancelled.turnId)
 
   sendEvent(
     socket,

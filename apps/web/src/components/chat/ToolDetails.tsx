@@ -117,16 +117,18 @@ function ReadDetails({ tool }: { tool: ToolTimelineItem }) {
 
 function TraceDetails({ tool }: { tool: ToolTimelineItem }) {
   const result = asRecord(tool.result);
-  const traces = Array.isArray(result?.traces) ? result.traces : [];
+  const results = Array.isArray(result?.results) ? result.results : [];
+  const warnings = Array.isArray(result?.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === "string") : [];
 
   return (
     <div className="space-y-2">
       {tool.argsPreview && <LabeledCode label="filters" value={tool.argsPreview} />}
-      {traces.length > 0 ? (
+      {warnings.length > 0 && <p className="text-xs text-amber-700">{warnings.join(" ")}</p>}
+      {results.length > 0 ? (
         <pre className="max-h-56 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 text-brand-text-dark">
-          {traces
+          {results
             .slice(0, 20)
-            .map((trace) => `${trace.toolName ?? "tool"} ${trace.status ?? ""} ${trace.summary ?? ""}`.trim())
+            .map(formatTraceResult)
             .join("\n")}
         </pre>
       ) : tool.resultPreview ? (
@@ -134,6 +136,22 @@ function TraceDetails({ tool }: { tool: ToolTimelineItem }) {
       ) : null}
     </div>
   );
+}
+
+function formatTraceResult(result: unknown): string {
+  const record = asRecord(result);
+  const handle = typeof record?.handle === "string" ? record.handle : "trace";
+  const kind = typeof record?.kind === "string" ? record.kind : "result";
+  const title = typeof record?.title === "string" ? record.title : "";
+  const body =
+    typeof record?.content === "string"
+      ? record.content
+      : typeof record?.snippet === "string"
+        ? record.snippet
+        : typeof record?.summary === "string"
+          ? record.summary
+          : "";
+  return `${handle} ${kind} ${title}${body ? `\n  ${body.replace(/\s+/g, " ").slice(0, 280)}` : ""}`.trim();
 }
 
 function ResourceDetails({ tool }: { tool: ToolTimelineItem }) {

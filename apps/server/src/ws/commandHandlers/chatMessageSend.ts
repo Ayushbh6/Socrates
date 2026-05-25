@@ -453,6 +453,7 @@ export const handleChatMessageSend = async (
       },
     )
     appendAndSend(socket, store, turnCompleted, "core")
+    store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
   } catch (error) {
     if (abortController.signal.aborted) {
       return
@@ -484,6 +485,7 @@ export const handleChatMessageSend = async (
       },
     )
     appendAndSend(socket, store, failed, "core")
+    store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
   } finally {
     activeTurns.delete(created.turnId)
   }
@@ -514,7 +516,7 @@ const createToolExecutors = (store: SocratesStore, projectId: string, activeTurn
       throw error
     }
   },
-  trace_retrieve: (input) => Promise.resolve(store.retrieveToolTraces(projectId, input)),
+  trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
 })
 

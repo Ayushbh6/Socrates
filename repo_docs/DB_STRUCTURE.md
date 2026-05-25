@@ -956,11 +956,10 @@ model_stream_chunks
 model_usage
 ```
 
-The index layer should create retrieval documents from those source tables:
+The retrieval-only index layer creates trace documents from those source tables:
 
 ```text
 trace_documents
-trace_embeddings
 trace_index_jobs
 ```
 
@@ -978,18 +977,19 @@ trace_index_jobs
 
 Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles.
 
-Hybrid retrieval should combine:
+Current retrieval combines:
 
 - Structured prefiltering by project, conversation, source kind, path, command, tool, and time.
 - Lexical search over titles, summaries, content, paths, commands, and errors.
-- Semantic search over embeddings when available.
 - Reranking that boosts exact path/title/command matches, verbatim anchors, recent relevant evidence, and high-importance source docs.
+
+Semantic search over embeddings remains a later phase. Until then, `mode = "semantic"` falls back to lexical/exact retrieval with a warning.
 
 Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
 
 ## Trace Index Tables
 
-The trace index tables are planned follow-up schema additions for semantic and exact retrieval. They should be added before replacing the current `tool_calls`-only retrieval implementation.
+The implemented retrieval-only schema includes `trace_documents` and `trace_index_jobs`, plus an internal SQLite FTS table for lexical search. `trace_embeddings` remains planned for the semantic retrieval phase.
 
 ## `trace_documents`
 
@@ -1032,9 +1032,9 @@ CREATE INDEX trace_documents_kind_idx ON trace_documents(source_kind);
 
 SQLite FTS should be considered for lexical search over `title`, `summary`, `content`, and metadata-derived text.
 
-## `trace_embeddings`
+## Planned `trace_embeddings`
 
-Stores semantic embeddings for `trace_documents`.
+Will store semantic embeddings for `trace_documents`.
 
 Embeddings should be generated asynchronously. Chat turns must not wait for embedding jobs to finish. Lexical/exact retrieval should work immediately after trace documents are created.
 
@@ -1084,8 +1084,8 @@ turn completes or is cancelled
   -> raw tables are already persisted
   -> enqueue trace_index_jobs.build_trace_documents
   -> build deterministic trace_documents from new messages/tools/events
-  -> enqueue trace_index_jobs.embed_trace_documents
-  -> embed unchanged/new docs only when content_hash needs it
+  -> search works immediately through SQLite FTS and exact inspect handles
+  -> later semantic phase enqueues trace_index_jobs.embed_trace_documents
 ```
 
 Summaries:
@@ -1218,10 +1218,16 @@ session_state
 schema_migrations
 ```
 
-Planned trace retrieval schema additions:
+Implemented trace retrieval schema additions:
 
 ```text
 trace_documents
-trace_embeddings
 trace_index_jobs
+trace_documents_fts
+```
+
+Planned later semantic retrieval schema:
+
+```text
+trace_embeddings
 ```

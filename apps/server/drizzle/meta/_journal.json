@@ -8,6 +8,13 @@
       "when": 1778739974463,
       "tag": "0000_smooth_supernaut",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1779734400000,
+      "tag": "0001_trace_retrieval_index",
+      "breakpoints": true
     }
   ]
 }

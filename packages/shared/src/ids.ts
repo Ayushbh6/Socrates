@@ -28,5 +28,7 @@ export type IdPrefix =
   | "audioout"
   | "fb"
   | "conn"
+  | "tdoc"
+  | "tjob"
 
 export const createId = (prefix: IdPrefix): string => `${prefix}_${randomUUID().replaceAll("-", "")}`

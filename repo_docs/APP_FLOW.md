@@ -501,7 +501,7 @@ The intended trace retrieval flow is search first, exact inspection second:
 ```text
 agent needs older context
   -> trace_retrieve search with natural-language query, scope, and optional conversation hint
-  -> backend searches indexed trace documents with lexical and semantic retrieval
+  -> backend searches indexed trace documents with scoped SQLite FTS/exact retrieval
   -> result returns compact evidence plus handles
   -> if exact wording matters, agent calls trace_retrieve inspect on the returned handle
   -> backend returns bounded raw message/tool/shell/patch/error text
@@ -594,6 +594,14 @@ exact retrievable anchors
 ```
 
 `trace_retrieve` is the bridge between compact summaries and raw evidence. Broad search can find likely relevant history; exact inspection can open the one message, turn, tool call, or shell output needed to avoid RAG noise.
+
+Current implementation note:
+
+```text
+trace_retrieve search is lexical/exact today
+mode = semantic falls back with a warning
+embeddings and rolling conversation summaries are later phases
+```
 
 ## Project-Scoped Conversations
 

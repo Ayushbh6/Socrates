@@ -65,6 +65,7 @@ import {
   searchToolInputSchema,
   toolExecutionResultSchema,
   traceRetrieveToolInputSchema,
+  traceRetrieveToolOutputSchema,
   conversationToolRunSchema,
 } from "./index"
 
@@ -540,7 +541,42 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)
-    expect(traceRetrieveToolInputSchema.safeParse({ toolNames: ["read"], query: "README" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"] }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ turnId: "turn_1" }).success).toBe(false)
+    expect(
+      traceRetrieveToolOutputSchema.safeParse({
+        results: [
+          {
+            handle: "tdoc_1",
+            kind: "message",
+            projectId: project.id,
+            conversationId: conversation.id,
+            turnId: "turn_1",
+            sourceId: "msg_1",
+            title: "User message",
+            snippet: "README context",
+            score: 0.5,
+          },
+          {
+            handle: "tdoc_2",
+            kind: "exact_source",
+            projectId: project.id,
+            conversationId: conversation.id,
+            turnId: "turn_1",
+            sourceId: "msg_1",
+            title: "User message",
+            content: "Exact source",
+            source: { table: "messages", id: "msg_1" },
+            truncation: { truncated: false, charLimit: 20_000, returnedLength: 12 },
+          },
+        ],
+        totalMatches: 2,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
+        appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
+        warnings: ["Semantic trace retrieval is not indexed yet; using lexical/exact retrieval instead."],
+      }).success,
+    ).toBe(true)
     expect(listProjectResourcesToolInputSchema.safeParse({ kind: "pdf", limit: 10 }).success).toBe(true)
     expect(listProjectResourcesToolInputSchema.safeParse({ source: "uploaded" }).success).toBe(false)
     expect(
