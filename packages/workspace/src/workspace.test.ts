@@ -194,6 +194,28 @@ describe("workspace tools", () => {
     expect(result.changedFiles).toEqual([{ path: "README.md", operation: "edited" }])
   })
 
+  it("composes multiple replacement edits to the same file before writing", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "strategy.py"), "rate = 0.02\nplt.show()\n")
+
+    const result = await editWorkspace(
+      {
+        operations: [
+          { type: "replace", path: "strategy.py", oldText: "rate = 0.02", newText: "rate = 0.04" },
+          { type: "replace", path: "strategy.py", oldText: "plt.show()", newText: "plt.savefig('strategy_vs_bh.png')" },
+        ],
+      },
+      { workspacePath },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "strategy.py"), "utf8")).toBe(
+      "rate = 0.04\nplt.savefig('strategy_vs_bh.png')\n",
+    )
+    expect(result.changedFiles).toEqual([{ path: "strategy.py", operation: "edited" }])
+    expect(result.diff).toContain("rate = 0.04")
+    expect(result.diff).toContain("plt.savefig('strategy_vs_bh.png')")
+  })
+
   it("runs shell commands with bounded output", async () => {
     const workspacePath = tempDir()
     const result = await runWorkspaceBash({ command: "printf hello", charLimit: 3 }, { workspacePath })

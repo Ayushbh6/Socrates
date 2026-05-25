@@ -7,16 +7,25 @@ import { clampCharLimit, ensureParentDirectory, isSensitivePath, resolveWorkspac
 
 export const editWorkspace = async (input: EditToolInput, context: { workspacePath: string }): Promise<EditToolOutput> => {
   const dryRun = input.dryRun ?? false
-  const planned: Array<{ operation: EditOperation; path?: string; absolutePath?: string; before?: string; after?: string }> = []
-  const changedFiles: EditToolOutput["changedFiles"] = []
-  const diffs: string[] = []
+  const plannedPatches: Array<{ operation: Extract<EditOperation, { type: "patch" }> }> = []
+  const fileStates = new Map<
+    string,
+    {
+      absolutePath: string
+      relativePath: string
+      original: string
+      current: string
+      existedAtStart: boolean
+      existsNow: boolean
+      operation: EditToolOutput["changedFiles"][number]["operation"]
+    }
+  >()
+  const changedFilesByPath = new Map<string, EditToolOutput["changedFiles"][number]>()
 
   for (const operation of input.operations) {
     if (operation.type === "patch") {
       validatePatch(operation.patch, context.workspacePath)
-      diffs.push(operation.patch)
-      planned.push({ operation })
-      changedFiles.push(...pathsFromPatch(operation.patch).map((patchPath) => ({ path: patchPath, operation: "patched" as const })))
+      plannedPatches.push({ operation })
       continue
     }
 
@@ -27,54 +36,72 @@ export const editWorkspace = async (input: EditToolInput, context: { workspacePa
       })
     }
     const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
-    const exists = fs.existsSync(absolutePath)
-    const before = exists ? fs.readFileSync(absolutePath, "utf8") : ""
+    let state = fileStates.get(absolutePath)
+    if (!state) {
+      const exists = fs.existsSync(absolutePath)
+      const before = exists ? fs.readFileSync(absolutePath, "utf8") : ""
+      state = {
+        absolutePath,
+        relativePath,
+        original: before,
+        current: before,
+        existedAtStart: exists,
+        existsNow: exists,
+        operation: exists ? "edited" : "created",
+      }
+      fileStates.set(absolutePath, state)
+    }
     let after: string
     let changedOperation: EditToolOutput["changedFiles"][number]["operation"]
 
     if (operation.type === "create") {
-      if (exists) {
+      if (state.existsNow) {
         throw new SocratesError("file_already_exists", "Create edit cannot overwrite an existing file", { details: { path: operation.path } })
       }
       after = operation.content
       changedOperation = "created"
     } else if (operation.type === "overwrite") {
       after = operation.content
-      changedOperation = exists ? "overwritten" : "created"
+      changedOperation = state.existsNow ? "overwritten" : "created"
     } else {
-      if (!exists) {
+      if (!state.existsNow) {
         throw new SocratesError("file_not_found", "Replace edit target does not exist", { details: { path: operation.path } })
       }
-      const occurrences = before.split(operation.oldText).length - 1
+      const occurrences = state.current.split(operation.oldText).length - 1
       const expected = operation.expectedOccurrences ?? 1
       if (occurrences !== expected) {
         throw new SocratesError("replace_occurrence_mismatch", "Replace edit oldText occurrence count did not match", {
           details: { path: operation.path, expectedOccurrences: expected, actualOccurrences: occurrences },
         })
       }
-      after = before.split(operation.oldText).join(operation.newText)
+      after = state.current.split(operation.oldText).join(operation.newText)
       changedOperation = "edited"
     }
 
-    planned.push({ operation, path: relativePath, absolutePath, before, after })
-    changedFiles.push({ path: relativePath, operation: changedOperation })
-    diffs.push(createSimpleDiff(relativePath, before, after))
+    state.current = after
+    state.existsNow = true
+    state.operation = combineOperations(state, changedOperation)
+    changedFilesByPath.set(relativePath, { path: relativePath, operation: state.operation })
   }
 
   if (!dryRun) {
-    for (const item of planned) {
-      if (item.operation.type === "patch") {
-        await applyPatch(context.workspacePath, item.operation.patch)
-        continue
-      }
-      if (!item.absolutePath || item.after === undefined) {
-        continue
-      }
+    for (const item of fileStates.values()) {
       ensureParentDirectory(item.absolutePath)
-      fs.writeFileSync(item.absolutePath, item.after)
+      fs.writeFileSync(item.absolutePath, item.current)
+    }
+    for (const item of plannedPatches) {
+      await applyPatch(context.workspacePath, item.operation.patch)
     }
   }
 
+  const patchedFiles = plannedPatches.flatMap((item) =>
+    pathsFromPatch(item.operation.patch).map((patchPath) => ({ path: patchPath, operation: "patched" as const })),
+  )
+  const changedFiles = [...changedFilesByPath.values(), ...patchedFiles]
+  const diffs = [
+    ...[...fileStates.values()].map((item) => createSimpleDiff(item.relativePath, item.original, item.current)),
+    ...plannedPatches.map((item) => item.operation.patch),
+  ]
   const diffText = diffs.join("\n")
   const truncated = truncateText(diffText, clampCharLimit(), 0)
   return {
@@ -83,6 +110,19 @@ export const editWorkspace = async (input: EditToolInput, context: { workspacePa
     dryRun,
     truncation: truncated.truncation,
   }
+}
+
+const combineOperations = (
+  state: { existedAtStart: boolean; operation: EditToolOutput["changedFiles"][number]["operation"] },
+  next: EditToolOutput["changedFiles"][number]["operation"],
+): EditToolOutput["changedFiles"][number]["operation"] => {
+  if (!state.existedAtStart) {
+    return "created"
+  }
+  if (state.operation === "overwritten" || next === "overwritten") {
+    return "overwritten"
+  }
+  return "edited"
 }
 
 const validatePatch = (patchText: string, workspacePath: string): void => {
