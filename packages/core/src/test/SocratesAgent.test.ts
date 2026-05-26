@@ -48,6 +48,91 @@ describe("SocratesAgent", () => {
     ])
   })
 
+  it("streams blocking compaction start before the compressor finishes and model call begins", async () => {
+    let releaseCompressor: (() => void) | undefined
+    const compressorReleased = new Promise<void>((resolve) => {
+      releaseCompressor = resolve
+    })
+    let countCalls = 0
+    let appModelStarted = false
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countCalls += 1
+        const inputTokens = countCalls === 1 ? 20 : 5
+        return {
+          providerId: request.providerId,
+          modelId: request.modelId,
+          inputTokens,
+          baseTokens: inputTokens,
+          method: "local_tiktoken",
+          safetyMarginPercent: 0,
+        }
+      },
+      async *stream(request) {
+        if (request.modelId === "deepseek/deepseek-v4-flash") {
+          await compressorReleased
+          yield {
+            type: "model.answer.delta",
+            text: JSON.stringify({
+              goals: ["stream lifecycle"],
+              currentTaskState: {},
+              decisions: [],
+              protectedAnchors: [],
+              filesAndArtifacts: [],
+              failuresAndBlockers: [],
+              openTasks: [],
+              sourceHandles: [{ messageId: "msg_1" }],
+            }),
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        appModelStarted = true
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    const iterator = agent
+      .streamTurn({
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        runtimeConfig: {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          thinkingEnabled: false,
+          thinkingEffort: "none",
+          approvalMode: "manual",
+          sandboxMode: "read_only",
+        },
+        messages: [{ role: "user", content: "Large history", id: "msg_1", turnId: "turn_1" }],
+        contextCompression: {
+          enabled: true,
+          thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
+        },
+      })
+      [Symbol.asyncIterator]()
+
+    const first = await iterator.next()
+    expect(first.value?.type).toBe("context.compaction.started")
+    expect(appModelStarted).toBe(false)
+
+    releaseCompressor?.()
+
+    const events: SocratesAgentEvent[] = [first.value as SocratesAgentEvent]
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) {
+        break
+      }
+      events.push(next.value)
+    }
+
+    const eventTypes = events.map((event) => event.type)
+    expect(eventTypes).toEqual(["context.compaction.started", "context.compaction.completed", "model.completed"])
+    expect(appModelStarted).toBe(true)
+  })
+
   it("executes current-turn tool calls and feeds results into a final model step", async () => {
     const seenMessages: unknown[] = []
     const countRequests: CountedRequest[] = []

@@ -1265,7 +1265,7 @@ The event shape is intentionally unchanged. Richer counting metadata, such as to
 
 ### `context.compaction.started`
 
-Sent when Socrates starts compacting model-facing context before or after a provider call boundary.
+Sent when Socrates starts compacting model-facing context before or after a provider call boundary. For blocking active-turn compaction, this event is emitted before the backend awaits the compressor model so the existing inline compaction state can render during the wait. Post-turn `reason = "precompute"` work may be persisted without being forwarded to the live UI.
 
 ```ts
 type ContextCompactionStartedPayload = {

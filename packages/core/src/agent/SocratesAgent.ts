@@ -88,16 +88,31 @@ export class SocratesAgent {
 
     for (let step = 0; ; step += 1) {
       const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions()
-      const preparedContext = await prepareContextForModelCall({
-        provider: this.provider,
-        providerId: input.providerId,
-        modelId: input.modelId,
-        runtimeConfig: input.runtimeConfig,
-        system,
-        messages,
-        tools,
-        ...(input.contextCompression ? { compression: input.contextCompression } : {}),
-      })
+      const compactionStartedEvents = new AsyncEventQueue<ContextCompactionLifecycleEvent>()
+      const preparedContextPromise = (async () => {
+        try {
+          return await prepareContextForModelCall({
+            provider: this.provider,
+            providerId: input.providerId,
+            modelId: input.modelId,
+            runtimeConfig: input.runtimeConfig,
+            system,
+            messages,
+            tools,
+            ...(input.contextCompression ? { compression: input.contextCompression } : {}),
+            onCompactionStarted: (event) => compactionStartedEvents.push(event),
+          })
+        } finally {
+          compactionStartedEvents.close()
+        }
+      })()
+      void preparedContextPromise.catch(() => undefined)
+
+      for await (const event of compactionStartedEvents) {
+        yield event
+      }
+
+      const preparedContext = await preparedContextPromise
       for (const event of preparedContext.compactionEvents) {
         yield event
         if (event.type === "context.compaction.failed") {

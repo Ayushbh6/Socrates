@@ -589,8 +589,8 @@ describe("context compaction persistence", () => {
         sessionId,
         turnId,
         reason: "threshold",
-        contextTokensEstimate: 126000,
-        targetTokens: 100000,
+        contextTokensEstimate: 161000,
+        targetTokens: 120000,
         compressorProviderId: "openrouter",
         compressorModelId: "deepseek/deepseek-v4-flash",
         sourceMessageIds: ["msg_old_1"],
@@ -601,9 +601,9 @@ describe("context compaction persistence", () => {
         summary: { decisions: ["alpha decision"] },
         renderedSummary: "alpha decision from first compacted summary",
         sourceHandles: [{ messageId: "msg_old_1" }],
-        inputTokensEstimate: 126000,
+        inputTokensEstimate: 161000,
         outputTokensEstimate: 1200,
-        contextTokensAfter: 95000,
+        contextTokensAfter: 115000,
         usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
       })
       store.startContextCompactionSnapshot({
@@ -614,8 +614,8 @@ describe("context compaction persistence", () => {
         sessionId,
         turnId,
         reason: "threshold",
-        contextTokensEstimate: 130000,
-        targetTokens: 100000,
+        contextTokensEstimate: 165000,
+        targetTokens: 120000,
         compressorProviderId: "openrouter",
         compressorModelId: "qwen/qwen3.6-plus",
         sourceMessageIds: ["msg_old_2"],
@@ -626,9 +626,9 @@ describe("context compaction persistence", () => {
         summary: { decisions: ["beta decision"] },
         renderedSummary: "beta decision from second compacted summary",
         sourceHandles: [{ messageId: "msg_old_2" }],
-        inputTokensEstimate: 130000,
+        inputTokensEstimate: 165000,
         outputTokensEstimate: 1300,
-        contextTokensAfter: 96000,
+        contextTokensAfter: 116000,
       })
 
       const latest = store.getLatestContextCompactionSnapshot(conversationId)

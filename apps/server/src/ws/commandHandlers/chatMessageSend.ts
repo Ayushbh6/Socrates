@@ -467,7 +467,7 @@ export const handleChatMessageSend = async (
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId)
-    const postTurnCompactionEvents = await agent.precomputeContext({
+    await agent.precomputeContext({
       providerId: command.payload.runtimeConfig.providerId,
       modelId: command.payload.runtimeConfig.modelId,
       runtimeConfig: command.payload.runtimeConfig,
@@ -475,14 +475,6 @@ export const handleChatMessageSend = async (
       promptContext,
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
     })
-    for (const event of postTurnCompactionEvents) {
-      sendContextCompactionEvent(socket, store, event, {
-        projectId,
-        conversationId,
-        sessionId: created.sessionId,
-        turnId: created.turnId,
-      })
-    }
   } catch (error) {
     if (abortController.signal.aborted) {
       return

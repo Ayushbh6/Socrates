@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { precomputeContextSnapshot, prepareContextForModelCall, type ContextCompactionSummary } from "../index"
+import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, precomputeContextSnapshot, prepareContextForModelCall, type ContextCompactionSummary } from "../index"
 import type { ModelEvent, ModelProvider, ModelRequest } from "@socrates/providers"
 
 const runtimeConfig = {
@@ -12,6 +12,89 @@ const runtimeConfig = {
 }
 
 describe("context compression", () => {
+  it("uses the raised default threshold constants", () => {
+    expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toMatchObject({
+      precomputeTokens: 145_000,
+      synchronousTokens: 160_000,
+      targetTokens: 120_000,
+      hardCapTokens: 180_000,
+    })
+  })
+
+  it("does not compact below the default synchronous threshold", async () => {
+    const provider = providerWithCounts([159_999])
+    const messages = [{ role: "user" as const, content: "small", id: "msg_1", turnId: "turn_1" }]
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages,
+      compression: { enabled: true },
+    })
+
+    expect(prepared.messages).toEqual(messages)
+    expect(prepared.estimatedTokens).toBe(159_999)
+    expect(prepared.compactionEvents).toEqual([])
+  })
+
+  it("compacts at the default synchronous threshold and passes the raised packed target", async () => {
+    const requests: ModelRequest[] = []
+    const startedTargets: number[] = []
+    const provider = providerWithCounts([160_000, 119_000], requests)
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: [{ role: "user", content: "large", id: "msg_1", turnId: "turn_1" }],
+      compression: {
+        enabled: true,
+        startSnapshot: (input) => {
+          startedTargets.push(input.targetTokens)
+        },
+      },
+    })
+
+    expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
+      "context.compaction.started",
+      "context.compaction.completed",
+    ])
+    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 120_000 })
+    expect(prepared.estimatedTokens).toBe(119_000)
+    expect(startedTargets).toEqual([120_000])
+    const compressorContent = requests[0]?.messages[0]?.content
+    expect(JSON.parse(typeof compressorContent === "string" ? compressorContent : "")).toMatchObject({ targetTokens: 120_000 })
+  })
+
+  it("precomputes at the default background threshold", async () => {
+    const provider = providerWithCounts([145_000, 120_000])
+    const startedTargets: number[] = []
+
+    const events = await precomputeContextSnapshot({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: [{ role: "user", content: "large", id: "msg_1", turnId: "turn_1" }],
+      compression: {
+        enabled: true,
+        startSnapshot: (input) => {
+          startedTargets.push(input.targetTokens)
+        },
+      },
+    })
+
+    expect(events.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
+    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 120_000 })
+    expect(startedTargets).toEqual([120_000])
+  })
+
   it("does not compact below the synchronous threshold", async () => {
     const provider = providerFrom([{ type: "model.completed" }])
     const messages = [{ role: "user" as const, content: "small", id: "msg_1", turnId: "turn_1" }]
@@ -328,6 +411,41 @@ describe("context compression", () => {
     expect(completed).toEqual([expect.stringMatching(/^ctxcmp_/)])
   })
 })
+
+const providerWithCounts = (counts: number[], requests: ModelRequest[] = []): ModelProvider => {
+  let countIndex = 0
+  return {
+    countTokens: async (request) => {
+      const inputTokens = counts[Math.min(countIndex, counts.length - 1)] ?? 0
+      countIndex += 1
+      return {
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens,
+        baseTokens: inputTokens,
+        method: "local_tiktoken",
+        safetyMarginPercent: 0,
+      }
+    },
+    async *stream(request) {
+      requests.push(request)
+      yield {
+        type: "model.answer.delta",
+        text: JSON.stringify({
+          goals: ["compress"],
+          currentTaskState: {},
+          decisions: [],
+          protectedAnchors: [],
+          filesAndArtifacts: [],
+          failuresAndBlockers: [],
+          openTasks: [],
+          sourceHandles: [{ messageId: "msg_1" }],
+        }),
+      }
+      yield { type: "model.completed" }
+    },
+  }
+}
 
 const providerFrom = (events: ModelEvent[]): ModelProvider => ({
   countTokens: fakeCountTokens,

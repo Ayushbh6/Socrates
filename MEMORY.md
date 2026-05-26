@@ -433,11 +433,11 @@ Key decisions:
 
 Implemented the first contextual compression and recovery slice:
 
-- `packages/core/src/context/contextCompression.ts` owns provider-call-boundary context estimation, packing, compressor prompts, synchronous compaction near `125k`, precompute near `110k`, and a hard cap of `180k` estimated tokens.
+- `packages/core/src/context/contextCompression.ts` owns provider-call-boundary context estimation, packing, compressor prompts, synchronous compaction near `160k`, post-turn precompute near `145k`, a packed-context target near `120k`, and a hard cap of `180k` estimated tokens.
 - Compression is enabled by default through the runtime path and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`. It uses OpenRouter `deepseek/deepseek-v4-flash` as the primary compressor and keeps OpenRouter `qwen/qwen3.6-plus` as fallback. Both compressor routes use explicit OpenRouter thinking off.
 - `context_compaction_snapshots` stores append-only compaction snapshots with an active/latest marker, previous snapshot id, source ids, structured summary JSON, rendered hidden context, source handles, estimates, compressor model, usage, status, timing, and errors.
 - Completed compaction snapshots are indexed into `trace_documents` as hidden `conversation_summary` evidence so `trace_retrieve` can search and inspect summary provenance without creating fake chat messages.
-- The WebSocket stream now includes typed `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed` events. The frontend renders only a subtle `Compacting conversation...` state.
+- The WebSocket stream now includes typed `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed` events. Blocking active-turn compaction emits `started` before awaiting the compressor model, while background precompute stays silent in the live UI. The frontend renders only a subtle `Compacting conversation context...` state.
 - Provider calls persist `estimatedTokens` and `contextBudgetTokens` in `model_calls.request_json`; `context_usage_snapshots` records the effective Socrates budget capped at `180k`.
 - The conversation HTTP load returns `contextUsage` for the header and optional `partialTurns` recovered from `model_stream_chunks` when a turn stopped, failed, or is still running without a completed assistant message.
 - Reloading a failed or interrupted turn now shows recovered partial assistant text, reasoning, and historical tool runs instead of making the last user query look unanswered.

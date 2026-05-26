@@ -3,9 +3,9 @@ import type { ModelToolDefinition, ProviderId, RuntimeConfig } from "@socrates/c
 import { createId, SocratesError } from "@socrates/shared"
 
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
-  precomputeTokens: 110_000,
-  synchronousTokens: 125_000,
-  targetTokens: 100_000,
+  precomputeTokens: 145_000,
+  synchronousTokens: 160_000,
+  targetTokens: 120_000,
   hardCapTokens: 180_000,
   recentMessageCount: 8,
   maxRecentMessageChars: 40_000,
@@ -124,6 +124,7 @@ export type PrepareContextInput = {
   messages: ModelMessage[]
   tools?: ModelToolDefinition[]
   compression?: ContextCompressionRuntime
+  onCompactionStarted?: (event: ContextCompactionStartedEvent) => Promise<void> | void
 }
 
 export type PreparedContext = {
@@ -149,7 +150,20 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
     }
   }
 
-  const result = await runContextCompaction(input, thresholds, initialTokens, initialTokens >= thresholds.hardCapTokens ? "emergency" : "threshold")
+  let startedEmitted = false
+  const result = await runContextCompaction(
+    input,
+    thresholds,
+    initialTokens,
+    initialTokens >= thresholds.hardCapTokens ? "emergency" : "threshold",
+    async (event) => {
+      if (!input.onCompactionStarted) {
+        return
+      }
+      startedEmitted = true
+      await input.onCompactionStarted(event)
+    },
+  )
   if (!result.ok) {
     return {
       system: input.system,
@@ -201,7 +215,7 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
     estimatedTokens: finalTokens,
     tokenCount: finalTokenCount,
     compactionEvents: [
-      result.started,
+      ...(startedEmitted ? [] : [result.started]),
       {
         type: "context.compaction.completed",
         snapshotId: result.snapshotId,
@@ -275,6 +289,7 @@ const runContextCompaction = async (
   thresholds: ContextCompressionThresholds,
   initialTokens: number,
   reason: ContextCompressionReason,
+  onStarted?: (event: ContextCompactionStartedEvent) => Promise<void> | void,
 ): Promise<ContextCompactionResult> => {
   const compression = input.compression as ContextCompressionRuntime
   const snapshotId = createId("ctxcmp")
@@ -304,6 +319,7 @@ const runContextCompaction = async (
     sourceTurnIds,
     ...(latestSnapshot?.snapshotId ? { previousSnapshotId: latestSnapshot.snapshotId } : {}),
   })
+  await onStarted?.(started)
 
   try {
     const compressorResult = await runCompressorModelWithFallback({

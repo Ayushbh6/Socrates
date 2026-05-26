@@ -663,11 +663,13 @@ It should not rewrite the visible transcript. It should not create fake assistan
 Current implementation thresholds:
 
 ```text
-precompute around 110k estimated tokens
-synchronous compaction around 125k estimated tokens
-target packed context around 100k estimated tokens
+precompute around 145k estimated tokens
+synchronous compaction around 160k estimated tokens
+target packed context around 120k estimated tokens
 hard cap 180k estimated tokens
 ```
+
+`120k` is the packed-context target after compression, not a trigger. `145k` starts background post-turn precompute for the next turn. `160k` is the blocking active-turn threshold before a provider call is allowed to continue. `180k` remains the hard do-not-send cap after counting the assembled provider request.
 
 The estimate is provider-aware. Before each model call, Socrates counts the assembled next provider request through `packages/providers`, including the system prompt, visible messages, hidden compaction summaries, active tool calls/results, and tool definitions/schemas. Completed earlier turns still contribute only visible user query plus final assistant answer.
 
@@ -729,7 +731,7 @@ fallback: OpenRouter qwen/qwen3.6-plus with thinking off
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
 
-The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. While a compaction is active, it shows only a small `Compacting conversation...` state and does not add transcript messages.
+The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. Blocking active-turn compaction emits `started` before awaiting the compressor model so the UI can show a small `Compacting conversation context...` state during the wait. Background precompute remains silent in the live UI and does not add transcript messages.
 
 When showing or answering from retrieved history, Socrates must use the returned conversation provenance. If `conversation.isCurrentConversation` is false, the answer should say the evidence came from an earlier project conversation or use `conversation.title`; it should only say "this conversation" or "current chat" when the provenance says the result is from the current conversation.
 

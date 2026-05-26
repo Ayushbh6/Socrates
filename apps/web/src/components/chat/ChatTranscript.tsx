@@ -114,7 +114,7 @@ function CompactionLoader() {
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-teal-dark opacity-25" />
         <span className="relative inline-flex size-2 rounded-full bg-brand-teal-dark" />
       </span>
-      Compacting conversation...
+      Compacting conversation context...
     </div>
   );
 }

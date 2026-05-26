@@ -597,16 +597,16 @@ describe("websocket server event contracts", () => {
       envelope("context.compaction.started", {
         snapshotId: "ctxcmp_1",
         reason: "threshold",
-        contextUsedTokensEstimate: 126000,
-        targetTokens: 100000,
+        contextUsedTokensEstimate: 161000,
+        targetTokens: 120000,
       }),
     ),
     contextCompactionCompletedEventSchema.safeParse(
       envelope("context.compaction.completed", {
         snapshotId: "ctxcmp_1",
-        inputTokensEstimate: 126000,
+        inputTokensEstimate: 161000,
         outputTokensEstimate: 1800,
-        contextUsedTokensEstimate: 96000,
+        contextUsedTokensEstimate: 116000,
       }),
     ),
     contextCompactionFailedEventSchema.safeParse(

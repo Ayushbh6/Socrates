@@ -108,7 +108,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "context.compaction.started") {
-        setIsCompacting(true);
+        if (event.payload.reason !== "precompute") {
+          setIsCompacting(true);
+        }
         return;
       }
 
