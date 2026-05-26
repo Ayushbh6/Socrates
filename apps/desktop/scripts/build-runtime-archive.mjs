@@ -48,11 +48,7 @@ await run(nodeCommand, [path.join(desktopRoot, "scripts", "build-runtime.mjs")],
 fs.rmSync(archivePath, { force: true });
 
 if (process.platform === "win32") {
-  await run("powershell.exe", [
-    "-NoProfile",
-    "-Command",
-    `Compress-Archive -Path '${runtimeDir}\\*' -DestinationPath '${archivePath}' -Force`,
-  ]);
+  await run("tar.exe", ["-a", "-cf", archivePath, "-C", runtimeDir, "."]);
 } else {
   await run("zip", ["-qr", archivePath, "."], { cwd: runtimeDir });
 }
