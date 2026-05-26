@@ -90,8 +90,12 @@ const exposePnpmHoistedDependencies = (target, hoistedNodeModulesOverride) => {
 };
 
 const createPackageLink = (source, destination) => {
+  if (process.platform === "win32") {
+    copy(source, destination);
+    return;
+  }
   const relativeSource = path.relative(path.dirname(destination), source);
-  fs.symlinkSync(relativeSource, destination, process.platform === "win32" ? "junction" : "dir");
+  fs.symlinkSync(relativeSource, destination, "dir");
 };
 
 const downloadFile = async (url, target) => {
