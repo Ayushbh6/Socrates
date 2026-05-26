@@ -9,6 +9,7 @@ Each package has one job.
 ```text
 apps/web          -> user interface
 apps/server       -> API and WebSocket transport
+apps/desktop      -> native desktop shell and app launch/bundling glue
 packages/core     -> agent runtime and orchestration
 packages/workspace -> local file, shell, search, git, and patch operations
 packages/providers -> model provider abstraction and adapters
@@ -16,7 +17,7 @@ packages/contracts -> shared schemas, event types, tool contracts
 packages/shared   -> generic reusable utilities
 ```
 
-Do not place logic in a package just because it is convenient. Put it where it belongs.
+Do not place logic in a package just because it is convenient. Put it where it belongs. The desktop shell can launch or bundle the existing web/server runtime, but it must not fork agent logic, provider logic, workspace filesystem logic, or API contracts.
 
 ## 2. No Duplicate Implementations
 

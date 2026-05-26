@@ -7,6 +7,16 @@ This document is the source of truth for the current Socrates repo structure. So
 ```text
 Socrates/
   apps/
+    desktop/
+      package.json
+      scripts/
+        dev-services.mjs
+      src-tauri/
+        Cargo.toml
+        tauri.conf.json
+        src/
+      static/
+
     web/
       src/
         app/
@@ -175,6 +185,28 @@ useChatTurn()
 useApprovals()
 useContextUsage()
 ```
+
+### `apps/desktop`
+
+The native desktop shell.
+
+It owns:
+
+- Tauri configuration.
+- Desktop window metadata.
+- Desktop development launch scripts.
+- Desktop bundling glue.
+- Static placeholder shell assets used by Tauri when the web dev URL is not active.
+
+It must not own:
+
+- Agent decision logic.
+- Provider adapters.
+- Workspace filesystem or shell operations.
+- HTTP/WebSocket contract definitions.
+- Independent Socrates persistence.
+
+The desktop shell wraps the existing `apps/web` and `apps/server` runtime. It may start those services for development or bundle/launch them for packaged builds, but durable app data remains server-owned and defaults to `~/.Socrates/socrates.sqlite`.
 
 ### `apps/server`
 

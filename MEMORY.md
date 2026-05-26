@@ -84,9 +84,10 @@ This section records the initial backend foundation. Some bullets describe the s
 - Added `@socrates/server` with Fastify, `@fastify/websocket`, SQLite, Drizzle ORM, and Drizzle Kit migrations.
 - Added DB schema and generated migration SQL for every table in `repo_docs/DB_STRUCTURE.md`, including post-V1 tables.
 - Added DB bootstrap with `SOCRATES_DB_PATH` override.
-- Development DB path defaults to `app-data/socrates.sqlite`.
-- Future production/local app storage should move to `~/.socrates/socrates.sqlite`.
+- Default local app storage now lives outside the repo at `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME` can change the app-data directory, and `SOCRATES_DB_PATH` can still point at an explicit SQLite file.
+- The previous repo-local development DB at `app-data/socrates.sqlite` is legacy data. On default startup, if `~/.Socrates/socrates.sqlite` does not exist and no explicit `SOCRATES_DB_PATH` is set, the server copies the legacy DB plus WAL/SHM siblings once. Set `SOCRATES_SKIP_LEGACY_DB_IMPORT=true` to skip that import.
 - Future local app packaging must use a backend/native filesystem bridge for project workspace selection and creation.
+- Added `apps/desktop` as the Tauri desktop shell. `pnpm desktop:dev` starts the existing server and web dev services when needed and opens the web UI in a native window. The desktop shell is launch/bundling glue only; it must not duplicate agent, provider, workspace, or contract logic.
 - Do not rely on browser-only filesystem APIs for the core project model. Socrates needs durable absolute workspace paths so the backend agent can create folders, write `.socrates/`, store resources, scan repos, and run tools.
 - Dev V1 may use a backend filesystem bridge or temporary path input. Proper local app V1 should wrap the web UI in Tauri or Electron and use native folder dialogs.
 - Added DB-backed HTTP routes for onboarding, projects, resources, and conversations.

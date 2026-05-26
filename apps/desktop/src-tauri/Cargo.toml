@@ -1,0 +1,17 @@
+[package]
+name = "socrates-desktop"
+version = "0.1.0"
+description = "Socrates desktop shell"
+authors = ["Socrates"]
+edition = "2021"
+
+[lib]
+name = "socrates_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.2", features = [] }
+tauri-plugin-opener = "2.5.0"

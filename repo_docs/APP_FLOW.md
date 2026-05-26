@@ -35,6 +35,25 @@ open app
 
 The first-run check should use local SQLite state, not browser-only local storage.
 
+The local SQLite file defaults to `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME` changes the app-data directory, and `SOCRATES_DB_PATH` points at an explicit SQLite file for tests or recovery. Repo-local `app-data/socrates.sqlite` is only a legacy development import source.
+
+## Desktop Launch Flow
+
+The desktop shell lives in `apps/desktop` and wraps the existing web/server app instead of duplicating runtime logic.
+
+Development launch:
+
+```text
+pnpm desktop:dev
+  -> Tauri starts
+  -> beforeDevCommand runs apps/desktop/scripts/dev-services.mjs
+  -> script starts apps/server on 127.0.0.1:4000 if needed
+  -> script starts apps/web on 127.0.0.1:3000 if needed
+  -> Tauri opens the web UI at http://127.0.0.1:3000
+```
+
+The server still owns the SQLite path. By default it stores durable data at `~/.Socrates/socrates.sqlite`; the desktop shell must not invent a separate database path.
+
 ## Returning-User Flow
 
 ```text

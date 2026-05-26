@@ -21,4 +21,6 @@ photos/
 test_material/
 app-data/
 apps/server/app-data/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
 host-workspaces/

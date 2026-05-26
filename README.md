@@ -66,6 +66,7 @@ The planned repo shape:
 
 ```text
 apps/
+  desktop/     # Tauri desktop shell
   web/          # frontend UI
   server/       # HTTP and WebSocket backend
 
@@ -105,6 +106,30 @@ Providers talk to models.
 Contracts define shared truth.
 SQLite records everything.
 ```
+
+## Local Development
+
+Install dependencies once:
+
+```bash
+pnpm install
+```
+
+Run the desktop shell and local services together:
+
+```bash
+pnpm desktop:dev
+```
+
+That command starts the backend on `127.0.0.1:4000` and the web UI on `127.0.0.1:3000` when they are not already running, then opens the Tauri desktop window.
+
+Durable app data defaults to:
+
+```text
+~/.Socrates/socrates.sqlite
+```
+
+Use `SOCRATES_HOME` to change the app-data directory or `SOCRATES_DB_PATH` to point at a specific SQLite file.
 
 ## Provider Strategy
 

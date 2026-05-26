@@ -1,7 +1,15 @@
 import { buildServer } from "./app"
-import { getServerConfig } from "./config"
+import { getServerConfig, prepareServerDataDirectory } from "./config"
 
 const config = getServerConfig()
+const dataDirectoryResult = prepareServerDataDirectory(config)
+
+if (dataDirectoryResult.imported) {
+  console.info(
+    `Imported legacy development database from ${dataDirectoryResult.sourcePath} to ${dataDirectoryResult.targetPath}`,
+  )
+}
+
 const app = await buildServer({ dbPath: config.dbPath, logger: true })
 
 try {

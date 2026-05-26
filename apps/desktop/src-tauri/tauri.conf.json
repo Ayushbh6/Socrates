@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Socrates",
+  "version": "0.1.0",
+  "identifier": "com.socrates.desktop",
+  "build": {
+    "beforeDevCommand": "node ../scripts/dev-services.mjs",
+    "devUrl": "http://127.0.0.1:3000",
+    "frontendDist": "../static"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Socrates",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 1024,
+        "minHeight": 720
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "A local-first Socratic coding workspace"
+  }
+}

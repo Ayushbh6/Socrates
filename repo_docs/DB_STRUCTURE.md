@@ -17,6 +17,16 @@ user query
   -> token usage and metadata
 ```
 
+## Local Storage Location
+
+The default Socrates SQLite file is user-owned app data, not repo checkout data:
+
+```text
+~/.Socrates/socrates.sqlite
+```
+
+The server resolves this path from `SOCRATES_HOME` plus `socrates.sqlite`. `SOCRATES_DB_PATH` remains the explicit override for tests, special development runs, and recovery. The legacy development DB at `app-data/socrates.sqlite` is import-only: on default startup, if the user-owned DB does not exist and no explicit `SOCRATES_DB_PATH` is set, the server copies the legacy DB and any WAL/SHM siblings once, then runs migrations against the user-owned file. `SOCRATES_SKIP_LEGACY_DB_IMPORT=true` disables that one-time import.
+
 ## Design Principle
 
 The database should be event-log first.
