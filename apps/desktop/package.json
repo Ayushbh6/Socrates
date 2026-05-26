@@ -6,6 +6,9 @@
   "scripts": {
     "build:runtime": "node scripts/build-runtime.mjs",
     "bundle": "tauri build",
+    "bundle:mac": "tauri build --bundles dmg --config src-tauri/tauri.release.conf.json",
+    "bundle:windows": "tauri build --bundles nsis --config src-tauri/tauri.release.conf.json",
+    "release:local": "tauri build --bundles app",
     "dev": "tauri dev"
   },
   "devDependencies": {

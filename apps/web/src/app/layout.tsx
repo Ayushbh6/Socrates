@@ -14,7 +14,10 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Socrates",
-  description: "Socrates AI Coding Assistant",
+  description: "A local-first AI workspace for coding, research, planning, and long-running project memory.",
+  icons: {
+    icon: "/brand/socrates-logo.png",
+  },
 };
 
 export default function RootLayout({

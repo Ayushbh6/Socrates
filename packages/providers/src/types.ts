@@ -102,3 +102,7 @@ export type ProviderThinkingConfig =
   | { providerId: "openai"; effort: Exclude<ThinkingEffort, "minimal"> }
   | { providerId: "google"; effort: Extract<ThinkingEffort, "minimal" | "low" | "medium" | "high"> }
   | { providerId: "openrouter"; enabled: boolean }
+
+export type ProviderCredentialResolver = {
+  getApiKey: (providerId: ProviderId) => string | undefined
+}

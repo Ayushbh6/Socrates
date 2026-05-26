@@ -1,8 +1,8 @@
-import { AiSdkProvider, findModelOption, listModels, ProviderRouter } from "@socrates/providers"
+import { AiSdkProvider, findModelOption, listModels, ProviderRouter, type ProviderCredentialResolver } from "@socrates/providers"
 import { SocratesAgent } from "./SocratesAgent"
 
-export const createDefaultSocratesAgent = (): SocratesAgent => {
-  const aiSdkProvider = new AiSdkProvider()
+export const createDefaultSocratesAgent = (credentials?: ProviderCredentialResolver): SocratesAgent => {
+  const aiSdkProvider = new AiSdkProvider(credentials)
   return new SocratesAgent(
     new ProviderRouter({
       openai: aiSdkProvider,

@@ -198,6 +198,7 @@ It owns:
 - Desktop bundling glue.
 - Static placeholder shell assets used by Tauri when the web dev URL is not active.
 - Production runtime assembly scripts for the server sidecar, Next standalone web sidecar, and bundled Node runtime.
+- Release packaging glue for signed DMG/NSIS artifacts, updater metadata, install scripts, and OS keychain commands.
 
 It must not own:
 
@@ -207,7 +208,7 @@ It must not own:
 - HTTP/WebSocket contract definitions.
 - Independent Socrates persistence.
 
-The desktop shell wraps the existing `apps/web` and `apps/server` runtime. It may start those services for development or bundle/launch them for packaged builds, but durable app data remains server-owned and defaults to `~/.Socrates/socrates.sqlite`. Packaged builds use `apps/desktop/runtime/` as generated bundle input and currently target the native app bundle; installer formats belong to the release-packaging/signing stage. Source logic still belongs in the existing app/packages boundaries.
+The desktop shell wraps the existing `apps/web` and `apps/server` runtime. It may start those services for development or bundle/launch them for packaged builds, but durable app data remains server-owned and defaults to `~/.Socrates/socrates.sqlite`. Packaged builds use `apps/desktop/runtime/` as generated bundle input; signed release builds publish macOS DMG and Windows NSIS artifacts from GitHub Actions. Source logic still belongs in the existing app/packages boundaries.
 
 ### `apps/server`
 

@@ -1,127 +1,127 @@
-# Socrates
+<p align="center">
+  <img src="./apps/web/public/brand/socrates-logo.png" width="132" alt="Socrates logo" />
+</p>
 
-> A local-first AI partner that thinks with you, plans with you, and works beside you.
+<h1 align="center">Socrates</h1>
 
-Socrates is being built as a personal AI assistant with a real working memory, a clean interface, and the ability to reason through tasks with the user instead of acting like a black box.
+<p align="center">
+  A local-first AI workspace for coding, research, planning, and long-running project memory.
+</p>
 
-It is not intended to be only a chat window or only a coding CLI. The goal is a full personal partner that can help with coding, research, retrieval, planning, debugging, writing, and everyday knowledge work while showing exactly what it is doing.
+<p align="center">
+  <strong>Desktop app.</strong>
+  <strong>Real tools.</strong>
+  <strong>Replayable history.</strong>
+  <strong>User-owned data.</strong>
+</p>
 
-## Vision
+---
 
-Socrates should feel like a thoughtful collaborator:
+Socrates is a personal AI collaborator that runs as a desktop app and works directly with your local projects. It is built for the workflows where a normal chat box breaks down: multi-turn repo work, tool use, context compression, local resources, model switching, command output, and durable memory.
 
-- It can discuss a task before acting.
-- It can plan work clearly.
-- It can inspect local context.
-- It organizes work into projects.
-- It can attach local workspaces and resources to a project.
-- It can use tools with user-approved permissions.
-- It can run commands, read files, propose edits, and explain outcomes.
-- It can switch models and providers per query.
-- It can show thinking/reasoning separately from final responses when providers expose it.
-- It can accept voice input, transcribe it, and send it as a normal user query.
-- It can read assistant responses aloud.
-- It can collect thumbs up/down feedback on responses.
-- It can track context usage live.
-- It can store a full audit trail of every meaningful step.
+The goal is not to hide the work behind a black box. Socrates shows what it is doing, keeps the project history inspectable, and stores the meaningful runtime trail locally.
 
-The long-term goal is simple:
+## What It Does
 
-```text
-one personal assistant
-  -> many providers
-  -> local workspace access
-  -> transparent reasoning and tool use
-  -> durable memory and replayable history
-```
+- Organizes work into projects and conversations.
+- Attaches local workspaces and project resources.
+- Streams model responses, reasoning, tool calls, and context state live.
+- Runs local tools for file inspection, search, shell commands, git status, and patch application.
+- Uses explicit approval gates for sensitive local actions.
+- Tracks model usage and model-facing context usage separately.
+- Compresses long conversations so active projects can keep going.
+- Stores sessions, turns, model calls, tool calls, errors, events, and feedback in SQLite.
+- Supports desktop packaging with OS-native app data and provider credential storage.
 
-## What Socrates Is
+## Why It Exists
 
-Socrates is a local-first agent application with:
-
-- A polished web interface.
-- First-run onboarding.
-- Project-based workspaces.
-- A backend agent runtime.
-- WebSocket-based live communication.
-- Voice input, read-aloud output, and feedback flows.
-- SQLite as the source of truth.
-- Provider-agnostic model access.
-- Explicit tool and approval contracts.
-- Full event logging for replay and debugging.
-
-It should be able to help with:
-
-- Coding and repo work.
-- Reading and retrieving information.
-- Planning projects.
-- Explaining technical topics.
-- Running local workflows.
-- Reviewing files and outputs.
-- Acting as a personal assistant across tasks.
-
-## Architecture
-
-The planned repo shape:
+Most AI tools are either polished chat apps with no real local agency, or powerful CLIs that do not preserve enough user-facing context. Socrates aims for the middle ground:
 
 ```text
-apps/
-  desktop/     # Tauri desktop shell
-  web/          # frontend UI
-  server/       # HTTP and WebSocket backend
-
-packages/
-  core/         # agent runtime and orchestration
-  workspace/    # local file, shell, search, git, and patch operations
-  providers/    # model provider abstraction and adapters
-  contracts/    # schemas, events, tool contracts, approvals, sessions
-  shared/       # small generic reusable utilities
-
-repo_docs/      # architecture and implementation rules
+a desktop AI workspace
+  -> connected to your local projects
+  -> backed by durable local memory
+  -> transparent about tools and context
+  -> provider-agnostic by design
 ```
 
-Initial app flow:
+## Current Capabilities
 
-```text
-/welcome
-  -> /onboarding on first launch
-  -> /projects for returning users
+Socrates already includes the core shape of the app:
 
-/projects
-  -> /projects/new
-  -> /projects/:projectId
+- Tauri desktop shell with packaged backend and web sidecars.
+- Next.js frontend for onboarding, project dashboards, chat, and settings.
+- Fastify backend with HTTP and WebSocket APIs.
+- Provider abstraction over OpenRouter, OpenAI, and Google through the AI SDK.
+- Provider-aware context token counting with safety margins and compression thresholds.
+- DeepSeek V4 Flash context compression path.
+- SQLite persistence for conversations, events, model calls, tool calls, and context snapshots.
+- OS keychain integration for packaged provider credentials.
+- Signed-release workflow scaffolding for macOS DMG and Windows NSIS installers.
+- One-command install script entrypoints for GitHub Releases.
 
-/projects/:projectId
-  -> /projects/:projectId/chats/:conversationId
+## Sneak Peek
+
+The next slices are focused on turning the release pipeline into a real public distribution:
+
+- first signed macOS Apple Silicon release,
+- first signed Windows x64 installer,
+- updater manifest validation from GitHub Releases,
+- smoother provider-key onboarding,
+- richer settings for local-vs-hosted embeddings,
+- tighter public docs and screenshots.
+
+## Install
+
+After the first GitHub Release is published, the intended install paths are:
+
+macOS Apple Silicon:
+
+```bash
+curl -fsSL https://github.com/Ayushbh6/Socrates/releases/latest/download/install-socrates.sh | bash
 ```
 
-The core dependency rule:
+Windows x64:
 
-```text
-Frontend shows state.
-Backend transports events.
-Core runs the agent.
-Workspace performs local operations.
-Providers talk to models.
-Contracts define shared truth.
-SQLite records everything.
+```powershell
+irm https://github.com/Ayushbh6/Socrates/releases/latest/download/install-socrates.ps1 | iex
 ```
+
+The scripts fetch the latest release, download the matching installer, verify `SHA256SUMS`, and open or run the installer.
 
 ## Local Development
 
-Install dependencies once:
+Install dependencies:
 
 ```bash
 pnpm install
 ```
 
-Run the desktop shell and local services together:
+Run the desktop app with local services:
 
 ```bash
 pnpm desktop:dev
 ```
 
-That command starts the backend on `127.0.0.1:4000` and the web UI on `127.0.0.1:3000` when they are not already running, then opens the Tauri desktop window.
+Build the packaged runtime:
+
+```bash
+pnpm desktop:runtime
+```
+
+Build local desktop artifacts:
+
+```bash
+pnpm desktop:bundle
+pnpm desktop:release:local
+```
+
+Build release installer targets:
+
+```bash
+pnpm desktop:bundle:mac
+pnpm desktop:bundle:windows
+```
 
 Durable app data defaults to:
 
@@ -129,126 +129,72 @@ Durable app data defaults to:
 ~/.Socrates/socrates.sqlite
 ```
 
-Use `SOCRATES_HOME` to change the app-data directory or `SOCRATES_DB_PATH` to point at a specific SQLite file.
+Use `SOCRATES_HOME` to change the app-data directory, or `SOCRATES_DB_PATH` to point at a specific SQLite file.
 
-Prepare the packaged desktop runtime without building an installer:
+## Provider Keys
 
-```bash
-pnpm desktop:runtime
-```
+Packaged Socrates stores provider credentials in the OS keychain.
 
-Build a local internal desktop artifact:
+- OpenRouter is required for the default chat and compression path.
+- OpenAI is required only when hosted embeddings are selected instead of local Ollama embeddings.
+- Google is optional.
 
-```bash
-pnpm desktop:bundle
-```
+Secrets must not be stored in SQLite, logs, model-call JSON, events, or frontend persisted state.
 
-The bundle step prepares `apps/desktop/runtime/`, downloads the same official Node.js version as the build process, assembles the server and Next standalone web sidecars, and then runs `tauri build` for the native app bundle. Generated runtime files are ignored. Set `SOCRATES_DESKTOP_NODE_VERSION` only when deliberately rebuilding native dependencies against a different Node runtime. Installer formats such as DMG/MSI should be added with signing/notarization in the release-packaging stage.
-
-## Provider Strategy
-
-Socrates will start with Vercel AI SDK, but it will not be hardwired to it.
-
-V1:
+## Architecture
 
 ```text
-Vercel AI SDK behind Socrates' own ModelProvider interface
-  -> OpenAI
-  -> Anthropic
-  -> Google
-  -> OpenRouter
+apps/
+  desktop/     Tauri shell, runtime bundling, signing, updater, keychain commands
+  web/         Next.js frontend
+  server/      HTTP and WebSocket backend
+
+packages/
+  core/        agent orchestration and context management
+  workspace/   local file, search, shell, git, and patch operations
+  providers/   model providers, token counting, embeddings
+  contracts/   shared schemas, events, tools, approvals
+  shared/      small cross-package utilities
+
+repo_docs/     deeper architecture notes and repo rules
 ```
 
-V1.5:
+The dependency direction is intentionally strict:
 
 ```text
-Add Ollama/local model support.
+frontend shows state
+backend transports events
+core runs the agent
+workspace performs local operations
+providers talk to models
+contracts define shared truth
+SQLite records the runtime history
 ```
 
-V2:
+## Release Packaging
 
-```text
-Add direct provider wrappers for major providers where deeper control is needed.
-```
+Tagged releases such as `v0.1.0` are built by GitHub Actions. The release workflow is designed to publish:
 
-The rest of the app should never import provider SDKs directly. Provider-specific code belongs inside `packages/providers`.
+- macOS Apple Silicon DMG,
+- Windows x64 NSIS setup EXE,
+- Tauri updater artifacts and signatures,
+- `latest.json`,
+- `SHA256SUMS`,
+- one-command installer scripts.
 
-## Database Philosophy
+Real release builds require Apple Developer ID/notary secrets, Azure Trusted Signing secrets, and a Tauri updater signing key configured in GitHub.
 
-Socrates uses SQLite as the durable source of truth.
+## Repository Docs
 
-The database should store:
+For implementation details and active engineering rules, see:
 
-- Local user profile and onboarding state.
-- Projects.
-- Project workspaces.
-- Project resources.
-- Project instructions.
-- Conversations.
-- Sessions.
-- Turns.
-- Messages.
-- Runtime config per turn.
-- Model calls.
-- Model stream chunks.
-- Tool calls.
-- Approval requests and decisions.
-- Voice input and transcription records.
-- Read-aloud audio output records.
-- Message feedback.
-- Shell/file/git operations.
-- Errors.
-- Token usage.
-- Context usage snapshots.
-- Replayable events.
-
-The goal is that any response can be reconstructed later:
-
-```text
-user query
-  -> runtime settings
-  -> model calls
-  -> reasoning/answer stream
-  -> tool calls
-  -> approvals
-  -> command output
-  -> errors
-  -> final response
-  -> usage metadata
-```
-
-No black box.
-
-## Design Principles
-
-Socrates is being built around a few strict engineering rules:
-
-- Keep package responsibilities clear.
-- Store shared contracts in one place.
-- Use typed WebSocket events.
-- Avoid duplicate helpers and one-off implementations.
-- Keep the server thin.
-- Keep the agent core provider-agnostic.
-- Route all local operations through the workspace layer.
-- Require approval for dangerous actions.
-- Record errors and failures, not only successful paths.
-- Make runtime history replayable from the database.
-
-## Current Status
-
-This repository is in the architecture and foundation phase.
-
-Initial docs:
-
-- [`repo_docs/REPO_STRCUTURE.md`](repo_docs/REPO_STRCUTURE.md)
 - [`repo_docs/REPO_RULES.md`](repo_docs/REPO_RULES.md)
+- [`repo_docs/REPO_STRCUTURE.md`](repo_docs/REPO_STRCUTURE.md)
 - [`repo_docs/DB_STRUCTURE.md`](repo_docs/DB_STRUCTURE.md)
 - [`repo_docs/PROVIDER_USAGE.md`](repo_docs/PROVIDER_USAGE.md)
 - [`repo_docs/APP_FLOW.md`](repo_docs/APP_FLOW.md)
 - [`repo_docs/FRONTEND_BACKEND_CONTRACT.md`](repo_docs/FRONTEND_BACKEND_CONTRACT.md)
 
-## Working Agreement
+## Status
 
-Socrates should be built carefully from day one.
-
-Every new feature should respect the package boundaries, shared contracts, database audit model, provider abstraction, and approval system. The codebase should stay easy to reason about as it grows.
+Socrates is under active development. The app is usable locally, and the current focus is getting the first signed desktop release into a clean public distribution flow.

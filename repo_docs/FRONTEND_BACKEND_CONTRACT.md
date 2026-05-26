@@ -189,6 +189,11 @@ POST   /api/onboarding
 
 GET    /api/models
 
+GET    /api/provider-credentials/status
+POST   /api/provider-credentials/check
+POST   /api/provider-credentials/session
+DELETE /api/provider-credentials/:providerId
+
 POST   /api/workspaces/pick-folder
 POST   /api/workspaces/inspect
 
@@ -253,6 +258,42 @@ type CompleteOnboardingResponse = {
   user: User
 }
 ```
+
+The packaged onboarding page must also require OpenRouter provider setup before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints and Tauri keychain commands.
+
+### Provider Credential Endpoints
+
+Provider credential APIs expose only presence, source, and validation status. They must never return API key values.
+
+```ts
+type ProviderCredentialSource = "keychain" | "session" | "env" | "missing"
+
+type ProviderCredentialStatus = {
+  providerId: "openai" | "google" | "openrouter"
+  providerLabel: string
+  required: boolean
+  configured: boolean
+  source: ProviderCredentialSource
+  message?: string
+}
+
+type GetProviderCredentialsStatusResponse = {
+  providers: ProviderCredentialStatus[]
+  openRouterRequired: true
+  openAiRequiredForHostedEmbeddings: true
+  googleOptional: true
+}
+
+type SetProviderCredentialSessionRequest = {
+  providerId: "openai" | "google" | "openrouter"
+  apiKey: string
+  source?: "keychain" | "manual" | "env_import"
+}
+```
+
+`POST /api/provider-credentials/session` stores a secret only in the running backend process so newly saved or explicitly imported keychain credentials are immediately usable. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback. Packaged mode should prefer OS keychain values injected by Tauri into the sidecar process.
+
+OpenRouter is required for the default chat/compression path. OpenAI is required only for hosted embeddings when local Ollama is not used. Google is optional.
 
 ### `GET /api/models`
 

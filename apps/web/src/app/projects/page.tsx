@@ -9,6 +9,7 @@ import { formatUpdatedAt } from "@/lib/dates";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import type { ListProjectsResponse } from "@socrates/contracts";
 import Link from "next/link";
+import { Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 
 export default function ProjectsPage() {
@@ -55,11 +56,18 @@ export default function ProjectsPage() {
         <PageHeader
           title={title}
           action={
-            <Button asChild className="rounded-full px-5 h-10 text-sm bg-white text-brand-text-dark border border-gray-200 hover:bg-gray-50 hover:text-brand-text-dark shadow-sm">
-              <Link href="/projects/new">
-                New project
-              </Link>
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button asChild variant="outline" size="icon" className="rounded-full bg-white">
+                <Link href="/settings" aria-label="Settings">
+                  <Settings className="size-4" />
+                </Link>
+              </Button>
+              <Button asChild className="rounded-full px-5 h-10 text-sm bg-white text-brand-text-dark border border-gray-200 hover:bg-gray-50 hover:text-brand-text-dark shadow-sm">
+                <Link href="/projects/new">
+                  New project
+                </Link>
+              </Button>
+            </div>
           } 
         />
         

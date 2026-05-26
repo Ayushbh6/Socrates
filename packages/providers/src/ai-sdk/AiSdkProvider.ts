@@ -1,6 +1,6 @@
-import { google, createGoogleGenerativeAI } from "@ai-sdk/google"
-import { createOpenAI, openai } from "@ai-sdk/openai"
-import { createOpenRouter, openrouter } from "@openrouter/ai-sdk-provider"
+import { createGoogleGenerativeAI } from "@ai-sdk/google"
+import { createOpenAI } from "@ai-sdk/openai"
+import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import { smoothStream, streamText, tool, type LanguageModel, type LanguageModelUsage, type ModelMessage as AiModelMessage } from "ai"
 import type { NormalizedToolCall, ProviderMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
@@ -9,12 +9,15 @@ import {
   shouldUseProviderExactCount,
   type TokenCountResult,
 } from "../tokenCounting"
-import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage } from "../types"
+import { envProviderCredentialResolver } from "../credentials"
+import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage, ProviderCredentialResolver } from "../types"
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 type ProviderOptions = Record<string, Record<string, JsonValue>>
 
 export class AiSdkProvider implements ModelProvider {
+  constructor(private readonly credentials: ProviderCredentialResolver = envProviderCredentialResolver) {}
+
   async countTokens(request: ModelRequest): Promise<TokenCountResult> {
     const providerOptions = this.createProviderOptions(request)
     const local = countModelRequestLocally(request, { providerOptions })
@@ -26,7 +29,7 @@ export class AiSdkProvider implements ModelProvider {
       return local
     }
 
-    const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY
+    const apiKey = this.credentials.getApiKey("google")
     if (!apiKey) {
       return {
         ...local,
@@ -125,22 +128,33 @@ export class AiSdkProvider implements ModelProvider {
 
   private createModel(request: ModelRequest): LanguageModel {
     switch (request.providerId) {
-      case "openai":
-        return (process.env.OPENAI_API_KEY ? createOpenAI({ apiKey: process.env.OPENAI_API_KEY }) : openai).responses(request.modelId)
-      case "google": {
-        const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY
-        return (apiKey ? createGoogleGenerativeAI({ apiKey }) : google)(request.modelId)
+      case "openai": {
+        const apiKey = this.credentials.getApiKey("openai")
+        if (!apiKey) {
+          throw missingProviderCredential("openai")
+        }
+        return createOpenAI({ apiKey }).responses(request.modelId)
       }
-      case "openrouter":
+      case "google": {
+        const apiKey = this.credentials.getApiKey("google")
+        if (!apiKey) {
+          throw missingProviderCredential("google")
+        }
+        return createGoogleGenerativeAI({ apiKey })(request.modelId)
+      }
+      case "openrouter": {
+        const apiKey = this.credentials.getApiKey("openrouter")
+        if (!apiKey) {
+          throw missingProviderCredential("openrouter")
+        }
         return (
-          process.env.OPENROUTER_API_KEY
-            ? createOpenRouter({
-                apiKey: process.env.OPENROUTER_API_KEY,
-                appName: "Socrates",
-                appUrl: "http://localhost",
-              })
-            : openrouter
+          createOpenRouter({
+            apiKey,
+            appName: "Socrates",
+            appUrl: "http://localhost",
+          })
         ).chat(request.modelId)
+      }
     }
   }
 
@@ -155,6 +169,12 @@ export class AiSdkProvider implements ModelProvider {
     }
   }
 }
+
+const missingProviderCredential = (providerId: ModelRequest["providerId"]): SocratesError =>
+  new SocratesError("provider_credential_missing", `${providerId} API key is not configured.`, {
+    details: { providerId },
+    recoverable: true,
+  })
 
 type GoogleContent = {
   role: "user" | "model"

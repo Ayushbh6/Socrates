@@ -4,7 +4,19 @@ import path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
-import type { ApiResponse, Conversation, Message, Project, ProjectEmbeddingStatus, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
+import type {
+  ApiResponse,
+  Conversation,
+  GetProviderCredentialsStatusResponse,
+  Message,
+  Project,
+  ProjectEmbeddingStatus,
+  ProjectInstructions,
+  ProjectResource,
+  ProjectWorkspace,
+  ServerEvent,
+  User,
+} from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
 import type { EmbeddingProvider, ModelProvider } from "@socrates/providers"
@@ -673,6 +685,35 @@ describe("HTTP API", () => {
     const updated = await onboard(app, "Aparajit")
     expect(updated.id).toBe(created.id)
     expect(updated.displayName).toBe("Aparajit")
+  })
+
+  it("manages provider credentials without returning secret values", async () => {
+    const app = await buildTestServer()
+
+    const initialResponse = await app.inject({ method: "GET", url: "/api/provider-credentials/status" })
+    const initialBody = parseResponse<GetProviderCredentialsStatusResponse>(initialResponse.payload)
+    expect(initialResponse.statusCode).toBe(200)
+    expect(JSON.stringify(initialBody)).not.toContain("sk-secret")
+
+    const setResponse = await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/session",
+      payload: { providerId: "openrouter", apiKey: "sk-secret-test", source: "manual" },
+    })
+    expect(setResponse.statusCode).toBe(200)
+    expect(setResponse.payload).not.toContain("sk-secret-test")
+
+    const checkResponse = await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/check",
+      payload: { providerId: "openrouter" },
+    })
+    expect(checkResponse.statusCode).toBe(200)
+    expect(checkResponse.payload).not.toContain("sk-secret-test")
+
+    const deleteResponse = await app.inject({ method: "DELETE", url: "/api/provider-credentials/openrouter" })
+    expect(deleteResponse.statusCode).toBe(200)
+    expect(deleteResponse.payload).not.toContain("sk-secret-test")
   })
 
   it("creates, lists, gets, and patches projects", async () => {

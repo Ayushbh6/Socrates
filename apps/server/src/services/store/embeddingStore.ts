@@ -7,7 +7,7 @@ import type {
   ProjectEmbeddingProvider,
   ProjectEmbeddingStatus,
 } from "@socrates/contracts"
-import type { EmbeddingProvider } from "@socrates/providers"
+import { envProviderCredentialResolver, type EmbeddingProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue } from "@socrates/workspace"
 import { and, desc, eq } from "drizzle-orm"
@@ -57,6 +57,7 @@ export class EmbeddingStore extends StoreBase {
   constructor(
     context: ConstructorParameters<typeof StoreBase>[0],
     private readonly provider: EmbeddingProvider,
+    private readonly credentials: ProviderCredentialResolver = envProviderCredentialResolver,
   ) {
     super(context)
   }
@@ -77,8 +78,8 @@ export class EmbeddingStore extends StoreBase {
       return {
         providerId,
         modelId,
-        ok: Boolean(process.env.OPENAI_API_KEY) || candidates.some((candidate) => candidate.hasKey),
-        serverEnvAvailable: Boolean(process.env.OPENAI_API_KEY),
+        ok: Boolean(this.credentials.getApiKey("openai")) || candidates.some((candidate) => candidate.hasKey),
+        serverEnvAvailable: Boolean(this.credentials.getApiKey("openai")),
         workspaceEnvCandidates: candidates.map((candidate) => ({
           fileName: candidate.fileName,
           hasOpenAiApiKey: candidate.hasKey,
@@ -97,7 +98,7 @@ export class EmbeddingStore extends StoreBase {
       ...(check.dimensions ? { dimensions: check.dimensions } : {}),
       ...(providerId === "openai"
         ? {
-            serverEnvAvailable: Boolean(process.env.OPENAI_API_KEY),
+            serverEnvAvailable: Boolean(this.credentials.getApiKey("openai")),
             ...(input.workspaceEnvFile ? { selectedWorkspaceEnvFile: input.workspaceEnvFile } : {}),
           }
         : {}),
@@ -492,7 +493,8 @@ export class EmbeddingStore extends StoreBase {
       return {}
     }
     if (credentialSource === "server_env") {
-      return process.env.OPENAI_API_KEY ? { apiKey: process.env.OPENAI_API_KEY } : {}
+      const apiKey = this.credentials.getApiKey("openai")
+      return apiKey ? { apiKey } : {}
     }
     if (credentialSource === "workspace_env" && workspaceEnvFile) {
       const apiKey = readWorkspaceEnvValue(this.getPrimaryWorkspacePath(projectId), workspaceEnvFile, "OPENAI_API_KEY")

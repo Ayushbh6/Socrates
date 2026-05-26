@@ -3,6 +3,7 @@ import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
   checkProjectEmbeddingsRequestSchema,
+  checkProviderCredentialRequestSchema,
   configureProjectEmbeddingsRequestSchema,
   createConversationMessageRequestSchema,
   createConversationRequestSchema,
@@ -11,6 +12,8 @@ import {
   inspectWorkspaceRequestSchema,
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
+  providerIdSchema,
+  setProviderCredentialSessionRequestSchema,
   updateProjectWorkspaceRequestSchema,
   updateConversationRequestSchema,
   upsertProjectInstructionsRequestSchema,
@@ -19,10 +22,12 @@ import { listModels } from "@socrates/core"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
 import type { SocratesStore, UploadedResourceInput } from "../services/store"
+import type { ProviderCredentialStore } from "../services/providerCredentials"
 
 const projectParamsSchema = z.object({ projectId: z.string().min(1) }).strict()
 const resourceParamsSchema = z.object({ projectId: z.string().min(1), resourceId: z.string().min(1) }).strict()
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
+const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 
 const parseBody = <T>(schema: z.ZodType<T>, body: unknown): T => {
   const parsed = schema.safeParse(body)
@@ -75,12 +80,48 @@ const handleRouteError = (error: unknown) => {
   return { statusCode, response: fail(api) }
 }
 
-export const registerHttpRoutes = async (app: FastifyInstance, store: SocratesStore): Promise<void> => {
+export const registerHttpRoutes = async (
+  app: FastifyInstance,
+  store: SocratesStore,
+  credentials: ProviderCredentialStore,
+): Promise<void> => {
   app.get("/health", async () => ok({ status: "ok" }))
 
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
 
   app.get("/api/models", async () => ok(listModels()))
+
+  app.get("/api/provider-credentials/status", async () => ok(credentials.listStatus()))
+
+  app.post("/api/provider-credentials/check", async (request, reply) => {
+    try {
+      const input = parseBody(checkProviderCredentialRequestSchema, request.body)
+      return ok(credentials.check(input.providerId, input.apiKey))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/provider-credentials/session", async (request, reply) => {
+    try {
+      const input = parseBody(setProviderCredentialSessionRequestSchema, request.body)
+      return ok({ status: credentials.setSessionCredential(input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.delete("/api/provider-credentials/:providerId", async (request, reply) => {
+    try {
+      const { providerId } = parseParams(providerCredentialParamsSchema, request.params)
+      return ok({ status: credentials.deleteSessionCredential(providerId) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
 
   app.post("/api/onboarding", async (request, reply) => {
     try {

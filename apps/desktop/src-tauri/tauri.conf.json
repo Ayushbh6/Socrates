@@ -26,10 +26,29 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "createUpdaterArtifacts": false,
     "category": "DeveloperTool",
     "shortDescription": "A local-first Socratic coding workspace",
+    "publisher": "Socrates",
     "resources": {
       "../runtime/": "runtime"
+    },
+    "macOS": {
+      "hardenedRuntime": true
+    },
+    "windows": {
+      "signCommand": "trusted-signing-cli -e %AZURE_TRUSTED_SIGNING_ENDPOINT% -a %AZURE_TRUSTED_SIGNING_ACCOUNT% -c %AZURE_TRUSTED_SIGNING_CERT_PROFILE% -d Socrates %1"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "SOCRATES_UPDATER_PUBLIC_KEY_PLACEHOLDER",
+      "endpoints": [
+        "https://github.com/Ayushbh6/Socrates/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

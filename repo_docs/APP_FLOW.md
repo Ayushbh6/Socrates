@@ -9,6 +9,7 @@ Socrates is project-first. Users do not start with a floating global chat. They 
 ```text
 /welcome
 /onboarding
+/settings
 /projects
 /projects/new
 /projects/:projectId
@@ -66,9 +67,40 @@ pnpm desktop:bundle
   -> tauri build bundles runtime as native app resources
 ```
 
-The current internal artifact target is the native app bundle. Installer formats such as DMG/MSI require the release-packaging stage because they need signing/notarization and platform-specific distribution policy.
+Release packaging flow:
+
+```text
+push SemVer tag, for example v0.1.0
+  -> GitHub Actions builds macOS arm64 DMG and Windows x64 NSIS setup EXE
+  -> release workflow signs/notarizes with GitHub secrets
+  -> updater signatures, latest.json, SHA256SUMS, and install scripts are attached to GitHub Releases
+```
+
+Release builds are stable-channel only. The macOS artifact is a signed/notarized DMG, and the Windows artifact is a signed NSIS setup executable. Package-manager distribution is intentionally deferred until GitHub Releases are proven.
 
 On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
+
+Provider credentials:
+
+```text
+packaged app
+  -> user saves provider key through onboarding or /settings
+  -> Tauri writes the secret to OS keychain
+  -> Tauri injects configured keys into the sidecar process environment at launch
+  -> frontend also posts the key to the local backend session so the current process can use it immediately
+```
+
+OpenRouter is required for the default chat and compression path. OpenAI is required only when the user selects hosted OpenAI embeddings instead of local Ollama embeddings. Google is optional. The backend and frontend must return only credential presence/source/status, never secret values.
+
+Manual update flow:
+
+```text
+/settings
+  -> Check for updates
+  -> Tauri updater reads latest.json from GitHub Releases
+  -> user chooses Install
+  -> updater downloads signed artifact and asks for restart
+```
 
 ## Returning-User Flow
 

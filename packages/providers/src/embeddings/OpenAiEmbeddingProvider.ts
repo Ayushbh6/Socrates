@@ -1,11 +1,21 @@
 import { createOpenAI, openai } from "@ai-sdk/openai"
 import { embed, embedMany } from "ai"
 import { SocratesError } from "@socrates/shared"
-import type { EmbeddingCheckRequest, EmbeddingCheckResult, EmbeddingProvider, EmbeddingRequest, EmbeddingResult } from "../types"
+import { envProviderCredentialResolver } from "../credentials"
+import type {
+  EmbeddingCheckRequest,
+  EmbeddingCheckResult,
+  EmbeddingProvider,
+  EmbeddingRequest,
+  EmbeddingResult,
+  ProviderCredentialResolver,
+} from "../types"
 
 export class OpenAiEmbeddingProvider implements EmbeddingProvider {
+  constructor(private readonly credentials: ProviderCredentialResolver = envProviderCredentialResolver) {}
+
   async check(request: EmbeddingCheckRequest): Promise<EmbeddingCheckResult> {
-    if (!request.apiKey && !process.env.OPENAI_API_KEY) {
+    if (!request.apiKey && !this.credentials.getApiKey("openai")) {
       return { ok: false, message: "OPENAI_API_KEY was not found in the selected environment." }
     }
     try {
@@ -17,7 +27,8 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
   }
 
   async embed(request: EmbeddingCheckRequest & { value: string }): Promise<EmbeddingResult> {
-    const provider = request.apiKey ? createOpenAI({ apiKey: request.apiKey }) : openai
+    const apiKey = request.apiKey ?? this.credentials.getApiKey("openai")
+    const provider = apiKey ? createOpenAI({ apiKey }) : openai
     const result = await embed({
       model: provider.embeddingModel(request.modelId),
       value: request.value,
@@ -37,7 +48,8 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     if (request.values.length === 0) {
       return { embeddings: [], dimensions: 0 }
     }
-    const provider = request.apiKey ? createOpenAI({ apiKey: request.apiKey }) : openai
+    const apiKey = request.apiKey ?? this.credentials.getApiKey("openai")
+    const provider = apiKey ? createOpenAI({ apiKey }) : openai
     const result = await embedMany({
       model: provider.embeddingModel(request.modelId),
       values: request.values,

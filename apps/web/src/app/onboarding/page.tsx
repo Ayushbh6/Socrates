@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
+import { ProviderCredentialsPanel } from "@/components/settings/ProviderCredentialsPanel";
 import { api } from "@/lib/api";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 
@@ -13,6 +14,7 @@ export default function OnboardingPage() {
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [openRouterReady, setOpenRouterReady] = useState(false);
 
   useEffect(() => {
     if (!isLoading && user?.onboardingCompleted) {
@@ -26,6 +28,10 @@ export default function OnboardingPage() {
     const trimmedName = displayName.trim();
     if (!trimmedName) {
       setError("Enter your name to continue.");
+      return;
+    }
+    if (!openRouterReady) {
+      setError("Save an OpenRouter key to continue.");
       return;
     }
 
@@ -49,11 +55,11 @@ export default function OnboardingPage() {
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5, ease: "easeOut" }}
-        className="max-w-md w-full"
+        className="max-w-3xl w-full"
       >
         <h1 className="text-3xl font-serif mb-6 text-brand-text-dark text-center">Welcome to Socrates</h1>
-        <p className="text-brand-text-light mb-8 text-center text-lg">What should we call you?</p>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+        <p className="text-brand-text-light mb-8 text-center text-lg">Set up your local workspace and provider access.</p>
+        <form onSubmit={handleSubmit} className="mx-auto max-w-md flex flex-col gap-4">
           <input 
             type="text" 
             placeholder="Your name" 
@@ -62,10 +68,13 @@ export default function OnboardingPage() {
             className="px-5 py-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-brand-teal-dark shadow-sm text-lg transition-colors"
           />
           {error && <p className="text-sm text-red-600">{error}</p>}
-          <Button type="submit" disabled={isSubmitting || isLoading} className="w-full py-6 rounded-xl text-base">
+          <Button type="submit" disabled={isSubmitting || isLoading || !openRouterReady} className="w-full py-6 rounded-xl text-base">
             {isSubmitting ? "Saving" : "Continue"}
           </Button>
         </form>
+        <div className="mt-8">
+          <ProviderCredentialsPanel onOpenRouterReadyChange={setOpenRouterReady} />
+        </div>
       </motion.div>
     </main>
   );

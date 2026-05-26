@@ -8,6 +8,8 @@ import {
   chatTurnCancelCommandSchema,
   checkProjectEmbeddingsRequestSchema,
   checkProjectEmbeddingsResponseSchema,
+  checkProviderCredentialRequestSchema,
+  checkProviderCredentialResponseSchema,
   clientCommandSchema,
   completeOnboardingRequestSchema,
   completeOnboardingResponseSchema,
@@ -28,12 +30,14 @@ import {
   createProjectResourceRequestSchema,
   createProjectResourceResponseSchema,
   deleteConversationResponseSchema,
+  deleteProviderCredentialResponseSchema,
   deleteProjectResourceResponseSchema,
   errorCreatedEventSchema,
   feedbackSubmitCommandSchema,
   getConversationResponseSchema,
   getMeResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
+  getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
   inspectWorkspaceRequestSchema,
   inspectWorkspaceResponseSchema,
@@ -47,6 +51,8 @@ import {
   pickWorkspaceFolderRequestSchema,
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
+  setProviderCredentialSessionRequestSchema,
+  setProviderCredentialSessionResponseSchema,
   projectResourceSchema,
   projectSchema,
   projectWorkspaceSchema,
@@ -255,6 +261,47 @@ describe("http contracts", () => {
   it("parses onboarding contracts", () => {
     expect(completeOnboardingRequestSchema.safeParse({ displayName: "Ayush" }).success).toBe(true)
     expect(completeOnboardingResponseSchema.safeParse({ user }).success).toBe(true)
+  })
+
+  it("parses provider credential contracts without exposing secret values", () => {
+    const status = {
+      providerId: "openrouter",
+      providerLabel: "OpenRouter",
+      required: true,
+      configured: true,
+      source: "keychain",
+      message: "Required for chat and context compression.",
+    }
+
+    expect(
+      getProviderCredentialsStatusResponseSchema.safeParse({
+        providers: [status],
+        openRouterRequired: true,
+        openAiRequiredForHostedEmbeddings: true,
+        googleOptional: true,
+      }).success,
+    ).toBe(true)
+    expect(setProviderCredentialSessionRequestSchema.safeParse({ providerId: "openrouter", apiKey: "sk-test" }).success).toBe(true)
+    expect(setProviderCredentialSessionResponseSchema.safeParse({ status }).success).toBe(true)
+    expect(checkProviderCredentialRequestSchema.safeParse({ providerId: "openrouter" }).success).toBe(true)
+    expect(
+      checkProviderCredentialResponseSchema.safeParse({
+        providerId: "openrouter",
+        ok: true,
+        configured: true,
+        source: "session",
+        message: "OpenRouter credential is configured.",
+      }).success,
+    ).toBe(true)
+    expect(deleteProviderCredentialResponseSchema.safeParse({ status: { ...status, configured: false, source: "missing" } }).success).toBe(true)
+    expect(
+      getProviderCredentialsStatusResponseSchema.safeParse({
+        providers: [{ ...status, apiKey: "must-not-parse" }],
+        openRouterRequired: true,
+        openAiRequiredForHostedEmbeddings: true,
+        googleOptional: true,
+      }).success,
+    ).toBe(false)
   })
 
   it("parses project list, creation, and dashboard contracts", () => {

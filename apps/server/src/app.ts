@@ -5,7 +5,8 @@ import { openDatabase, runMigrations, type DatabaseHandle } from "./db/client"
 import { registerHttpRoutes } from "./routes/httpRoutes"
 import { SocratesStore } from "./services/store"
 import { registerWebSocketRoutes } from "./ws/websocket"
-import type { SocratesAgent } from "@socrates/core"
+import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
+import { ProviderCredentialStore } from "./services/providerCredentials"
 
 export type BuildServerOptions = {
   dbPath: string
@@ -18,7 +19,9 @@ export const buildServer = async (options: BuildServerOptions) => {
   const handle = options.databaseHandle ?? openDatabase(options.dbPath)
   runMigrations(handle)
 
-  const store = new SocratesStore(handle)
+  const credentials = new ProviderCredentialStore()
+  const store = new SocratesStore(handle, undefined, credentials)
+  const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const app = Fastify({ logger: options.logger ?? false })
 
   app.addHook("onClose", async () => {
@@ -35,8 +38,8 @@ export const buildServer = async (options: BuildServerOptions) => {
     origin: [/^http:\/\/127\.0\.0\.1:\d+$/, /^http:\/\/localhost:\d+$/],
   })
 
-  await registerWebSocketRoutes(app, store, options.agent)
-  await registerHttpRoutes(app, store)
+  await registerWebSocketRoutes(app, store, agent)
+  await registerHttpRoutes(app, store, credentials)
 
   return app
 }

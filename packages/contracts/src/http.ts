@@ -13,6 +13,7 @@ import {
   userSchema,
 } from "./entities"
 import { conversationContextUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
+import { providerIdSchema } from "./models"
 import { toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
@@ -22,6 +23,73 @@ export const getMeResponseSchema = z
   .strict()
 
 export const listModelsHttpResponseSchema = listModelsResponseSchema
+
+export const providerCredentialSourceSchema = z.enum(["keychain", "session", "env", "missing"])
+export type ProviderCredentialSource = z.infer<typeof providerCredentialSourceSchema>
+
+export const providerCredentialStatusSchema = z
+  .object({
+    providerId: providerIdSchema,
+    providerLabel: z.string().min(1),
+    required: z.boolean(),
+    configured: z.boolean(),
+    source: providerCredentialSourceSchema,
+    message: z.string().min(1).optional(),
+  })
+  .strict()
+export type ProviderCredentialStatus = z.infer<typeof providerCredentialStatusSchema>
+
+export const getProviderCredentialsStatusResponseSchema = z
+  .object({
+    providers: z.array(providerCredentialStatusSchema),
+    openRouterRequired: z.boolean(),
+    openAiRequiredForHostedEmbeddings: z.boolean(),
+    googleOptional: z.boolean(),
+  })
+  .strict()
+export type GetProviderCredentialsStatusResponse = z.infer<typeof getProviderCredentialsStatusResponseSchema>
+
+export const setProviderCredentialSessionRequestSchema = z
+  .object({
+    providerId: providerIdSchema,
+    apiKey: z.string().min(1),
+    source: z.enum(["keychain", "manual", "env_import"]).optional(),
+  })
+  .strict()
+export type SetProviderCredentialSessionRequest = z.infer<typeof setProviderCredentialSessionRequestSchema>
+
+export const setProviderCredentialSessionResponseSchema = z
+  .object({
+    status: providerCredentialStatusSchema,
+  })
+  .strict()
+export type SetProviderCredentialSessionResponse = z.infer<typeof setProviderCredentialSessionResponseSchema>
+
+export const checkProviderCredentialRequestSchema = z
+  .object({
+    providerId: providerIdSchema,
+    apiKey: z.string().min(1).optional(),
+  })
+  .strict()
+export type CheckProviderCredentialRequest = z.infer<typeof checkProviderCredentialRequestSchema>
+
+export const checkProviderCredentialResponseSchema = z
+  .object({
+    providerId: providerIdSchema,
+    ok: z.boolean(),
+    configured: z.boolean(),
+    source: providerCredentialSourceSchema,
+    message: z.string().min(1),
+  })
+  .strict()
+export type CheckProviderCredentialResponse = z.infer<typeof checkProviderCredentialResponseSchema>
+
+export const deleteProviderCredentialResponseSchema = z
+  .object({
+    status: providerCredentialStatusSchema,
+  })
+  .strict()
+export type DeleteProviderCredentialResponse = z.infer<typeof deleteProviderCredentialResponseSchema>
 
 export const completeOnboardingRequestSchema = z
   .object({

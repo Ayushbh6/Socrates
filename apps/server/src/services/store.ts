@@ -36,7 +36,7 @@ import type {
   UpsertProjectInstructionsRequest,
   User,
 } from "@socrates/contracts"
-import { createDefaultEmbeddingProvider, type EmbeddingProvider } from "@socrates/providers"
+import { createDefaultEmbeddingProvider, type EmbeddingProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
 import { ContextCompactionStore } from "./store/contextCompactionStore"
@@ -95,7 +95,8 @@ export class SocratesStore {
 
   constructor(
     private readonly handle: DatabaseHandle,
-    embeddingProvider: EmbeddingProvider = createDefaultEmbeddingProvider(),
+    embeddingProvider?: EmbeddingProvider,
+    credentials?: ProviderCredentialResolver,
   ) {
     this.events = new EventStore(handle)
     const context: StoreContext = {
@@ -114,7 +115,7 @@ export class SocratesStore {
     this.approvals = new ApprovalStore(context)
     this.feedback = new FeedbackStore(context)
     this.tools = new ToolStore(context)
-    this.embeddings = new EmbeddingStore(context, embeddingProvider)
+    this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     this.traces = new TraceStore(context, this.embeddings)
     this.contextCompactions = new ContextCompactionStore(context, this.errors)
   }

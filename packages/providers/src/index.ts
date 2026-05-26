@@ -4,6 +4,7 @@ export { createDefaultEmbeddingProvider } from "./embeddings/defaultEmbeddingPro
 export { OllamaEmbeddingProvider, normalizeBaseUrl } from "./embeddings/OllamaEmbeddingProvider"
 export { OpenAiEmbeddingProvider } from "./embeddings/OpenAiEmbeddingProvider"
 export { ProviderRouter } from "./ProviderRouter"
+export { envProviderApiKey, envProviderCredentialResolver } from "./credentials"
 export {
   DEFAULT_TOKEN_SAFETY_MARGIN_PERCENT,
   countModelRequestLocally,
@@ -26,4 +27,5 @@ export type {
   ModelProvider,
   ModelRequest,
   ModelUsage,
+  ProviderCredentialResolver,
 } from "./types"

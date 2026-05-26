@@ -1,0 +1,139 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: macOS arm64
+    runs-on: macos-14
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      SOCRATES_UPDATER_PUBLIC_KEY: ${{ vars.SOCRATES_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Import Apple certificate
+        run: |
+          CERT_PATH="$RUNNER_TEMP/socrates.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/socrates-signing.keychain-db"
+          echo "${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$KEYCHAIN_PATH"
+      - name: Inject updater public key
+        run: |
+          test -n "$SOCRATES_UPDATER_PUBLIC_KEY"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("apps/desktop/src-tauri/tauri.conf.json")
+          text = path.read_text()
+          text = text.replace("SOCRATES_UPDATER_PUBLIC_KEY_PLACEHOLDER", "${{ vars.SOCRATES_UPDATER_PUBLIC_KEY }}")
+          path.write_text(text)
+          PY
+      - name: Build signed DMG
+        run: pnpm desktop:bundle:mac
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-artifacts
+          find apps/desktop/src-tauri/target/release/bundle -type f \( -name "*.dmg" -o -name "*.tar.gz" -o -name "*.sig" \) -exec cp {} release-artifacts/ \;
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: release-artifacts/*
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_TRUSTED_SIGNING_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+      AZURE_TRUSTED_SIGNING_CERT_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_CERT_PROFILE }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+      SOCRATES_UPDATER_PUBLIC_KEY: ${{ vars.SOCRATES_UPDATER_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Windows signing tool
+        run: cargo install artifact-signing-cli
+      - name: Inject updater public key
+        shell: pwsh
+        run: |
+          if (-not $env:SOCRATES_UPDATER_PUBLIC_KEY) { throw "SOCRATES_UPDATER_PUBLIC_KEY repository variable is required." }
+          $path = "apps/desktop/src-tauri/tauri.conf.json"
+          (Get-Content $path -Raw).Replace("SOCRATES_UPDATER_PUBLIC_KEY_PLACEHOLDER", $env:SOCRATES_UPDATER_PUBLIC_KEY) | Set-Content $path
+      - name: Build signed NSIS installer
+        run: pnpm desktop:bundle:windows
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-artifacts | Out-Null
+          Get-ChildItem apps/desktop/src-tauri/target/release/bundle -Recurse -File |
+            Where-Object { $_.Name -like "*-setup.exe" -or $_.Name -like "*.sig" } |
+            Copy-Item -Destination release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: release-artifacts/*
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: [macos, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+      - name: Add install scripts
+        run: |
+          cp scripts/install-socrates.sh release-artifacts/
+          cp scripts/install-socrates.ps1 release-artifacts/
+      - name: Generate updater manifest and checksums
+        run: |
+          node apps/desktop/scripts/create-updater-manifest.mjs release-artifacts "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+          (cd release-artifacts && sha256sum * > SHA256SUMS)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-artifacts/* \
+            --title "Socrates $GITHUB_REF_NAME" \
+            --notes "Signed stable Socrates desktop release for macOS Apple Silicon and Windows x64."

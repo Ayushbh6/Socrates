@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Socrates logo</title>
+  <desc id="desc">A white outline logo of a bearded Socrates profile facing right on a green field.</desc>
+  <defs>
+    <linearGradient id="field" x1="112" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#16a394"/>
+      <stop offset="1" stop-color="#0f766e"/>
+    </linearGradient>
+  </defs>
+  <rect x="72" y="72" width="880" height="880" rx="212" fill="url(#field)"/>
+  <g fill="none" stroke="#f8fffb" stroke-linecap="round" stroke-linejoin="round">
+    <path
+      stroke-width="44"
+      d="M330 820
+         L520 828
+         C564 830 598 806 616 765
+         L657 668
+         C680 613 727 575 786 564
+         L831 556
+         C864 550 879 512 858 486
+         C836 458 807 436 773 422
+         C800 352 780 273 723 221
+         C654 157 546 138 449 172
+         C333 213 259 316 259 436
+         C259 496 278 553 314 606
+         C349 657 360 715 342 774"
+    />
+    <path
+      stroke-width="34"
+      d="M384 285
+         C455 225 557 202 646 230
+         C707 249 753 292 774 350"
+    />
+    <path
+      stroke-width="28"
+      d="M305 422
+         C333 342 394 280 481 247"
+    />
+    <path
+      stroke-width="26"
+      d="M616 392
+         C646 379 678 385 703 407"
+    />
+    <path
+      stroke-width="28"
+      d="M720 474
+         C758 490 796 486 830 466"
+    />
+    <path
+      stroke-width="32"
+      d="M505 573
+         C575 589 644 570 712 520"
+    />
+    <path
+      stroke-width="34"
+      d="M390 667
+         C466 705 557 686 637 616"
+    />
+    <path
+      stroke-width="34"
+      d="M455 807
+         C482 724 542 654 633 610"
+    />
+    <path
+      stroke-width="26"
+      d="M348 770
+         C377 742 407 729 438 731"
+    />
+  </g>
+  <circle cx="653" cy="418" r="17" fill="#f8fffb"/>
+</svg>

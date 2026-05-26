@@ -3,16 +3,19 @@
 import {
   apiResponseSchema,
   checkProjectEmbeddingsResponseSchema,
+  checkProviderCredentialResponseSchema,
   completeOnboardingResponseSchema,
   configureProjectEmbeddingsResponseSchema,
   createConversationMessageResponseSchema,
   createConversationResponseSchema,
   createProjectResponseSchema,
   deleteConversationResponseSchema,
+  deleteProviderCredentialResponseSchema,
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
   getConversationResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
+  getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
   inspectWorkspaceResponseSchema,
   listProjectsResponseSchema,
@@ -20,6 +23,7 @@ import {
   listProjectConversationsResponseSchema,
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
+  setProviderCredentialSessionResponseSchema,
   uploadProjectResourcesResponseSchema,
   updateProjectWorkspaceResponseSchema,
   updateConversationResponseSchema,
@@ -28,6 +32,8 @@ import {
   type ApiResponse,
   type CheckProjectEmbeddingsRequest,
   type CheckProjectEmbeddingsResponse,
+  type CheckProviderCredentialRequest,
+  type CheckProviderCredentialResponse,
   type CompleteOnboardingRequest,
   type CompleteOnboardingResponse,
   type ConfigureProjectEmbeddingsRequest,
@@ -39,11 +45,13 @@ import {
   type CreateProjectRequest,
   type CreateProjectResponse,
   type DeleteConversationResponse,
+  type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
   type GetMeResponse,
   type GetProjectEmbeddingsStatusResponse,
   type GetProjectResponse,
+  type GetProviderCredentialsStatusResponse,
   type InspectWorkspaceRequest,
   type InspectWorkspaceResponse,
   type ListProjectsResponse,
@@ -52,6 +60,8 @@ import {
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
   type ReindexProjectEmbeddingsResponse,
+  type SetProviderCredentialSessionRequest,
+  type SetProviderCredentialSessionResponse,
   type UpdateProjectWorkspaceRequest,
   type UpdateProjectWorkspaceResponse,
   type UpdateConversationRequest,
@@ -149,6 +159,41 @@ export const api = {
 
   listModels: () =>
     request<typeof listModelsHttpResponseSchema>("/api/models", listModelsHttpResponseSchema) as Promise<ListModelsHttpResponse>,
+
+  getProviderCredentialStatus: () =>
+    request<typeof getProviderCredentialsStatusResponseSchema>(
+      "/api/provider-credentials/status",
+      getProviderCredentialsStatusResponseSchema,
+    ) as Promise<GetProviderCredentialsStatusResponse>,
+
+  checkProviderCredential: (input: CheckProviderCredentialRequest) =>
+    request<typeof checkProviderCredentialResponseSchema>(
+      "/api/provider-credentials/check",
+      checkProviderCredentialResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<CheckProviderCredentialResponse>,
+
+  setProviderCredentialSession: (input: SetProviderCredentialSessionRequest) =>
+    request<typeof setProviderCredentialSessionResponseSchema>(
+      "/api/provider-credentials/session",
+      setProviderCredentialSessionResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<SetProviderCredentialSessionResponse>,
+
+  deleteProviderCredentialSession: (providerId: string) =>
+    request<typeof deleteProviderCredentialResponseSchema>(
+      `/api/provider-credentials/${providerId}`,
+      deleteProviderCredentialResponseSchema,
+      {
+        method: "DELETE",
+      },
+    ) as Promise<DeleteProviderCredentialResponse>,
 
   completeOnboarding: (input: CompleteOnboardingRequest) =>
     request<typeof completeOnboardingResponseSchema>("/api/onboarding", completeOnboardingResponseSchema, {

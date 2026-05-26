@@ -292,6 +292,20 @@ OpenRouter should be supported through the Vercel AI SDK OpenRouter provider pac
 
 Anthropic is intentionally skipped in the current V1 implementation. It can be added later through the same `packages/providers` boundary.
 
+## Provider Credentials
+
+Packaged Socrates stores user provider keys in the OS keychain through the Tauri shell. The backend receives keychain values through the launched sidecar process environment and through a session-only credential endpoint immediately after the user saves a key. Development still supports `.env`/server environment fallback.
+
+Credential policy:
+
+```text
+OpenRouter -> required for default chat and context compression
+OpenAI     -> required only for hosted OpenAI embeddings when local Ollama embeddings are not selected/available
+Google     -> optional chat provider
+```
+
+Provider APIs, model calls, telemetry, events, and SQLite rows must never persist or return raw provider key values. Credential status APIs may return only provider id, configured boolean, source, required flag, and safe messages.
+
 ## V1 Model Catalog And Thinking Rules
 
 The current selectable V1 catalog is backend-owned in `packages/providers/src/modelCatalog/modelCatalog.ts` and is exposed to the frontend through `GET /api/models`.
