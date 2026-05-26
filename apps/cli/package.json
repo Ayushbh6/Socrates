@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Launch Socrates as a local-first AI workspace from npm.",
   "bin": {
-    "socrates": "./bin/socrates.mjs"
+    "socrates": "bin/socrates.mjs"
   },
   "files": [
     "bin",
