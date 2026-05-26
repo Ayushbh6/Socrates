@@ -62,9 +62,22 @@ import {
 } from "@socrates/contracts";
 import type { z } from "zod";
 
+declare global {
+  interface Window {
+    __SOCRATES_CONFIG__?: {
+      apiBaseUrl?: string;
+    };
+  }
+}
+
 const directApiBaseUrl = process.env.NEXT_PUBLIC_SOCRATES_API_BASE_URL ?? "http://127.0.0.1:4000";
 
-export const socratesApiBaseUrl = directApiBaseUrl;
+export const socratesApiBaseUrl = (): string => {
+  if (typeof window !== "undefined") {
+    return window.__SOCRATES_CONFIG__?.apiBaseUrl ?? directApiBaseUrl;
+  }
+  return directApiBaseUrl;
+};
 
 async function readJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
@@ -154,7 +167,7 @@ export const api = {
 
   pickWorkspaceFolder: (input: PickWorkspaceFolderRequest) =>
     request<typeof pickWorkspaceFolderResponseSchema>(
-      `${directApiBaseUrl}/api/workspaces/pick-folder`,
+      `${socratesApiBaseUrl()}/api/workspaces/pick-folder`,
       pickWorkspaceFolderResponseSchema,
       {
         method: "POST",
@@ -164,7 +177,7 @@ export const api = {
 
   inspectWorkspace: (input: InspectWorkspaceRequest) =>
     request<typeof inspectWorkspaceResponseSchema>(
-      `${directApiBaseUrl}/api/workspaces/inspect`,
+      `${socratesApiBaseUrl()}/api/workspaces/inspect`,
       inspectWorkspaceResponseSchema,
       {
         method: "POST",

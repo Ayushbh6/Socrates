@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:runtime": "node scripts/build-runtime.mjs",
+    "bundle": "tauri build",
     "dev": "tauri dev"
   },
   "devDependencies": {

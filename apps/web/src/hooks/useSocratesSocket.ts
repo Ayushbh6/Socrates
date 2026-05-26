@@ -30,7 +30,7 @@ export function useSocratesSocket({ onEvent, onError }: UseSocratesSocketInput) 
   }, [onEvent, onError]);
 
   useEffect(() => {
-    const socket = new WebSocket(socketUrlFromApiBase(socratesApiBaseUrl));
+    const socket = new WebSocket(socketUrlFromApiBase(socratesApiBaseUrl()));
     let disposed = false;
     socketRef.current = socket;
 

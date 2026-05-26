@@ -23,4 +23,7 @@ app-data/
 apps/server/app-data/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/target/
+apps/desktop/.cache/
+apps/desktop/runtime/*
+!apps/desktop/runtime/.gitkeep
 host-workspaces/

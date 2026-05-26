@@ -131,6 +131,20 @@ Durable app data defaults to:
 
 Use `SOCRATES_HOME` to change the app-data directory or `SOCRATES_DB_PATH` to point at a specific SQLite file.
 
+Prepare the packaged desktop runtime without building an installer:
+
+```bash
+pnpm desktop:runtime
+```
+
+Build a local internal desktop artifact:
+
+```bash
+pnpm desktop:bundle
+```
+
+The bundle step prepares `apps/desktop/runtime/`, downloads the same official Node.js version as the build process, assembles the server and Next standalone web sidecars, and then runs `tauri build` for the native app bundle. Generated runtime files are ignored. Set `SOCRATES_DESKTOP_NODE_VERSION` only when deliberately rebuilding native dependencies against a different Node runtime. Installer formats such as DMG/MSI should be added with signing/notarization in the release-packaging stage.
+
 ## Provider Strategy
 
 Socrates will start with Vercel AI SDK, but it will not be hardwired to it.

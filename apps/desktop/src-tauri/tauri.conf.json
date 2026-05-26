@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.socrates.desktop",
   "build": {
-    "beforeDevCommand": "node ../scripts/dev-services.mjs",
+    "beforeBuildCommand": "node scripts/build-runtime.mjs",
+    "beforeDevCommand": "node scripts/dev-services.mjs",
     "devUrl": "http://127.0.0.1:3000",
     "frontendDist": "../static"
   },
@@ -24,8 +25,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["app"],
     "category": "DeveloperTool",
-    "shortDescription": "A local-first Socratic coding workspace"
+    "shortDescription": "A local-first Socratic coding workspace",
+    "resources": {
+      "../runtime/": "runtime"
+    }
   }
 }

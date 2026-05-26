@@ -54,6 +54,22 @@ pnpm desktop:dev
 
 The server still owns the SQLite path. By default it stores durable data at `~/.Socrates/socrates.sqlite`; the desktop shell must not invent a separate database path.
 
+Production/internal-tester bundle flow:
+
+```text
+pnpm desktop:bundle
+  -> build server dist
+  -> build Next standalone web runtime
+  -> deploy server production dependencies
+  -> download/copy official Node runtime matching the builder Node version
+  -> copy launcher, server, web, migrations, and Node into apps/desktop/runtime/
+  -> tauri build bundles runtime as native app resources
+```
+
+The current internal artifact target is the native app bundle. Installer formats such as DMG/MSI require the release-packaging stage because they need signing/notarization and platform-specific distribution policy.
+
+On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
+
 ## Returning-User Flow
 
 ```text

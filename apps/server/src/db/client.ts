@@ -13,7 +13,20 @@ export type DatabaseHandle = {
   close: () => void
 }
 
-const migrationsFolder = new URL("../../drizzle", import.meta.url).pathname
+const migrationsFolderCandidates = [
+  new URL("../../drizzle", import.meta.url).pathname,
+  new URL("../drizzle", import.meta.url).pathname,
+  path.resolve(process.cwd(), "drizzle"),
+  path.resolve(process.cwd(), "apps/server/drizzle"),
+]
+
+const resolveMigrationsFolder = (): string => {
+  const migrationsFolder = migrationsFolderCandidates.find((candidate) => fs.existsSync(candidate))
+  if (!migrationsFolder) {
+    throw new Error(`Could not find Drizzle migrations. Checked: ${migrationsFolderCandidates.join(", ")}`)
+  }
+  return migrationsFolder
+}
 
 export const ensureDatabaseDirectory = (dbPath: string): void => {
   if (dbPath === ":memory:") {
@@ -40,7 +53,7 @@ export const openDatabase = (dbPath: string): DatabaseHandle => {
 }
 
 export const runMigrations = (handle: DatabaseHandle): void => {
-  migrate(handle.db, { migrationsFolder })
+  migrate(handle.db, { migrationsFolder: resolveMigrationsFolder() })
   handle.sqlite
     .prepare(
       `INSERT OR IGNORE INTO schema_migrations (version, name, applied_at)
