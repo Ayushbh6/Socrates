@@ -32,13 +32,15 @@ const nodeDownloadUrl = `https://nodejs.org/dist/${nodeVersion}/${nodeArchiveNam
 
 const run = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
+    const { env, ...spawnOptions } = options;
     const child = spawn(command, args, {
       cwd: repoRoot,
       stdio: "inherit",
-      ...options,
+      shell: process.platform === "win32" && command === pnpmCommand,
+      ...spawnOptions,
       env: {
         ...process.env,
-        ...options.env,
+        ...env,
       },
     });
     child.once("exit", (code) => {
