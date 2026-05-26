@@ -16,23 +16,44 @@ const archivePath = path.join(outputDir, archiveName);
 
 const run = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
+    let output = "";
     const child = spawn(command, args, {
       cwd: repoRoot,
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
       ...options,
       env: {
         ...process.env,
         ...options.env,
       },
     });
+    const capture = (chunk, stream) => {
+      const text = chunk.toString();
+      output = `${output}${text}`.slice(-24000);
+      stream.write(chunk);
+    };
+    child.stdout.on("data", (chunk) => capture(chunk, process.stdout));
+    child.stderr.on("data", (chunk) => capture(chunk, process.stderr));
     child.once("exit", (code) => {
       if (code === 0) {
         resolve();
       } else {
+        emitGithubError(output);
         reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
       }
     });
   });
+
+const emitGithubError = (output) => {
+  if (!process.env.GITHUB_ACTIONS) {
+    return;
+  }
+  const tail = output.split(/\r?\n/).slice(-80).join("\n").trim();
+  if (!tail) {
+    return;
+  }
+  const escaped = tail.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+  console.error(`::error title=Runtime archive command failed::${escaped}`);
+};
 
 fs.rmSync(runtimeDir, { recursive: true, force: true });
 fs.mkdirSync(outputDir, { recursive: true });
