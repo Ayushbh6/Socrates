@@ -7,6 +7,7 @@ describe("SocratesAgent", () => {
     const events: ModelEvent[] = [{ type: "model.answer.delta", text: "Hello" }, { type: "model.completed" }]
     const seen: unknown[] = []
     const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
       async *stream(request) {
         seen.push(request)
         yield* events
@@ -49,8 +50,13 @@ describe("SocratesAgent", () => {
 
   it("executes current-turn tool calls and feeds results into a final model step", async () => {
     const seenMessages: unknown[] = []
+    const countRequests: CountedRequest[] = []
     let calls = 0
     const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
       async *stream(request) {
         seenMessages.push(request.messages)
         calls += 1
@@ -124,13 +130,81 @@ describe("SocratesAgent", () => {
 
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
+    expect(countRequests).toHaveLength(2)
+    expect(countRequests[0]?.toolCount).toBe(6)
+    expect(countRequests[1]?.toolCount).toBe(6)
+    expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
+    expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
+  })
+
+  it("omits tools from the final no-tools call after the per-turn tool budget is exhausted", async () => {
+    const countRequests: CountedRequest[] = []
+    const streamRequests: ModelRequestLike[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_read_1",
+              toolName: "read",
+              input: { path: "README.md" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Tool budget was exhausted." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    const streamed: SocratesAgentEvent[] = []
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read README" }],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+      maxToolCallsPerTurn: 0,
+    })) {
+      streamed.push(event)
+    }
+
+    expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
+    expect(countRequests[0]?.toolCount).toBe(6)
+    expect(countRequests[1]?.toolCount).toBe(0)
+    expect(streamRequests[1]?.tools).toHaveLength(0)
+    expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
   })
 
   it("includes dry-run edit diff in approval requests before applying the edit", async () => {
     let calls = 0
     const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
       async *stream() {
         calls += 1
         if (calls === 1) {
@@ -218,6 +292,7 @@ describe("SocratesAgent", () => {
   it("injects user and project context into the system prompt", async () => {
     const seen: unknown[] = []
     const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
       async *stream(request) {
         seen.push(request)
         yield { type: "model.completed" }
@@ -258,3 +333,50 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("plt.show()")
   })
 })
+
+type ModelRequestLike = Parameters<ModelProvider["countTokens"]>[0]
+type CountedRequest = {
+  messages: unknown
+  toolCount: number
+}
+
+const snapshotCountRequest = (request: ModelRequestLike): CountedRequest => ({
+  messages: JSON.parse(JSON.stringify(request.messages)) as unknown,
+  toolCount: request.tools?.length ?? 0,
+})
+
+const emptyToolExecutors = (): ToolExecutors => ({
+  read: async () => ({
+    path: "README.md",
+    kind: "file",
+    content: "",
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+  }),
+  search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  trace_retrieve: async () => ({
+    results: [],
+    totalMatches: 0,
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+    appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
+  }),
+  list_project_resources: async () => ({
+    resources: [],
+    summary: "Listed 0 project resources.",
+    totalResources: 0,
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
+  }),
+})
+
+const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
+  const baseTokens = Math.ceil(`${request.system}${JSON.stringify(request.messages)}${JSON.stringify(request.tools ?? [])}`.length / 4)
+  return {
+    providerId: request.providerId,
+    modelId: request.modelId,
+    inputTokens: baseTokens,
+    baseTokens,
+    method: "local_tiktoken",
+    safetyMarginPercent: 0,
+  }
+}

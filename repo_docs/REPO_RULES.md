@@ -156,6 +156,8 @@ The correct shape is:
 packages/core -> ModelProvider interface -> provider adapter
 ```
 
+Provider/model tokenizer details also belong behind this boundary. Context budgeting must call the provider interface's token counter for the assembled next model request instead of using ad hoc character estimates in `packages/core`, `apps/server`, or `apps/web`.
+
 Not:
 
 ```text
@@ -352,6 +354,8 @@ When a turn is cancelled after assistant text has streamed, Socrates must persis
 Context compression must preserve this same visible-history rule. Recent real user/assistant messages stay real role-typed messages in model context. Hidden summaries, compaction notes, and context briefs must not be stored as fake user or assistant messages. Raw rows stay in SQLite, and compacted context must point back to exact source handles whenever precision matters.
 
 Compression should run at provider-call boundaries. Do not compress by mutating in-flight tool execution state. Persist the tool output first, then compact or summarize only the model-facing context before the next model call.
+
+The context count used for those decisions must include the exact request being considered for the next provider call: system prompt, visible history, hidden summaries, current-turn tool calls/results, and available tool definitions/schemas. `tokenUsage` remains provider-reported diagnostic/cost usage and must not be substituted for model-facing `contextUsage`.
 
 ## 16. Streaming Is Event-Based
 

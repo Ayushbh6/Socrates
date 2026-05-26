@@ -4,6 +4,14 @@ export { createDefaultEmbeddingProvider } from "./embeddings/defaultEmbeddingPro
 export { OllamaEmbeddingProvider, normalizeBaseUrl } from "./embeddings/OllamaEmbeddingProvider"
 export { OpenAiEmbeddingProvider } from "./embeddings/OpenAiEmbeddingProvider"
 export { ProviderRouter } from "./ProviderRouter"
+export {
+  DEFAULT_TOKEN_SAFETY_MARGIN_PERCENT,
+  countModelRequestLocally,
+  estimateTextTokens,
+  shouldUseProviderExactCount,
+  type TokenCountMethod,
+  type TokenCountResult,
+} from "./tokenCounting"
 export { defaultModel, findModelOption, listModels, modelCatalog } from "./modelCatalog/modelCatalog"
 export type {
   EmbeddingCheckRequest,

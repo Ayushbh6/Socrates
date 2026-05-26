@@ -451,7 +451,7 @@ A single turn can contain multiple model calls.
 | `provider_id` | `TEXT` | yes | Provider used for this call. |
 | `model_id` | `TEXT` | yes | Model used for this call. |
 | `status` | `TEXT` | yes | `started`, `streaming`, `completed`, `failed`, `cancelled`. |
-| `request_json` | `TEXT` | yes | Full normalized request sent through `ModelProvider`. Current requests include local `estimatedTokens` and `contextBudgetTokens` for diagnostics and fallback context accounting. |
+| `request_json` | `TEXT` | yes | Full normalized request sent through `ModelProvider`. Current requests include `estimatedTokens` and `contextBudgetTokens` for compatibility, populated from provider-aware context counting, plus token-count metadata such as method, base count, safety margin, exact-count attempt status, and warnings. |
 | `provider_request_json` | `TEXT` | no | Provider-specific request payload if captured. |
 | `response_json` | `TEXT` | no | Final normalized response summary. |
 | `provider_response_json` | `TEXT` | no | Provider-specific final response if captured. |
@@ -502,7 +502,9 @@ Stores token usage and cost for model calls.
 
 Stores live context-window usage snapshots for the UI.
 
-This supports context accounting around provider requests. The current chat header shows only the latest used estimate, such as `23,433 tokens`; richer remaining/percent widgets can be added later.
+This supports context accounting around provider requests. The current chat header shows only the latest used count, such as `23,433 tokens`; richer remaining/percent widgets can be added later.
+
+`context_used_tokens` is the safety count used for model-facing context budgeting. It is counted from the assembled provider-call payload, including system prompt, visible messages, hidden compaction summaries, current-turn tool calls/results, and tool definitions/schemas. Provider-exact counts may be used near thresholds when available; local/fallback tokenizer counts include the configured safety margin.
 
 `context_window_tokens` should represent the effective Socrates prompt budget at that call, capped by the context-compression hard cap even when the selected model advertises a larger provider context window. When no snapshot exists for an older turn, the server may estimate latest context usage from the most recent `model_calls.request_json`.
 
@@ -1071,7 +1073,7 @@ The source data remains in the original tables. `trace_documents` stores searcha
 | `importance` | `TEXT` | no | `low`, `normal`, `high`, `critical`. |
 | `preserve_verbatim` | `INTEGER` | yes | Boolean. True for exact source chunks that must not be summarized away. |
 | `chunk_index` | `INTEGER` | no | Chunk order for multi-chunk source rows. |
-| `token_count_estimate` | `INTEGER` | no | Local token estimate for context budgeting. |
+| `token_count_estimate` | `INTEGER` | no | Local tokenizer estimate for search/chunk sizing and trace budgeting. |
 | `metadata_json` | `TEXT` | no | Tags, paths, commands, files, scores, title hints, etc. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 | `updated_at` | `TEXT` | yes | ISO timestamp. |
@@ -1258,8 +1260,8 @@ This data comes from:
 - `turn_runtime_configs.context_window_tokens`
 - `model_usage`
 - `context_usage_snapshots`
-- provider metadata where available
-- local token estimation when provider does not return exact values
+- provider-exact context counting where available near thresholds
+- local provider-aware tokenizer counts, with a safety margin for fallback/unknown tokenizers
 - `model_calls.request_json.estimatedTokens` / `contextBudgetTokens` as a fallback for older rows without snapshots
 
 ## Replay Query

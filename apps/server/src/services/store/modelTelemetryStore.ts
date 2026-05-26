@@ -1,4 +1,5 @@
 import type { ConversationContextUsage, ConversationTokenUsage } from "@socrates/contracts"
+import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso } from "@socrates/shared"
 import { and, eq } from "drizzle-orm"
 import { contextUsageSnapshots, modelCalls, modelStreamChunks, modelUsage } from "../../db/schema"
@@ -340,7 +341,7 @@ const estimateRequestTokens = (requestJson: string): { estimatedTokens: number; 
     const estimatedTokens =
       typeof parsed.estimatedTokens === "number" && Number.isFinite(parsed.estimatedTokens)
         ? Math.max(0, Math.ceil(parsed.estimatedTokens))
-        : Math.max(0, Math.ceil(requestJson.length / 4))
+        : estimateTextTokens(requestJson).inputTokens
     return {
       estimatedTokens,
       ...(typeof parsed.contextBudgetTokens === "number" && Number.isFinite(parsed.contextBudgetTokens)
@@ -348,7 +349,7 @@ const estimateRequestTokens = (requestJson: string): { estimatedTokens: number; 
         : {}),
     }
   } catch {
-    return { estimatedTokens: Math.max(0, Math.ceil(requestJson.length / 4)) }
+    return { estimatedTokens: estimateTextTokens(requestJson).inputTokens }
   }
 }
 

@@ -10,6 +10,7 @@ import type {
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
 } from "@socrates/contracts"
+import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso } from "@socrates/shared"
 import { and, desc, eq, inArray } from "drizzle-orm"
 import {
@@ -1509,7 +1510,7 @@ const previewJson = (value: unknown, limit: number): string => truncateText(type
 
 const hashText = (text: string): string => createHash("sha256").update(text).digest("hex")
 
-const estimateTokens = (text: string): number => Math.ceil(text.length / 4)
+const estimateTokens = (text: string): number => estimateTextTokens(text).inputTokens
 
 const daysAgoIso = (days: number): string => new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
 

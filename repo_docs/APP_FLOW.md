@@ -669,6 +669,8 @@ target packed context around 100k estimated tokens
 hard cap 180k estimated tokens
 ```
 
+The estimate is provider-aware. Before each model call, Socrates counts the assembled next provider request through `packages/providers`, including the system prompt, visible messages, hidden compaction summaries, active tool calls/results, and tool definitions/schemas. Completed earlier turns still contribute only visible user query plus final assistant answer.
+
 Compression is enabled by default and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`.
 
 The chat header displays the latest estimated model-facing context usage, for example `23,433 tokens`. It does not display cumulative provider token spend. Provider-reported token usage remains persisted for diagnostics and cost accounting.
@@ -804,6 +806,7 @@ user sends first message
   -> create turn_runtime_configs row for selected provider/model/thinking settings
   -> build model history from prior user messages and final assistant answers
   -> inject user display name, project name, full project description, and full project instructions into the Socrates system prompt
+  -> count the assembled provider-call request, including active tools/tool evidence and tool schemas
   -> stream model output through packages/core and packages/providers
   -> create assistant message on completion
   -> persist model_calls, model_stream_chunks, model_usage, context_usage_snapshots when a context window is known, and events

@@ -792,7 +792,9 @@ Cancelled turns may include a cancelled partial assistant message when user-visi
 
 `partialTurns` contains incomplete turn text recovered from persisted `model_stream_chunks` for running, failed, or cancelled turns that do not have a completed assistant message row. It lets the frontend show recovered answer text, reasoning, and historical tool runs after reload instead of making the last user query look unanswered. A returned `partialTurns` item with `status = "running"` should restore the active stop-button state.
 
-`tokenUsage` remains cumulative provider-reported usage for diagnostics and cost accounting. The chat header should use `contextUsage.contextUsedTokens` when available, not `tokenUsage.totalTokens`.
+`tokenUsage` remains cumulative provider-reported usage for diagnostics and cost accounting. `contextUsage` is the model-facing context budget count for the latest provider call, not cumulative spend. The chat header should use `contextUsage.contextUsedTokens` when available, not `tokenUsage.totalTokens`.
+
+The backend computes `contextUsage.contextUsedTokens` from the assembled provider-call payload: system prompt, visible messages, hidden compaction summaries, current-turn tool calls/results, and the tool definitions/schemas available for that call. Completed previous turns still contribute only visible user queries and final assistant answers; historical tool evidence stays in audit/tool tables unless it is part of the active turn or a hidden compaction summary.
 
 Frontend behavior:
 
@@ -1258,6 +1260,8 @@ type ContextUsageSnapshotPayload = {
 ```
 
 The server should use the effective Socrates prompt budget for `contextWindowTokens`, capped by the compression hard cap. The frontend may show the used estimate in the header and can reserve richer widgets for later.
+
+The event shape is intentionally unchanged. Richer counting metadata, such as tokenizer method, base count, safety margin, provider-exact attempt status, and warnings, is stored in backend metadata rather than exposed in the V1 frontend contract.
 
 ### `context.compaction.started`
 

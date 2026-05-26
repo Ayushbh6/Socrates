@@ -388,7 +388,7 @@ model-visible access
 
 Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Completed context compaction snapshots are indexed as hidden `conversation_summary` trace evidence. Rolling conversation summaries outside compaction remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
-Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, compressor prompt/schema, packing, and budget decisions. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `packages/providers` only executes the selected compressor/model request behind the provider interface; provider-specific compression behavior must not leak into `apps/web` or route handlers.
+Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, compressor prompt/schema, packing, and budget decisions. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `packages/providers` owns provider/model token counting and executes the selected compressor/model request behind the provider interface; provider-specific compression or tokenizer behavior must not leak into `apps/web` or route handlers.
 
 ### `packages/providers`
 
@@ -401,6 +401,7 @@ It owns:
 - Vercel AI SDK adapter.
 - Provider/model registry.
 - Provider config loading.
+- Provider-aware request token counting with local tokenizer fallback, safety-margin metadata, and provider-exact counting where available.
 - Future LiteLLM, Ollama, OpenRouter, OpenAI, Anthropic, or Gemini direct adapters if needed.
 
 The agent core should call only the internal provider interface.

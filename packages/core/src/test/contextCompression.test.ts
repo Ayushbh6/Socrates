@@ -36,6 +36,7 @@ describe("context compression", () => {
   it("compacts over-threshold history into a hidden developer block while preserving recent typed messages", async () => {
     const requests: ModelRequest[] = []
     const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
       async *stream(request) {
         requests.push(request)
         yield {
@@ -132,10 +133,111 @@ describe("context compression", () => {
     expect(prepared.messages[0]).toMatchObject({ role: "user", id: "msg_1" })
   })
 
+  it("uses injected provider token counts for thresholds instead of character length", async () => {
+    const provider: ModelProvider = {
+      countTokens: async (request) => ({
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens: 20,
+        baseTokens: 20,
+        method: "local_tiktoken",
+        safetyMarginPercent: 0,
+      }),
+      async *stream() {
+        yield {
+          type: "model.answer.delta",
+          text: JSON.stringify({
+            goals: ["count tokens"],
+            currentTaskState: {},
+            decisions: [],
+            protectedAnchors: [],
+            filesAndArtifacts: [],
+            failuresAndBlockers: [],
+            openTasks: [],
+            sourceHandles: [{ messageId: "msg_1" }],
+          }),
+        }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: [{ role: "user", content: "tiny", id: "msg_1", turnId: "turn_1" }],
+      compression: {
+        enabled: true,
+        thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
+      },
+    })
+
+    expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
+      "context.compaction.started",
+      "context.compaction.completed",
+    ])
+  })
+
+  it("recounts packed context after compaction before returning it", async () => {
+    const countedMessages: unknown[] = []
+    let countCall = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countCall += 1
+        countedMessages.push(request.messages)
+        return {
+          providerId: request.providerId,
+          modelId: request.modelId,
+          inputTokens: countCall === 1 ? 20 : 7,
+          baseTokens: countCall === 1 ? 20 : 7,
+          method: "local_tiktoken",
+          safetyMarginPercent: 0,
+        }
+      },
+      async *stream() {
+        yield {
+          type: "model.answer.delta",
+          text: JSON.stringify({
+            goals: ["recount"],
+            currentTaskState: {},
+            decisions: [],
+            protectedAnchors: [],
+            filesAndArtifacts: [],
+            failuresAndBlockers: [],
+            openTasks: [],
+            sourceHandles: [{ messageId: "msg_1" }],
+          }),
+        }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: [{ role: "user", content: "tiny", id: "msg_1", turnId: "turn_1" }],
+      compression: {
+        enabled: true,
+        thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
+      },
+    })
+
+    expect(countedMessages).toHaveLength(2)
+    expect(JSON.stringify(countedMessages[1])).toContain("context_compaction_summary")
+    expect(prepared.estimatedTokens).toBe(7)
+    expect(prepared.tokenCount.inputTokens).toBe(7)
+  })
+
   it("uses Qwen fallback when the DeepSeek primary compressor fails", async () => {
     const requests: ModelRequest[] = []
     const completedModels: string[] = []
     const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
       async *stream(request) {
         requests.push(request)
         if (request.modelId === "deepseek/deepseek-v4-flash") {
@@ -228,7 +330,20 @@ describe("context compression", () => {
 })
 
 const providerFrom = (events: ModelEvent[]): ModelProvider => ({
+  countTokens: fakeCountTokens,
   async *stream() {
     yield* events
   },
 })
+
+const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
+  const baseTokens = Math.ceil(`${request.system}${JSON.stringify(request.messages)}${JSON.stringify(request.tools ?? [])}`.length / 4)
+  return {
+    providerId: request.providerId,
+    modelId: request.modelId,
+    inputTokens: baseTokens,
+    baseTokens,
+    method: "local_tiktoken",
+    safetyMarginPercent: 0,
+  }
+}

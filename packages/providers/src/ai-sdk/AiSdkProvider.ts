@@ -4,12 +4,73 @@ import { createOpenRouter, openrouter } from "@openrouter/ai-sdk-provider"
 import { smoothStream, streamText, tool, type LanguageModel, type LanguageModelUsage, type ModelMessage as AiModelMessage } from "ai"
 import type { NormalizedToolCall, ProviderMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
+import {
+  countModelRequestLocally,
+  shouldUseProviderExactCount,
+  type TokenCountResult,
+} from "../tokenCounting"
 import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage } from "../types"
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 type ProviderOptions = Record<string, Record<string, JsonValue>>
 
 export class AiSdkProvider implements ModelProvider {
+  async countTokens(request: ModelRequest): Promise<TokenCountResult> {
+    const providerOptions = this.createProviderOptions(request)
+    const local = countModelRequestLocally(request, { providerOptions })
+    if (
+      request.providerId !== "google" ||
+      !request.countTokens?.exactThresholds ||
+      !shouldUseProviderExactCount(local.inputTokens, request.countTokens.exactThresholds)
+    ) {
+      return local
+    }
+
+    const apiKey = process.env.GOOGLE_GENERATIVE_AI_API_KEY ?? process.env.GEMINI_API_KEY
+    if (!apiKey) {
+      return {
+        ...local,
+        providerExactAttempted: false,
+        warnings: [...(local.warnings ?? []), "Google exact token counting skipped because no Gemini API key is configured."],
+      }
+    }
+
+    const googleRequest = toGoogleCountTokensRequest(request)
+    if (!googleRequest) {
+      return {
+        ...local,
+        providerExactAttempted: false,
+        warnings: [
+          ...(local.warnings ?? []),
+          "Google exact token counting skipped because this request contains tool definitions or structured tool parts; using local count with safety margin.",
+        ],
+      }
+    }
+
+    try {
+      const exactTokens = await countGoogleTokens(request.modelId, apiKey, googleRequest)
+      return {
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens: exactTokens,
+        baseTokens: exactTokens,
+        method: "provider_exact",
+        safetyMarginPercent: 0,
+        providerExactAttempted: true,
+        ...(local.warnings?.length ? { warnings: local.warnings } : {}),
+      }
+    } catch (error) {
+      return {
+        ...local,
+        providerExactAttempted: true,
+        warnings: [
+          ...(local.warnings ?? []),
+          `Google exact token counting failed; using local count with safety margin. ${error instanceof Error ? error.message : String(error)}`,
+        ],
+      }
+    }
+  }
+
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     const streamTimeout = createStreamTimeout(request)
     try {
@@ -93,6 +154,89 @@ export class AiSdkProvider implements ModelProvider {
         return createOpenRouterProviderOptions(request)
     }
   }
+}
+
+type GoogleContent = {
+  role: "user" | "model"
+  parts: Array<{ text: string }>
+}
+
+type GoogleCountTokensRequest = {
+  generateContentRequest: {
+    model: string
+    systemInstruction?: { role: "system"; parts: Array<{ text: string }> }
+    contents: GoogleContent[]
+  }
+}
+
+const countGoogleTokens = async (modelId: string, apiKey: string, request: GoogleCountTokensRequest): Promise<number> => {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:countTokens?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  )
+
+  if (!response.ok) {
+    throw new SocratesError("google_count_tokens_failed", `Google countTokens failed with HTTP ${response.status}`, {
+      details: { status: response.status, body: await response.text().catch(() => "") },
+      recoverable: true,
+    })
+  }
+
+  const json = (await response.json()) as { totalTokens?: unknown }
+  if (typeof json.totalTokens !== "number" || !Number.isFinite(json.totalTokens)) {
+    throw new SocratesError("google_count_tokens_invalid_response", "Google countTokens returned an invalid response.", {
+      details: json,
+      recoverable: true,
+    })
+  }
+  return Math.ceil(json.totalTokens)
+}
+
+const toGoogleCountTokensRequest = (request: ModelRequest): GoogleCountTokensRequest | undefined => {
+  if (request.tools && request.tools.length > 0) {
+    return undefined
+  }
+
+  const contents: GoogleContent[] = []
+  for (const message of request.messages) {
+    const text = textContentForGeminiCount(message.content)
+    if (text === undefined) {
+      return undefined
+    }
+    contents.push({
+      role: message.role === "assistant" ? "model" : "user",
+      parts: [{ text: message.role === "developer" ? `[developer]\n${text}` : text }],
+    })
+  }
+
+  return {
+    generateContentRequest: {
+      model: `models/${request.modelId}`,
+      ...(request.system ? { systemInstruction: { role: "system", parts: [{ text: request.system }] } } : {}),
+      contents,
+    },
+  }
+}
+
+const textContentForGeminiCount = (content: ModelRequest["messages"][number]["content"]): string | undefined => {
+  if (typeof content === "string") {
+    return content
+  }
+  if (!Array.isArray(content)) {
+    return undefined
+  }
+  const textParts: string[] = []
+  for (const part of content) {
+    if (part.type !== "text") {
+      return undefined
+    }
+    textParts.push(part.text)
+  }
+  return textParts.join("\n")
 }
 
 const DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS = 120_000

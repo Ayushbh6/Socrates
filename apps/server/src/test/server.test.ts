@@ -7,7 +7,7 @@ import WebSocket from "ws"
 import type { ApiResponse, Conversation, Message, Project, ProjectEmbeddingStatus, ProjectInstructions, ProjectResource, ProjectWorkspace, ServerEvent, User } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
-import type { EmbeddingProvider } from "@socrates/providers"
+import type { EmbeddingProvider, ModelProvider } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
@@ -36,8 +36,21 @@ const buildTestServer = async (dbPath = tempDbPath(), agent = createTestAgent())
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
+  const baseTokens = Math.ceil(`${request.system}${JSON.stringify(request.messages)}${JSON.stringify(request.tools ?? [])}`.length / 4)
+  return {
+    providerId: request.providerId,
+    modelId: request.modelId,
+    inputTokens: baseTokens,
+    baseTokens,
+    method: "local_tiktoken",
+    safetyMarginPercent: 0,
+  }
+}
+
 const createTestAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream(request) {
       yield { type: "model.reasoning.delta", text: "Testing." }
       yield { type: "model.answer.delta", text: `Echo: ${request.messages.at(-1)?.content ?? ""}` }
@@ -58,6 +71,7 @@ const createTestAgent = (): SocratesAgent => {
 
 const createCapturingAgent = (requests: unknown[]): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream(request) {
       requests.push(request)
       yield { type: "model.answer.delta", text: "Captured" }
@@ -74,9 +88,37 @@ const createCapturingAgent = (requests: unknown[]): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createFixedContextAgent = (inputTokens: number): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    async countTokens(request) {
+      return {
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens,
+        baseTokens: inputTokens,
+        method: "local_tiktoken",
+        safetyMarginPercent: 0,
+      }
+    },
+    async *stream() {
+      yield { type: "model.answer.delta", text: "Fixed context answer." }
+      yield {
+        type: "model.completed",
+        usage: {
+          inputTokens: 4,
+          outputTokens: 2,
+          totalTokens: 6,
+        },
+      }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createCancellablePartialAgent = (requests: unknown[]): SocratesAgent => {
   let call = 0
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream(request) {
       call += 1
       requests.push(request)
@@ -95,6 +137,7 @@ const createCancellablePartialAgent = (requests: unknown[]): SocratesAgent => {
 
 const createApprovalWaitingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream() {
       yield {
         type: "model.tool_call.completed",
@@ -112,6 +155,7 @@ const createApprovalWaitingAgent = (): SocratesAgent => {
 
 const createFailingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream() {
       yield {
         type: "model.failed",
@@ -125,6 +169,7 @@ const createFailingAgent = (): SocratesAgent => {
 const createPersistentBashAgent = (): SocratesAgent => {
   let step = 0
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream() {
       step += 1
       if (step === 1) {
@@ -161,6 +206,7 @@ const createPersistentBashAgent = (): SocratesAgent => {
 const createApprovalToolAgent = (): SocratesAgent => {
   let step = 0
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream() {
       step += 1
       if (step === 1) {
@@ -214,6 +260,7 @@ const testEmbeddingVector = (value: string): number[] => {
 const createGeminiSignatureAgent = (requests: unknown[]): SocratesAgent => {
   let step = 0
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
     async *stream(request) {
       requests.push(request)
       step += 1
@@ -1430,6 +1477,48 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("returns contextUsage from snapshots rather than cumulative tokenUsage", async () => {
+    const app = await buildTestServer(tempDbPath(), createFixedContextAgent(12_345))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(
+        socket,
+        chatMessageCommandWithRuntime(project.id, conversation.id, "Count this request", {
+          modelId: "gpt-5.4-mini",
+          thinkingEnabled: false,
+          thinkingEffort: "none",
+        }),
+      )
+
+      const snapshot = await waitForEvent(socket, "context.usage.snapshot")
+      expect(snapshot.payload.contextUsedTokens).toBe(12_345)
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{
+        tokenUsage: { totalTokens: number }
+        contextUsage?: { contextUsedTokens: number; contextWindowTokens: number }
+      }>(response.payload)
+
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.tokenUsage.totalTokens).toBe(6)
+        expect(body.data.contextUsage?.contextUsedTokens).toBe(12_345)
+        expect(body.data.contextUsage?.contextUsedTokens).not.toBe(body.data.tokenUsage.totalTokens)
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
   it("creates verbatim anchors for long canonical user source text", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
@@ -1774,6 +1863,16 @@ describe("WebSocket API", () => {
       if (body.ok) {
         expect(JSON.stringify(body.data.messages)).not.toContain("thoughtSignature")
       }
+
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Continue without replaying tools"))
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const nextTurnRequest = requests[2] as { messages: Array<{ role: string; content: unknown }> }
+      expect(JSON.stringify(nextTurnRequest.messages)).toContain("Resources listed.")
+      expect(JSON.stringify(nextTurnRequest.messages)).toContain("Continue without replaying tools")
+      expect(JSON.stringify(nextTurnRequest.messages)).not.toContain("tool-result")
+      expect(JSON.stringify(nextTurnRequest.messages)).not.toContain("sig_gemini_1")
     } finally {
       socket.close()
     }

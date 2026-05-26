@@ -1,5 +1,5 @@
-import type { ModelMessage, ModelProvider, ModelUsage } from "@socrates/providers"
-import type { ProviderId, RuntimeConfig } from "@socrates/contracts"
+import { estimateTextTokens, type ModelMessage, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
+import type { ModelToolDefinition, ProviderId, RuntimeConfig } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
 
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
@@ -122,6 +122,7 @@ export type PrepareContextInput = {
   runtimeConfig: RuntimeConfig
   system: string
   messages: ModelMessage[]
+  tools?: ModelToolDefinition[]
   compression?: ContextCompressionRuntime
 }
 
@@ -129,18 +130,21 @@ export type PreparedContext = {
   system: string
   messages: ModelMessage[]
   estimatedTokens: number
+  tokenCount: TokenCountResult
   compactionEvents: ContextCompactionLifecycleEvent[]
 }
 
 export const prepareContextForModelCall = async (input: PrepareContextInput): Promise<PreparedContext> => {
   const thresholds = { ...DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, ...input.compression?.thresholds }
-  const initialTokens = estimateModelContextTokens(input.system, input.messages)
+  const initialTokenCount = await countPreparedContext(input, thresholds)
+  const initialTokens = initialTokenCount.inputTokens
 
   if (!input.compression?.enabled || initialTokens < thresholds.synchronousTokens) {
     return {
       system: input.system,
       messages: input.messages,
       estimatedTokens: initialTokens,
+      tokenCount: initialTokenCount,
       compactionEvents: [],
     }
   }
@@ -151,11 +155,13 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
       system: input.system,
       messages: input.messages,
       estimatedTokens: initialTokens,
+      tokenCount: initialTokenCount,
       compactionEvents: [result.failed],
     }
   }
 
-  const finalTokens = estimateModelContextTokens(input.system, result.messages)
+  const finalTokenCount = await countPreparedContext({ ...input, messages: result.messages }, thresholds)
+  const finalTokens = finalTokenCount.inputTokens
   if (finalTokens > thresholds.hardCapTokens) {
     const error = new SocratesError("context_compaction_over_hard_cap", "Compacted context still exceeds the hard context cap.", {
       details: { finalTokens, hardCapTokens: thresholds.hardCapTokens },
@@ -171,6 +177,7 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
       system: input.system,
       messages: input.messages,
       estimatedTokens: initialTokens,
+      tokenCount: initialTokenCount,
       compactionEvents: [{ type: "context.compaction.failed", snapshotId: result.snapshotId, error }],
     }
   }
@@ -181,17 +188,18 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
     renderedSummary: result.renderedSummary,
     sourceHandles: result.sourceHandles,
     inputTokensEstimate: initialTokens,
-      outputTokensEstimate: result.outputTokensEstimate,
-      contextTokensAfter: finalTokens,
-      ...(result.usage ? { usage: result.usage } : {}),
-      compressorProviderId: result.compressorProviderId,
-      compressorModelId: result.compressorModelId,
-    })
+    outputTokensEstimate: result.outputTokensEstimate,
+    contextTokensAfter: finalTokens,
+    ...(result.usage ? { usage: result.usage } : {}),
+    compressorProviderId: result.compressorProviderId,
+    compressorModelId: result.compressorModelId,
+  })
 
   return {
     system: input.system,
     messages: result.messages,
     estimatedTokens: finalTokens,
+    tokenCount: finalTokenCount,
     compactionEvents: [
       result.started,
       {
@@ -207,7 +215,7 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
 
 export const precomputeContextSnapshot = async (input: PrepareContextInput): Promise<ContextCompactionLifecycleEvent[]> => {
   const thresholds = { ...DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, ...input.compression?.thresholds }
-  const initialTokens = estimateModelContextTokens(input.system, input.messages)
+  const initialTokens = (await countPreparedContext(input, thresholds)).inputTokens
   if (!input.compression?.enabled || initialTokens < thresholds.precomputeTokens) {
     return []
   }
@@ -217,7 +225,7 @@ export const precomputeContextSnapshot = async (input: PrepareContextInput): Pro
     return [result.failed]
   }
 
-  const projectedTokens = estimateModelContextTokens(input.system, result.messages)
+  const projectedTokens = (await countPreparedContext({ ...input, messages: result.messages }, thresholds)).inputTokens
   await input.compression.completeSnapshot?.({
     snapshotId: result.snapshotId,
     summary: result.summary,
@@ -340,10 +348,39 @@ const runContextCompaction = async (
   }
 }
 
-export const estimateModelContextTokens = (system: string, messages: ModelMessage[]): number =>
-  estimateTokens(system) + estimateTokens(JSON.stringify(messages))
+export const estimateModelContextTokens = async (
+  provider: ModelProvider,
+  input: Omit<PrepareContextInput, "provider" | "compression">,
+  thresholds: Pick<ContextCompressionThresholds, "precomputeTokens" | "synchronousTokens" | "hardCapTokens"> = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
+): Promise<TokenCountResult> =>
+  provider.countTokens({
+    providerId: input.providerId,
+    modelId: input.modelId,
+    system: input.system,
+    messages: input.messages,
+    runtimeConfig: input.runtimeConfig,
+    ...(input.tools ? { tools: input.tools } : {}),
+    countTokens: { exactThresholds: [thresholds.precomputeTokens, thresholds.synchronousTokens, thresholds.hardCapTokens] },
+  })
 
-export const estimateTokens = (value: string): number => Math.ceil(value.length / 4)
+export const estimateTokens = (value: string): number => estimateTextTokens(value).inputTokens
+
+const countPreparedContext = (
+  input: PrepareContextInput,
+  thresholds: Pick<ContextCompressionThresholds, "precomputeTokens" | "synchronousTokens" | "hardCapTokens">,
+): Promise<TokenCountResult> =>
+  estimateModelContextTokens(
+    input.provider,
+    {
+      providerId: input.providerId,
+      modelId: input.modelId,
+      runtimeConfig: input.runtimeConfig,
+      system: input.system,
+      messages: input.messages,
+      ...(input.tools ? { tools: input.tools } : {}),
+    },
+    thresholds,
+  )
 
 type CompressorRunInput = {
   provider: ModelProvider
@@ -439,7 +476,10 @@ const runCompressorModel = async (input: CompressorRunInput): Promise<Compressor
     sourceHandles: Array.isArray((parsed as { sourceHandles?: unknown }).sourceHandles)
       ? ((parsed as { sourceHandles: Array<Record<string, unknown>> }).sourceHandles)
       : [],
-    outputTokensEstimate: estimateTokens(renderedSummary),
+    outputTokensEstimate: estimateTextTokens(renderedSummary, {
+      providerId: input.providerId,
+      modelId: input.modelId,
+    }).inputTokens,
     ...(usage ? { usage } : {}),
   }
 }

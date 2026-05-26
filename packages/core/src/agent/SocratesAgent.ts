@@ -8,7 +8,7 @@ import {
   type ToolExecutionResult,
 } from "@socrates/contracts"
 import { createId, normalizeError, SocratesError } from "@socrates/shared"
-import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
+import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage, TokenCountResult } from "@socrates/providers"
 import {
   prepareContextForModelCall,
   precomputeContextSnapshot,
@@ -37,6 +37,7 @@ export type SocratesAgentTurnInput = {
     runtimeConfig: RuntimeConfig
     messages: ModelMessage[]
     estimatedTokens: number
+    tokenCount: TokenCountResult
     promptContext?: SocratesPromptContext
     tools: ModelToolDefinition[]
   }) => string
@@ -94,6 +95,7 @@ export class SocratesAgent {
         runtimeConfig: input.runtimeConfig,
         system,
         messages,
+        tools,
         ...(input.contextCompression ? { compression: input.contextCompression } : {}),
       })
       for (const event of preparedContext.compactionEvents) {
@@ -111,6 +113,7 @@ export class SocratesAgent {
         runtimeConfig: input.runtimeConfig,
         messages: preparedContext.messages,
         estimatedTokens: preparedContext.estimatedTokens,
+        tokenCount: preparedContext.tokenCount,
         tools,
         ...(input.promptContext ? { promptContext: input.promptContext } : {}),
       })

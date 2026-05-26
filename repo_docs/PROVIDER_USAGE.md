@@ -533,6 +533,16 @@ For every model call, Socrates should store:
 - Normalized request.
 - Provider-specific request if captured.
 - Normalized response summary.
+
+## Context Token Counting
+
+Context accounting belongs behind `packages/providers` because tokenizer behavior is provider/model-specific. The internal `ModelProvider` interface exposes `countTokens(request)`, and `packages/core` uses that count before each provider call, including every tool-loop continuation.
+
+The counted payload is the normalized provider-call request: system prompt, visible messages, hidden compaction summaries, current-turn tool calls/results, and full tool definitions/schemas. Completed prior turns are still loaded as visible user query plus final assistant answer only; old tool traces remain persisted audit data unless retrieved or summarized into current context.
+
+OpenAI/OpenRouter local counts use `js-tiktoken` mappings where possible. Unknown OpenRouter/local model tokenizers use the local fallback tokenizer with a 15 percent safety margin. Google requests may use Gemini provider-exact `countTokens` near thresholds when credentials are configured; otherwise the local/fallback safety count is used.
+
+`contextUsage` and `context_usage_snapshots` store the safety count used for context budgeting. `tokenUsage` and `model_usage` remain provider-reported cost/diagnostic usage and must not drive the chat header.
 - Provider-specific response if captured.
 - Stream chunks.
 - Usage.

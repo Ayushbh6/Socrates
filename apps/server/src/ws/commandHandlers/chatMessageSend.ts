@@ -97,6 +97,7 @@ export const handleChatMessageSend = async (
             modelId: modelRequest.modelId,
             estimatedTokens: modelRequest.estimatedTokens,
             contextBudgetTokens,
+            tokenCount: modelRequest.tokenCount,
             messages: modelRequest.messages,
             promptContext: modelRequest.promptContext,
             runtimeConfig: modelRequest.runtimeConfig,
@@ -117,6 +118,10 @@ export const handleChatMessageSend = async (
             modelId: modelRequest.modelId,
             contextWindowTokens: Math.min(model.contextWindowTokens, contextBudgetTokens),
             contextUsedTokens: modelRequest.estimatedTokens,
+            metadata: {
+              source: "model_context_estimate",
+              tokenCount: modelRequest.tokenCount,
+            },
           })
         }
         return modelCallId
@@ -625,6 +630,7 @@ const sendContextUsageSnapshot = (
     modelId: string
     contextWindowTokens: number
     contextUsedTokens: number
+    metadata?: Record<string, unknown>
   },
 ): void => {
   const contextLeftTokens = Math.max(input.contextWindowTokens - input.contextUsedTokens, 0)
@@ -639,7 +645,7 @@ const sendContextUsageSnapshot = (
     modelId: input.modelId,
     contextWindowTokens: input.contextWindowTokens,
     contextUsedTokens: input.contextUsedTokens,
-    metadata: { source: "model_context_estimate" },
+    metadata: input.metadata ?? { source: "model_context_estimate" },
   })
   appendAndSend(
     socket,

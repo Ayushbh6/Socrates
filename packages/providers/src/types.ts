@@ -7,6 +7,7 @@ import type {
   RuntimeConfig,
   ThinkingEffort,
 } from "@socrates/contracts"
+import type { TokenCountResult } from "./tokenCounting"
 
 export type ModelMessage = {
   role: "user" | "assistant" | "system" | "developer" | "tool"
@@ -40,6 +41,9 @@ export type ModelRequest = {
   tools?: ModelToolDefinition[]
   modelCallId?: string
   abortSignal?: AbortSignal
+  countTokens?: {
+    exactThresholds?: number[]
+  }
 }
 
 export type ModelEvent =
@@ -53,6 +57,7 @@ export type ModelEvent =
 
 export interface ModelProvider {
   stream(request: ModelRequest): AsyncIterable<ModelEvent>
+  countTokens(request: ModelRequest): Promise<TokenCountResult>
 }
 
 export type EmbeddingUsage = {
