@@ -294,7 +294,7 @@ Anthropic is intentionally skipped in the current V1 implementation. It can be a
 
 ## Provider Credentials
 
-Packaged Socrates stores user provider keys in the OS keychain through the Tauri shell. The backend receives keychain values through the launched sidecar process environment and through a session-only credential endpoint immediately after the user saves a key. Development still supports `.env`/server environment fallback.
+The npm CLI/browser app stores user provider keys in `~/.Socrates/.env` through the local backend. Packaged Tauri builds store provider keys in the OS keychain through the Tauri shell. The backend receives newly saved keys through a session credential endpoint immediately after save. Development still supports `.env`/server environment fallback.
 
 Credential policy:
 

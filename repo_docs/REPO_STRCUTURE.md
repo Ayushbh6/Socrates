@@ -208,7 +208,19 @@ It must not own:
 - HTTP/WebSocket contract definitions.
 - Independent Socrates persistence.
 
-The desktop shell wraps the existing `apps/web` and `apps/server` runtime. It may start those services for development or bundle/launch them for packaged builds, but durable app data remains server-owned and defaults to `~/.Socrates/socrates.sqlite`. Packaged builds use `apps/desktop/runtime/` as generated bundle input; signed release builds publish macOS DMG and Windows NSIS artifacts from GitHub Actions. Source logic still belongs in the existing app/packages boundaries.
+The desktop shell wraps the existing `apps/web` and `apps/server` runtime. It may start those services for development or bundle/launch them for packaged builds, but durable app data remains server-owned and defaults to `~/.Socrates/socrates.sqlite`. Packaged builds use `apps/desktop/runtime/` as generated bundle input. The same runtime builder also creates unsigned npm CLI runtime archives without bundled Node. Signed release builds publish macOS DMG and Windows NSIS artifacts only from the manual desktop release workflow. Source logic still belongs in the existing app/packages boundaries.
+
+### `apps/cli`
+
+The npm launcher package.
+
+It owns:
+
+- The `@socrates-ai/cli` package manifest and `socrates` binary.
+- GitHub Release runtime lookup, download, checksum verification, and extraction.
+- Local port selection, browser opening, and runtime process lifecycle.
+
+It must not own agent logic, provider logic, workspace operations, persistence, or frontend UI behavior.
 
 ### `apps/server`
 

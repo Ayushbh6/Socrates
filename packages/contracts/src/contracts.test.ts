@@ -269,7 +269,7 @@ describe("http contracts", () => {
       providerLabel: "OpenRouter",
       required: true,
       configured: true,
-      source: "keychain",
+      source: "local_file",
       message: "Required for chat and context compression.",
     }
 
@@ -281,7 +281,7 @@ describe("http contracts", () => {
         googleOptional: true,
       }).success,
     ).toBe(true)
-    expect(setProviderCredentialSessionRequestSchema.safeParse({ providerId: "openrouter", apiKey: "sk-test" }).success).toBe(true)
+    expect(setProviderCredentialSessionRequestSchema.safeParse({ providerId: "openrouter", apiKey: "sk-test", source: "local_file" }).success).toBe(true)
     expect(setProviderCredentialSessionResponseSchema.safeParse({ status }).success).toBe(true)
     expect(checkProviderCredentialRequestSchema.safeParse({ providerId: "openrouter" }).success).toBe(true)
     expect(

@@ -1,0 +1,30 @@
+{
+  "name": "@socrates-ai/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Launch Socrates as a local-first AI workspace from npm.",
+  "bin": {
+    "socrates": "./bin/socrates.mjs"
+  },
+  "files": [
+    "bin",
+    "src/cli.mjs",
+    "src/runtime.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ayushbh6/Socrates.git",
+    "directory": "apps/cli"
+  },
+  "license": "UNLICENSED"
+}

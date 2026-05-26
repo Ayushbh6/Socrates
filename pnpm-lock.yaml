@@ -18,6 +18,8 @@ importers:
         specifier: ^4.0.15
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@20.19.41)(msw@2.14.6(@types/node@20.19.41)(typescript@5.9.3))(vite@8.0.12(@types/node@20.19.41)(esbuild@0.27.7)(jiti@2.7.0)(tsx@4.21.0))
 
+  apps/cli: {}
+
   apps/desktop:
     devDependencies:
       '@tauri-apps/cli':

@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>Desktop app.</strong>
+  <strong>One-command local app.</strong>
   <strong>Real tools.</strong>
   <strong>Replayable history.</strong>
   <strong>User-owned data.</strong>
@@ -17,7 +17,7 @@
 
 ---
 
-Socrates is a personal AI collaborator that runs as a desktop app and works directly with your local projects. It is built for the workflows where a normal chat box breaks down: multi-turn repo work, tool use, context compression, local resources, model switching, command output, and durable memory.
+Socrates is a personal AI collaborator that runs locally and works directly with your projects. It is built for the workflows where a normal chat box breaks down: multi-turn repo work, tool use, context compression, local resources, model switching, command output, and durable memory.
 
 The goal is not to hide the work behind a black box. Socrates shows what it is doing, keeps the project history inspectable, and stores the meaningful runtime trail locally.
 
@@ -31,7 +31,7 @@ The goal is not to hide the work behind a black box. Socrates shows what it is d
 - Tracks model usage and model-facing context usage separately.
 - Compresses long conversations so active projects can keep going.
 - Stores sessions, turns, model calls, tool calls, errors, events, and feedback in SQLite.
-- Supports desktop packaging with OS-native app data and provider credential storage.
+- Runs from npm as a local browser app, with desktop packaging still available for future signed releases.
 
 ## Why It Exists
 
@@ -49,6 +49,7 @@ a desktop AI workspace
 
 Socrates already includes the core shape of the app:
 
+- npm CLI launcher for a one-command local app.
 - Tauri desktop shell with packaged backend and web sidecars.
 - Next.js frontend for onboarding, project dashboards, chat, and settings.
 - Fastify backend with HTTP and WebSocket APIs.
@@ -56,38 +57,36 @@ Socrates already includes the core shape of the app:
 - Provider-aware context token counting with safety margins and compression thresholds.
 - DeepSeek V4 Flash context compression path.
 - SQLite persistence for conversations, events, model calls, tool calls, and context snapshots.
-- OS keychain integration for packaged provider credentials.
-- Signed-release workflow scaffolding for macOS DMG and Windows NSIS installers.
-- One-command install script entrypoints for GitHub Releases.
+- Local provider-key persistence for npm/browser mode.
+- OS keychain integration for future packaged desktop credentials.
+- Unsigned GitHub Release runtime bundles for macOS and Windows.
 
 ## Sneak Peek
 
-The next slices are focused on turning the release pipeline into a real public distribution:
+The next slices are focused on making the npm distribution smooth:
 
-- first signed macOS Apple Silicon release,
-- first signed Windows x64 installer,
-- updater manifest validation from GitHub Releases,
+- first published `@socrates-ai/cli` package,
+- first unsigned runtime release bundles on GitHub,
 - smoother provider-key onboarding,
 - richer settings for local-vs-hosted embeddings,
 - tighter public docs and screenshots.
 
 ## Install
 
-After the first GitHub Release is published, the intended install paths are:
-
-macOS Apple Silicon:
+After the first npm package and GitHub runtime release are published:
 
 ```bash
-curl -fsSL https://github.com/Ayushbh6/Socrates/releases/latest/download/install-socrates.sh | bash
+npx @socrates-ai/cli
 ```
 
-Windows x64:
+Or install the command globally:
 
-```powershell
-irm https://github.com/Ayushbh6/Socrates/releases/latest/download/install-socrates.ps1 | iex
+```bash
+npm install -g @socrates-ai/cli
+socrates
 ```
 
-The scripts fetch the latest release, download the matching installer, verify `SHA256SUMS`, and open or run the installer.
+The CLI downloads the matching unsigned runtime bundle from GitHub Releases, verifies `SHA256SUMS`, stores it under `~/.Socrates/runtimes/`, starts Socrates on `127.0.0.1`, and opens the browser.
 
 ## Local Development
 
@@ -107,6 +106,12 @@ Build the packaged runtime:
 
 ```bash
 pnpm desktop:runtime
+```
+
+Build an unsigned npm runtime archive:
+
+```bash
+pnpm runtime:archive
 ```
 
 Build local desktop artifacts:
@@ -133,7 +138,13 @@ Use `SOCRATES_HOME` to change the app-data directory, or `SOCRATES_DB_PATH` to p
 
 ## Provider Keys
 
-Packaged Socrates stores provider credentials in the OS keychain.
+The npm/browser app stores provider credentials in:
+
+```text
+~/.Socrates/.env
+```
+
+Future packaged desktop builds store provider credentials in the OS keychain.
 
 - OpenRouter is required for the default chat and compression path.
 - OpenAI is required only when hosted embeddings are selected instead of local Ollama embeddings.
@@ -173,7 +184,14 @@ SQLite records the runtime history
 
 ## Release Packaging
 
-Tagged releases such as `v0.1.0` are built by GitHub Actions. The release workflow is designed to publish:
+Tagged releases such as `v0.1.0` build unsigned npm runtime bundles through GitHub Actions:
+
+- `socrates-runtime-darwin-arm64.zip`,
+- `socrates-runtime-darwin-x64.zip`,
+- `socrates-runtime-win32-x64.zip`,
+- `SHA256SUMS`.
+
+The signed Tauri desktop workflow is manual and reserved for a future polished release path. It is designed to publish:
 
 - macOS Apple Silicon DMG,
 - Windows x64 NSIS setup EXE,
@@ -183,6 +201,14 @@ Tagged releases such as `v0.1.0` are built by GitHub Actions. The release workfl
 - one-command installer scripts.
 
 Real release builds require Apple Developer ID/notary secrets, Azure Trusted Signing secrets, and a Tauri updater signing key configured in GitHub.
+
+## Troubleshooting
+
+- Node.js 20 or newer is required.
+- First launch downloads a runtime bundle from GitHub Releases.
+- App data lives under `~/.Socrates` unless `--home` is used.
+- Provider keys stay local and are not stored in SQLite.
+- macOS/Windows app signing is not needed for the npm launcher path.
 
 ## Repository Docs
 
@@ -197,4 +223,4 @@ For implementation details and active engineering rules, see:
 
 ## Status
 
-Socrates is under active development. The app is usable locally, and the current focus is getting the first signed desktop release into a clean public distribution flow.
+Socrates is under active development. The app is usable locally, and the current focus is the npm launcher plus unsigned runtime release flow.

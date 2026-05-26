@@ -67,23 +67,30 @@ pnpm desktop:bundle
   -> tauri build bundles runtime as native app resources
 ```
 
-Release packaging flow:
+npm CLI release flow:
 
 ```text
 push SemVer tag, for example v0.1.0
-  -> GitHub Actions builds macOS arm64 DMG and Windows x64 NSIS setup EXE
-  -> release workflow signs/notarizes with GitHub secrets
-  -> updater signatures, latest.json, SHA256SUMS, and install scripts are attached to GitHub Releases
+  -> GitHub Actions builds unsigned runtime zips for macOS arm64, macOS x64, and Windows x64
+  -> SHA256SUMS and runtime zips are attached to GitHub Releases
+  -> users run npx @socrates-ai/cli
+  -> CLI downloads/verifies/extracts the matching runtime under ~/.Socrates/runtimes/
+  -> CLI starts the backend and web sidecars and opens the browser
 ```
 
-Release builds are stable-channel only. The macOS artifact is a signed/notarized DMG, and the Windows artifact is a signed NSIS setup executable. Package-manager distribution is intentionally deferred until GitHub Releases are proven.
+The npm CLI path is the primary distribution path until paid desktop signing is available. The signed Tauri release workflow is manual-only and reserved for a future polished desktop release.
 
 On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
 
 Provider credentials:
 
 ```text
-packaged app
+CLI/browser app
+  -> user saves provider key through onboarding or /settings
+  -> backend writes the secret to ~/.Socrates/.env with restricted local file permissions
+  -> backend also keeps the key in the current process session
+
+packaged Tauri app
   -> user saves provider key through onboarding or /settings
   -> Tauri writes the secret to OS keychain
   -> Tauri injects configured keys into the sidecar process environment at launch

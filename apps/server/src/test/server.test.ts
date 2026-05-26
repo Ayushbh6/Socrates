@@ -688,7 +688,9 @@ describe("HTTP API", () => {
   })
 
   it("manages provider credentials without returning secret values", async () => {
-    const app = await buildTestServer()
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-credentials-test-"))
+    const app = await buildServer({ dbPath: path.join(home, "socrates.sqlite"), socratesHome: home, agent: createTestAgent() })
+    servers.push(app)
 
     const initialResponse = await app.inject({ method: "GET", url: "/api/provider-credentials/status" })
     const initialBody = parseResponse<GetProviderCredentialsStatusResponse>(initialResponse.payload)
@@ -698,10 +700,11 @@ describe("HTTP API", () => {
     const setResponse = await app.inject({
       method: "POST",
       url: "/api/provider-credentials/session",
-      payload: { providerId: "openrouter", apiKey: "sk-secret-test", source: "manual" },
+      payload: { providerId: "openrouter", apiKey: "sk-secret-test", source: "local_file" },
     })
     expect(setResponse.statusCode).toBe(200)
     expect(setResponse.payload).not.toContain("sk-secret-test")
+    expect(fs.readFileSync(path.join(home, ".env"), "utf8")).toContain("OPENROUTER_API_KEY=")
 
     const checkResponse = await app.inject({
       method: "POST",
@@ -714,6 +717,7 @@ describe("HTTP API", () => {
     const deleteResponse = await app.inject({ method: "DELETE", url: "/api/provider-credentials/openrouter" })
     expect(deleteResponse.statusCode).toBe(200)
     expect(deleteResponse.payload).not.toContain("sk-secret-test")
+    expect(fs.readFileSync(path.join(home, ".env"), "utf8")).not.toContain("OPENROUTER_API_KEY=")
   })
 
   it("creates, lists, gets, and patches projects", async () => {

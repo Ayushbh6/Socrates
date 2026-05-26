@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:runtime": "node scripts/build-runtime.mjs",
+    "runtime:archive": "node scripts/build-runtime-archive.mjs",
     "bundle": "tauri build",
     "bundle:mac": "tauri build --bundles dmg --config src-tauri/tauri.release.conf.json",
     "bundle:windows": "tauri build --bundles nsis --config src-tauri/tauri.release.conf.json",

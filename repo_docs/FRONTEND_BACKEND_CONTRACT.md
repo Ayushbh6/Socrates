@@ -259,14 +259,14 @@ type CompleteOnboardingResponse = {
 }
 ```
 
-The packaged onboarding page must also require OpenRouter provider setup before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints and Tauri keychain commands.
+The onboarding page must also require OpenRouter provider setup before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints plus either CLI local-file persistence or Tauri keychain commands.
 
 ### Provider Credential Endpoints
 
 Provider credential APIs expose only presence, source, and validation status. They must never return API key values.
 
 ```ts
-type ProviderCredentialSource = "keychain" | "session" | "env" | "missing"
+type ProviderCredentialSource = "keychain" | "local_file" | "session" | "env" | "missing"
 
 type ProviderCredentialStatus = {
   providerId: "openai" | "google" | "openrouter"
@@ -287,11 +287,11 @@ type GetProviderCredentialsStatusResponse = {
 type SetProviderCredentialSessionRequest = {
   providerId: "openai" | "google" | "openrouter"
   apiKey: string
-  source?: "keychain" | "manual" | "env_import"
+  source?: "keychain" | "local_file" | "manual" | "env_import"
 }
 ```
 
-`POST /api/provider-credentials/session` stores a secret only in the running backend process so newly saved or explicitly imported keychain credentials are immediately usable. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback. Packaged mode should prefer OS keychain values injected by Tauri into the sidecar process.
+`POST /api/provider-credentials/session` stores a secret in the running backend process so newly saved credentials are immediately usable. With `source = "local_file"`, the backend also writes the key to `~/.Socrates/.env`; with `source = "keychain"`, Tauri owns OS keychain persistence. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback.
 
 OpenRouter is required for the default chat/compression path. OpenAI is required only for hosted embeddings when local Ollama is not used. Google is optional.
 

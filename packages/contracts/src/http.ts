@@ -24,7 +24,7 @@ export const getMeResponseSchema = z
 
 export const listModelsHttpResponseSchema = listModelsResponseSchema
 
-export const providerCredentialSourceSchema = z.enum(["keychain", "session", "env", "missing"])
+export const providerCredentialSourceSchema = z.enum(["keychain", "local_file", "session", "env", "missing"])
 export type ProviderCredentialSource = z.infer<typeof providerCredentialSourceSchema>
 
 export const providerCredentialStatusSchema = z
@@ -53,7 +53,7 @@ export const setProviderCredentialSessionRequestSchema = z
   .object({
     providerId: providerIdSchema,
     apiKey: z.string().min(1),
-    source: z.enum(["keychain", "manual", "env_import"]).optional(),
+    source: z.enum(["keychain", "local_file", "manual", "env_import"]).optional(),
   })
   .strict()
 export type SetProviderCredentialSessionRequest = z.infer<typeof setProviderCredentialSessionRequestSchema>

@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const desktopRoot = path.join(repoRoot, "apps", "desktop");
-const runtimeDir = path.join(desktopRoot, "runtime");
+const runtimeDir = path.resolve(process.env.SOCRATES_RUNTIME_OUTPUT_DIR ?? path.join(desktopRoot, "runtime"));
 const cacheDir = path.join(desktopRoot, ".cache");
 const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const nodeVersion = process.env.SOCRATES_DESKTOP_NODE_VERSION ?? process.version;
+const includeNodeRuntime = process.env.SOCRATES_RUNTIME_INCLUDE_NODE !== "false";
+const runtimePlatformArch = process.env.SOCRATES_RUNTIME_PLATFORM_ARCH ?? `${process.platform}-${process.arch}`;
 
 const nodePlatform = (() => {
   if (process.platform === "darwin") return "darwin";
@@ -58,6 +60,38 @@ const removePackagedEnvFiles = (target) => {
       fs.rmSync(path.join(target, entry), { recursive: true, force: true });
     }
   }
+};
+
+const exposePnpmHoistedDependencies = (target, hoistedNodeModulesOverride) => {
+  const nodeModules = path.join(target, "node_modules");
+  const hoistedNodeModules = hoistedNodeModulesOverride ?? path.join(nodeModules, ".pnpm", "node_modules");
+  if (!fs.existsSync(hoistedNodeModules)) {
+    return;
+  }
+  fs.mkdirSync(nodeModules, { recursive: true });
+  for (const entry of fs.readdirSync(hoistedNodeModules)) {
+    const source = path.join(hoistedNodeModules, entry);
+    const destination = path.join(nodeModules, entry);
+    if (entry.startsWith("@")) {
+      fs.mkdirSync(destination, { recursive: true });
+      for (const scopedEntry of fs.readdirSync(source)) {
+        const scopedSource = path.join(source, scopedEntry);
+        const scopedDestination = path.join(destination, scopedEntry);
+        if (!fs.existsSync(scopedDestination)) {
+          createPackageLink(scopedSource, scopedDestination);
+        }
+      }
+      continue;
+    }
+    if (!fs.existsSync(destination)) {
+      createPackageLink(source, destination);
+    }
+  }
+};
+
+const createPackageLink = (source, destination) => {
+  const relativeSource = path.relative(path.dirname(destination), source);
+  fs.symlinkSync(relativeSource, destination, process.platform === "win32" ? "junction" : "dir");
 };
 
 const downloadFile = async (url, target) => {
@@ -123,6 +157,7 @@ await run(pnpmCommand, ["--filter", "web", "build"], {
 
 await run(pnpmCommand, ["--filter", "@socrates/server", "deploy", "--prod", path.join(runtimeDir, "server")]);
 removePackagedEnvFiles(path.join(runtimeDir, "server"));
+exposePnpmHoistedDependencies(path.join(runtimeDir, "server"));
 
 copy(path.join(repoRoot, "apps", "server", "dist"), path.join(runtimeDir, "server", "dist"));
 copy(path.join(repoRoot, "apps", "server", "drizzle"), path.join(runtimeDir, "server", "drizzle"));
@@ -134,6 +169,11 @@ if (!fs.existsSync(path.join(standaloneAppRoot, "server.js"))) {
 }
 copy(standaloneRoot, path.join(runtimeDir, "web"));
 copy(path.join(repoRoot, "apps", "web", ".next", "static"), path.join(runtimeDir, "web", "apps", "web", ".next", "static"));
+exposePnpmHoistedDependencies(path.join(runtimeDir, "web"));
+exposePnpmHoistedDependencies(
+  path.join(runtimeDir, "web", "apps", "web"),
+  path.join(runtimeDir, "web", "node_modules", ".pnpm", "node_modules"),
+);
 
 const publicDir = path.join(repoRoot, "apps", "web", "public");
 if (fs.existsSync(publicDir)) {
@@ -142,8 +182,10 @@ if (fs.existsSync(publicDir)) {
 
 copy(path.join(desktopRoot, "scripts", "launcher.mjs"), path.join(runtimeDir, "launcher.mjs"));
 
-await downloadFile(nodeDownloadUrl, nodeArchivePath);
-await extractNodeRuntime(path.join(runtimeDir, "node"));
+if (includeNodeRuntime) {
+  await downloadFile(nodeDownloadUrl, nodeArchivePath);
+  await extractNodeRuntime(path.join(runtimeDir, "node"));
+}
 
 fs.writeFileSync(path.join(runtimeDir, ".gitkeep"), "");
 
@@ -152,7 +194,9 @@ fs.writeFileSync(
   `${JSON.stringify(
     {
       version: "0.1.0",
-      node: process.platform === "win32" ? "node/node.exe" : "node/bin/node",
+      runtimeKind: includeNodeRuntime ? "desktop" : "cli",
+      platformArch: runtimePlatformArch,
+      ...(includeNodeRuntime ? { node: process.platform === "win32" ? "node/node.exe" : "node/bin/node" } : {}),
       nodeVersion,
       launcher: "launcher.mjs",
       serverEntry: "server/dist/index.js",

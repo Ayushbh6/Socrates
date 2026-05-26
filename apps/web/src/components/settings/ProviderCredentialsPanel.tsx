@@ -22,6 +22,7 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus>({ state: "idle" });
+  const [desktopMode, setDesktopMode] = useState(false);
 
   const openRouterReady = useMemo(
     () => statuses.some((status) => status.providerId === "openrouter" && status.configured),
@@ -31,6 +32,10 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
   useEffect(() => {
     onOpenRouterReadyChange?.(openRouterReady);
   }, [onOpenRouterReadyChange, openRouterReady]);
+
+  useEffect(() => {
+    setDesktopMode(isTauriRuntime());
+  }, []);
 
   const loadStatus = async () => {
     const data = await api.getProviderCredentialStatus();
@@ -70,7 +75,7 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
       await api.setProviderCredentialSession({
         providerId,
         apiKey,
-        source: isTauriRuntime() ? "keychain" : "manual",
+        source: isTauriRuntime() ? "keychain" : "local_file",
       });
       setInputs((current) => ({ ...current, [providerId]: "" }));
       await loadStatus();
@@ -90,7 +95,7 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
       await desktopCredentials.delete(providerId);
       await api.deleteProviderCredentialSession(providerId);
       await loadStatus();
-      setMessage(`${labelFor(providerId)} credential removed for this session.`);
+      setMessage(`${labelFor(providerId)} credential removed.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not delete provider credential.");
     } finally {
@@ -180,23 +185,25 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
         })}
       </section>
 
-      <form onSubmit={importEnvFile} className="rounded-lg border border-gray-200 bg-white p-4">
-        <div className="flex items-center gap-2 text-sm font-semibold text-brand-text-dark">
-          <Upload className="size-4 text-brand-teal-dark" />
-          Import from .env
-        </div>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-          <input
-            value={envImportPath}
-            onChange={(event) => setEnvImportPath(event.target.value)}
-            placeholder="/absolute/path/to/.env"
-            className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-teal-dark"
-          />
-          <Button type="submit" variant="outline" disabled={isBusy}>
-            Import
-          </Button>
-        </div>
-      </form>
+      {desktopMode && (
+        <form onSubmit={importEnvFile} className="rounded-lg border border-gray-200 bg-white p-4">
+          <div className="flex items-center gap-2 text-sm font-semibold text-brand-text-dark">
+            <Upload className="size-4 text-brand-teal-dark" />
+            Import from .env
+          </div>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+            <input
+              value={envImportPath}
+              onChange={(event) => setEnvImportPath(event.target.value)}
+              placeholder="/absolute/path/to/.env"
+              className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-teal-dark"
+            />
+            <Button type="submit" variant="outline" disabled={isBusy}>
+              Import
+            </Button>
+          </div>
+        </form>
+      )}
 
       {showUpdater && (
         <section className="rounded-lg border border-gray-200 bg-white p-4">

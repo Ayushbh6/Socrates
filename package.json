@@ -9,6 +9,8 @@
     "desktop:bundle:mac": "pnpm --filter @socrates/desktop bundle:mac",
     "desktop:bundle:windows": "pnpm --filter @socrates/desktop bundle:windows",
     "desktop:runtime": "pnpm --filter @socrates/desktop build:runtime",
+    "runtime:archive": "pnpm --filter @socrates/desktop runtime:archive",
+    "cli:test": "pnpm --filter @socrates-ai/cli test",
     "desktop:release:local": "pnpm --filter @socrates/desktop release:local",
     "desktop:dev": "pnpm --filter @socrates/desktop dev",
     "eval:context-compression": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && node scripts/context-compression-eval.mjs",

@@ -1,6 +1,7 @@
 import Fastify from "fastify"
 import cors from "@fastify/cors"
 import multipart from "@fastify/multipart"
+import path from "node:path"
 import { openDatabase, runMigrations, type DatabaseHandle } from "./db/client"
 import { registerHttpRoutes } from "./routes/httpRoutes"
 import { SocratesStore } from "./services/store"
@@ -13,13 +14,15 @@ export type BuildServerOptions = {
   logger?: boolean
   databaseHandle?: DatabaseHandle
   agent?: SocratesAgent
+  socratesHome?: string
 }
 
 export const buildServer = async (options: BuildServerOptions) => {
   const handle = options.databaseHandle ?? openDatabase(options.dbPath)
   runMigrations(handle)
 
-  const credentials = new ProviderCredentialStore()
+  const socratesHome = options.socratesHome ?? (options.dbPath === ":memory:" ? undefined : path.dirname(options.dbPath))
+  const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
   const store = new SocratesStore(handle, undefined, credentials)
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const app = Fastify({ logger: options.logger ?? false })
