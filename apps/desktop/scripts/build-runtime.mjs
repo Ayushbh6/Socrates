@@ -56,6 +56,12 @@ const copy = (source, target) => {
   fs.cpSync(source, target, { recursive: true, force: true, dereference: true });
 };
 
+const assertFile = (filePath, label) => {
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`${label} was not found at ${filePath}`);
+  }
+};
+
 const removePackagedEnvFiles = (target) => {
   for (const entry of fs.readdirSync(target)) {
     if (entry === ".env" || entry.startsWith(".env.")) {
@@ -130,6 +136,28 @@ const downloadFile = async (url, target) => {
   fs.renameSync(tempTarget, target);
 };
 
+const buildServerPackages = async () => {
+  for (const packageName of [
+    "@socrates/shared",
+    "@socrates/contracts",
+    "@socrates/workspace",
+    "@socrates/providers",
+    "@socrates/core",
+    "@socrates/server",
+  ]) {
+    await run(pnpmCommand, ["--filter", packageName, "build"]);
+  }
+};
+
+const assertPackagedServerDependencies = () => {
+  for (const packageName of ["shared", "contracts", "workspace", "providers", "core"]) {
+    assertFile(
+      path.join(runtimeDir, "server", "node_modules", "@socrates", packageName, "dist", "index.js"),
+      `Packaged @socrates/${packageName} dist entry`,
+    );
+  }
+};
+
 const extractNodeRuntime = async (target) => {
   const extractDir = path.join(cacheDir, "node-extract", `${nodePackageBase}-${Date.now()}`);
   fs.rmSync(extractDir, { recursive: true, force: true });
@@ -153,7 +181,7 @@ const extractNodeRuntime = async (target) => {
 fs.rmSync(runtimeDir, { recursive: true, force: true });
 fs.mkdirSync(runtimeDir, { recursive: true });
 
-await run(pnpmCommand, ["--filter", "@socrates/server", "build"]);
+await buildServerPackages();
 await run(pnpmCommand, ["--filter", "web", "build"], {
   env: {
     NEXT_PUBLIC_SOCRATES_API_BASE_URL: "http://127.0.0.1:4000",
@@ -164,6 +192,7 @@ await run(pnpmCommand, ["--filter", "web", "build"], {
 await run(pnpmCommand, ["--filter", "@socrates/server", "deploy", "--prod", path.join(runtimeDir, "server")]);
 removePackagedEnvFiles(path.join(runtimeDir, "server"));
 exposePnpmHoistedDependencies(path.join(runtimeDir, "server"));
+assertPackagedServerDependencies();
 
 copy(path.join(repoRoot, "apps", "server", "dist"), path.join(runtimeDir, "server", "dist"));
 copy(path.join(repoRoot, "apps", "server", "drizzle"), path.join(runtimeDir, "server", "drizzle"));
