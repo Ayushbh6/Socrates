@@ -6,6 +6,7 @@ import { openDatabase, runMigrations, type DatabaseHandle } from "./db/client"
 import { registerHttpRoutes } from "./routes/httpRoutes"
 import { SocratesStore } from "./services/store"
 import { registerWebSocketRoutes } from "./ws/websocket"
+import { ConversationTerminalManager } from "./ws/conversationTerminals"
 import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
 import { ProviderCredentialStore } from "./services/providerCredentials"
 
@@ -25,9 +26,12 @@ export const buildServer = async (options: BuildServerOptions) => {
   const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
   const store = new SocratesStore(handle, undefined, credentials)
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
+  const terminals = new ConversationTerminalManager(store)
+  terminals.markPersistedRunningTerminalsStale()
   const app = Fastify({ logger: options.logger ?? false })
 
   app.addHook("onClose", async () => {
+    terminals.dispose()
     store.close()
   })
 
@@ -42,8 +46,11 @@ export const buildServer = async (options: BuildServerOptions) => {
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   })
 
-  await registerWebSocketRoutes(app, store, agent)
-  await registerHttpRoutes(app, store, credentials)
+  await registerWebSocketRoutes(app, store, terminals, agent)
+  await registerHttpRoutes(app, store, credentials, {
+    onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
+    onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),
+  })
 
   return app
 }

@@ -42,7 +42,10 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
           ? "git_push"
           : "shell_command",
       title: "Approve shell command",
-      description: "Socrates wants to run a command in the active project workspace.",
+      description:
+        operation === "start"
+          ? "Socrates wants to start a background Terminal in the active project workspace."
+          : "Socrates wants to run a command in the active project workspace.",
       actionPreview: command,
       risk: highRiskCommandPattern.test(command) ? "high" : "medium",
     },
@@ -52,7 +55,7 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
 export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bashToolOutputSchema._type> = {
   name: "bash",
   description:
-    "Run a platform-native shell command from the active project workspace with bounded output and a timeout. Supports run plus turn-scoped start/status/output/stop process operations. Prefer read/search/edit for structured file work, but use bash when a real command is needed.",
+    "Run a platform-native shell command from the active project workspace with bounded output and a timeout. Supports run plus conversation-scoped start/status/output/stop Terminal process operations. Prefer read/search/edit for structured file work, but use bash when a real command is needed.",
   inputSchema: bashToolInputSchema,
   resultSchema: bashToolOutputSchema,
   permission: "execute",
@@ -63,7 +66,7 @@ export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bas
   summary: (output) => {
     const operation = output.operation ?? "run"
     if (operation === "start" && output.process) {
-      return `Started process ${output.process.processId}.`
+      return `Started Terminal ${output.terminal?.name ?? output.process.processId}.`
     }
     if ((operation === "status" || operation === "output" || operation === "stop") && output.process) {
       return `Process ${output.process.processId} is ${output.process.status}.`

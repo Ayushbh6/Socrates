@@ -39,8 +39,10 @@ function BashDetails({ tool }: { tool: ToolTimelineItem }) {
       {(tool.shell?.operation || tool.shell?.processId || tool.shell?.processStatus) && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-brand-text-light">
           {tool.shell.operation && <span>operation {tool.shell.operation}</span>}
+          {tool.shell.terminalId && <span>terminal {tool.shell.terminalName ?? tool.shell.terminalId}</span>}
           {tool.shell.processId && <span>process {tool.shell.processId}</span>}
-          {tool.shell.processStatus && <span>status {tool.shell.processStatus}</span>}
+          {(tool.shell.terminalStatus || tool.shell.processStatus) && <span>status {tool.shell.terminalStatus ?? tool.shell.processStatus}</span>}
+          {tool.shell.awaitingInput && <span>awaiting user input</span>}
           {tool.shell.nextOutputSequence !== undefined && <span>next output {tool.shell.nextOutputSequence}</span>}
         </div>
       )}

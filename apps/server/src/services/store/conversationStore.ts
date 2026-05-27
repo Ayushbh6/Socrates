@@ -29,6 +29,8 @@ import {
   sessionState,
   shellCommands,
   shellOutputChunks,
+  terminalOutputChunks,
+  terminalSessions,
   toolCalls,
   turnRuntimeConfigs,
   turns,
@@ -298,9 +300,18 @@ export class ConversationStore extends StoreBase {
         .where(eq(shellCommands.conversationId, conversationId))
         .all()
       const shellCommandIds = shellCommandRows.map((row) => row.id)
+      const terminalRows = this.handle.db
+        .select({ id: terminalSessions.id })
+        .from(terminalSessions)
+        .where(eq(terminalSessions.conversationId, conversationId))
+        .all()
+      const terminalIds = terminalRows.map((row) => row.id)
 
       if (shellCommandIds.length > 0) {
         this.handle.db.delete(shellOutputChunks).where(inArray(shellOutputChunks.shellCommandId, shellCommandIds)).run()
+      }
+      if (terminalIds.length > 0) {
+        this.handle.db.delete(terminalOutputChunks).where(inArray(terminalOutputChunks.terminalSessionId, terminalIds)).run()
       }
       if (turnIds.length > 0) {
         this.handle.db.delete(turnRuntimeConfigs).where(inArray(turnRuntimeConfigs.turnId, turnIds)).run()
@@ -317,6 +328,7 @@ export class ConversationStore extends StoreBase {
       this.handle.db.delete(patches).where(eq(patches.conversationId, conversationId)).run()
       this.handle.db.delete(fileOperations).where(eq(fileOperations.conversationId, conversationId)).run()
       this.handle.db.delete(shellCommands).where(eq(shellCommands.conversationId, conversationId)).run()
+      this.handle.db.delete(terminalSessions).where(eq(terminalSessions.conversationId, conversationId)).run()
       this.handle.db.delete(approvals).where(eq(approvals.conversationId, conversationId)).run()
       this.handle.db.delete(toolCalls).where(eq(toolCalls.conversationId, conversationId)).run()
       this.handle.db.delete(contextUsageSnapshots).where(eq(contextUsageSnapshots.conversationId, conversationId)).run()

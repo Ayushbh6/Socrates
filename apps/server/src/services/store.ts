@@ -10,6 +10,7 @@ import type {
   Conversation,
   ConversationContextUsage,
   ConversationPartialTurn,
+  ConversationTerminal,
   ConversationTokenUsage,
   ConversationToolRun,
   CreateConversationMessageRequest,
@@ -51,6 +52,7 @@ import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
 import type { StoreContext } from "./store/shared"
 import { TraceStore } from "./store/traceStore"
+import { TerminalStore } from "./store/terminalStore"
 import { ToolStore } from "./store/toolStore"
 import { TurnStore } from "./store/turnStore"
 import type {
@@ -89,6 +91,7 @@ export class SocratesStore {
   private readonly approvals: ApprovalStore
   private readonly feedback: FeedbackStore
   private readonly tools: ToolStore
+  private readonly terminals: TerminalStore
   private readonly traces: TraceStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
@@ -115,6 +118,7 @@ export class SocratesStore {
     this.approvals = new ApprovalStore(context)
     this.feedback = new FeedbackStore(context)
     this.tools = new ToolStore(context)
+    this.terminals = new TerminalStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     this.traces = new TraceStore(context, this.embeddings)
     this.contextCompactions = new ContextCompactionStore(context, this.errors)
@@ -210,6 +214,7 @@ export class SocratesStore {
     conversation: Conversation
     messages: Message[]
     toolRuns: ConversationToolRun[]
+    terminals?: ConversationTerminal[]
     partialTurns?: ConversationPartialTurn[]
     tokenUsage: ConversationTokenUsage
     contextUsage?: ConversationContextUsage
@@ -218,6 +223,7 @@ export class SocratesStore {
     return {
       ...conversation,
       toolRuns: this.tools.getConversationToolRuns(conversationId),
+      terminals: this.terminals.listConversationTerminals(conversationId),
     }
   }
 
@@ -230,6 +236,7 @@ export class SocratesStore {
   }
 
   deleteConversation(projectId: string, conversationId: string): { deletedConversationId: string } {
+    this.terminals.stopConversationTerminals(conversationId)
     return this.conversations.deleteConversation(projectId, conversationId)
   }
 
@@ -398,6 +405,42 @@ export class SocratesStore {
 
   failShellCommand(toolCallId: string): void {
     this.tools.failShellCommand(toolCallId)
+  }
+
+  createTerminal(input: Parameters<TerminalStore["createTerminal"]>[0]): string {
+    return this.terminals.createTerminal(input)
+  }
+
+  updateTerminal(terminalId: string, input: Parameters<TerminalStore["updateTerminal"]>[1]): void {
+    this.terminals.updateTerminal(terminalId, input)
+  }
+
+  appendTerminalOutput(input: Parameters<TerminalStore["appendOutput"]>[0]): number {
+    return this.terminals.appendOutput(input)
+  }
+
+  findTerminal(conversationId: string, identifier: string) {
+    return this.terminals.findTerminalRow(conversationId, identifier)
+  }
+
+  listConversationTerminals(conversationId: string): ConversationTerminal[] {
+    return this.terminals.listConversationTerminals(conversationId)
+  }
+
+  terminalContextBrief(conversationId: string): string | undefined {
+    return this.terminals.terminalContextBrief(conversationId)
+  }
+
+  markRunningTerminalsStale(): ConversationTerminal[] {
+    return this.terminals.markRunningStale()
+  }
+
+  stopConversationTerminals(conversationId: string): void {
+    this.terminals.stopConversationTerminals(conversationId)
+  }
+
+  stopProjectTerminals(projectId: string): void {
+    this.terminals.stopProjectTerminals(projectId)
   }
 
   recordFileOperations(input: Parameters<ToolStore["recordFileOperations"]>[0]): void {

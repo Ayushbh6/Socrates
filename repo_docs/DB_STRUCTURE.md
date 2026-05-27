@@ -320,6 +320,8 @@ Conversation deletion should remove rows tied to the conversation, including:
 - `approvals`
 - `shell_commands`
 - `shell_output_chunks`
+- `terminal_sessions`
+- `terminal_output_chunks`
 - `file_operations`
 - `patches`
 - `artifacts` when the artifact is conversation-scoped
@@ -634,7 +636,7 @@ Stores shell command executions.
 | `started_at` | `TEXT` | yes | ISO timestamp. |
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `duration_ms` | `INTEGER` | no | Runtime duration. |
-| `metadata_json` | `TEXT` | no | Extra shell/process metadata, including operation, platform, shell kind, shell executable, turn-scoped process id/status, and next output sequence when present. |
+| `metadata_json` | `TEXT` | no | Extra shell/process metadata, including operation, platform, shell kind, shell executable, process id/status, terminal id/name/status, and next output sequence when present. |
 
 ## `shell_output_chunks`
 
@@ -647,6 +649,50 @@ Stores stdout/stderr chunks for shell commands.
 | `sequence` | `INTEGER` | yes | Strictly increasing per shell command. |
 | `stream` | `TEXT` | yes | `stdout` or `stderr`. |
 | `text` | `TEXT` | yes | Output chunk text. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+
+## `terminal_sessions`
+
+Stores conversation-scoped Terminal sessions started through the model-visible `bash` tool or auto-detached from a long blocking `bash run`.
+
+Terminal sessions are durable conversation runtime state. A Terminal may outlive a single turn, but it is still scoped to one project, one conversation, and one workspace path. On server restart, rows that were `running` or `awaiting_input` are marked `stale`; Socrates does not reattach to orphaned OS processes.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `term_...`. |
+| `project_id` | `TEXT` | yes | FK to `projects.id`. |
+| `conversation_id` | `TEXT` | yes | FK to `conversations.id`. |
+| `workspace_path` | `TEXT` | yes | Workspace path used when the Terminal was started. |
+| `name` | `TEXT` | yes | User/model-facing terminal name. |
+| `command` | `TEXT` | yes | Original command string. |
+| `cwd` | `TEXT` | yes | Last known working directory. |
+| `status` | `TEXT` | yes | `running`, `exited`, `stopped`, `stale`, `awaiting_input`, or `missing`. |
+| `platform` | `TEXT` | no | Runtime platform such as `darwin`, `linux`, or `win32`. |
+| `shell_kind` | `TEXT` | no | `posix`, `powershell`, or `cmd`. |
+| `shell_executable` | `TEXT` | no | Resolved shell executable. |
+| `process_id` | `TEXT` | no | Runtime process handle id from the workspace shell session. |
+| `exit_code` | `INTEGER` | no | Process exit code when known. |
+| `signal` | `TEXT` | no | Termination signal when known. |
+| `auto_detached` | `INTEGER` | yes | Boolean as `0` or `1`; true when detached from a long blocking `run`. |
+| `awaiting_input` | `INTEGER` | yes | Boolean as `0` or `1`; true when conservative prompt detection surfaced user-only stdin. |
+| `last_prompt` | `TEXT` | no | Safe prompt text for awaiting-input UI/model context. Secret-like input itself is never stored here. |
+| `started_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `completed_at` | `TEXT` | no | ISO timestamp for exited/stopped/stale completion. |
+| `metadata_json` | `TEXT` | no | Extra terminal metadata such as linked tool call id or stop reason. |
+
+## `terminal_output_chunks`
+
+Stores full Terminal output and redacted user-input markers independently from per-tool shell command output.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `tout_...`. |
+| `terminal_session_id` | `TEXT` | yes | FK to `terminal_sessions.id`. |
+| `sequence` | `INTEGER` | yes | Strictly increasing per terminal session. |
+| `stream` | `TEXT` | yes | `stdout`, `stderr`, `log`, `result`, or `input`. |
+| `text` | `TEXT` | yes | Output chunk text. User stdin is persisted only as redacted marker text. |
+| `redacted` | `INTEGER` | yes | Boolean as `0` or `1`; true for user-only stdin markers or other redacted terminal entries. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 
 ## `file_operations`
@@ -1010,6 +1056,8 @@ tool_calls
 events
 shell_commands
 shell_output_chunks
+terminal_sessions
+terminal_output_chunks
 file_operations
 patches
 errors

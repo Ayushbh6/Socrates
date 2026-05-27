@@ -269,13 +269,16 @@ Workspace/server implementation:
 - `edit` supports create, overwrite, exact multiline replace, and patch-style edits with diff previews and approval policy.
 - `bash` uses platform-native shell adapters behind the stable model-visible tool name: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` as fallback. Do not add separate model-visible PowerShell/cmd/process tools unless the contracts change.
 - `bash` uses one non-interactive persistent shell session per active turn for `operation: "run"`, keeps `cwd`/environment across bash calls in that turn, streams output, enforces timeout/output caps, rejects or times out likely interactive commands, and resets the shell after timeout or shell start/write/protocol failures.
-- `bash` supports turn-scoped long-running processes with `operation: "start"`, then `status`/`output`/`stop` by `processId`. These processes keep bounded in-memory output buffers, stream live output through `tool.call.output`, persist shell/process metadata in existing `metadataJson` fields, and are disposed at turn end.
+- `bash` supports conversation-scoped Terminal sessions with `operation: "start"`, then `status`/`output`/`stop` by `terminalId` or `processId`. These processes keep bounded in-memory output buffers, stream live output through `tool.call.output` and `terminal.output`, persist terminal/process metadata in `terminal_sessions` and `terminal_output_chunks`, and survive across turns until stopped, deleted with the conversation, cleaned up during workspace switch/shutdown, marked stale on restart, or expired by idle TTL.
+- Long blocking `bash run` commands can auto-detach into a conversation Terminal after `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds). The UI/product copy says Terminal while the model-visible tool id remains `bash`.
+- Terminal input is user-only. Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`; the frontend shows a Terminal-scoped input box and the backend persists only redacted input markers.
 - Windows command policy auto-allows safe diagnostics such as `Get-Location`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Command`, `where`, Python version checks, and safe git inspection; installs, dev servers, Docker, network commands, deletes, migrations, and git mutations remain approval-gated by default.
 - Sensitive-path policy allows safe env templates such as `.env.example`, `.env.sample`, `.env.template`, and `.env.local.example`, while real `.env`, private keys, credentials, and secret-like paths remain blocked or high-risk approval-gated.
 - `bash` already starts in the active workspace and rejects commands that begin by changing into a guessed absolute path outside that workspace. Relative workspace navigation and approved external destination paths are still allowed.
 - The backend injects compact Python environment hints into the Socrates prompt each turn. Existing project-local venvs and package-manager workflows are preferred; when no environment is detected, Socrates should ask before creating one unless the user already requested setup.
-- `apps/server/src/services/store/toolStore.ts` persists tool calls, shell commands/output, file operations, patches, approvals, and trace retrieval data.
+- `apps/server/src/services/store/toolStore.ts` persists tool calls, shell commands/output, file operations, patches, approvals, and trace retrieval data. `apps/server/src/services/store/terminalStore.ts` persists conversation Terminal sessions and output chunks.
 - `apps/server/src/ws/activeTurns.ts` owns active turn state, approval waiters, abort controllers, and per-turn shell session lifecycle.
+- `apps/server/src/ws/conversationTerminals.ts` owns conversation-scoped Terminal process handles, polling, output events, stale marking, user-only stdin, and cleanup.
 - `approval.decide` persists the decision and wakes the waiting active turn.
 
 Provider behavior:
@@ -292,6 +295,7 @@ Frontend behavior:
 - Chat transcripts render a Codex-style inline tool timeline instead of card-heavy separate tool panels.
 - Tool rows are collapsed by default with icon, status, concise summary, duration, and expandable details.
 - Expanded details show inputs, search snippets, read previews, edit diffs, bash command/output, trace summaries, resource lists, errors, and completion status.
+- The chat workspace now has a persistent Terminal panel hydrated from `GET /api/projects/:projectId/conversations/:conversationId.terminals` and updated by `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and `terminal.stale`.
 - Approval prompts render inline under the relevant tool row with adjacent Approve/Reject actions.
 - Historical `toolRuns` are returned by conversation GET and merged with live WebSocket tool events so completed tool flows reload with conversation history.
 - If a turn is cancelled after assistant text streamed, that visible text is persisted as a cancelled partial assistant message, rendered with a stopped indicator, and included in later semantic history as `user_query -> partial_assistant_response -> new_user_query`. Cancelled turn tools/results/reasoning stay audit/UI-only.
@@ -453,3 +457,15 @@ Implemented the first contextual compression and recovery slice:
 - `tokenUsage` remains provider-reported cost/diagnostic usage. Completed previous turns still enter later prompts as visible user query plus final assistant answer only; old tool results are not replayed unless retrieved or summarized into current context.
 - The AI SDK provider adapter aborts idle provider streams after `SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS` or the default `120000ms`, producing a structured `model_stream_idle_timeout` error instead of hanging indefinitely.
 - Edit approval and completed tool details now prefer focused diffs derived from `edit` operations' `oldText`/`newText`, hide raw literal replacement payloads in approval UI, reject non-unified fake diff text, and render visual Codex-style diff cards through `DiffView`.
+
+## Conversation-Scoped Terminal Sessions Implementation
+
+Implemented the Codex-like Terminal layer on top of Bash v2:
+
+- `packages/contracts` now extends `bash` input/output with `terminalId`, terminal metadata, terminal statuses, conversation `terminals`, and WebSocket commands/events for `terminal.stop`, `terminal.input`, `terminal.rename`, `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and `terminal.stale`.
+- `apps/server` added `terminal_sessions` and `terminal_output_chunks` plus `TerminalStore`. `shell_commands` remains per-tool provenance and can link to terminal metadata; full long-running Terminal logs live in terminal tables.
+- `ConversationTerminalManager` lives at `apps/server/src/ws/conversationTerminals.ts` and owns conversation-scoped process state. It routes `bash start/status/output/stop`, auto-detaches likely long-running `run` commands, broadcasts terminal events, detects conservative user-input prompts, redacts stdin markers, marks persisted running terminals stale on startup, and cleans up on stop/delete/shutdown/TTL.
+- Terminal scope is `projectId + conversationId + workspacePath`. Multiple named Terminals can exist in one conversation. They survive turn completion, but are not reattached after server restart.
+- The Socrates system prompt now includes bounded Terminal context on every turn: ids, names, command, cwd, shell/platform, status, exit/signal, awaiting-input prompt, and recent output tail. This is current-state context and should survive compression; full logs are not replayed into the prompt.
+- The frontend chat workspace has a persistent Terminal panel with status, command/cwd/shell metadata, bounded live output, stop controls, and user-only stdin controls when a Terminal awaits input. Timeline rows still show compact tool provenance and label `bash` as Terminal in UI copy.
+- Regression coverage includes contract tests for terminal commands/events, server tests for cross-turn terminal hydration/context injection/stop, schema migration coverage for terminal tables, and workspace stdin process coverage.

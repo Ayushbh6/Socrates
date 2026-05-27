@@ -4,12 +4,14 @@ import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
 import { createId, nowIso } from "@socrates/shared"
 import type { SocratesStore } from "../services/store"
 import { ActiveTurns } from "./activeTurns"
+import type { ConversationTerminalManager } from "./conversationTerminals"
 import { handleInboundMessage } from "./commandDispatcher"
 import { makeEvent, sendEvent } from "./eventSender"
 
 export const registerWebSocketRoutes = async (
   app: FastifyInstance,
   store: SocratesStore,
+  terminals: ConversationTerminalManager,
   agent: SocratesAgent = createDefaultSocratesAgent(),
 ): Promise<void> => {
   await app.register(websocket)
@@ -21,6 +23,7 @@ export const registerWebSocketRoutes = async (
   })
 
   app.get("/ws", { websocket: true }, (socket) => {
+    terminals.subscribe(socket)
     const ready = makeEvent("connection.ready", {
       connectionId: createId("conn"),
       serverTime: nowIso(),
@@ -28,7 +31,7 @@ export const registerWebSocketRoutes = async (
     sendEvent(socket, ready)
 
     socket.on("message", (raw) => {
-      void handleInboundMessage(socket, store, agent, activeTurns, raw.toString())
+      void handleInboundMessage(socket, store, agent, activeTurns, terminals, raw.toString())
     })
   })
 }

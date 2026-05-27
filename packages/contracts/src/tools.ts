@@ -161,11 +161,31 @@ export const editToolOutputSchema = z
   .strict()
 export type EditToolOutput = z.infer<typeof editToolOutputSchema>
 
+export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "stale", "awaiting_input", "missing"])
+export type TerminalStatus = z.infer<typeof terminalStatusSchema>
+
+export const bashTerminalMetadataSchema = z
+  .object({
+    terminalId: z.string().min(1),
+    name: z.string().min(1),
+    status: terminalStatusSchema,
+    autoDetached: z.boolean().optional(),
+    awaitingInput: z.boolean().optional(),
+    lastPrompt: z.string().optional(),
+    nextOutputSequence: z.number().int().nonnegative().optional(),
+    startedAt: z.string().optional(),
+    updatedAt: z.string().optional(),
+  })
+  .strict()
+export type BashTerminalMetadata = z.infer<typeof bashTerminalMetadataSchema>
+
 export const bashToolInputSchema = z
   .object({
     operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
     command: z.string().min(1).optional(),
     processId: z.string().min(1).optional(),
+    terminalId: z.string().min(1).optional(),
+    name: z.string().min(1).optional(),
     outputSequence: z.number().int().nonnegative().optional(),
     cwd: z.string().min(1).optional(),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
@@ -181,11 +201,11 @@ export const bashToolInputSchema = z
         message: "command is required for run and start operations",
       })
     }
-    if ((operation === "status" || operation === "output" || operation === "stop") && !input.processId) {
+    if ((operation === "status" || operation === "output" || operation === "stop") && !input.processId && !input.terminalId) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["processId"],
-        message: "processId is required for status, output, and stop operations",
+        message: "processId or terminalId is required for status, output, and stop operations",
       })
     }
   })
@@ -222,6 +242,7 @@ export const bashToolOutputSchema = z
       })
       .strict()
       .optional(),
+    terminal: bashTerminalMetadataSchema.optional(),
   })
   .strict()
 export type BashToolOutput = z.infer<typeof bashToolOutputSchema>

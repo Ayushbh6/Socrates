@@ -291,6 +291,33 @@ const createApprovalToolAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createConversationTerminalAgent = (requests: unknown[]): SocratesAgent => {
+  let step = 0
+  const command = `node -e "console.log('terminal-ready'); setInterval(() => console.log('terminal-tick'), 250)"`
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream(request) {
+      step += 1
+      requests.push(request)
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_terminal_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "server-test" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Terminal observed." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createTestEmbeddingProvider = (): EmbeddingProvider => ({
   async check() {
     return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
@@ -591,6 +618,8 @@ describe("database migrations", () => {
         "approvals",
         "shell_commands",
         "shell_output_chunks",
+        "terminal_sessions",
+        "terminal_output_chunks",
         "file_operations",
         "patches",
         "errors",
@@ -2019,6 +2048,59 @@ describe("WebSocket API", () => {
         expect(body.data.toolRuns[1]?.shell?.cwd.endsWith("nested")).toBe(true)
         expect(body.data.toolRuns[1]?.durationMs).toBeGreaterThanOrEqual(0)
       }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("keeps started terminals across turns and injects terminal context into the next prompt", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createConversationTerminalAgent(requests))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start a terminal", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      expect(startedTerminal.payload.name).toBe("server-test")
+      expect(startedTerminal.payload.status).toBe("running")
+
+      await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ terminalId: string; name: string; status: string }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.terminals.some((terminal) => terminal.terminalId === startedTerminal.payload.terminalId && terminal.status === "running")).toBe(true)
+      }
+
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "What terminals are active?"))
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const nextTurnRequest = requests.at(-1) as { system?: string }
+      expect(nextTurnRequest.system).toContain(startedTerminal.payload.terminalId)
+      expect(nextTurnRequest.system).toContain("server-test")
+
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "terminal.stop",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { terminalId: startedTerminal.payload.terminalId, reason: "Test cleanup" },
+      })
+      const stopped = await waitForEvent(socket, "terminal.stopped")
+      expect(stopped.payload.terminalId).toBe(startedTerminal.payload.terminalId)
     } finally {
       socket.close()
     }

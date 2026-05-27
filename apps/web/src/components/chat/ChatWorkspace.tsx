@@ -1,14 +1,16 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { Eye, EyeOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ClientCommand, Conversation, GetConversationResponse, Message, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
+import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
 import { ChatComposer } from "./ChatComposer";
 import { ChatTranscript } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
+import { TerminalPanel } from "./TerminalPanel";
 import { type PendingApproval, type ToolTimelineItem } from "./ToolTimelineTypes";
 
 interface ChatWorkspaceProps {
@@ -29,9 +31,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [liveThinking, setLiveThinking] = useState("");
   const [liveAnswer, setLiveAnswer] = useState("");
   const [liveTools, setLiveTools] = useState<ToolTimelineItem[]>([]);
+  const [terminals, setTerminals] = useState<ConversationTerminal[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isTerminalPanelCollapsed, setIsTerminalPanelCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const replaceConversationInSidebar = useCallback((conversation: Conversation) => {
@@ -52,6 +56,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const refreshConversation = useCallback(async () => {
     const conversation = await api.getConversation(projectId, conversationId);
     setConversationData(conversation);
+    setTerminals(conversation.terminals ?? []);
     replaceConversationInSidebar(conversation.conversation);
   }, [projectId, conversationId, replaceConversationInSidebar]);
 
@@ -86,6 +91,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 },
                 messages: [event.payload.userMessage],
                 toolRuns: [],
+                terminals: [],
                 tokenUsage: { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
               };
         });
@@ -136,6 +142,25 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setLiveAnswer("");
         setLiveThinking("");
         setIsCompacting(false);
+        return;
+      }
+
+      if (
+        event.type === "terminal.started" ||
+        event.type === "terminal.status" ||
+        event.type === "terminal.completed" ||
+        event.type === "terminal.stopped" ||
+        event.type === "terminal.stale" ||
+        event.type === "terminal.input.requested"
+      ) {
+        setTerminals((current) => upsertTerminal(current, terminalEventToConversationTerminal(event)));
+        return;
+      }
+
+      if (event.type === "terminal.output") {
+        setTerminals((current) =>
+          current.map((terminal) => (terminal.terminalId === event.payload.terminalId ? appendTerminalOutput(terminal, event) : terminal)),
+        );
         return;
       }
 
@@ -304,6 +329,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
         if (isMounted) {
           setConversationData(conversation);
+          setTerminals(conversation.terminals ?? []);
           const reloadActiveTurn = conversation.partialTurns?.find((turn) => turn.status === "running")?.turnId ?? null;
           setActiveTurnId(reloadActiveTurn);
           setIsSending(Boolean(reloadActiveTurn));
@@ -345,6 +371,12 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       isMounted = false;
     };
   }, [projectId, conversationId]);
+
+  useEffect(() => {
+    if (terminals.some((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input")) {
+      setIsTerminalPanelCollapsed(false);
+    }
+  }, [terminals]);
 
   const handleModelChange = (model: ModelOption) => {
     setSelectedModel(model);
@@ -410,6 +442,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               },
               messages: [optimisticMessage],
               toolRuns: [],
+              terminals: [],
               tokenUsage: { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
             },
       );
@@ -460,6 +493,41 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     sendCommand(command);
   };
 
+  const handleTerminalStop = (terminalId: string) => {
+    const command: ClientCommand = {
+      id: `cmd_${crypto.randomUUID()}`,
+      type: "terminal.stop",
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      projectId,
+      conversationId,
+      actor: { type: "user" },
+      payload: {
+        terminalId,
+        reason: "User stopped the terminal.",
+      },
+    };
+    sendCommand(command);
+  };
+
+  const handleTerminalInput = (terminalId: string, text: string, submit = true) => {
+    const command: ClientCommand = {
+      id: `cmd_${crypto.randomUUID()}`,
+      type: "terminal.input",
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      projectId,
+      conversationId,
+      actor: { type: "user" },
+      payload: {
+        terminalId,
+        text,
+        submit,
+      },
+    };
+    sendCommand(command);
+  };
+
   const handleStop = () => {
     if (!activeTurnId) {
       return;
@@ -486,6 +554,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const partialTurns = conversationData?.partialTurns ?? [];
   const conversationTitle = conversationData?.conversation.title ?? "New conversation";
   const contextUsage = conversationData?.contextUsage;
+  const hasTerminals = terminals.length > 0;
+  const activeTerminalCount = terminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
+  const awaitingTerminalInputCount = terminals.filter((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input").length;
   const tokenLabel = useMemo(() => {
     if (contextUsage) {
       return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
@@ -512,58 +583,87 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         >
           <h1 className="truncate text-sm font-medium text-brand-text-dark">{conversationTitle}</h1>
           {tokenLabel ? <span className="ml-4 shrink-0 font-mono text-xs text-brand-text-light">{tokenLabel}</span> : null}
+          {hasTerminals ? (
+            <button
+              type="button"
+              className="ml-auto inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+              title={isTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
+              aria-pressed={!isTerminalPanelCollapsed}
+              onClick={() => setIsTerminalPanelCollapsed((current) => !current)}
+            >
+              {isTerminalPanelCollapsed ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+              <span className="hidden sm:inline">Terminal</span>
+              {activeTerminalCount > 0 ? (
+                <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] text-brand-teal-dark">
+                  {activeTerminalCount}
+                </span>
+              ) : null}
+              {awaitingTerminalInputCount > 0 ? <span className="size-2 rounded-full bg-amber-500" title="Terminal awaiting input" /> : null}
+            </button>
+          ) : null}
         </header>
-        {isLoading ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
-        ) : error && !conversationData ? (
-          <div className="flex flex-1 items-center justify-center px-6 text-sm text-red-600">{error}</div>
-        ) : messages.length === 0 ? (
-          <EmptyChatState
-            error={error}
-            isSending={isSending}
-            isConnected={isConnected}
-            models={models}
-            selectedModel={selectedModel}
-            selectedThinkingOption={selectedThinkingOption}
-            warningResetKey={conversationId}
-            onModelChange={handleModelChange}
-            onThinkingChange={handleThinkingChange}
-            onSend={handleSend}
-            onStop={handleStop}
-          />
-        ) : (
-          <>
-            <ChatTranscript
-              messages={messages}
-              toolRuns={toolRuns}
-              partialTurns={partialTurns}
-              liveThinking={liveThinking}
-              liveAnswer={liveAnswer}
-              liveTools={liveTools}
-              approvals={approvals}
-              isStreaming={isSending}
-              isCompacting={isCompacting}
-              onApprovalDecision={handleApprovalDecision}
-            />
-            <div className="border-t border-gray-100 bg-white px-6 py-4">
-              <div className="mx-auto max-w-3xl">
-                {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
-                <ChatComposer
-                  isSending={isSending}
-                  isConnected={isConnected}
-                  models={models}
-                  selectedModel={selectedModel}
-                  selectedThinkingOption={selectedThinkingOption}
-                  warningResetKey={conversationId}
-                  onModelChange={handleModelChange}
-                  onThinkingChange={handleThinkingChange}
-                  onSend={handleSend}
-                  onStop={handleStop}
+        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+          <div className="flex min-h-0 flex-1 flex-col">
+            {isLoading ? (
+              <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
+            ) : error && !conversationData ? (
+              <div className="flex flex-1 items-center justify-center px-6 text-sm text-red-600">{error}</div>
+            ) : messages.length === 0 ? (
+              <EmptyChatState
+                error={error}
+                isSending={isSending}
+                isConnected={isConnected}
+                models={models}
+                selectedModel={selectedModel}
+                selectedThinkingOption={selectedThinkingOption}
+                warningResetKey={conversationId}
+                onModelChange={handleModelChange}
+                onThinkingChange={handleThinkingChange}
+                onSend={handleSend}
+                onStop={handleStop}
+              />
+            ) : (
+              <>
+                <ChatTranscript
+                  messages={messages}
+                  toolRuns={toolRuns}
+                  partialTurns={partialTurns}
+                  liveThinking={liveThinking}
+                  liveAnswer={liveAnswer}
+                  liveTools={liveTools}
+                  approvals={approvals}
+                  isStreaming={isSending}
+                  isCompacting={isCompacting}
+                  onApprovalDecision={handleApprovalDecision}
                 />
-              </div>
-            </div>
-          </>
-        )}
+                <div className="border-t border-gray-100 bg-white px-6 py-4">
+                  <div className="mx-auto max-w-3xl">
+                    {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+                    <ChatComposer
+                      isSending={isSending}
+                      isConnected={isConnected}
+                      models={models}
+                      selectedModel={selectedModel}
+                      selectedThinkingOption={selectedThinkingOption}
+                      warningResetKey={conversationId}
+                      onModelChange={handleModelChange}
+                      onThinkingChange={handleThinkingChange}
+                      onSend={handleSend}
+                      onStop={handleStop}
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+          <TerminalPanel
+            terminals={terminals}
+            isCollapsed={isTerminalPanelCollapsed}
+            onToggleCollapsed={() => setIsTerminalPanelCollapsed((current) => !current)}
+            onStop={handleTerminalStop}
+            onInput={handleTerminalInput}
+          />
+        </div>
       </section>
     </main>
   );
@@ -582,3 +682,75 @@ const appendToolOutput = (
   }
   return { ...tool, output: `${tool.output}${text}` };
 };
+
+const upsertTerminal = (terminals: ConversationTerminal[], terminal: ConversationTerminal): ConversationTerminal[] => {
+  const existing = terminals.find((item) => item.terminalId === terminal.terminalId);
+  const output =
+    terminal.output.stdout || terminal.output.stderr
+      ? terminal.output
+      : existing?.output
+        ? { ...existing.output, nextOutputSequence: terminal.output.nextOutputSequence }
+        : terminal.output;
+  return [{ ...existing, ...terminal, output }, ...terminals.filter((item) => item.terminalId !== terminal.terminalId)];
+};
+
+const terminalEventToConversationTerminal = (
+  event: Extract<
+    ServerEvent,
+    {
+      type:
+        | "terminal.started"
+        | "terminal.status"
+        | "terminal.completed"
+        | "terminal.stopped"
+        | "terminal.stale"
+        | "terminal.input.requested";
+    }
+  >,
+): ConversationTerminal => ({
+  terminalId: event.payload.terminalId,
+  projectId: event.projectId ?? "",
+  conversationId: event.conversationId ?? "",
+  name: event.payload.name,
+  command: event.payload.command,
+  cwd: event.payload.cwd,
+  workspacePath: event.payload.workspacePath,
+  status: event.payload.status,
+  ...(event.payload.platform ? { platform: event.payload.platform } : {}),
+  ...(event.payload.shellKind ? { shellKind: event.payload.shellKind } : {}),
+  ...(event.payload.shellExecutable ? { shellExecutable: event.payload.shellExecutable } : {}),
+  ...(event.payload.processId ? { processId: event.payload.processId } : {}),
+  ...(event.payload.exitCode === undefined ? {} : { exitCode: event.payload.exitCode }),
+  ...(event.payload.signal === undefined ? {} : { signal: event.payload.signal }),
+  autoDetached: event.payload.autoDetached,
+  awaitingInput: event.payload.awaitingInput,
+  ...(event.payload.lastPrompt ? { lastPrompt: event.payload.lastPrompt } : {}),
+  startedAt: event.payload.startedAt,
+  updatedAt: event.payload.updatedAt,
+  ...(event.payload.completedAt ? { completedAt: event.payload.completedAt } : {}),
+  output: {
+    stdout: "",
+    stderr: "",
+    nextOutputSequence: event.payload.nextOutputSequence ?? 0,
+  },
+});
+
+const appendTerminalOutput = (terminal: ConversationTerminal, event: Extract<ServerEvent, { type: "terminal.output" }>): ConversationTerminal => {
+  const sequence = event.payload.sequence ?? terminal.output.nextOutputSequence;
+  const nextOutput = { ...terminal.output, nextOutputSequence: sequence + 1 };
+  if (event.payload.stream === "stdout") {
+    nextOutput.stdout = trimTerminalOutput(`${nextOutput.stdout}${event.payload.text}`);
+  } else if (event.payload.stream === "stderr") {
+    nextOutput.stderr = trimTerminalOutput(`${nextOutput.stderr}${event.payload.text}`);
+  }
+  return {
+    ...terminal,
+    status: event.payload.status,
+    awaitingInput: event.payload.awaitingInput,
+    ...(event.payload.lastPrompt ? { lastPrompt: event.payload.lastPrompt } : {}),
+    updatedAt: event.payload.updatedAt,
+    output: nextOutput,
+  };
+};
+
+const trimTerminalOutput = (value: string): string => (value.length > 16_000 ? value.slice(-16_000) : value);

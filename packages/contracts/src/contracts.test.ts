@@ -553,6 +553,9 @@ describe("websocket client command contracts", () => {
         rating: "thumbs_up",
       }),
     ),
+    clientCommandSchema.safeParse(envelope("terminal.stop", { terminalId: "term_1", reason: "Done" })),
+    clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1", text: "yes", submit: true })),
+    clientCommandSchema.safeParse(envelope("terminal.rename", { terminalId: "term_1", name: "frontend" })),
   ]
 
   it("parses every V1 client command", () => {
@@ -702,6 +705,61 @@ describe("websocket server event contracts", () => {
         reason: "User stopped the run",
       }),
     ),
+    serverEventSchema.safeParse(
+      envelope("terminal.started", {
+        terminalId: "term_1",
+        name: "frontend",
+        command: "pnpm dev",
+        cwd: "/tmp/socrates",
+        workspacePath: "/tmp/socrates",
+        status: "running",
+        platform: "darwin",
+        shellKind: "posix",
+        shellExecutable: "/bin/zsh",
+        processId: "proc_1",
+        autoDetached: false,
+        awaitingInput: false,
+        nextOutputSequence: 0,
+        startedAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    ),
+    serverEventSchema.safeParse(
+      envelope("terminal.output", {
+        terminalId: "term_1",
+        name: "frontend",
+        command: "pnpm dev",
+        cwd: "/tmp/socrates",
+        workspacePath: "/tmp/socrates",
+        status: "running",
+        stream: "stdout",
+        text: "ready\n",
+        sequence: 0,
+        autoDetached: false,
+        awaitingInput: false,
+        nextOutputSequence: 1,
+        startedAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    ),
+    serverEventSchema.safeParse(
+      envelope("terminal.input.requested", {
+        terminalId: "term_1",
+        name: "scaffold",
+        command: "npx create-example",
+        cwd: "/tmp/socrates",
+        workspacePath: "/tmp/socrates",
+        status: "awaiting_input",
+        prompt: "Continue?",
+        secret: false,
+        autoDetached: false,
+        awaitingInput: true,
+        lastPrompt: "Continue?",
+        nextOutputSequence: 2,
+        startedAt: timestamp,
+        updatedAt: timestamp,
+      }),
+    ),
     errorCreatedEventSchema.safeParse(
       envelope("error.created", {
         error: {
@@ -735,6 +793,7 @@ describe("tool contracts", () => {
     expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "start", command: "pnpm dev" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output", processId: "proc_1", outputSequence: 0 }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "status", terminalId: "term_1" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
     expect(

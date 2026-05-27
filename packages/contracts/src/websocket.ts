@@ -2,7 +2,7 @@ import { z } from "zod"
 import { apiErrorSchema } from "./api"
 import { idSchema, messageSchema, timestampSchema } from "./entities"
 import { providerIdSchema, thinkingEffortSchema } from "./models"
-import { toolNameSchema } from "./tools"
+import { terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const schemaVersionSchema = z.literal(1)
 
@@ -82,6 +82,28 @@ export const approvalDecidePayloadSchema = z
   })
   .strict()
 
+export const terminalStopPayloadSchema = z
+  .object({
+    terminalId: idSchema,
+    reason: z.string().optional(),
+  })
+  .strict()
+
+export const terminalInputPayloadSchema = z
+  .object({
+    terminalId: idSchema,
+    text: z.string(),
+    submit: z.boolean().optional(),
+  })
+  .strict()
+
+export const terminalRenamePayloadSchema = z
+  .object({
+    terminalId: idSchema,
+    name: z.string().min(1),
+  })
+  .strict()
+
 export const feedbackSubmitPayloadSchema = z
   .object({
     messageId: idSchema,
@@ -96,12 +118,18 @@ export const feedbackSubmitPayloadSchema = z
 export const chatMessageSendCommandSchema = socketEnvelopeSchema("chat.message.send", chatMessageSendPayloadSchema)
 export const chatTurnCancelCommandSchema = socketEnvelopeSchema("chat.turn.cancel", chatTurnCancelPayloadSchema)
 export const approvalDecideCommandSchema = socketEnvelopeSchema("approval.decide", approvalDecidePayloadSchema)
+export const terminalStopCommandSchema = socketEnvelopeSchema("terminal.stop", terminalStopPayloadSchema)
+export const terminalInputCommandSchema = socketEnvelopeSchema("terminal.input", terminalInputPayloadSchema)
+export const terminalRenameCommandSchema = socketEnvelopeSchema("terminal.rename", terminalRenamePayloadSchema)
 export const feedbackSubmitCommandSchema = socketEnvelopeSchema("feedback.submit", feedbackSubmitPayloadSchema)
 
 export const clientCommandSchema = z.discriminatedUnion("type", [
   chatMessageSendCommandSchema,
   chatTurnCancelCommandSchema,
   approvalDecideCommandSchema,
+  terminalStopCommandSchema,
+  terminalInputCommandSchema,
+  terminalRenameCommandSchema,
   feedbackSubmitCommandSchema,
 ])
 
@@ -282,6 +310,48 @@ export const errorCreatedPayloadSchema = z
   })
   .strict()
 
+export const terminalOutputStreamSchema = z.enum(["stdout", "stderr", "log", "result", "input"])
+
+export const terminalEventPayloadBaseSchema = z
+  .object({
+    terminalId: idSchema,
+    name: z.string().min(1),
+    command: z.string().min(1),
+    cwd: z.string().min(1),
+    workspacePath: z.string().min(1),
+    status: terminalStatusSchema,
+    platform: z.string().min(1).optional(),
+    shellKind: z.enum(["posix", "powershell", "cmd"]).optional(),
+    shellExecutable: z.string().min(1).optional(),
+    processId: z.string().min(1).optional(),
+    exitCode: z.number().int().nullable().optional(),
+    signal: z.string().nullable().optional(),
+    autoDetached: z.boolean(),
+    awaitingInput: z.boolean(),
+    lastPrompt: z.string().optional(),
+    nextOutputSequence: z.number().int().nonnegative().optional(),
+    startedAt: z.string().min(1),
+    updatedAt: z.string().min(1),
+    completedAt: z.string().min(1).optional(),
+  })
+  .strict()
+
+export const terminalOutputPayloadSchema = terminalEventPayloadBaseSchema
+  .extend({
+    stream: terminalOutputStreamSchema,
+    text: z.string(),
+    sequence: z.number().int().nonnegative().optional(),
+    redacted: z.boolean().optional(),
+  })
+  .strict()
+
+export const terminalInputRequestedPayloadSchema = terminalEventPayloadBaseSchema
+  .extend({
+    prompt: z.string().optional(),
+    secret: z.boolean().optional(),
+  })
+  .strict()
+
 export const connectionReadyEventSchema = socketEnvelopeSchema("connection.ready", connectionReadyPayloadSchema)
 export const turnStartedEventSchema = socketEnvelopeSchema("turn.started", turnStartedPayloadSchema)
 export const agentThinkingDeltaEventSchema = socketEnvelopeSchema("agent.thinking.delta", agentThinkingDeltaPayloadSchema)
@@ -313,6 +383,13 @@ export const turnCompletedEventSchema = socketEnvelopeSchema("turn.completed", t
 export const turnFailedEventSchema = socketEnvelopeSchema("turn.failed", turnFailedPayloadSchema)
 export const turnCancelledEventSchema = socketEnvelopeSchema("turn.cancelled", turnCancelledPayloadSchema)
 export const errorCreatedEventSchema = socketEnvelopeSchema("error.created", errorCreatedPayloadSchema)
+export const terminalStartedEventSchema = socketEnvelopeSchema("terminal.started", terminalEventPayloadBaseSchema)
+export const terminalOutputEventSchema = socketEnvelopeSchema("terminal.output", terminalOutputPayloadSchema)
+export const terminalStatusEventSchema = socketEnvelopeSchema("terminal.status", terminalEventPayloadBaseSchema)
+export const terminalInputRequestedEventSchema = socketEnvelopeSchema("terminal.input.requested", terminalInputRequestedPayloadSchema)
+export const terminalCompletedEventSchema = socketEnvelopeSchema("terminal.completed", terminalEventPayloadBaseSchema)
+export const terminalStoppedEventSchema = socketEnvelopeSchema("terminal.stopped", terminalEventPayloadBaseSchema)
+export const terminalStaleEventSchema = socketEnvelopeSchema("terminal.stale", terminalEventPayloadBaseSchema)
 
 export const serverEventSchema = z.discriminatedUnion("type", [
   connectionReadyEventSchema,
@@ -334,6 +411,13 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   turnFailedEventSchema,
   turnCancelledEventSchema,
   errorCreatedEventSchema,
+  terminalStartedEventSchema,
+  terminalOutputEventSchema,
+  terminalStatusEventSchema,
+  terminalInputRequestedEventSchema,
+  terminalCompletedEventSchema,
+  terminalStoppedEventSchema,
+  terminalStaleEventSchema,
 ])
 
 export const socketMessageSchema = z.union([clientCommandSchema, serverEventSchema])
@@ -345,6 +429,9 @@ export type ModelUsage = z.infer<typeof modelUsageSchema>
 export type ChatMessageSendPayload = z.infer<typeof chatMessageSendPayloadSchema>
 export type ChatTurnCancelPayload = z.infer<typeof chatTurnCancelPayloadSchema>
 export type ApprovalDecidePayload = z.infer<typeof approvalDecidePayloadSchema>
+export type TerminalStopPayload = z.infer<typeof terminalStopPayloadSchema>
+export type TerminalInputPayload = z.infer<typeof terminalInputPayloadSchema>
+export type TerminalRenamePayload = z.infer<typeof terminalRenamePayloadSchema>
 export type FeedbackSubmitPayload = z.infer<typeof feedbackSubmitPayloadSchema>
 export type ClientCommand = z.infer<typeof clientCommandSchema>
 export type ServerEvent = z.infer<typeof serverEventSchema>

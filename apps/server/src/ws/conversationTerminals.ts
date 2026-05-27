@@ -1,0 +1,591 @@
+import type { WebSocket } from "ws"
+import type { BashToolInput, BashToolOutput, ClientCommand, TerminalStatus } from "@socrates/contracts"
+import { createId, normalizeError, nowIso, SocratesError } from "@socrates/shared"
+import { createWorkspaceShellSession, type WorkspaceShellSession } from "@socrates/workspace"
+import type { ToolExecutorContext } from "@socrates/core"
+import type { SocratesStore } from "../services/store"
+import type { ActiveTurns } from "./activeTurns"
+import { makeEvent, sendEvent } from "./eventSender"
+
+type RuntimeTerminal = {
+  terminalId: string
+  projectId: string
+  conversationId: string
+  workspacePath: string
+  session: WorkspaceShellSession
+  processId: string
+  command: string
+  name: string
+  status: TerminalStatus
+  pollTimer?: NodeJS.Timeout
+  awaitingInput: boolean
+}
+
+type TerminalManagerOptions = {
+  autoDetachMs?: number
+  idleTtlMs?: number
+}
+
+type ShellOutput = { stream: "stdout" | "stderr" | "log" | "result"; text?: string; data?: unknown }
+type TerminalSnapshot = ReturnType<SocratesStore["listConversationTerminals"]>[number]
+
+const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_DETACH_MS ?? "60000", 10)
+const defaultIdleTtlMs = Number.parseInt(process.env.SOCRATES_TERMINAL_IDLE_TTL_MS ?? "7200000", 10)
+
+export class ConversationTerminalManager {
+  private readonly terminals = new Map<string, RuntimeTerminal>()
+  private readonly sockets = new Set<WebSocket>()
+  private readonly autoDetachMs: number
+  private readonly idleTtlMs: number
+
+  constructor(
+    private readonly store: SocratesStore,
+    options: TerminalManagerOptions = {},
+  ) {
+    this.autoDetachMs = options.autoDetachMs ?? defaultAutoDetachMs
+    this.idleTtlMs = options.idleTtlMs ?? defaultIdleTtlMs
+  }
+
+  subscribe(socket: WebSocket): void {
+    this.sockets.add(socket)
+    socket.on("close", () => this.sockets.delete(socket))
+  }
+
+  markPersistedRunningTerminalsStale(): void {
+    for (const terminal of this.store.markRunningTerminalsStale()) {
+      this.emitTerminalEvent("terminal.stale", terminal)
+    }
+  }
+
+  dispose(): void {
+    for (const terminal of this.terminals.values()) {
+      this.stopRuntimeTerminal(terminal, "Server is shutting down.")
+    }
+    this.terminals.clear()
+  }
+
+  stopConversation(conversationId: string, reason?: string): void {
+    for (const terminal of [...this.terminals.values()]) {
+      if (terminal.conversationId === conversationId) {
+        this.stopRuntimeTerminal(terminal, reason)
+      }
+    }
+    this.store.stopConversationTerminals(conversationId)
+  }
+
+  stopProject(projectId: string, reason?: string): void {
+    for (const terminal of [...this.terminals.values()]) {
+      if (terminal.projectId === projectId) {
+        this.stopRuntimeTerminal(terminal, reason)
+      }
+    }
+    this.store.stopProjectTerminals(projectId)
+  }
+
+  async executeBash(input: BashToolInput, context: ToolExecutorContext, activeTurns: ActiveTurns): Promise<BashToolOutput> {
+    const operation = input.operation ?? "run"
+    if (operation === "start") {
+      return this.startTerminal(input, context, false)
+    }
+    if (operation === "status") {
+      return this.terminalStatus(input, context)
+    }
+    if (operation === "output") {
+      return this.terminalOutput(input, context)
+    }
+    if (operation === "stop") {
+      return this.terminalStop(input, context)
+    }
+    if (shouldAutoDetachRun(input.command ?? "")) {
+      return this.runWithAutoDetach(input, context)
+    }
+    return activeTurns.getShellSession(context.turnId, context.workspacePath).run(input, context)
+  }
+
+  handleStop(command: Extract<ClientCommand, { type: "terminal.stop" }>): void {
+    const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
+    if (terminal) {
+      this.stopRuntimeTerminal(terminal, command.payload.reason)
+      return
+    }
+    const row = command.conversationId ? this.store.findTerminal(command.conversationId, command.payload.terminalId) : undefined
+    if (!row) {
+      throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { terminalId: command.payload.terminalId }, recoverable: true })
+    }
+    this.store.updateTerminal(row.id, { status: "stopped", awaitingInput: false, signal: "SIGTERM", completedAt: nowIso() })
+    const terminalSnapshot = this.store.listConversationTerminals(row.conversationId).find((item) => item.terminalId === row.id)
+    if (terminalSnapshot) {
+      this.emitTerminalEvent("terminal.stopped", terminalSnapshot)
+    }
+  }
+
+  handleInput(command: Extract<ClientCommand, { type: "terminal.input" }>): void {
+    const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
+    if (!terminal) {
+      throw new SocratesError("terminal_not_running", "Terminal input can only be sent to a running terminal.", {
+        details: { terminalId: command.payload.terminalId },
+        recoverable: true,
+      })
+    }
+    const row = this.store.findTerminal(terminal.conversationId, terminal.terminalId)
+    if (!row || row.status !== "awaiting_input") {
+      throw new SocratesError("terminal_not_awaiting_input", "Terminal is not currently waiting for user input.", {
+        details: { terminalId: terminal.terminalId },
+        recoverable: true,
+      })
+    }
+    const inputText = `${command.payload.text}${command.payload.submit === false ? "" : "\n"}`
+    terminal.session.writeProcessInput(terminal.processId, inputText)
+    terminal.awaitingInput = false
+    terminal.status = "running"
+    this.store.appendTerminalOutput({
+      terminalId: terminal.terminalId,
+      stream: "input",
+      text: "[user input sent]\n",
+      redacted: true,
+    })
+    this.store.updateTerminal(terminal.terminalId, { status: "running", awaitingInput: false, lastPrompt: null })
+    this.emitTerminalStatus(terminal)
+  }
+
+  handleRename(command: Extract<ClientCommand, { type: "terminal.rename" }>): void {
+    const row = command.conversationId ? this.store.findTerminal(command.conversationId, command.payload.terminalId) : undefined
+    if (!row) {
+      throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { terminalId: command.payload.terminalId }, recoverable: true })
+    }
+    this.store.updateTerminal(row.id, { name: command.payload.name })
+    const runtime = this.terminals.get(row.id)
+    if (runtime) {
+      runtime.name = command.payload.name
+    }
+    const terminal = this.store.listConversationTerminals(row.conversationId).find((item) => item.terminalId === row.id)
+    if (terminal) {
+      this.emitTerminalEvent("terminal.status", terminal)
+    }
+  }
+
+  private async startTerminal(input: BashToolInput, context: ToolExecutorContext, autoDetached: boolean): Promise<BashToolOutput> {
+    const command = input.command
+    if (!command) {
+      throw new SocratesError("shell_command_required", "A shell command is required for terminal start.")
+    }
+    const terminalId = createId("term")
+    const name = input.name ?? inferTerminalName(command)
+    const session = createWorkspaceShellSession(context.workspacePath)
+    this.store.createTerminal({
+      terminalId,
+      projectId: context.projectId,
+      conversationId: context.conversationId,
+      workspacePath: context.workspacePath,
+      name,
+      command,
+      cwd: input.cwd ?? context.workspacePath,
+      status: "running",
+      autoDetached,
+    })
+    let output: BashToolOutput
+    try {
+      output = await session.run(
+        { ...input, operation: "start" },
+        {
+          ...context,
+          onOutput: (chunk) => this.handleRuntimeOutput(terminalId, context, chunk),
+        },
+      )
+    } catch (error) {
+      session.dispose()
+      const normalized = normalizeError(error)
+      this.store.updateTerminal(terminalId, {
+        status: "missing",
+        awaitingInput: false,
+        completedAt: nowIso(),
+        metadata: { startError: { code: normalized.code, message: normalized.message, details: normalized.details } },
+      })
+      const failedTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
+      if (failedTerminal) {
+        this.emitTerminalEvent("terminal.status", failedTerminal)
+      }
+      throw error
+    }
+    const processId = output.process?.processId
+    if (!processId) {
+      session.dispose()
+      this.store.updateTerminal(terminalId, { status: "missing", awaitingInput: false, completedAt: nowIso() })
+      throw new SocratesError("terminal_start_failed", "Terminal process did not return a process id.", { recoverable: true })
+    }
+    const runtime: RuntimeTerminal = {
+      terminalId,
+      projectId: context.projectId,
+      conversationId: context.conversationId,
+      workspacePath: context.workspacePath,
+      session,
+      processId,
+      command,
+      name,
+      status: "running",
+      awaitingInput: false,
+    }
+    this.terminals.set(terminalId, runtime)
+    this.store.updateTerminal(terminalId, {
+      cwd: output.cwd,
+      platform: output.shell.platform,
+      shellKind: output.shell.kind,
+      shellExecutable: output.shell.executable,
+      processId,
+      status: "running",
+      autoDetached,
+      metadata: { toolCallId: context.toolCallId },
+    })
+    this.emitTerminalStatus(runtime, "terminal.started")
+    this.startPolling(runtime)
+    return withTerminalMetadata(output, this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId), autoDetached)
+  }
+
+  private async runWithAutoDetach(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
+    const started = await this.startTerminal(input, context, true)
+    const terminalId = started.terminal?.terminalId
+    const processId = started.process?.processId
+    if (!terminalId || !processId) {
+      return started
+    }
+    const deadline = Date.now() + this.autoDetachMs
+    for (;;) {
+      const runtime = this.terminals.get(terminalId)
+      if (!runtime || runtime.status !== "running") {
+        return this.terminalOutput({ operation: "output", terminalId, processId, outputSequence: 0 }, context)
+      }
+      if (Date.now() >= deadline) {
+        return started
+      }
+      await wait(Math.min(100, deadline - Date.now()))
+    }
+  }
+
+  private async terminalStatus(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
+    const runtime = this.requireRuntimeOrStored(input, context)
+    if ("session" in runtime) {
+      const output = await runtime.session.run({ ...input, operation: "status", processId: runtime.processId }, context)
+      this.updateFromOutput(runtime, output)
+      return withTerminalMetadata(output, this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId))
+    }
+    return storedTerminalOutput("status", runtime)
+  }
+
+  private async terminalOutput(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
+    const runtime = this.requireRuntimeOrStored(input, context)
+    if ("session" in runtime) {
+      const output = await runtime.session.run({ ...input, operation: "output", processId: runtime.processId }, context)
+      this.updateFromOutput(runtime, output)
+      return withTerminalMetadata(output, this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId))
+    }
+    return storedTerminalOutput("output", runtime)
+  }
+
+  private async terminalStop(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
+    const runtime = this.requireRuntimeOrStored(input, context)
+    if ("session" in runtime) {
+      const output = await runtime.session.run({ ...input, operation: "stop", processId: runtime.processId }, context)
+      this.stopRuntimeTerminal(runtime)
+      return withTerminalMetadata(output, this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId))
+    }
+    this.store.updateTerminal(runtime.terminalId, { status: "stopped", awaitingInput: false, signal: "SIGTERM", completedAt: nowIso() })
+    return storedTerminalOutput("stop", { ...runtime, status: "stopped" })
+  }
+
+  private requireRuntimeOrStored(input: BashToolInput, context: ToolExecutorContext): RuntimeTerminal | ReturnType<typeof storedTerminalFromRow> {
+    const identifier = input.terminalId ?? input.processId
+    if (!identifier) {
+      throw new SocratesError("terminal_id_required", "A terminalId or processId is required.", { recoverable: true })
+    }
+    const runtime = this.findRuntimeTerminal(context.conversationId, identifier)
+    if (runtime) {
+      return runtime
+    }
+    const row = this.store.findTerminal(context.conversationId, identifier)
+    if (!row) {
+      throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { identifier }, recoverable: true })
+    }
+    return storedTerminalFromRow(this.store, row.conversationId, row.id)
+  }
+
+  private handleRuntimeOutput(terminalId: string, context: ToolExecutorContext, chunk: { stream: "stdout" | "stderr" | "log"; text: string }): void {
+    const runtime = this.terminals.get(terminalId)
+    const sequence = this.store.appendTerminalOutput({ terminalId, stream: chunk.stream, text: chunk.text })
+    context.onOutput?.(chunk)
+    const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
+    if (terminal) {
+      this.emitTerminalEvent("terminal.output", terminal, { stream: chunk.stream, text: chunk.text, sequence })
+    }
+    const prompt = detectPrompt(chunk.text)
+    if (prompt && runtime && !runtime.awaitingInput) {
+      runtime.awaitingInput = true
+      runtime.status = "awaiting_input"
+      this.store.updateTerminal(terminalId, { status: "awaiting_input", awaitingInput: true, lastPrompt: prompt })
+      const prompted = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
+      if (prompted) {
+        this.emitTerminalEvent("terminal.input.requested", prompted, { prompt, secret: isSecretPrompt(prompt) })
+      }
+    }
+  }
+
+  private startPolling(terminal: RuntimeTerminal): void {
+    terminal.pollTimer = setInterval(() => {
+      void this.pollTerminal(terminal).catch((error) => this.markRuntimeTerminalMissing(terminal, error))
+    }, 1_000)
+    terminal.pollTimer.unref?.()
+    setTimeout(() => {
+      if (this.terminals.get(terminal.terminalId) === terminal && terminal.status === "running") {
+        this.stopRuntimeTerminal(terminal, "Terminal idle TTL expired.")
+      }
+    }, this.idleTtlMs).unref?.()
+  }
+
+  private async pollTerminal(terminal: RuntimeTerminal): Promise<void> {
+    const output = await terminal.session.run({ operation: "status", processId: terminal.processId })
+    this.updateFromOutput(terminal, output)
+  }
+
+  private updateFromOutput(terminal: RuntimeTerminal, output: BashToolOutput): void {
+    const status = terminal.awaitingInput && output.process?.status === "running" ? "awaiting_input" : processStatusToTerminalStatus(output.process?.status)
+    terminal.status = status
+    this.store.updateTerminal(terminal.terminalId, {
+      status,
+      cwd: output.cwd,
+      exitCode: output.exitCode,
+      signal: output.signal ?? null,
+      awaitingInput: status === "awaiting_input",
+      ...(status === "exited" || status === "stopped" ? { completedAt: nowIso() } : {}),
+    })
+    if (status === "exited" || status === "stopped") {
+      this.clearRuntimeTerminal(terminal)
+      this.emitTerminalStatus(terminal, status === "stopped" ? "terminal.stopped" : "terminal.completed")
+    } else {
+      this.emitTerminalStatus(terminal)
+    }
+  }
+
+  private stopRuntimeTerminal(terminal: RuntimeTerminal, reason?: string): void {
+    terminal.session.dispose()
+    terminal.status = "stopped"
+    this.store.updateTerminal(terminal.terminalId, {
+      status: "stopped",
+      awaitingInput: false,
+      signal: "SIGTERM",
+      completedAt: nowIso(),
+      ...(reason ? { metadata: { stopReason: reason } } : {}),
+    })
+    this.clearRuntimeTerminal(terminal)
+    this.emitTerminalStatus(terminal, "terminal.stopped")
+  }
+
+  private markRuntimeTerminalMissing(terminal: RuntimeTerminal, error: unknown): void {
+    if (!this.terminals.has(terminal.terminalId)) {
+      return
+    }
+    const normalized = normalizeError(error)
+    terminal.session.dispose()
+    terminal.status = "missing"
+    this.store.updateTerminal(terminal.terminalId, {
+      status: "missing",
+      awaitingInput: false,
+      completedAt: nowIso(),
+      metadata: { runtimeError: { code: normalized.code, message: normalized.message, details: normalized.details } },
+    })
+    this.clearRuntimeTerminal(terminal)
+    this.emitTerminalStatus(terminal)
+  }
+
+  private clearRuntimeTerminal(terminal: RuntimeTerminal): void {
+    if (terminal.pollTimer) {
+      clearInterval(terminal.pollTimer)
+    }
+    this.terminals.delete(terminal.terminalId)
+  }
+
+  private findRuntimeTerminal(conversationId: string | undefined, identifier: string): RuntimeTerminal | undefined {
+    return [...this.terminals.values()].find(
+      (terminal) =>
+        (!conversationId || terminal.conversationId === conversationId) && (terminal.terminalId === identifier || terminal.processId === identifier),
+    )
+  }
+
+  private emitTerminalStatus(
+    terminal: RuntimeTerminal,
+    type: "terminal.started" | "terminal.status" | "terminal.completed" | "terminal.stopped" | "terminal.stale" = "terminal.status",
+  ): void {
+    const terminalSnapshot = this.store.listConversationTerminals(terminal.conversationId).find((item) => item.terminalId === terminal.terminalId)
+    if (terminalSnapshot) {
+      this.emitTerminalEvent(type, terminalSnapshot)
+    }
+  }
+
+  private emitTerminalEvent(
+    type: "terminal.started" | "terminal.output" | "terminal.status" | "terminal.input.requested" | "terminal.completed" | "terminal.stopped" | "terminal.stale",
+    terminal: TerminalSnapshot,
+    extra: Record<string, unknown> = {},
+  ): void {
+    const event = makeEvent(
+      type,
+      {
+        terminalId: terminal.terminalId,
+        name: terminal.name,
+        command: terminal.command,
+        cwd: terminal.cwd,
+        workspacePath: terminal.workspacePath,
+        status: terminal.status,
+        ...(terminal.platform ? { platform: terminal.platform } : {}),
+        ...(terminal.shellKind ? { shellKind: terminal.shellKind } : {}),
+        ...(terminal.shellExecutable ? { shellExecutable: terminal.shellExecutable } : {}),
+        ...(terminal.processId ? { processId: terminal.processId } : {}),
+        ...(terminal.exitCode === undefined ? {} : { exitCode: terminal.exitCode }),
+        ...(terminal.signal === undefined ? {} : { signal: terminal.signal }),
+        autoDetached: terminal.autoDetached,
+        awaitingInput: terminal.awaitingInput,
+        ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
+        nextOutputSequence: terminal.output.nextOutputSequence,
+        startedAt: terminal.startedAt,
+        updatedAt: terminal.updatedAt,
+        ...(terminal.completedAt ? { completedAt: terminal.completedAt } : {}),
+        ...extra,
+      } as never,
+      {
+        projectId: terminal.projectId,
+        conversationId: terminal.conversationId,
+        actor: { type: "tool", id: terminal.terminalId, label: "Terminal" },
+      },
+    )
+    this.store.appendEvent({
+      projectId: terminal.projectId,
+      conversationId: terminal.conversationId,
+      type: event.type,
+      source: "terminal",
+      payload: event.payload,
+    })
+    for (const socket of this.sockets) {
+      if (socket.readyState === 1) {
+        sendEvent(socket, event)
+      }
+    }
+  }
+}
+
+const withTerminalMetadata = (output: BashToolOutput, terminal: ReturnType<SocratesStore["listConversationTerminals"]>[number] | undefined, autoDetached?: boolean): BashToolOutput => {
+  if (!terminal) {
+    return output
+  }
+  return {
+    ...output,
+    terminal: {
+      terminalId: terminal.terminalId,
+      name: terminal.name,
+      status: terminal.status,
+      autoDetached: autoDetached ?? terminal.autoDetached,
+      awaitingInput: terminal.awaitingInput,
+      ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
+      nextOutputSequence: terminal.output.nextOutputSequence,
+      startedAt: terminal.startedAt,
+      updatedAt: terminal.updatedAt,
+    },
+  }
+}
+
+const storedTerminalFromRow = (store: SocratesStore, conversationId: string, terminalId: string) => {
+  const terminal = store.listConversationTerminals(conversationId).find((item) => item.terminalId === terminalId)
+  if (!terminal) {
+    throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { terminalId }, recoverable: true })
+  }
+  return terminal
+}
+
+const storedTerminalOutput = (operation: "status" | "output" | "stop", terminal: ReturnType<typeof storedTerminalFromRow>): BashToolOutput => ({
+  operation,
+  command: terminal.command,
+  cwd: terminal.cwd,
+  exitCode: terminal.exitCode ?? null,
+  ...(terminal.signal ? { signal: terminal.signal } : {}),
+  stdout: operation === "output" ? terminal.output.stdout : "",
+  stderr: operation === "output" ? terminal.output.stderr : "",
+  durationMs: 0,
+  timedOut: false,
+  truncation: {
+    truncated: false,
+    charLimit: 80_000,
+    originalLength: operation === "output" ? terminal.output.stdout.length + terminal.output.stderr.length : 0,
+    returnedLength: operation === "output" ? terminal.output.stdout.length + terminal.output.stderr.length : 0,
+  },
+  shell: {
+    platform: terminal.platform ?? process.platform,
+    kind: terminal.shellKind ?? (process.platform === "win32" ? "powershell" : "posix"),
+    executable: terminal.shellExecutable ?? "unknown",
+  },
+  process: {
+    processId: terminal.processId ?? terminal.terminalId,
+    status: terminal.status === "running" || terminal.status === "awaiting_input" ? "running" : terminal.status === "stopped" ? "stopped" : "exited",
+    exitCode: terminal.exitCode ?? null,
+    ...(terminal.signal ? { signal: terminal.signal } : {}),
+    startedAt: terminal.startedAt,
+    ...(terminal.completedAt ? { exitedAt: terminal.completedAt } : {}),
+    nextOutputSequence: terminal.output.nextOutputSequence,
+  },
+  terminal: {
+    terminalId: terminal.terminalId,
+    name: terminal.name,
+    status: terminal.status,
+    autoDetached: terminal.autoDetached,
+    awaitingInput: terminal.awaitingInput,
+    ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
+    nextOutputSequence: terminal.output.nextOutputSequence,
+    startedAt: terminal.startedAt,
+    updatedAt: terminal.updatedAt,
+  },
+})
+
+const processStatusToTerminalStatus = (status: string | undefined): TerminalStatus => {
+  if (status === "running") {
+    return "running"
+  }
+  if (status === "stopped") {
+    return "stopped"
+  }
+  return "exited"
+}
+
+const shouldAutoDetachRun = (command: string): boolean =>
+  /\b(pnpm|npm|yarn|bun)\s+(dev|start|serve)\b|\b(next|vite|astro|webpack|turbo)\s+dev\b|\b(uvicorn|fastapi|flask|django-admin)\b|\b(npx|pnpm\s+dlx|yarn\s+dlx|bunx)\b/i.test(
+    command,
+  )
+
+const inferTerminalName = (command: string): string => {
+  if (/\b(test|vitest|jest|watch)\b/i.test(command)) {
+    return "test-watch"
+  }
+  if (/\b(frontend|vite|next|web)\b/i.test(command)) {
+    return "frontend"
+  }
+  if (/\b(backend|server|uvicorn|fastapi|flask|django)\b/i.test(command)) {
+    return "backend"
+  }
+  if (/\b(dev|serve|start)\b/i.test(command)) {
+    return "dev-server"
+  }
+  return "terminal"
+}
+
+const detectPrompt = (text: string): string | undefined => {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const candidate = lines.at(-1)
+  if (!candidate) {
+    return undefined
+  }
+  if (/(password|token|api\s*key|secret|passphrase)\s*[:?]?$/i.test(candidate)) {
+    return candidate
+  }
+  if (/(\[[YyNn]\/[YyNn]\]|\([YyNn]\/[YyNn]\)|press enter|select|choose|continue\?|overwrite\?|install\?|proceed\?|:\s*$|\?\s*$)/i.test(candidate)) {
+    return candidate
+  }
+  return undefined
+}
+
+const isSecretPrompt = (prompt: string): boolean => /(password|token|api\s*key|secret|passphrase)/i.test(prompt)
+
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

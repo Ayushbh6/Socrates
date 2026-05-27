@@ -258,6 +258,7 @@ store/
   traceStore.ts
   embeddingStore.ts
   contextCompactionStore.ts
+  terminalStore.ts
   shared.ts
   types.ts
 ```
@@ -276,6 +277,7 @@ WebSocket transport is split under `apps/server/src/ws/`:
 ws/
   websocket.ts
   activeTurns.ts
+  conversationTerminals.ts
   eventSender.ts
   commandDispatcher.ts
   commandHandlers/
@@ -287,7 +289,7 @@ ws/
 
 Rules for WebSocket files:
 
-- Keep `websocket.ts` focused on Fastify registration, connection setup, `connection.ready`, and shutdown cleanup.
+- Keep `websocket.ts` focused on Fastify registration, connection setup, `connection.ready`, conversation Terminal manager setup, and shutdown cleanup.
 - Put command parsing and dispatch in `commandDispatcher.ts`.
 - Put typed event construction, sending, persisted event appending, and WebSocket error emission in `eventSender.ts`.
 - Put command-specific behavior in one handler file per command.
@@ -399,7 +401,7 @@ Implementation can be split into narrower workspace files such as text readers, 
 
 Reader implementations should stay pragmatic. The initial `read` implementation can wrap local extractors or lightweight libraries, for example text file reads, `pdftotext`-style PDF extraction when available, document/slide text extraction, CSV/JSON previews, and image metadata or OCR/description extraction. Socrates should not build a large document-processing platform before the coding-agent loop works.
 
-The `bash` implementation remains a real escape hatch. Even when a structured reader/searcher exists, approved shell commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on shell commands that overlap with `read` or `search`. Bash uses shell adapters in `packages/workspace/src/tools/bashTool.ts`: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` only as fallback. `run` uses a workspace-owned non-interactive shell session that is created lazily per active turn, reused for later bash calls in that turn, and disposed when the turn completes, fails, or is cancelled. `start`/`status`/`output`/`stop` manage turn-scoped child processes with bounded in-memory output buffers, shell/process metadata, and automatic cleanup at turn end. Because bash already starts in the active workspace, commands that begin by changing into a guessed external absolute path are rejected with a recoverable tool error; relative workspace navigation and approved external destination arguments remain allowed. Spawn, write, protocol, and timeout failures reset the active shell session before later bash calls.
+The `bash` implementation remains a real escape hatch. Even when a structured reader/searcher exists, approved shell commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on shell commands that overlap with `read` or `search`. Bash uses shell adapters in `packages/workspace/src/tools/bashTool.ts`: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` only as fallback. Blocking `run` uses a workspace-owned non-interactive shell session that is created lazily per active turn, reused for later bash calls in that turn, and disposed when the turn completes, fails, or is cancelled. `start`/`status`/`output`/`stop` are server-level conversation Terminal operations managed by `apps/server/src/ws/conversationTerminals.ts`; they own conversation-scoped process handles, bounded output buffers, persistence in `terminal_sessions`/`terminal_output_chunks`, WebSocket terminal events, auto-detach, stale marking on restart, user-only stdin, and cleanup on stop/delete/workspace switch/shutdown/TTL. Because bash already starts in the active workspace, commands that begin by changing into a guessed external absolute path are rejected with a recoverable tool error; relative workspace navigation and approved external destination arguments remain allowed. Spawn, write, protocol, and timeout failures reset the active shell session before later bash calls.
 
 `packages/workspace/src/pythonEnvironment.ts` owns the lightweight Python environment scan. It detects common local venv folders and Python dependency-manager files so the server can inject compact per-turn prompt guidance. The agent should prefer existing project environments or detected package-manager workflows, and should ask before creating a new environment when no env exists unless the user already requested setup.
 
@@ -416,6 +418,7 @@ raw runtime tables
   messages
   tool_calls
   shell_commands
+  terminal_sessions
   file_operations
   patches
   errors

@@ -20,6 +20,7 @@ import {
 import { apiError } from "../../http"
 import type { SocratesStore } from "../../services/store"
 import type { ActiveTurns } from "../activeTurns"
+import type { ConversationTerminalManager } from "../conversationTerminals"
 import { appendAndSend, makeEvent, sendEvent } from "../eventSender"
 
 const requireCommandScope = (command: ClientCommand): { projectId: string; conversationId: string } => {
@@ -36,6 +37,7 @@ export const handleChatMessageSend = async (
   store: SocratesStore,
   agent: SocratesAgent,
   activeTurns: ActiveTurns,
+  terminals: ConversationTerminalManager,
   command: Extract<ClientCommand, { type: "chat.message.send" }>,
 ): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
@@ -62,9 +64,11 @@ export const handleChatMessageSend = async (
 
   const history = store.getConversationModelMessages(projectId, conversationId)
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
+  const terminalContext = store.terminalContextBrief(conversationId)
   const promptContext = {
     ...store.getAgentContext(projectId),
     workspaceGuidance: formatPythonEnvironmentHints(inspectPythonEnvironment(workspacePath)),
+    ...(terminalContext ? { terminalContext } : {}),
   }
   const modelCallIds: string[] = []
   const latestUsageByModelCallId = new Map<string, ModelUsage>()
@@ -87,7 +91,7 @@ export const handleChatMessageSend = async (
       messages: history,
       promptContext,
       workspacePath,
-      toolExecutors: createToolExecutors(store, projectId, activeTurns),
+      toolExecutors: createToolExecutors(store, projectId, activeTurns, terminals),
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
       maxToolCallsPerTurn: 80,
@@ -336,6 +340,12 @@ export const handleChatMessageSend = async (
             processId: agentEvent.output.process?.processId,
             processStatus: agentEvent.output.process?.status,
             nextOutputSequence: agentEvent.output.process?.nextOutputSequence,
+            terminalId: agentEvent.output.terminal?.terminalId,
+            terminalName: agentEvent.output.terminal?.name,
+            terminalStatus: agentEvent.output.terminal?.status,
+            autoDetached: agentEvent.output.terminal?.autoDetached,
+            awaitingInput: agentEvent.output.terminal?.awaitingInput,
+            lastPrompt: agentEvent.output.terminal?.lastPrompt,
           })
           store.completeShellCommand(agentEvent.toolCallId, {
             exitCode: agentEvent.output.exitCode,
@@ -528,7 +538,12 @@ export const handleChatMessageSend = async (
   }
 }
 
-const createToolExecutors = (store: SocratesStore, projectId: string, activeTurns: ActiveTurns): ToolExecutors => ({
+const createToolExecutors = (
+  store: SocratesStore,
+  projectId: string,
+  activeTurns: ActiveTurns,
+  terminals: ConversationTerminalManager,
+): ToolExecutors => ({
   read: (input, context) => readWorkspacePath(input, context),
   search: (input, context) => searchWorkspace(input, context),
   edit: (input, context) => editWorkspace(input, context),
@@ -541,10 +556,10 @@ const createToolExecutors = (store: SocratesStore, projectId: string, activeTurn
       turnId: context.turnId,
       command: input.command ?? `${input.operation ?? "run"} ${input.processId ?? ""}`.trim(),
       cwd: input.cwd ?? context.workspacePath,
-      metadata: { operation: input.operation ?? "run", processId: input.processId },
+      metadata: { operation: input.operation ?? "run", processId: input.processId, terminalId: input.terminalId },
     })
     try {
-      const output = await activeTurns.getShellSession(context.turnId, context.workspacePath).run(input, context)
+      const output = await terminals.executeBash(input, context, activeTurns)
       store.updateShellCommandMetadata(toolCallId, {
         operation: output.operation ?? input.operation ?? "run",
         platform: output.shell.platform,
@@ -553,8 +568,14 @@ const createToolExecutors = (store: SocratesStore, projectId: string, activeTurn
         processId: output.process?.processId,
         processStatus: output.process?.status,
         nextOutputSequence: output.process?.nextOutputSequence,
+        terminalId: output.terminal?.terminalId,
+        terminalName: output.terminal?.name,
+        terminalStatus: output.terminal?.status,
+        autoDetached: output.terminal?.autoDetached,
+        awaitingInput: output.terminal?.awaitingInput,
+        lastPrompt: output.terminal?.lastPrompt,
       })
-      if (output.timedOut) {
+      if (output.timedOut && !output.terminal) {
         activeTurns.resetShellSession(context.turnId, context.workspacePath)
       }
       return output
@@ -795,6 +816,14 @@ const isBashOutput = (
   durationMs: number
   shell: { platform: string; kind: string; executable: string }
   process?: { processId: string; status: string; nextOutputSequence?: number }
+  terminal?: {
+    terminalId: string
+    name: string
+    status: string
+    autoDetached?: boolean
+    awaitingInput?: boolean
+    lastPrompt?: string
+  }
 } =>
   typeof output === "object" &&
   output !== null &&

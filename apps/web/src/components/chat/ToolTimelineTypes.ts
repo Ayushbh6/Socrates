@@ -36,7 +36,7 @@ export const displayNameForTool = (toolName: string): string => {
     case "edit":
       return "Edit";
     case "bash":
-      return "Bash";
+      return "Terminal";
     case "trace_retrieve":
       return "Trace";
     case "list_project_resources":

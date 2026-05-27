@@ -14,7 +14,7 @@ import {
 } from "./entities"
 import { conversationContextUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
 import { providerIdSchema } from "./models"
-import { toolNameSchema } from "./tools"
+import { terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
   .object({
@@ -431,6 +431,12 @@ export const conversationToolRunSchema = z
         shellKind: z.enum(["posix", "powershell", "cmd"]).optional(),
         shellExecutable: z.string().optional(),
         processId: z.string().optional(),
+        terminalId: z.string().optional(),
+        terminalName: z.string().optional(),
+        terminalStatus: terminalStatusSchema.optional(),
+        autoDetached: z.boolean().optional(),
+        awaitingInput: z.boolean().optional(),
+        lastPrompt: z.string().optional(),
         processStatus: z.enum(["running", "exited", "stopped", "missing"]).optional(),
         nextOutputSequence: z.number().int().nonnegative().optional(),
         exitCode: z.number().int().nullable().optional(),
@@ -464,6 +470,40 @@ export const conversationToolRunSchema = z
   })
   .strict()
 
+export const conversationTerminalOutputSchema = z
+  .object({
+    stdout: z.string(),
+    stderr: z.string(),
+    nextOutputSequence: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const conversationTerminalSchema = z
+  .object({
+    terminalId: idSchema,
+    projectId: idSchema,
+    conversationId: idSchema,
+    name: z.string().min(1),
+    command: z.string().min(1),
+    cwd: z.string().min(1),
+    workspacePath: z.string().min(1),
+    status: terminalStatusSchema,
+    platform: z.string().min(1).optional(),
+    shellKind: z.enum(["posix", "powershell", "cmd"]).optional(),
+    shellExecutable: z.string().min(1).optional(),
+    processId: z.string().min(1).optional(),
+    exitCode: z.number().int().nullable().optional(),
+    signal: z.string().nullable().optional(),
+    autoDetached: z.boolean(),
+    awaitingInput: z.boolean(),
+    lastPrompt: z.string().optional(),
+    startedAt: z.string().min(1),
+    updatedAt: z.string().min(1),
+    completedAt: z.string().min(1).optional(),
+    output: conversationTerminalOutputSchema,
+  })
+  .strict()
+
 export const conversationPartialTurnSchema = z
   .object({
     turnId: idSchema,
@@ -478,6 +518,7 @@ export const getConversationResponseSchema = z
     conversation: conversationSchema,
     messages: z.array(messageSchema),
     toolRuns: z.array(conversationToolRunSchema),
+    terminals: z.array(conversationTerminalSchema).optional(),
     partialTurns: z.array(conversationPartialTurnSchema).optional(),
     tokenUsage: conversationTokenUsageSchema,
     contextUsage: conversationContextUsageSchema.optional(),
@@ -543,6 +584,7 @@ export type CreateConversationRequest = z.infer<typeof createConversationRequest
 export type CreateConversationResponse = z.infer<typeof createConversationResponseSchema>
 export type ConversationToolApproval = z.infer<typeof conversationToolApprovalSchema>
 export type ConversationToolRun = z.infer<typeof conversationToolRunSchema>
+export type ConversationTerminal = z.infer<typeof conversationTerminalSchema>
 export type ConversationPartialTurn = z.infer<typeof conversationPartialTurnSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
 export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>

@@ -300,6 +300,12 @@ export class ToolStore extends StoreBase {
                 ...(isShellKind(shellMetadata?.shellKind) ? { shellKind: shellMetadata.shellKind } : {}),
                 ...(typeof shellMetadata?.shellExecutable === "string" ? { shellExecutable: shellMetadata.shellExecutable } : {}),
                 ...(typeof shellMetadata?.processId === "string" ? { processId: shellMetadata.processId } : {}),
+                ...(typeof shellMetadata?.terminalId === "string" ? { terminalId: shellMetadata.terminalId } : {}),
+                ...(typeof shellMetadata?.terminalName === "string" ? { terminalName: shellMetadata.terminalName } : {}),
+                ...(isTerminalStatus(shellMetadata?.terminalStatus) ? { terminalStatus: shellMetadata.terminalStatus } : {}),
+                ...(typeof shellMetadata?.autoDetached === "boolean" ? { autoDetached: shellMetadata.autoDetached } : {}),
+                ...(typeof shellMetadata?.awaitingInput === "boolean" ? { awaitingInput: shellMetadata.awaitingInput } : {}),
+                ...(typeof shellMetadata?.lastPrompt === "string" ? { lastPrompt: shellMetadata.lastPrompt } : {}),
                 ...(isShellProcessStatus(shellMetadata?.processStatus) ? { processStatus: shellMetadata.processStatus } : {}),
                 ...(typeof shellMetadata?.nextOutputSequence === "number" ? { nextOutputSequence: shellMetadata.nextOutputSequence } : {}),
                 exitCode: shell.exitCode,
@@ -348,6 +354,9 @@ const isShellKind = (value: unknown): value is "posix" | "powershell" | "cmd" =>
 
 const isShellProcessStatus = (value: unknown): value is "running" | "exited" | "stopped" | "missing" =>
   value === "running" || value === "exited" || value === "stopped" || value === "missing"
+
+const isTerminalStatus = (value: unknown): value is "running" | "exited" | "stopped" | "stale" | "awaiting_input" | "missing" =>
+  value === "running" || value === "exited" || value === "stopped" || value === "stale" || value === "awaiting_input" || value === "missing"
 
 const normalizeToolStatus = (status: string): ConversationToolRun["status"] => {
   if (["running", "awaiting_approval", "completed", "failed", "rejected", "cancelled"].includes(status)) {

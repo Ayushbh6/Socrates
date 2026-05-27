@@ -29,6 +29,11 @@ const resourceParamsSchema = z.object({ projectId: z.string().min(1), resourceId
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 
+type HttpRouteHooks = {
+  onConversationDelete?: (conversationId: string) => void
+  onProjectWorkspaceSwitch?: (projectId: string) => void
+}
+
 const parseBody = <T>(schema: z.ZodType<T>, body: unknown): T => {
   const parsed = schema.safeParse(body)
   if (!parsed.success) {
@@ -84,6 +89,7 @@ export const registerHttpRoutes = async (
   app: FastifyInstance,
   store: SocratesStore,
   credentials: ProviderCredentialStore,
+  hooks: HttpRouteHooks = {},
 ): Promise<void> => {
   app.get("/health", async () => ok({ status: "ok" }))
 
@@ -197,7 +203,9 @@ export const registerHttpRoutes = async (
     try {
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(updateProjectWorkspaceRequestSchema, request.body)
-      return ok(store.updateProjectWorkspace(projectId, input))
+      const result = store.updateProjectWorkspace(projectId, input)
+      hooks.onProjectWorkspaceSwitch?.(projectId)
+      return ok(result)
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
@@ -362,6 +370,7 @@ export const registerHttpRoutes = async (
   app.delete("/api/projects/:projectId/conversations/:conversationId", async (request, reply) => {
     try {
       const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      hooks.onConversationDelete?.(conversationId)
       return ok(store.deleteConversation(projectId, conversationId))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)

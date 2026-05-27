@@ -86,6 +86,17 @@ export class WorkspaceShellSession {
     this.processes.clear()
   }
 
+  writeProcessInput(processId: string, text: string): void {
+    const processInfo = this.findProcess(processId)
+    if (!processInfo || processInfo.status !== "running" || processInfo.child.killed) {
+      throw new SocratesError("terminal_process_not_running", "Terminal input can only be sent to a running process.", {
+        details: { processId },
+        recoverable: true,
+      })
+    }
+    processInfo.child.stdin.write(text)
+  }
+
   private async runNow(input: BashToolInput, context: ShellRunContext): Promise<BashToolOutput> {
     if (this.disposed) {
       throw new SocratesError("shell_session_disposed", "The shell session has already ended.")

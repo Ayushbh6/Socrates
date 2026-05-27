@@ -500,6 +500,7 @@ Purpose:
 - Stream agent events over WebSocket.
 - Show streamed thinking when the selected provider exposes it.
 - Show streamed final assistant answers.
+- Show a persistent Terminal panel for active and recent conversation terminals.
 - Show the latest estimated model-facing context size next to the conversation title.
 
 Primary layout:
@@ -513,6 +514,7 @@ main chat area
   thinking blocks
   assistant messages
   tool-call timeline
+  terminal panel
   feedback controls
   composer
 
@@ -578,6 +580,8 @@ V1 uses cancel/stop, not true pause/resume.
 If assistant answer text has already streamed when the user stops a turn, the backend persists that visible text as a cancelled partial assistant message. The transcript keeps showing it with a stopped indicator, and later model turns receive the semantic shape `user_query -> partial_assistant_response -> new_user_query`. Tool calls/results/reasoning from the cancelled turn remain persisted for audit/UI only.
 
 If a running, failed, or cancelled turn has streamed text but no completed assistant message row, `GET /api/projects/:projectId/conversations/:conversationId` can return a `partialTurns` entry recovered from `model_stream_chunks`. The frontend renders that incomplete turn with recovered answer text, reasoning, and persisted historical tool runs, and it can restore stop-button state when the turn is still running after reload.
+
+The same conversation response returns active and recent `terminals` so reloads hydrate the Terminal panel. Terminal response entries include bounded stdout/stderr tails and process metadata, not the complete log archive.
 
 Runtime settings are per turn:
 
@@ -648,7 +652,11 @@ list_project_resources
 
 `edit` is the only V1 model-visible file mutation tool. It can create files, overwrite files, make precise multiline replacements, and apply patch-style edits. It requires approval unless the user explicitly runs a full-access mode.
 
-`bash` runs platform-native shell commands from the active project workspace. The model-visible name remains `bash`, but macOS/Linux use POSIX shell adapters while Windows tries `powershell.exe`, then `pwsh`, then `cmd.exe` fallback. `operation: "run"` is the default and uses one non-interactive shell process per active turn, so `cwd` and exported environment can persist across bash calls inside that turn. `operation: "start"` launches a turn-scoped long-running process and returns a `processId`; `status`, `output`, and `stop` inspect or terminate that process without rerunning it. It has a default timeout of 120 seconds, streams output, persists full command output and shell/process metadata for retrieval, and relies on policy to auto-allow, approval-gate, or deny commands. It remains an approved fallback for cases where `read`, `search`, or `edit` are insufficient; Socrates should not block a legitimate approved shell command solely because a specialized tool exists.
+`bash` runs platform-native shell commands from the active project workspace. The model-visible name remains `bash`, but UI/product copy says Terminal. macOS/Linux use POSIX shell adapters while Windows tries `powershell.exe`, then `pwsh`, then `cmd.exe` fallback. `operation: "run"` is the default and uses one non-interactive shell process per active turn, so `cwd` and exported environment can persist across bash calls inside that turn. `operation: "start"` launches a conversation-scoped Terminal and returns a `terminalId` plus `processId`; `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning it. Long blocking `run` commands can auto-detach into a Terminal after `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds). It has a default timeout of 120 seconds for blocking runs, streams output, persists full command/Terminal output and shell/process metadata for retrieval, and relies on policy to auto-allow, approval-gate, or deny commands. It remains an approved fallback for cases where `read`, `search`, or `edit` are insufficient; Socrates should not block a legitimate approved shell command solely because a specialized tool exists.
+
+Conversation terminals are scoped by `projectId + conversationId + workspacePath`. Multiple named terminals can run in one conversation. A turn may complete while terminals continue running; later turns receive a bounded terminal-context summary and can use `bash status`, `bash output`, or `bash stop` by `terminalId` or `processId`. Running terminals are stopped on explicit stop, conversation delete, workspace switch, app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server restart, previously running terminals become `stale`; Socrates does not reattach orphaned OS processes.
+
+If a terminal appears to be waiting for user input, the backend emits `terminal.input.requested` and the frontend shows a Terminal-scoped input box. Only the user can send stdin through `terminal.input`; the agent must ask the user for the needed input and must not invent stdin. Raw stdin is redacted from persistence and model context.
 
 Bash already starts in the active workspace. Commands that begin by changing into guessed absolute paths outside that workspace are rejected. Relative workspace navigation and approved external destination paths remain allowed.
 
@@ -695,6 +703,8 @@ Generated code belongs in the attached workspace/repo, not in `.socrates/`. When
 
 Between user queries, Socrates should carry forward final user/assistant dialogue, not full historical tool-call dumps. Within the current turn, tool calls and tool outputs may be passed back to the model until the final answer is reached.
 
+Active/stale Terminal summaries are current-state context, not old transcript replay. The backend injects bounded terminal context into every new turn: terminal id/name, command, cwd, shell/platform, status, exit/signal, awaiting-input state, safe prompt text, and recent stdout/stderr tail. Full terminal logs stay persisted and inspectable through terminal output polling or trace retrieval.
+
 Provider-exposed thinking is shown and stored when available, but it is not used as semantic prompt context for later user queries.
 
 Gemini thought signatures and similar provider-specific tool-call metadata are same-turn-only continuation metadata. They may be carried while the active run is resolving tool calls, but they must not become later-turn semantic conversation history.
@@ -721,6 +731,8 @@ trace_retrieve can inspect exact source handles
 ```
 
 The context builder should keep recent visible user/assistant messages exact while older turns are represented by compact hidden summaries. When exact older content matters, summaries should point to inspectable handles.
+
+Context compression must preserve active terminal anchors: terminal ids, commands, status, awaiting-input state, latest actionable output/prompt, and source handles for exact recovery. It must not stuff full terminal logs into hidden context.
 
 Compression applies to both common long-chat growth and long single-turn work. A conversation such as `Q1/A1 ... Q70/A70` should keep recent Q/A pairs as normal `user` and `assistant` messages while older Q/A pairs move into hidden compacted context. A single large task should use the same mechanism before the next model call: keep the current user request and latest critical evidence exact when possible, but compact older current-turn tool outputs into hidden evidence capsules with exact inspect handles.
 

@@ -42,7 +42,9 @@ Tool behavior:
 - Use bash when command execution is actually needed: running tests/builds, package commands, scripts, git inspection, environment checks, dev servers, or operations that dedicated tools cannot do well. Do not use bash just to inspect uploaded resources when list_project_resources/read/search are better.
 - Bash is a platform-native shell even though the tool is named "bash": POSIX shell on macOS/Linux and PowerShell/cmd on Windows. Match commands to the active workspace guidance and operating system; do not assume Unix tools exist on Windows.
 - Bash commands already start in the active workspace. Do not hardcode or guess absolute workspace paths, and do not begin commands with cd /some/guessed/workspace && .... Use relative paths from the active workspace. Absolute paths may be used as explicit user-provided arguments or destinations when approval policy allows them.
-- For long-running commands such as dev servers, use bash operation="start", then operation="output" to inspect logs, operation="status" to check state, and operation="stop" when finished.
+- For long-running commands such as dev servers, watchers, long installs, scaffolds, or any command likely to run for more than one minute, use bash operation="start", then operation="output" to inspect logs, operation="status" to check state, and operation="stop" when finished.
+- Before starting a long-running command, check the terminal context below and avoid duplicate dev servers or watchers. Existing terminals can be controlled with operation="status" | "output" | "stop" using their terminalId or processId.
+- If a terminal is awaiting user input, tell the user what input is needed. Do not invent stdin or attempt to send user-only input yourself.
 - Use trace_retrieve for older persisted conversation and execution evidence. It is read-only and should be search-first, inspect-second.
 - Read-only tools can run in parallel. Mutating or shell execution should be treated as serialized and approval-aware.
 
@@ -69,6 +71,7 @@ export type SocratesPromptContext = {
   projectDescription?: string
   projectInstructions?: string
   workspaceGuidance?: string
+  terminalContext?: string
 }
 
 export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): string => {
@@ -82,6 +85,8 @@ export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): stri
     context.projectInstructions === undefined || context.projectInstructions.length === 0 ? "Not provided." : context.projectInstructions
   const workspaceGuidance =
     context.workspaceGuidance === undefined || context.workspaceGuidance.length === 0 ? "Not provided." : context.workspaceGuidance
+  const terminalContext =
+    context.terminalContext === undefined || context.terminalContext.length === 0 ? "No active or recent terminals." : context.terminalContext
 
   return `${socratesBasePrompt}
 
@@ -100,5 +105,10 @@ ${projectInstructions}
 Workspace guidance:
 <workspace_guidance>
 ${workspaceGuidance}
-</workspace_guidance>`
+</workspace_guidance>
+
+Terminal context:
+<terminal_context>
+${terminalContext}
+</terminal_context>`
 }

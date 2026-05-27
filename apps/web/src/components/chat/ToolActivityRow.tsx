@@ -83,7 +83,7 @@ function summarizeTool(tool: ToolTimelineItem): string {
   }
   if (tool.toolName === "bash") {
     const command = tool.shell?.command ?? inputString(tool, "command") ?? tool.argsPreview ?? "command";
-    return `Ran ${truncateInline(command, 80)}`;
+    return `Terminal ${truncateInline(command, 80)}`;
   }
   if (tool.toolName === "read") {
     return `Read ${inputString(tool, "path") ?? "file"}`;

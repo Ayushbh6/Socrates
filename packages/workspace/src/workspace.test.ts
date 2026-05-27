@@ -375,13 +375,50 @@ describe("workspace tools", () => {
       const processId = started.process?.processId
       expect(started.process?.status).toBe("running")
       expect(processId).toBeTruthy()
+      if (!processId) {
+        return
+      }
 
-      await wait(120)
-      const output = await session.run({ operation: "output", processId, outputSequence: started.process?.nextOutputSequence ?? 0, charLimit: 20_000 })
-      expect(`${started.stdout}${output.stdout}`).toMatch(/ready|tick/)
+      let nextOutputSequence = started.process?.nextOutputSequence ?? 0
+      let collectedOutput = started.stdout
+      for (let attempt = 0; attempt < 10 && !/ready|tick/.test(collectedOutput); attempt += 1) {
+        await wait(100)
+        const output = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+        collectedOutput = `${collectedOutput}${output.stdout}`
+        nextOutputSequence = output.process?.nextOutputSequence ?? nextOutputSequence
+      }
+      expect(collectedOutput).toMatch(/ready|tick/)
 
       const stopped = await session.run({ operation: "stop", processId })
       expect(stopped.process?.status).toBe("stopped")
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("writes user stdin to a running shell process", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath)
+    const command = nodeCommand(
+      "process.stdout.write('Name? '); process.stdin.once('data', (data) => { process.stdout.write('hello ' + data.toString().trim()); process.exit(0); })",
+    )
+    try {
+      const started = await session.run({ operation: "start", command, charLimit: 20_000 })
+      const processId = started.process?.processId
+      expect(processId).toBeTruthy()
+      if (!processId) {
+        return
+      }
+
+      await wait(80)
+      session.writeProcessInput(processId, "Socrates\n")
+      await wait(120)
+      const output = await session.run({ operation: "output", processId, outputSequence: started.process?.nextOutputSequence ?? 0, charLimit: 20_000 })
+      const status = await session.run({ operation: "status", processId })
+
+      expect(`${started.stdout}${output.stdout}`).toContain("Name?")
+      expect(output.stdout).toContain("hello Socrates")
+      expect(status.process?.status).toBe("exited")
     } finally {
       session.dispose()
     }

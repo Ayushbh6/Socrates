@@ -21,6 +21,8 @@ export type IdPrefix =
   | "appr"
   | "sh"
   | "shout"
+  | "term"
+  | "tout"
   | "fop"
   | "patch"
   | "err"

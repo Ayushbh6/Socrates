@@ -442,6 +442,54 @@ export const shellOutputChunks = sqliteTable(
   }),
 )
 
+export const terminalSessions = sqliteTable(
+  "terminal_sessions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    workspacePath: text("workspace_path").notNull(),
+    name: text("name").notNull(),
+    command: text("command").notNull(),
+    cwd: text("cwd").notNull(),
+    status: text("status").notNull(),
+    platform: text("platform"),
+    shellKind: text("shell_kind"),
+    shellExecutable: text("shell_executable"),
+    processId: text("process_id"),
+    exitCode: integer("exit_code"),
+    signal: text("signal"),
+    autoDetached: integer("auto_detached", { mode: "boolean" }).notNull(),
+    awaitingInput: integer("awaiting_input", { mode: "boolean" }).notNull(),
+    lastPrompt: text("last_prompt"),
+    startedAt: text("started_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    conversationIdx: index("terminal_sessions_conversation_idx").on(table.conversationId),
+    statusIdx: index("terminal_sessions_status_idx").on(table.conversationId, table.status),
+    processIdx: index("terminal_sessions_process_idx").on(table.processId),
+  }),
+)
+
+export const terminalOutputChunks = sqliteTable(
+  "terminal_output_chunks",
+  {
+    id: text("id").primaryKey(),
+    terminalSessionId: text("terminal_session_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    stream: text("stream").notNull(),
+    text: text("text").notNull(),
+    redacted: integer("redacted", { mode: "boolean" }).notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    terminalSequenceIdx: index("terminal_output_chunks_session_sequence_idx").on(table.terminalSessionId, table.sequence),
+  }),
+)
+
 export const fileOperations = sqliteTable(
   "file_operations",
   {

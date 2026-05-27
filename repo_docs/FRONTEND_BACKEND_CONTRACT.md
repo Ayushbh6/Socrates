@@ -167,6 +167,34 @@ type Message = {
   status: "streaming" | "completed" | "failed" | "cancelled"
   createdAt: string
 }
+
+type ConversationTerminal = {
+  terminalId: string
+  projectId: string
+  conversationId: string
+  name: string
+  command: string
+  cwd: string
+  workspacePath: string
+  status: "running" | "exited" | "stopped" | "stale" | "awaiting_input" | "missing"
+  platform?: string
+  shellKind?: "posix" | "powershell" | "cmd"
+  shellExecutable?: string
+  processId?: string
+  exitCode?: number | null
+  signal?: string | null
+  autoDetached: boolean
+  awaitingInput: boolean
+  lastPrompt?: string
+  startedAt: string
+  updatedAt: string
+  completedAt?: string
+  output: {
+    stdout: string
+    stderr: string
+    nextOutputSequence: number
+  }
+}
 ```
 
 V1 project/workspace invariant:
@@ -804,6 +832,7 @@ type GetConversationResponse = {
   conversation: Conversation
   messages: Message[]
   toolRuns: ConversationToolRun[]
+  terminals?: ConversationTerminal[]
   partialTurns?: Array<{
     turnId: string
     status: "running" | "failed" | "cancelled"
@@ -828,6 +857,8 @@ type GetConversationResponse = {
 ```
 
 `toolRuns` contains persisted, bounded tool activity for completed or cancelled turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
+
+`terminals` contains active and recent conversation-scoped Terminal sessions for the Terminal panel. It includes bounded stdout/stderr tails and metadata needed to hydrate running, stopped, exited, stale, and awaiting-input terminals after reload. Full logs remain in terminal output persistence and can be polled or retrieved; the frontend must not treat this bounded response as the complete log archive.
 
 Cancelled turns may include a cancelled partial assistant message when user-visible answer text streamed before cancellation. That partial assistant message is displayed in the transcript and included in later semantic prompt history as normal visible conversation text.
 
@@ -1013,6 +1044,9 @@ chat.message.send
 chat.turn.cancel
 approval.decide
 feedback.submit
+terminal.stop
+terminal.input
+terminal.rename
 ```
 
 ### `chat.message.send`
@@ -1080,6 +1114,40 @@ type FeedbackSubmitPayload = {
 }
 ```
 
+### `terminal.stop`
+
+Stops a running conversation-scoped Terminal.
+
+```ts
+type TerminalStopPayload = {
+  terminalId: string
+  reason?: string
+}
+```
+
+### `terminal.input`
+
+Sends user-only stdin to a Terminal that is awaiting input. The agent cannot send this command in the current design. The backend persists only a redacted marker such as `[user input sent]`; raw stdin must not be exposed to the model or event history.
+
+```ts
+type TerminalInputPayload = {
+  terminalId: string
+  text: string
+  submit?: boolean
+}
+```
+
+### `terminal.rename`
+
+Renames a conversation Terminal in the UI and persistence.
+
+```ts
+type TerminalRenamePayload = {
+  terminalId: string
+  name: string
+}
+```
+
 ## Server Events
 
 V1 should stay small but sufficient.
@@ -1101,6 +1169,13 @@ context.usage.snapshot
 context.compaction.started
 context.compaction.completed
 context.compaction.failed
+terminal.started
+terminal.output
+terminal.status
+terminal.input.requested
+terminal.completed
+terminal.stopped
+terminal.stale
 message.completed
 turn.completed
 turn.failed
@@ -1600,6 +1675,8 @@ Input:
 type BashToolInput = {
   operation?: "run" | "start" | "status" | "output" | "stop"
   command?: string
+  terminalId?: string
+  name?: string
   processId?: string
   outputSequence?: number
   cwd?: string
@@ -1608,7 +1685,7 @@ type BashToolInput = {
 }
 ```
 
-`operation` defaults to `"run"`. `run` and `start` require `command`; `status`, `output`, and `stop` require `processId`.
+`operation` defaults to `"run"`. `run` and `start` require `command`; `status`, `output`, and `stop` require `terminalId` or `processId`.
 
 Output:
 
@@ -1638,6 +1715,17 @@ type BashToolOutput = {
     exitedAt?: string
     nextOutputSequence?: number
   }
+  terminal?: {
+    terminalId: string
+    name: string
+    status: "running" | "exited" | "stopped" | "stale" | "awaiting_input" | "missing"
+    autoDetached?: boolean
+    awaitingInput?: boolean
+    lastPrompt?: string
+    nextOutputSequence?: number
+    startedAt?: string
+    updatedAt?: string
+  }
 }
 ```
 
@@ -1646,12 +1734,16 @@ Rules:
 - Default timeout is 120,000 milliseconds.
 - The model-visible tool name remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback.
 - `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
-- `start` launches a turn-scoped child process and returns quickly with `processId`. `status`, `output`, and `stop` inspect or terminate that same process without rerunning the command. Any still-running child process is stopped when the active turn ends.
-- Commands run one at a time. Obvious interactive/TTY commands are rejected or time out; stdin prompt UI is not part of V1.
+- `start` launches a conversation-scoped Terminal and returns quickly with `terminalId`, `processId`, shell metadata, status, and `nextOutputSequence`. `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning the command. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation.
+- `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
+- Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, previously running terminals are marked `stale`; Socrates does not reattach to orphaned OS processes.
+- Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
+- Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; raw stdin is redacted from persistence and model context.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
 - If a bash command times out or hits a shell start/write/protocol failure, the active shell session is reset before later bash calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
 - Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Bash already starts in the active workspace; use relative paths from there.
 - Command output must stream through `tool.call.output`.
+- Long-running Terminal output must also stream through `terminal.output` so the persistent Terminal panel updates even when the chat turn is idle or another turn is active.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
 - Read-only commands can be auto-allowed by policy.
