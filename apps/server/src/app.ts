@@ -39,6 +39,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   })
   await app.register(cors, {
     origin: [/^http:\/\/127\.0\.0\.1:\d+$/, /^http:\/\/localhost:\d+$/],
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   })
 
   await registerWebSocketRoutes(app, store, agent)

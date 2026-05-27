@@ -687,6 +687,21 @@ describe("HTTP API", () => {
     expect(updated.displayName).toBe("Aparajit")
   })
 
+  it("allows browser CORS preflights for project PATCH routes", async () => {
+    const app = await buildTestServer()
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/api/projects/proj_test/workspace",
+      headers: {
+        origin: "http://127.0.0.1:49986",
+        "access-control-request-method": "PATCH",
+      },
+    })
+
+    expect(response.statusCode).toBe(204)
+    expect(response.headers["access-control-allow-methods"]).toContain("PATCH")
+  })
+
   it("manages provider credentials without returning secret values", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-credentials-test-"))
     const app = await buildServer({ dbPath: path.join(home, "socrates.sqlite"), socratesHome: home, agent: createTestAgent() })
