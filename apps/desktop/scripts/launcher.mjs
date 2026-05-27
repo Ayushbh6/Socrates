@@ -13,7 +13,11 @@ const host = "127.0.0.1";
 const socratesHome = process.env.SOCRATES_HOME ?? path.join(os.homedir(), ".Socrates");
 const children = [];
 
-const nodeExecutable = process.execPath;
+const manifestPath = path.join(runtimeDir, "manifest.json");
+const manifest = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, "utf8")) : {};
+const bundledNode =
+  typeof manifest.node === "string" ? path.join(runtimeDir, manifest.node) : undefined;
+const nodeExecutable = bundledNode && fs.existsSync(bundledNode) ? bundledNode : process.execPath;
 const serverEntry = path.join(runtimeDir, "server", "dist", "index.js");
 const webEntry = path.join(runtimeDir, "web", "apps", "web", "server.js");
 const webCwd = path.dirname(webEntry);

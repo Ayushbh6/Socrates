@@ -61,7 +61,8 @@ fs.mkdirSync(outputDir, { recursive: true });
 await run(nodeCommand, [path.join(desktopRoot, "scripts", "build-runtime.mjs")], {
   env: {
     SOCRATES_RUNTIME_OUTPUT_DIR: runtimeDir,
-    SOCRATES_RUNTIME_INCLUDE_NODE: "false",
+    SOCRATES_RUNTIME_INCLUDE_NODE: "true",
+    SOCRATES_RUNTIME_KIND: "cli",
     SOCRATES_RUNTIME_PLATFORM_ARCH: platformArch,
   },
 });
@@ -75,8 +76,8 @@ if (process.platform === "win32") {
 }
 
 const manifest = JSON.parse(fs.readFileSync(path.join(runtimeDir, "manifest.json"), "utf8"));
-if (manifest.runtimeKind !== "cli" || manifest.node) {
-  throw new Error("Runtime archive manifest is not a CLI runtime.");
+if (manifest.runtimeKind !== "cli" || typeof manifest.node !== "string") {
+  throw new Error("Runtime archive manifest is not a bundled-node CLI runtime.");
 }
 
 const sizeMb = Math.round((fs.statSync(archivePath).size / 1024 / 1024) * 10) / 10;

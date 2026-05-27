@@ -8,8 +8,9 @@ const desktopRoot = path.join(repoRoot, "apps", "desktop");
 const runtimeDir = path.resolve(process.env.SOCRATES_RUNTIME_OUTPUT_DIR ?? path.join(desktopRoot, "runtime"));
 const cacheDir = path.join(desktopRoot, ".cache");
 const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-const nodeVersion = process.env.SOCRATES_DESKTOP_NODE_VERSION ?? process.version;
+const nodeVersion = process.env.SOCRATES_DESKTOP_NODE_VERSION ?? "v20.20.2";
 const includeNodeRuntime = process.env.SOCRATES_RUNTIME_INCLUDE_NODE !== "false";
+const runtimeKind = process.env.SOCRATES_RUNTIME_KIND ?? (includeNodeRuntime ? "desktop" : "cli");
 const runtimePlatformArch = process.env.SOCRATES_RUNTIME_PLATFORM_ARCH ?? `${process.platform}-${process.arch}`;
 
 const nodePlatform = (() => {
@@ -229,7 +230,7 @@ fs.writeFileSync(
   `${JSON.stringify(
     {
       version: "0.1.0",
-      runtimeKind: includeNodeRuntime ? "desktop" : "cli",
+      runtimeKind,
       platformArch: runtimePlatformArch,
       ...(includeNodeRuntime ? { node: process.platform === "win32" ? "node/node.exe" : "node/bin/node" } : {}),
       nodeVersion,

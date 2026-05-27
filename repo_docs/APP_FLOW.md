@@ -72,6 +72,7 @@ npm CLI release flow:
 ```text
 push SemVer tag, for example v0.1.0
   -> GitHub Actions builds unsigned runtime zips for macOS arm64, macOS x64, and Windows x64
+  -> each runtime zip includes a fixed Node runtime for app processes and native dependency ABI compatibility
   -> SHA256SUMS and runtime zips are attached to GitHub Releases
   -> users run npx @socrates-ai/cli
   -> CLI downloads/verifies/extracts the matching runtime under ~/.Socrates/runtimes/
