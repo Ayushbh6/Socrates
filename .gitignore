@@ -27,3 +27,4 @@ apps/desktop/.cache/
 apps/desktop/runtime/*
 !apps/desktop/runtime/.gitkeep
 host-workspaces/
+.socrates/
