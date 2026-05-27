@@ -89,6 +89,16 @@ export const socratesApiBaseUrl = (): string => {
   return directApiBaseUrl;
 };
 
+const apiUrl = (path: string): string => {
+  if (/^https?:\/\//.test(path)) {
+    return path;
+  }
+  if (path.startsWith("/api/")) {
+    return `${socratesApiBaseUrl()}${path}`;
+  }
+  return path;
+};
+
 async function readJsonResponse(response: Response): Promise<unknown> {
   const text = await response.text();
   try {
@@ -119,7 +129,7 @@ async function request<TSchema extends z.ZodTypeAny>(
     headers.set("content-type", "application/json");
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers,
     cache: "no-store",
@@ -139,7 +149,7 @@ async function uploadRequest<TSchema extends z.ZodTypeAny>(
   schema: TSchema,
   body: FormData,
 ): Promise<z.infer<TSchema>> {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     method: "POST",
     body,
     cache: "no-store",
