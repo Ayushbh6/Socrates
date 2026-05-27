@@ -84,6 +84,7 @@ export class ToolStore extends StoreBase {
     turnId: string
     command: string
     cwd: string
+    metadata?: unknown
   }): string {
     const id = createId("sh")
     this.handle.db
@@ -98,9 +99,21 @@ export class ToolStore extends StoreBase {
         cwd: input.cwd,
         status: "running",
         startedAt: nowIso(),
+        metadataJson: input.metadata === undefined ? undefined : JSON.stringify(input.metadata),
       })
       .run()
     return id
+  }
+
+  updateShellCommandMetadata(toolCallId: string, metadata: unknown): void {
+    const command = this.handle.db.select().from(shellCommands).where(eq(shellCommands.toolCallId, toolCallId)).get()
+    const previous = asRecord(parseJson(command?.metadataJson ?? null))
+    const next = asRecord(metadata) ?? {}
+    this.handle.db
+      .update(shellCommands)
+      .set({ metadataJson: JSON.stringify({ ...(previous ?? {}), ...next }) })
+      .where(eq(shellCommands.toolCallId, toolCallId))
+      .run()
   }
 
   appendShellOutput(toolCallId: string, stream: "stdout" | "stderr" | "log" | "result", text: string): void {
@@ -249,6 +262,7 @@ export class ToolStore extends StoreBase {
       const stdout = chunks.filter((row) => row.stream === "stdout").map((row) => row.text).join("")
       const stderr = chunks.filter((row) => row.stream === "stderr").map((row) => row.text).join("")
       const log = chunks.filter((row) => row.stream !== "stdout" && row.stream !== "stderr").map((row) => row.text).join("")
+      const shellMetadata = asRecord(parseJson(shell?.metadataJson ?? null))
       const files = fileRows
         .filter((row) => row.toolCallId === tool.id)
         .map((row) => ({ path: row.path, operation: row.operation, status: row.status }))
@@ -281,6 +295,13 @@ export class ToolStore extends StoreBase {
                 command: shell.command,
                 cwd: shell.cwd,
                 status: shell.status,
+                ...(isShellOperation(shellMetadata?.operation) ? { operation: shellMetadata.operation } : {}),
+                ...(typeof shellMetadata?.platform === "string" ? { platform: shellMetadata.platform } : {}),
+                ...(isShellKind(shellMetadata?.shellKind) ? { shellKind: shellMetadata.shellKind } : {}),
+                ...(typeof shellMetadata?.shellExecutable === "string" ? { shellExecutable: shellMetadata.shellExecutable } : {}),
+                ...(typeof shellMetadata?.processId === "string" ? { processId: shellMetadata.processId } : {}),
+                ...(isShellProcessStatus(shellMetadata?.processStatus) ? { processStatus: shellMetadata.processStatus } : {}),
+                ...(typeof shellMetadata?.nextOutputSequence === "number" ? { nextOutputSequence: shellMetadata.nextOutputSequence } : {}),
                 exitCode: shell.exitCode,
                 signal: shell.signal,
                 ...(shell.durationMs === null ? {} : { durationMs: shell.durationMs }),
@@ -315,6 +336,18 @@ const parseJson = (text: string | null): unknown => {
     return text
   }
 }
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+
+const isShellOperation = (value: unknown): value is "run" | "start" | "status" | "output" | "stop" =>
+  value === "run" || value === "start" || value === "status" || value === "output" || value === "stop"
+
+const isShellKind = (value: unknown): value is "posix" | "powershell" | "cmd" =>
+  value === "posix" || value === "powershell" || value === "cmd"
+
+const isShellProcessStatus = (value: unknown): value is "running" | "exited" | "stopped" | "missing" =>
+  value === "running" || value === "exited" || value === "stopped" || value === "missing"
 
 const normalizeToolStatus = (status: string): ConversationToolRun["status"] => {
   if (["running", "awaiting_approval", "completed", "failed", "rejected", "cancelled"].includes(status)) {

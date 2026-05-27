@@ -47,6 +47,7 @@ const buildTestServer = async (dbPath = tempDbPath(), agent = createTestAgent())
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
 
 const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
   const baseTokens = Math.ceil(`${request.system}${JSON.stringify(request.messages)}${JSON.stringify(request.tools ?? [])}`.length / 4)
@@ -185,30 +186,76 @@ const createPersistentBashAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        const setupCommand =
+          process.platform === "win32"
+            ? "New-Item -ItemType Directory -Force nested | Out-Null; Set-Location nested; $env:SOCRATES_SERVER_TEST = 'ok'; Get-Location"
+            : "mkdir -p nested && cd nested && export SOCRATES_SERVER_TEST=ok && pwd"
         yield {
           type: "model.tool_call.completed",
           toolCall: {
             toolCallId: "tcall_cd",
             toolName: "bash",
-            input: { command: "mkdir -p nested && cd nested && export SOCRATES_SERVER_TEST=ok && pwd" },
+            input: { command: setupCommand },
           },
         }
         yield { type: "model.completed" }
         return
       }
       if (step === 2) {
+        const stateCommand =
+          process.platform === "win32"
+            ? 'Write-Output -NoNewline "$env:SOCRATES_SERVER_TEST $(Split-Path -Leaf (Get-Location))"'
+            : 'printf "$SOCRATES_SERVER_TEST $(basename "$PWD")"'
         yield {
           type: "model.tool_call.completed",
           toolCall: {
             toolCallId: "tcall_state",
             toolName: "bash",
-            input: { command: "printf \"$SOCRATES_SERVER_TEST $(basename \"$PWD\")\"" },
+            input: { command: stateCommand },
           },
         }
         yield { type: "model.completed" }
         return
       }
       yield { type: "model.answer.delta", text: "Shell state preserved." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createRecoveringBashAgent = (): SocratesAgent => {
+  let step = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_break_shell",
+            toolName: "bash",
+            input: { command: "exit" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        const recoveryCommand = process.platform === "win32" ? "Write-Output -NoNewline recovered" : "printf recovered"
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_after_reset",
+            toolName: "bash",
+            input: { command: recoveryCommand },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Recovered after shell reset." }
       yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
     },
   }
@@ -222,12 +269,16 @@ const createApprovalToolAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        const command =
+          process.platform === "win32"
+            ? `[System.IO.File]::WriteAllText((Join-Path (Get-Location) ${psQuote("approved.txt")}), ${psQuote("approved")})`
+            : "printf approved > approved.txt"
         yield {
           type: "model.tool_call.completed",
           toolCall: {
             toolCallId: "tcall_approval",
             toolName: "bash",
-            input: { command: "printf approved > approved.txt" },
+            input: { command },
           },
         }
         yield { type: "model.completed" }
@@ -1967,6 +2018,61 @@ describe("WebSocket API", () => {
         expect(body.data.toolRuns[1]?.shell?.stdout).toBe("ok nested")
         expect(body.data.toolRuns[1]?.shell?.cwd.endsWith("nested")).toBe(true)
         expect(body.data.toolRuns[1]?.durationMs).toBeGreaterThanOrEqual(0)
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("persists recoverable shell protocol failures and resets the shell session", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createRecoveringBashAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Recover bash shell", { approvalMode: "approve_all" }))
+      const failed = await waitForEvent(socket, "tool.call.failed")
+      const completed = await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      expect(failed.payload.toolCallId).toBe("tcall_break_shell")
+      expect(failed.payload.error.code).toBe("shell_protocol_failed")
+      expect(completed.payload.toolCallId).toBe("tcall_after_reset")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{
+        toolRuns: Array<{ toolCallId: string; shell?: { stdout: string; platform?: string; shellKind?: string; shellExecutable?: string } }>
+      }>(response.payload)
+
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.toolRuns.find((run) => run.toolCallId === "tcall_after_reset")?.shell?.stdout).toBe("recovered")
+        expect(body.data.toolRuns.find((run) => run.toolCallId === "tcall_after_reset")?.shell?.shellKind).toBe(
+          process.platform === "win32" ? "powershell" : "posix",
+        )
+      }
+
+      const sqlite = new Database(dbPath)
+      try {
+        const error = sqlite
+          .prepare("SELECT code, recoverable, details_json FROM errors WHERE source = 'tool' AND code = 'shell_protocol_failed'")
+          .get() as { code: string; recoverable: number; details_json: string } | undefined
+        expect(error?.code).toBe("shell_protocol_failed")
+        expect(error?.recoverable).toBe(1)
+        const details = JSON.parse(error?.details_json ?? "{}") as { platform?: string; kind?: string; executable?: string; cwd?: string }
+        expect(details.platform).toBe(process.platform)
+        expect(details.kind).toBe(process.platform === "win32" ? "powershell" : "posix")
+        expect(details.executable).toBeTruthy()
+        expect(details.cwd).toBeTruthy()
+      } finally {
+        sqlite.close()
       }
     } finally {
       socket.close()

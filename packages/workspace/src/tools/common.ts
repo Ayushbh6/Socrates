@@ -54,6 +54,9 @@ export const isProbablyBinary = (buffer: Buffer): boolean => {
 
 export const isSensitivePath = (targetPath: string): boolean => {
   const base = path.basename(targetPath).toLowerCase()
+  if (isEnvTemplatePath(base)) {
+    return false
+  }
   return (
     base === ".env" ||
     base.startsWith(".env.") ||
@@ -63,6 +66,15 @@ export const isSensitivePath = (targetPath: string): boolean => {
     base.includes("credential")
   )
 }
+
+const isEnvTemplatePath = (base: string): boolean =>
+  base === ".env.example" ||
+  base === ".env.sample" ||
+  base === ".env.template" ||
+  base.endsWith(".env.example") ||
+  base.endsWith(".env.sample") ||
+  base.endsWith(".env.template") ||
+  base.endsWith(".env.local.example")
 
 export const ensureParentDirectory = (targetPath: string): void => {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true })

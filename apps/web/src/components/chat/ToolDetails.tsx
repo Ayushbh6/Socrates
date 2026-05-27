@@ -29,11 +29,21 @@ function BashDetails({ tool }: { tool: ToolTimelineItem }) {
   const cwd = tool.shell?.cwd ?? getInputValue(tool, "cwd");
   const commandText = typeof command === "string" ? command : undefined;
   const cwdText = typeof cwd === "string" ? cwd : undefined;
+  const shellParts = [tool.shell?.platform, tool.shell?.shellKind, tool.shell?.shellExecutable].filter(Boolean).join(" / ");
 
   return (
     <div className="space-y-2">
       {commandText && <LabeledCode label="Command" value={commandText} />}
       {cwdText && <MetaLine label="cwd" value={cwdText} />}
+      {shellParts && <MetaLine label="shell" value={shellParts} />}
+      {(tool.shell?.operation || tool.shell?.processId || tool.shell?.processStatus) && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-brand-text-light">
+          {tool.shell.operation && <span>operation {tool.shell.operation}</span>}
+          {tool.shell.processId && <span>process {tool.shell.processId}</span>}
+          {tool.shell.processStatus && <span>status {tool.shell.processStatus}</span>}
+          {tool.shell.nextOutputSequence !== undefined && <span>next output {tool.shell.nextOutputSequence}</span>}
+        </div>
+      )}
       {tool.shell && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-brand-text-light">
           <span>exit {tool.shell.exitCode ?? "none"}</span>

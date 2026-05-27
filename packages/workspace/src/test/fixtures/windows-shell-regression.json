@@ -1,0 +1,48 @@
+{
+  "name": "windows-shell-v0.1-regression",
+  "source": "sanitized from Windows tester conversation export",
+  "events": [
+    {
+      "type": "tool.call.failed",
+      "toolName": "bash",
+      "command": "npm create vite@latest frontend -- --template react-ts 2>&1",
+      "error": {
+        "code": "internal_error",
+        "message": "spawn /bin/zsh ENOENT"
+      }
+    },
+    {
+      "type": "tool.call.failed",
+      "toolName": "bash",
+      "command": "npx --yes create-vite@latest frontend -- --template react-ts 2>&1",
+      "error": {
+        "code": "internal_error",
+        "message": "Cannot call write after a stream was destroyed"
+      }
+    },
+    {
+      "type": "tool.call.failed",
+      "toolName": "bash",
+      "command": "where python && python --version && python -m pip show uvicorn",
+      "error": {
+        "code": "internal_error",
+        "message": "spawn /bin/zsh ENOENT"
+      }
+    },
+    {
+      "type": "tool.call.failed",
+      "toolName": "bash",
+      "command": "docker compose logs postgres 2>&1 | tail -30",
+      "error": {
+        "code": "internal_error",
+        "message": "spawn /bin/zsh ENOENT"
+      }
+    }
+  ],
+  "expectedFix": {
+    "windowsShellDefault": "powershell.exe",
+    "fallbackOrder": ["powershell.exe", "pwsh", "cmd.exe"],
+    "spawnFailuresAreRecoverable": true,
+    "deadStdinIsNotReused": true
+  }
+}

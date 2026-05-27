@@ -495,6 +495,10 @@ describe("http contracts", () => {
           command: "pwd",
           cwd: "/tmp/socrates",
           status: "completed",
+          operation: "run",
+          platform: "darwin",
+          shellKind: "posix",
+          shellExecutable: "/bin/zsh",
           exitCode: 0,
           durationMs: 12,
           stdout: "/tmp/socrates\n",
@@ -729,6 +733,9 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "start", command: "pnpm dev" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "output", processId: "proc_1", outputSequence: 0 }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "output" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
     expect(
       traceRetrieveToolInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1", startTurnNo: 2, turnLimit: 5 }).success,

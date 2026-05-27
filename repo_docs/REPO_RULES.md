@@ -257,7 +257,9 @@ Generated plotting/data scripts should save charts or artifacts to files and pri
 
 `.socrates/` is Socrates-owned memory/runtime/resource storage. It is not the default location for user code, scripts, tests, or normal app/repo changes. The agent should edit `.socrates/` only when the user explicitly asks for Socrates internals, uploaded resources, or runtime/memory storage behavior.
 
-The `bash` tool is the only V1 model-visible command execution tool. It may run git, package managers, test commands, Docker, and other shell commands, but policy decides whether each command is auto-allowed, approval-gated, or denied. Destructive, network, install, git mutation, and outside-workspace commands require approval by default.
+The `bash` tool is the only V1 model-visible command execution tool. It may run git, package managers, test commands, Docker, dev servers, and other shell commands, but policy decides whether each command is auto-allowed, approval-gated, or denied. Internally it is platform-native: POSIX on macOS/Linux, PowerShell-first on Windows, and cmd fallback. Do not add separate model-visible PowerShell, cmd, terminal, or process tools without updating contracts. Destructive, network, install, git mutation, delete, migration, and outside-workspace commands require approval by default.
+
+Long-running shell work must use `bash` process operations: `start` to launch a turn-scoped process, then `status`, `output`, and `stop` by `processId`. Processes are cleaned up at turn end unless a future project-scoped mode is explicitly added to the contract.
 
 Bash commands already start in the active workspace. Commands that begin by changing into a guessed absolute path outside the active workspace, such as `cd /Users/ayush/Test && ...`, must be rejected with a recoverable error. Relative `cd` inside the workspace and absolute paths used as explicit arguments or destinations may still be allowed by policy and approval.
 

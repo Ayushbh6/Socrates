@@ -163,17 +163,38 @@ export type EditToolOutput = z.infer<typeof editToolOutputSchema>
 
 export const bashToolInputSchema = z
   .object({
-    command: z.string().min(1),
+    operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+    command: z.string().min(1).optional(),
+    processId: z.string().min(1).optional(),
+    outputSequence: z.number().int().nonnegative().optional(),
     cwd: z.string().min(1).optional(),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
+  .superRefine((input, context) => {
+    const operation = input.operation ?? "run"
+    if ((operation === "run" || operation === "start") && !input.command) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["command"],
+        message: "command is required for run and start operations",
+      })
+    }
+    if ((operation === "status" || operation === "output" || operation === "stop") && !input.processId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["processId"],
+        message: "processId is required for status, output, and stop operations",
+      })
+    }
+  })
 export type BashToolInput = z.infer<typeof bashToolInputSchema>
 
 export const bashToolOutputSchema = z
   .object({
-    command: z.string().min(1),
+    operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+    command: z.string().min(1).optional(),
     cwd: z.string().min(1),
     exitCode: z.number().int().nullable(),
     signal: z.string().nullable().optional(),
@@ -182,6 +203,25 @@ export const bashToolOutputSchema = z
     durationMs: z.number().int().nonnegative(),
     timedOut: z.boolean(),
     truncation: truncationMetadataSchema,
+    shell: z
+      .object({
+        platform: z.string().min(1),
+        kind: z.enum(["posix", "powershell", "cmd"]),
+        executable: z.string().min(1),
+      })
+      .strict(),
+    process: z
+      .object({
+        processId: z.string().min(1),
+        status: z.enum(["running", "exited", "stopped", "missing"]),
+        exitCode: z.number().int().nullable().optional(),
+        signal: z.string().nullable().optional(),
+        startedAt: z.string().optional(),
+        exitedAt: z.string().optional(),
+        nextOutputSequence: z.number().int().nonnegative().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
 export type BashToolOutput = z.infer<typeof bashToolOutputSchema>

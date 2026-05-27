@@ -19,8 +19,15 @@ import {
   storeResourceFile,
   type CommandRunner,
 } from "./index"
+import { __bashToolTest } from "./tools/bashTool"
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-workspace-test-"))
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
+const nodeCommand = (script: string): string =>
+  process.platform === "win32"
+    ? `& ${psQuote(process.execPath)} -e ${psQuote(script)}`
+    : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`
 
 describe("workspace scaffold", () => {
   it("creates .socrates/resources for a start-from-scratch workspace", () => {
@@ -277,6 +284,17 @@ describe("workspace tools", () => {
     expect(result.changedFiles).toEqual([{ path: "README.md", operation: "edited" }])
   })
 
+  it("allows env template edits while denying real env files", async () => {
+    const workspacePath = tempDir()
+
+    await editWorkspace({ operations: [{ type: "create", path: ".env.example", content: "OPENAI_API_KEY=\n" }] }, { workspacePath })
+
+    expect(fs.readFileSync(path.join(workspacePath, ".env.example"), "utf8")).toBe("OPENAI_API_KEY=\n")
+    await expect(editWorkspace({ operations: [{ type: "create", path: ".env", content: "OPENAI_API_KEY=secret\n" }] }, { workspacePath })).rejects.toThrow(
+      SocratesError,
+    )
+  })
+
   it("composes multiple replacement edits to the same file before writing", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "strategy.py"), "rate = 0.02\nplt.show()\n")
@@ -318,7 +336,7 @@ describe("workspace tools", () => {
 
   it("runs shell commands with bounded output", async () => {
     const workspacePath = tempDir()
-    const result = await runWorkspaceBash({ command: "printf hello", charLimit: 3 }, { workspacePath })
+    const result = await runWorkspaceBash({ command: nodeCommand("process.stdout.write('hello')"), charLimit: 3 }, { workspacePath })
 
     expect(result.stdout).toBe("hel")
     expect(result.truncation.truncated).toBe(true)
@@ -330,13 +348,68 @@ describe("workspace tools", () => {
     fs.mkdirSync(path.join(workspacePath, "nested"))
     const session = createWorkspaceShellSession(workspacePath)
     try {
-      const first = await session.run({ command: "cd nested && export SOCRATES_TEST=ok && pwd" })
-      const second = await session.run({ command: "printf \"$SOCRATES_TEST $(basename \"$PWD\")\"" })
+      const firstCommand =
+        process.platform === "win32" ? "Set-Location nested; $env:SOCRATES_TEST = 'ok'; Get-Location" : "cd nested && export SOCRATES_TEST=ok && pwd"
+      const secondCommand =
+        process.platform === "win32"
+          ? 'Write-Output -NoNewline "$env:SOCRATES_TEST $(Split-Path -Leaf (Get-Location))"'
+          : 'printf "$SOCRATES_TEST $(basename "$PWD")"'
+      const first = await session.run({ command: firstCommand })
+      const second = await session.run({ command: secondCommand })
 
       expect(first.exitCode).toBe(0)
       expect(first.cwd.endsWith("nested")).toBe(true)
       expect(second.stdout).toBe("ok nested")
       expect(second.cwd.endsWith("nested")).toBe(true)
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("starts, reads, and stops a turn-scoped shell process", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath)
+    const command = nodeCommand("console.log('ready'); setInterval(() => console.log('tick'), 50)")
+    try {
+      const started = await session.run({ operation: "start", command, charLimit: 20_000 })
+      const processId = started.process?.processId
+      expect(started.process?.status).toBe("running")
+      expect(processId).toBeTruthy()
+
+      await wait(120)
+      const output = await session.run({ operation: "output", processId, outputSequence: started.process?.nextOutputSequence ?? 0, charLimit: 20_000 })
+      expect(`${started.stdout}${output.stdout}`).toMatch(/ready|tick/)
+
+      const stopped = await session.run({ operation: "stop", processId })
+      expect(stopped.process?.status).toBe("stopped")
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("formats Windows PowerShell command wrappers without translating commands", () => {
+    const adapter = __bashToolTest.candidateAdapters("win32", {})[0]
+    const wrapped = adapter?.wrapCommand({
+      command: "Get-Content package.json | Select-String version",
+      cwd: "C:\\Users\\Ayush\\Project",
+      cwdMarker: "__SOCRATES_CWD_test__",
+      doneMarker: "__SOCRATES_DONE_test__",
+    })
+
+    expect(adapter?.kind).toBe("powershell")
+    expect(adapter?.executable).toBe("powershell.exe")
+    expect(wrapped).toContain("Set-Location -LiteralPath 'C:\\Users\\Ayush\\Project'")
+    expect(wrapped).toContain("Get-Content package.json | Select-String version")
+    expect(wrapped).toContain("$global:LASTEXITCODE -ne 0")
+    expect(wrapped).toContain("__SOCRATES_DONE_test__")
+  })
+
+  it("does not reuse a destroyed shell after startup failure", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath, { platform: "win32", env: { COMSPEC: "definitely-missing-cmd.exe" } })
+    try {
+      await expect(session.run({ command: "Write-Output ok" })).rejects.toMatchObject({ code: "shell_start_failed" })
+      await expect(session.run({ command: "Write-Output ok" })).rejects.toMatchObject({ code: "shell_start_failed" })
     } finally {
       session.dispose()
     }
@@ -361,8 +434,8 @@ describe("workspace tools", () => {
     const workspacePath = tempDir()
     const session = createWorkspaceShellSession(workspacePath)
     try {
-      const timedOut = await session.run({ command: "sleep 1", timeoutMs: 20 })
-      const afterTimeout = await session.run({ command: "printf alive" })
+      const timedOut = await session.run({ command: nodeCommand("setTimeout(() => {}, 1000)"), timeoutMs: 20 })
+      const afterTimeout = await session.run({ command: nodeCommand("process.stdout.write('alive')") })
 
       expect(timedOut.timedOut).toBe(true)
       expect(afterTimeout.stdout).toBe("alive")
@@ -379,8 +452,13 @@ describe("workspace tools", () => {
     const session = createWorkspaceShellSession(workspacePath)
     try {
       await expect(session.run({ command: "cd /Users/ayush/Test && python3 -m venv venv" })).rejects.toThrow(SocratesError)
-      const relative = await session.run({ command: "cd nested && pwd" })
-      const externalDestination = await session.run({ command: "cp ../result.txt /tmp/socrates-result-test.txt" })
+      const relative = await session.run({ command: process.platform === "win32" ? "Set-Location nested; Get-Location" : "cd nested && pwd" })
+      const externalDestination = await session.run({
+        command:
+          process.platform === "win32"
+            ? `Copy-Item ..\\result.txt ${psQuote(path.join(os.tmpdir(), "socrates-result-test.txt"))}`
+            : "cp ../result.txt /tmp/socrates-result-test.txt",
+      })
 
       expect(relative.exitCode).toBe(0)
       expect(relative.cwd.endsWith("nested")).toBe(true)

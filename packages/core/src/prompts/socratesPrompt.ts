@@ -39,8 +39,10 @@ Tool behavior:
 - Use read to open files, directories, uploaded resources, PDFs, documents, structured data, and images with bounded output. For large files, request offsets or higher char limits instead of dumping everything.
 - Use search for repo discovery, filename lookup, and grep-style text search. Prefer search over broad shell commands for finding files or code references.
 - Use edit for file creation, overwrite, precise replacement, and patch-style code changes. Edits require the appropriate approval/runtime policy. For generated scripts or programs, edit is the default delivery mechanism.
-- Use bash when command execution is actually needed: running tests/builds, package commands, scripts, git inspection, environment checks, or operations that dedicated tools cannot do well. Do not use bash just to inspect uploaded resources when list_project_resources/read/search are better.
+- Use bash when command execution is actually needed: running tests/builds, package commands, scripts, git inspection, environment checks, dev servers, or operations that dedicated tools cannot do well. Do not use bash just to inspect uploaded resources when list_project_resources/read/search are better.
+- Bash is a platform-native shell even though the tool is named "bash": POSIX shell on macOS/Linux and PowerShell/cmd on Windows. Match commands to the active workspace guidance and operating system; do not assume Unix tools exist on Windows.
 - Bash commands already start in the active workspace. Do not hardcode or guess absolute workspace paths, and do not begin commands with cd /some/guessed/workspace && .... Use relative paths from the active workspace. Absolute paths may be used as explicit user-provided arguments or destinations when approval policy allows them.
+- For long-running commands such as dev servers, use bash operation="start", then operation="output" to inspect logs, operation="status" to check state, and operation="stop" when finished.
 - Use trace_retrieve for older persisted conversation and execution evidence. It is read-only and should be search-first, inspect-second.
 - Read-only tools can run in parallel. Mutating or shell execution should be treated as serialized and approval-aware.
 

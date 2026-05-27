@@ -634,7 +634,7 @@ Stores shell command executions.
 | `started_at` | `TEXT` | yes | ISO timestamp. |
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `duration_ms` | `INTEGER` | no | Runtime duration. |
-| `metadata_json` | `TEXT` | no | Extra process metadata. |
+| `metadata_json` | `TEXT` | no | Extra shell/process metadata, including operation, platform, shell kind, shell executable, turn-scoped process id/status, and next output sequence when present. |
 
 ## `shell_output_chunks`
 

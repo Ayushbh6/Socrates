@@ -196,6 +196,8 @@ Provider-specific tool-call formats must not leak into `packages/core/tools`, `a
 
 The provider request may include these tools, but the provider layer must treat the tool definitions as data from Socrates. It must not define filesystem, shell, git, patch, or trace behavior itself.
 
+The `bash` tool name is stable even though execution is platform-native. Provider adapters must pass the Socrates tool schema through unchanged; core/server/workspace own POSIX, PowerShell, and cmd behavior. Prompt guidance should tell the model to use PowerShell-compatible commands on Windows and `operation: "start"`/`"status"`/`"output"`/`"stop"` for long-running processes. Providers must not invent separate terminal, process, PowerShell, or cmd tools.
+
 Normalized tool calls may carry opaque provider metadata required for same-turn continuation, for example `providerMetadata.google.thoughtSignature` on Gemini function calls. Providers must preserve this metadata when normalizing tool-call parts and when converting same-turn assistant tool-call messages back into provider messages. Core may carry it only in the active in-memory turn loop; server history loading must not add old thought signatures to later prompts.
 
 Image handling depends on provider capability. Providers with native vision support may receive image inputs through the normalized message/tool-result path when the user or `read` tool supplies an image. Non-vision providers should receive bounded OCR text, image metadata, or a generated visual description when available. Provider adapters must keep this normalized so vision support does not leak provider-specific image payloads into `apps/web`, `apps/server`, or unrelated core code.

@@ -388,6 +388,10 @@ export class SocratesStore {
     this.tools.appendShellOutput(toolCallId, stream, text)
   }
 
+  updateShellCommandMetadata(toolCallId: string, metadata: unknown): void {
+    this.tools.updateShellCommandMetadata(toolCallId, metadata)
+  }
+
   completeShellCommand(toolCallId: string, input: Parameters<ToolStore["completeShellCommand"]>[1]): void {
     this.tools.completeShellCommand(toolCallId, input)
   }

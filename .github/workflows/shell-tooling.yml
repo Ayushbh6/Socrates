@@ -1,0 +1,42 @@
+name: Shell Tooling
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck shell contracts
+        run: |
+          pnpm --filter @socrates/contracts typecheck
+          pnpm --filter @socrates/workspace typecheck
+          pnpm --filter @socrates/core typecheck
+          pnpm --filter @socrates/server typecheck
+      - name: Test shell contracts
+        run: |
+          pnpm --filter @socrates/contracts test
+          pnpm --filter @socrates/workspace test
+          pnpm --filter @socrates/core test
+          pnpm --filter @socrates/server test

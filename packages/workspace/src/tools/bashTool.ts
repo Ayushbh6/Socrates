@@ -1,26 +1,75 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
+import type { BashToolInput, BashToolOutput, TruncationMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { clampCharLimit, resolveWorkspacePath } from "./common"
+
+type ShellKind = "posix" | "powershell" | "cmd"
+type BashOperation = NonNullable<BashToolInput["operation"]>
 
 type ShellRunContext = {
   abortSignal?: AbortSignal
   onOutput?: (output: { stream: "stdout" | "stderr" | "log"; text: string }) => void
 }
 
+type ShellAdapter = {
+  kind: ShellKind
+  platform: NodeJS.Platform
+  executable: string
+  interactiveArgs: string[]
+  runArgs: (command: string) => string[]
+  quotePath: (value: string) => string
+  wrapCommand: (input: { command: string; cwd?: string; cwdMarker: string; doneMarker: string }) => string
+}
+
+type RunningProcess = {
+  processId: string
+  command: string
+  cwd: string
+  child: ChildProcessWithoutNullStreams
+  adapter: ShellAdapter
+  startedAt: string
+  exitedAt?: string
+  status: "running" | "exited" | "stopped"
+  exitCode?: number | null
+  signal?: string | null
+  chunks: ProcessChunk[]
+  nextSequence: number
+}
+
+type ProcessChunk = {
+  sequence: number
+  stream: "stdout" | "stderr"
+  text: string
+}
+
+type ShellChild = {
+  child: ChildProcessWithoutNullStreams
+  adapter: ShellAdapter
+}
+
 const interactiveCommandPattern =
   /^\s*(vi|vim|nvim|nano|emacs|less|more|top|htop|ssh|scp|sftp|ftp|passwd)\b|\b(--interactive|-i)\b/
 
 const markerHoldback = 256
+const processOutputBufferLimit = 200_000
 
 export class WorkspaceShellSession {
-  private child: ChildProcessWithoutNullStreams | null = null
+  private shellChild: ShellChild | null = null
   private queue: Promise<unknown> = Promise.resolve()
   private disposed = false
+  private readonly processes = new Map<string, RunningProcess>()
+  private readonly platform: NodeJS.Platform
+  private readonly env: NodeJS.ProcessEnv
 
-  constructor(private readonly workspacePath: string) {}
+  constructor(
+    private readonly workspacePath: string,
+    options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv } = {},
+  ) {
+    this.platform = options.platform ?? process.platform
+    this.env = options.env ?? process.env
+  }
 
   run(input: BashToolInput, context: ShellRunContext = {}): Promise<BashToolOutput> {
     const run = this.queue.then(() => this.runNow(input, context))
@@ -30,24 +79,41 @@ export class WorkspaceShellSession {
 
   dispose(): void {
     this.disposed = true
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM")
+    this.resetChild()
+    for (const processInfo of this.processes.values()) {
+      this.stopProcess(processInfo)
     }
-    this.child = null
+    this.processes.clear()
   }
 
   private async runNow(input: BashToolInput, context: ShellRunContext): Promise<BashToolOutput> {
     if (this.disposed) {
       throw new SocratesError("shell_session_disposed", "The shell session has already ended.")
     }
-    rejectLeadingExternalCd(input.command, this.workspacePath)
-    if (interactiveCommandPattern.test(input.command)) {
-      throw new SocratesError(
-        "interactive_shell_command_unsupported",
-        "Interactive shell commands are not supported yet. Run a non-interactive command instead.",
-        { details: { command: input.command }, recoverable: true },
-      )
+
+    const operation = input.operation ?? "run"
+    if (operation === "run") {
+      return await this.runCommand(input, context)
     }
+    if (operation === "start") {
+      return await this.startProcess(input, context)
+    }
+    if (operation === "status") {
+      return this.processStatus(input)
+    }
+    if (operation === "output") {
+      return this.processOutput(input, context)
+    }
+    return this.processStop(input, context)
+  }
+
+  private async runCommand(input: BashToolInput, context: ShellRunContext): Promise<BashToolOutput> {
+    const commandText = input.command
+    if (!commandText) {
+      throw new SocratesError("shell_command_required", "A shell command is required for run operations.")
+    }
+    rejectLeadingExternalCd(commandText, this.workspacePath)
+    rejectInteractiveCommand(commandText)
 
     const startedAt = Date.now()
     const requestedCwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : undefined
@@ -67,7 +133,8 @@ export class WorkspaceShellSession {
     let resolved = false
     let forceReset = false
 
-    const child = this.ensureChild()
+    const shellChild = await this.ensureChild()
+    const { child, adapter } = shellChild
 
     const append = (stream: "stdout" | "stderr", text: string) => {
       if (!text) {
@@ -140,7 +207,8 @@ export class WorkspaceShellSession {
       }
       const fail = (error: unknown) => {
         cleanup()
-        reject(error)
+        this.resetChild()
+        reject(normalizeShellError(error, "shell_protocol_failed", adapter, finalCwd))
       }
       const cleanup = () => {
         clearTimeout(timeout)
@@ -152,7 +220,8 @@ export class WorkspaceShellSession {
         context.abortSignal?.removeEventListener("abort", onAbort)
       }
       const makeOutput = (exitCode: number | null, signal?: string | null): BashToolOutput => ({
-        command: input.command,
+        operation: "run",
+        command: commandText,
         cwd: finalCwd,
         exitCode,
         ...(signal ? { signal } : {}),
@@ -166,6 +235,7 @@ export class WorkspaceShellSession {
           originalLength,
           returnedLength,
         },
+        shell: shellMetadata(adapter),
       })
 
       const onStdout = (chunk: Buffer) => {
@@ -181,11 +251,26 @@ export class WorkspaceShellSession {
       const onClose = (exitCode: number | null, signal: NodeJS.Signals | null) => {
         append("stdout", stdoutPending)
         stdoutPending = ""
-        this.child = null
+        this.shellChild = null
+        if (!resolved) {
+          if (timedOut) {
+            finish(makeOutput(exitCode, signal))
+            return
+          }
+          fail(
+            new Error(
+              `Shell closed before command completion marker was emitted.${exitCode === null ? "" : ` Exit code: ${exitCode}.`}${
+                signal ? ` Signal: ${signal}.` : ""
+              }`,
+            ),
+          )
+          return
+        }
         finish(makeOutput(exitCode, signal))
       }
       const onAbort = () => {
         forceReset = true
+        timedOut = false
         this.resetChild()
       }
       const timeout = setTimeout(() => {
@@ -194,8 +279,8 @@ export class WorkspaceShellSession {
         this.resetChild()
       }, timeoutMs)
       const killTimeout = setTimeout(() => {
-        if (forceReset && this.child && !this.child.killed) {
-          this.child.kill("SIGKILL")
+        if (forceReset && this.shellChild?.child && !this.shellChild.child.killed) {
+          this.shellChild.child.kill("SIGKILL")
         }
       }, timeoutMs + 2_000)
 
@@ -205,55 +290,255 @@ export class WorkspaceShellSession {
       child.once("error", fail)
       context.abortSignal?.addEventListener("abort", onAbort, { once: true })
 
-      const command = [
-        requestedCwd ? `cd ${shellQuote(requestedCwd)}` : undefined,
-        input.command,
-        "__socrates_exit=$?",
-        `printf '${cwdMarker}%s\\n' "$PWD"`,
-        `printf '${doneMarker}%s\\n' "$__socrates_exit"`,
-      ]
-        .filter(Boolean)
-        .join("\n")
+      const wrappedCommand = adapter.wrapCommand({
+        command: commandText,
+        ...(requestedCwd ? { cwd: requestedCwd } : {}),
+        cwdMarker,
+        doneMarker,
+      })
 
-      child.stdin.write(`${command}\n`, (error) => {
+      child.stdin.write(`${wrappedCommand}\n`, (error) => {
         if (error && !resolved) {
-          fail(error)
+          cleanup()
+          this.resetChild()
+          reject(normalizeShellError(error, "shell_write_failed", adapter, finalCwd))
         }
       })
     })
   }
 
-  private ensureChild(): ChildProcessWithoutNullStreams {
-    if (this.child && !this.child.killed) {
-      return this.child
+  private async startProcess(input: BashToolInput, context: ShellRunContext): Promise<BashToolOutput> {
+    const commandText = input.command
+    if (!commandText) {
+      throw new SocratesError("shell_command_required", "A shell command is required for start operations.")
     }
-    const shell = process.env.SHELL || "/bin/zsh"
-    const child = spawn(shell, shellArgs(shell), {
-      cwd: this.workspacePath,
-      env: {
-        ...process.env,
-        CI: "1",
-        PAGER: "cat",
-        GIT_PAGER: "cat",
-        PS1: "",
-        PROMPT: "",
-      },
-      stdio: ["pipe", "pipe", "pipe"],
+    rejectLeadingExternalCd(commandText, this.workspacePath)
+    rejectInteractiveCommand(commandText)
+
+    const startedAt = Date.now()
+    const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
+    const { child, adapter } = await this.spawnProcessShell(commandText, cwd)
+    const processId = `proc_${randomUUID().replaceAll("-", "")}`
+    const processInfo: RunningProcess = {
+      processId,
+      command: commandText,
+      cwd,
+      child,
+      adapter,
+      startedAt: new Date(startedAt).toISOString(),
+      status: "running",
+      chunks: [],
+      nextSequence: 0,
+    }
+    this.processes.set(processId, processInfo)
+
+    child.stdout.on("data", (chunk: Buffer) => this.appendProcessOutput(processInfo, "stdout", chunk.toString("utf8"), context))
+    child.stderr.on("data", (chunk: Buffer) => this.appendProcessOutput(processInfo, "stderr", chunk.toString("utf8"), context))
+    child.once("error", (error) => {
+      processInfo.status = "exited"
+      processInfo.exitedAt = new Date().toISOString()
+      this.appendProcessOutput(processInfo, "stderr", `${error.message}\n`, context)
     })
-    this.child = child
-    return child
+    child.once("close", (exitCode: number | null, signal: NodeJS.Signals | null) => {
+      if (processInfo.status !== "stopped") {
+        processInfo.status = "exited"
+      }
+      processInfo.exitCode = exitCode
+      processInfo.signal = signal
+      processInfo.exitedAt = new Date().toISOString()
+    })
+
+    const snapshot = processSnapshot(processInfo, input.outputSequence, clampCharLimit(input.charLimit))
+    return {
+      operation: "start",
+      command: commandText,
+      cwd,
+      exitCode: null,
+      stdout: snapshot.stdout,
+      stderr: snapshot.stderr,
+      durationMs: Date.now() - startedAt,
+      timedOut: false,
+      truncation: snapshot.truncation,
+      shell: shellMetadata(adapter),
+      process: processMetadata(processInfo),
+    }
+  }
+
+  private processStatus(input: BashToolInput): BashToolOutput {
+    const startedAt = Date.now()
+    const processInfo = this.findProcess(input.processId)
+    return {
+      operation: "status",
+      cwd: processInfo?.cwd ?? this.workspacePath,
+      exitCode: processInfo?.exitCode ?? null,
+      ...(processInfo?.signal ? { signal: processInfo.signal } : {}),
+      stdout: "",
+      stderr: "",
+      durationMs: Date.now() - startedAt,
+      timedOut: false,
+      truncation: emptyTruncation(clampCharLimit(input.charLimit)),
+      shell: shellMetadata(processInfo?.adapter ?? this.defaultAdapter()),
+      process: processInfo ? processMetadata(processInfo) : missingProcessMetadata(input.processId),
+    }
+  }
+
+  private processOutput(input: BashToolInput, context: ShellRunContext): BashToolOutput {
+    const startedAt = Date.now()
+    const processInfo = this.findProcess(input.processId)
+    if (!processInfo) {
+      return {
+        operation: "output",
+        cwd: this.workspacePath,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: Date.now() - startedAt,
+        timedOut: false,
+        truncation: emptyTruncation(clampCharLimit(input.charLimit)),
+        shell: shellMetadata(this.defaultAdapter()),
+        process: missingProcessMetadata(input.processId),
+      }
+    }
+    const snapshot = processSnapshot(processInfo, input.outputSequence, clampCharLimit(input.charLimit))
+    if (snapshot.stdout) {
+      context.onOutput?.({ stream: "stdout", text: snapshot.stdout })
+    }
+    if (snapshot.stderr) {
+      context.onOutput?.({ stream: "stderr", text: snapshot.stderr })
+    }
+    return {
+      operation: "output",
+      command: processInfo.command,
+      cwd: processInfo.cwd,
+      exitCode: processInfo.exitCode ?? null,
+      ...(processInfo.signal ? { signal: processInfo.signal } : {}),
+      stdout: snapshot.stdout,
+      stderr: snapshot.stderr,
+      durationMs: Date.now() - startedAt,
+      timedOut: false,
+      truncation: snapshot.truncation,
+      shell: shellMetadata(processInfo.adapter),
+      process: processMetadata(processInfo),
+    }
+  }
+
+  private processStop(input: BashToolInput, context: ShellRunContext): BashToolOutput {
+    const startedAt = Date.now()
+    const processInfo = this.findProcess(input.processId)
+    if (!processInfo) {
+      return {
+        operation: "stop",
+        cwd: this.workspacePath,
+        exitCode: null,
+        stdout: "",
+        stderr: "",
+        durationMs: Date.now() - startedAt,
+        timedOut: false,
+        truncation: emptyTruncation(clampCharLimit(input.charLimit)),
+        shell: shellMetadata(this.defaultAdapter()),
+        process: missingProcessMetadata(input.processId),
+      }
+    }
+
+    this.stopProcess(processInfo)
+    const snapshot = processSnapshot(processInfo, input.outputSequence, clampCharLimit(input.charLimit))
+    if (snapshot.stdout) {
+      context.onOutput?.({ stream: "stdout", text: snapshot.stdout })
+    }
+    if (snapshot.stderr) {
+      context.onOutput?.({ stream: "stderr", text: snapshot.stderr })
+    }
+    return {
+      operation: "stop",
+      command: processInfo.command,
+      cwd: processInfo.cwd,
+      exitCode: processInfo.exitCode ?? null,
+      ...(processInfo.signal ? { signal: processInfo.signal } : {}),
+      stdout: snapshot.stdout,
+      stderr: snapshot.stderr,
+      durationMs: Date.now() - startedAt,
+      timedOut: false,
+      truncation: snapshot.truncation,
+      shell: shellMetadata(processInfo.adapter),
+      process: processMetadata(processInfo),
+    }
+  }
+
+  private async ensureChild(): Promise<ShellChild> {
+    if (this.shellChild?.child && !this.shellChild.child.killed) {
+      return this.shellChild
+    }
+
+    let lastError: unknown
+    for (const adapter of candidateAdapters(this.platform, this.env)) {
+      try {
+        const child = await spawnChecked(adapter, adapter.interactiveArgs, this.workspacePath, this.env)
+        this.shellChild = { child, adapter }
+        return this.shellChild
+      } catch (error) {
+        lastError = error
+      }
+    }
+
+    throw normalizeShellError(lastError, "shell_start_failed", this.defaultAdapter(), this.workspacePath)
+  }
+
+  private async spawnProcessShell(command: string, cwd: string): Promise<ShellChild> {
+    let lastError: unknown
+    for (const adapter of candidateAdapters(this.platform, this.env)) {
+      try {
+        const child = await spawnChecked(adapter, adapter.runArgs(command), cwd, this.env)
+        return { child, adapter }
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw normalizeShellError(lastError, "shell_start_failed", this.defaultAdapter(), cwd)
   }
 
   private resetChild(): void {
-    if (this.child && !this.child.killed) {
-      this.child.kill("SIGTERM")
+    if (this.shellChild?.child && !this.shellChild.child.killed) {
+      this.shellChild.child.kill("SIGTERM")
     }
-    this.child = null
+    this.shellChild = null
+  }
+
+  private appendProcessOutput(processInfo: RunningProcess, stream: "stdout" | "stderr", text: string, context?: ShellRunContext): void {
+    if (!text) {
+      return
+    }
+    processInfo.chunks.push({ sequence: processInfo.nextSequence, stream, text })
+    processInfo.nextSequence += 1
+    trimProcessChunks(processInfo)
+    context?.onOutput?.({ stream, text })
+  }
+
+  private stopProcess(processInfo: RunningProcess): void {
+    if (processInfo.status === "running" && !processInfo.child.killed) {
+      processInfo.status = "stopped"
+      processInfo.child.kill("SIGTERM")
+      setTimeout(() => {
+        if (!processInfo.child.killed && processInfo.status === "stopped") {
+          processInfo.child.kill("SIGKILL")
+        }
+      }, 2_000).unref?.()
+    }
+    processInfo.exitedAt ??= new Date().toISOString()
+  }
+
+  private findProcess(processId: string | undefined): RunningProcess | undefined {
+    return processId ? this.processes.get(processId) : undefined
+  }
+
+  private defaultAdapter(): ShellAdapter {
+    return candidateAdapters(this.platform, this.env)[0] ?? makePosixAdapter(this.platform, "/bin/sh")
   }
 }
 
-export const createWorkspaceShellSession = (workspacePath: string): WorkspaceShellSession =>
-  new WorkspaceShellSession(resolveWorkspacePath(workspacePath))
+export const createWorkspaceShellSession = (
+  workspacePath: string,
+  options?: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv },
+): WorkspaceShellSession => new WorkspaceShellSession(resolveWorkspacePath(workspacePath), options)
 
 export const runWorkspaceBash = async (
   input: BashToolInput,
@@ -271,18 +556,247 @@ export const runWorkspaceBash = async (
   }
 }
 
-const shellArgs = (shell: string): string[] => {
-  const base = path.basename(shell)
-  if (base.includes("zsh")) {
-    return ["-f"]
+export const isShellSessionResetError = (error: unknown): boolean =>
+  error instanceof SocratesError && ["shell_start_failed", "shell_write_failed", "shell_protocol_failed"].includes(error.code)
+
+const rejectInteractiveCommand = (command: string): void => {
+  if (interactiveCommandPattern.test(command)) {
+    throw new SocratesError(
+      "interactive_shell_command_unsupported",
+      "Interactive shell commands are not supported yet. Run a non-interactive command instead.",
+      { details: { command }, recoverable: true },
+    )
   }
-  if (base.includes("bash")) {
-    return ["--noprofile", "--norc"]
-  }
-  return []
 }
 
-const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
+const spawnChecked = (
+  adapter: ShellAdapter,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<ChildProcessWithoutNullStreams> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(adapter.executable, args, {
+      cwd,
+      env: shellEnv(env),
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    })
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) {
+        return
+      }
+      settled = true
+      child.off("error", onError)
+      child.off("close", onEarlyClose)
+      resolve(child)
+    }, 25)
+    const onError = (error: Error) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      child.off("close", onEarlyClose)
+      reject(normalizeShellError(error, "shell_start_failed", adapter, cwd))
+    }
+    const onEarlyClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      child.off("error", onError)
+      reject(
+        new SocratesError("shell_start_failed", "Shell process exited before it was ready.", {
+          details: { ...shellMetadata(adapter), cwd, code, signal },
+          recoverable: true,
+        }),
+      )
+    }
+    child.once("error", onError)
+    child.once("close", onEarlyClose)
+  })
+
+const shellEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+  ...env,
+  CI: "1",
+  PAGER: "cat",
+  GIT_PAGER: "cat",
+  PS1: "",
+  PROMPT: "",
+})
+
+const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): ShellAdapter[] => {
+  if (platform === "win32") {
+    return [makePowerShellAdapter(platform, "powershell.exe"), makePowerShellAdapter(platform, "pwsh"), makeCmdAdapter(platform, env.COMSPEC || "cmd.exe")]
+  }
+
+  const candidates = [env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"].filter((item): item is string => Boolean(item))
+  return [...new Set(candidates)].map((shell) => makePosixAdapter(platform, shell))
+}
+
+export const __bashToolTest = {
+  candidateAdapters,
+}
+
+const makePosixAdapter = (platform: NodeJS.Platform, executable: string): ShellAdapter => {
+  const base = path.basename(executable)
+  const interactiveArgs = base.includes("zsh") ? ["-f"] : base.includes("bash") ? ["--noprofile", "--norc"] : []
+  return {
+    kind: "posix",
+    platform,
+    executable,
+    interactiveArgs,
+    runArgs: (command) => [...interactiveArgs, "-c", command || "exit 0"],
+    quotePath: posixQuote,
+    wrapCommand: ({ command, cwd, cwdMarker, doneMarker }) =>
+      [
+        cwd ? `cd ${posixQuote(cwd)}` : undefined,
+        command,
+        "__socrates_exit=$?",
+        `printf '${cwdMarker}%s\\n' "$PWD"`,
+        `printf '${doneMarker}%s\\n' "$__socrates_exit"`,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+  }
+}
+
+const makePowerShellAdapter = (platform: NodeJS.Platform, executable: string): ShellAdapter => ({
+  kind: "powershell",
+  platform,
+  executable,
+  interactiveArgs: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+  runArgs: (command) => ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command || "exit 0"],
+  quotePath: powerShellQuote,
+  wrapCommand: ({ command, cwd, cwdMarker, doneMarker }) =>
+    [
+      cwd ? `Set-Location -LiteralPath ${powerShellQuote(cwd)}` : undefined,
+      "$global:LASTEXITCODE = 0",
+      command,
+      "$__socrates_success = $?",
+      "$__socrates_exit = if (-not $__socrates_success -and $global:LASTEXITCODE -is [int] -and $global:LASTEXITCODE -ne 0) { $global:LASTEXITCODE } elseif ($__socrates_success) { 0 } else { 1 }",
+      `[Console]::Out.WriteLine(${powerShellQuote(cwdMarker)} + (Get-Location).ProviderPath)`,
+      `[Console]::Out.WriteLine(${powerShellQuote(doneMarker)} + $__socrates_exit)`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+})
+
+const makeCmdAdapter = (platform: NodeJS.Platform, executable: string): ShellAdapter => ({
+  kind: "cmd",
+  platform,
+  executable,
+  interactiveArgs: ["/d", "/q", "/k"],
+  runArgs: (command) => ["/d", "/s", "/c", command || "exit /b 0"],
+  quotePath: cmdQuote,
+  wrapCommand: ({ command, cwd, cwdMarker, doneMarker }) =>
+    [
+      cwd ? `cd /d ${cmdQuote(cwd)}` : undefined,
+      command,
+      "set __socrates_exit=%ERRORLEVEL%",
+      `echo ${cwdMarker}%CD%`,
+      `echo ${doneMarker}%__socrates_exit%`,
+    ]
+      .filter(Boolean)
+      .join("\r\n"),
+})
+
+const normalizeShellError = (error: unknown, code: "shell_start_failed" | "shell_write_failed" | "shell_protocol_failed", adapter: ShellAdapter, cwd: string): SocratesError => {
+  if (error instanceof SocratesError) {
+    return error
+  }
+  const message = error instanceof Error ? error.message : String(error)
+  const nodeError = error as NodeJS.ErrnoException
+  return new SocratesError(code, message || "Shell command failed.", {
+    details: {
+      ...shellMetadata(adapter),
+      cwd,
+      errorCode: nodeError.code,
+      errno: nodeError.errno,
+      syscall: nodeError.syscall,
+    },
+    recoverable: true,
+  })
+}
+
+const shellMetadata = (adapter: ShellAdapter): BashToolOutput["shell"] => ({
+  platform: adapter.platform,
+  kind: adapter.kind,
+  executable: adapter.executable,
+})
+
+const processMetadata = (processInfo: RunningProcess): NonNullable<BashToolOutput["process"]> => ({
+  processId: processInfo.processId,
+  status: processInfo.status,
+  exitCode: processInfo.exitCode,
+  signal: processInfo.signal,
+  startedAt: processInfo.startedAt,
+  exitedAt: processInfo.exitedAt,
+  nextOutputSequence: processInfo.nextSequence,
+})
+
+const missingProcessMetadata = (processId: string | undefined): NonNullable<BashToolOutput["process"]> => ({
+  processId: processId ?? "missing",
+  status: "missing",
+  nextOutputSequence: 0,
+})
+
+const processSnapshot = (
+  processInfo: RunningProcess,
+  outputSequence = 0,
+  charLimit = clampCharLimit(),
+): { stdout: string; stderr: string; truncation: TruncationMetadata } => {
+  let stdout = ""
+  let stderr = ""
+  let returnedLength = 0
+  let originalLength = 0
+  let truncated = false
+  for (const chunk of processInfo.chunks.filter((item) => item.sequence >= outputSequence)) {
+    originalLength += chunk.text.length
+    const remaining = Math.max(charLimit - returnedLength, 0)
+    if (remaining <= 0) {
+      truncated = true
+      continue
+    }
+    const sliced = chunk.text.slice(0, remaining)
+    returnedLength += sliced.length
+    if (sliced.length < chunk.text.length) {
+      truncated = true
+    }
+    if (chunk.stream === "stdout") {
+      stdout += sliced
+    } else {
+      stderr += sliced
+    }
+  }
+  return {
+    stdout,
+    stderr,
+    truncation: { truncated, charLimit, originalLength, returnedLength, nextOffset: processInfo.nextSequence },
+  }
+}
+
+const trimProcessChunks = (processInfo: RunningProcess): void => {
+  let total = processInfo.chunks.reduce((sum, chunk) => sum + chunk.text.length, 0)
+  while (total > processOutputBufferLimit && processInfo.chunks.length > 0) {
+    const removed = processInfo.chunks.shift()
+    total -= removed?.text.length ?? 0
+  }
+}
+
+const emptyTruncation = (charLimit: number): TruncationMetadata => ({
+  truncated: false,
+  charLimit,
+  originalLength: 0,
+  returnedLength: 0,
+})
+
+const posixQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
+const powerShellQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
+const cmdQuote = (value: string): string => `"${value.replaceAll('"', '""')}"`
 
 const leadingCdPattern = /^\s*cd\s+((?:"[^"]+")|(?:'[^']+')|(?:\S+))(?:\s*(?:&&|;|\n|$))/
 

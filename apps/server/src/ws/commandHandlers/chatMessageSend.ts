@@ -9,7 +9,14 @@ import {
 } from "@socrates/core"
 import type { ClientCommand, ModelUsage, ProjectResource } from "@socrates/contracts"
 import { normalizeError, SocratesError } from "@socrates/shared"
-import { editWorkspace, formatPythonEnvironmentHints, inspectPythonEnvironment, readWorkspacePath, searchWorkspace } from "@socrates/workspace"
+import {
+  editWorkspace,
+  formatPythonEnvironmentHints,
+  inspectPythonEnvironment,
+  isShellSessionResetError,
+  readWorkspacePath,
+  searchWorkspace,
+} from "@socrates/workspace"
 import { apiError } from "../../http"
 import type { SocratesStore } from "../../services/store"
 import type { ActiveTurns } from "../activeTurns"
@@ -321,6 +328,15 @@ export const handleChatMessageSend = async (
       if (agentEvent.type === "tool.call.completed") {
         store.completeToolCall(agentEvent.toolCallId, agentEvent.output)
         if (isBashOutput(agentEvent.output)) {
+          store.updateShellCommandMetadata(agentEvent.toolCallId, {
+            operation: agentEvent.output.operation ?? "run",
+            platform: agentEvent.output.shell.platform,
+            shellKind: agentEvent.output.shell.kind,
+            shellExecutable: agentEvent.output.shell.executable,
+            processId: agentEvent.output.process?.processId,
+            processStatus: agentEvent.output.process?.status,
+            nextOutputSequence: agentEvent.output.process?.nextOutputSequence,
+          })
           store.completeShellCommand(agentEvent.toolCallId, {
             exitCode: agentEvent.output.exitCode,
             signal: agentEvent.output.signal ?? null,
@@ -523,16 +539,29 @@ const createToolExecutors = (store: SocratesStore, projectId: string, activeTurn
       conversationId: context.conversationId,
       sessionId: context.sessionId,
       turnId: context.turnId,
-      command: input.command,
+      command: input.command ?? `${input.operation ?? "run"} ${input.processId ?? ""}`.trim(),
       cwd: input.cwd ?? context.workspacePath,
+      metadata: { operation: input.operation ?? "run", processId: input.processId },
     })
     try {
       const output = await activeTurns.getShellSession(context.turnId, context.workspacePath).run(input, context)
+      store.updateShellCommandMetadata(toolCallId, {
+        operation: output.operation ?? input.operation ?? "run",
+        platform: output.shell.platform,
+        shellKind: output.shell.kind,
+        shellExecutable: output.shell.executable,
+        processId: output.process?.processId,
+        processStatus: output.process?.status,
+        nextOutputSequence: output.process?.nextOutputSequence,
+      })
       if (output.timedOut) {
         activeTurns.resetShellSession(context.turnId, context.workspacePath)
       }
       return output
     } catch (error) {
+      if (isShellSessionResetError(error)) {
+        activeTurns.resetShellSession(context.turnId, context.workspacePath)
+      }
       store.failShellCommand(toolCallId)
       throw error
     }
@@ -756,14 +785,24 @@ const toStoredUsage = (usage: ModelUsage) => ({
   ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
 })
 
-const isBashOutput = (output: unknown): output is { cwd: string; exitCode: number | null; signal?: string | null; durationMs: number } =>
+const isBashOutput = (
+  output: unknown,
+): output is {
+  operation?: string
+  cwd: string
+  exitCode: number | null
+  signal?: string | null
+  durationMs: number
+  shell: { platform: string; kind: string; executable: string }
+  process?: { processId: string; status: string; nextOutputSequence?: number }
+} =>
   typeof output === "object" &&
   output !== null &&
-  "command" in output &&
   "cwd" in output &&
   "stdout" in output &&
   "stderr" in output &&
-  "durationMs" in output
+  "durationMs" in output &&
+  "shell" in output
 
 const isEditOutput = (output: unknown): output is { changedFiles: Array<{ path: string; operation: string }>; diff: string } =>
   typeof output === "object" && output !== null && "changedFiles" in output && "diff" in output

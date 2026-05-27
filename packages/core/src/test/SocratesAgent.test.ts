@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
 import type { ModelEvent, ModelProvider } from "@socrates/providers"
+import { bashTool } from "../tools/bashTool"
 
 describe("SocratesAgent", () => {
   it("streams through the provider with Socrates prompt and history", async () => {
@@ -172,7 +173,7 @@ describe("SocratesAgent", () => {
       }),
       search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
-      bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      bash: async () => bashOk(),
       trace_retrieve: async () => ({
         results: [],
         totalMatches: 0,
@@ -327,7 +328,7 @@ describe("SocratesAgent", () => {
           truncation: { truncated: false, charLimit: 20_000, returnedLength: 57 },
         }
       },
-      bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      bash: async () => bashOk(),
       trace_retrieve: async () => ({
         results: [],
         totalMatches: 0,
@@ -419,6 +420,24 @@ describe("SocratesAgent", () => {
   })
 })
 
+describe("bash tool policy", () => {
+  it("auto-allows Windows read-only diagnostics and gates high-risk commands", async () => {
+    const context = {
+      runtimeConfig: { sandboxMode: "workspace_write", approvalMode: "manual" },
+    } as Parameters<typeof bashTool.decidePolicy>[1]
+
+    expect(await bashTool.decidePolicy({ command: "Get-Content package.json" }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ command: "where python" }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ operation: "output", processId: "proc_1" }, context)).toEqual({ type: "auto" })
+
+    const dockerPolicy = await bashTool.decidePolicy({ command: "docker compose up -d" }, context)
+    expect(dockerPolicy.type).toBe("approval_required")
+    if (dockerPolicy.type === "approval_required") {
+      expect(dockerPolicy.request.risk).toBe("high")
+    }
+  })
+})
+
 type ModelRequestLike = Parameters<ModelProvider["countTokens"]>[0]
 type CountedRequest = {
   messages: unknown
@@ -439,7 +458,7 @@ const emptyToolExecutors = (): ToolExecutors => ({
   }),
   search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
-  bash: async () => ({ command: "pwd", cwd: "/tmp", exitCode: 0, stdout: "", stderr: "", durationMs: 0, timedOut: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  bash: async () => bashOk(),
   trace_retrieve: async () => ({
     results: [],
     totalMatches: 0,
@@ -452,6 +471,19 @@ const emptyToolExecutors = (): ToolExecutors => ({
     totalResources: 0,
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
   }),
+})
+
+const bashOk = () => ({
+  operation: "run" as const,
+  command: "pwd",
+  cwd: "/tmp",
+  exitCode: 0,
+  stdout: "",
+  stderr: "",
+  durationMs: 0,
+  timedOut: false,
+  truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+  shell: { platform: "darwin", kind: "posix" as const, executable: "/bin/zsh" },
 })
 
 const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {

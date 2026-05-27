@@ -55,8 +55,9 @@ export const formatPythonEnvironmentHints = (hints: PythonEnvironmentHints): str
   const guidance = pythonGuidanceForHints(hints)
 
   return `Active Workspace
-- Root: ${hints.workspacePath}
-- Bash commands already start in this root. Do not guess or hardcode another workspace path.
+  - Root: ${hints.workspacePath}
+  - Bash commands already start in this root. Do not guess or hardcode another workspace path.
+  - The bash tool uses the platform-native shell. On Windows, write PowerShell-compatible commands instead of Unix-only pipelines unless the project provides those tools.
 
 Python Environment Hints
 - Local virtual environments found:
@@ -129,7 +130,8 @@ const pythonGuidanceForHints = (hints: PythonEnvironmentHints): string => {
   if (hints.suggestedVirtualEnvironment) {
     const env = hints.suggestedVirtualEnvironment
     return `- Use the existing \`${env}\` environment for installs and runs.
-- Prefer commands like \`source ${env}bin/activate && python script.py\` and \`source ${env}bin/activate && pip install <packages>\`.
+- On macOS/Linux, prefer commands like \`source ${env}bin/activate && python script.py\` and \`source ${env}bin/activate && pip install <packages>\`.
+- On Windows, prefer commands like \`.\\${env}Scripts\\Activate.ps1; python script.py\` and \`.\\${env}Scripts\\Activate.ps1; python -m pip install <packages>\`.
 - Do not create another virtual environment unless the user asks.`
   }
   return "- No project-local Python environment was detected. If dependency installation is needed, ask whether to create `.venv/`, use Conda, or use another environment before installing packages, unless the user already explicitly requested setup."

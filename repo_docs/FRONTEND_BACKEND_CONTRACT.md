@@ -1598,18 +1598,24 @@ Input:
 
 ```ts
 type BashToolInput = {
-  command: string
+  operation?: "run" | "start" | "status" | "output" | "stop"
+  command?: string
+  processId?: string
+  outputSequence?: number
   cwd?: string
   timeoutMs?: number
   charLimit?: number
 }
 ```
 
+`operation` defaults to `"run"`. `run` and `start` require `command`; `status`, `output`, and `stop` require `processId`.
+
 Output:
 
 ```ts
 type BashToolOutput = {
-  command: string
+  operation?: "run" | "start" | "status" | "output" | "stop"
+  command?: string
   cwd: string
   exitCode: number | null
   signal?: string
@@ -1618,22 +1624,40 @@ type BashToolOutput = {
   durationMs: number
   timedOut: boolean
   truncation: TruncationMetadata
+  shell: {
+    platform: string
+    kind: "posix" | "powershell" | "cmd"
+    executable: string
+  }
+  process?: {
+    processId: string
+    status: "running" | "exited" | "stopped" | "missing"
+    exitCode?: number | null
+    signal?: string
+    startedAt?: string
+    exitedAt?: string
+    nextOutputSequence?: number
+  }
 }
 ```
 
 Rules:
 
 - Default timeout is 120,000 milliseconds.
-- Bash uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash calls in that turn and is disposed when the turn completes, fails, or is cancelled.
+- The model-visible tool name remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback.
+- `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
+- `start` launches a turn-scoped child process and returns quickly with `processId`. `status`, `output`, and `stop` inspect or terminate that same process without rerunning the command. Any still-running child process is stopped when the active turn ends.
 - Commands run one at a time. Obvious interactive/TTY commands are rejected or time out; stdin prompt UI is not part of V1.
-- If a bash command times out, the active shell session is reset before later bash calls.
+- Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
+- If a bash command times out or hits a shell start/write/protocol failure, the active shell session is reset before later bash calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
 - Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Bash already starts in the active workspace; use relative paths from there.
 - Command output must stream through `tool.call.output`.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
 - Read-only commands can be auto-allowed by policy.
-- Package installation, dev servers, Docker, network commands, git mutations, deletes, migrations, and commands with side effects require approval by default.
+- Windows read-only diagnostics such as `Get-Location`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Command`, `where`, Python version checks, and safe git inspection can be auto-allowed by policy. Package installation, dev servers, Docker, network commands, git mutations, deletes, migrations, and commands with side effects require approval by default.
 - Destructive or credential-exfiltration patterns are denied by default.
+- Safe env template filenames such as `.env.example`, `.env.sample`, `.env.template`, and `.env.local.example` are allowed by sensitive-path policy; real `.env`, private keys, credentials, and secret-like paths remain blocked or high-risk approval-gated.
 - `read`, `search`, and `edit` are preferred for structured file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
 - Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
 
