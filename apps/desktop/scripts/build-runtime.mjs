@@ -30,6 +30,8 @@ const nodePackageBase = `node-${nodeVersion}-${nodePlatform}-${nodeArch}`;
 const nodeArchiveName = `${nodePackageBase}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
 const nodeArchivePath = path.join(cacheDir, nodeArchiveName);
 const nodeDownloadUrl = `https://nodejs.org/dist/${nodeVersion}/${nodeArchiveName}`;
+const cliPackageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "apps", "cli", "package.json"), "utf8"));
+const runtimeVersion = process.env.SOCRATES_RUNTIME_VERSION ?? process.env.GITHUB_REF_NAME?.replace(/^v/, "") ?? cliPackageJson.version;
 
 const run = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
@@ -229,7 +231,7 @@ fs.writeFileSync(
   path.join(runtimeDir, "manifest.json"),
   `${JSON.stringify(
     {
-      version: "0.1.0",
+      version: runtimeVersion,
       runtimeKind,
       platformArch: runtimePlatformArch,
       ...(includeNodeRuntime ? { node: process.platform === "win32" ? "node/node.exe" : "node/bin/node" } : {}),
