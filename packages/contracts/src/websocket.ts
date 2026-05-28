@@ -62,10 +62,20 @@ export const runtimeConfigSchema = z
 export const chatMessageSendPayloadSchema = z
   .object({
     clientMessageId: idSchema,
-    content: z.string().min(1),
+    content: z.string(),
+    attachmentIds: z.array(idSchema).max(12).optional(),
     runtimeConfig: runtimeConfigSchema,
   })
   .strict()
+  .superRefine((input, context) => {
+    if (!input.content.trim() && (input.attachmentIds ?? []).length === 0) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["content"],
+        message: "content is required unless at least one attachment is present",
+      })
+    }
+  })
 
 export const chatTurnCancelPayloadSchema = z
   .object({
@@ -150,6 +160,8 @@ export const turnStartedPayloadSchema = z
 export const agentThinkingDeltaPayloadSchema = z
   .object({
     text: z.string(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -157,10 +169,12 @@ export const agentAnswerDeltaPayloadSchema = z
   .object({
     messageId: idSchema,
     text: z.string(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
   })
   .strict()
 
-export const toolCallCategorySchema = z.enum(["file", "search", "shell", "git", "patch", "resource", "trace", "other"])
+export const toolCallCategorySchema = z.enum(["file", "search", "shell", "git", "patch", "resource", "trace", "mcp", "other"])
 
 export const toolCallStartedPayloadSchema = z
   .object({
@@ -170,6 +184,8 @@ export const toolCallStartedPayloadSchema = z
     displayName: z.string().min(1),
     argsPreview: z.string().optional(),
     requiresApproval: z.boolean(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -179,6 +195,8 @@ export const toolCallOutputPayloadSchema = z
     stream: z.enum(["stdout", "stderr", "log", "result"]),
     text: z.string().optional(),
     data: z.unknown().optional(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -198,6 +216,8 @@ export const toolCallCompletedPayloadSchema = z
     resultPreview: z.string().optional(),
     metrics: toolCallMetricsSchema.optional(),
     durationMs: z.number().int().nonnegative().optional(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -205,6 +225,8 @@ export const toolCallFailedPayloadSchema = z
   .object({
     toolCallId: idSchema,
     error: apiErrorSchema,
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
   })
   .strict()
 

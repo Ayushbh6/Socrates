@@ -43,8 +43,9 @@ export type SocratesAgentTurnInput = {
   }) => string
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
   contextCompression?: ContextCompressionRuntime
-  maxToolCallsPerTurn?: number
+    maxToolCallsPerTurn?: number
   maxParallelToolCalls?: number
+  dynamicTools?: ModelToolDefinition[] | (() => ModelToolDefinition[])
   abortSignal?: AbortSignal
 }
 
@@ -87,7 +88,8 @@ export class SocratesAgent {
     let forceFinalNoTools = false
 
     for (let step = 0; ; step += 1) {
-      const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions()
+      const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
+      const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
       const compactionStartedEvents = new AsyncEventQueue<ContextCompactionLifecycleEvent>()
       const preparedContextPromise = (async () => {
         try {
@@ -161,7 +163,7 @@ export class SocratesAgent {
           }
         }
 
-        yield attachModelCallId(modelEvent, modelCallId)
+        yield attachModelMetadata(modelEvent, modelCallId, step)
       }
 
       if (!input.toolExecutors || tools.length === 0 || toolCalls.length === 0) {
@@ -199,6 +201,8 @@ export class SocratesAgent {
           runtimeConfig: input.runtimeConfig,
           executors: input.toolExecutors,
           requestApproval: input.requestApproval,
+          modelCallId,
+          stepIndex: step,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         },
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,
@@ -297,8 +301,11 @@ export class SocratesAgent {
     const startedAt = Date.now()
     const tool = this.toolRegistry.get(toolCall.toolName)
     if (!tool) {
+      if (isDynamicMcpToolName(toolCall.toolName) && context.executors.mcp_dynamic) {
+        return this.executeDynamicMcpToolCall(toolCall, context, queue, startedAt)
+      }
       const error = new SocratesError("tool_not_found", "Tool is not registered", { details: { toolName: toolCall.toolName } })
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error })
+      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
       return toolErrorResult(toolCall, error)
     }
 
@@ -307,7 +314,7 @@ export class SocratesAgent {
       const error = new SocratesError("invalid_tool_input", "Tool input did not match the schema", {
         details: parsed.error.flatten(),
       })
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error })
+      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
       return toolErrorResult(toolCall, error)
     }
 
@@ -322,6 +329,8 @@ export class SocratesAgent {
         argsPreview: previewJson(parsed.data),
         input: parsed.data,
         requiresApproval: policy.type === "approval_required",
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
       })
 
       if (policy.type === "denied") {
@@ -347,7 +356,7 @@ export class SocratesAgent {
       const output = await tool.execute(parsed.data, {
         ...context,
         toolCallId: toolCall.toolCallId,
-        onOutput: (output) => queue.push({ type: "tool.call.output", toolCallId: toolCall.toolCallId, ...output }),
+        onOutput: (output) => queue.push({ type: "tool.call.output", toolCallId: toolCall.toolCallId, modelCallId: context.modelCallId, stepIndex: context.stepIndex, ...output }),
       })
       const parsedOutput = tool.resultSchema.safeParse(output)
       if (!parsedOutput.success) {
@@ -364,6 +373,8 @@ export class SocratesAgent {
         resultPreview: tool.resultPreview(parsedOutput.data),
         ...(tool.metrics ? { metrics: tool.metrics(parsedOutput.data) } : {}),
         durationMs: Date.now() - startedAt,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
       })
       return {
         toolCallId: toolCall.toolCallId,
@@ -373,18 +384,65 @@ export class SocratesAgent {
       }
     } catch (error) {
       const normalized = normalizeError(error)
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: tool.name, error: normalized })
+      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: tool.name, error: normalized, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
+      return toolErrorResult(toolCall, normalized)
+    }
+  }
+
+  private async executeDynamicMcpToolCall(
+    toolCall: NormalizedToolCall,
+    context: ToolRuntimeContext,
+    queue: AsyncEventQueue<ToolLifecycleEvent>,
+    startedAt: number,
+  ): Promise<ToolExecutionResult> {
+    try {
+      queue.push({
+        type: "tool.call.started",
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        category: "mcp",
+        displayName: toolCall.toolName,
+        argsPreview: previewJson(toolCall.input),
+        input: toolCall.input,
+        requiresApproval: false,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
+      const output = await context.executors.mcp_dynamic?.(
+        { dynamicName: toolCall.toolName, input: toolCall.input },
+        {
+          ...context,
+          toolCallId: toolCall.toolCallId,
+          onOutput: (output) => queue.push({ type: "tool.call.output", toolCallId: toolCall.toolCallId, modelCallId: context.modelCallId, stepIndex: context.stepIndex, ...output }),
+        },
+      )
+      queue.push({
+        type: "tool.call.completed",
+        toolCallId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+        output,
+        summary: `${toolCall.toolName} completed.`,
+        resultPreview: output === undefined ? "" : previewJson(output),
+        durationMs: Date.now() - startedAt,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
+      return { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, ok: true, output }
+    } catch (error) {
+      const normalized = normalizeError(error)
+      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error: normalized, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
       return toolErrorResult(toolCall, normalized)
     }
   }
 }
 
-const attachModelCallId = (event: ModelEvent, modelCallId: string | undefined): ModelEvent => {
-  if (!modelCallId || event.type === "model.started") {
-    return event
-  }
-  return { ...event, modelCallId } as ModelEvent
-}
+const attachModelMetadata = (event: ModelEvent, modelCallId: string | undefined, stepIndex: number): ModelEvent => ({
+  ...event,
+  ...(modelCallId ? { modelCallId } : {}),
+  stepIndex,
+}) as ModelEvent
+
+const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/.test(toolName)
 
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({

@@ -6,6 +6,7 @@ import type {
   CreateConversationMessageRequest,
   CreateConversationRequest,
   Message,
+  MessageAttachment,
   UpdateConversationRequest,
 } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
@@ -20,6 +21,7 @@ import {
   events,
   fileOperations,
   messageFeedback,
+  messageAttachments,
   messages,
   modelCalls,
   modelStreamChunks,
@@ -135,7 +137,7 @@ export class ConversationStore extends StoreBase {
       .where(eq(messages.conversationId, conversationId))
       .orderBy(messages.createdAt)
       .all()
-    const mappedMessages = rows.map(mapMessage)
+    const mappedMessages = this.withMessageAttachments(rows.map(mapMessage))
     const missingReasoningTurnIds = mappedMessages
       .filter((message) => message.role === "assistant" && message.turnId && !message.reasoning)
       .map((message) => message.turnId as string)
@@ -323,6 +325,7 @@ export class ConversationStore extends StoreBase {
       }
 
       this.handle.db.delete(messageFeedback).where(eq(messageFeedback.conversationId, conversationId)).run()
+      this.handle.db.delete(messageAttachments).where(eq(messageAttachments.conversationId, conversationId)).run()
       this.handle.db.delete(audioOutputs).where(eq(audioOutputs.conversationId, conversationId)).run()
       this.handle.db.delete(voiceInputs).where(eq(voiceInputs.conversationId, conversationId)).run()
       this.handle.db.delete(patches).where(eq(patches.conversationId, conversationId)).run()
@@ -356,9 +359,16 @@ export class ConversationStore extends StoreBase {
     return { deletedConversationId: conversationId }
   }
 
-  getConversationModelMessages(projectId: string, conversationId: string): ConversationModelMessage[] {
+  getConversationModelMessages(
+    projectId: string,
+    conversationId: string,
+    options: {
+      includeImageParts?: boolean
+      readAttachmentDataUrl?: (attachment: MessageAttachment) => string | undefined
+    } = {},
+  ): ConversationModelMessage[] {
     this.mustGetConversationRow(projectId, conversationId)
-    return this.handle.db
+    const messageRows = this.handle.db
       .select()
       .from(messages)
       .where(eq(messages.conversationId, conversationId))
@@ -373,13 +383,83 @@ export class ConversationStore extends StoreBase {
         }
         return message.role === "assistant" && message.status === "cancelled" && isCancelledPartialAssistant(message.metadataJson)
       })
-      .map((message) => ({
+    const attachmentsByMessageId = this.getAttachmentsByMessageIds(messageRows.map((message) => message.id))
+
+    return messageRows.map((message) => {
+      const attachments = attachmentsByMessageId.get(message.id) ?? []
+      const content = buildModelMessageContent(message.content, attachments, options)
+      return {
         role: message.role as ConversationModelMessage["role"],
-        content: message.content,
+        content,
         id: message.id,
         ...(message.turnId ? { turnId: message.turnId } : {}),
-      }))
+      }
+    })
   }
+
+  private withMessageAttachments(messagesToMap: Message[]): Message[] {
+    const attachmentsByMessageId = this.getAttachmentsByMessageIds(messagesToMap.map((message) => message.id))
+    return messagesToMap.map((message) => {
+      const attachments = attachmentsByMessageId.get(message.id)
+      return attachments?.length ? { ...message, attachments } : message
+    })
+  }
+
+  private getAttachmentsByMessageIds(messageIds: string[]): Map<string, MessageAttachment[]> {
+    const unique = Array.from(new Set(messageIds))
+    if (unique.length === 0) {
+      return new Map()
+    }
+    const placeholders = unique.map(() => "?").join(", ")
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT id, project_id AS projectId, conversation_id AS conversationId, session_id AS sessionId,
+                turn_id AS turnId, message_id AS messageId, artifact_id AS artifactId, kind, file_name AS fileName,
+                mime_type AS mimeType, size_bytes AS sizeBytes, uri, status, created_at AS createdAt
+         FROM message_attachments
+         WHERE status = 'attached' AND message_id IN (${placeholders})
+         ORDER BY created_at`,
+      )
+      .all(...unique) as MessageAttachment[]
+    const grouped = new Map<string, MessageAttachment[]>()
+    for (const row of rows) {
+      if (!row.messageId) {
+        continue
+      }
+      row.url = `/api/projects/${encodeURIComponent(row.projectId)}/conversations/${encodeURIComponent(row.conversationId)}/attachments/${encodeURIComponent(row.id)}/content`
+      grouped.set(row.messageId, [...(grouped.get(row.messageId) ?? []), row])
+    }
+    return grouped
+  }
+}
+
+const buildModelMessageContent = (
+  content: string,
+  attachments: MessageAttachment[],
+  options: {
+    includeImageParts?: boolean
+    readAttachmentDataUrl?: (attachment: MessageAttachment) => string | undefined
+  },
+): ConversationModelMessage["content"] => {
+  if (attachments.length === 0) {
+    return content
+  }
+  if (!options.includeImageParts) {
+    const omitted = `[${attachments.length} image attachment${attachments.length === 1 ? "" : "s"} omitted because the selected model does not support vision.]`
+    return content.trim() ? `${content}\n\n${omitted}` : omitted
+  }
+
+  const parts: ConversationModelMessage["content"] = []
+  if (content.trim()) {
+    parts.push({ type: "text", text: content })
+  }
+  for (const attachment of attachments) {
+    const data = options.readAttachmentDataUrl?.(attachment)
+    if (data) {
+      parts.push({ type: "image", mediaType: attachment.mimeType, data, fileName: attachment.fileName })
+    }
+  }
+  return parts.length > 0 ? parts : content
 }
 
 const isCancelledPartialAssistant = (metadataJson: string | null): boolean => {

@@ -202,6 +202,33 @@ export const messages = sqliteTable(
   }),
 )
 
+export const messageAttachments = sqliteTable(
+  "message_attachments",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    sessionId: text("session_id"),
+    turnId: text("turn_id"),
+    messageId: text("message_id"),
+    artifactId: text("artifact_id").notNull(),
+    kind: text("kind").notNull(),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    uri: text("uri").notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    conversationIdx: index("message_attachments_conversation_idx").on(table.conversationId, table.createdAt),
+    messageIdx: index("message_attachments_message_idx").on(table.messageId),
+    statusIdx: index("message_attachments_status_idx").on(table.projectId, table.status),
+  }),
+)
+
 export const events = sqliteTable(
   "events",
   {

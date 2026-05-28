@@ -1,10 +1,11 @@
 "use client";
 
-import type { ConversationPartialTurn, ConversationToolRun, Message } from "@socrates/contracts";
+import type { ConversationActivityStep, ConversationPartialTurn, ConversationToolRun, Message, MessageAttachment } from "@socrates/contracts";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { isValidElement, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { socratesApiBaseUrl } from "@/lib/api";
 import { ChatToolTimeline } from "./ChatToolTimeline";
 import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
 import { toolRunToTimelineItem } from "./ToolTimelineTypes";
@@ -13,29 +14,38 @@ interface ChatTranscriptProps {
   messages: Message[];
   toolRuns?: ConversationToolRun[];
   partialTurns?: ConversationPartialTurn[];
-  liveThinking?: string;
-  liveAnswer?: string;
-  liveTools?: ToolTimelineItem[];
+  activitySteps?: ConversationActivityStep[];
+  liveSteps?: LiveActivityStep[];
   approvals?: PendingApproval[];
   isStreaming?: boolean;
   isCompacting?: boolean;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
 }
 
+export type LiveActivityStep = {
+  key: string;
+  modelCallId?: string;
+  stepIndex: number;
+  reasoning: string;
+  answer: string;
+  tools: ToolTimelineItem[];
+};
+
 export function ChatTranscript({
   messages,
   toolRuns = [],
   partialTurns = [],
-  liveThinking,
-  liveAnswer,
-  liveTools = [],
+  activitySteps = [],
+  liveSteps = [],
   approvals = [],
   isStreaming,
   isCompacting,
   onApprovalDecision,
 }: ChatTranscriptProps) {
-  const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !liveThinking && !liveAnswer && liveTools.length === 0);
+  const hasLiveActivity = liveSteps.some((step) => step.reasoning || step.answer || step.tools.length > 0);
+  const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !hasLiveActivity);
   const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
+  const historicalStepsByTurn = groupActivityStepsByTurn(activitySteps, toolRuns);
   const assistantTurnIds = new Set(
     messages.filter((message) => message.role === "assistant" && message.turnId).map((message) => message.turnId as string),
   );
@@ -45,8 +55,8 @@ export function ChatTranscript({
     <div className="flex-1 overflow-y-auto px-6 py-8">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
         {messages.map((message) => {
-          const tools =
-            message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : [];
+          const tools = message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : [];
+          const steps = message.role === "assistant" && message.turnId ? historicalStepsByTurn.get(message.turnId) ?? [] : [];
           const shouldRenderIncompleteTurn =
             message.role === "user" && message.turnId && !assistantTurnIds.has(message.turnId);
           const incompleteTurn = shouldRenderIncompleteTurn ? partialTurnsByTurn.get(message.turnId as string) : undefined;
@@ -54,22 +64,29 @@ export function ChatTranscript({
 
           return (
             <div key={message.id} className="contents">
-              <MessageBubble message={message} tools={tools} />
+              <MessageBubble message={message} tools={tools} steps={steps} />
               {shouldRenderIncompleteTurn ? (
                 <IncompleteTurnBubble turn={incompleteTurn} tools={incompleteTools} />
               ) : null}
             </div>
           );
         })}
-        {(liveThinking || liveAnswer || isStreaming || isCompacting) && (
+        {(hasLiveActivity || isStreaming || isCompacting) && (
           <div className="flex justify-start">
             <div className="w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
-              {liveThinking && (
-                <ThinkingBlock content={liveThinking} defaultOpen />
-              )}
-              <ChatToolTimeline tools={liveTools} approvals={approvals} onApprovalDecision={onApprovalDecision} />
+              {liveSteps.map((step) => (
+                <ActivityStepView
+                  key={step.key}
+                  reasoning={step.reasoning}
+                  answer={step.answer}
+                  tools={step.tools}
+                  approvals={approvals}
+                  defaultOpen
+                  onApprovalDecision={onApprovalDecision}
+                />
+              ))}
               {isCompacting ? <CompactionLoader /> : null}
-              {liveAnswer ? <MarkdownContent content={liveAnswer} /> : isWaitingForFirstToken ? <FirstTokenLoader /> : null}
+              {isWaitingForFirstToken ? <FirstTokenLoader /> : null}
             </div>
           </div>
         )}
@@ -130,7 +147,7 @@ function FirstTokenLoader() {
   );
 }
 
-function MessageBubble({ message, tools }: { message: Message; tools: ToolTimelineItem[] }) {
+function MessageBubble({ message, tools, steps }: { message: Message; tools: ToolTimelineItem[]; steps: HistoricalActivityStep[] }) {
   const isUser = message.role === "user";
 
   return (
@@ -143,19 +160,88 @@ function MessageBubble({ message, tools }: { message: Message; tools: ToolTimeli
         }
       >
         {isUser ? (
-          <p className="whitespace-pre-wrap">{message.content}</p>
+          <>
+            {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : null}
+            <AttachmentGrid attachments={message.attachments ?? []} />
+          </>
         ) : (
           <>
-            {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
             {message.partial || message.cancelled ? <StoppedIndicator reason={message.cancellationReason} /> : null}
-            <ChatToolTimeline tools={tools} />
-            <MarkdownContent content={message.content} />
+            {steps.length > 0 ? (
+              steps.map((step) => (
+                <ActivityStepView
+                  key={step.modelCallId}
+                  reasoning={step.reasoning ?? ""}
+                  answer={step.answer ?? ""}
+                  tools={step.tools}
+                />
+              ))
+            ) : (
+              <>
+                {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
+                <ChatToolTimeline tools={tools} />
+              </>
+            )}
+            {steps.some((step) => step.answer) ? null : <MarkdownContent content={message.content} />}
           </>
         )}
       </div>
     </div>
   );
 }
+
+type HistoricalActivityStep = ConversationActivityStep & { tools: ToolTimelineItem[] };
+
+function ActivityStepView({
+  reasoning,
+  answer,
+  tools,
+  approvals,
+  defaultOpen = false,
+  onApprovalDecision,
+}: {
+  reasoning: string;
+  answer: string;
+  tools: ToolTimelineItem[];
+  approvals?: PendingApproval[];
+  defaultOpen?: boolean;
+  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
+}) {
+  if (!reasoning && !answer && tools.length === 0) {
+    return null;
+  }
+  return (
+    <>
+      {reasoning ? <ThinkingBlock content={reasoning} defaultOpen={defaultOpen} /> : null}
+      {answer ? <MarkdownContent content={answer} /> : null}
+      <ChatToolTimeline tools={tools} approvals={approvals} onApprovalDecision={onApprovalDecision} />
+    </>
+  );
+}
+
+function AttachmentGrid({ attachments }: { attachments: MessageAttachment[] }) {
+  if (attachments.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      {attachments.map((attachment) => (
+        <a
+          key={attachment.id}
+          href={attachmentUrl(attachment)}
+          target="_blank"
+          rel="noreferrer"
+          className="block overflow-hidden rounded-lg border border-white/30 bg-white/10"
+        >
+          <img src={attachmentUrl(attachment)} alt={attachment.fileName} className="max-h-56 w-full object-cover" />
+        </a>
+      ))}
+    </div>
+  );
+}
+
+const attachmentUrl = (attachment: MessageAttachment): string =>
+  attachment.url?.startsWith("/api/") ? `${socratesApiBaseUrl()}${attachment.url}` : attachment.url ?? attachment.uri;
 
 function StoppedIndicator({ reason }: { reason?: string }) {
   return (
@@ -171,6 +257,23 @@ function groupToolRunsByTurn(toolRuns: ConversationToolRun[]): Map<string, ToolT
     const tools = grouped.get(run.turnId) ?? [];
     tools.push(toolRunToTimelineItem(run));
     grouped.set(run.turnId, tools);
+  }
+  return grouped;
+}
+
+function groupActivityStepsByTurn(
+  activitySteps: ConversationActivityStep[],
+  toolRuns: ConversationToolRun[],
+): Map<string, HistoricalActivityStep[]> {
+  const toolsById = new Map(toolRuns.map((run) => [run.toolCallId, toolRunToTimelineItem(run)]));
+  const grouped = new Map<string, HistoricalActivityStep[]>();
+  for (const step of activitySteps) {
+    const steps = grouped.get(step.turnId) ?? [];
+    steps.push({
+      ...step,
+      tools: step.toolCallIds.map((id) => toolsById.get(id)).filter((tool): tool is ToolTimelineItem => Boolean(tool)),
+    });
+    grouped.set(step.turnId, steps);
   }
   return grouped;
 }

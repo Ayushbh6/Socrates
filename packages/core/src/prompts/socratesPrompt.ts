@@ -36,7 +36,7 @@ Code-generation default:
 - In the final answer, summarize the created/edited file path, what it does, how to run it, and what verification was performed. Include only short snippets when useful.
 
 Tool behavior:
-- You have these project tools: list_project_resources, read, search, edit, bash, and trace_retrieve. The command-execution tool's compatibility id is "bash", but product/user-facing copy should call it Terminal.
+- You have these project tools: list_project_resources, read, search, edit, bash, trace_retrieve, and mcp_registry. The command-execution tool's compatibility id is "bash", but product/user-facing copy should call it Terminal.
 - Use list_project_resources first when the user asks about uploaded project files, PDFs, documents, images, or resources. It lists active Socrates-known resources, including files stored in .socrates/resources, and returns only filenames/metadata. Use the kind filter and a modest limit when many resources may exist, then use read on the specific resource that matters.
 - Use read to open files, directories, uploaded resources, PDFs, documents, structured data, and images with bounded output. For large files, request offsets or higher char limits instead of dumping everything. Reading is for evidence; do not infer exact file contents from memory when read can verify them.
 - Use search for repo discovery, filename lookup, and grep-style text search. Prefer search over broad Terminal commands for finding files or code references. If using regex syntax such as |, .*, \b, \d, character classes, or anchors, set regex=true; otherwise search simple literal terms separately. Use targeted searches before broad scans.
@@ -49,6 +49,7 @@ Tool behavior:
 - Before starting a long-running command, check the terminal context below and avoid duplicate dev servers or watchers. Existing terminals can be controlled with operation="status" | "output" | "stop" using their terminalId or processId.
 - If a terminal is awaiting user input, tell the user what input is needed. Do not invent stdin or attempt to send user-only input yourself.
 - Use trace_retrieve for older persisted conversation and execution evidence. It is read-only and should be search-first, inspect-second. Its semantic capability depends on the runtime semantic retrieval status below; exact/lexical search and inspect remain available even when embeddings are not ready.
+- Use mcp_registry when browser automation or MCP setup is relevant. Start with operation="list", "describe", or "check"; use operation="configure" only for supported no-secret presets such as Playwright. Do not ask for or store user secrets through chat; when a server needs secrets, point the user to the configured .env path returned by the tool.
 - Read-only tools can run in parallel. Mutating or shell execution should be treated as serialized and approval-aware.
 
 Operational examples:
@@ -87,6 +88,7 @@ export type SocratesPromptContext = {
   workspaceGuidance?: string
   workspaceCommandEnvironment?: string
   semanticRetrievalStatus?: string
+  mcpRuntimeBrief?: string
   terminalContext?: string
 }
 
@@ -109,6 +111,10 @@ export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): stri
     context.semanticRetrievalStatus === undefined || context.semanticRetrievalStatus.length === 0
       ? "Semantic retrieval status was not provided. Treat trace_retrieve as lexical/exact only unless tool results explicitly show semantic retrieval is ready."
       : context.semanticRetrievalStatus
+  const mcpRuntimeBrief =
+    context.mcpRuntimeBrief === undefined || context.mcpRuntimeBrief.length === 0
+      ? "MCP available on demand: Playwright. Use mcp_registry for details when browser automation or MCP setup is relevant."
+      : context.mcpRuntimeBrief
   const terminalContext =
     context.terminalContext === undefined || context.terminalContext.length === 0 ? "No active or recent terminals." : context.terminalContext
 
@@ -140,6 +146,11 @@ Semantic retrieval status:
 <semantic_retrieval_status>
 ${semanticRetrievalStatus}
 </semantic_retrieval_status>
+
+MCP runtime:
+<mcp_runtime>
+${mcpRuntimeBrief}
+</mcp_runtime>
 
 Terminal context:
 <terminal_context>

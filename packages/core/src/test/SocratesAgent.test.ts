@@ -33,7 +33,7 @@ describe("SocratesAgent", () => {
       streamed.push(event)
     }
 
-    expect(streamed).toEqual(events)
+    expect(streamed).toEqual(events.map((event) => ({ ...event, stepIndex: 0 })))
     const requestJson = JSON.stringify(seen[0])
     expect(requestJson).toContain("You are Socrates")
     expect(requestJson).toContain("Hi")
@@ -44,7 +44,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
   })
 
-  it("exposes exactly the six V1 tools", () => {
+  it("exposes the base tool set", () => {
     expect(createDefaultToolRegistry().modelDefinitions().map((tool) => tool.name)).toEqual([
       "read",
       "search",
@@ -52,6 +52,7 @@ describe("SocratesAgent", () => {
       "bash",
       "trace_retrieve",
       "list_project_resources",
+      "mcp_registry",
     ])
   })
 
@@ -223,8 +224,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(6)
-    expect(countRequests[1]?.toolCount).toBe(6)
+    expect(countRequests[0]?.toolCount).toBe(7)
+    expect(countRequests[1]?.toolCount).toBe(7)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -287,7 +288,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(6)
+    expect(countRequests[0]?.toolCount).toBe(7)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")

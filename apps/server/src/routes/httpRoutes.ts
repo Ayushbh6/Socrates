@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify"
+import fs from "node:fs"
 import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
@@ -27,6 +28,7 @@ import type { ProviderCredentialStore } from "../services/providerCredentials"
 const projectParamsSchema = z.object({ projectId: z.string().min(1) }).strict()
 const resourceParamsSchema = z.object({ projectId: z.string().min(1), resourceId: z.string().min(1) }).strict()
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
+const attachmentParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1), attachmentId: z.string().min(1) }).strict()
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 
 type HttpRouteHooks = {
@@ -65,8 +67,12 @@ const handleRouteError = (error: unknown) => {
     api.code === "workspace_path_not_directory" ||
     api.code === "conversation_title_required" ||
     api.code === "message_content_required" ||
-    api.code === "resource_file_required" ||
-    api.code === "resource_upload_limit_exceeded" ||
+        api.code === "resource_file_required" ||
+        api.code === "attachment_file_required" ||
+        api.code === "attachment_type_not_supported" ||
+        api.code === "attachment_too_large" ||
+        api.code === "resource_upload_limit_exceeded" ||
+        api.code === "attachment_upload_limit_exceeded" ||
     api.code === "embedding_check_failed" ||
     api.code === "workspace_env_file_not_allowed"
       ? 400
@@ -350,6 +356,41 @@ export const registerHttpRoutes = async (
     try {
       const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
       return ok(store.getConversation(projectId, conversationId))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/conversations/:conversationId/attachments/upload", async (request, reply) => {
+    try {
+      const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      const uploads: UploadedResourceInput[] = []
+      for await (const upload of request.files()) {
+        if (uploads.length >= 12) {
+          throw new SocratesError("attachment_upload_limit_exceeded", "Attach up to 12 images to one message", {
+            details: { maxFiles: 12 },
+            recoverable: true,
+          })
+        }
+        uploads.push({
+          originalName: upload.filename,
+          data: await upload.toBuffer(),
+          mimeType: upload.mimetype,
+        })
+      }
+      return ok({ attachments: store.createConversationAttachments(projectId, conversationId, uploads) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/attachments/:attachmentId/content", async (request, reply) => {
+    try {
+      const { projectId, conversationId, attachmentId } = parseParams(attachmentParamsSchema, request.params)
+      const attachment = store.getConversationAttachmentContent(projectId, conversationId, attachmentId)
+      return reply.type(attachment.mimeType).send(fs.createReadStream(attachment.uri))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

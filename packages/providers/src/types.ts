@@ -20,6 +20,7 @@ export type ModelMessageContent = string | ModelMessagePart[]
 
 export type ModelMessagePart =
   | { type: "text"; text: string }
+  | { type: "image"; mediaType: string; data: string; fileName?: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown; providerMetadata?: ProviderMetadata }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
 
@@ -47,13 +48,13 @@ export type ModelRequest = {
 }
 
 export type ModelEvent =
-  | { type: "model.started"; modelCallId?: string }
-  | { type: "model.reasoning.delta"; text: string; modelCallId?: string }
-  | { type: "model.answer.delta"; text: string; modelCallId?: string }
-  | { type: "model.tool_call.completed"; toolCall: NormalizedToolCall; modelCallId?: string }
-  | { type: "model.usage"; usage: ModelUsage; modelCallId?: string }
-  | { type: "model.completed"; usage?: ModelUsage; finishReason?: string; modelCallId?: string }
-  | { type: "model.failed"; error: Error; modelCallId?: string }
+  | { type: "model.started"; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.reasoning.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.answer.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.tool_call.completed"; toolCall: NormalizedToolCall; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.usage"; usage: ModelUsage; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.completed"; usage?: ModelUsage; finishReason?: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.failed"; error: Error; modelCallId?: string | undefined; stepIndex?: number | undefined }
 
 export interface ModelProvider {
   stream(request: ModelRequest): AsyncIterable<ModelEvent>

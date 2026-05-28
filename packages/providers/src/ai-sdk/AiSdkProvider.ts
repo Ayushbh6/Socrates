@@ -364,6 +364,9 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
         if (part.type === "text") {
           return { type: "text" as const, text: part.text }
         }
+        if (part.type === "image") {
+          return { type: "file" as const, mediaType: part.mediaType, data: part.data }
+        }
         if (part.type === "tool-call") {
           return {
             type: "tool-call" as const,
@@ -386,8 +389,12 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
   return {
     role,
     content: message.content
-      .filter((part) => part.type === "text")
-      .map((part) => ({ type: "text" as const, text: part.text })),
+      .filter((part) => part.type === "text" || part.type === "image")
+      .map((part) =>
+        part.type === "text"
+          ? { type: "text" as const, text: part.text }
+          : { type: "file" as const, mediaType: part.mediaType, data: part.data },
+      ),
   } as AiModelMessage
 }
 

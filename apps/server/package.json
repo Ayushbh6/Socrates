@@ -6,9 +6,9 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "scripts": {
-    "dev": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && tsx watch src/index.ts",
+    "dev": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/mcp build && pnpm --filter @socrates/core build && tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm --dts --clean",
-    "test": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && vitest run",
+    "test": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/mcp build && pnpm --filter @socrates/core build && vitest run",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts"
@@ -19,6 +19,7 @@
     "@fastify/websocket": "^11.2.0",
     "@socrates/contracts": "workspace:*",
     "@socrates/core": "workspace:^",
+    "@socrates/mcp": "workspace:*",
     "@socrates/providers": "workspace:*",
     "@socrates/shared": "workspace:*",
     "@socrates/workspace": "workspace:*",

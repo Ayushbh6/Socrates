@@ -308,6 +308,7 @@ export class ToolStore extends StoreBase {
         sessionId: tool.sessionId,
         turnId: tool.turnId,
         toolName: tool.toolName as ToolName,
+        ...(tool.modelCallId ? { modelCallId: tool.modelCallId } : {}),
         status: normalizeToolStatus(tool.status),
         requiresApproval: tool.requiresApproval,
         arguments: parseJson(tool.argumentsJson),

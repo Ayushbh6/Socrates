@@ -1,4 +1,4 @@
-import type { ConversationContextUsage, ConversationTokenUsage } from "@socrates/contracts"
+import type { ConversationActivityStep, ConversationContextUsage, ConversationTokenUsage, ConversationToolRun } from "@socrates/contracts"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso } from "@socrates/shared"
 import { and, eq } from "drizzle-orm"
@@ -118,6 +118,68 @@ export class ModelTelemetryStore extends StoreBase {
       reasoningByTurnId.set(row.turn_id, `${reasoningByTurnId.get(row.turn_id) ?? ""}${row.text}`)
     }
     return reasoningByTurnId
+  }
+
+  getConversationActivitySteps(conversationId: string, toolRuns: ConversationToolRun[] = []): ConversationActivityStep[] {
+    const calls = this.handle.db
+      .select()
+      .from(modelCalls)
+      .where(eq(modelCalls.conversationId, conversationId))
+      .orderBy(modelCalls.startedAt)
+      .all()
+    if (calls.length === 0) {
+      return []
+    }
+
+    const callIds = calls.map((call) => call.id)
+    const placeholders = callIds.map(() => "?").join(", ")
+    const chunks = this.handle.sqlite
+      .prepare(
+        `SELECT model_call_id AS modelCallId, channel, text
+         FROM model_stream_chunks
+         WHERE model_call_id IN (${placeholders}) AND channel IN ('reasoning', 'answer')
+         ORDER BY model_call_id, sequence`,
+      )
+      .all(...callIds) as Array<{ modelCallId: string; channel: "reasoning" | "answer"; text: string | null }>
+
+    const textByCall = new Map<string, { reasoning: string; answer: string }>()
+    for (const chunk of chunks) {
+      if (!chunk.text) {
+        continue
+      }
+      const current = textByCall.get(chunk.modelCallId) ?? { reasoning: "", answer: "" }
+      if (chunk.channel === "reasoning") {
+        current.reasoning += chunk.text
+      } else {
+        current.answer += chunk.text
+      }
+      textByCall.set(chunk.modelCallId, current)
+    }
+
+    const toolsByCall = new Map<string, string[]>()
+    for (const run of toolRuns) {
+      if (!run.modelCallId) {
+        continue
+      }
+      toolsByCall.set(run.modelCallId, [...(toolsByCall.get(run.modelCallId) ?? []), run.toolCallId])
+    }
+
+    const stepByTurn = new Map<string, number>()
+    return calls
+      .map((call) => {
+        const stepIndex = stepByTurn.get(call.turnId) ?? 0
+        stepByTurn.set(call.turnId, stepIndex + 1)
+        const text = textByCall.get(call.id)
+        return {
+          turnId: call.turnId,
+          modelCallId: call.id,
+          stepIndex,
+          ...(text?.reasoning.trim() ? { reasoning: text.reasoning } : {}),
+          ...(text?.answer.trim() ? { answer: text.answer } : {}),
+          toolCallIds: toolsByCall.get(call.id) ?? [],
+        }
+      })
+      .filter((step) => step.reasoning || step.answer || step.toolCallIds.length > 0)
   }
 
   completeModelCall(input: { modelCallId: string; response: unknown; usage?: StoredModelUsage }): void {

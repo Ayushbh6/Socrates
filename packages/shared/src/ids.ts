@@ -27,6 +27,7 @@ export type IdPrefix =
   | "patch"
   | "err"
   | "art"
+  | "att"
   | "voicein"
   | "audioout"
   | "fb"

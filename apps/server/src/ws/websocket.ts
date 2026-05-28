@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify"
 import websocket from "@fastify/websocket"
 import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
+import type { McpRuntime } from "@socrates/mcp"
 import { createId, nowIso } from "@socrates/shared"
 import type { SocratesStore } from "../services/store"
 import { ActiveTurns } from "./activeTurns"
@@ -13,6 +14,7 @@ export const registerWebSocketRoutes = async (
   store: SocratesStore,
   terminals: ConversationTerminalManager,
   agent: SocratesAgent = createDefaultSocratesAgent(),
+  mcpRuntime?: McpRuntime,
 ): Promise<void> => {
   await app.register(websocket)
 
@@ -31,7 +33,7 @@ export const registerWebSocketRoutes = async (
     sendEvent(socket, ready)
 
     socket.on("message", (raw) => {
-      void handleInboundMessage(socket, store, agent, activeTurns, terminals, raw.toString())
+      void handleInboundMessage(socket, store, agent, activeTurns, terminals, raw.toString(), mcpRuntime)
     })
   })
 }

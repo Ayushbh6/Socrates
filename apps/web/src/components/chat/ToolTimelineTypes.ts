@@ -15,6 +15,8 @@ export type ToolTimelineItem = Omit<ConversationToolRun, "approval"> & {
   stdout?: string;
   stderr?: string;
   error?: string;
+  modelCallId?: string;
+  stepIndex?: number;
   approval?: ConversationToolApproval;
 };
 
@@ -41,7 +43,12 @@ export const displayNameForTool = (toolName: string): string => {
       return "Trace";
     case "list_project_resources":
       return "Resources";
+    case "mcp_registry":
+      return "MCP Registry";
     default:
+      if (toolName.startsWith("mcp__")) {
+        return toolName.replace(/^mcp__/, "MCP ");
+      }
       return toolName;
   }
 };
@@ -59,7 +66,12 @@ export const categoryForTool = (toolName: string): string => {
       return "shell";
     case "trace_retrieve":
       return "trace";
+    case "mcp_registry":
+      return "mcp";
     default:
+      if (toolName.startsWith("mcp__")) {
+        return "mcp";
+      }
       return "other";
   }
 };

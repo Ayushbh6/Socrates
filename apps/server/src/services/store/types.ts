@@ -42,7 +42,12 @@ export type StoredModelUsage = {
 
 export type ConversationModelMessage = {
   role: "user" | "assistant" | "system" | "developer"
-  content: string
+  content:
+    | string
+    | Array<
+        | { type: "text"; text: string }
+        | { type: "image"; mediaType: string; data: string; fileName?: string }
+      >
   id?: string
   turnId?: string
 }
@@ -60,6 +65,8 @@ export type UploadedResourceInput = {
   data: Buffer
   mimeType?: string
 }
+
+export type UploadedAttachmentInput = UploadedResourceInput
 
 export type StoreEventInput = {
   projectId?: string

@@ -27,6 +27,7 @@ import {
   uploadProjectResourcesResponseSchema,
   updateProjectWorkspaceResponseSchema,
   updateConversationResponseSchema,
+  uploadConversationAttachmentsResponseSchema,
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
@@ -66,6 +67,7 @@ import {
   type UpdateProjectWorkspaceResponse,
   type UpdateConversationRequest,
   type UpdateConversationResponse,
+  type UploadConversationAttachmentsResponse,
   type UploadProjectResourcesResponse,
   type UpsertProjectInstructionsRequest,
   type UpsertProjectInstructionsResponse,
@@ -338,6 +340,18 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<CreateConversationMessageResponse>,
+
+  uploadConversationAttachments: (projectId: string, conversationId: string, files: File[]) => {
+    const body = new FormData();
+    for (const file of files) {
+      body.append("files", file);
+    }
+    return uploadRequest(
+      `/api/projects/${projectId}/conversations/${conversationId}/attachments/upload`,
+      uploadConversationAttachmentsResponseSchema,
+      body,
+    ) as Promise<UploadConversationAttachmentsResponse>;
+  },
 
   upsertProjectInstructions: (projectId: string, input: UpsertProjectInstructionsRequest) =>
     request<typeof upsertProjectInstructionsResponseSchema>(

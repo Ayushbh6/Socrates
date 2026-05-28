@@ -1,7 +1,7 @@
 "use client";
 
 import { ChatComposer } from "./ChatComposer";
-import type { ModelOption, ModelThinkingOption } from "@socrates/contracts";
+import type { MessageAttachment, ModelOption, ModelThinkingOption } from "@socrates/contracts";
 
 interface EmptyChatStateProps {
   error?: string | null;
@@ -13,7 +13,8 @@ interface EmptyChatStateProps {
   warningResetKey?: string;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
-  onSend: (content: string) => Promise<void>;
+  onSend: (content: string, attachments: MessageAttachment[]) => Promise<void>;
+  onUploadAttachments: (files: File[]) => Promise<MessageAttachment[]>;
   onStop: () => void;
 }
 
@@ -28,6 +29,7 @@ export function EmptyChatState({
   onModelChange,
   onThinkingChange,
   onSend,
+  onUploadAttachments,
   onStop,
 }: EmptyChatStateProps) {
   return (
@@ -43,6 +45,7 @@ export function EmptyChatState({
         onModelChange={onModelChange}
         onThinkingChange={onThinkingChange}
         onSend={onSend}
+        onUploadAttachments={onUploadAttachments}
         onStop={onStop}
       />
     </div>

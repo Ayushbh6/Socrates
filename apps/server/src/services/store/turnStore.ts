@@ -6,11 +6,13 @@ import { mapMessage } from "../../db/mappers"
 import { activeTurnStatuses, defaultConversationTitle, deriveConversationTitle, StoreBase } from "./shared"
 import type { CreatedTurn } from "./types"
 import type { ErrorStore } from "./errorStore"
+import type { AttachmentStore } from "./attachmentStore"
 
 export class TurnStore extends StoreBase {
   constructor(
     context: ConstructorParameters<typeof StoreBase>[0],
     private readonly errors: ErrorStore,
+    private readonly attachments?: AttachmentStore,
   ) {
     super(context)
   }
@@ -18,7 +20,8 @@ export class TurnStore extends StoreBase {
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
     const conversation = this.mustGetConversationRow(projectId, conversationId)
     const content = payload.content.trim()
-    if (!content) {
+    const attachmentIds = payload.attachmentIds ?? []
+    if (!content && attachmentIds.length === 0) {
       throw new SocratesError("message_content_required", "Message content is required", { recoverable: true })
     }
 
@@ -59,6 +62,15 @@ export class TurnStore extends StoreBase {
       })
       .run()
 
+    const attached = this.attachments?.attachToMessage({
+      projectId,
+      conversationId,
+      sessionId,
+      turnId,
+      messageId,
+      attachmentIds,
+    }) ?? []
+
     this.handle.db
       .insert(turns)
       .values({
@@ -81,7 +93,8 @@ export class TurnStore extends StoreBase {
       .where(and(eq(conversations.projectId, projectId), eq(conversations.id, conversationId)))
       .run()
 
-    const userMessage = mapMessage(this.mustGetMessageRow(messageId))
+    const mapped = mapMessage(this.mustGetMessageRow(messageId))
+    const userMessage = attached.length > 0 ? { ...mapped, attachments: attached } : mapped
     this.appendEvent({
       projectId,
       conversationId,

@@ -59,6 +59,9 @@ export type StoredResourceFile = {
   fileName: string
 }
 
+export type StoreAttachmentFileInput = StoreResourceFileInput
+export type StoredAttachmentFile = StoredResourceFile
+
 export type CopyStoredResourceFileInput = {
   targetWorkspacePath: string
   sourcePath: string
@@ -309,6 +312,20 @@ export const storeResourceFile = (input: StoreResourceFileInput): StoredResource
   })
   const safeName = sanitizeFileName(input.originalName)
   const target = nextAvailablePath(scaffold.resourcesPath, safeName)
+  fs.writeFileSync(target.path, input.data)
+  return target
+}
+
+export const storeAttachmentFile = (input: StoreAttachmentFileInput): StoredAttachmentFile => {
+  const scaffold = ensureWorkspaceScaffold({
+    workspacePath: input.workspacePath,
+    mode: "existing_folder",
+    scaffoldAction: "use_existing",
+  })
+  const attachmentsPath = path.join(scaffold.socratesPath, "attachments")
+  fs.mkdirSync(attachmentsPath, { recursive: true })
+  const safeName = sanitizeFileName(input.originalName)
+  const target = nextAvailablePath(attachmentsPath, safeName)
   fs.writeFileSync(target.path, input.data)
   return target
 }

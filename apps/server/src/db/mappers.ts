@@ -1,5 +1,5 @@
-import type { Conversation, Message, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, User } from "@socrates/contracts"
-import type { artifacts, conversations, messages, projectInstructions, projectResources, projectWorkspaces, projects, users } from "./schema"
+import type { Conversation, Message, MessageAttachment, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, User } from "@socrates/contracts"
+import type { artifacts, conversations, messageAttachments, messages, projectInstructions, projectResources, projectWorkspaces, projects, users } from "./schema"
 
 type UserRow = typeof users.$inferSelect
 type ProjectRow = typeof projects.$inferSelect
@@ -9,6 +9,7 @@ type ProjectInstructionsRow = typeof projectInstructions.$inferSelect
 type ArtifactRow = typeof artifacts.$inferSelect
 type ConversationRow = typeof conversations.$inferSelect
 type MessageRow = typeof messages.$inferSelect
+type MessageAttachmentRow = typeof messageAttachments.$inferSelect
 
 const parseMessageMetadata = (
   metadataJson: string | null,
@@ -102,5 +103,23 @@ export const mapMessage = (row: MessageRow): Message => ({
   content: row.content,
   ...parseMessageMetadata(row.metadataJson),
   status: row.status as Message["status"],
+  createdAt: row.createdAt,
+})
+
+export const mapMessageAttachment = (row: MessageAttachmentRow): MessageAttachment => ({
+  id: row.id,
+  projectId: row.projectId,
+  conversationId: row.conversationId,
+  ...(row.sessionId ? { sessionId: row.sessionId } : {}),
+  ...(row.turnId ? { turnId: row.turnId } : {}),
+  ...(row.messageId ? { messageId: row.messageId } : {}),
+  artifactId: row.artifactId,
+  kind: row.kind as MessageAttachment["kind"],
+  fileName: row.fileName,
+  mimeType: row.mimeType,
+  sizeBytes: row.sizeBytes,
+  uri: row.uri,
+  url: `/api/projects/${encodeURIComponent(row.projectId)}/conversations/${encodeURIComponent(row.conversationId)}/attachments/${encodeURIComponent(row.id)}/content`,
+  status: row.status as MessageAttachment["status"],
   createdAt: row.createdAt,
 })

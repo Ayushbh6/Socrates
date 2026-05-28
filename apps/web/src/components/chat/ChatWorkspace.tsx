@@ -3,11 +3,11 @@
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
+import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
 import { ChatComposer } from "./ChatComposer";
-import { ChatTranscript } from "./ChatTranscript";
+import { ChatTranscript, type LiveActivityStep } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
 import { TerminalPanel } from "./TerminalPanel";
@@ -28,9 +28,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [isLoading, setIsLoading] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
-  const [liveThinking, setLiveThinking] = useState("");
-  const [liveAnswer, setLiveAnswer] = useState("");
-  const [liveTools, setLiveTools] = useState<ToolTimelineItem[]>([]);
+  const [liveSteps, setLiveSteps] = useState<LiveActivityStep[]>([]);
   const [terminals, setTerminals] = useState<ConversationTerminal[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
@@ -74,7 +72,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setActiveTurnId(event.payload.turnId);
         setIsSending(true);
         setIsCompacting(false);
-        setLiveTools([]);
+        setLiveSteps([]);
         setApprovals([]);
         setConversationData((current) => {
           const messages = current?.messages ?? [];
@@ -104,12 +102,22 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "agent.thinking.delta") {
-        setLiveThinking((current) => `${current}${event.payload.text}`);
+        setLiveSteps((current) =>
+          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
+            ...step,
+            reasoning: `${step.reasoning}${event.payload.text}`,
+          })),
+        );
         return;
       }
 
       if (event.type === "agent.answer.delta") {
-        setLiveAnswer((current) => `${current}${event.payload.text}`);
+        setLiveSteps((current) =>
+          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
+            ...step,
+            answer: `${step.answer}${event.payload.text}`,
+          })),
+        );
         return;
       }
 
@@ -139,8 +147,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           const withoutDuplicate = current.messages.filter((message) => message.id !== event.payload.message.id);
           return { ...current, messages: [...withoutDuplicate, event.payload.message] };
         });
-        setLiveAnswer("");
-        setLiveThinking("");
+        setLiveSteps([]);
         setIsCompacting(false);
         return;
       }
@@ -165,9 +172,12 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "tool.call.started") {
-        setLiveTools((current) => [
-          ...current.filter((tool) => tool.toolCallId !== event.payload.toolCallId),
-          {
+        setLiveSteps((current) =>
+          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
+            ...step,
+            tools: [
+              ...step.tools.filter((tool) => tool.toolCallId !== event.payload.toolCallId),
+              {
             toolCallId: event.payload.toolCallId,
             conversationId,
             sessionId: event.sessionId ?? "live",
@@ -178,47 +188,45 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             status: event.payload.requiresApproval ? "awaiting_approval" : "running",
             requiresApproval: event.payload.requiresApproval,
             argsPreview: event.payload.argsPreview,
+            modelCallId: event.payload.modelCallId,
+            stepIndex: event.payload.stepIndex,
             output: "",
           },
-        ]);
+            ],
+          })),
+        );
         return;
       }
 
       if (event.type === "tool.call.output") {
-        setLiveTools((current) =>
-          current.map((tool) =>
-            tool.toolCallId === event.payload.toolCallId
-              ? appendToolOutput(tool, event.payload.stream, event.payload.text ?? "")
-              : tool,
+        setLiveSteps((current) =>
+          updateLiveTool(current, event.payload.toolCallId, (tool) =>
+            appendToolOutput(tool, event.payload.stream, event.payload.text ?? ""),
           ),
         );
         return;
       }
 
       if (event.type === "tool.call.completed") {
-        setLiveTools((current) =>
-          current.map((tool) =>
-            tool.toolCallId === event.payload.toolCallId
-              ? {
+        setLiveSteps((current) =>
+          updateLiveTool(current, event.payload.toolCallId, (tool) => ({
                   ...tool,
                   status: "completed",
                   summary: event.payload.summary,
                   resultPreview: event.payload.resultPreview,
                   durationMs: event.payload.durationMs,
-                }
-              : tool,
-          ),
+                })),
         );
         return;
       }
 
       if (event.type === "tool.call.failed") {
-        setLiveTools((current) =>
-          current.map((tool) =>
-            tool.toolCallId === event.payload.toolCallId
-              ? { ...tool, status: "failed", error: event.payload.error.message }
-              : tool,
-          ),
+        setLiveSteps((current) =>
+          updateLiveTool(current, event.payload.toolCallId, (tool) => ({
+            ...tool,
+            status: "failed",
+            error: event.payload.error.message,
+          })),
         );
         return;
       }
@@ -238,12 +246,12 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           ),
         );
         if (event.payload.toolCallId) {
-          setLiveTools((current) =>
-            current.map((tool) =>
-              tool.toolCallId === event.payload.toolCallId
-                ? { ...tool, status: event.payload.decision === "approved" ? "running" : "rejected" }
-                : tool,
-            ),
+          const toolCallId = event.payload.toolCallId;
+          setLiveSteps((current) =>
+            updateLiveTool(current, toolCallId, (tool) => ({
+              ...tool,
+              status: event.payload.decision === "approved" ? "running" : "rejected",
+            })),
           );
         }
         return;
@@ -252,9 +260,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       if (event.type === "turn.completed") {
         setIsSending(false);
         setActiveTurnId(null);
-        setLiveAnswer("");
-        setLiveThinking("");
-        setLiveTools([]);
+        setLiveSteps([]);
         setApprovals([]);
         setIsCompacting(false);
         void refreshConversation();
@@ -278,9 +284,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         });
         setIsSending(false);
         setActiveTurnId(null);
-        setLiveAnswer("");
-        setLiveThinking("");
-        setLiveTools([]);
+        setLiveSteps([]);
         setApprovals([]);
         setIsCompacting(false);
         return;
@@ -292,9 +296,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setIsCompacting(false);
         setError(event.type === "turn.failed" ? event.payload.error.message : event.payload.error.message);
         if (event.type === "turn.failed") {
-          setLiveAnswer("");
-          setLiveThinking("");
-          setLiveTools([]);
+          setLiveSteps([]);
           setApprovals([]);
           void refreshConversation();
         }
@@ -333,9 +335,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           const reloadActiveTurn = conversation.partialTurns?.find((turn) => turn.status === "running")?.turnId ?? null;
           setActiveTurnId(reloadActiveTurn);
           setIsSending(Boolean(reloadActiveTurn));
-          setLiveAnswer("");
-          setLiveThinking("");
-          setLiveTools([]);
+          setLiveSteps([]);
           setApprovals([]);
           setIsCompacting(false);
           setSidebarProjects(projectConversations);
@@ -404,7 +404,16 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     router.push(`/projects/${targetProjectId}/chats/${response.conversation.id}`);
   };
 
-  const handleSend = async (content: string) => {
+  const handleUploadAttachments = async (files: File[]): Promise<MessageAttachment[]> => {
+    try {
+      return (await api.uploadConversationAttachments(projectId, conversationId, files)).attachments;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload image.");
+      throw err;
+    }
+  };
+
+  const handleSend = async (content: string, attachments: MessageAttachment[]) => {
     if (!selectedModel || !selectedThinkingOption) {
       setError("Choose a model before sending.");
       return;
@@ -412,8 +421,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
     setIsSending(true);
     setError(null);
-    setLiveAnswer("");
-    setLiveThinking("");
+    setLiveSteps([]);
     setIsCompacting(false);
     const clientMessageId = `msg_${crypto.randomUUID()}`;
     try {
@@ -423,6 +431,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         sessionId: "pending",
         role: "user",
         content,
+        ...(attachments.length > 0 ? { attachments } : {}),
         status: "completed",
         createdAt: new Date().toISOString(),
       };
@@ -458,6 +467,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         payload: {
           clientMessageId,
           content,
+          ...(attachments.length > 0 ? { attachmentIds: attachments.map((attachment) => attachment.id) } : {}),
           runtimeConfig: {
             providerId: selectedModel.providerId,
             modelId: selectedModel.modelId,
@@ -620,6 +630,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 onModelChange={handleModelChange}
                 onThinkingChange={handleThinkingChange}
                 onSend={handleSend}
+                onUploadAttachments={handleUploadAttachments}
                 onStop={handleStop}
               />
             ) : (
@@ -628,9 +639,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   messages={messages}
                   toolRuns={toolRuns}
                   partialTurns={partialTurns}
-                  liveThinking={liveThinking}
-                  liveAnswer={liveAnswer}
-                  liveTools={liveTools}
+                  activitySteps={conversationData?.activitySteps ?? []}
+                  liveSteps={liveSteps}
                   approvals={approvals}
                   isStreaming={isSending}
                   isCompacting={isCompacting}
@@ -649,6 +659,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                       onModelChange={handleModelChange}
                       onThinkingChange={handleThinkingChange}
                       onSend={handleSend}
+                      onUploadAttachments={handleUploadAttachments}
                       onStop={handleStop}
                     />
                   </div>
@@ -682,6 +693,40 @@ const appendToolOutput = (
   }
   return { ...tool, output: `${tool.output}${text}` };
 };
+
+const updateLiveStep = (
+  steps: LiveActivityStep[],
+  modelCallId: string | undefined,
+  stepIndex: number | undefined,
+  updater: (step: LiveActivityStep) => LiveActivityStep,
+): LiveActivityStep[] => {
+  const key = modelCallId ?? `step-${stepIndex ?? steps.length}`;
+  const existingIndex = steps.findIndex((step) => step.key === key);
+  if (existingIndex >= 0) {
+    return steps.map((step, index) => (index === existingIndex ? updater(step) : step));
+  }
+  return [
+    ...steps,
+    updater({
+      key,
+      ...(modelCallId ? { modelCallId } : {}),
+      stepIndex: stepIndex ?? steps.length,
+      reasoning: "",
+      answer: "",
+      tools: [],
+    }),
+  ];
+};
+
+const updateLiveTool = (
+  steps: LiveActivityStep[],
+  toolCallId: string,
+  updater: (tool: ToolTimelineItem) => ToolTimelineItem,
+): LiveActivityStep[] =>
+  steps.map((step) => ({
+    ...step,
+    tools: step.tools.map((tool) => (tool.toolCallId === toolCallId ? updater(tool) : tool)),
+  }));
 
 const upsertTerminal = (terminals: ConversationTerminal[], terminal: ConversationTerminal): ConversationTerminal[] => {
   const existing = terminals.find((item) => item.terminalId === terminal.terminalId);

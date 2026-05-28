@@ -2,12 +2,13 @@ import type { ModelToolDefinition, ToolName } from "@socrates/contracts"
 import { bashTool } from "./bashTool"
 import { editTool } from "./editTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
+import { mcpRegistryTool } from "./mcpRegistryTool"
 import { readTool } from "./readTool"
 import { searchTool } from "./searchTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
 
-const tools = [readTool, searchTool, editTool, bashTool, traceRetrieveTool, listProjectResourcesTool] as const
+const tools = [readTool, searchTool, editTool, bashTool, traceRetrieveTool, listProjectResourcesTool, mcpRegistryTool] as const
 
 export type RegisteredTool = (typeof tools)[number]
 
@@ -18,12 +19,12 @@ export class ToolRegistry {
     return [...tools]
   }
 
-  modelDefinitions(): ModelToolDefinition[] {
+  modelDefinitions(additionalTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
     return tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
-    }))
+    })).concat(additionalTools)
   }
 
   get(name: ToolName): SocratesTool<unknown, unknown> | undefined {

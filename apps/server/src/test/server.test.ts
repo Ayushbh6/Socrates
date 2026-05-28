@@ -9,6 +9,7 @@ import type {
   Conversation,
   GetProviderCredentialsStatusResponse,
   Message,
+  MessageAttachment,
   Project,
   ProjectInstructions,
   ProjectResource,
@@ -1642,6 +1643,89 @@ describe("WebSocket API", () => {
     } finally {
       socket.close()
     }
+  })
+
+  it("uploads chat image attachments, sends image-only messages, and hydrates attachments", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const boundary = "----socrates-attachment-boundary"
+    const imageBytes = Buffer.from("fake png bytes")
+    const payload = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="files"; filename="screenshot.png"',
+        "Content-Type: image/png",
+        "",
+        imageBytes.toString("binary"),
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+      "binary",
+    )
+
+    const uploadResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/attachments/upload`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const uploadBody = parseResponse<{ attachments: MessageAttachment[] }>(uploadResponse.payload)
+    expect(uploadBody.ok).toBe(true)
+    if (!uploadBody.ok) {
+      throw new Error("Expected attachment upload success")
+    }
+    const attachment = uploadBody.data.attachments[0]
+    if (!attachment) {
+      throw new Error("Expected uploaded attachment")
+    }
+    expect(attachment.kind).toBe("image")
+    expect(attachment.url).toContain(`/attachments/${attachment.id}/content`)
+    expect(attachment.uri).toContain(path.join(".socrates", "attachments"))
+
+    const contentResponse = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/attachments/${attachment?.id}/content`,
+    })
+    expect(contentResponse.statusCode).toBe(200)
+    expect(contentResponse.headers["content-type"]).toContain("image/png")
+
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      const command = {
+        ...chatMessageCommand(project.id, conversation.id, ""),
+        payload: {
+          ...chatMessageCommand(project.id, conversation.id, "").payload,
+          clientMessageId: createId("msg"),
+          content: "",
+          attachmentIds: [attachment.id],
+        },
+      }
+      sendCommand(socket, command)
+
+      const started = await waitForEvent(socket, "turn.started")
+      expect(started.payload.userMessage.content).toBe("")
+      expect(started.payload.userMessage.attachments?.[0]?.id).toBe(attachment?.id)
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+    } finally {
+      socket.close()
+    }
+
+    const hydratedResponse = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+    })
+    const hydratedBody = parseResponse<{ messages: Message[] }>(hydratedResponse.payload)
+    expect(hydratedBody.ok).toBe(true)
+    if (hydratedBody.ok) {
+      const userMessage = hydratedBody.data.messages.find((message) => message.role === "user")
+      expect(userMessage?.attachments?.[0]?.id).toBe(attachment?.id)
+    }
+    expect(JSON.stringify(requests[0])).toContain("\"type\":\"image\"")
   })
 
   it("returns contextUsage from snapshots rather than cumulative tokenUsage", async () => {

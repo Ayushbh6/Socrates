@@ -105,6 +105,29 @@ export const conversationSchema = z
 export const messageRoleSchema = z.enum(["user", "assistant", "system", "tool", "developer"])
 export const messageStatusSchema = z.enum(["streaming", "completed", "failed", "cancelled"])
 
+export const messageAttachmentKindSchema = z.enum(["image"])
+export const messageAttachmentStatusSchema = z.enum(["draft", "attached", "deleted"])
+
+export const messageAttachmentSchema = z
+  .object({
+    id: idSchema,
+    projectId: idSchema,
+    conversationId: idSchema,
+    sessionId: idSchema.optional(),
+    turnId: idSchema.optional(),
+    messageId: idSchema.optional(),
+    artifactId: idSchema,
+    kind: messageAttachmentKindSchema,
+    fileName: z.string().min(1),
+    mimeType: z.string().min(1),
+    sizeBytes: z.number().int().nonnegative(),
+    uri: z.string().min(1),
+    url: z.string().min(1).optional(),
+    status: messageAttachmentStatusSchema,
+    createdAt: timestampSchema,
+  })
+  .strict()
+
 export const messageSchema = z
   .object({
     id: idSchema,
@@ -117,6 +140,7 @@ export const messageSchema = z
     partial: z.boolean().optional(),
     cancelled: z.boolean().optional(),
     cancellationReason: z.string().optional(),
+    attachments: z.array(messageAttachmentSchema).optional(),
     status: messageStatusSchema,
     createdAt: timestampSchema,
   })
@@ -128,4 +152,5 @@ export type ProjectWorkspace = z.infer<typeof projectWorkspaceSchema>
 export type ProjectResource = z.infer<typeof projectResourceSchema>
 export type ProjectInstructions = z.infer<typeof projectInstructionsSchema>
 export type Conversation = z.infer<typeof conversationSchema>
+export type MessageAttachment = z.infer<typeof messageAttachmentSchema>
 export type Message = z.infer<typeof messageSchema>

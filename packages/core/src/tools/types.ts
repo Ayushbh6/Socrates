@@ -5,6 +5,8 @@ import type {
   EditToolOutput,
   ListProjectResourcesToolInput,
   ListProjectResourcesToolOutput,
+  McpRegistryToolInput,
+  McpRegistryToolOutput,
   ModelToolDefinition,
   ReadToolInput,
   ReadToolOutput,
@@ -40,6 +42,8 @@ export type ToolExecutors = {
     input: ListProjectResourcesToolInput,
     context: ToolExecutorContext,
   ) => Promise<ListProjectResourcesToolOutput>
+  mcp_registry?: (input: McpRegistryToolInput, context: ToolExecutorContext) => Promise<McpRegistryToolOutput>
+  mcp_dynamic?: (input: { dynamicName: string; input: unknown }, context: ToolExecutorContext) => Promise<unknown>
 }
 
 export type ApprovalRequest = {
@@ -61,6 +65,8 @@ export type ApprovalDecision = {
 export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
   executors: ToolExecutors
   requestApproval: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  modelCallId?: string | undefined
+  stepIndex?: number | undefined
 }
 
 export type ToolPolicyDecision =
@@ -73,7 +79,7 @@ export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
   resultSchema: NonNullable<ModelToolDefinition["resultSchema"]>
   permission: ToolPermission
   executeLane: "parallel" | "mutation"
-  category: "file" | "search" | "shell" | "patch" | "trace" | "other"
+  category: "file" | "search" | "shell" | "patch" | "trace" | "mcp" | "other"
   resultPreview: (output: TOutput) => string
   summary: (output: TOutput) => string
   metrics?: (output: TOutput) => {
@@ -101,6 +107,8 @@ export type ToolLifecycleEvent =
       argsPreview?: string
       input?: unknown
       requiresApproval: boolean
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
     }
   | {
       type: "tool.call.output"
@@ -108,6 +116,8 @@ export type ToolLifecycleEvent =
       stream: "stdout" | "stderr" | "log" | "result"
       text?: string
       data?: unknown
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
     }
   | {
       type: "tool.call.completed"
@@ -123,7 +133,9 @@ export type ToolLifecycleEvent =
         searchesRun?: number
       }
       durationMs?: number
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
     }
-  | { type: "tool.call.failed"; toolCallId: string; toolName: ToolName; error: SocratesError }
+  | { type: "tool.call.failed"; toolCallId: string; toolName: ToolName; error: SocratesError; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "approval.requested"; request: ApprovalRequest }
   | { type: "approval.resolved"; approvalId: string; toolCallId: string; decision: "approved" | "rejected" }

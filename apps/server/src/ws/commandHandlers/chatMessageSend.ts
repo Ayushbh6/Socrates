@@ -8,6 +8,7 @@ import {
   type ToolExecutors,
 } from "@socrates/core"
 import type { ClientCommand, ModelUsage, ProjectEmbeddingStatus, ProjectResource } from "@socrates/contracts"
+import type { McpRuntime } from "@socrates/mcp"
 import { normalizeError, SocratesError } from "@socrates/shared"
 import {
   editWorkspace,
@@ -39,6 +40,7 @@ export const handleChatMessageSend = async (
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
   command: Extract<ClientCommand, { type: "chat.message.send" }>,
+  mcpRuntime?: McpRuntime,
 ): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
   const created = store.createTurnFromUserMessage(projectId, conversationId, command.payload)
@@ -62,7 +64,9 @@ export const handleChatMessageSend = async (
     ),
   )
 
-  const history = store.getConversationModelMessages(projectId, conversationId)
+  const selectedModel = findModelOption(command.payload.runtimeConfig.providerId, command.payload.runtimeConfig.modelId)
+  const includeImageParts = selectedModel?.capabilities?.vision !== false
+  const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
   const terminalContext = store.terminalContextBrief(conversationId)
   const promptContext = {
@@ -70,6 +74,7 @@ export const handleChatMessageSend = async (
     workspaceGuidance: formatPythonEnvironmentHints(inspectPythonEnvironment(workspacePath)),
     workspaceCommandEnvironment: formatWorkspaceCommandEnvironmentBrief(),
     semanticRetrievalStatus: formatSemanticRetrievalStatus(store.getProjectEmbeddingStatus(projectId)),
+    mcpRuntimeBrief: "MCP available on demand: Playwright. Use mcp_registry when browser automation or MCP setup is relevant.",
     ...(terminalContext ? { terminalContext } : {}),
   }
   const modelCallIds: string[] = []
@@ -93,7 +98,8 @@ export const handleChatMessageSend = async (
       messages: history,
       promptContext,
       workspacePath,
-      toolExecutors: createToolExecutors(store, projectId, activeTurns, terminals),
+      toolExecutors: createToolExecutors(store, projectId, activeTurns, terminals, mcpRuntime),
+      dynamicTools: () => mcpRuntime?.getDynamicToolDefinitions("playwright") ?? [],
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
       maxToolCallsPerTurn: 80,
@@ -210,7 +216,7 @@ export const handleChatMessageSend = async (
         })
         const event = makeEvent(
           "agent.thinking.delta",
-          { text: agentEvent.text },
+          { text: agentEvent.text, modelCallId, stepIndex: agentEvent.stepIndex },
           {
             projectId,
             conversationId,
@@ -242,7 +248,7 @@ export const handleChatMessageSend = async (
         })
         const event = makeEvent(
           "agent.answer.delta",
-          { messageId: modelCallId, text },
+          { messageId: modelCallId, text, modelCallId, stepIndex: agentEvent.stepIndex },
           {
             projectId,
             conversationId,
@@ -277,6 +283,7 @@ export const handleChatMessageSend = async (
       }
 
       if (agentEvent.type === "tool.call.started") {
+        const toolModelCallId = agentEvent.modelCallId ?? latestModelCallId
         store.createToolCall({
           toolCallId: agentEvent.toolCallId,
           conversationId,
@@ -285,7 +292,7 @@ export const handleChatMessageSend = async (
           toolName: agentEvent.toolName,
           arguments: agentEvent.input ?? agentEvent.argsPreview ?? {},
           requiresApproval: agentEvent.requiresApproval,
-          ...(latestModelCallId ? { modelCallId: latestModelCallId } : {}),
+          ...(toolModelCallId ? { modelCallId: toolModelCallId } : {}),
         })
         const event = makeEvent(
           "tool.call.started",
@@ -296,6 +303,8 @@ export const handleChatMessageSend = async (
             displayName: agentEvent.displayName,
             argsPreview: agentEvent.argsPreview,
             requiresApproval: agentEvent.requiresApproval,
+            modelCallId: agentEvent.modelCallId,
+            stepIndex: agentEvent.stepIndex,
           },
           {
             projectId,
@@ -319,6 +328,8 @@ export const handleChatMessageSend = async (
             stream: agentEvent.stream,
             text: agentEvent.text,
             data: agentEvent.data,
+            modelCallId: agentEvent.modelCallId,
+            stepIndex: agentEvent.stepIndex,
           },
           {
             projectId,
@@ -381,6 +392,8 @@ export const handleChatMessageSend = async (
             resultPreview: agentEvent.resultPreview,
             metrics: agentEvent.metrics,
             durationMs: agentEvent.durationMs,
+            modelCallId: agentEvent.modelCallId,
+            stepIndex: agentEvent.stepIndex,
           },
           {
             projectId,
@@ -413,6 +426,8 @@ export const handleChatMessageSend = async (
               details: agentEvent.error.details,
               recoverable: agentEvent.error.recoverable,
             }),
+            modelCallId: agentEvent.modelCallId,
+            stepIndex: agentEvent.stepIndex,
           },
           {
             projectId,
@@ -497,7 +512,7 @@ export const handleChatMessageSend = async (
     appendAndSend(socket, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
 
-    const postTurnHistory = store.getConversationModelMessages(projectId, conversationId)
+    const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({
       providerId: command.payload.runtimeConfig.providerId,
       modelId: command.payload.runtimeConfig.modelId,
@@ -548,6 +563,7 @@ const createToolExecutors = (
   projectId: string,
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
+  mcpRuntime?: McpRuntime,
 ): ToolExecutors => ({
   read: (input, context) => readWorkspacePath(input, context),
   search: (input, context) => searchWorkspace(input, context),
@@ -594,6 +610,18 @@ const createToolExecutors = (
   },
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
+  mcp_registry: (input) => {
+    if (!mcpRuntime) {
+      throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+    }
+    return mcpRuntime.handleRegistryTool(input)
+  },
+  mcp_dynamic: (input) => {
+    if (!mcpRuntime) {
+      throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+    }
+    return mcpRuntime.callDynamicTool(input.dynamicName, input.input)
+  },
 })
 
 const sendContextCompactionEvent = (

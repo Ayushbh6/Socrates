@@ -8,6 +8,7 @@ import type {
   ChatMessageSendPayload,
   CompleteOnboardingRequest,
   Conversation,
+  ConversationActivityStep,
   ConversationContextUsage,
   ConversationPartialTurn,
   ConversationTerminal,
@@ -21,6 +22,7 @@ import type {
   ConfigureProjectEmbeddingsRequest,
   FeedbackSubmitPayload,
   Message,
+  MessageAttachment,
   PatchProjectRequest,
   InspectWorkspaceRequest,
   InspectWorkspaceResponse,
@@ -40,6 +42,7 @@ import type {
 import { createDefaultEmbeddingProvider, type EmbeddingProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
+import { AttachmentStore } from "./store/attachmentStore"
 import { ContextCompactionStore } from "./store/contextCompactionStore"
 import { ConversationStore } from "./store/conversationStore"
 import { ErrorStore, type RecordErrorInput } from "./store/errorStore"
@@ -63,6 +66,7 @@ import type {
   ProjectListItem,
   StoreEventInput,
   StoredModelUsage,
+  UploadedAttachmentInput,
   UploadedResourceInput,
 } from "./store/types"
 import { UserStore } from "./store/userStore"
@@ -75,6 +79,7 @@ export type {
   ProjectListItem,
   StoreEventInput,
   StoredModelUsage,
+  UploadedAttachmentInput,
   UploadedResourceInput,
 } from "./store/types"
 
@@ -89,6 +94,7 @@ export class SocratesStore {
   private readonly errors: ErrorStore
   private readonly turns: TurnStore
   private readonly approvals: ApprovalStore
+  private readonly attachments: AttachmentStore
   private readonly feedback: FeedbackStore
   private readonly tools: ToolStore
   private readonly terminals: TerminalStore
@@ -114,8 +120,9 @@ export class SocratesStore {
     this.modelTelemetry = new ModelTelemetryStore(context)
     this.conversations = new ConversationStore(context, this.modelTelemetry)
     this.errors = new ErrorStore(context)
-    this.turns = new TurnStore(context, this.errors)
     this.approvals = new ApprovalStore(context)
+    this.attachments = new AttachmentStore(context)
+    this.turns = new TurnStore(context, this.errors, this.attachments)
     this.feedback = new FeedbackStore(context)
     this.tools = new ToolStore(context)
     this.terminals = new TerminalStore(context)
@@ -188,6 +195,18 @@ export class SocratesStore {
     return this.resources.createUploadedResources(projectId, inputs)
   }
 
+  createConversationAttachments(
+    projectId: string,
+    conversationId: string,
+    inputs: UploadedAttachmentInput[],
+  ): MessageAttachment[] {
+    return this.attachments.createDraftAttachments(projectId, conversationId, inputs)
+  }
+
+  getConversationAttachmentContent(projectId: string, conversationId: string, attachmentId: string): MessageAttachment {
+    return this.attachments.getAttachmentForContent(projectId, conversationId, attachmentId)
+  }
+
   deleteResource(projectId: string, resourceId: string): string {
     return this.resources.deleteResource(projectId, resourceId)
   }
@@ -217,13 +236,16 @@ export class SocratesStore {
     toolRuns: ConversationToolRun[]
     terminals?: ConversationTerminal[]
     partialTurns?: ConversationPartialTurn[]
+    activitySteps?: ConversationActivityStep[]
     tokenUsage: ConversationTokenUsage
     contextUsage?: ConversationContextUsage
   } {
     const conversation = this.conversations.getConversation(projectId, conversationId)
+    const toolRuns = this.tools.getConversationToolRuns(conversationId)
     return {
       ...conversation,
-      toolRuns: this.tools.getConversationToolRuns(conversationId),
+      toolRuns,
+      activitySteps: this.modelTelemetry.getConversationActivitySteps(conversationId, toolRuns),
       terminals: this.terminals.listConversationTerminals(conversationId),
     }
   }
@@ -245,8 +267,15 @@ export class SocratesStore {
     return this.turns.createTurnFromUserMessage(projectId, conversationId, payload)
   }
 
-  getConversationModelMessages(projectId: string, conversationId: string): ConversationModelMessage[] {
-    return this.conversations.getConversationModelMessages(projectId, conversationId)
+  getConversationModelMessages(
+    projectId: string,
+    conversationId: string,
+    options: { includeImageParts?: boolean } = {},
+  ): ConversationModelMessage[] {
+    return this.conversations.getConversationModelMessages(projectId, conversationId, {
+      ...options,
+      readAttachmentDataUrl: (attachment) => this.attachments.readAttachmentDataUrl(attachment),
+    })
   }
 
   createModelCall(input: {

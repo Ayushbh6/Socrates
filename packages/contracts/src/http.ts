@@ -1,6 +1,7 @@
 import { z } from "zod"
 import {
   conversationSchema,
+  messageAttachmentSchema,
   idSchema,
   messageSchema,
   projectInstructionsSchema,
@@ -309,6 +310,12 @@ export const uploadProjectResourcesResponseSchema = z
   })
   .strict()
 
+export const uploadConversationAttachmentsResponseSchema = z
+  .object({
+    attachments: z.array(messageAttachmentSchema),
+  })
+  .strict()
+
 export const deleteProjectResourceResponseSchema = z
   .object({
     deletedResourceId: idSchema,
@@ -410,6 +417,7 @@ export const conversationToolRunSchema = z
     sessionId: idSchema,
     turnId: idSchema,
     toolName: toolNameSchema,
+    modelCallId: idSchema.optional(),
     status: z.enum(["running", "awaiting_approval", "completed", "failed", "rejected", "cancelled"]),
     requiresApproval: z.boolean(),
     arguments: z.unknown().optional(),
@@ -519,11 +527,23 @@ export const conversationPartialTurnSchema = z
   })
   .strict()
 
+export const conversationActivityStepSchema = z
+  .object({
+    turnId: idSchema,
+    modelCallId: idSchema,
+    stepIndex: z.number().int().nonnegative(),
+    reasoning: z.string().optional(),
+    answer: z.string().optional(),
+    toolCallIds: z.array(idSchema),
+  })
+  .strict()
+
 export const getConversationResponseSchema = z
   .object({
     conversation: conversationSchema,
     messages: z.array(messageSchema),
     toolRuns: z.array(conversationToolRunSchema),
+    activitySteps: z.array(conversationActivityStepSchema).optional(),
     terminals: z.array(conversationTerminalSchema).optional(),
     partialTurns: z.array(conversationPartialTurnSchema).optional(),
     tokenUsage: conversationTokenUsageSchema,
@@ -576,6 +596,7 @@ export type ListProjectResourcesResponse = z.infer<typeof listProjectResourcesRe
 export type CreateProjectResourceRequest = z.infer<typeof createProjectResourceRequestSchema>
 export type CreateProjectResourceResponse = z.infer<typeof createProjectResourceResponseSchema>
 export type UploadProjectResourcesResponse = z.infer<typeof uploadProjectResourcesResponseSchema>
+export type UploadConversationAttachmentsResponse = z.infer<typeof uploadConversationAttachmentsResponseSchema>
 export type DeleteProjectResourceResponse = z.infer<typeof deleteProjectResourceResponseSchema>
 export type UpsertProjectInstructionsRequest = z.infer<typeof upsertProjectInstructionsRequestSchema>
 export type UpsertProjectInstructionsResponse = z.infer<typeof upsertProjectInstructionsResponseSchema>
@@ -592,6 +613,7 @@ export type ConversationToolApproval = z.infer<typeof conversationToolApprovalSc
 export type ConversationToolRun = z.infer<typeof conversationToolRunSchema>
 export type ConversationTerminal = z.infer<typeof conversationTerminalSchema>
 export type ConversationPartialTurn = z.infer<typeof conversationPartialTurnSchema>
+export type ConversationActivityStep = z.infer<typeof conversationActivityStepSchema>
 export type GetConversationResponse = z.infer<typeof getConversationResponseSchema>
 export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>
 export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>

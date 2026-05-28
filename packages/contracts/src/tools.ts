@@ -1,7 +1,17 @@
 import { z } from "zod"
 import { conversationStatusSchema, messageRoleSchema, projectResourceKindSchema, projectResourceSourceSchema, projectResourceStatusSchema } from "./entities"
 
-export const toolNameSchema = z.enum(["read", "search", "edit", "bash", "trace_retrieve", "list_project_resources"])
+export const baseToolNameSchema = z.enum([
+  "read",
+  "search",
+  "edit",
+  "bash",
+  "trace_retrieve",
+  "list_project_resources",
+  "mcp_registry",
+])
+export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
+export const toolNameSchema = z.union([baseToolNameSchema, dynamicMcpToolNameSchema])
 export type ToolName = z.infer<typeof toolNameSchema>
 
 export const providerMetadataSchema = z.record(z.string(), z.record(z.string(), z.unknown()))
@@ -455,6 +465,59 @@ export const listProjectResourcesToolOutputSchema = z
   })
   .strict()
 export type ListProjectResourcesToolOutput = z.infer<typeof listProjectResourcesToolOutputSchema>
+
+export const mcpRegistryOperationSchema = z.enum(["list", "describe", "check", "configure"])
+export type McpRegistryOperation = z.infer<typeof mcpRegistryOperationSchema>
+
+export const mcpRegistryToolInputSchema = z
+  .object({
+    operation: mcpRegistryOperationSchema,
+    serverId: z.string().min(1).optional(),
+    preset: z.enum(["playwright"]).optional(),
+  })
+  .strict()
+export type McpRegistryToolInput = z.infer<typeof mcpRegistryToolInputSchema>
+
+export const mcpRegistryServerSchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().min(1),
+    configured: z.boolean(),
+    enabled: z.boolean(),
+    bundled: z.boolean().optional(),
+    requiresSecrets: z.boolean(),
+    status: z.enum(["available", "missing", "failed", "unknown"]),
+    toolCount: z.number().int().nonnegative().optional(),
+    configPath: z.string().min(1).optional(),
+    envPath: z.string().min(1).optional(),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+
+export const mcpRegistryToolDescriptorSchema = z
+  .object({
+    name: z.string().min(1),
+    dynamicName: dynamicMcpToolNameSchema,
+    description: z.string().optional(),
+    inputSchema: z.unknown().optional(),
+  })
+  .strict()
+
+export const mcpRegistryToolOutputSchema = z
+  .object({
+    operation: mcpRegistryOperationSchema,
+    configPath: z.string().min(1),
+    envPath: z.string().min(1),
+    servers: z.array(mcpRegistryServerSchema).optional(),
+    server: mcpRegistryServerSchema.optional(),
+    tools: z.array(mcpRegistryToolDescriptorSchema).optional(),
+    docs: z.string().optional(),
+    configured: z.boolean().optional(),
+    summary: z.string(),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type McpRegistryToolOutput = z.infer<typeof mcpRegistryToolOutputSchema>
 
 export const normalizedToolCallSchema = z
   .object({
