@@ -9,6 +9,7 @@ import type {
   MessageAttachment,
   UpdateConversationRequest,
 } from "@socrates/contracts"
+import path from "node:path"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { and, desc, eq, inArray } from "drizzle-orm"
 import {
@@ -444,15 +445,15 @@ const buildModelMessageContent = (
   if (attachments.length === 0) {
     return content
   }
+  const attachmentReference = formatAttachmentReference(attachments)
   if (!options.includeImageParts) {
-    const omitted = `[${attachments.length} image attachment${attachments.length === 1 ? "" : "s"} omitted because the selected model does not support vision.]`
+    const omitted = `[${attachments.length} image attachment${attachments.length === 1 ? "" : "s"} omitted because the selected model does not support vision.]\n${attachmentReference}`
     return content.trim() ? `${content}\n\n${omitted}` : omitted
   }
 
   const parts: ConversationModelMessage["content"] = []
-  if (content.trim()) {
-    parts.push({ type: "text", text: content })
-  }
+  const text = [content.trim(), attachmentReference].filter(Boolean).join("\n\n")
+  parts.push({ type: "text", text })
   for (const attachment of attachments) {
     const data = options.readAttachmentDataUrl?.(attachment)
     if (data) {
@@ -460,6 +461,25 @@ const buildModelMessageContent = (
     }
   }
   return parts.length > 0 ? parts : content
+}
+
+const formatAttachmentReference = (attachments: MessageAttachment[]): string =>
+  [
+    "Attached image files are stored in the workspace and can be reopened with the read tool:",
+    ...attachments.map(
+      (attachment) =>
+        `- ${attachment.fileName}: ${attachmentReferencePath(attachment.uri)} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+    ),
+  ].join("\n")
+
+const attachmentReferencePath = (uri: string): string => {
+  const normalized = uri.split(path.sep).join("/")
+  const marker = "/.socrates/"
+  const markerIndex = normalized.indexOf(marker)
+  if (markerIndex >= 0) {
+    return normalized.slice(markerIndex + 1)
+  }
+  return path.basename(uri)
 }
 
 const isCancelledPartialAssistant = (metadataJson: string | null): boolean => {

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
 import type { ModelEvent, ModelProvider } from "@socrates/providers"
 import { bashTool } from "../tools/bashTool"
@@ -380,6 +383,74 @@ describe("SocratesAgent", () => {
     expect(editDryRuns).toEqual([true, false])
     expect(approvals[0]).toContain("-old")
     expect(approvals[0]).toContain("+new")
+  })
+
+  it("feeds read image results back to vision-capable models as native image parts", async () => {
+    const workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-core-image-read-"))
+    fs.writeFileSync(path.join(workspacePath, "screenshot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+    const streamRequests: ModelRequestLike[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "call_read_image",
+              toolName: "read",
+              input: { path: "screenshot.png" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "I can inspect the image." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async () => ({
+      path: "screenshot.png",
+      kind: "image",
+      mimeType: "image/png",
+      sizeBytes: 4,
+      contentHash: "hash",
+      image: {
+        mediaType: "image/png",
+        nativeVisionSupported: true,
+        description: "Image metadata is available.",
+      },
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+    })
+
+    const agent = new SocratesAgent(provider)
+    const streamed: SocratesAgentEvent[] = []
+    for await (const event of agent.streamTurn({
+      providerId: "openrouter",
+      modelId: "x-ai/grok-build-0.1",
+      runtimeConfig: {
+        providerId: "openrouter",
+        modelId: "x-ai/grok-build-0.1",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read the screenshot." }],
+      workspacePath,
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Native image content returned by read")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain('"type":"image"')
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("iVBORw==")
   })
 
   it("injects user and project context into the system prompt", async () => {

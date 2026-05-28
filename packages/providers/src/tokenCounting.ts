@@ -91,7 +91,10 @@ export const buildCountableModelRequest = (request: ModelRequest, providerOption
   providerId: request.providerId,
   modelId: request.modelId,
   system: request.system,
-  messages: request.messages,
+  messages: request.messages.map((message) => ({
+    ...message,
+    content: sanitizeCountableMessageContent(message.content),
+  })),
   tools: (request.tools ?? []).map((tool) => ({
     name: tool.name,
     description: tool.description,
@@ -99,6 +102,23 @@ export const buildCountableModelRequest = (request: ModelRequest, providerOption
   })),
   ...(providerOptions === undefined ? {} : { providerOptions }),
 })
+
+const sanitizeCountableMessageContent = (content: ModelRequest["messages"][number]["content"]): unknown => {
+  if (typeof content === "string") {
+    return content
+  }
+  return content.map((part) => {
+    if (part.type !== "image") {
+      return part
+    }
+    return {
+      type: "image",
+      mediaType: part.mediaType,
+      fileName: part.fileName,
+      data: `[image bytes omitted from text token estimate; encodedLength=${part.data.length}]`,
+    }
+  })
+}
 
 export const stableStringify = (value: unknown): string =>
   JSON.stringify(toJsonValue(value), (_key, nested) => {

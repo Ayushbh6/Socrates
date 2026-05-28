@@ -7,6 +7,8 @@ import {
   type RuntimeConfig,
   type ToolExecutionResult,
 } from "@socrates/contracts"
+import fs from "node:fs"
+import path from "node:path"
 import { createId, normalizeError, SocratesError } from "@socrates/shared"
 import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage, TokenCountResult } from "@socrates/providers"
 import {
@@ -226,6 +228,8 @@ export class SocratesAgent {
           output: result,
         })),
       })
+      const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
+      messages.push(...nativeToolMessages)
 
       if (execution.budgetExhausted || usedToolCalls >= maxToolCallsPerTurn) {
         messages.push({
@@ -433,6 +437,58 @@ export class SocratesAgent {
       queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error: normalized, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
       return toolErrorResult(toolCall, normalized)
     }
+  }
+}
+
+const nativeFollowUpMessagesForToolResult = (result: ToolExecutionResult, workspacePath: string | undefined): ModelMessage[] => {
+  if (!workspacePath || !result.ok || result.toolName !== "read") {
+    return []
+  }
+  const output = result.output
+  if (!isReadImageOutput(output) || output.image.nativeVisionSupported !== true || !output.mimeType) {
+    return []
+  }
+  const imageBytes = readWorkspaceImageForModel(workspacePath, output.path)
+  if (!imageBytes) {
+    return []
+  }
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `Native image content returned by read for ${output.path}. Use this image together with the read tool metadata from toolCallId ${result.toolCallId}.`,
+        },
+        { type: "image", mediaType: output.mimeType, data: imageBytes, fileName: path.basename(output.path) },
+      ],
+    },
+  ]
+}
+
+const isReadImageOutput = (value: unknown): value is {
+  path: string
+  kind: "image"
+  mimeType?: string
+  image: { nativeVisionSupported: boolean }
+} =>
+  typeof value === "object" &&
+  value !== null &&
+  (value as { kind?: unknown }).kind === "image" &&
+  typeof (value as { path?: unknown }).path === "string" &&
+  typeof (value as { image?: { nativeVisionSupported?: unknown } }).image?.nativeVisionSupported === "boolean"
+
+const readWorkspaceImageForModel = (workspacePath: string, relativePath: string): string | undefined => {
+  const workspaceRoot = path.resolve(workspacePath)
+  const absolutePath = path.resolve(workspaceRoot, relativePath)
+  const relative = path.relative(workspaceRoot, absolutePath)
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return undefined
+  }
+  try {
+    return fs.readFileSync(absolutePath).toString("base64")
+  } catch {
+    return undefined
   }
 }
 

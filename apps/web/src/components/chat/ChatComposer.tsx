@@ -43,8 +43,8 @@ export function ChatComposer({
   const canSend = (content.trim().length > 0 || attachments.length > 0) && !isSending && !isUploading && isConnected && Boolean(selectedModel);
   const selectedModelHasNoVision = selectedModel?.capabilities?.vision === false;
   const selectedModelKey = selectedModel ? `${selectedModel.providerId}:${selectedModel.modelId}` : "none";
-  const visionWarningKey = `${warningResetKey ?? "default"}:${selectedModelKey}:${attachments.length}`;
-  const shouldShowVisionWarning = selectedModelHasNoVision && attachments.length > 0 && dismissedVisionWarningKey !== visionWarningKey;
+  const visionWarningKey = `${warningResetKey ?? "default"}:${selectedModelKey}`;
+  const shouldShowVisionWarning = selectedModelHasNoVision && dismissedVisionWarningKey !== visionWarningKey;
 
   const uploadFiles = async (fileList: File[] | FileList) => {
     const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));

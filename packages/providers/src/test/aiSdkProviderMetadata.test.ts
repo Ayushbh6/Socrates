@@ -45,4 +45,22 @@ describe("AI SDK provider metadata", () => {
       ],
     })
   })
+
+  it("maps Socrates image parts to AI SDK image parts without the data URL prefix", () => {
+    expect(
+      toAiModelMessage({
+        role: "user",
+        content: [
+          { type: "text", text: "what do you see?" },
+          { type: "image", mediaType: "image/png", data: "data:image/png;base64,aGVsbG8=", fileName: "screenshot.png" },
+        ],
+      }),
+    ).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "what do you see?" },
+        { type: "image", mediaType: "image/png", image: "aGVsbG8=" },
+      ],
+    })
+  })
 })

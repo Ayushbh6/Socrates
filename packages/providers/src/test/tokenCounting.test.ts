@@ -103,6 +103,25 @@ describe("provider token counting", () => {
     expect(withToolsAndResults.baseTokens).toBeGreaterThan(withoutTools.baseTokens)
   })
 
+  it("does not count image bytes as text tokens", () => {
+    const textOnly = countModelRequestLocally(baseRequest({ messages: [{ role: "user", content: "Describe this image." }] }))
+    const withImage = countModelRequestLocally(
+      baseRequest({
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "Describe this image." },
+              { type: "image", mediaType: "image/png", data: "a".repeat(1_000_000), fileName: "screenshot.png" },
+            ],
+          },
+        ],
+      }),
+    )
+
+    expect(withImage.baseTokens - textOnly.baseTokens).toBeLessThan(100)
+  })
+
   it("identifies near-threshold counts for provider-exact counting", () => {
     expect(shouldUseProviderExactCount(86, [100])).toBe(true)
     expect(shouldUseProviderExactCount(116, [100])).toBe(false)

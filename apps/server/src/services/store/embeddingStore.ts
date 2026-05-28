@@ -290,7 +290,7 @@ export class EmbeddingStore extends StoreBase {
 
       try {
         const embedded = await this.embedMissingDocuments(projectId, config)
-        this.completeJob(job.id, embedded)
+        this.completeJob(job.id, embedded, undefined, config.id)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         this.handle.db
@@ -385,16 +385,20 @@ export class EmbeddingStore extends StoreBase {
       .all(config.providerId, config.modelId, config.dimensions, projectId, EMBEDDING_BATCH_SIZE) as TraceDocumentRow[]
   }
 
-  private completeJob(jobId: string, embeddedDocuments: number, warning?: string): void {
+  private completeJob(jobId: string, embeddedDocuments: number, warning?: string, configId?: string): void {
+    const now = nowIso()
     this.handle.db
       .update(traceIndexJobs)
       .set({
         status: "completed",
-        completedAt: nowIso(),
+        completedAt: now,
         metadataJson: JSON.stringify({ embeddedDocuments, ...(warning ? { warning } : {}) }),
       })
       .where(eq(traceIndexJobs.id, jobId))
       .run()
+    if (configId && !warning) {
+      this.handle.db.update(projectEmbeddingConfigs).set({ lastError: null, updatedAt: now }).where(eq(projectEmbeddingConfigs.id, configId)).run()
+    }
   }
 
   private nextQueuedJob(projectId: string): typeof traceIndexJobs.$inferSelect | undefined {
@@ -463,6 +467,8 @@ export class EmbeddingStore extends StoreBase {
       .orderBy(desc(traceIndexJobs.createdAt))
       .limit(1)
       .get()
+    const pendingDocuments = Math.max(totalDocuments - indexedDocuments - failedDocuments, 0)
+    const shouldShowLastError = Boolean(config.lastError) && (config.status === "failed" || failedDocuments > 0 || pendingDocuments > 0 || activeJob?.status === "failed")
     return {
       configured: true,
       ready: config.status === "ready",
@@ -476,7 +482,7 @@ export class EmbeddingStore extends StoreBase {
       status: config.status as ProjectEmbeddingStatus["status"],
       totalDocuments,
       indexedDocuments,
-      pendingDocuments: Math.max(totalDocuments - indexedDocuments - failedDocuments, 0),
+      pendingDocuments,
       failedDocuments,
       ...(activeJob
         ? {
@@ -489,7 +495,7 @@ export class EmbeddingStore extends StoreBase {
             },
           }
         : {}),
-      ...(config.lastError ? { lastError: config.lastError } : {}),
+      ...(shouldShowLastError ? { lastError: config.lastError ?? undefined } : {}),
       updatedAt: config.updatedAt,
     }
   }

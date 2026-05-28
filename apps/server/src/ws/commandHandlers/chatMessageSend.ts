@@ -65,7 +65,7 @@ export const handleChatMessageSend = async (
   )
 
   const selectedModel = findModelOption(command.payload.runtimeConfig.providerId, command.payload.runtimeConfig.modelId)
-  const includeImageParts = selectedModel?.capabilities?.vision !== false
+  const includeImageParts = selectedModel?.capabilities?.vision === true
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
   const terminalContext = store.terminalContextBrief(conversationId)

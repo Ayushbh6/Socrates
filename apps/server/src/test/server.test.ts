@@ -11,6 +11,7 @@ import type {
   Message,
   MessageAttachment,
   Project,
+  ProjectEmbeddingStatus,
   ProjectInstructions,
   ProjectResource,
   ProjectWorkspace,
@@ -48,6 +49,22 @@ const buildTestServer = async (dbPath = tempDbPath(), agent = createTestAgent())
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
+
+const waitForProjectEmbeddingStatus = async (
+  store: SocratesStore,
+  projectId: string,
+  predicate: (status: ProjectEmbeddingStatus) => boolean,
+): Promise<ProjectEmbeddingStatus> => {
+  const deadline = Date.now() + 2_000
+  while (Date.now() < deadline) {
+    const status = store.getProjectEmbeddingStatus(projectId)
+    if (predicate(status)) {
+      return status
+    }
+    await delay(20)
+  }
+  throw new Error("Timed out waiting for embedding status")
+}
 
 const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
   const baseTokens = Math.ceil(`${request.system}${JSON.stringify(request.messages)}${JSON.stringify(request.tools ?? [])}`.length / 4)
@@ -1751,16 +1768,21 @@ describe("WebSocket API", () => {
     const socket = await connectWebSocket(app)
     try {
       await waitForEvent(socket, "connection.ready")
-      const command = {
-        ...chatMessageCommand(project.id, conversation.id, ""),
+      const command = chatMessageCommandWithRuntime(project.id, conversation.id, "", {
+        providerId: "openrouter",
+        modelId: "x-ai/grok-build-0.1",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+      })
+      sendCommand(socket, {
+        ...command,
         payload: {
-          ...chatMessageCommand(project.id, conversation.id, "").payload,
+          ...command.payload,
           clientMessageId: createId("msg"),
           content: "",
           attachmentIds: [attachment.id],
         },
-      }
-      sendCommand(socket, command)
+      })
 
       const started = await waitForEvent(socket, "turn.started")
       expect(started.payload.userMessage.content).toBe("")
@@ -1782,6 +1804,68 @@ describe("WebSocket API", () => {
       expect(userMessage?.attachments?.[0]?.id).toBe(attachment?.id)
     }
     expect(JSON.stringify(requests[0])).toContain("\"type\":\"image\"")
+    expect(JSON.stringify(requests[0])).toContain(".socrates/attachments/")
+  })
+
+  it("omits chat image bytes for non-vision models", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const boundary = "----socrates-nonvision-attachment-boundary"
+    const imageBytes = Buffer.from("fake png bytes")
+    const payload = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="files"; filename="screenshot.png"',
+        "Content-Type: image/png",
+        "",
+        imageBytes.toString("binary"),
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+      "binary",
+    )
+
+    const uploadResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/attachments/upload`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const uploadBody = parseResponse<{ attachments: MessageAttachment[] }>(uploadResponse.payload)
+    expect(uploadBody.ok).toBe(true)
+    if (!uploadBody.ok || !uploadBody.data.attachments[0]) {
+      throw new Error("Expected attachment upload success")
+    }
+
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      const command = chatMessageCommandWithRuntime(project.id, conversation.id, "what do you see?", {
+        providerId: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+      })
+      sendCommand(socket, {
+        ...command,
+        payload: {
+          ...command.payload,
+          attachmentIds: [uploadBody.data.attachments[0].id],
+        },
+      })
+
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+    } finally {
+      socket.close()
+    }
+
+    const serialized = JSON.stringify(requests[0])
+    expect(serialized).not.toContain("\"type\":\"image\"")
+    expect(serialized).toContain("image attachment omitted because the selected model does not support vision")
   })
 
   it("returns contextUsage from snapshots rather than cumulative tokenUsage", async () => {
@@ -2085,6 +2169,61 @@ describe("WebSocket API", () => {
       expect(body.data.ok).toBe(true)
       expect(body.data.workspaceEnvCandidates).toContainEqual({ fileName: ".env.local", hasOpenAiApiKey: true })
       expect(JSON.stringify(body.data)).not.toContain("sk-secret-test")
+    }
+  })
+
+  it("clears stale embedding errors after a successful reindex", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Embedding Retry")
+
+    let failNextBatch = true
+    const provider: EmbeddingProvider = {
+      async check() {
+        return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
+      },
+      async embed(request) {
+        return { embeddings: [testEmbeddingVector(request.value)], dimensions: 3 }
+      },
+      async embedMany(request) {
+        if (failNextBatch) {
+          failNextBatch = false
+          throw new Error("Invalid 'input[9]': maximum input length is 8192 tokens.")
+        }
+        return { embeddings: request.values.map(testEmbeddingVector), dimensions: 3 }
+      },
+    }
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, provider)
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "A long source should retry cleanly.", "Indexed.", nowIso())
+      store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
+
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "embeddinggemma",
+        credentialSource: "none",
+      })
+      const failed = await waitForProjectEmbeddingStatus(store, project.id, (status) => Boolean(status.lastError))
+      expect(failed.lastError).toContain("maximum input length")
+
+      store.reindexProjectEmbeddings(project.id)
+      const completed = await waitForProjectEmbeddingStatus(
+        store,
+        project.id,
+        (status) => status.totalDocuments > 0 && status.indexedDocuments === status.totalDocuments && !status.lastError,
+      )
+      expect(completed.pendingDocuments).toBe(0)
+      expect(completed.lastError).toBeUndefined()
+
+      handle.sqlite.prepare("UPDATE project_embedding_configs SET last_error = ? WHERE project_id = ? AND active = 1").run(failed.lastError, project.id)
+      expect(store.getProjectEmbeddingStatus(project.id).lastError).toBeUndefined()
+    } finally {
+      await store.close()
     }
   })
 

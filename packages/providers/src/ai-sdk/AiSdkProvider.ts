@@ -365,7 +365,7 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
           return { type: "text" as const, text: part.text }
         }
         if (part.type === "image") {
-          return { type: "file" as const, mediaType: part.mediaType, data: part.data }
+          return { type: "image" as const, mediaType: part.mediaType, image: imageDataContent(part.data) }
         }
         if (part.type === "tool-call") {
           return {
@@ -393,9 +393,14 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
       .map((part) =>
         part.type === "text"
           ? { type: "text" as const, text: part.text }
-          : { type: "file" as const, mediaType: part.mediaType, data: part.data },
+          : { type: "image" as const, mediaType: part.mediaType, image: imageDataContent(part.data) },
       ),
   } as AiModelMessage
+}
+
+const imageDataContent = (data: string): string => {
+  const comma = data.indexOf(",")
+  return data.startsWith("data:") && comma >= 0 ? data.slice(comma + 1) : data
 }
 
 const toToolResultOutput = (output: unknown) =>
@@ -454,9 +459,7 @@ const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => 
 export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => ({
   openrouter: {
     usage: { include: true },
-    reasoning: request.runtimeConfig.thinkingEnabled
-      ? { enabled: true, exclude: false }
-      : { effort: "none", exclude: true },
+    ...(request.runtimeConfig.thinkingEnabled ? { reasoning: { enabled: true, exclude: false } } : {}),
   },
 })
 

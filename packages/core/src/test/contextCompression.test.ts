@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, precomputeContextSnapshot, prepareContextForModelCall, type ContextCompactionSummary } from "../index"
+import {
+  DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
+  buildCompressorUserMessageContent,
+  precomputeContextSnapshot,
+  prepareContextForModelCall,
+  type ContextCompactionSummary,
+} from "../index"
 import type { ModelEvent, ModelProvider, ModelRequest } from "@socrates/providers"
 
 const runtimeConfig = {
@@ -180,6 +186,28 @@ describe("context compression", () => {
       { role: "user", content: "recent user", id: "msg_recent_u", turnId: "turn_recent" },
     ])
     expect(completed[0]?.sourceHandles).toEqual([{ messageId: "msg_old" }, { turnId: "turn_old" }])
+  })
+
+  it("omits image bytes from compressor input while keeping image metadata", () => {
+    const content = buildCompressorUserMessageContent({
+      messages: [
+        {
+          role: "user",
+          id: "msg_image",
+          turnId: "turn_image",
+          content: [
+            { type: "text", text: "What do you see?" },
+            { type: "image", mediaType: "image/png", fileName: "screenshot.png", data: "a".repeat(1_000_000) },
+          ],
+        },
+      ],
+      thresholds: { targetTokens: 120_000, hardCapTokens: 180_000 },
+    })
+
+    expect(content).toContain("screenshot.png")
+    expect(content).toContain("image bytes omitted from compression input")
+    expect(content).toContain("encodedLength=1000000")
+    expect(content).not.toContain("a".repeat(500))
   })
 
   it("reports compressor failures as lifecycle events", async () => {

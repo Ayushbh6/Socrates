@@ -1,5 +1,6 @@
 import { createOpenAI, openai } from "@ai-sdk/openai"
 import { embed, embedMany } from "ai"
+import { getEncoding, type Tiktoken } from "js-tiktoken"
 import { SocratesError } from "@socrates/shared"
 import { envProviderCredentialResolver } from "../credentials"
 import type {
@@ -10,6 +11,9 @@ import type {
   EmbeddingResult,
   ProviderCredentialResolver,
 } from "../types"
+
+export const OPENAI_EMBEDDING_MAX_INPUT_TOKENS = 8_192
+export const OPENAI_EMBEDDING_INPUT_TOKEN_BUDGET = 7_500
 
 export class OpenAiEmbeddingProvider implements EmbeddingProvider {
   constructor(private readonly credentials: ProviderCredentialResolver = envProviderCredentialResolver) {}
@@ -31,7 +35,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     const provider = apiKey ? createOpenAI({ apiKey }) : openai
     const result = await embed({
       model: provider.embeddingModel(request.modelId),
-      value: request.value,
+      value: prepareOpenAiEmbeddingInput(request.value),
       maxRetries: 1,
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
     })
@@ -52,7 +56,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     const provider = apiKey ? createOpenAI({ apiKey }) : openai
     const result = await embedMany({
       model: provider.embeddingModel(request.modelId),
-      values: request.values,
+      values: request.values.map(prepareOpenAiEmbeddingInput),
       maxRetries: 1,
       maxParallelCalls: 2,
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
@@ -65,6 +69,21 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
       ...(result.responses ? { raw: result.responses } : {}),
     }
   }
+}
+
+let embeddingEncoder: Tiktoken | undefined
+
+export const prepareOpenAiEmbeddingInput = (value: string): string => {
+  const tokens = getOpenAiEmbeddingEncoder().encode(value)
+  if (tokens.length <= OPENAI_EMBEDDING_INPUT_TOKEN_BUDGET) {
+    return value
+  }
+  return getOpenAiEmbeddingEncoder().decode(tokens.slice(0, OPENAI_EMBEDDING_INPUT_TOKEN_BUDGET))
+}
+
+const getOpenAiEmbeddingEncoder = (): Tiktoken => {
+  embeddingEncoder ??= getEncoding("cl100k_base")
+  return embeddingEncoder
 }
 
 const mapEmbeddingUsage = (usage: { tokens?: number; totalTokens?: number } | undefined): { inputTokens?: number; totalTokens?: number; raw: unknown } | undefined => {

@@ -115,6 +115,14 @@ export const modelCatalog = [
   }),
   makeModel({
     providerId: "openrouter",
+    modelId: "xiaomi/mimo-v2.5",
+    label: "MiMo-V2.5",
+    contextWindowTokens: 1048576,
+    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    defaultThinkingOptionId: "off",
+  }),
+  makeModel({
+    providerId: "openrouter",
     modelId: "x-ai/grok-build-0.1",
     label: "Grok Build 0.1",
     contextWindowTokens: 256000,

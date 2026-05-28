@@ -1,4 +1,4 @@
-import { estimateTextTokens, type ModelMessage, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
+import { estimateTextTokens, type ModelMessage, type ModelMessagePart, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
 import type { ModelToolDefinition, ProviderId, RuntimeConfig } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
 
@@ -554,8 +554,20 @@ const messageForCompression = (message: ModelMessage) => ({
   role: message.role,
   messageId: message.id,
   turnId: message.turnId,
-  content: typeof message.content === "string" ? truncateWithNotice(message.content, 20_000, {}) : message.content,
+  content: typeof message.content === "string" ? truncateWithNotice(message.content, 20_000, {}) : message.content.map(partForCompression),
 })
+
+const partForCompression = (part: ModelMessagePart): unknown => {
+  if (part.type !== "image") {
+    return part
+  }
+  return {
+    type: "image",
+    mediaType: part.mediaType,
+    fileName: part.fileName,
+    data: `[image bytes omitted from compression input; encodedLength=${part.data.length}]`,
+  }
+}
 
 const truncateWithNotice = (value: string, maxChars: number, handle: Record<string, unknown>): string => {
   if (value.length <= maxChars) {

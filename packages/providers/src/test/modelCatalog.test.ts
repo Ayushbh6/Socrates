@@ -21,6 +21,7 @@ describe("model catalog", () => {
       "openrouter/moonshotai/kimi-k2.6",
       "openrouter/z-ai/glm-5.1",
       "openrouter/xiaomi/mimo-v2.5-pro",
+      "openrouter/xiaomi/mimo-v2.5",
       "openrouter/x-ai/grok-build-0.1",
       "openrouter/qwen/qwen3.6-35b-a3b",
       "openrouter/deepseek/deepseek-v4-pro",
