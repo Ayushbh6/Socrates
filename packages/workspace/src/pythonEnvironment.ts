@@ -56,8 +56,8 @@ export const formatPythonEnvironmentHints = (hints: PythonEnvironmentHints): str
 
   return `Active Workspace
   - Root: ${hints.workspacePath}
-  - Bash commands already start in this root. Do not guess or hardcode another workspace path.
-  - The bash tool uses the platform-native shell. On Windows, write PowerShell-compatible commands instead of Unix-only pipelines unless the project provides those tools.
+  - Terminal commands already start in this root. Do not guess or hardcode another workspace path.
+  - The Terminal tool's compatibility id is bash, but it uses the platform-native shell. On Windows, write PowerShell-compatible commands instead of Unix-only pipelines unless the project provides those tools.
 
 Python Environment Hints
 - Local virtual environments found:

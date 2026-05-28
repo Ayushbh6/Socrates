@@ -81,11 +81,13 @@ import {
   listProjectResourcesToolOutputSchema,
   normalizedToolCallSchema,
   readToolInputSchema,
+  readToolOutputSchema,
   searchToolInputSchema,
   toolExecutionResultSchema,
   traceRetrieveToolInputSchema,
   traceRetrieveToolOutputSchema,
   conversationToolRunSchema,
+  editToolOutputSchema,
 } from "./index"
 
 const timestamp = "2026-05-13T21:30:00.000Z"
@@ -788,6 +790,47 @@ describe("tool contracts", () => {
     expect(
       editToolInputSchema.safeParse({
         operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }],
+      }).success,
+    ).toBe(true)
+    expect(
+      editToolInputSchema.safeParse({
+        operations: [{ type: "overwrite", path: "README.md", content: "new", baseContentHash: "hash_before" }],
+      }).success,
+    ).toBe(true)
+    expect(
+      editToolInputSchema.safeParse({
+        operations: [{ type: "patch", patch: "--- a/README.md\n+++ b/README.md\n", baseContentHashes: { "README.md": "hash_before" } }],
+      }).success,
+    ).toBe(true)
+    expect(
+      readToolOutputSchema.safeParse({
+        path: "README.md",
+        kind: "file",
+        content: "hello",
+        sizeBytes: 5,
+        mtimeMs: 10,
+        contentHash: "hash_after",
+        lineEnding: "lf",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 5 },
+      }).success,
+    ).toBe(true)
+    expect(
+      editToolOutputSchema.safeParse({
+        changedFiles: [
+          {
+            path: "README.md",
+            operation: "edited",
+            verification: "verified",
+            contentHashBefore: "hash_before",
+            contentHashAfter: "hash_after",
+            sizeBytesBefore: 3,
+            sizeBytesAfter: 5,
+            lineDelta: 1,
+          },
+        ],
+        diff: "--- a/README.md\n+++ b/README.md\n",
+        dryRun: false,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }).success,
     ).toBe(true)
     expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)

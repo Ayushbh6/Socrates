@@ -52,6 +52,9 @@ export const readToolOutputSchema = z
       .optional(),
     mimeType: z.string().min(1).optional(),
     sizeBytes: z.number().int().nonnegative().optional(),
+    mtimeMs: z.number().nonnegative().optional(),
+    contentHash: z.string().min(1).optional(),
+    lineEnding: z.enum(["lf", "crlf", "cr", "mixed", "none"]).optional(),
     image: z
       .object({
         mediaType: z.string().min(1).optional(),
@@ -115,6 +118,7 @@ export const editOperationSchema = z.discriminatedUnion("type", [
       type: z.literal("overwrite"),
       path: z.string().min(1),
       content: z.string(),
+      baseContentHash: z.string().min(1).optional(),
     })
     .strict(),
   z
@@ -130,6 +134,7 @@ export const editOperationSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("patch"),
       patch: z.string().min(1),
+      baseContentHashes: z.record(z.string(), z.string().min(1)).optional(),
     })
     .strict(),
 ])
@@ -150,6 +155,12 @@ export const editToolOutputSchema = z
         .object({
           path: z.string().min(1),
           operation: z.enum(["created", "overwritten", "edited", "patched"]),
+          verification: z.literal("verified").optional(),
+          contentHashBefore: z.string().min(1).optional(),
+          contentHashAfter: z.string().min(1).optional(),
+          sizeBytesBefore: z.number().int().nonnegative().optional(),
+          sizeBytesAfter: z.number().int().nonnegative().optional(),
+          lineDelta: z.number().int().optional(),
         })
         .strict(),
     ),

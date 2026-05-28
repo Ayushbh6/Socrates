@@ -267,7 +267,7 @@ Workspace/server implementation:
 - `read` supports bounded file/dir/resource reads, pragmatic text/data extraction, image metadata, and truncation metadata.
 - `search` supports bounded file and text search with ignore handling.
 - `edit` supports create, overwrite, exact multiline replace, and patch-style edits with diff previews and approval policy.
-- `bash` uses platform-native shell adapters behind the stable model-visible tool name: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` as fallback. Do not add separate model-visible PowerShell/cmd/process tools unless the contracts change.
+- `bash` is the stable model-visible compatibility id for the Terminal tool. User-facing and prompt copy should say Terminal. It uses platform-native shell adapters: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` as fallback. Do not add separate model-visible PowerShell/cmd/process tools unless the contracts change.
 - `bash` uses one non-interactive persistent shell session per active turn for `operation: "run"`, keeps `cwd`/environment across bash calls in that turn, streams output, enforces timeout/output caps, rejects or times out likely interactive commands, and resets the shell after timeout or shell start/write/protocol failures.
 - `bash` supports conversation-scoped Terminal sessions with `operation: "start"`, then `status`/`output`/`stop` by `terminalId` or `processId`. These processes keep bounded in-memory output buffers, stream live output through `tool.call.output` and `terminal.output`, persist terminal/process metadata in `terminal_sessions` and `terminal_output_chunks`, and survive across turns until stopped, deleted with the conversation, cleaned up during workspace switch/shutdown, marked stale on restart, or expired by idle TTL.
 - Long blocking `bash run` commands can auto-detach into a conversation Terminal after `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds). The UI/product copy says Terminal while the model-visible tool id remains `bash`.
@@ -294,7 +294,7 @@ Frontend behavior:
 
 - Chat transcripts render a Codex-style inline tool timeline instead of card-heavy separate tool panels.
 - Tool rows are collapsed by default with icon, status, concise summary, duration, and expandable details.
-- Expanded details show inputs, search snippets, read previews, edit diffs, bash command/output, trace summaries, resource lists, errors, and completion status.
+- Expanded details show inputs, search snippets, read previews, edit diffs, Terminal command/output, trace summaries, resource lists, errors, and completion status.
 - The chat workspace now has a persistent Terminal panel hydrated from `GET /api/projects/:projectId/conversations/:conversationId.terminals` and updated by `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and `terminal.stale`.
 - Approval prompts render inline under the relevant tool row with adjacent Approve/Reject actions.
 - Historical `toolRuns` are returned by conversation GET and merged with live WebSocket tool events so completed tool flows reload with conversation history.
@@ -321,7 +321,7 @@ Resource management:
 
 Prompt/current behavior:
 
-- The Socrates master prompt now describes local-first/project-first behavior, tool choice, context gathering before edits, approval-aware edit/bash behavior, verification expectations, `.socrates/` rules, concise user communication, and a restrained Socratic sacred-sage personality.
+- The Socrates master prompt now describes local-first/project-first behavior, tool choice, context gathering before edits, approval-aware edit/Terminal behavior, verification expectations, `.socrates/` rules, concise user communication, and a restrained Socratic sacred-sage personality.
 - When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, the prompt has a dedicated code-generation default section. Socrates should create or edit a real workspace/repo file with `edit`, choose a sensible path when obvious, verify when appropriate, and paste a full runnable file in chat only when the user explicitly asks for inline code or no write-capable workspace is available.
 - For generated plotting/data scripts, Socrates should save charts/artifacts to files and print their paths by default instead of using GUI-blocking display calls such as `plt.show()`, unless the user explicitly asks for an interactive window.
 - Chat markdown code blocks render through a dedicated code-block UI with a language header and copy button. Block code should not reuse inline-code styling.
@@ -469,3 +469,17 @@ Implemented the Codex-like Terminal layer on top of Bash v2:
 - The Socrates system prompt now includes bounded Terminal context on every turn: ids, names, command, cwd, shell/platform, status, exit/signal, awaiting-input prompt, and recent output tail. This is current-state context and should survive compression; full logs are not replayed into the prompt.
 - The frontend chat workspace has a persistent Terminal panel with status, command/cwd/shell metadata, bounded live output, stop controls, and user-only stdin controls when a Terminal awaits input. Timeline rows still show compact tool provenance and label `bash` as Terminal in UI copy.
 - Regression coverage includes contract tests for terminal commands/events, server tests for cross-turn terminal hydration/context injection/stop, schema migration coverage for terminal tables, and workspace stdin process coverage.
+
+## Verified Edit Tool And Debugging Discipline
+
+Implemented the verified edit reliability slice after Terminal v2:
+
+- `read` now returns full-file freshness metadata: `contentHash`, `mtimeMs`, `sizeBytes`, and text `lineEnding` when applicable. The hash represents the full file bytes, not the truncated preview returned to the model.
+- `edit` remains the only model-visible file mutation tool. It still supports create, overwrite, exact replace, and patch operations, but existing-file overwrites require `baseContentHash`, and patches touching existing files require `baseContentHashes`.
+- Non-dry-run edits read/stat/hash before writing, write text through a same-directory temp file, immediately read/stat/hash after writing, and fail with recoverable errors such as `edit_stale_content`, `edit_write_failed`, `edit_verification_failed`, or `patch_verification_failed` when disk state does not match Socrates' plan.
+- `replace` stays lightweight because exact `oldText` must match current disk content. It still verifies disk after writing before reporting success.
+- Completed edit outputs include per-file verification metadata: before/after hashes, before/after byte sizes, line delta, and `verification: "verified"`.
+- `apps/server` persists verified edit evidence in existing `file_operations` columns (`content_hash_before`, `content_hash_after`, `metadata_json`) and surfaces that evidence in conversation tool history and trace documents. No DB migration was required.
+- The Socrates prompt now requires reading before overwrite/patch, refusing to claim unverified edits, comparing stack traces against current file contents, checking file/module existence before cache guesses, distinguishing DB config/credential errors from service availability, and running the smallest meaningful verification after fixes.
+- Regression coverage includes contracts for freshness metadata, workspace tests for stale hashes, read-back verification, Windows-style paths, CRLF preservation, env template policy, patch verification, server tests for persisted edit hashes and recoverable stale-edit failures, and core prompt coverage for debugging discipline.
+- Search now treats regex-looking text queries such as `a|b`, `.*`, `\b`, anchors, and character classes as regex unless `regex: false` is explicit; zero-match literal regex-looking searches return warnings. File search now matches case-insensitively against both full relative paths and basenames, including glob queries. The prompt tells Socrates to set `regex=true` for regex syntax and otherwise search simple terms separately.

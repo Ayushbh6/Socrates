@@ -10,13 +10,21 @@ export const clampCharLimit = (charLimit?: number): number => Math.min(charLimit
 
 export const resolveWorkspacePath = (workspacePath: string, requestedPath?: string): string => {
   const workspaceRoot = path.resolve(workspacePath)
-  const target = path.resolve(workspaceRoot, requestedPath ?? ".")
+  const normalizedRequest = normalizeWorkspaceRequestPath(requestedPath)
+  const target = path.resolve(workspaceRoot, normalizedRequest ?? ".")
   if (target !== workspaceRoot && !target.startsWith(`${workspaceRoot}${path.sep}`)) {
     throw new SocratesError("workspace_path_escape", "Tool paths must stay inside the active project workspace", {
       details: { workspacePath: workspaceRoot, requestedPath },
     })
   }
   return target
+}
+
+const normalizeWorkspaceRequestPath = (requestedPath?: string): string | undefined => {
+  if (!requestedPath) {
+    return requestedPath
+  }
+  return requestedPath.replaceAll("\\", path.sep)
 }
 
 export const toWorkspaceRelativePath = (workspacePath: string, targetPath: string): string => {

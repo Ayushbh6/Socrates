@@ -4,7 +4,7 @@ import { getEditFileSummaries, getPreferredEditDiffFiles } from "./editPresentat
 
 export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
   if (tool.toolName === "bash") {
-    return <BashDetails tool={tool} />;
+    return <TerminalDetails tool={tool} />;
   }
   if (tool.toolName === "edit") {
     return <EditDetails tool={tool} />;
@@ -24,7 +24,7 @@ export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
   return <GenericDetails tool={tool} />;
 }
 
-function BashDetails({ tool }: { tool: ToolTimelineItem }) {
+function TerminalDetails({ tool }: { tool: ToolTimelineItem }) {
   const command = tool.shell?.command ?? getInputValue(tool, "command") ?? tool.argsPreview;
   const cwd = tool.shell?.cwd ?? getInputValue(tool, "cwd");
   const commandText = typeof command === "string" ? command : undefined;
@@ -82,6 +82,18 @@ function EditDetails({ tool }: { tool: ToolTimelineItem }) {
           ))}
         </div>
       )}
+      {Array.isArray(tool.fileOperations) && tool.fileOperations.some((file) => file.verification || file.contentHashAfter) ? (
+        <div className="space-y-1 rounded-md bg-emerald-50 p-2 text-xs text-emerald-800">
+          {tool.fileOperations.map((file) => (
+            <div key={file.path} className="flex flex-wrap gap-x-2 gap-y-1">
+              <span className="font-medium">{file.verification ?? "recorded"}</span>
+              <span className="font-mono">{file.path}</span>
+              {file.contentHashAfter ? <span className="font-mono">hash {file.contentHashAfter.slice(0, 12)}</span> : null}
+              {file.lineDelta !== undefined ? <span className="font-mono">lines {file.lineDelta >= 0 ? "+" : ""}{file.lineDelta}</span> : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {diffFiles.length > 0 ? (
         <DiffView files={diffFiles} />
       ) : tool.resultPreview ? (
@@ -129,6 +141,8 @@ function ReadDetails({ tool }: { tool: ToolTimelineItem }) {
     <div className="space-y-2">
       {pathText && <MetaLine label="path" value={pathText} />}
       {kindText && <MetaLine label="kind" value={kindText} />}
+      {typeof result?.contentHash === "string" && <MetaLine label="hash" value={result.contentHash.slice(0, 16)} />}
+      {typeof result?.lineEnding === "string" && <MetaLine label="line endings" value={result.lineEnding} />}
       {content ? <LabeledCode label="content" value={content} /> : null}
       {Array.isArray(result?.entries) && result.entries.length > 0 && (
         <pre className="max-h-56 overflow-auto rounded-md bg-white p-2 font-mono text-xs leading-5 text-brand-text-dark">

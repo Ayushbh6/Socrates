@@ -4,28 +4,51 @@ import path from "node:path"
 import type { EditOperation, EditToolInput, EditToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { clampCharLimit, ensureParentDirectory, isSensitivePath, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
+import { countLines, hashText, readFileSnapshot, type FileSnapshot } from "./fileMetadata"
+
+type ChangedFile = EditToolOutput["changedFiles"][number]
+
+type EditFileState = {
+  absolutePath: string
+  relativePath: string
+  original: string
+  current: string
+  before: FileSnapshot
+  existedAtStart: boolean
+  existsNow: boolean
+  operation: ChangedFile["operation"]
+}
+
+type VerificationRecord = {
+  path: string
+  operation: ChangedFile["operation"]
+  before: FileSnapshot
+  after: FileSnapshot
+  expectedHash?: string
+  lineDelta?: number
+}
+
+const editTestHooks: {
+  afterWrite: ((filePath: string) => void) | undefined
+} = { afterWrite: undefined }
 
 export const editWorkspace = async (input: EditToolInput, context: { workspacePath: string }): Promise<EditToolOutput> => {
   const dryRun = input.dryRun ?? false
-  const plannedPatches: Array<{ operation: Extract<EditOperation, { type: "patch" }> }> = []
-  const fileStates = new Map<
-    string,
-    {
-      absolutePath: string
-      relativePath: string
-      original: string
-      current: string
-      existedAtStart: boolean
-      existsNow: boolean
-      operation: EditToolOutput["changedFiles"][number]["operation"]
-    }
-  >()
-  const changedFilesByPath = new Map<string, EditToolOutput["changedFiles"][number]>()
+  const plannedPatches: Array<{
+    operation: Extract<EditOperation, { type: "patch" }>
+    beforeSnapshots: Map<string, FileSnapshot>
+  }> = []
+  const fileStates = new Map<string, EditFileState>()
+  const changedFilesByPath = new Map<string, ChangedFile>()
+  const verificationByPath = new Map<string, VerificationRecord>()
 
   for (const operation of input.operations) {
     if (operation.type === "patch") {
       validatePatch(operation.patch, context.workspacePath)
-      plannedPatches.push({ operation })
+      plannedPatches.push({
+        operation,
+        beforeSnapshots: collectPatchSnapshots(operation, context.workspacePath),
+      })
       continue
     }
 
@@ -38,16 +61,16 @@ export const editWorkspace = async (input: EditToolInput, context: { workspacePa
     const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
     let state = fileStates.get(absolutePath)
     if (!state) {
-      const exists = fs.existsSync(absolutePath)
-      const before = exists ? fs.readFileSync(absolutePath, "utf8") : ""
+      const before = readFileSnapshot(absolutePath, { includeText: true })
       state = {
         absolutePath,
         relativePath,
-        original: before,
-        current: before,
-        existedAtStart: exists,
-        existsNow: exists,
-        operation: exists ? "edited" : "created",
+        original: before.content ?? "",
+        current: before.content ?? "",
+        before,
+        existedAtStart: before.exists,
+        existsNow: before.exists,
+        operation: before.exists ? "edited" : "created",
       }
       fileStates.set(absolutePath, state)
     }
@@ -61,6 +84,9 @@ export const editWorkspace = async (input: EditToolInput, context: { workspacePa
       after = operation.content
       changedOperation = "created"
     } else if (operation.type === "overwrite") {
+      if (state.existedAtStart) {
+        assertBaseContentHash(operation.path, state.before.contentHash, operation.baseContentHash)
+      }
       after = operation.content
       changedOperation = state.existsNow ? "overwritten" : "created"
     } else {
@@ -81,23 +107,58 @@ export const editWorkspace = async (input: EditToolInput, context: { workspacePa
     state.current = after
     state.existsNow = true
     state.operation = combineOperations(state, changedOperation)
-    changedFilesByPath.set(relativePath, { path: relativePath, operation: state.operation })
+    changedFilesByPath.set(relativePath, {
+      path: relativePath,
+      operation: state.operation,
+      verification: dryRun ? undefined : "verified",
+      contentHashBefore: state.before.contentHash,
+      sizeBytesBefore: state.before.sizeBytes,
+    })
   }
 
   if (!dryRun) {
     for (const item of fileStates.values()) {
-      ensureParentDirectory(item.absolutePath)
-      fs.writeFileSync(item.absolutePath, item.current)
+      const expectedHash = hashText(item.current)
+      safeWriteTextFile(item.absolutePath, item.current, item.before)
+      editTestHooks.afterWrite?.(item.absolutePath)
+      const after = readFileSnapshot(item.absolutePath, { includeText: true })
+      verifyWrittenFile(item, after, expectedHash)
+      verificationByPath.set(item.relativePath, {
+        path: item.relativePath,
+        operation: item.operation,
+        before: item.before,
+        after,
+        expectedHash,
+        lineDelta: countLines(item.current) - countLines(item.original),
+      })
     }
     for (const item of plannedPatches) {
       await applyPatch(context.workspacePath, item.operation.patch)
+      for (const patchPath of pathsFromPatch(item.operation.patch)) {
+        const absolutePath = resolveWorkspacePath(context.workspacePath, patchPath)
+        const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
+        const before = item.beforeSnapshots.get(relativePath) ?? { exists: false }
+        const after = readFileSnapshot(absolutePath, { includeText: true })
+        verifyPatchedFile(relativePath, before, after)
+        verificationByPath.set(relativePath, {
+          path: relativePath,
+          operation: "patched",
+          before,
+          after,
+          lineDelta: (after.lineCount ?? 0) - (before.lineCount ?? 0),
+        })
+      }
     }
   }
 
   const patchedFiles = plannedPatches.flatMap((item) =>
-    pathsFromPatch(item.operation.patch).map((patchPath) => ({ path: patchPath, operation: "patched" as const })),
+    pathsFromPatch(item.operation.patch).map((patchPath) => ({
+      path: patchPath,
+      operation: "patched" as const,
+      verification: dryRun ? undefined : ("verified" as const),
+    })),
   )
-  const changedFiles = [...changedFilesByPath.values(), ...patchedFiles]
+  const changedFiles = [...changedFilesByPath.values(), ...patchedFiles].map((file) => enrichChangedFile(file, verificationByPath.get(file.path)))
   const diffs = [
     ...[...fileStates.values()].map((item) => createUnifiedDiff(item.relativePath, item.original, item.current)).filter(Boolean),
     ...plannedPatches.map((item) => item.operation.patch),
@@ -113,9 +174,9 @@ export const editWorkspace = async (input: EditToolInput, context: { workspacePa
 }
 
 const combineOperations = (
-  state: { existedAtStart: boolean; operation: EditToolOutput["changedFiles"][number]["operation"] },
-  next: EditToolOutput["changedFiles"][number]["operation"],
-): EditToolOutput["changedFiles"][number]["operation"] => {
+  state: { existedAtStart: boolean; operation: ChangedFile["operation"] },
+  next: ChangedFile["operation"],
+): ChangedFile["operation"] => {
   if (!state.existedAtStart) {
     return "created"
   }
@@ -123,6 +184,108 @@ const combineOperations = (
     return "overwritten"
   }
   return "edited"
+}
+
+const assertBaseContentHash = (path: string, actualHash: string | undefined, baseContentHash: string | undefined): void => {
+  if (!baseContentHash) {
+    throw new SocratesError("edit_stale_content", "Overwrite edits to existing files require a fresh baseContentHash from read.", {
+      details: { path, actualHash },
+    })
+  }
+  if (actualHash !== baseContentHash) {
+    throw new SocratesError("edit_stale_content", "File content changed since Socrates last read it.", {
+      details: { path, expectedBaseContentHash: baseContentHash, actualHash },
+    })
+  }
+}
+
+const collectPatchSnapshots = (
+  operation: Extract<EditOperation, { type: "patch" }>,
+  workspacePath: string,
+): Map<string, FileSnapshot> => {
+  const snapshots = new Map<string, FileSnapshot>()
+  for (const patchPath of pathsFromPatch(operation.patch)) {
+    const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
+    const relativePath = toWorkspaceRelativePath(workspacePath, absolutePath)
+    const snapshot = readFileSnapshot(absolutePath, { includeText: true })
+    if (snapshot.exists) {
+      assertBaseContentHash(relativePath, snapshot.contentHash, operation.baseContentHashes?.[relativePath] ?? operation.baseContentHashes?.[patchPath])
+    }
+    snapshots.set(relativePath, snapshot)
+  }
+  return snapshots
+}
+
+const safeWriteTextFile = (absolutePath: string, content: string, before: FileSnapshot): void => {
+  ensureParentDirectory(absolutePath)
+  const tempPath = path.join(path.dirname(absolutePath), `.${path.basename(absolutePath)}.socrates-${process.pid}-${Date.now()}.tmp`)
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(tempPath, "w", before.mode === undefined ? 0o666 : before.mode & 0o777)
+    fs.writeFileSync(fd, content, "utf8")
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+    fd = undefined
+    fs.renameSync(tempPath, absolutePath)
+  } catch (error) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd)
+      } catch {
+        // Ignore close errors while reporting the original write failure.
+      }
+    }
+    try {
+      fs.rmSync(tempPath, { force: true })
+    } catch {
+      // Ignore cleanup errors while reporting the original write failure.
+    }
+    throw new SocratesError("edit_write_failed", "Could not write file edit to disk.", {
+      details: { path: absolutePath, message: error instanceof Error ? error.message : String(error) },
+    })
+  }
+}
+
+const verifyWrittenFile = (state: EditFileState, after: FileSnapshot, expectedHash: string): void => {
+  if (!after.exists || after.contentHash !== expectedHash || after.content !== state.current) {
+    throw new SocratesError("edit_verification_failed", "File edit did not persist to disk as expected.", {
+      details: {
+        path: state.relativePath,
+        expectedContentHash: expectedHash,
+        actualContentHash: after.contentHash,
+        expectedSizeBytes: Buffer.byteLength(state.current, "utf8"),
+        actualSizeBytes: after.sizeBytes,
+      },
+    })
+  }
+}
+
+const verifyPatchedFile = (relativePath: string, before: FileSnapshot, after: FileSnapshot): void => {
+  if (!after.exists) {
+    throw new SocratesError("patch_verification_failed", "Patch target was not present after git apply.", {
+      details: { path: relativePath, contentHashBefore: before.contentHash },
+    })
+  }
+  if (before.exists && before.contentHash === after.contentHash) {
+    throw new SocratesError("patch_verification_failed", "Patch target content did not change after git apply.", {
+      details: { path: relativePath, contentHash: after.contentHash },
+    })
+  }
+}
+
+const enrichChangedFile = (file: ChangedFile, verification: VerificationRecord | undefined): ChangedFile => {
+  if (!verification) {
+    return file
+  }
+  return {
+    ...file,
+    verification: "verified",
+    contentHashBefore: verification.before.contentHash,
+    contentHashAfter: verification.after.contentHash,
+    sizeBytesBefore: verification.before.sizeBytes,
+    sizeBytesAfter: verification.after.sizeBytes,
+    lineDelta: verification.lineDelta,
+  }
 }
 
 const validatePatch = (patchText: string, workspacePath: string): void => {
@@ -320,4 +483,10 @@ const buildUnifiedHunks = (ops: LineDiffOp[], contextLines = 3): Array<{ header:
 const firstLineNumber = (ops: LineDiffOp[], key: "oldLine" | "newLine"): number => {
   const value = ops.find((op) => op[key] !== undefined)?.[key]
   return value ?? 1
+}
+
+export const __editToolTest = {
+  setAfterWriteHook(hook: ((filePath: string) => void) | undefined): void {
+    editTestHooks.afterWrite = hook
+  },
 }

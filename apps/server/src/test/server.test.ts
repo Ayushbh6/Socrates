@@ -291,6 +291,49 @@ const createApprovalToolAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createVerifiedEditAgent = (): SocratesAgent => {
+  let step = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_verified_edit",
+            toolName: "edit",
+            input: { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Verified edit done." }
+      yield { type: "model.completed", usage: { inputTokens: 3, outputTokens: 3, totalTokens: 6 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createStaleEditAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: "tcall_stale_edit",
+          toolName: "edit",
+          input: { operations: [{ type: "overwrite", path: "README.md", content: "new" }] },
+        },
+      }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createConversationTerminalAgent = (requests: unknown[]): SocratesAgent => {
   let step = 0
   const command = `node -e "console.log('terminal-ready'); setInterval(() => console.log('terminal-tick'), 250)"`
@@ -2204,6 +2247,75 @@ describe("WebSocket API", () => {
         expect(body.data.toolRuns[0]?.shell?.exitCode).toBe(0)
         expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "approved.txt"), "utf8")).toBe("approved")
       }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("persists verified edit hashes in tool history and file operations", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createVerifiedEditAgent())
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    fs.writeFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "hello old world")
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Edit README", { approvalMode: "approve_all" }))
+      await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{
+        toolRuns: Array<{
+          toolCallId: string
+          fileOperations?: Array<{ path: string; contentHashBefore?: string; contentHashAfter?: string; verification?: string }>
+        }>
+      }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const fileOperation = body.data.toolRuns.find((run) => run.toolCallId === "tcall_verified_edit")?.fileOperations?.[0]
+        expect(fileOperation).toMatchObject({ path: "README.md", verification: "verified" })
+        expect(fileOperation?.contentHashBefore).toMatch(/^[a-f0-9]{64}$/)
+        expect(fileOperation?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+      }
+
+      const sqlite = new Database(dbPath)
+      try {
+        const row = sqlite.prepare("SELECT content_hash_before, content_hash_after, metadata_json FROM file_operations WHERE tool_call_id = ?").get(
+          "tcall_verified_edit",
+        ) as { content_hash_before?: string; content_hash_after?: string; metadata_json?: string } | undefined
+        expect(row?.content_hash_before).toMatch(/^[a-f0-9]{64}$/)
+        expect(row?.content_hash_after).toMatch(/^[a-f0-9]{64}$/)
+        expect(row?.metadata_json).toContain("verified")
+      } finally {
+        sqlite.close()
+      }
+      expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello new world")
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("surfaces stale edit verification failures as recoverable tool errors", async () => {
+    const app = await buildTestServer(tempDbPath(), createStaleEditAgent())
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    fs.writeFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "hello old world")
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Overwrite README", { approvalMode: "approve_all" }))
+      const failed = await waitForEvent(socket, "tool.call.failed")
+      expect(failed.payload.error.code).toBe("edit_stale_content")
+      expect(failed.payload.error.recoverable).toBe(true)
+      expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello old world")
     } finally {
       socket.close()
     }

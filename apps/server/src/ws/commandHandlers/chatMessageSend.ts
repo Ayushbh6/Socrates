@@ -407,7 +407,10 @@ export const handleChatMessageSend = async (
           "tool.call.failed",
           {
             toolCallId: agentEvent.toolCallId,
-            error: apiError(agentEvent.error.code, agentEvent.error.message, { details: agentEvent.error.details }),
+            error: apiError(agentEvent.error.code, agentEvent.error.message, {
+              details: agentEvent.error.details,
+              recoverable: agentEvent.error.recoverable,
+            }),
           },
           {
             projectId,

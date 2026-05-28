@@ -824,7 +824,7 @@ const rejectLeadingExternalCd = (command: string, workspacePath: string): void =
 
   throw new SocratesError(
     "external_workspace_cd_rejected",
-    `Bash command rejected: Socrates already runs inside the active workspace. Do not cd into a guessed absolute workspace path; run the command relative to the active workspace instead.`,
+    `Terminal command rejected: Socrates already runs inside the active workspace. Do not cd into a guessed absolute workspace path; run the command relative to the active workspace instead.`,
     {
       details: {
         workspacePath,

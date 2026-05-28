@@ -13,10 +13,12 @@ export const searchWorkspace = async (input: SearchToolInput, context: { workspa
   const root = resolveWorkspacePath(context.workspacePath, input.path)
   const maxResults = input.maxResults ?? defaultMaxResults
   const charLimit = clampCharLimit(input.charLimit)
+  const warnings: string[] = []
 
-  const matches = input.mode === "files"
-    ? await searchFiles(root, context.workspacePath, input.query, maxResults, Boolean(input.includeHidden))
-    : await searchText(root, context.workspacePath, input, maxResults)
+  const matches =
+    input.mode === "files"
+      ? await searchFiles(root, context.workspacePath, input.query, maxResults, Boolean(input.includeHidden))
+      : await searchText(root, context.workspacePath, input, maxResults, warnings)
 
   const boundedMatches = boundMatches(matches, charLimit)
   const serialized = JSON.stringify(matches)
@@ -33,6 +35,7 @@ export const searchWorkspace = async (input: SearchToolInput, context: { workspa
       originalLength: serialized.length,
       returnedLength: boundedSerialized.length,
     },
+    ...(warnings.length > 0 ? { warnings } : {}),
   }
 }
 
@@ -55,16 +58,19 @@ const searchFiles = async (
   maxResults: number,
   includeHidden: boolean,
 ): Promise<SearchToolOutput["matches"]> => {
-  const rgFiles = await tryRgFiles(root)
+  const rgFiles = await tryRgFiles(root, includeHidden)
   const candidates = rgFiles ?? (await walkFiles(root, includeHidden))
-  const loweredQuery = query.toLowerCase()
+  const loweredQuery = normalizePathForSearch(query)
   return candidates
     .filter((candidate) => {
-      const relative = path.relative(root, candidate)
-      return query.includes("*") ? globLikeMatch(relative, query) : relative.toLowerCase().includes(loweredQuery)
+      const relative = candidateRelativePath(root, candidate)
+      const basename = path.basename(relative)
+      return query.includes("*")
+        ? globLikeMatch(relative, query) || globLikeMatch(basename, query)
+        : normalizePathForSearch(relative).includes(loweredQuery) || basename.toLowerCase().includes(loweredQuery)
     })
     .slice(0, maxResults)
-    .map((candidate) => ({ path: toWorkspaceRelativePath(workspacePath, path.isAbsolute(candidate) ? candidate : path.join(root, candidate)) }))
+    .map((candidate) => ({ path: toWorkspaceRelativePath(workspacePath, candidateAbsolutePath(root, candidate)) }))
 }
 
 const searchText = async (
@@ -72,30 +78,49 @@ const searchText = async (
   workspacePath: string,
   input: SearchToolInput,
   maxResults: number,
+  warnings: string[],
 ): Promise<SearchToolOutput["matches"]> => {
+  const regexLike = looksLikeRegexQuery(input.query)
+  const useRegex = input.regex ?? regexLike
+  if (input.regex === undefined && regexLike) {
+    warnings.push("Query looked like regex syntax, so search interpreted it as regex. Set regex=false to search it literally.")
+  }
   const args = [
     "--line-number",
     "--column",
     "--no-heading",
     "--color",
     "never",
-    ...(input.regex ? [] : ["--fixed-strings"]),
+    ...(useRegex ? [] : ["--fixed-strings"]),
     ...(input.caseSensitive ? [] : ["--ignore-case"]),
     input.query,
     root,
   ]
   try {
     const result = await execFileAsync("rg", args, { encoding: "utf8", timeout: 20_000, maxBuffer: 4_000_000 })
-    return parseRgOutput(result.stdout, workspacePath).slice(0, maxResults)
+    const matches = parseRgOutput(result.stdout, workspacePath).slice(0, maxResults)
+    addZeroMatchWarning(matches, input, useRegex, regexLike, warnings)
+    return matches
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException & { stdout?: string; code?: number }
     if (nodeError.stdout) {
-      return parseRgOutput(nodeError.stdout, workspacePath).slice(0, maxResults)
+      const matches = parseRgOutput(nodeError.stdout, workspacePath).slice(0, maxResults)
+      addZeroMatchWarning(matches, input, useRegex, regexLike, warnings)
+      return matches
     }
     if (nodeError.code === 1) {
+      addZeroMatchWarning([], input, useRegex, regexLike, warnings)
       return []
     }
-    return searchTextFallback(root, workspacePath, input, maxResults)
+    if (useRegex && isInvalidRegexError(nodeError)) {
+      warnings.push("Regex search failed to parse; retried as a literal fixed-string search.")
+      const matches = await searchTextFallback(root, workspacePath, { ...input, regex: false }, maxResults)
+      addZeroMatchWarning(matches, input, false, regexLike, warnings)
+      return matches
+    }
+    const matches = await searchTextFallback(root, workspacePath, { ...input, regex: useRegex }, maxResults)
+    addZeroMatchWarning(matches, input, useRegex, regexLike, warnings)
+    return matches
   }
 }
 
@@ -116,9 +141,13 @@ const parseRgOutput = (stdout: string, workspacePath: string): SearchToolOutput[
       }
     })
 
-const tryRgFiles = async (root: string): Promise<string[] | null> => {
+const tryRgFiles = async (root: string, includeHidden: boolean): Promise<string[] | null> => {
   try {
-    const result = await execFileAsync("rg", ["--files", root], { encoding: "utf8", timeout: 20_000, maxBuffer: 4_000_000 })
+    const result = await execFileAsync("rg", ["--files", ...(includeHidden ? ["--hidden"] : []), root], {
+      encoding: "utf8",
+      timeout: 20_000,
+      maxBuffer: 4_000_000,
+    })
     return result.stdout.split("\n").filter(Boolean)
   } catch {
     return null
@@ -177,6 +206,44 @@ const searchTextFallback = async (
 }
 
 const globLikeMatch = (value: string, pattern: string): boolean => {
-  const escaped = pattern.replaceAll(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("**", ".*").replaceAll("*", "[^/]*")
-  return new RegExp(`^${escaped}$`).test(value)
+  const normalizedValue = normalizePathForSearch(value)
+  const normalizedPattern = normalizePathForSearch(pattern)
+  const escaped = normalizedPattern.replaceAll(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("**", ".*").replaceAll("*", "[^/]*")
+  return new RegExp(`^${escaped}$`, "i").test(normalizedValue)
+}
+
+const candidateAbsolutePath = (root: string, candidate: string): string => (path.isAbsolute(candidate) ? candidate : path.join(root, candidate))
+
+const candidateRelativePath = (root: string, candidate: string): string => normalizePathForSearch(path.relative(root, candidateAbsolutePath(root, candidate)))
+
+const normalizePathForSearch = (value: string): string => value.replaceAll("\\", "/").toLowerCase()
+
+const looksLikeRegexQuery = (query: string): boolean =>
+  /(^|[^\\])\|/.test(query) ||
+  query.includes(".*") ||
+  query.includes("\\b") ||
+  query.includes("\\d") ||
+  query.includes("\\w") ||
+  /[[\](){}+?^$]/.test(query)
+
+const addZeroMatchWarning = (
+  matches: SearchToolOutput["matches"],
+  input: SearchToolInput,
+  usedRegex: boolean,
+  regexLike: boolean,
+  warnings: string[],
+): void => {
+  if (matches.length > 0 || !regexLike) {
+    return
+  }
+  if (usedRegex) {
+    warnings.push("No matches found for regex-looking query. Try simpler terms or separate searches if this was too narrow.")
+  } else {
+    warnings.push("No matches found. Query looked like regex syntax; set regex=true or use simpler literal terms.")
+  }
+}
+
+const isInvalidRegexError = (error: NodeJS.ErrnoException & { stderr?: string }): boolean => {
+  const stderr = typeof error.stderr === "string" ? error.stderr : ""
+  return stderr.toLowerCase().includes("regex parse error") || stderr.toLowerCase().includes("invalid regex")
 }

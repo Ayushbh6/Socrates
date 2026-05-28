@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 import type { ReadToolInput, ReadToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { clampCharLimit, emptyTruncation, isProbablyBinary, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
+import { detectLineEnding, hashBuffer } from "./fileMetadata"
 
 const execFileAsync = promisify(execFile)
 
@@ -55,16 +56,24 @@ export const readWorkspacePath = async (
     }
   }
 
+  const fileBuffer = await fs.readFile(absolutePath)
+  const fileMetadata = {
+    sizeBytes: stat.size,
+    mtimeMs: stat.mtimeMs,
+    contentHash: hashBuffer(fileBuffer),
+  }
   const ext = path.extname(absolutePath).toLowerCase()
   if ([".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".svg"].includes(ext)) {
     const isSvg = ext === ".svg"
-    const content = isSvg ? truncateText(await fs.readFile(absolutePath, "utf8"), charLimit, input.offset) : undefined
+    const svgText = isSvg ? fileBuffer.toString("utf8") : undefined
+    const content = svgText === undefined ? undefined : truncateText(svgText, charLimit, input.offset)
     const nativeVisionSupported = !context.runtimeConfig?.modelId || !nonVisionModelIds.has(context.runtimeConfig.modelId)
     return {
       path: relativePath,
       kind: "image",
       ...(content ? { content: content.text } : {}),
-      sizeBytes: stat.size,
+      ...fileMetadata,
+      ...(svgText === undefined ? {} : { lineEnding: detectLineEnding(svgText) }),
       mimeType: imageMimeType(ext),
       image: {
         mediaType: imageMimeType(ext),
@@ -84,12 +93,12 @@ export const readWorkspacePath = async (
     const extracted = await tryExtractCommand("pdftotext", [absolutePath, "-"])
     if (extracted !== null) {
       const truncated = truncateText(extracted, charLimit, input.offset)
-      return { path: relativePath, kind: "pdf", content: truncated.text, sizeBytes: stat.size, truncation: truncated.truncation }
+      return { path: relativePath, kind: "pdf", content: truncated.text, ...fileMetadata, truncation: truncated.truncation }
     }
     return {
       path: relativePath,
       kind: "pdf",
-      sizeBytes: stat.size,
+      ...fileMetadata,
       truncation: emptyTruncation(charLimit),
       warnings: ["PDF text extraction is unavailable because pdftotext failed or is not installed."],
     }
@@ -99,7 +108,7 @@ export const readWorkspacePath = async (
     const extracted = (await tryExtractCommand("textutil", ["-convert", "txt", "-stdout", absolutePath])) ?? (await extractZippedXml(absolutePath, "word/document.xml"))
     if (extracted !== null) {
       const truncated = truncateText(extracted, charLimit, input.offset)
-      return { path: relativePath, kind: "document", content: truncated.text, sizeBytes: stat.size, truncation: truncated.truncation }
+      return { path: relativePath, kind: "document", content: truncated.text, ...fileMetadata, truncation: truncated.truncation }
     }
   }
 
@@ -107,28 +116,28 @@ export const readWorkspacePath = async (
     const extracted = await extractZippedXml(absolutePath, "ppt/slides/*.xml")
     if (extracted !== null) {
       const truncated = truncateText(extracted, charLimit, input.offset)
-      return { path: relativePath, kind: "presentation", content: truncated.text, sizeBytes: stat.size, truncation: truncated.truncation }
+      return { path: relativePath, kind: "presentation", content: truncated.text, ...fileMetadata, truncation: truncated.truncation }
     }
   }
 
-  const buffer = await fs.readFile(absolutePath)
-  if (isProbablyBinary(buffer)) {
+  if (isProbablyBinary(fileBuffer)) {
     return {
       path: relativePath,
       kind: "binary",
-      sizeBytes: stat.size,
+      ...fileMetadata,
       truncation: emptyTruncation(charLimit),
       warnings: ["Binary file was not read into model context."],
     }
   }
 
-  const text = buffer.toString("utf8")
+  const text = fileBuffer.toString("utf8")
   const truncated = truncateText(text, charLimit, input.offset)
   return {
     path: relativePath,
     kind: [".csv", ".tsv"].includes(ext) ? "spreadsheet" : "file",
     content: truncated.text,
-    sizeBytes: stat.size,
+    ...fileMetadata,
+    lineEnding: detectLineEnding(text),
     truncation: truncated.truncation,
   }
 }

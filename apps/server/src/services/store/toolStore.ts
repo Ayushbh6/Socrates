@@ -180,7 +180,16 @@ export class ToolStore extends StoreBase {
     sessionId: string
     turnId: string
     toolCallId: string
-    files: Array<{ path: string; operation: string }>
+    files: Array<{
+      path: string
+      operation: string
+      contentHashBefore?: string
+      contentHashAfter?: string
+      sizeBytesBefore?: number
+      sizeBytesAfter?: number
+      lineDelta?: number
+      verification?: string
+    }>
   }): void {
     const now = nowIso()
     for (const file of input.files) {
@@ -194,9 +203,17 @@ export class ToolStore extends StoreBase {
           turnId: input.turnId,
           operation: file.operation,
           path: file.path,
+          contentHashBefore: file.contentHashBefore,
+          contentHashAfter: file.contentHashAfter,
           status: "completed",
           startedAt: now,
           completedAt: now,
+          metadataJson: JSON.stringify({
+            verification: file.verification,
+            sizeBytesBefore: file.sizeBytesBefore,
+            sizeBytesAfter: file.sizeBytesAfter,
+            lineDelta: file.lineDelta,
+          }),
         })
         .run()
     }
@@ -265,7 +282,20 @@ export class ToolStore extends StoreBase {
       const shellMetadata = asRecord(parseJson(shell?.metadataJson ?? null))
       const files = fileRows
         .filter((row) => row.toolCallId === tool.id)
-        .map((row) => ({ path: row.path, operation: row.operation, status: row.status }))
+        .map((row) => {
+          const metadata = asRecord(parseJson(row.metadataJson))
+          return {
+            path: row.path,
+            operation: row.operation,
+            status: row.status,
+            ...(row.contentHashBefore ? { contentHashBefore: row.contentHashBefore } : {}),
+            ...(row.contentHashAfter ? { contentHashAfter: row.contentHashAfter } : {}),
+            ...(typeof metadata?.sizeBytesBefore === "number" ? { sizeBytesBefore: metadata.sizeBytesBefore } : {}),
+            ...(typeof metadata?.sizeBytesAfter === "number" ? { sizeBytesAfter: metadata.sizeBytesAfter } : {}),
+            ...(typeof metadata?.lineDelta === "number" ? { lineDelta: metadata.lineDelta } : {}),
+            ...(typeof metadata?.verification === "string" ? { verification: metadata.verification } : {}),
+          }
+        })
       const patch = patchRows.find((row) => row.toolCallId === tool.id)
       const result = parseJson(tool.resultJson)
       const durationMs =

@@ -659,8 +659,10 @@ export class TraceStore extends StoreBase {
 
   private buildFileDocuments(context: TraceTurnContext): TraceDocumentInsert[] {
     const rows = this.handle.db.select().from(fileOperations).where(eq(fileOperations.turnId, context.turnId)).orderBy(fileOperations.startedAt).all()
-    return rows.map((row) =>
-      makeTraceDocument({
+    return rows.map((row) => {
+      const metadata = parseJson(row.metadataJson)
+      const metadataRecord = typeof metadata === "object" && metadata !== null && !Array.isArray(metadata) ? (metadata as Record<string, unknown>) : undefined
+      return makeTraceDocument({
         context,
         sourceKind: "file",
         sourceTable: "file_operations",
@@ -672,14 +674,26 @@ export class TraceStore extends StoreBase {
           `Path: ${row.path}`,
           row.oldPath ? `Old path: ${row.oldPath}` : "",
           `Status: ${row.status}`,
+          row.contentHashBefore ? `Content hash before: ${row.contentHashBefore}` : "",
+          row.contentHashAfter ? `Content hash after: ${row.contentHashAfter}` : "",
+          typeof metadataRecord?.verification === "string" ? `Verification: ${metadataRecord.verification}` : "",
+          typeof metadataRecord?.lineDelta === "number" ? `Line delta: ${metadataRecord.lineDelta}` : "",
           row.errorId ? `Error id: ${row.errorId}` : "",
         ]
           .filter(Boolean)
           .join("\n"),
         importance: row.status === "failed" ? "high" : "normal",
-        metadata: { path: row.path, oldPath: row.oldPath, operation: row.operation, status: row.status },
-      }),
-    )
+        metadata: {
+          path: row.path,
+          oldPath: row.oldPath,
+          operation: row.operation,
+          status: row.status,
+          contentHashBefore: row.contentHashBefore,
+          contentHashAfter: row.contentHashAfter,
+          verification: metadataRecord?.verification,
+        },
+      })
+    })
   }
 
   private buildPatchDocuments(context: TraceTurnContext): TraceDocumentInsert[] {

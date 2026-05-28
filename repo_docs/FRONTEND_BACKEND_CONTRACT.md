@@ -86,6 +86,7 @@ type ApiError = {
   message: string
   details?: unknown
   requestId?: string
+  recoverable?: boolean
 }
 ```
 
@@ -1536,15 +1537,9 @@ Input:
 
 ```ts
 type ReadToolInput = {
-  targets: Array<{
-    path: string
-    startLine?: number
-    endLine?: number
-    page?: number
-    charLimit?: number
-    recursive?: boolean
-    depth?: number
-  }>
+  path: string
+  offset?: number
+  charLimit?: number
 }
 ```
 
@@ -1552,19 +1547,18 @@ Output:
 
 ```ts
 type ReadToolOutput = {
-  entries: Array<{
-    path: string
-    kind: "file" | "directory" | "image" | "pdf" | "document" | "presentation" | "data" | "other"
-    mimeType?: string
-    sizeBytes?: number
-    content?: string
-    children?: Array<{ path: string; kind: "file" | "directory"; sizeBytes?: number }>
-    page?: number
-    startLine?: number
-    endLine?: number
-    image?: { width: number; height: number; description?: string; text?: string }
-    truncated: boolean
-  }>
+  path: string
+  kind: "file" | "directory" | "pdf" | "document" | "presentation" | "spreadsheet" | "image" | "binary" | "missing"
+  content?: string
+  entries?: Array<{ name: string; path: string; kind: "file" | "directory"; sizeBytes?: number }>
+  mimeType?: string
+  sizeBytes?: number
+  mtimeMs?: number
+  contentHash?: string
+  lineEnding?: "lf" | "crlf" | "cr" | "mixed" | "none"
+  image?: { mediaType?: string; nativeVisionSupported: boolean; description?: string }
+  truncation: TruncationMetadata
+  warnings?: string[]
 }
 ```
 
@@ -1572,7 +1566,8 @@ Rules:
 
 - Default `charLimit` is 20,000 characters.
 - Normal backend per-call cap is 80,000 characters.
-- Output must include `truncated = true` when content is cut.
+- Output must include `truncation.truncated = true` when content is cut.
+- File reads include `contentHash` for the full file bytes, plus `mtimeMs`, `sizeBytes`, and text `lineEnding` when applicable. Hashes are freshness markers for later verified edits and must represent the full file on disk, not only the truncated text returned to the model.
 - PDFs, documents, slide decks, structured data, and images must be extracted into bounded text or visual descriptions with metadata.
 - The tool must never dump a full large PDF, document, slide deck, generated file, lockfile, or binary blob into context by accident.
 - Reader implementations may use local extractors or lightweight parsing libraries. The first version should prefer practical bounded extraction over deep document-processing infrastructure.
@@ -1617,6 +1612,8 @@ Rules:
 
 - `mode = "files"` covers glob/path/name search.
 - `mode = "text"` covers grep-style regex or fixed-string search.
+- Text search treats regex-looking queries such as `a|b`, `.*`, `\bword`, character classes, anchors, or other regex operators as regex unless `regex: false` is explicitly set. Literal searches with regex-looking syntax that return no matches should include a warning suggesting `regex: true` or simpler literal terms.
+- File search matches case-insensitively against both the full relative path and basename. Glob-style queries should work for nested paths and basename matches.
 - Search respects `.gitignore` by default.
 - Search ignores `.git`, dependency folders, generated outputs, binary files, and large nuisance files by default unless explicitly included.
 - Results must be bounded with clear truncation metadata.
@@ -1630,19 +1627,18 @@ Input:
 ```ts
 type EditToolInput = {
   operations: Array<
-    | { kind: "create"; path: string; content: string; createDirs?: boolean; ifExists?: "error" | "overwrite" }
-    | { kind: "overwrite"; path: string; content: string }
+    | { type: "create"; path: string; content: string }
+    | { type: "overwrite"; path: string; content: string; baseContentHash?: string }
     | {
-        kind: "replace"
+        type: "replace"
         path: string
         oldText: string
         newText: string
         expectedOccurrences?: number
-        replaceAll?: boolean
       }
-    | { kind: "patch"; diff: string }
+    | { type: "patch"; patch: string; baseContentHashes?: Record<string, string> }
   >
-  reason?: string
+  dryRun?: boolean
 }
 ```
 
@@ -1650,8 +1646,20 @@ Output:
 
 ```ts
 type EditToolOutput = {
-  changedFiles: Array<{ path: string; operation: "created" | "overwritten" | "edited" | "patched" }>
+  changedFiles: Array<{
+    path: string
+    operation: "created" | "overwritten" | "edited" | "patched"
+    verification?: "verified"
+    contentHashBefore?: string
+    contentHashAfter?: string
+    sizeBytesBefore?: number
+    sizeBytesAfter?: number
+    lineDelta?: number
+  }>
   diff: string
+  dryRun: boolean
+  truncation: TruncationMetadata
+  warnings?: string[]
 }
 ```
 
@@ -1661,13 +1669,17 @@ Rules:
 - Must show a diff or equivalent preview before applying.
 - For requests to write code, create scripts, build small programs, implement files, or build a small app/tool, the agent should treat the request as a workspace file creation/edit request. It should use `edit` by default, write generated code into the attached workspace/repo rather than `.socrates/`, choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, and avoid pasting a full runnable file into chat. If the user lets Socrates decide, standalone scripts can go in the repo root; multi-file work can use a small well-named folder when natural. Inline code is appropriate only when the user explicitly asks for a snippet or when no write-capable workspace is available.
 - Precise replacements must fail with helpful errors when `oldText` matches zero times or more times than expected.
+- `replace` reads current disk content and is allowed without a base hash because exact `oldText` matching proves the edit target is current enough for that precise change.
+- `overwrite` of an existing file requires `baseContentHash` from a prior `read`; stale or missing hashes fail with `edit_stale_content`.
+- `patch` requires `baseContentHashes` for every existing touched file; create-only patch targets do not need hashes.
+- Non-dry-run edits must read/stat/hash before writing, write through a same-directory temp file, immediately read/stat/hash after writing, and return verified metadata. If disk does not match the planned result, the tool must fail loudly with recoverable errors such as `edit_write_failed`, `edit_verification_failed`, or `patch_verification_failed`.
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
 
-### `bash`
+### `bash` / Terminal
 
-Runs shell commands from the project workspace.
+Runs Terminal commands from the project workspace. The compatibility model-visible tool id remains `bash`; product/UI copy should call this Terminal.
 
 Input:
 
@@ -1732,7 +1744,7 @@ type BashToolOutput = {
 Rules:
 
 - Default timeout is 120,000 milliseconds.
-- The model-visible tool name remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback.
+- The model-visible compatibility tool id remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
 - `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
 - `start` launches a conversation-scoped Terminal and returns quickly with `terminalId`, `processId`, shell metadata, status, and `nextOutputSequence`. `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning the command. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation.
 - `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
@@ -1740,8 +1752,8 @@ Rules:
 - Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
 - Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; raw stdin is redacted from persistence and model context.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
-- If a bash command times out or hits a shell start/write/protocol failure, the active shell session is reset before later bash calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
-- Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Bash already starts in the active workspace; use relative paths from there.
+- If a Terminal command times out or hits a shell start/write/protocol failure, the active shell session is reset before later Terminal calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
+- Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Terminal already starts in the active workspace; use relative paths from there.
 - Command output must stream through `tool.call.output`.
 - Long-running Terminal output must also stream through `terminal.output` so the persistent Terminal panel updates even when the chat turn is idle or another turn is active.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.

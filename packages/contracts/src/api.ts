@@ -6,6 +6,7 @@ export const apiErrorSchema = z
     message: z.string().min(1),
     details: z.unknown().optional(),
     requestId: z.string().min(1).optional(),
+    recoverable: z.boolean().optional(),
   })
   .strict()
 
@@ -38,4 +39,3 @@ export const apiFailureSchema = z
 
 export const apiResponseSchema = <TData extends z.ZodTypeAny>(dataSchema: TData) =>
   z.discriminatedUnion("ok", [apiSuccessSchema(dataSchema), apiFailureSchema])
-

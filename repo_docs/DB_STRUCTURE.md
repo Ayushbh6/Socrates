@@ -717,6 +717,8 @@ Stores file reads, writes, deletes, moves, and patch-related file operations.
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Extra file operation metadata. |
 
+Verified edit operations store full-file hashes in `content_hash_before` and `content_hash_after`. `metadata_json` may include read-back verification state, before/after byte sizes, and line delta. The `edit` tool must not persist a successful completed file operation unless the disk read-back matched the planned content.
+
 ## `patches`
 
 Stores proposed and applied patches.

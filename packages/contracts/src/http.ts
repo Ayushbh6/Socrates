@@ -455,6 +455,12 @@ export const conversationToolRunSchema = z
             path: z.string().min(1),
             operation: z.string().min(1),
             status: z.string().min(1),
+            contentHashBefore: z.string().min(1).optional(),
+            contentHashAfter: z.string().min(1).optional(),
+            sizeBytesBefore: z.number().int().nonnegative().optional(),
+            sizeBytesAfter: z.number().int().nonnegative().optional(),
+            lineDelta: z.number().int().optional(),
+            verification: z.string().optional(),
           })
           .strict(),
       )

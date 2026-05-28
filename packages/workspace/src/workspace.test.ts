@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import { SocratesError } from "@socrates/shared"
 import {
   copyStoredResourceFile,
+  __editToolTest,
   ensureWorkspaceScaffold,
   deleteStoredResourceFile,
   editWorkspace,
@@ -271,6 +272,33 @@ describe("workspace tools", () => {
     expect(text.matches[0]?.line).toBe(1)
   })
 
+  it("auto-detects regex-looking text searches and warns on literal regex syntax", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "src"))
+    fs.writeFileSync(path.join(workspacePath, "src", "traceRetrieveTool.ts"), "export const trace_retrieve = true\n")
+
+    const regexLike = await searchWorkspace({ mode: "text", query: "trace_retrieve|traceRetrieve", path: "src" }, { workspacePath })
+    const literal = await searchWorkspace({ mode: "text", query: "trace_retrieve|traceRetrieve", path: "src", regex: false }, { workspacePath })
+
+    expect(regexLike.totalMatches).toBe(1)
+    expect(regexLike.matches[0]?.path).toBe("src/traceRetrieveTool.ts")
+    expect(regexLike.warnings?.[0]).toContain("interpreted it as regex")
+    expect(literal.totalMatches).toBe(0)
+    expect(literal.warnings?.[0]).toContain("set regex=true")
+  })
+
+  it("matches file globs case-insensitively against relative paths and basenames", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "packages", "core", "src", "tools"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, "packages", "core", "src", "tools", "traceRetrieveTool.ts"), "export {}\n")
+
+    const basenameMatch = await searchWorkspace({ mode: "files", query: "*retriev*", path: "packages/core" }, { workspacePath })
+    const pathMatch = await searchWorkspace({ mode: "files", query: "*SRC/TOOLS/TRACERETRIEVE*", path: "packages/core" }, { workspacePath })
+
+    expect(basenameMatch.matches.map((match) => match.path)).toContain("packages/core/src/tools/traceRetrieveTool.ts")
+    expect(pathMatch.matches.map((match) => match.path)).toContain("packages/core/src/tools/traceRetrieveTool.ts")
+  })
+
   it("applies precise replacement edits", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
@@ -281,7 +309,122 @@ describe("workspace tools", () => {
     )
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
-    expect(result.changedFiles).toEqual([{ path: "README.md", operation: "edited" }])
+    expect(result.changedFiles[0]).toMatchObject({ path: "README.md", operation: "edited", verification: "verified" })
+  })
+
+  it("returns file freshness metadata when reading files", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "hello\r\nworld\r\n")
+
+    const result = await readWorkspacePath({ path: "README.md", charLimit: 5 }, { workspacePath })
+
+    expect(result.content).toBe("hello")
+    expect(result.contentHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(result.sizeBytes).toBe(Buffer.byteLength("hello\r\nworld\r\n"))
+    expect(result.mtimeMs).toBeGreaterThan(0)
+    expect(result.lineEnding).toBe("crlf")
+  })
+
+  it("requires a fresh base hash before overwriting existing files", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+
+    await expect(
+      editWorkspace({ operations: [{ type: "overwrite", path: "README.md", content: "hello new world" }] }, { workspacePath }),
+    ).rejects.toMatchObject({ code: "edit_stale_content" })
+
+    await expect(
+      editWorkspace(
+        { operations: [{ type: "overwrite", path: "README.md", content: "hello new world", baseContentHash: "stale" }] },
+        { workspacePath },
+      ),
+    ).rejects.toMatchObject({ code: "edit_stale_content" })
+
+    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath })
+    const result = await editWorkspace(
+      { operations: [{ type: "overwrite", path: "README.md", content: "hello new world", baseContentHash: read.contentHash }] },
+      { workspacePath },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "README.md",
+      operation: "overwritten",
+      verification: "verified",
+      contentHashBefore: read.contentHash,
+      sizeBytesAfter: Buffer.byteLength("hello new world"),
+    })
+    expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("fails loudly when disk verification does not match the planned edit", async () => {
+    const workspacePath = tempDir()
+    const target = path.join(workspacePath, "README.md")
+    fs.writeFileSync(target, "hello old world")
+
+    __editToolTest.setAfterWriteHook((filePath) => {
+      if (filePath === target) {
+        fs.writeFileSync(filePath, "external rewrite")
+      }
+    })
+    try {
+      await expect(
+        editWorkspace({ operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] }, { workspacePath }),
+      ).rejects.toMatchObject({ code: "edit_verification_failed" })
+    } finally {
+      __editToolTest.setAfterWriteHook(undefined)
+    }
+  })
+
+  it("normalizes Windows-style backslash paths inside the workspace", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "src"))
+    fs.writeFileSync(path.join(workspacePath, "src", "main.py"), "print('old')\n")
+
+    const result = await editWorkspace(
+      { operations: [{ type: "replace", path: "src\\main.py", oldText: "old", newText: "new" }] },
+      { workspacePath },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "src", "main.py"), "utf8")).toBe("print('new')\n")
+    expect(result.changedFiles[0]?.path).toBe(path.join("src", "main.py"))
+  })
+
+  it("preserves CRLF content when applying exact replacements", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "server.py"), "alpha\r\nbeta\r\ngamma\r\n")
+
+    await editWorkspace(
+      { operations: [{ type: "replace", path: "server.py", oldText: "beta", newText: "beta = 42" }] },
+      { workspacePath },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "server.py"), "utf8")).toBe("alpha\r\nbeta = 42\r\ngamma\r\n")
+  })
+
+  it("requires and verifies base hashes for patches touching existing files", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world\n")
+    const patch = ["--- a/README.md", "+++ b/README.md", "@@ -1 +1 @@", "-hello old world", "+hello new world", ""].join("\n")
+
+    await expect(editWorkspace({ operations: [{ type: "patch", patch }] }, { workspacePath })).rejects.toMatchObject({
+      code: "edit_stale_content",
+    })
+
+    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath })
+    const result = await editWorkspace(
+      { operations: [{ type: "patch", patch, baseContentHashes: { "README.md": read.contentHash ?? "" } }] },
+      { workspacePath },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "README.md",
+      operation: "patched",
+      verification: "verified",
+      contentHashBefore: read.contentHash,
+    })
+    expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
   })
 
   it("allows env template edits while denying real env files", async () => {
@@ -312,7 +455,7 @@ describe("workspace tools", () => {
     expect(fs.readFileSync(path.join(workspacePath, "strategy.py"), "utf8")).toBe(
       "rate = 0.04\nplt.savefig('strategy_vs_bh.png')\n",
     )
-    expect(result.changedFiles).toEqual([{ path: "strategy.py", operation: "edited" }])
+    expect(result.changedFiles[0]).toMatchObject({ path: "strategy.py", operation: "edited", verification: "verified" })
     expect(result.diff).toContain("rate = 0.04")
     expect(result.diff).toContain("plt.savefig('strategy_vs_bh.png')")
   })

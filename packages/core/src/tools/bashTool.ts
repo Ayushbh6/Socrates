@@ -55,7 +55,7 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
 export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bashToolOutputSchema._type> = {
   name: "bash",
   description:
-    "Run a platform-native shell command from the active project workspace with bounded output and a timeout. Supports run plus conversation-scoped start/status/output/stop Terminal process operations. Prefer read/search/edit for structured file work, but use bash when a real command is needed.",
+    "Terminal command execution tool. The compatibility tool id is bash, but behavior is platform-native: POSIX on macOS/Linux and PowerShell/cmd on Windows. Runs commands from the active project workspace with bounded output and supports run plus conversation-scoped start/status/output/stop operations. Prefer read/search/edit for structured file work, but use Terminal when a real command is needed.",
   inputSchema: bashToolInputSchema,
   resultSchema: bashToolOutputSchema,
   permission: "execute",

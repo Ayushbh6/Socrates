@@ -34,8 +34,14 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed).toEqual(events)
-    expect(JSON.stringify(seen[0])).toContain("You are Socrates")
-    expect(JSON.stringify(seen[0])).toContain("Hi")
+    const requestJson = JSON.stringify(seen[0])
+    expect(requestJson).toContain("You are Socrates")
+    expect(requestJson).toContain("Hi")
+    expect(requestJson).toContain("pass the returned contentHash")
+    expect(requestJson).toContain("product/user-facing copy should call it Terminal")
+    expect(requestJson).toContain("set regex=true")
+    expect(requestJson).toContain("compare the reported file and line with the current file contents")
+    expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
   })
 
   it("exposes exactly the six V1 tools", () => {
