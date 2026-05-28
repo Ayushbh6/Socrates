@@ -140,14 +140,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "message.completed") {
-        setConversationData((current) => {
-          if (!current) {
-            return current;
-          }
-          const withoutDuplicate = current.messages.filter((message) => message.id !== event.payload.message.id);
-          return { ...current, messages: [...withoutDuplicate, event.payload.message] };
-        });
-        setLiveSteps([]);
+        // Keep the live, step-based transcript visible until turn.completed refreshes
+        // the hydrated activitySteps. Rendering the completed aggregate message here
+        // creates a transient "all tools, then all text" layout.
         setIsCompacting(false);
         return;
       }

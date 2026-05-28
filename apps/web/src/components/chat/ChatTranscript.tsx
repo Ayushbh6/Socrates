@@ -149,6 +149,7 @@ function FirstTokenLoader() {
 
 function MessageBubble({ message, tools, steps }: { message: Message; tools: ToolTimelineItem[]; steps: HistoricalActivityStep[] }) {
   const isUser = message.role === "user";
+  const hasStepAnswers = steps.some((step) => step.answer);
 
   return (
     <div className={isUser ? "flex justify-end" : "flex justify-start"}>
@@ -156,7 +157,7 @@ function MessageBubble({ message, tools, steps }: { message: Message; tools: Too
         className={
           isUser
             ? "max-w-2xl rounded-2xl rounded-tr-sm bg-brand-button px-4 py-3 text-sm leading-6 text-white"
-            : "max-w-2xl rounded-2xl rounded-tl-sm border border-gray-200 bg-white px-4 py-3 text-sm leading-6 text-brand-text-dark shadow-sm"
+            : "w-full max-w-3xl text-[15px] leading-7 text-brand-text-dark"
         }
       >
         {isUser ? (
@@ -168,21 +169,22 @@ function MessageBubble({ message, tools, steps }: { message: Message; tools: Too
           <>
             {message.partial || message.cancelled ? <StoppedIndicator reason={message.cancellationReason} /> : null}
             {steps.length > 0 ? (
-              steps.map((step) => (
-                <ActivityStepView
-                  key={step.modelCallId}
-                  reasoning={step.reasoning ?? ""}
-                  answer={step.answer ?? ""}
-                  tools={step.tools}
-                />
-              ))
+              <AssistantActivityStream
+                steps={steps.map((step) => ({
+                  key: step.modelCallId,
+                  reasoning: step.reasoning ?? "",
+                  answer: step.answer ?? "",
+                  tools: step.tools,
+                }))}
+                fallbackAnswer={hasStepAnswers ? "" : message.content}
+              />
             ) : (
-              <>
+              <div className="space-y-4">
                 {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
                 <ChatToolTimeline tools={tools} />
-              </>
+                <MarkdownContent content={message.content} />
+              </div>
             )}
-            {steps.some((step) => step.answer) ? null : <MarkdownContent content={message.content} />}
           </>
         )}
       </div>
@@ -211,11 +213,28 @@ function ActivityStepView({
     return null;
   }
   return (
-    <>
+    <div className="space-y-3">
       {reasoning ? <ThinkingBlock content={reasoning} defaultOpen={defaultOpen} /> : null}
       {answer ? <MarkdownContent content={answer} /> : null}
       <ChatToolTimeline tools={tools} approvals={approvals} onApprovalDecision={onApprovalDecision} />
-    </>
+    </div>
+  );
+}
+
+function AssistantActivityStream({
+  steps,
+  fallbackAnswer,
+}: {
+  steps: Array<{ key: string; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
+  fallbackAnswer?: string;
+}) {
+  return (
+    <div className="space-y-5">
+      {steps.map((step) => (
+        <ActivityStepView key={step.key} reasoning={step.reasoning} answer={step.answer} tools={step.tools} />
+      ))}
+      {fallbackAnswer ? <MarkdownContent content={fallbackAnswer} /> : null}
+    </div>
   );
 }
 
@@ -273,14 +292,17 @@ function groupActivityStepsByTurn(
       ...step,
       tools: step.toolCallIds.map((id) => toolsById.get(id)).filter((tool): tool is ToolTimelineItem => Boolean(tool)),
     });
-    grouped.set(step.turnId, steps);
+    grouped.set(
+      step.turnId,
+      steps.sort((left, right) => left.stepIndex - right.stepIndex),
+    );
   }
   return grouped;
 }
 
 function ThinkingBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
   return (
-    <details className="group mb-3 rounded-xl bg-gray-50 px-3 py-2 text-brand-text-light" open={defaultOpen || undefined}>
+    <details className="group rounded-lg bg-gray-50 px-3 py-2 text-sm text-brand-text-light" open={defaultOpen || undefined}>
       <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium uppercase tracking-wide text-brand-teal-dark">
         <ChevronDown className="size-3 transition-transform group-open:rotate-180" />
         Thinking
