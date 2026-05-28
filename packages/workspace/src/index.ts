@@ -59,6 +59,13 @@ export type StoredResourceFile = {
   fileName: string
 }
 
+export type StoredResourceFileEntry = {
+  path: string
+  fileName: string
+  sizeBytes: number
+  mimeType: string
+}
+
 export type StoreAttachmentFileInput = StoreResourceFileInput
 export type StoredAttachmentFile = StoredResourceFile
 
@@ -316,6 +323,28 @@ export const storeResourceFile = (input: StoreResourceFileInput): StoredResource
   return target
 }
 
+export const listStoredResourceFiles = (workspacePath: string): StoredResourceFileEntry[] => {
+  const scaffold = ensureWorkspaceScaffold({
+    workspacePath,
+    mode: "existing_folder",
+    scaffoldAction: "use_existing",
+  })
+  return fs
+    .readdirSync(scaffold.resourcesPath, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && !entry.name.startsWith("."))
+    .map((entry) => {
+      const resourcePath = path.join(scaffold.resourcesPath, entry.name)
+      const stat = fs.statSync(resourcePath)
+      return {
+        path: resourcePath,
+        fileName: entry.name,
+        sizeBytes: stat.size,
+        mimeType: inferResourceMimeType(entry.name),
+      }
+    })
+    .sort((left, right) => left.fileName.localeCompare(right.fileName))
+}
+
 export const storeAttachmentFile = (input: StoreAttachmentFileInput): StoredAttachmentFile => {
   const scaffold = ensureWorkspaceScaffold({
     workspacePath: input.workspacePath,
@@ -420,4 +449,47 @@ export const inferResourceKind = (
     return "document"
   }
   return "local_file"
+}
+
+export const inferResourceMimeType = (fileName: string): string => {
+  const ext = path.extname(fileName).toLowerCase()
+  switch (ext) {
+    case ".pdf":
+      return "application/pdf"
+    case ".png":
+      return "image/png"
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg"
+    case ".gif":
+      return "image/gif"
+    case ".webp":
+      return "image/webp"
+    case ".heic":
+      return "image/heic"
+    case ".svg":
+      return "image/svg+xml"
+    case ".md":
+    case ".markdown":
+      return "text/markdown"
+    case ".txt":
+      return "text/plain"
+    case ".csv":
+      return "text/csv"
+    case ".json":
+      return "application/json"
+    case ".yaml":
+    case ".yml":
+      return "application/yaml"
+    case ".doc":
+      return "application/msword"
+    case ".docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    case ".rtf":
+      return "application/rtf"
+    case ".odt":
+      return "application/vnd.oasis.opendocument.text"
+    default:
+      return "application/octet-stream"
+  }
 }

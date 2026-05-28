@@ -708,6 +708,16 @@ for each uploaded file:
   create project_resources row with source = "uploaded" and uri = stored file path
 ```
 
+Resource list/dashboard behavior:
+
+```text
+before returning project resources:
+  scan direct files in <workspace>/.socrates/resources/
+  create/reactivate project_resources rows for files that are present on disk
+  mark uploaded resource rows deleted when their Socrates-owned file is gone
+do not scan <workspace>/.socrates/attachments/ into project resources
+```
+
 Response:
 
 ```ts
@@ -1963,11 +1973,12 @@ type ListProjectResourcesToolOutput = {
 Rules:
 
 - This is read-only and may execute in parallel with `read`, `search`, and `trace_retrieve`.
-- It must use backend project resource records, not shell directory scanning.
+- It must use backend project resource records, not model-driven shell directory scanning. The backend may sync direct files from `.socrates/resources/` into those records before returning results.
 - Deleted resources are always excluded from the model-visible tool.
 - `limit` defaults to 25 and has a backend/schema cap of 100.
 - The model should prefer this tool before probing `.socrates/resources/` with shell commands.
 - Returned resource `uri` values should be sufficient for a follow-up `read` call when the resource is file-backed.
+- Chat image attachments under `.socrates/attachments/` are intentionally excluded from project resources.
 
 ## Context Carry-Forward Rule
 

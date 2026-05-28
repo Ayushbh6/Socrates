@@ -163,6 +163,7 @@ export class SocratesStore {
   getProjectDashboard(projectId: string): ProjectDashboard {
     return {
       ...this.projects.getProjectDashboard(projectId),
+      resources: this.resources.listResources(projectId),
       embeddingStatus: this.embeddings.getStatus(projectId),
     }
   }

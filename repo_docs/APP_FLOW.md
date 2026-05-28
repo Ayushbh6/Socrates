@@ -369,7 +369,9 @@ File upload behavior:
 - Clicking the files add action opens the file upload control.
 - Users may select up to 10 files at once.
 - The backend stores each uploaded file under the primary workspace `.socrates/resources/` folder and creates one `project_resources` row per file.
+- Direct files manually copied into `.socrates/resources/` are synced into `project_resources` when project resources are listed or the dashboard loads. This is one-way metadata sync for direct files in that folder, not a chat attachment import.
 - Removing a resource asks for confirmation, marks the resource row as `deleted`, removes it from project context, and deletes only Socrates-owned uploaded copies inside `.socrates/resources/`.
+- If a Socrates-owned resource file is manually removed from `.socrates/resources/`, normal resource listings mark that resource deleted and stop showing it.
 - The file panel should show uploaded file previews with filename, type, and size when known.
 - The preview area must have a bounded height. It may show around four file previews before becoming scrollable.
 - The file panel must not grow indefinitely when a project has many resources.
@@ -702,6 +704,8 @@ Conversation hints should be natural language, for example:
 Backend code resolves those hints against project conversations, titles, timestamps, summaries, and indexed trace documents.
 
 `list_project_resources` lists active project resources from backend records, especially uploaded files stored under `.socrates/resources/`. It accepts only `kind` and `limit`, returns filenames and metadata only, and defaults to a modest bounded list. The agent should prefer it before shell directory probing when the user asks about uploaded resources, then call `read` on the returned URI/path when content inspection is needed.
+
+Resource listing syncs direct files from `.socrates/resources/` into backend records first, so files copied there manually from VS Code/Finder are visible to both the dashboard and `list_project_resources`. Chat image attachments live under `.socrates/attachments/` and are not project resources.
 
 Generated code belongs in the attached workspace/repo, not in `.socrates/`. When the user asks Socrates to write code or create a script/program, Socrates should use `edit` to create the file in a sensible repo location. If the location is ambiguous and the user says Socrates can decide, use the repo root for a standalone script or a small well-named folder for natural multi-file work.
 

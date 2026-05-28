@@ -1118,6 +1118,62 @@ describe("HTTP API", () => {
     }
   })
 
+  it("syncs files manually added to the workspace resources folder", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const manualPath = path.join(primaryWorkspace.path ?? "", ".socrates", "resources", "Manual Brief.pdf")
+    fs.writeFileSync(manualPath, "manual pdf")
+
+    const listResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}/resources` })
+    const listBody = parseResponse<{ resources: ProjectResource[] }>(listResponse.payload)
+    expect(listBody.ok).toBe(true)
+    if (!listBody.ok) {
+      throw new Error("Expected resource list success")
+    }
+
+    const synced = listBody.data.resources.find((resource) => resource.uri === manualPath)
+    expect(synced?.name).toBe("Manual Brief.pdf")
+    expect(synced?.kind).toBe("pdf")
+    expect(synced?.source).toBe("uploaded")
+    expect(synced?.mimeType).toBe("application/pdf")
+    expect(synced?.sizeBytes).toBe(Buffer.byteLength("manual pdf"))
+
+    const dashboardResponse = await app.inject({ method: "GET", url: `/api/projects/${project.id}` })
+    const dashboardBody = parseResponse<{ resources: ProjectResource[] }>(dashboardResponse.payload)
+    expect(dashboardBody.ok).toBe(true)
+    if (dashboardBody.ok) {
+      expect(dashboardBody.data.resources.some((resource) => resource.uri === manualPath)).toBe(true)
+    }
+  })
+
+  it("removes resources from listings when their workspace file is manually removed", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const manualPath = path.join(primaryWorkspace.path ?? "", ".socrates", "resources", "Temporary Notes.md")
+    fs.writeFileSync(manualPath, "temporary")
+
+    const firstList = parseResponse<{ resources: ProjectResource[] }>(
+      (await app.inject({ method: "GET", url: `/api/projects/${project.id}/resources` })).payload,
+    )
+    expect(firstList.ok).toBe(true)
+    if (!firstList.ok) {
+      throw new Error("Expected first resource list success")
+    }
+    expect(firstList.data.resources.some((resource) => resource.uri === manualPath)).toBe(true)
+
+    fs.rmSync(manualPath)
+
+    const secondList = parseResponse<{ resources: ProjectResource[] }>(
+      (await app.inject({ method: "GET", url: `/api/projects/${project.id}/resources` })).payload,
+    )
+    expect(secondList.ok).toBe(true)
+    if (secondList.ok) {
+      expect(secondList.data.resources.some((resource) => resource.uri === manualPath)).toBe(false)
+    }
+  })
+
   it("uploads project resources into the workspace scaffold", async () => {
     const app = await buildTestServer()
     await onboard(app)

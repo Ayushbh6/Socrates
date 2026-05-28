@@ -9,9 +9,11 @@ import {
   ensureWorkspaceScaffold,
   deleteStoredResourceFile,
   editWorkspace,
+  inferResourceMimeType,
   inferResourceKind,
   inspectWorkspacePath,
   inspectPythonEnvironment,
+  listStoredResourceFiles,
   pickWorkspaceFolder,
   readWorkspacePath,
   runWorkspaceBash,
@@ -162,6 +164,25 @@ describe("resource files", () => {
     expect(fs.readFileSync(second.path, "utf8")).toBe("two")
   })
 
+  it("lists direct files manually added to .socrates/resources", () => {
+    const workspacePath = tempDir()
+    ensureWorkspaceScaffold({ workspacePath, mode: "existing_folder" })
+    const resourcesPath = path.join(workspacePath, ".socrates", "resources")
+    fs.writeFileSync(path.join(resourcesPath, "Brief.pdf"), "pdf")
+    fs.writeFileSync(path.join(resourcesPath, ".DS_Store"), "noise")
+    fs.mkdirSync(path.join(resourcesPath, "Nested"))
+    fs.writeFileSync(path.join(resourcesPath, "Nested", "Hidden.md"), "nested")
+
+    expect(listStoredResourceFiles(workspacePath)).toEqual([
+      {
+        path: path.join(resourcesPath, "Brief.pdf"),
+        fileName: "Brief.pdf",
+        sizeBytes: 3,
+        mimeType: "application/pdf",
+      },
+    ])
+  })
+
   it("deletes only resource files owned by the workspace scaffold", () => {
     const workspacePath = tempDir()
     const stored = storeResourceFile({ workspacePath, originalName: "owned.txt", data: Buffer.from("owned") })
@@ -184,6 +205,14 @@ describe("resource files", () => {
     expect(inferResourceKind("README.md")).toBe("text")
     expect(inferResourceKind("draft.docx")).toBe("document")
     expect(inferResourceKind("archive.zip")).toBe("local_file")
+  })
+
+  it("infers common resource MIME types from filenames", () => {
+    expect(inferResourceMimeType("paper.pdf")).toBe("application/pdf")
+    expect(inferResourceMimeType("photo.png")).toBe("image/png")
+    expect(inferResourceMimeType("README.md")).toBe("text/markdown")
+    expect(inferResourceMimeType("draft.docx")).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    expect(inferResourceMimeType("archive.zip")).toBe("application/octet-stream")
   })
 })
 

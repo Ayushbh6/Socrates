@@ -222,7 +222,11 @@ Uploaded file-backed resources should be stored under the primary workspace scaf
 <primary_workspace>/.socrates/resources/
 ```
 
+Direct files manually copied into `<primary_workspace>/.socrates/resources/` are treated as Socrates-owned project resources after resource-list sync. The sync creates or reactivates `project_resources` rows plus file artifacts for direct files in that folder and hides uploaded resource rows when their underlying file is removed manually.
+
 The `uri` column should point to the stored resource path or linked source, depending on `source`.
+
+Chat composer image attachments are separate from project resources. They live under `<primary_workspace>/.socrates/attachments/` and are tracked by `message_attachments`, not `project_resources`, so screenshots sent in chat do not appear in the dashboard Resources panel.
 
 When the primary workspace changes, active uploaded resources whose `uri` points inside the old primary workspace `.socrates/resources/` directory should be copied into the new primary workspace `.socrates/resources/`, with `project_resources.uri` and the artifact path updated to the copied file. Linked or external resource paths are not copied or rewritten.
 
