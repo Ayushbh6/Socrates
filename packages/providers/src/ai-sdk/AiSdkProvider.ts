@@ -1,8 +1,17 @@
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
-import { smoothStream, streamText, tool, type LanguageModel, type LanguageModelUsage, type ModelMessage as AiModelMessage } from "ai"
-import type { NormalizedToolCall, ProviderMetadata } from "@socrates/contracts"
+import {
+  jsonSchema,
+  smoothStream,
+  streamText,
+  tool,
+  type LanguageModel,
+  type LanguageModelUsage,
+  type JSONSchema7,
+  type ModelMessage as AiModelMessage,
+} from "ai"
+import type { ModelToolDefinition, NormalizedToolCall, ProviderMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import {
   countModelRequestLocally,
@@ -317,10 +326,55 @@ const toAiTools = (tools: NonNullable<ModelRequest["tools"]>) =>
       definition.name,
       tool({
         description: definition.description,
-        inputSchema: definition.inputSchema,
+        inputSchema: inputSchemaForAiTool(definition),
       }),
     ]),
   )
+
+export const inputSchemaForAiTool = (definition: ModelToolDefinition) => {
+  if (definition.name !== "trace_retrieve") {
+    return definition.inputSchema
+  }
+  return jsonSchema(traceRetrieveJsonSchema, {
+    validate: (value) => {
+      const parsed = definition.inputSchema.safeParse(value)
+      return parsed.success
+        ? { success: true, value: parsed.data }
+        : { success: false, error: new Error(parsed.error.message) }
+    },
+  })
+}
+
+const traceRetrieveJsonSchema: JSONSchema7 = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    operation: { type: "string", enum: ["search", "inspect"], description: "Use search by default; use inspect for returned handles or ids." },
+    query: { type: "string", description: "Search text. Required unless operation is inspect." },
+    scope: { type: "string", enum: ["current_conversation", "recent_conversations", "project"] },
+    conversationHint: { type: "string" },
+    conversationLimit: { type: "integer", minimum: 1, maximum: 50 },
+    turnNo: { type: "integer", minimum: 1, maximum: 10_000 },
+    role: { type: "string", enum: ["user", "assistant", "any"] },
+    mode: { type: "string", enum: ["combined", "exact", "semantic"] },
+    include: { type: "array", items: { type: "string", enum: ["messages", "summaries", "tool_calls", "shell", "files", "errors", "decisions"] } },
+    toolNames: { type: "array", items: { type: "string" } },
+    paths: { type: "array", items: { type: "string" }, maxItems: 20 },
+    command: { type: "string" },
+    createdAfter: { type: "string" },
+    createdBefore: { type: "string" },
+    limit: { type: "integer", minimum: 1, maximum: 20 },
+    includeRaw: { type: "boolean" },
+    charLimit: { type: "integer", minimum: 1, maximum: 80_000 },
+    handle: { type: "string", description: "Trace document handle to inspect." },
+    conversationId: { type: "string" },
+    turnId: { type: "string" },
+    messageId: { type: "string" },
+    toolCallId: { type: "string" },
+    startTurnNo: { type: "integer", minimum: 1, maximum: 10_000 },
+    turnLimit: { type: "integer", minimum: 1, maximum: 100 },
+  },
+} as const
 
 export const normalizeAiSdkToolCallPart = (part: {
   toolCallId: string

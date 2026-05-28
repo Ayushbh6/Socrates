@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
+import type { Schema } from "ai"
+import { traceRetrieveToolInputSchema } from "@socrates/contracts"
+import { inputSchemaForAiTool, normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
 
 describe("AI SDK provider metadata", () => {
   it("preserves Gemini thought signatures from streamed tool calls", () => {
@@ -62,5 +64,26 @@ describe("AI SDK provider metadata", () => {
         { type: "image", mediaType: "image/png", image: "aGVsbG8=" },
       ],
     })
+  })
+
+  it("exposes trace_retrieve as an object JSON schema for strict providers", async () => {
+    const schema = inputSchemaForAiTool({
+      name: "trace_retrieve",
+      description: "Search or inspect previous trace documents.",
+      inputSchema: traceRetrieveToolInputSchema,
+    }) as Schema
+
+    expect(schema.jsonSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+    })
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"None"')
+
+    await expect(Promise.resolve(schema.validate?.({ query: "screenshot" }))).resolves.toEqual({
+      success: true,
+      value: { query: "screenshot" },
+    })
+    const invalid = await Promise.resolve(schema.validate?.({ operation: "inspect" }))
+    expect(invalid?.success).toBe(false)
   })
 })
