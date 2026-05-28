@@ -10,7 +10,6 @@ import type {
   GetProviderCredentialsStatusResponse,
   Message,
   Project,
-  ProjectEmbeddingStatus,
   ProjectInstructions,
   ProjectResource,
   ProjectWorkspace,
@@ -566,21 +565,6 @@ const insertCompletedTestTurn = (
   return { turnId, userMessageId, assistantMessageId }
 }
 
-const waitForEmbeddingStatus = async (
-  store: SocratesStore,
-  projectId: string,
-  predicate: (status: ProjectEmbeddingStatus) => boolean,
-): Promise<ProjectEmbeddingStatus> => {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    const status = store.getProjectEmbeddingStatus(projectId)
-    if (predicate(status)) {
-      return status
-    }
-    await delay(25)
-  }
-  throw new Error("Timed out waiting for embedding status")
-}
-
 const chatMessageCommand = (projectId: string, conversationId: string, content: string) => ({
   id: createId("evt"),
   type: "chat.message.send",
@@ -784,7 +768,7 @@ describe("context compaction persistence", () => {
       })
       expect(search.results.some((result) => result.kind === "conversation_summary" && result.sourceId === secondSnapshotId)).toBe(true)
     } finally {
-      store.close()
+      await store.close()
     }
   })
 })
@@ -1653,7 +1637,7 @@ describe("WebSocket API", () => {
         const semantic = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic" })
         expect(semantic.warnings?.join(" ")).toContain("Semantic trace retrieval is not configured")
       } finally {
-        store.close()
+        await store.close()
       }
     } finally {
       socket.close()
@@ -1732,7 +1716,7 @@ describe("WebSocket API", () => {
         })
         expect(search.results.some((result) => result.kind === "verbatim_anchor" && result.preserveVerbatim)).toBe(true)
       } finally {
-        store.close()
+        await store.close()
       }
     } finally {
       socket.close()
@@ -1808,7 +1792,7 @@ describe("WebSocket API", () => {
       expect(outOfRange.results).toHaveLength(0)
       expect(outOfRange.warnings?.join(" ")).toContain("No turn number 5")
     } finally {
-      store.close()
+      await store.close()
     }
   })
 
@@ -1855,11 +1839,11 @@ describe("WebSocket API", () => {
       expect(bundle.appliedFilters.startTurnNo).toBe(2)
       expect(bundle.appliedFilters.turnLimit).toBe(2)
     } finally {
-      store.close()
+      await store.close()
     }
   })
 
-  it("configures trace embeddings and uses semantic retrieval for active provider rows", async () => {
+  it("uses semantic retrieval for active provider rows", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
@@ -1889,13 +1873,25 @@ describe("WebSocket API", () => {
       store.indexTurnTraceDocuments(project.id, conversation.id, ordinary.turnId)
       store.indexTurnTraceDocuments(project.id, conversation.id, target.turnId)
 
-      await store.configureProjectEmbeddings(project.id, {
-        providerId: "ollama",
-        modelId: "embeddinggemma",
-        credentialSource: "none",
-        ollamaBaseUrl: "http://127.0.0.1:11434",
-      })
-      const status = await waitForEmbeddingStatus(store, project.id, (current) => current.pendingDocuments === 0 && current.indexedDocuments > 0)
+      const now = nowIso()
+      handle.sqlite
+        .prepare(
+          `INSERT INTO project_embedding_configs
+            (id, project_id, provider_id, model_id, dimensions, credential_source, ollama_base_url, status, active, created_at, updated_at)
+           VALUES (?, ?, 'ollama', 'embeddinggemma', 3, 'none', 'http://127.0.0.1:11434', 'ready', 1, ?, ?)`,
+        )
+        .run(createId("embcfg"), project.id, now, now)
+      handle.sqlite
+        .prepare(
+          `INSERT INTO trace_embeddings
+            (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
+           SELECT ?, project_id, id, 'ollama', 'embeddinggemma', 3, content_hash, '[1,0,0]', 'completed', ?, ?, ?
+           FROM trace_documents
+           WHERE source_id = ?
+           LIMIT 1`,
+        )
+        .run(createId("temb"), now, now, now, target.userMessageId)
+      const status = store.getProjectEmbeddingStatus(project.id)
       expect(status.indexedDocuments).toBeGreaterThan(0)
 
       const semantic = await store.retrieveToolTraces(project.id, conversation.id, {
@@ -1924,7 +1920,7 @@ describe("WebSocket API", () => {
       })
       expect(JSON.stringify(stillSemantic.results[0])).toContain(target.userMessageId)
     } finally {
-      store.close()
+      await store.close()
     }
   })
 
@@ -1974,7 +1970,72 @@ describe("WebSocket API", () => {
       expect(request.system).toContain("Name: Context Project")
       expect(request.system).toContain("A test project")
       expect(request.system).toContain("Always answer from the project instructions.")
+      expect(request.system).toContain("Workspace Terminal commands run with a sanitized user-workspace environment.")
+      expect(request.system).toContain("NODE_ENV")
+      expect(request.system).toContain("CI are not inherited")
+      expect(request.system).toContain("Semantic retrieval: not configured.")
+      expect(request.system).toContain("Do not claim semantic retrieval was used.")
       expect(request.messages.at(-1)?.content).toBe("Use the context")
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("injects ready semantic retrieval status into the agent prompt", async () => {
+    const dbPath = tempDbPath()
+    const requests: unknown[] = []
+    const app = await buildTestServer(dbPath, createCapturingAgent(requests))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Ready Semantic Prompt")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, createTestEmbeddingProvider())
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(
+        handle.sqlite,
+        conversation.id,
+        sessionId,
+        "Semantic prompt context should include BLUE-LANTERN-42.",
+        "Indexed.",
+        nowIso(),
+      )
+      store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
+      const now = nowIso()
+      handle.sqlite
+        .prepare(
+          `INSERT INTO project_embedding_configs
+            (id, project_id, provider_id, model_id, dimensions, credential_source, ollama_base_url, status, active, created_at, updated_at)
+           VALUES (?, ?, 'ollama', 'embeddinggemma', 3, 'none', 'http://127.0.0.1:11434', 'ready', 1, ?, ?)`,
+        )
+        .run(createId("embcfg"), project.id, now, now)
+      handle.sqlite
+        .prepare(
+          `INSERT INTO trace_embeddings
+            (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
+           SELECT ?, project_id, id, 'ollama', 'embeddinggemma', 3, content_hash, '[1,0,0]', 'completed', ?, ?, ?
+           FROM trace_documents
+           WHERE source_id = ?
+           LIMIT 1`,
+        )
+        .run(createId("temb"), now, now, now, turn.userMessageId)
+    } finally {
+      await store.close()
+    }
+
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Use semantic context"))
+      await waitForEvent(socket, "message.completed")
+
+      const request = requests[0] as { system: string; messages: Array<{ content: string }> }
+      expect(request.system).toContain("Semantic retrieval: ready")
+      expect(request.system).toContain("Provider/model: ollama/embeddinggemma")
+      expect(request.system).toContain("indexed=")
+      expect(request.system).toContain('mode="combined"')
+      expect(request.messages.at(-1)?.content).toBe("Use semantic context")
     } finally {
       socket.close()
     }

@@ -124,7 +124,8 @@ export class SocratesStore {
     this.contextCompactions = new ContextCompactionStore(context, this.errors)
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    await this.embeddings.dispose()
     this.handle.close()
   }
 

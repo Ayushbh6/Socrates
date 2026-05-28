@@ -53,6 +53,8 @@ export type TraceQueryEmbeddingResult = {
 
 export class EmbeddingStore extends StoreBase {
   private readonly runningProjects = new Set<string>()
+  private readonly runningTasks = new Set<Promise<void>>()
+  private disposed = false
 
   constructor(
     context: ConstructorParameters<typeof StoreBase>[0],
@@ -65,6 +67,11 @@ export class EmbeddingStore extends StoreBase {
   getStatus(projectId: string): ProjectEmbeddingStatus {
     this.mustGetProjectRow(projectId)
     return this.buildStatus(projectId)
+  }
+
+  async dispose(): Promise<void> {
+    this.disposed = true
+    await Promise.allSettled([...this.runningTasks])
   }
 
   async check(projectId: string, input: CheckProjectEmbeddingsRequest): Promise<CheckProjectEmbeddingsResponse> {
@@ -243,10 +250,22 @@ export class EmbeddingStore extends StoreBase {
   }
 
   private processProjectInBackground(projectId: string): void {
-    void this.processProject(projectId)
+    if (this.disposed) {
+      return
+    }
+    let task: Promise<void>
+    task = this.processProject(projectId)
+      .catch(() => undefined)
+      .finally(() => {
+        this.runningTasks.delete(task)
+      })
+    this.runningTasks.add(task)
   }
 
   private async processProject(projectId: string): Promise<void> {
+    if (this.disposed) {
+      return
+    }
     if (this.runningProjects.has(projectId)) {
       return
     }
@@ -287,7 +306,7 @@ export class EmbeddingStore extends StoreBase {
       }
     } finally {
       this.runningProjects.delete(projectId)
-      if (this.nextQueuedJob(projectId)) {
+      if (!this.disposed && this.nextQueuedJob(projectId)) {
         this.processProjectInBackground(projectId)
       }
     }

@@ -410,6 +410,10 @@ describe("SocratesAgent", () => {
         projectDescription: "Local-first AI workspace.",
         projectInstructions: "Read repo_docs before answering.",
         workspaceGuidance: "Python Environment Hints\n- Local virtual environments found:\n  - venv/",
+        workspaceCommandEnvironment:
+          "Workspace Terminal commands run with a sanitized user-workspace environment. NODE_ENV, provider secrets, package-manager omit flags, and CI are not inherited.",
+        semanticRetrievalStatus:
+          'Semantic retrieval: ready.\n- Provider/model: openai/text-embedding-3-small.\n- Use trace_retrieve mode="combined" by default.',
       },
     })) {
       // Exhaust the stream.
@@ -421,6 +425,12 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("Local-first AI workspace.")
     expect(request.system).toContain("Read repo_docs before answering.")
     expect(request.system).toContain("Python Environment Hints")
+    expect(request.system).toContain("Workspace command environment:")
+    expect(request.system).toContain("sanitized user-workspace environment")
+    expect(request.system).toContain("provider secrets")
+    expect(request.system).toContain("Semantic retrieval status:")
+    expect(request.system).toContain("Semantic retrieval: ready.")
+    expect(request.system).toContain('mode="combined"')
     expect(request.system).toContain("Do not hardcode or guess absolute workspace paths")
     expect(request.system).toContain("plt.show()")
   })

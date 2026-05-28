@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const traceRetrieveTool: SocratesTool<typeof traceRetrieveToolInputSchema._type, typeof traceRetrieveToolOutputSchema._type> = {
   name: "trace_retrieve",
   description:
-    "Search or inspect older project-scoped conversation and execution evidence. Search by natural query, scope, conversation hint, tool, path, or command; inspect returned handles for exact source text.",
+    "Search or inspect older project-scoped conversation and execution evidence. Search by natural query, scope, conversation hint, turnNo/role, tool, path, command, and mode. Semantic and combined search depend on the runtime semantic retrieval status; exact/lexical search and inspect remain available. Inspect returned handles before exact claims.",
   inputSchema: traceRetrieveToolInputSchema,
   resultSchema: traceRetrieveToolOutputSchema,
   permission: "read",

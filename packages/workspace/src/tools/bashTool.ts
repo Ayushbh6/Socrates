@@ -589,7 +589,7 @@ const spawnChecked = (
   new Promise((resolve, reject) => {
     const child = spawn(adapter.executable, args, {
       cwd,
-      env: shellEnv(env),
+      env: buildWorkspaceCommandEnv(env, adapter.platform),
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     })
@@ -630,14 +630,55 @@ const spawnChecked = (
     child.once("close", onEarlyClose)
   })
 
-const shellEnv = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
-  ...env,
-  CI: "1",
-  PAGER: "cat",
-  GIT_PAGER: "cat",
-  PS1: "",
-  PROMPT: "",
-})
+const safeEnvNames = new Set([
+  "PATH",
+  "Path",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "TERM",
+])
+
+const safeWindowsEnvNames = new Set([
+  "SystemRoot",
+  "ComSpec",
+  "COMSPEC",
+  "PATHEXT",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "ProgramData",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "USERNAME",
+  "USERDOMAIN",
+])
+
+const isSafeWorkspaceEnvName = (name: string, platform: NodeJS.Platform): boolean =>
+  safeEnvNames.has(name) || name.startsWith("LC_") || (platform === "win32" && safeWindowsEnvNames.has(name))
+
+const buildWorkspaceCommandEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv => {
+  const sanitized: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && isSafeWorkspaceEnvName(name, platform)) {
+      sanitized[name] = value
+    }
+  }
+  return {
+    ...sanitized,
+    PAGER: "cat",
+    GIT_PAGER: "cat",
+    PS1: "",
+    PROMPT: "",
+  }
+}
 
 const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): ShellAdapter[] => {
   if (platform === "win32") {
@@ -649,6 +690,7 @@ const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): S
 }
 
 export const __bashToolTest = {
+  buildWorkspaceCommandEnv,
   candidateAdapters,
 }
 

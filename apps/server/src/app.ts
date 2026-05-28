@@ -32,7 +32,7 @@ export const buildServer = async (options: BuildServerOptions) => {
 
   app.addHook("onClose", async () => {
     terminals.dispose()
-    store.close()
+    await store.close()
   })
 
   await app.register(multipart, {

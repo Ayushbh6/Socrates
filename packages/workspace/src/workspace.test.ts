@@ -486,6 +486,89 @@ describe("workspace tools", () => {
     expect(result.exitCode).toBe(0)
   })
 
+  it("starts shell commands with a sanitized workspace environment", async () => {
+    const workspacePath = tempDir()
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      HOME: os.tmpdir(),
+      USER: "ayush",
+      SHELL: process.env.SHELL ?? "/bin/sh",
+      TMPDIR: os.tmpdir(),
+      LANG: "en_US.UTF-8",
+      LC_ALL: "en_US.UTF-8",
+      NODE_ENV: "production",
+      SOCRATES_HOME: "/private/socrates",
+      SOCRATES_PORT: "4000",
+      OPENAI_API_KEY: "sk-secret",
+      OPENROUTER_API_KEY: "or-secret",
+      GOOGLE_GENERATIVE_AI_API_KEY: "google-secret",
+      GEMINI_API_KEY: "gemini-secret",
+      npm_config_omit: "dev",
+      NPM_CONFIG_PRODUCTION: "true",
+      YARN_PRODUCTION: "true",
+      CI: "1",
+    }
+    const sanitized = __bashToolTest.buildWorkspaceCommandEnv(env)
+
+    expect(sanitized.PATH).toBe(env.PATH)
+    expect(sanitized.HOME).toBe(env.HOME)
+    expect(sanitized.TMPDIR).toBe(env.TMPDIR)
+    expect(sanitized.LC_ALL).toBe(env.LC_ALL)
+    expect(sanitized.NODE_ENV).toBeUndefined()
+    expect(sanitized.SOCRATES_HOME).toBeUndefined()
+    expect(sanitized.OPENAI_API_KEY).toBeUndefined()
+    expect(sanitized.npm_config_omit).toBeUndefined()
+    expect(sanitized.NPM_CONFIG_PRODUCTION).toBeUndefined()
+    expect(sanitized.CI).toBeUndefined()
+
+    const session = createWorkspaceShellSession(workspacePath, { env })
+    try {
+      const command = nodeCommand(
+        'const names = ["NODE_ENV", "SOCRATES_HOME", "SOCRATES_PORT", "OPENAI_API_KEY", "npm_config_omit", "NPM_CONFIG_PRODUCTION", "YARN_PRODUCTION", "CI"]; for (const name of names) console.log(name + "=" + (process.env[name] ?? "")); console.log("PATH_PRESENT=" + (process.env.PATH || process.env.Path ? "yes" : "no")); console.log("HOME=" + (process.env.HOME ?? process.env.USERPROFILE ?? "")); console.log("LC_ALL=" + (process.env.LC_ALL ?? ""));',
+      )
+      const result = await session.run({ command })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain("NODE_ENV=\n")
+      expect(result.stdout).toContain("SOCRATES_HOME=\n")
+      expect(result.stdout).toContain("OPENAI_API_KEY=\n")
+      expect(result.stdout).toContain("npm_config_omit=\n")
+      expect(result.stdout).toContain("NPM_CONFIG_PRODUCTION=\n")
+      expect(result.stdout).toContain("YARN_PRODUCTION=\n")
+      expect(result.stdout).toContain("CI=\n")
+      expect(result.stdout).toContain("PATH_PRESENT=yes")
+      expect(result.stdout).toContain(`HOME=${os.tmpdir()}`)
+      expect(result.stdout).toContain("LC_ALL=en_US.UTF-8")
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("preserves explicit command-level environment assignment", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath, {
+      env: {
+        PATH: process.env.PATH,
+        HOME: os.tmpdir(),
+        SHELL: process.env.SHELL ?? "/bin/sh",
+        NODE_ENV: "development",
+        npm_config_omit: "dev",
+      },
+    })
+    try {
+      const command =
+        process.platform === "win32"
+          ? `$env:NODE_ENV = 'production'; ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
+          : `NODE_ENV=production ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
+      const result = await session.run({ command })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe("production")
+    } finally {
+      session.dispose()
+    }
+  })
+
   it("keeps cwd and environment inside a persistent per-turn shell session", async () => {
     const workspacePath = tempDir()
     fs.mkdirSync(path.join(workspacePath, "nested"))

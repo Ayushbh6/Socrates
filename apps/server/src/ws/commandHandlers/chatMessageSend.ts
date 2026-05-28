@@ -7,7 +7,7 @@ import {
   type SocratesAgent,
   type ToolExecutors,
 } from "@socrates/core"
-import type { ClientCommand, ModelUsage, ProjectResource } from "@socrates/contracts"
+import type { ClientCommand, ModelUsage, ProjectEmbeddingStatus, ProjectResource } from "@socrates/contracts"
 import { normalizeError, SocratesError } from "@socrates/shared"
 import {
   editWorkspace,
@@ -68,6 +68,8 @@ export const handleChatMessageSend = async (
   const promptContext = {
     ...store.getAgentContext(projectId),
     workspaceGuidance: formatPythonEnvironmentHints(inspectPythonEnvironment(workspacePath)),
+    workspaceCommandEnvironment: formatWorkspaceCommandEnvironmentBrief(),
+    semanticRetrievalStatus: formatSemanticRetrievalStatus(store.getProjectEmbeddingStatus(projectId)),
     ...(terminalContext ? { terminalContext } : {}),
   }
   const modelCallIds: string[] = []
@@ -791,6 +793,71 @@ const listProjectResourcesForTool = (
     },
     ...(hiddenCount > 0 ? { warnings: [`${hiddenCount} resources were omitted by the output cap.`] } : {}),
   }
+}
+
+const formatWorkspaceCommandEnvironmentBrief = (): string =>
+  [
+    "Workspace Terminal commands run with a sanitized user-workspace environment.",
+    "- Socrates runtime variables, app API URLs, runtime paths, provider API keys, NODE_ENV, npm/yarn production or omit flags, and CI are not inherited from the server process.",
+    "- Safe OS basics such as PATH, HOME/user profile, shell identity, temp paths, locale variables, and Windows system roots are preserved.",
+    "- Explicit command-level env assignments still work when a task intentionally needs them, for example NODE_ENV=production npm run build.",
+  ].join("\n")
+
+const formatSemanticRetrievalStatus = (status: ProjectEmbeddingStatus): string => {
+  const warnings = status.warnings?.length ? `\n- Warnings: ${status.warnings.join(" ")}` : ""
+  const provider = status.providerId && status.modelId ? `${status.providerId}/${status.modelId}` : "not configured"
+  const counts = `documents total=${status.totalDocuments}, indexed=${status.indexedDocuments}, pending=${status.pendingDocuments}, failed=${status.failedDocuments}`
+
+  if (!status.configured) {
+    return [
+      "Semantic retrieval: not configured.",
+      `- Provider/model: ${provider}.`,
+      `- Trace document state: ${counts}.`,
+      "- Use trace_retrieve for lexical/exact search and inspect. Do not claim semantic retrieval was used.",
+      warnings.trim(),
+    ]
+      .filter(Boolean)
+      .join("\n")
+  }
+
+  const activeJob = status.activeJob ? `\n- Active indexing job: ${status.activeJob.status}.` : ""
+  const lastError = status.lastError ? `\n- Last error: ${status.lastError}` : ""
+  const state = semanticRetrievalState(status)
+  const usage =
+    status.ready && status.indexedDocuments > 0
+      ? '- Use trace_retrieve mode="combined" by default, mode="semantic" for fuzzy or conceptual recall, and inspect handles before exact claims.'
+      : "- Treat trace_retrieve as lexical/exact only until indexing is ready. Do not claim semantic retrieval was used."
+
+  return [
+    `Semantic retrieval: ${state}.`,
+    `- Provider/model: ${provider}.`,
+    `- Trace document state: ${counts}.`,
+    usage,
+    activeJob.trim(),
+    lastError.trim(),
+    warnings.trim(),
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+const semanticRetrievalState = (status: ProjectEmbeddingStatus): string => {
+  if (status.status === "failed" || status.lastError) {
+    return "failed"
+  }
+  if (status.ready && status.indexedDocuments > 0 && status.pendingDocuments > 0) {
+    return "ready (partially indexed)"
+  }
+  if (status.ready && status.indexedDocuments > 0) {
+    return "ready"
+  }
+  if (status.activeJob && (status.activeJob.status === "queued" || status.activeJob.status === "running")) {
+    return "indexing"
+  }
+  if (status.ready) {
+    return "ready, waiting for indexed documents"
+  }
+  return status.status ?? "not ready"
 }
 
 const ensureParagraphBoundary = (text: string): string => (text.endsWith("\n\n") ? "" : "\n\n")

@@ -43,7 +43,7 @@ const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof ed
 export const editTool: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type> = {
   name: "edit",
   description:
-    "Create, overwrite, precisely replace multiline text, or apply a patch in the active project workspace. Use this as the default way to deliver generated scripts, programs, and implementation changes. Use exact oldText for replacements. Overwrites and patches to existing files require fresh content hashes from read.",
+    "Create, overwrite, precisely replace multiline text, or apply a patch in the active project workspace. Use this as the default way to deliver generated scripts, programs, and implementation changes. Use exact oldText for replacements. Before overwriting or patching existing files, read them first and pass fresh baseContentHash/baseContentHashes so stale disk state is detected.",
   inputSchema: editToolInputSchema,
   resultSchema: editToolOutputSchema,
   permission: "mutate",
