@@ -737,7 +737,7 @@ describe("context compaction persistence", () => {
         contextTokensEstimate: 165000,
         targetTokens: 120000,
         compressorProviderId: "openrouter",
-        compressorModelId: "qwen/qwen3.6-plus",
+        compressorModelId: "qwen/qwen3.6-35b-a3b",
         sourceMessageIds: ["msg_old_2"],
         sourceTurnIds: ["turn_old_2"],
       })

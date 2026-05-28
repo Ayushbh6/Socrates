@@ -20,7 +20,9 @@ describe("model catalog", () => {
       "google/gemini-3.1-flash-lite-preview",
       "openrouter/moonshotai/kimi-k2.6",
       "openrouter/z-ai/glm-5.1",
-      "openrouter/qwen/qwen3.6-plus",
+      "openrouter/xiaomi/mimo-v2.5-pro",
+      "openrouter/x-ai/grok-build-0.1",
+      "openrouter/qwen/qwen3.6-35b-a3b",
       "openrouter/deepseek/deepseek-v4-pro",
       "openrouter/deepseek/deepseek-v4-flash",
       "openrouter/google/gemma-4-31b-it",
@@ -32,11 +34,11 @@ describe("model catalog", () => {
     expect(pro?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high"])
   })
 
-  it("marks GLM and DeepSeek models as non-vision models", () => {
+  it("marks OpenRouter text-only models as non-vision models", () => {
     const nonVision = modelCatalog
       .filter((model) => model.capabilities?.vision === false)
       .map((model) => model.modelId)
 
-    expect(nonVision).toEqual(["z-ai/glm-5.1", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+    expect(nonVision).toEqual(["z-ai/glm-5.1", "xiaomi/mimo-v2.5-pro", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
   })
 })

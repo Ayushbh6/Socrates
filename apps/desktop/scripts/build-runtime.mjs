@@ -145,6 +145,7 @@ const buildServerPackages = async () => {
     "@socrates/contracts",
     "@socrates/workspace",
     "@socrates/providers",
+    "@socrates/mcp",
     "@socrates/core",
     "@socrates/server",
   ]) {
@@ -153,7 +154,7 @@ const buildServerPackages = async () => {
 };
 
 const assertPackagedServerDependencies = () => {
-  for (const packageName of ["shared", "contracts", "workspace", "providers", "core"]) {
+  for (const packageName of ["shared", "contracts", "workspace", "providers", "mcp", "core"]) {
     assertFile(
       path.join(runtimeDir, "server", "node_modules", "@socrates", packageName, "dist", "index.js"),
       `Packaged @socrates/${packageName} dist entry`,

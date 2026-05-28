@@ -70,7 +70,7 @@ pnpm desktop:bundle
 npm CLI release flow:
 
 ```text
-push SemVer tag, for example v0.1.1
+push SemVer tag, for example v0.1.2
   -> GitHub Actions builds unsigned runtime zips for macOS arm64, macOS x64, and Windows x64
   -> each runtime zip includes a fixed Node runtime for app processes and native dependency ABI compatibility
   -> SHA256SUMS and runtime zips are attached to GitHub Releases
@@ -821,7 +821,7 @@ Compressor-model selection:
 
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash with thinking off
-fallback: OpenRouter qwen/qwen3.6-plus with thinking off
+fallback: OpenRouter qwen/qwen3.6-35b-a3b with thinking off
 ```
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.

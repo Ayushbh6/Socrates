@@ -1,6 +1,6 @@
 [package]
 name = "socrates-desktop"
-version = "0.1.0"
+version = "0.1.2"
 description = "Socrates desktop shell"
 authors = ["Socrates"]
 edition = "2021"

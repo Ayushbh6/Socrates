@@ -325,12 +325,16 @@ Google
 
 OpenRouter
   moonshotai/kimi-k2.6
-  z-ai/glm-5.1
-  qwen/qwen3.6-plus
+  z-ai/glm-5.1                  no vision
+  xiaomi/mimo-v2.5-pro          no vision
+  x-ai/grok-build-0.1
+  qwen/qwen3.6-35b-a3b
   deepseek/deepseek-v4-pro   default
-  deepseek/deepseek-v4-flash
+  deepseek/deepseek-v4-flash    no vision
   google/gemma-4-31b-it
 ```
+
+Vision capability must come from the backend model catalog. As of the current OpenRouter metadata check, GLM, MiMo, and both DeepSeek V4 models are text-only; their `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and omitted from provider requests.
 
 Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
 
@@ -377,7 +381,7 @@ The locked fallback compressor is:
 
 ```text
 providerId = openrouter
-modelId = qwen/qwen3.6-plus
+modelId = qwen/qwen3.6-35b-a3b
 thinking = off
 ```
 
@@ -396,7 +400,7 @@ The local/release evaluation gate should continue to run both models on the same
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
 
-The current evaluation selected `deepseek/deepseek-v4-flash` because both candidates preserved all required facts and DeepSeek used fewer output/total tokens. `qwen/qwen3.6-plus` remains the runtime fallback if the primary compressor call fails.
+The current evaluation selected `deepseek/deepseek-v4-flash` because both candidates preserved all required facts and DeepSeek used fewer output/total tokens. `qwen/qwen3.6-35b-a3b` remains the runtime fallback if the primary compressor call fails.
 
 The compressor model is an internal runtime choice. The frontend should not hardcode or expose compressor provider mappings unless a later settings surface is explicitly designed.
 

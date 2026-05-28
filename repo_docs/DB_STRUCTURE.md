@@ -1304,7 +1304,7 @@ Compressor model selection:
 
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash, thinking off
-fallback: OpenRouter qwen/qwen3.6-plus, thinking off
+fallback: OpenRouter qwen/qwen3.6-35b-a3b, thinking off
 ```
 
 The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, trace-handle quality, output length, latency, and cost. The latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower token usage; Qwen remains the runtime fallback. Compression outputs remain summaries and handles over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.

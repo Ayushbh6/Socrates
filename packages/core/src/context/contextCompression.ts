@@ -29,7 +29,7 @@ export const DEFAULT_COMPRESSOR_MODEL = {
 
 export const DEFAULT_COMPRESSOR_FALLBACK_MODEL = {
   providerId: "openrouter" as ProviderId,
-  modelId: "qwen/qwen3.6-plus",
+  modelId: "qwen/qwen3.6-35b-a3b",
 } as const
 
 export type ContextCompressionReason = "precompute" | "threshold" | "emergency" | "manual"

@@ -362,13 +362,13 @@ describe("context compression", () => {
 
     expect(requests.map((request) => `${request.providerId}:${request.modelId}`)).toEqual([
       "openrouter:deepseek/deepseek-v4-flash",
-      "openrouter:qwen/qwen3.6-plus",
+      "openrouter:qwen/qwen3.6-35b-a3b",
     ])
     expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
       "context.compaction.started",
       "context.compaction.completed",
     ])
-    expect(completedModels).toEqual(["openrouter:qwen/qwen3.6-plus"])
+    expect(completedModels).toEqual(["openrouter:qwen/qwen3.6-35b-a3b"])
   })
 
   it("precomputes a snapshot at the lower threshold without returning packed messages", async () => {

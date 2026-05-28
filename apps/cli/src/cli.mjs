@@ -92,7 +92,7 @@ Options:
   --home <path>             Use a custom Socrates data directory.
   --backend-port <port>     Use a fixed backend port.
   --web-port <port>         Use a fixed web port.
-  --runtime-version <tag>   Use a specific GitHub Release tag, e.g. v0.1.0.
+  --runtime-version <tag>   Use a specific GitHub Release tag, e.g. v0.1.2.
   --reset-runtime           Redownload and extract the runtime bundle.
   --help                    Show this help.
 `;

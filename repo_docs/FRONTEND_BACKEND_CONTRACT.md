@@ -347,6 +347,9 @@ type ModelOption = {
   label: string
   thinkingOptions: ModelThinkingOption[]
   defaultThinkingOptionId: string
+  capabilities?: {
+    vision: boolean
+  }
   contextWindowTokens?: number
   isDefault: boolean
 }
@@ -366,6 +369,7 @@ Frontend rule:
 ```text
 render model and thinking controls from this response
 do not hardcode selectable model ids in the composer
+use capabilities.vision === false to warn users and avoid sending image bytes to non-vision models
 ```
 
 ### `GET /api/projects`
