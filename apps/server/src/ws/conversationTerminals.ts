@@ -128,13 +128,13 @@ export class ConversationTerminalManager {
       })
     }
     const row = this.store.findTerminal(terminal.conversationId, terminal.terminalId)
-    if (!row || row.status !== "awaiting_input") {
-      throw new SocratesError("terminal_not_awaiting_input", "Terminal is not currently waiting for user input.", {
+    if (!row || (row.status !== "awaiting_input" && row.status !== "running")) {
+      throw new SocratesError("terminal_not_accepting_input", "Terminal is not currently accepting user input.", {
         details: { terminalId: terminal.terminalId },
         recoverable: true,
       })
     }
-    const inputText = `${command.payload.text}${command.payload.submit === false ? "" : "\n"}`
+    const inputText = terminalInputText(command.payload)
     terminal.session.writeProcessInput(terminal.processId, inputText)
     terminal.awaitingInput = false
     terminal.status = "running"
@@ -262,7 +262,7 @@ export class ConversationTerminalManager {
   }
 
   private async terminalStatus(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
-    const runtime = this.requireRuntimeOrStored(input, context)
+    const runtime = this.resolveTerminal(input, context)
     if ("session" in runtime) {
       const output = await runtime.session.run({ ...input, operation: "status", processId: runtime.processId }, context)
       this.updateFromOutput(runtime, output)
@@ -272,7 +272,7 @@ export class ConversationTerminalManager {
   }
 
   private async terminalOutput(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
-    const runtime = this.requireRuntimeOrStored(input, context)
+    const runtime = this.resolveTerminal(input, context)
     if ("session" in runtime) {
       const output = await runtime.session.run({ ...input, operation: "output", processId: runtime.processId }, context)
       this.updateFromOutput(runtime, output)
@@ -282,7 +282,7 @@ export class ConversationTerminalManager {
   }
 
   private async terminalStop(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
-    const runtime = this.requireRuntimeOrStored(input, context)
+    const runtime = this.resolveTerminal(input, context)
     if ("session" in runtime) {
       const output = await runtime.session.run({ ...input, operation: "stop", processId: runtime.processId }, context)
       this.stopRuntimeTerminal(runtime)
@@ -292,20 +292,46 @@ export class ConversationTerminalManager {
     return storedTerminalOutput("stop", { ...runtime, status: "stopped" })
   }
 
-  private requireRuntimeOrStored(input: BashToolInput, context: ToolExecutorContext): RuntimeTerminal | ReturnType<typeof storedTerminalFromRow> {
-    const identifier = input.terminalId ?? input.processId
-    if (!identifier) {
-      throw new SocratesError("terminal_id_required", "A terminalId or processId is required.", { recoverable: true })
+  private resolveTerminal(input: BashToolInput, context: ToolExecutorContext): RuntimeTerminal | ReturnType<typeof storedTerminalFromRow> {
+    const identifier = input.terminalId ?? input.processId ?? input.name ?? input.target
+    if (identifier) {
+      const runtime = this.findRuntimeTerminal(context.conversationId, identifier)
+      if (runtime) {
+        return runtime
+      }
+      const row = this.store.findTerminal(context.conversationId, identifier)
+      if (!row) {
+        throw new SocratesError("terminal_not_found", `No Terminal matched "${identifier}".`, { details: { target: identifier }, recoverable: true })
+      }
+      return storedTerminalFromRow(this.store, row.conversationId, row.id)
     }
-    const runtime = this.findRuntimeTerminal(context.conversationId, identifier)
-    if (runtime) {
-      return runtime
+
+    const activeRuntime = [...this.terminals.values()].filter(
+      (terminal) => terminal.conversationId === context.conversationId && isActiveTerminalStatus(terminal.status),
+    )
+    if (activeRuntime.length === 1) {
+      const terminal = activeRuntime[0]
+      if (terminal) {
+        return terminal
+      }
     }
-    const row = this.store.findTerminal(context.conversationId, identifier)
-    if (!row) {
-      throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { identifier }, recoverable: true })
+    if (activeRuntime.length > 1) {
+      throw ambiguousTerminalError(activeRuntime.map(runtimeTerminalCandidate))
     }
-    return storedTerminalFromRow(this.store, row.conversationId, row.id)
+
+    const activeStored = this.store.listConversationTerminals(context.conversationId).filter((terminal) => isActiveTerminalStatus(terminal.status))
+    if (activeStored.length === 1) {
+      const terminal = activeStored[0]
+      if (terminal) {
+        return terminal
+      }
+    }
+    if (activeStored.length > 1) {
+      throw ambiguousTerminalError(activeStored.map(storedTerminalCandidate))
+    }
+    throw new SocratesError("terminal_not_found", "No active Terminal is available. Start a Terminal first or provide a Terminal name.", {
+      recoverable: true,
+    })
   }
 
   private handleRuntimeOutput(terminalId: string, context: ToolExecutorContext, chunk: { stream: "stdout" | "stderr" | "log"; text: string }): void {
@@ -403,10 +429,19 @@ export class ConversationTerminalManager {
   }
 
   private findRuntimeTerminal(conversationId: string | undefined, identifier: string): RuntimeTerminal | undefined {
-    return [...this.terminals.values()].find(
+    const exact = [...this.terminals.values()].find(
       (terminal) =>
         (!conversationId || terminal.conversationId === conversationId) && (terminal.terminalId === identifier || terminal.processId === identifier),
     )
+    if (exact) {
+      return exact
+    }
+    const byName = [...this.terminals.values()].filter((terminal) => (!conversationId || terminal.conversationId === conversationId) && terminal.name === identifier)
+    const activeByName = byName.filter((terminal) => isActiveTerminalStatus(terminal.status))
+    if (activeByName.length === 1) {
+      return activeByName[0]
+    }
+    return byName.length === 1 ? byName[0] : undefined
   }
 
   private emitTerminalStatus(
@@ -540,6 +575,28 @@ const storedTerminalOutput = (operation: "status" | "output" | "stop", terminal:
   },
 })
 
+const isActiveTerminalStatus = (status: TerminalStatus): boolean => status === "running" || status === "awaiting_input"
+
+const runtimeTerminalCandidate = (terminal: RuntimeTerminal) => ({
+  name: terminal.name,
+  status: terminal.status,
+  command: terminal.command,
+  cwd: terminal.workspacePath,
+})
+
+const storedTerminalCandidate = (terminal: ReturnType<SocratesStore["listConversationTerminals"]>[number]) => ({
+  name: terminal.name,
+  status: terminal.status,
+  command: terminal.command,
+  cwd: terminal.cwd,
+})
+
+const ambiguousTerminalError = (candidates: Array<{ name: string; status: string; command: string; cwd: string }>): SocratesError =>
+  new SocratesError("terminal_ambiguous", "Multiple active Terminals are available. Provide the Terminal name to target one.", {
+    details: { candidates },
+    recoverable: true,
+  })
+
 const processStatusToTerminalStatus = (status: string | undefined): TerminalStatus => {
   if (status === "running") {
     return "running"
@@ -571,21 +628,53 @@ const inferTerminalName = (command: string): string => {
   return "terminal"
 }
 
+const terminalInputText = (payload: Extract<ClientCommand, { type: "terminal.input" }>["payload"]): string => {
+  if (payload.key) {
+    return terminalKeySequence(payload.key)
+  }
+  return `${payload.text ?? ""}${payload.submit === false ? "" : "\n"}`
+}
+
+const terminalKeySequence = (key: NonNullable<Extract<ClientCommand, { type: "terminal.input" }>["payload"]["key"]>): string => {
+  switch (key) {
+    case "ArrowUp":
+      return "\u001b[A"
+    case "ArrowDown":
+      return "\u001b[B"
+    case "ArrowLeft":
+      return "\u001b[D"
+    case "ArrowRight":
+      return "\u001b[C"
+    case "Enter":
+      return "\r"
+    case "Escape":
+      return "\u001b"
+    case "Ctrl-C":
+      return "\u0003"
+  }
+}
+
 const detectPrompt = (text: string): string | undefined => {
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  const candidate = lines.at(-1)
+  const lines = text.split(/\r?\n/).map((line) => stripAnsi(line).trim()).filter(Boolean)
+  const joined = lines.join(" ")
+  const inquirerLine = [...lines].reverse().find((line) => /\b(select|choose|use arrow-keys|return to submit|press enter)\b|[›❯❯]/i.test(line))
+  const candidate = inquirerLine ?? lines.at(-1)
   if (!candidate) {
     return undefined
+  }
+  if (/\b(select|choose|use arrow-keys|return to submit)\b|[›❯]/i.test(joined)) {
+    return joined.slice(-300)
   }
   if (/(password|token|api\s*key|secret|passphrase)\s*[:?]?$/i.test(candidate)) {
     return candidate
   }
-  if (/(\[[YyNn]\/[YyNn]\]|\([YyNn]\/[YyNn]\)|press enter|select|choose|continue\?|overwrite\?|install\?|proceed\?|:\s*$|\?\s*$)/i.test(candidate)) {
+  if (/(\[[YyNn]\/[YyNn]\]|\([YyNn]\/[YyNn]\)|press enter|select|choose|continue\?|overwrite\?|install\?|proceed\?|:\s*$|\?\s*$|[›❯]\s*)/i.test(candidate)) {
     return candidate
   }
   return undefined
 }
 
 const isSecretPrompt = (prompt: string): boolean => /(password|token|api\s*key|secret|passphrase)/i.test(prompt)
+const stripAnsi = (text: string): string => text.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

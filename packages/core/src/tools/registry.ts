@@ -23,7 +23,7 @@ export class ToolRegistry {
     return tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema,
+      inputSchema: tool.modelInputSchema ?? tool.inputSchema,
     })).concat(additionalTools)
   }
 

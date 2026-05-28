@@ -15,7 +15,7 @@ const socketUrlFromApiBase = (baseUrl: string): string => {
 
 type UseSocratesSocketInput = {
   onEvent: (event: ServerEvent) => void;
-  onError?: (message: string) => void;
+  onError?: (message: string | null) => void;
 };
 
 export function useSocratesSocket({ onEvent, onError }: UseSocratesSocketInput) {
@@ -30,39 +30,60 @@ export function useSocratesSocket({ onEvent, onError }: UseSocratesSocketInput) 
   }, [onEvent, onError]);
 
   useEffect(() => {
-    const socket = new WebSocket(socketUrlFromApiBase(socratesApiBaseUrl()));
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconnectAttempts = 0;
     let disposed = false;
-    socketRef.current = socket;
 
-    socket.onopen = () => {
+    const connect = () => {
       if (!disposed) {
-        setIsConnected(true);
+        const socket = new WebSocket(socketUrlFromApiBase(socratesApiBaseUrl()));
+        socketRef.current = socket;
+
+        socket.onopen = () => {
+          if (!disposed) {
+            reconnectAttempts = 0;
+            setIsConnected(true);
+            errorHandlerRef.current?.(null);
+          }
+        };
+        socket.onclose = () => {
+          if (!disposed) {
+            setIsConnected(false);
+            socketRef.current = null;
+            const delay = Math.min(500 * 2 ** reconnectAttempts, 5_000);
+            reconnectAttempts += 1;
+            reconnectTimer = setTimeout(connect, delay);
+          }
+        };
+        socket.onerror = () => {
+          if (!disposed && reconnectAttempts > 0) {
+            errorHandlerRef.current?.("WebSocket connection interrupted. Reconnecting...");
+          }
+        };
+        socket.onmessage = (message) => {
+          if (disposed) {
+            return;
+          }
+          try {
+            const parsed = serverEventSchema.parse(JSON.parse(message.data as string));
+            eventHandlerRef.current(parsed);
+          } catch {
+            errorHandlerRef.current?.("Received an invalid server event.");
+          }
+        };
       }
     };
-    socket.onclose = () => {
-      if (!disposed) {
-        setIsConnected(false);
-      }
-    };
-    socket.onerror = () => {
-      if (!disposed) {
-        errorHandlerRef.current?.("WebSocket connection failed.");
-      }
-    };
-    socket.onmessage = (message) => {
-      if (disposed) {
-        return;
-      }
-      try {
-        const parsed = serverEventSchema.parse(JSON.parse(message.data as string));
-        eventHandlerRef.current(parsed);
-      } catch {
-        errorHandlerRef.current?.("Received an invalid server event.");
-      }
-    };
+    connect();
 
     return () => {
       disposed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+      }
+      const socket = socketRef.current;
+      if (!socket) {
+        return;
+      }
       socket.onopen = null;
       socket.onclose = null;
       socket.onerror = null;

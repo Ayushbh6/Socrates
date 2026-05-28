@@ -76,15 +76,18 @@ import {
   agentAnswerDeltaEventSchema,
   agentThinkingDeltaEventSchema,
   bashToolInputSchema,
+  bashToolModelInputSchema,
   editToolInputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
+  mcpRegistryToolModelInputSchema,
   normalizedToolCallSchema,
   readToolInputSchema,
   readToolOutputSchema,
   searchToolInputSchema,
   toolExecutionResultSchema,
   traceRetrieveToolInputSchema,
+  traceRetrieveToolModelInputSchema,
   traceRetrieveToolOutputSchema,
   conversationToolRunSchema,
   editToolOutputSchema,
@@ -557,6 +560,7 @@ describe("websocket client command contracts", () => {
     ),
     clientCommandSchema.safeParse(envelope("terminal.stop", { terminalId: "term_1", reason: "Done" })),
     clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1", text: "yes", submit: true })),
+    clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1", key: "ArrowDown" })),
     clientCommandSchema.safeParse(envelope("terminal.rename", { terminalId: "term_1", name: "frontend" })),
   ]
 
@@ -566,6 +570,7 @@ describe("websocket client command contracts", () => {
 
   it("rejects unknown command types and malformed payloads", () => {
     expect(clientCommandSchema.safeParse(envelope("chat.unknown", {})).success).toBe(false)
+    expect(clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1" })).success).toBe(false)
     expect(
       clientCommandSchema.safeParse(
         envelope("chat.message.send", {
@@ -787,6 +792,8 @@ describe("tool contracts", () => {
   it("parses the six V1 model-visible tool inputs", () => {
     expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
+    expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
+    expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)
     expect(
       editToolInputSchema.safeParse({
         operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }],
@@ -837,11 +844,26 @@ describe("tool contracts", () => {
     expect(bashToolInputSchema.safeParse({ operation: "start", command: "pnpm dev" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output", processId: "proc_1", outputSequence: 0 }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "status", terminalId: "term_1" }).success).toBe(true)
-    expect(bashToolInputSchema.safeParse({ operation: "output" }).success).toBe(false)
+    expect(bashToolInputSchema.safeParse({ operation: "output" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "stop" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "status", name: "dev-server" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "output", target: "frontend" }).success).toBe(true)
+    expect(bashToolModelInputSchema.safeParse({ operation: "stop" }).success).toBe(true)
+    expect(bashToolModelInputSchema.safeParse({ operation: "stop", name: "dev-server" }).success).toBe(true)
+    expect(bashToolModelInputSchema.safeParse({ operation: "stop", terminalId: "term_1" }).success).toBe(false)
+    expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", query: "README", role: "assistant" }).success).toBe(true)
     expect(
       traceRetrieveToolInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1", startTurnNo: 2, turnLimit: 5 }).success,
     ).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", query: "README", role: "assistant" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1" }).success).toBe(false)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverId: "srv_1" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", turnNo: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", role: "system" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ turnId: "turn_1" }).success).toBe(false)
@@ -849,6 +871,7 @@ describe("tool contracts", () => {
       traceRetrieveToolOutputSchema.safeParse({
         results: [
           {
+            resultNumber: 1,
             handle: "tdoc_1",
             kind: "message",
             projectId: project.id,
@@ -864,7 +887,9 @@ describe("tool contracts", () => {
               updatedAt: "2026-05-25T00:00:00.000Z",
               isCurrentConversation: false,
             },
+            conversationTitle: "Trace source",
             inspectArgs: { operation: "inspect", messageId: "msg_1" },
+            inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
             title: "User message",
             snippet: "README context",
             score: 0.5,
@@ -872,6 +897,7 @@ describe("tool contracts", () => {
             messageRole: "user",
           },
           {
+            resultNumber: 2,
             handle: "tdoc_2",
             kind: "exact_source",
             projectId: project.id,
@@ -889,6 +915,7 @@ describe("tool contracts", () => {
               updatedAt: "2026-05-25T00:00:00.000Z",
               isCurrentConversation: true,
             },
+            conversationTitle: "Trace source",
             turnNo: 2,
             messageRole: "user",
             truncation: { truncated: false, charLimit: 20_000, returnedLength: 12 },

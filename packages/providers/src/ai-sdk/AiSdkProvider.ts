@@ -102,7 +102,7 @@ export class AiSdkProvider implements ModelProvider {
 
       for await (const part of result.fullStream) {
         streamTimeout.refresh()
-        if (part.type === "reasoning-delta" && part.text) {
+        if (part.type === "reasoning-delta" && part.text && request.runtimeConfig.thinkingEnabled) {
           yield { type: "model.reasoning.delta", text: part.text }
         }
         if (part.type === "text-delta" && part.text) {
@@ -513,7 +513,9 @@ const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => 
 export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => ({
   openrouter: {
     usage: { include: true },
-    ...(request.runtimeConfig.thinkingEnabled ? { reasoning: { enabled: true, exclude: false } } : {}),
+    reasoning: request.runtimeConfig.thinkingEnabled
+      ? { enabled: true, exclude: false }
+      : { enabled: false, effort: "none", exclude: true },
   },
 })
 

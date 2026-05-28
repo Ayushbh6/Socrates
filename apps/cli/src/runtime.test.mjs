@@ -44,6 +44,7 @@ describe("Socrates CLI runtime helpers", () => {
       runtimeVersion: "v0.1.0",
       resetRuntime: true,
     });
+    expect(parseArgs(["--resest-runtime"])).toEqual({ resetRuntime: true });
   });
 
   it("selects release assets and rejects missing assets", () => {

@@ -47,15 +47,16 @@ export class McpRuntime {
 
   handleRegistryTool(input: McpRegistryToolInput): Promise<McpRegistryToolOutput> {
     this.ensureDefaults()
+    const serverName = input.serverName ?? input.serverId ?? input.preset ?? "playwright"
     switch (input.operation) {
       case "list":
         return Promise.resolve(this.list())
       case "describe":
-        return this.describe(input.serverId ?? input.preset ?? "playwright")
+        return this.describe(serverName)
       case "check":
-        return this.check(input.serverId ?? input.preset ?? "playwright")
+        return this.check(serverName)
       case "configure":
-        return Promise.resolve(this.configure(input.preset ?? input.serverId ?? "playwright"))
+        return Promise.resolve(this.configure(input.preset ?? input.serverName ?? input.serverId ?? "playwright"))
     }
   }
 

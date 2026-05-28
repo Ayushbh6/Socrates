@@ -196,11 +196,11 @@ Provider-specific tool-call formats must not leak into `packages/core/tools`, `a
 
 The provider request may include these tools, but the provider layer must treat the tool definitions as data from Socrates. It must not define filesystem, shell, git, patch, or trace behavior itself.
 
-The `bash` tool id is stable for provider compatibility, but product and prompt copy should call it Terminal. Provider adapters must pass the Socrates tool schema through unchanged; core/server/workspace own POSIX, PowerShell, cmd, and conversation-scoped Terminal behavior. Prompt guidance should tell the model to use PowerShell-compatible commands on Windows, use `operation: "start"` for dev servers/watchers/long commands, inspect existing terminal context before starting duplicates, use `operation: "status"`/`"output"`/`"stop"` by `terminalId` or `processId`, and ask the user when a Terminal awaits input. Providers must not invent separate terminal, process, PowerShell, or cmd tools.
+The `bash` tool id is stable for provider compatibility, but product and prompt copy should call it Terminal. Provider adapters must pass the Socrates tool schema through unchanged; core/server/workspace own POSIX, PowerShell, cmd, and conversation-scoped Terminal behavior. Prompt guidance should tell the model to use PowerShell-compatible commands on Windows, use `operation: "start"` for dev servers/watchers/long commands, inspect existing terminal context before starting duplicates, use `operation: "status"`/`"output"`/`"stop"` with no target when exactly one active Terminal exists or with the human Terminal name when needed, and ask the user when a Terminal awaits input. Providers must not invent separate terminal, process, PowerShell, or cmd tools.
 
 Normalized tool calls may carry opaque provider metadata required for same-turn continuation, for example `providerMetadata.google.thoughtSignature` on Gemini function calls. Providers must preserve this metadata when normalizing tool-call parts and when converting same-turn assistant tool-call messages back into provider messages. Core may carry it only in the active in-memory turn loop; server history loading must not add old thought signatures to later prompts.
 
-Image handling depends on provider capability. Providers with native vision support may receive image inputs through the normalized message/tool-result path when the user or `read` tool supplies an image. Non-vision providers should receive bounded OCR text, image metadata, or a generated visual description when available. Provider adapters must keep this normalized so vision support does not leak provider-specific image payloads into `apps/web`, `apps/server`, or unrelated core code.
+Image handling depends on provider capability. Providers with native vision support may receive image inputs through the normalized message/tool-result path when the user or `read` tool supplies an image. Vision-capable OpenRouter, OpenAI, and Google calls must keep native image parts and Socrates tool schemas in the same AI SDK request; images are not a reason to strip tools. Non-vision providers receive bounded omission/reference text, OCR text, image metadata, or a generated visual description when available. Provider adapters must keep this normalized so vision support does not leak provider-specific image payloads into `apps/web`, `apps/server`, or unrelated core code.
 
 ## Thinking Carry-Forward Rule
 
@@ -334,7 +334,7 @@ OpenRouter
   google/gemma-4-31b-it
 ```
 
-Vision capability must come from the backend model catalog. As of the current OpenRouter metadata check, GLM, MiMo, and both DeepSeek V4 models are text-only; their `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and omitted from provider requests.
+Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, MiMo, and the DeepSeek V4 models, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests.
 
 Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
 

@@ -132,12 +132,31 @@ export class TerminalStore extends StoreBase {
   }
 
   findTerminalRow(conversationId: string, identifier: string): TerminalSessionRow | undefined {
-    return this.handle.db
+    const exact = this.handle.db
       .select()
       .from(terminalSessions)
       .where(and(eq(terminalSessions.conversationId, conversationId), or(eq(terminalSessions.id, identifier), eq(terminalSessions.processId, identifier))))
       .limit(1)
       .get()
+    if (exact) {
+      return exact
+    }
+    const nameMatches = this.handle.db
+      .select()
+      .from(terminalSessions)
+      .where(and(eq(terminalSessions.conversationId, conversationId), eq(terminalSessions.name, identifier)))
+      .orderBy(desc(terminalSessions.updatedAt))
+      .all()
+    const activeMatches = nameMatches.filter((row) => row.status === "running" || row.status === "awaiting_input")
+    const activeMatch = activeMatches[0]
+    if (activeMatches.length === 1 && activeMatch) {
+      return activeMatch
+    }
+    const onlyMatch = nameMatches[0]
+    if (nameMatches.length === 1 && onlyMatch) {
+      return onlyMatch
+    }
+    return undefined
   }
 
   listConversationTerminals(conversationId: string, limit = 20): ConversationTerminal[] {
@@ -160,11 +179,11 @@ export class TerminalStore extends StoreBase {
     }
     return [
       "Active Terminal Context",
-      "These terminals are current conversation state. Check them before starting duplicate dev servers. Use bash status/output/stop with terminalId when needed.",
+      "These terminals are current conversation state. Check them before starting duplicate dev servers. Use bash status/output/stop with the terminal name, or omit the target when exactly one Terminal is active.",
       ...terminals.map((terminal) => {
         const tail = [terminal.output.stdout, terminal.output.stderr].filter(Boolean).join("\n").slice(-2_000)
         return [
-          `- ${terminal.name} (${terminal.terminalId})`,
+          `- name: ${terminal.name}`,
           `  status: ${terminal.status}${terminal.awaitingInput ? " awaiting user input" : ""}`,
           `  command: ${terminal.command}`,
           `  cwd: ${terminal.cwd}`,

@@ -269,7 +269,7 @@ Workspace/server implementation:
 - `edit` supports create, overwrite, exact multiline replace, and patch-style edits with diff previews and approval policy.
 - `bash` is the stable model-visible compatibility id for the Terminal tool. User-facing and prompt copy should say Terminal. It uses platform-native shell adapters: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` as fallback. Do not add separate model-visible PowerShell/cmd/process tools unless the contracts change.
 - `bash` uses one non-interactive persistent shell session per active turn for `operation: "run"`, keeps `cwd`/environment across bash calls in that turn, streams output, enforces timeout/output caps, rejects or times out likely interactive commands, and resets the shell after timeout or shell start/write/protocol failures.
-- `bash` supports conversation-scoped Terminal sessions with `operation: "start"`, then `status`/`output`/`stop` by `terminalId` or `processId`. These processes keep bounded in-memory output buffers, stream live output through `tool.call.output` and `terminal.output`, persist terminal/process metadata in `terminal_sessions` and `terminal_output_chunks`, and survive across turns until stopped, deleted with the conversation, cleaned up during workspace switch/shutdown, marked stale on restart, or expired by idle TTL.
+- `bash` supports conversation-scoped Terminal sessions with `operation: "start"`, then `status`/`output`/`stop` by no target when exactly one active Terminal exists or by human Terminal name when needed. Terminal/process ids remain internal for UI/runtime compatibility. These processes keep bounded in-memory output buffers, stream live output through `tool.call.output` and `terminal.output`, persist terminal/process metadata in `terminal_sessions` and `terminal_output_chunks`, and survive across turns until stopped, deleted with the conversation, cleaned up during workspace switch/shutdown, marked stale on restart, or expired by idle TTL.
 - Long blocking `bash run` commands can auto-detach into a conversation Terminal after `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds). The UI/product copy says Terminal while the model-visible tool id remains `bash`.
 - Terminal input is user-only. Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`; the frontend shows a Terminal-scoped input box and the backend persists only redacted input markers.
 - Windows command policy auto-allows safe diagnostics such as `Get-Location`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Command`, `where`, Python version checks, and safe git inspection; installs, dev servers, Docker, network commands, deletes, migrations, and git mutations remain approval-gated by default.
@@ -345,9 +345,9 @@ Planned the next `trace_retrieve` direction before implementation.
 Key decisions:
 
 - `trace_retrieve` should evolve from V0 tool-call lookup into hybrid search/inspect retrieval over Socrates history.
-- The model-facing interface should be high-level: natural-language `query`, scope, conversation hint, evidence type, tool name, path, command, and returned handles.
+- The model-facing interface should be high-level: natural-language `query`, scope, conversation hint, evidence type, tool name, path, command, returned `resultNumber`, and natural inspect filters.
 - Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` should be follow-up handles returned by search or backend-filled context, not values the model must know upfront.
-- Retrieval should support broad search first, then exact bounded inspect of a returned handle when precision matters.
+- Retrieval should support broad search first, then exact bounded inspect of a returned `resultNumber` or natural filter when precision matters.
 - The backend should introduce an internal trace index layer:
 
 ```text
@@ -380,7 +380,7 @@ Implemented the retrieval-only `trace_retrieve` upgrade:
 
 - Replaced the V0 `traces` output with search/inspect `results`.
 - Search accepts natural `query`, scope, conversation hints, evidence filters, tool/path/command filters, date filters, and bounded limits.
-- Inspect accepts returned handles or ids and returns exact bounded source content.
+- Inspect accepts returned `resultNumber`, natural filters, or server-side compatibility ids and returns exact bounded source content.
 - Added `trace_documents` and `trace_index_jobs`, plus internal SQLite FTS for lexical trace search.
 - `TraceStore` owns trace indexing, FTS search, exact inspect, and immediate `build_trace_documents` job processing after completed, failed, and cancelled turns.
 - Indexing is new-turn-only; there is no backfill for old DB history.
@@ -399,7 +399,7 @@ Implemented the `turnNo` precision upgrade for `trace_retrieve`:
 - `turnNo` counts user/Q&A turns inside the resolved conversation. `turnNo: 2, role: "user"` means the user message in the second turn.
 - There is intentionally no natural-language ordinal fallback. If Socrates puts "second user message" only in `query` and omits `turnNo`, the backend runs ordinary search.
 - Broad ordinal lookup with `scope = "recent_conversations"` or `scope = "project"` requires a `conversationHint`; ambiguous hints and out-of-range turn numbers return warnings instead of fallback results.
-- Search results now include ready-to-call `inspectArgs`, explicit source ids such as `messageId`/`toolCallId`, and raw source provenance.
+- Search results now include `resultNumber`, inspect hints, conversation provenance, and server-side compatibility source ids for persistence/UI. The model should prefer `resultNumber` over raw ids.
 - Inspecting `conversationId` returns an ordered bounded conversation bundle using `startTurnNo` and `turnLimit`.
 - Exact inspect can fall back to raw persisted rows for returned `messageId`, `toolCallId`, or `turnId` when trace documents are absent. Raw tables remain the source of truth; this is not a trace backfill.
 
@@ -492,3 +492,32 @@ Published the current Terminal v2 plus verified edit/search runtime as GitHub Re
 - The `v0.1.1` GitHub Release contains `SHA256SUMS`, `socrates-runtime-darwin-arm64.zip`, `socrates-runtime-darwin-x64.zip`, and `socrates-runtime-win32-x64.zip`. Existing `@socrates-ai/cli@0.1.0` clients fetch GitHub Releases `latest`, so rerunning `npx @socrates-ai/cli` should download the `v0.1.1` runtime.
 - npm registry publishing of `@socrates-ai/cli@0.1.1` is not complete from this machine because `npm whoami` returned `401 Unauthorized`. `npm publish --access public --dry-run` passed from `apps/cli`, so the remaining npm step is authentication plus real publish.
 - Windows first-run/update extraction is a known serious UX issue: the Windows runtime zip is about 496 MiB and the CLI currently extracts with PowerShell `Expand-Archive`, which can take extremely long on some laptops when combined with many files, NTFS writes, and antivirus scanning. Fixing Windows runtime extraction/package size/progress should be treated as the next release/install-performance priority before broad Windows testing.
+
+## v0.1.2 Vision, Tooling, And Runtime-Owned Handles
+
+Prepared the v0.1.2 runtime slice for the npm CLI release path:
+
+- Vision-capable OpenRouter, OpenAI, and Google calls keep native image parts and the full Socrates tool set in the same AI SDK request. The previous OpenRouter workaround that omitted tools when images were present was removed.
+- Composer image attachments are copied into `<workspace>/.socrates/attachments/` and remain referenced in the user text so Socrates can reopen exact files later. Vision models receive native image parts; non-vision models receive clear omission/reference text instead of image bytes.
+- Context compression no longer serializes base64 image bytes into compressor prompts. Recent native image parts remain available to the actual model call, while compressed history keeps compact metadata and `.socrates/attachments` references.
+- The Socrates prompt now explicitly tells vision-capable models to inspect images as native visual inputs and still use tools until enough evidence has been gathered.
+- OpenRouter thinking off remains explicit through `providerOptions.openrouter.reasoning = { effort: "none", exclude: true }`, including provider request-shape coverage.
+- `search` now defaults to 20 results, hard-caps model-requested results at 50, skips generated/vendor folders by default, and emits warnings when output is capped or paths are skipped.
+- Terminal stdin is usable for running Terminals, not only perfectly detected awaiting-input rows. The UI supports raw input plus quick keys for arrow navigation, Enter, Escape, and Ctrl-C.
+- Cancelled streaming preserves partial assistant text through stop/reload instead of letting thinking/tool rows hide or replace the intermediate answer.
+- Model-facing tool schemas and prompt context no longer require Socrates to type opaque runtime ids. `bash` status/output/stop can omit the target when exactly one active Terminal exists or use a human Terminal name such as `dev-server`; terminal ids and process ids remain internal for UI/runtime compatibility only.
+- `trace_retrieve` search returns numbered results and inspect hints. Model-facing inspect should use `resultNumber` or natural filters such as `conversationHint`, `turnNo`, `role`, `query`, `paths`, or `command`; raw ids remain server-side compatibility only.
+- Tool results sent back into the next model step are sanitized to strip opaque ids from the model-visible output body while preserving provider-required `toolCallId` in the protocol wrapper and full ids in persistence/UI.
+- `mcp_registry` model-facing inputs prefer `preset` or `serverName`; opaque server ids are internal/backward-compatible.
+- WebSocket reconnect/backoff clears transient connection errors after reconnect and keeps visible assistant/terminal state recoverable through refresh.
+
+Validation commands passed for this slice:
+
+```text
+pnpm --filter @socrates/contracts test
+pnpm --filter @socrates/core test
+pnpm --filter @socrates/server test
+pnpm --filter web typecheck
+pnpm --filter @socrates/workspace test
+pnpm --filter @socrates/providers test
+```

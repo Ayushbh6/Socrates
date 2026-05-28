@@ -76,6 +76,7 @@ export type ToolPolicyDecision =
 
 export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
   name: ToolName
+  modelInputSchema?: ModelToolDefinition["inputSchema"]
   resultSchema: NonNullable<ModelToolDefinition["resultSchema"]>
   permission: ToolPermission
   executeLane: "parallel" | "mutation"

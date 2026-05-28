@@ -4,12 +4,14 @@ import { ChevronRight, Circle, Send, Square, SquareTerminal } from "lucide-react
 import { useMemo, useState } from "react";
 import type { ConversationTerminal } from "@socrates/contracts";
 
+type TerminalInputKey = "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C";
+
 interface TerminalPanelProps {
   terminals: ConversationTerminal[];
   isCollapsed: boolean;
   onToggleCollapsed: () => void;
   onStop: (terminalId: string) => void;
-  onInput: (terminalId: string, text: string, submit?: boolean) => void;
+  onInput: (terminalId: string, input: { text?: string; key?: TerminalInputKey; submit?: boolean }) => void;
 }
 
 export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onStop, onInput }: TerminalPanelProps) {
@@ -86,13 +88,18 @@ function TerminalPane({ terminal, onStop, onInput }: { terminal: ConversationTer
   const shell = [terminal.platform, terminal.shellKind, terminal.shellExecutable].filter(Boolean).join(" / ");
   const canStop = terminal.status === "running" || terminal.status === "awaiting_input";
   const needsInput = terminal.awaitingInput || terminal.status === "awaiting_input";
+  const canSendInput = terminal.status === "running" || terminal.status === "awaiting_input";
 
   const sendInput = () => {
     if (!input) {
       return;
     }
-    onInput(terminal.terminalId, input, true);
+    onInput(terminal.terminalId, { text: input, submit: true });
     setInput("");
+  };
+
+  const sendKey = (key: TerminalInputKey) => {
+    onInput(terminal.terminalId, { key });
   };
 
   return (
@@ -133,12 +140,21 @@ function TerminalPane({ terminal, onStop, onInput }: { terminal: ConversationTer
       ) : (
         <div className="bg-gray-950 px-3 py-6 text-center font-mono text-[11px] text-gray-500">No output yet.</div>
       )}
-      {needsInput ? (
-        <div className="border-t border-amber-100 bg-amber-50 px-3 py-3">
+      {canSendInput ? (
+        <div className={`border-t px-3 py-3 ${needsInput ? "border-amber-100 bg-amber-50" : "border-gray-100 bg-gray-50"}`}>
           {terminal.lastPrompt ? <p className="mb-2 text-xs text-amber-800">{terminal.lastPrompt}</p> : null}
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            <KeyButton label="↑" title="Arrow up" onClick={() => sendKey("ArrowUp")} />
+            <KeyButton label="↓" title="Arrow down" onClick={() => sendKey("ArrowDown")} />
+            <KeyButton label="Enter" title="Enter" onClick={() => sendKey("Enter")} />
+            <KeyButton label="Esc" title="Escape" onClick={() => sendKey("Escape")} />
+            <KeyButton label="^C" title="Ctrl-C" onClick={() => sendKey("Ctrl-C")} />
+          </div>
           <div className="flex gap-2">
             <input
-              className="min-w-0 flex-1 rounded-md border border-amber-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-amber-500"
+              className={`min-w-0 flex-1 rounded-md border bg-white px-2 py-1.5 text-sm outline-none ${
+                needsInput ? "border-amber-200 focus:border-amber-500" : "border-gray-200 focus:border-brand-teal-dark"
+              }`}
               type={isSecretPrompt(terminal.lastPrompt) ? "password" : "text"}
               value={input}
               onChange={(event) => setInput(event.target.value)}
@@ -162,6 +178,19 @@ function TerminalPane({ terminal, onStop, onInput }: { terminal: ConversationTer
         </div>
       ) : null}
     </article>
+  );
+}
+
+function KeyButton({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex h-7 min-w-7 items-center justify-center rounded-md border border-gray-200 bg-white px-2 font-mono text-[11px] text-brand-text-light hover:border-brand-teal-dark hover:text-brand-teal-dark"
+      title={title}
+      onClick={onClick}
+    >
+      {label}
+    </button>
   );
 }
 

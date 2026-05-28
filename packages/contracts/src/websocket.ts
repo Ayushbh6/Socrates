@@ -102,10 +102,20 @@ export const terminalStopPayloadSchema = z
 export const terminalInputPayloadSchema = z
   .object({
     terminalId: idSchema,
-    text: z.string(),
+    text: z.string().optional(),
+    key: z.enum(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape", "Ctrl-C"]).optional(),
     submit: z.boolean().optional(),
   })
   .strict()
+  .superRefine((input, context) => {
+    if (input.text === undefined && input.key === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["text"],
+        message: "terminal input requires text or key",
+      })
+    }
+  })
 
 export const terminalRenamePayloadSchema = z
   .object({

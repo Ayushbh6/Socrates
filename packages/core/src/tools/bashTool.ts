@@ -1,4 +1,4 @@
-import { bashToolInputSchema, bashToolOutputSchema } from "@socrates/contracts"
+import { bashToolInputSchema, bashToolModelInputSchema, bashToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool, ToolPolicyDecision } from "./types"
 
 const readOnlyCommandPattern =
@@ -55,8 +55,9 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
 export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bashToolOutputSchema._type> = {
   name: "bash",
   description:
-    "Terminal command execution tool. The compatibility tool id is bash, but product copy should call it Terminal. Behavior is platform-native: POSIX on macOS/Linux and PowerShell/cmd on Windows. Runs from the active project workspace with bounded output and a sanitized user-workspace environment that does not inherit Socrates runtime variables, provider secrets, NODE_ENV, package-manager production/omit flags, or CI. Supports run plus conversation-scoped start/status/output/stop operations. Prefer read/search/edit for structured file work, but use Terminal when a real command is needed.",
+    "Terminal command execution tool. The compatibility tool id is bash, but product copy should call it Terminal. Behavior is platform-native: POSIX on macOS/Linux and PowerShell/cmd on Windows. Runs from the active project workspace with bounded output and a sanitized user-workspace environment that does not inherit Socrates runtime variables, provider secrets, NODE_ENV, package-manager production/omit flags, or CI. Supports run plus conversation-scoped start/status/output/stop operations. Prefer read/search/edit for structured file work, but use Terminal when a real command is needed. For status/output/stop, omit the target when there is exactly one active Terminal, or use the Terminal name shown in context.",
   inputSchema: bashToolInputSchema,
+  modelInputSchema: bashToolModelInputSchema,
   resultSchema: bashToolOutputSchema,
   permission: "execute",
   executeLane: "mutation",

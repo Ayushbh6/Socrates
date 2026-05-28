@@ -29,6 +29,7 @@ export const parseArgs = (argv) => {
         options.noOpen = true;
         break;
       case "--reset-runtime":
+      case "--resest-runtime":
         options.resetRuntime = true;
         break;
       case "--home":

@@ -451,10 +451,10 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Native image content returned by read")
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain('"type":"image"')
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("iVBORw==")
-    expect(streamRequests[1]?.tools).toHaveLength(0)
+    expect(streamRequests[1]?.tools?.map((tool) => tool.name)).toContain("read")
   })
 
-  it("omits tool schemas for OpenRouter turns that already include native image parts", async () => {
+  it("preserves tool schemas for OpenRouter turns that already include native image parts", async () => {
     const streamRequests: ModelRequestLike[] = []
     const countRequests: CountedRequest[] = []
     const provider: ModelProvider = {
@@ -499,8 +499,8 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(0)
-    expect(streamRequests[0]?.tools).toHaveLength(0)
+    expect(countRequests[0]?.toolCount).toBeGreaterThan(0)
+    expect(streamRequests[0]?.tools?.map((tool) => tool.name)).toContain("read")
   })
 
   it("injects user and project context into the system prompt", async () => {

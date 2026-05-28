@@ -217,9 +217,9 @@ Each model-visible tool must live in its own small TypeScript file under `packag
 
 The `read`, `search`, `trace_retrieve`, and `list_project_resources` tools are read-only. They may be auto-allowed when scoped to the project workspace and bounded by output limits.
 
-`trace_retrieve` must stay high-level and intent-based. The model should search by query, scope, conversation hint, evidence type, tool name, path, command, or returned handle. It should not be expected to know opaque database ids before retrieval.
+`trace_retrieve` must stay high-level and intent-based. The model should search by query, scope, conversation hint, evidence type, tool name, path, command, or returned result number. It should not be expected to know opaque database ids before retrieval.
 
-`conversationId`, `turnId`, `messageId`, and `toolCallId` may be accepted only as follow-up inspect handles or backend-filled context. They are not the primary model-facing retrieval interface.
+`conversationId`, `turnId`, `messageId`, `toolCallId`, terminal ids, process ids, provider ids, and other opaque runtime ids may remain internal for storage, UI events, provider protocol correlation, and backwards compatibility. They must not be required or recommended in model-authored tool inputs.
 
 Search and inspect results must include conversation provenance when the source belongs to a conversation. Socrates should use `conversation.title` as the human-readable location and must only say a source came from "this conversation" or "current chat" when `conversation.isCurrentConversation` is true.
 
@@ -230,10 +230,10 @@ Trace retrieval is search-then-inspect:
 ```text
 search
   natural-language, scoped, hybrid retrieval
-  returns compact evidence plus handles
+  returns compact numbered evidence plus provenance
 
 inspect
-  exact bounded retrieval by returned handle/id
+  exact bounded retrieval by returned resultNumber or natural filters
   returns raw source text or exact tool evidence
 ```
 
@@ -259,13 +259,13 @@ Generated plotting/data scripts should save charts or artifacts to files and pri
 
 The `bash` tool id is the only V1 model-visible command execution tool, but product/UI/prompt copy should call it Terminal. It may run git, package managers, test commands, Docker, dev servers, and other shell commands, but policy decides whether each command is auto-allowed, approval-gated, or denied. Internally it is platform-native: POSIX on macOS/Linux, PowerShell-first on Windows, and cmd fallback. Do not add separate model-visible PowerShell, cmd, terminal, or process tools without updating contracts. Destructive, network, install, git mutation, delete, migration, and outside-workspace commands require approval by default.
 
-Long-running shell work must use `bash` process operations: `start` to launch a conversation-scoped Terminal, then `status`, `output`, and `stop` by `terminalId` or `processId`. Blocking `run` commands may auto-detach into a Terminal after the configured threshold. Terminals are scoped to `projectId + conversationId + workspacePath`; they survive across turns, are represented in bounded terminal context, and are cleaned up on explicit stop, conversation delete, workspace switch, app shutdown, or idle TTL. If a Terminal awaits input, only the user may send stdin through the frontend; the agent must ask the user and raw stdin must stay redacted from model context and persistence.
+Long-running shell work must use `bash` process operations: `start` to launch a conversation-scoped Terminal, then `status`, `output`, and `stop` with no target when exactly one active Terminal exists or with the human Terminal name when there are multiple candidates. Blocking `run` commands may auto-detach into a Terminal after the configured threshold. Terminals are scoped to `projectId + conversationId + workspacePath`; they survive across turns, are represented in bounded terminal context without exposing opaque ids to the model, and are cleaned up on explicit stop, conversation delete, workspace switch, app shutdown, or idle TTL. If a Terminal awaits input, only the user may send stdin through the frontend; the agent must ask the user and raw stdin must stay redacted from model context and persistence.
 
 Terminal commands already start in the active workspace. Commands that begin by changing into a guessed absolute path outside the active workspace, such as `cd /Users/ayush/Test && ...`, must be rejected with a recoverable error. Relative `cd` inside the workspace and absolute paths used as explicit arguments or destinations may still be allowed by policy and approval.
 
 The agent should prefer `read` for file/document/image inspection and `search` for file discovery or content search because those tools provide bounded structured output. This is a preference, not a hard restriction. If `read` or `search` fails or gives poor output, an approved Terminal fallback such as a local extractor, `cat`, `find`, `grep`, or `pdftotext` may still run. Do not deny a legitimate approved Terminal command solely because a more specialized Socrates tool exists.
 
-Tool outputs must be bounded. `read` uses a default `charLimit` of 20,000 characters, a normal backend per-call cap of 80,000 characters, and explicit truncation metadata when output is cut. Large files, PDFs, documents, slides, command outputs, and trace retrieval results must be paged or summarized instead of dumped wholesale into model context.
+Tool outputs must be bounded. `read` uses a default `charLimit` of 20,000 characters, a normal backend per-call cap of 80,000 characters, and explicit truncation metadata when output is cut. `search` defaults to at most 20 results and has a hard runtime cap of 50 results; generated/vendor directories such as `.git`, `node_modules`, `dist`, `build`, `.next`, `.turbo`, and `coverage` are skipped by default and warnings must tell the model to narrow noisy searches. Large files, PDFs, documents, slides, command outputs, and trace retrieval results must be paged or summarized instead of dumped wholesale into model context.
 
 ## 11. Dangerous Actions Require Approval
 

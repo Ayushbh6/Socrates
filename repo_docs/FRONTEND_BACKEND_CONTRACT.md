@@ -1703,6 +1703,7 @@ type BashToolInput = {
   command?: string
   terminalId?: string
   name?: string
+  target?: string
   processId?: string
   outputSequence?: number
   cwd?: string
@@ -1711,7 +1712,7 @@ type BashToolInput = {
 }
 ```
 
-`operation` defaults to `"run"`. `run` and `start` require `command`; `status`, `output`, and `stop` require `terminalId` or `processId`.
+`operation` defaults to `"run"`. `run` and `start` require `command`. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. `terminalId` and `processId` remain accepted internally for UI and backwards compatibility, but they are not required or recommended in model-authored inputs.
 
 Output:
 
@@ -1760,7 +1761,7 @@ Rules:
 - Default timeout is 120,000 milliseconds.
 - The model-visible compatibility tool id remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
 - `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
-- `start` launches a conversation-scoped Terminal and returns quickly with `terminalId`, `processId`, shell metadata, status, and `nextOutputSequence`. `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning the command. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation.
+- `start` launches a conversation-scoped Terminal and returns quickly with runtime metadata, shell metadata, status, and `nextOutputSequence`. `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning the command. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
 - `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
 - Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, previously running terminals are marked `stale`; Socrates does not reattach to orphaned OS processes.
 - Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
@@ -1785,17 +1786,17 @@ Before Python installs/runs, the backend injects compact workspace environment h
 
 Retrieves older Socrates conversation and execution evidence only when useful. This is a hybrid retrieval tool over project history, not a raw database id lookup.
 
-The model-visible interface should stay high-level. Socrates should normally search by natural-language intent, scope, conversation hint, tool kind, path, command, or desired evidence type. Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` are follow-up handles returned by search results, not values the model is expected to know before retrieval.
+The model-visible interface should stay high-level. Socrates should normally search by natural-language intent, scope, conversation hint, tool kind, path, command, result number, or desired evidence type. Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` are internal compatibility fields and must not be required from the model before retrieval.
 
 `trace_retrieve` supports two conceptual operations:
 
 ```text
 search
   broad retrieval over indexed history
-  returns compact evidence, snippets, scores, and handles
+  returns compact numbered evidence, snippets, scores, provenance, and inspect hints
 
 inspect
-  exact bounded retrieval by returned handle/id
+  exact bounded retrieval by returned resultNumber or natural filters
   returns raw source text or exact tool evidence when precision matters
 ```
 
@@ -1822,6 +1823,13 @@ type TraceRetrieveToolInput =
     }
   | {
       operation: "inspect"
+      resultNumber?: number
+      query?: string
+      conversationHint?: string
+      turnNo?: number
+      role?: "user" | "assistant" | "any"
+      paths?: string[]
+      command?: string
       handle?: string
       conversationId?: string
       turnId?: string
@@ -1836,7 +1844,7 @@ type TraceRetrieveToolInput =
 }
 ```
 
-The current schema is the search/inspect shape above. Older id-first lookup inputs are intentionally not part of the primary model-facing interface.
+The model-facing schema exposes `resultNumber` and natural inspect filters. Older handle/id-first lookup inputs remain server-side compatibility only and must not be described as the primary model-facing interface.
 
 Output:
 
@@ -1844,6 +1852,7 @@ Output:
 type TraceRetrieveToolOutput = {
   results: Array<
     | {
+        resultNumber?: number
         handle: string
         kind: "message" | "tool_call" | "shell" | "file" | "patch" | "error" | "turn_summary" | "conversation_summary" | "verbatim_anchor"
         projectId: string
@@ -1865,6 +1874,7 @@ type TraceRetrieveToolOutput = {
         }
         inspectArgs: {
           operation: "inspect"
+          resultNumber?: number
           handle?: string
           conversationId?: string
           turnId?: string
@@ -1931,11 +1941,11 @@ Rules:
 - For ordinal recall, Socrates must pass structured `turnNo` and optional `role`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn.
 - The backend must not infer ordinal intent from query text. If the query says "second user message" but `turnNo` is omitted, the call is a normal lexical/exact search.
 - `turnNo` with `recent_conversations` or `project` requires `conversationHint`. If the hint resolves to multiple conversations or the turn is out of range, return an empty result with a warning rather than falling back.
-- Search results must include stable handles/ids and ready-to-call `inspectArgs` so the model can perform exact follow-up inspection without guessing ids.
+- Search results must include `resultNumber`, human-readable provenance, and natural inspect hints so the model can perform exact follow-up inspection without guessing ids. Internal ids and `inspectArgs` may still be persisted or returned for compatibility, but they are not the preferred model-facing path.
 - Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
 - `conversationId` inspect returns a bounded ordered conversation bundle. Use `startTurnNo` and `turnLimit` to page by turns.
 - Large outputs must be paged or truncated with `TruncationMetadata`.
-- Search results are compact snippets only. Exact raw content requires `operation: "inspect"` on a returned handle or id.
+- Search results are compact snippets only. Exact raw content requires `operation: "inspect"` with a returned `resultNumber` or natural inspect filters.
 - Raw messages, tool calls, model calls, events, shell output, patches, and errors remain the source of truth. Trace index rows are retrieval documents over that source data, not replacements for it.
 - Conversation summaries and verbatim anchors must not be inserted as fake user messages.
 - Verbatim anchors preserve exact high-value source chunks such as rubrics, user-provided rules, "use this throughout" instructions, canonical examples, or source-of-truth pasted text.

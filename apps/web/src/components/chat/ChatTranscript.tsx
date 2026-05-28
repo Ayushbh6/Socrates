@@ -46,6 +46,7 @@ export function ChatTranscript({
   const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !hasLiveActivity);
   const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
   const historicalStepsByTurn = groupActivityStepsByTurn(activitySteps, toolRuns);
+  const liveToolIds = new Set(liveSteps.flatMap((step) => step.tools.map((tool) => tool.toolCallId)));
   const assistantTurnIds = new Set(
     messages.filter((message) => message.role === "assistant" && message.turnId).map((message) => message.turnId as string),
   );
@@ -74,13 +75,13 @@ export function ChatTranscript({
         {(hasLiveActivity || isStreaming || isCompacting) && (
           <div className="flex justify-start">
             <div className="w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
-              {liveSteps.map((step) => (
+              {liveSteps.map((step, index) => (
                 <ActivityStepView
                   key={step.key}
                   reasoning={step.reasoning}
                   answer={step.answer}
                   tools={step.tools}
-                  approvals={approvals}
+                  approvals={approvalsForLiveStep(step, approvals, liveToolIds, index === liveSteps.length - 1)}
                   defaultOpen
                   onApprovalDecision={onApprovalDecision}
                 />
@@ -299,6 +300,24 @@ function groupActivityStepsByTurn(
   }
   return grouped;
 }
+
+const approvalsForLiveStep = (
+  step: LiveActivityStep,
+  approvals: PendingApproval[],
+  liveToolIds: Set<string>,
+  isLastStep: boolean,
+): PendingApproval[] => {
+  const stepToolIds = new Set(step.tools.map((tool) => tool.toolCallId));
+  return approvals.filter((approval) => {
+    if (!approval.toolCallId) {
+      return isLastStep;
+    }
+    if (stepToolIds.has(approval.toolCallId)) {
+      return true;
+    }
+    return isLastStep && !liveToolIds.has(approval.toolCallId);
+  });
+};
 
 function ThinkingBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
   return (

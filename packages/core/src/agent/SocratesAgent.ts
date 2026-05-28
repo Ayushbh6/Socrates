@@ -91,8 +91,7 @@ export class SocratesAgent {
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
-      const candidateTools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
-      const tools = shouldOmitToolsForNativeImageCall(input.providerId, messages) ? [] : candidateTools
+      const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
       const compactionStartedEvents = new AsyncEventQueue<ContextCompactionLifecycleEvent>()
       const preparedContextPromise = (async () => {
         try {
@@ -226,7 +225,7 @@ export class SocratesAgent {
           type: "tool-result",
           toolCallId: result.toolCallId,
           toolName: result.toolName,
-          output: result,
+          output: sanitizeToolExecutionResultForModel(result),
         })),
       })
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
@@ -459,7 +458,7 @@ const nativeFollowUpMessagesForToolResult = (result: ToolExecutionResult, worksp
       content: [
         {
           type: "text",
-          text: `Native image content returned by read for ${output.path}. Use this image together with the read tool metadata from toolCallId ${result.toolCallId}.`,
+          text: `Native image content returned by read for ${output.path}. Use this image together with the read tool metadata.`,
         },
         { type: "image", mediaType: output.mimeType, data: imageBytes, fileName: path.basename(output.path) },
       ],
@@ -478,12 +477,6 @@ const isReadImageOutput = (value: unknown): value is {
   (value as { kind?: unknown }).kind === "image" &&
   typeof (value as { path?: unknown }).path === "string" &&
   typeof (value as { image?: { nativeVisionSupported?: unknown } }).image?.nativeVisionSupported === "boolean"
-
-const shouldOmitToolsForNativeImageCall = (providerId: ProviderId, messages: ModelMessage[]): boolean =>
-  providerId === "openrouter" && messages.some((message) => messageHasNativeImage(message))
-
-const messageHasNativeImage = (message: ModelMessage): boolean =>
-  Array.isArray(message.content) && message.content.some((part) => part.type === "image")
 
 const readWorkspaceImageForModel = (workspacePath: string, relativePath: string): string | undefined => {
   const workspaceRoot = path.resolve(workspacePath)
@@ -518,6 +511,73 @@ const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): To
       details: error.details,
     },
   })
+
+const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult): ToolExecutionResult => {
+  if (result.ok) {
+    return toolExecutionResultSchema.parse({
+      toolCallId: result.toolCallId,
+      toolName: result.toolName,
+      ok: true,
+      output: sanitizeModelVisibleValue(result.output),
+    })
+  }
+  return toolExecutionResultSchema.parse({
+    toolCallId: result.toolCallId,
+    toolName: result.toolName,
+    ok: false,
+    error: result.error
+      ? {
+          code: result.error.code,
+          message: result.error.message,
+          ...(result.error.details === undefined ? {} : { details: sanitizeModelVisibleValue(result.error.details) }),
+        }
+      : undefined,
+  })
+}
+
+const sanitizeModelVisibleValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeModelVisibleValue)
+  }
+  if (!value || typeof value !== "object") {
+    return value
+  }
+  const record = value as Record<string, unknown>
+  const sanitized: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(record)) {
+    if (isRuntimeOwnedModelKey(key)) {
+      continue
+    }
+    if (key === "source" && child && typeof child === "object" && "id" in child) {
+      continue
+    }
+    sanitized[key] = sanitizeModelVisibleValue(child)
+  }
+  return sanitized
+}
+
+const isRuntimeOwnedModelKey = (key: string): boolean =>
+  key === "id" ||
+  key === "ids" ||
+  key === "handle" ||
+  key === "sourceId" ||
+  key === "sourceIds" ||
+  key === "inspectArgs" ||
+  key === "projectId" ||
+  key === "conversationId" ||
+  key === "conversationIds" ||
+  key === "sessionId" ||
+  key === "turnId" ||
+  key === "messageId" ||
+  key === "toolCallId" ||
+  key === "terminalId" ||
+  key === "processId" ||
+  key === "serverId" ||
+  key === "configId" ||
+  key === "providerId" ||
+  key === "modelCallId" ||
+  key.endsWith("Id") ||
+  key.endsWith("Ids")
 
 const previewJson = (value: unknown): string => {
   const text = JSON.stringify(value)

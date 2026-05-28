@@ -87,7 +87,7 @@ export const searchToolInputSchema = z
     regex: z.boolean().optional(),
     caseSensitive: z.boolean().optional(),
     includeHidden: z.boolean().optional(),
-    maxResults: z.number().int().positive().max(500).optional(),
+    maxResults: z.number().int().positive().max(50).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
@@ -207,6 +207,7 @@ export const bashToolInputSchema = z
     processId: z.string().min(1).optional(),
     terminalId: z.string().min(1).optional(),
     name: z.string().min(1).optional(),
+    target: z.string().min(1).optional(),
     outputSequence: z.number().int().nonnegative().optional(),
     cwd: z.string().min(1).optional(),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
@@ -222,15 +223,31 @@ export const bashToolInputSchema = z
         message: "command is required for run and start operations",
       })
     }
-    if ((operation === "status" || operation === "output" || operation === "stop") && !input.processId && !input.terminalId) {
+  })
+export type BashToolInput = z.infer<typeof bashToolInputSchema>
+
+export const bashToolModelInputSchema = z
+  .object({
+    operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+    command: z.string().min(1).optional(),
+    name: z.string().min(1).optional(),
+    target: z.string().min(1).optional(),
+    outputSequence: z.number().int().nonnegative().optional(),
+    cwd: z.string().min(1).optional(),
+    timeoutMs: z.number().int().positive().max(600_000).optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const operation = input.operation ?? "run"
+    if ((operation === "run" || operation === "start") && !input.command) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["processId"],
-        message: "processId or terminalId is required for status, output, and stop operations",
+        path: ["command"],
+        message: "command is required for run and start operations",
       })
     }
   })
-export type BashToolInput = z.infer<typeof bashToolInputSchema>
 
 export const bashToolOutputSchema = z
   .object({
@@ -319,6 +336,13 @@ export type TraceRetrieveSearchInput = z.infer<typeof traceRetrieveSearchInputSc
 export const traceRetrieveInspectArgsSchema = z
   .object({
     operation: z.literal("inspect"),
+    resultNumber: z.number().int().positive().max(20).optional(),
+    query: z.string().min(1).optional(),
+    conversationHint: z.string().min(1).optional(),
+    turnNo: z.number().int().positive().max(10_000).optional(),
+    role: traceRetrieveRoleSchema.optional(),
+    paths: z.array(z.string().min(1)).max(20).optional(),
+    command: z.string().min(1).optional(),
     handle: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
     turnId: z.string().min(1).optional(),
@@ -331,8 +355,8 @@ export const traceRetrieveInspectArgsSchema = z
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
-  .refine((input) => Boolean(input.handle ?? input.conversationId ?? input.turnId ?? input.messageId ?? input.toolCallId), {
-    message: "inspect requires handle, conversationId, turnId, messageId, or toolCallId",
+  .refine((input) => Boolean(input.resultNumber ?? input.query ?? input.conversationHint ?? input.turnNo ?? input.command ?? input.paths ?? input.handle ?? input.conversationId ?? input.turnId ?? input.messageId ?? input.toolCallId), {
+    message: "inspect requires resultNumber, natural filters, handle, conversationId, turnId, messageId, or toolCallId",
   })
 export type TraceRetrieveInspectArgs = z.infer<typeof traceRetrieveInspectArgsSchema>
 
@@ -341,6 +365,28 @@ export type TraceRetrieveInspectInput = z.infer<typeof traceRetrieveInspectInput
 
 export const traceRetrieveToolInputSchema = z.union([traceRetrieveSearchInputSchema, traceRetrieveInspectInputSchema])
 export type TraceRetrieveToolInput = z.infer<typeof traceRetrieveToolInputSchema>
+
+export const traceRetrieveModelSearchInputSchema = traceRetrieveSearchInputSchema.omit({ includeRaw: true })
+export const traceRetrieveModelInspectInputSchema = z
+  .object({
+    operation: z.literal("inspect"),
+    resultNumber: z.number().int().positive().max(20).optional(),
+    query: z.string().min(1).optional(),
+    conversationHint: z.string().min(1).optional(),
+    turnNo: z.number().int().positive().max(10_000).optional(),
+    role: traceRetrieveRoleSchema.optional(),
+    paths: z.array(z.string().min(1)).max(20).optional(),
+    command: z.string().min(1).optional(),
+    startTurnNo: z.number().int().positive().max(10_000).optional(),
+    turnLimit: z.number().int().positive().max(100).optional(),
+    include: z.array(traceRetrieveIncludeSchema).optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+  .refine((input) => Boolean(input.resultNumber ?? input.query ?? input.conversationHint ?? input.turnNo ?? input.command ?? input.paths), {
+    message: "inspect requires resultNumber or natural filters",
+  })
+export const traceRetrieveToolModelInputSchema = z.union([traceRetrieveModelSearchInputSchema, traceRetrieveModelInspectInputSchema])
 
 export const traceRetrieveSourceSchema = z
   .object({
@@ -379,6 +425,7 @@ export const traceRetrieveAppliedFiltersSchema = z
 
 export const traceRetrieveSearchResultSchema = z
   .object({
+    resultNumber: z.number().int().positive().optional(),
     handle: z.string().min(1),
     kind: traceRetrieveSourceKindSchema,
     projectId: z.string().min(1),
@@ -390,6 +437,8 @@ export const traceRetrieveSearchResultSchema = z
     source: traceRetrieveSourceSchema,
     conversation: traceRetrieveConversationProvenanceSchema.optional(),
     inspectArgs: traceRetrieveInspectArgsSchema,
+    inspectHint: z.string().min(1).optional(),
+    conversationTitle: z.string().min(1).optional(),
     title: z.string().min(1),
     snippet: z.string().optional(),
     summary: z.string().optional(),
@@ -404,6 +453,7 @@ export const traceRetrieveSearchResultSchema = z
 
 export const traceRetrieveExactResultSchema = z
   .object({
+    resultNumber: z.number().int().positive().optional(),
     handle: z.string().min(1),
     kind: z.literal("exact_source"),
     projectId: z.string().min(1),
@@ -416,6 +466,7 @@ export const traceRetrieveExactResultSchema = z
     content: z.string(),
     source: traceRetrieveSourceSchema,
     conversation: traceRetrieveConversationProvenanceSchema.optional(),
+    conversationTitle: z.string().min(1).optional(),
     turnNo: z.number().int().positive().optional(),
     messageRole: messageRoleSchema.optional(),
     truncation: truncationMetadataSchema,
@@ -473,10 +524,19 @@ export const mcpRegistryToolInputSchema = z
   .object({
     operation: mcpRegistryOperationSchema,
     serverId: z.string().min(1).optional(),
+    serverName: z.string().min(1).optional(),
     preset: z.enum(["playwright"]).optional(),
   })
   .strict()
 export type McpRegistryToolInput = z.infer<typeof mcpRegistryToolInputSchema>
+
+export const mcpRegistryToolModelInputSchema = z
+  .object({
+    operation: mcpRegistryOperationSchema,
+    serverName: z.string().min(1).optional(),
+    preset: z.enum(["playwright"]).optional(),
+  })
+  .strict()
 
 export const mcpRegistryServerSchema = z
   .object({

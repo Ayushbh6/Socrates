@@ -279,7 +279,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         });
         setIsSending(false);
         setActiveTurnId(null);
-        setLiveSteps([]);
+        if (partialAssistantMessage) {
+          setLiveSteps([]);
+        }
         setApprovals([]);
         setIsCompacting(false);
         return;
@@ -515,7 +517,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     sendCommand(command);
   };
 
-  const handleTerminalInput = (terminalId: string, text: string, submit = true) => {
+  const handleTerminalInput = (terminalId: string, input: { text?: string; key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"; submit?: boolean }) => {
     const command: ClientCommand = {
       id: `cmd_${crypto.randomUUID()}`,
       type: "terminal.input",
@@ -526,8 +528,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       actor: { type: "user" },
       payload: {
         terminalId,
-        text,
-        submit,
+        ...(input.text === undefined ? {} : { text: input.text }),
+        ...(input.key === undefined ? {} : { key: input.key }),
+        ...(input.submit === undefined ? {} : { submit: input.submit }),
       },
     };
     sendCommand(command);

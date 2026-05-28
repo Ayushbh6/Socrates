@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto"
 import type {
   TraceRetrieveInclude,
+  TraceRetrieveInspectArgs,
   TraceRetrieveInspectInput,
   TraceRetrieveMode,
   TraceRetrieveRole,
@@ -122,6 +123,8 @@ const traceDocumentSelect = `td.id AS id,
   td.updated_at AS updatedAt`
 
 export class TraceStore extends StoreBase {
+  private readonly recentSearchRefs = new Map<string, TraceRetrieveInspectArgs[]>()
+
   constructor(
     context: ConstructorParameters<typeof StoreBase>[0],
     private readonly embeddingQueryProvider?: TraceEmbeddingQueryProvider,
@@ -341,7 +344,8 @@ export class TraceStore extends StoreBase {
           })
         : rows
 
-    const results = fallbackRows.map((row) => this.searchResultFromTraceRow(row, input, currentConversationId))
+    const results = this.numberSearchResults(fallbackRows.map((row) => this.searchResultFromTraceRow(row, input, currentConversationId)))
+    this.rememberSearchRefs(projectId, currentConversationId, results.map((result) => result.inspectArgs))
 
     const text = JSON.stringify(results)
     return {
@@ -380,6 +384,7 @@ export class TraceStore extends StoreBase {
             : doc.content
       const truncated = truncateText(content, charLimit)
       return {
+        ...(input.resultNumber ? { resultNumber: input.resultNumber } : {}),
         handle: doc.handle,
         kind: "exact_source" as const,
         projectId: doc.projectId,
@@ -420,6 +425,7 @@ export class TraceStore extends StoreBase {
   }
 
   private searchResultFromTraceRow(row: SearchRow, input: TraceRetrieveSearchInput, currentConversationId: string) {
+    const conversation = row.conversationId ? this.conversationProvenance(row.projectId, currentConversationId, row.conversationId) : undefined
     return {
       handle: row.handle,
       kind: normalizeResultKind(row.sourceKind),
@@ -430,8 +436,10 @@ export class TraceStore extends StoreBase {
       ...(row.sourceTable === "tool_calls" ? { toolCallId: row.sourceId } : {}),
       sourceId: row.sourceId,
       source: { table: row.sourceTable, id: row.sourceId },
-      ...(row.conversationId ? { conversation: this.conversationProvenance(row.projectId, currentConversationId, row.conversationId) } : {}),
+      ...(conversation ? { conversation } : {}),
+      ...(conversation?.title ? { conversationTitle: conversation.title } : {}),
       inspectArgs: inspectArgsForSource(row.handle, row.sourceTable, row.sourceId, row.turnId),
+      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
       title: row.title,
       snippet: makeSnippet(row.content, input.query),
       ...(row.summary ? { summary: row.summary } : {}),
@@ -442,6 +450,66 @@ export class TraceStore extends StoreBase {
       createdAt: row.createdAt,
       ...(row.metadataJson ? { metadata: parseJson(row.metadataJson) } : {}),
     }
+  }
+
+  private numberSearchResults<T extends { inspectArgs: TraceRetrieveInspectArgs }>(results: T[]): Array<T & { resultNumber: number }> {
+    return results.map((result, index) => ({ ...result, resultNumber: index + 1 }))
+  }
+
+  private rememberSearchRefs(projectId: string, currentConversationId: string, refs: TraceRetrieveInspectArgs[]): void {
+    this.recentSearchRefs.set(traceSearchRefKey(projectId, currentConversationId), refs)
+  }
+
+  private searchOrdinalOrNaturalInspectCandidate(
+    projectId: string,
+    currentConversationId: string,
+    input: TraceRetrieveInspectInput,
+    query: string,
+  ): { inspectArgs: TraceRetrieveInspectArgs } | undefined {
+    if (input.turnNo !== undefined) {
+      const resolved = this.resolveOrdinalConversationIds(
+        projectId,
+        currentConversationId,
+        input.conversationHint ? "recent_conversations" : "current_conversation",
+        DEFAULT_CONVERSATION_LIMIT,
+        input.conversationHint,
+      )
+      const conversationId = resolved.conversationIds.length === 1 ? resolved.conversationIds[0] : undefined
+      if (!conversationId) {
+        return undefined
+      }
+      const turn = this.findTurnByNumber(projectId, conversationId, input.turnNo)
+      if (!turn) {
+        return undefined
+      }
+      if (input.role === "user" || input.role === "assistant") {
+        const message = this.findMessageForTurnRole(projectId, turn.id, input.role)
+        return message ? { inspectArgs: { operation: "inspect", messageId: message.id } } : undefined
+      }
+      return { inspectArgs: { operation: "inspect", turnId: turn.id } }
+    }
+
+    const conversationIds = this.resolveConversationIds(
+      projectId,
+      currentConversationId,
+      input.conversationHint ? "recent_conversations" : "current_conversation",
+      DEFAULT_CONVERSATION_LIMIT,
+      input.conversationHint,
+    )
+    const rows = this.searchTraceDocuments(projectId, {
+      query,
+      mode: "exact",
+      conversationIds,
+      include: input.include,
+      toolNames: undefined,
+      paths: input.paths,
+      command: input.command,
+      createdAfter: undefined,
+      createdBefore: undefined,
+      limit: 1,
+    })
+    const row = rows[0]
+    return row ? this.searchResultFromTraceRow(row, { query, mode: "exact", paths: input.paths, command: input.command }, currentConversationId) : undefined
   }
 
   private searchOrdinalTurn(
@@ -485,10 +553,12 @@ export class TraceStore extends StoreBase {
       }
     }
 
-    const text = JSON.stringify(results)
+    const numberedResults = this.numberSearchResults(results)
+    this.rememberSearchRefs(projectId, currentConversationId, numberedResults.map((result) => result.inspectArgs))
+    const text = JSON.stringify(numberedResults)
     return {
-      results,
-      totalMatches: results.length,
+      results: numberedResults,
+      totalMatches: numberedResults.length,
       truncation: truncationFor(text, resolved.charLimit),
       appliedFilters: {
         operation: "search",
@@ -896,6 +966,7 @@ export class TraceStore extends StoreBase {
   ) {
     const traceDoc = this.findTraceDocumentForSource(projectId, "messages", row.id)
     const handle = traceDoc?.handle ?? `message:${row.id}`
+    const conversation = this.conversationProvenance(projectId, currentConversationId, row.conversationId)
     return {
       handle,
       kind: "message" as const,
@@ -905,8 +976,10 @@ export class TraceStore extends StoreBase {
       messageId: row.id,
       sourceId: row.id,
       source: { table: "messages", id: row.id },
-      conversation: this.conversationProvenance(projectId, currentConversationId, row.conversationId),
+      conversation,
+      ...(conversation.title ? { conversationTitle: conversation.title } : {}),
       inspectArgs: { operation: "inspect" as const, messageId: row.id },
+      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
       title: `${capitalize(row.role)} message in turn ${turnNo}`,
       snippet: makeSnippet(row.content, input.query),
       summary: summarizeText(row.content, 240),
@@ -922,6 +995,7 @@ export class TraceStore extends StoreBase {
     const traceDoc = this.findTraceDocumentForSource(projectId, "turns", row.id)
     const content = this.buildTurnBundle(projectId, row.id, input.include)
     const handle = traceDoc?.handle ?? `turn:${row.id}`
+    const conversation = this.conversationProvenance(projectId, currentConversationId, row.conversationId)
     return {
       handle,
       kind: "turn_summary" as const,
@@ -930,8 +1004,10 @@ export class TraceStore extends StoreBase {
       turnId: row.id,
       sourceId: row.id,
       source: { table: "turns", id: row.id },
-      conversation: this.conversationProvenance(projectId, currentConversationId, row.conversationId),
+      conversation,
+      ...(conversation.title ? { conversationTitle: conversation.title } : {}),
       inspectArgs: { operation: "inspect" as const, turnId: row.id },
+      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
       title: `Turn ${turnNo}`,
       snippet: makeSnippet(content, input.query),
       summary: summarizeText(content, 300),
@@ -1211,6 +1287,17 @@ export class TraceStore extends StoreBase {
     currentConversationId: string,
     input: Extract<TraceRetrieveToolInput, { operation: "inspect" }>,
   ): TraceDocumentRow[] {
+    if (input.resultNumber) {
+      const refs = this.recentSearchRefs.get(traceSearchRefKey(projectId, currentConversationId)) ?? []
+      const ref = refs[input.resultNumber - 1]
+      return ref ? this.resolveInspectDocuments(projectId, currentConversationId, ref) : []
+    }
+    if (input.query || input.conversationHint || input.turnNo || input.command || input.paths) {
+      const query = input.query ?? input.command ?? input.paths?.join(" ") ?? `turn ${input.turnNo ?? ""}`.trim()
+      const searchResult = this.searchOrdinalOrNaturalInspectCandidate(projectId, currentConversationId, input, query)
+      const ref = searchResult?.inspectArgs
+      return ref ? this.resolveInspectDocuments(projectId, currentConversationId, ref) : []
+    }
     if (input.handle) {
       return this.handle.db
         .select()
@@ -1686,6 +1773,8 @@ const inspectArgsForSource = (handle: string, sourceTable: string, sourceId: str
   }
   return { operation: "inspect" as const, handle }
 }
+
+const traceSearchRefKey = (projectId: string, currentConversationId: string): string => `${projectId}:${currentConversationId}`
 
 const scoreTraceRow = (row: SearchRow, input: { query: string; command: string | undefined; paths: string[] | undefined }): number => {
   let score = row.score ?? 0

@@ -311,9 +311,9 @@ describe("workspace tools", () => {
 
     expect(regexLike.totalMatches).toBe(1)
     expect(regexLike.matches[0]?.path).toBe("src/traceRetrieveTool.ts")
-    expect(regexLike.warnings?.[0]).toContain("interpreted it as regex")
+    expect(regexLike.warnings?.some((warning) => warning.includes("interpreted it as regex"))).toBe(true)
     expect(literal.totalMatches).toBe(0)
-    expect(literal.warnings?.[0]).toContain("set regex=true")
+    expect(literal.warnings?.some((warning) => warning.includes("set regex=true"))).toBe(true)
   })
 
   it("matches file globs case-insensitively against relative paths and basenames", async () => {
@@ -326,6 +326,38 @@ describe("workspace tools", () => {
 
     expect(basenameMatch.matches.map((match) => match.path)).toContain("packages/core/src/tools/traceRetrieveTool.ts")
     expect(pathMatch.matches.map((match) => match.path)).toContain("packages/core/src/tools/traceRetrieveTool.ts")
+  })
+
+  it("caps noisy search results and warns when capped", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "src"), { recursive: true })
+    for (let index = 0; index < 60; index += 1) {
+      fs.writeFileSync(path.join(workspacePath, "src", `agent-${index}.ts`), "export const marker = 'Socrates'\n")
+    }
+
+    const defaultCapped = await searchWorkspace({ mode: "files", query: "agent" }, { workspacePath })
+    const hardCapped = await searchWorkspace({ mode: "text", query: "Socrates", maxResults: 50 }, { workspacePath })
+
+    expect(defaultCapped.matches).toHaveLength(20)
+    expect(defaultCapped.totalMatches).toBe(60)
+    expect(defaultCapped.warnings?.some((warning) => warning.includes("capped at 20"))).toBe(true)
+    expect(hardCapped.matches).toHaveLength(50)
+    expect(hardCapped.warnings?.some((warning) => warning.includes("capped at 50"))).toBe(true)
+  })
+
+  it("skips generated and vendor directories in rg-backed searches", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "src"), { recursive: true })
+    fs.mkdirSync(path.join(workspacePath, "node_modules", "noisy"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, "src", "package.json"), "{}\n")
+    fs.writeFileSync(path.join(workspacePath, "node_modules", "noisy", "package.json"), "{}\n")
+
+    const files = await searchWorkspace({ mode: "files", query: "package.json" }, { workspacePath })
+    const text = await searchWorkspace({ mode: "text", query: "{}" }, { workspacePath })
+
+    expect(files.matches.map((match) => match.path)).toEqual(["src/package.json"])
+    expect(text.matches.map((match) => match.path)).toEqual(["src/package.json"])
+    expect(files.warnings?.some((warning) => warning.includes("generated/vendor directories"))).toBe(true)
   })
 
   it("applies precise replacement edits", async () => {

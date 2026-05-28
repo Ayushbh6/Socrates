@@ -17,10 +17,11 @@ const baseRequest = (thinkingEnabled: boolean): ModelRequest => ({
 })
 
 describe("OpenRouter provider options", () => {
-  it("omits reasoning controls when thinking is off", () => {
+  it("explicitly disables and excludes reasoning when thinking is off", () => {
     expect(createOpenRouterProviderOptions(baseRequest(false))).toEqual({
       openrouter: {
         usage: { include: true },
+        reasoning: { enabled: false, effort: "none", exclude: true },
       },
     })
   })
