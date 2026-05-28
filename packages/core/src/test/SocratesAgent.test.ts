@@ -451,6 +451,56 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Native image content returned by read")
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain('"type":"image"')
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("iVBORw==")
+    expect(streamRequests[1]?.tools).toHaveLength(0)
+  })
+
+  it("omits tool schemas for OpenRouter turns that already include native image parts", async () => {
+    const streamRequests: ModelRequestLike[] = []
+    const countRequests: CountedRequest[] = []
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        yield { type: "model.answer.delta", text: request.tools?.length ? "tools present" : "image only" }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    const streamed: SocratesAgentEvent[] = []
+    for await (const event of agent.streamTurn({
+      providerId: "openrouter",
+      modelId: "x-ai/grok-build-0.1",
+      runtimeConfig: {
+        providerId: "openrouter",
+        modelId: "x-ai/grok-build-0.1",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "What is in this screenshot?" },
+            { type: "image", mediaType: "image/png", data: "data:image/png;base64,iVBORw==" },
+          ],
+        },
+      ],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
+    expect(countRequests[0]?.toolCount).toBe(0)
+    expect(streamRequests[0]?.tools).toHaveLength(0)
   })
 
   it("injects user and project context into the system prompt", async () => {

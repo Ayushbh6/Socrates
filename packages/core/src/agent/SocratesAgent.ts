@@ -91,7 +91,8 @@ export class SocratesAgent {
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
-      const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
+      const candidateTools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
+      const tools = shouldOmitToolsForNativeImageCall(input.providerId, messages) ? [] : candidateTools
       const compactionStartedEvents = new AsyncEventQueue<ContextCompactionLifecycleEvent>()
       const preparedContextPromise = (async () => {
         try {
@@ -477,6 +478,12 @@ const isReadImageOutput = (value: unknown): value is {
   (value as { kind?: unknown }).kind === "image" &&
   typeof (value as { path?: unknown }).path === "string" &&
   typeof (value as { image?: { nativeVisionSupported?: unknown } }).image?.nativeVisionSupported === "boolean"
+
+const shouldOmitToolsForNativeImageCall = (providerId: ProviderId, messages: ModelMessage[]): boolean =>
+  providerId === "openrouter" && messages.some((message) => messageHasNativeImage(message))
+
+const messageHasNativeImage = (message: ModelMessage): boolean =>
+  Array.isArray(message.content) && message.content.some((part) => part.type === "image")
 
 const readWorkspaceImageForModel = (workspacePath: string, relativePath: string): string | undefined => {
   const workspaceRoot = path.resolve(workspacePath)
