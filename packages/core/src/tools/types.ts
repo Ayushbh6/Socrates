@@ -1,4 +1,6 @@
 import type {
+  ApplyPatchToolInput,
+  ApplyPatchToolOutput,
   BashToolInput,
   BashToolOutput,
   EditToolInput,
@@ -20,6 +22,11 @@ import type {
 } from "@socrates/contracts"
 import type { SocratesError } from "@socrates/shared"
 
+export type FileFreshnessTracker = {
+  record: (path: string, contentHash: string | undefined, workspacePath: string) => void
+  validate: (path: string, actualHash: string | undefined, workspacePath: string) => void
+}
+
 export type ToolExecutorContext = {
   projectId: string
   conversationId: string
@@ -28,6 +35,7 @@ export type ToolExecutorContext = {
   toolCallId?: string
   workspacePath: string
   runtimeConfig: RuntimeConfig
+  fileFreshness?: FileFreshnessTracker
   abortSignal?: AbortSignal
   onOutput?: (output: { stream: "stdout" | "stderr" | "log" | "result"; text?: string; data?: unknown }) => void
 }
@@ -36,6 +44,7 @@ export type ToolExecutors = {
   read: (input: ReadToolInput, context: ToolExecutorContext) => Promise<ReadToolOutput>
   search: (input: SearchToolInput, context: ToolExecutorContext) => Promise<SearchToolOutput>
   edit: (input: EditToolInput, context: ToolExecutorContext) => Promise<EditToolOutput>
+  apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
   list_project_resources: (

@@ -6,7 +6,7 @@ export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
   if (tool.toolName === "bash") {
     return <TerminalDetails tool={tool} />;
   }
-  if (tool.toolName === "edit") {
+  if (tool.toolName === "edit" || tool.toolName === "apply_patch") {
     return <EditDetails tool={tool} />;
   }
   if (tool.toolName === "search") {

@@ -11,7 +11,9 @@ import type { ClientCommand, ModelUsage, ProjectEmbeddingStatus, ProjectResource
 import type { McpRuntime } from "@socrates/mcp"
 import { normalizeError, SocratesError } from "@socrates/shared"
 import {
+  applyPatchWorkspace,
   editWorkspace,
+  FileFreshnessTracker,
   formatPythonEnvironmentHints,
   inspectPythonEnvironment,
   isShellSessionResetError,
@@ -98,7 +100,7 @@ export const handleChatMessageSend = async (
       messages: history,
       promptContext,
       workspacePath,
-      toolExecutors: createToolExecutors(store, projectId, activeTurns, terminals, mcpRuntime),
+      toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime),
       dynamicTools: () => mcpRuntime?.getDynamicToolDefinitions("playwright") ?? [],
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
@@ -561,13 +563,20 @@ export const handleChatMessageSend = async (
 const createToolExecutors = (
   store: SocratesStore,
   projectId: string,
+  turnId: string,
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
   mcpRuntime?: McpRuntime,
-): ToolExecutors => ({
-  read: (input, context) => readWorkspacePath(input, context),
+): ToolExecutors => {
+  const withFreshness = <C extends object>(context: C): C & { fileFreshness?: FileFreshnessTracker } => {
+    const tracker = activeTurns.getFileFreshness(turnId)
+    return tracker ? { ...context, fileFreshness: tracker } : context
+  }
+  return {
+  read: (input, context) => readWorkspacePath(input, withFreshness(context)),
   search: (input, context) => searchWorkspace(input, context),
-  edit: (input, context) => editWorkspace(input, context),
+  edit: (input, context) => editWorkspace(input, withFreshness(context)),
+  apply_patch: (input, context) => applyPatchWorkspace(input, context),
   bash: async (input, context) => {
     const toolCallId = context.toolCallId ?? "unknown"
     store.createShellCommand({
@@ -622,7 +631,8 @@ const createToolExecutors = (
     }
     return mcpRuntime.callDynamicTool(input.dynamicName, input.input)
   },
-})
+  }
+}
 
 const sendContextCompactionEvent = (
   socket: WebSocket,

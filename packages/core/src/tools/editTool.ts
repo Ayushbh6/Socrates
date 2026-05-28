@@ -1,18 +1,12 @@
 import { editToolInputSchema, editToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool } from "./types"
 
-const previewEdit = (input: typeof editToolInputSchema._type): string =>
-  Array.from(
-    new Set(
-      input.operations.map((operation) => {
-        if (operation.type === "patch") {
-          return "patch: workspace"
-        }
-        return `${operation.type}: ${operation.path}`
-      }),
-    ),
-  )
-    .join("\n")
+const previewEdit = (input: typeof editToolInputSchema._type): string => {
+  if (input.content !== undefined) {
+    return `write: ${input.path}`
+  }
+  return `replace: ${input.path}`
+}
 
 const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type>["decidePolicy"] = async (
   input,
@@ -31,7 +25,7 @@ const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof ed
   return {
     type: "approval_required",
     request: {
-      actionKind: input.operations.some((operation) => operation.type === "patch") ? "patch_apply" : "file_write",
+      actionKind: "file_write",
       title: "Approve file edit",
       description: "Socrates wants to modify files in the active project workspace.",
       actionPreview: preview.diff.trim().length > 0 ? preview.diff : previewEdit(input),
@@ -43,7 +37,7 @@ const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof ed
 export const editTool: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type> = {
   name: "edit",
   description:
-    "Create, overwrite, precisely replace multiline text, or apply a patch in the active project workspace. Use this as the default way to deliver generated scripts, programs, and implementation changes. Use exact oldText for replacements. Before overwriting or patching existing files, read them first and pass fresh baseContentHash/baseContentHashes so stale disk state is detected.",
+    "Create or modify a file in the active project workspace. Use content for a whole-file write (create or overwrite). Use oldString and newString for a targeted multiline replace; set replaceAll to change every occurrence. Read the file first when overwriting or replacing so Socrates can verify freshness.",
   inputSchema: editToolInputSchema,
   resultSchema: editToolOutputSchema,
   permission: "mutate",

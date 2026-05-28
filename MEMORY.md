@@ -521,3 +521,13 @@ pnpm --filter web typecheck
 pnpm --filter @socrates/workspace test
 pnpm --filter @socrates/providers test
 ```
+
+## Flat Edit And apply_patch Split (feat-123-cursor)
+
+Split the model-facing file mutation surface to reduce weak-model tool-schema failures while preserving capabilities:
+
+- `edit` is now flat per call: `{ path, content? }` for whole-file create/overwrite, or `{ path, oldString, newString, replaceAll? }` for targeted multiline replace. No `operations[]`, no discriminated union, and no model-carried `baseContentHash` / `expectedOccurrences`.
+- `apply_patch` is a dedicated seventh V1 tool: `{ patch, dryRun? }` for multi-hunk or multi-file unified diffs via git apply.
+- `FileFreshnessTracker` (turn-scoped in `apps/server` `activeTurns`) records `read` `contentHash` values and enforces freshness on existing-file `edit` writes/replaces with recoverable `edit_stale_content`.
+- `packages/workspace` owns tracker + patch helpers; `packages/contracts` owns schemas; `packages/core` registers both tools; frontend `editPresentation` reads flat args and routes `apply_patch` through the same diff UI.
+- Rule 10 / contract docs amended: `apply_patch` is model-visible; patch is no longer a hidden `edit` mode.

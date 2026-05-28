@@ -206,12 +206,13 @@ The V1 model-visible tool surface is intentionally small:
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `patch`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above. Unified diff application is exposed as `apply_patch`, not as a hidden patch mode inside `edit`.
 
 Each model-visible tool must live in its own small TypeScript file under `packages/core/tools/`, with a single unified registry that exposes the enabled tools to the agent. Do not put all tools into one large class or one large mixed implementation file.
 
@@ -247,7 +248,7 @@ Verbatim anchors should preserve exact high-value user source material such as r
 
 `list_project_resources` must use backend project resource records and should be preferred before shell probing when the user asks about uploaded project files under `.socrates/resources/`. Its model-visible input is limited to `kind` and `limit`, and its output must stay to filenames/metadata only.
 
-The `edit` tool is the only V1 model-visible file mutation tool. It must cover creating new files, overwriting files, precise multiline replacement, and patch-style edits. It must show a diff or equivalent preview and require approval unless the user explicitly runs a full-access mode.
+The `edit` tool is the primary V1 model-visible file mutation tool for whole-file writes and targeted multiline replacements. The separate `apply_patch` tool covers multi-hunk or multi-file unified diff application via git apply. Both must show a diff or equivalent preview and require approval unless the user explicitly runs a full-access mode. The harness tracks file freshness from `read` results; model-facing tool inputs must not carry content hashes.
 
 When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, Socrates should treat that as a request to create or edit a real workspace file with `edit`, not as a request for a long inline code block. This applies even for small scripts when the workspace is write-capable. Generated code belongs in the attached workspace/repo, not in `.socrates/`. Socrates should choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, optionally verify with Terminal, and summarize file path plus run instructions in the final answer. If the user says "wherever" or lets Socrates decide, use the repo root for a standalone script, or a small well-named folder only when the task naturally needs multiple files. It should paste a full runnable file in chat only when the user explicitly asks for inline code or when no write-capable workspace is available.
 

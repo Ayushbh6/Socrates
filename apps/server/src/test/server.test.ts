@@ -322,9 +322,21 @@ const createVerifiedEditAgent = (): SocratesAgent => {
         yield {
           type: "model.tool_call.completed",
           toolCall: {
+            toolCallId: "tcall_read_readme",
+            toolName: "read",
+            input: { path: "README.md" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
             toolCallId: "tcall_verified_edit",
             toolName: "edit",
-            input: { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
+            input: { path: "README.md", oldString: "old", newString: "new" },
           },
         }
         yield { type: "model.completed" }
@@ -346,7 +358,7 @@ const createStaleEditAgent = (): SocratesAgent => {
         toolCall: {
           toolCallId: "tcall_stale_edit",
           toolName: "edit",
-          input: { operations: [{ type: "overwrite", path: "README.md", content: "new" }] },
+          input: { path: "README.md", content: "new" },
         },
       }
       yield { type: "model.completed" }
@@ -2891,6 +2903,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Edit README", { approvalMode: "approve_all" }))
+      await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")

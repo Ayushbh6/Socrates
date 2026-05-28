@@ -223,25 +223,23 @@ function getChangedFiles(result: unknown): Array<{ path: string; operation: stri
 }
 
 function getInputOperations(argumentsValue: unknown): Array<{ path: string | undefined; type: string }> {
-  if (typeof argumentsValue !== "object" || argumentsValue === null || !("operations" in argumentsValue)) {
+  if (typeof argumentsValue !== "object" || argumentsValue === null) {
     return [];
   }
-  const operations = (argumentsValue as { operations?: unknown }).operations;
-  if (!Array.isArray(operations)) {
+  const record = argumentsValue as { path?: unknown; content?: unknown; oldString?: unknown; newString?: unknown; patch?: unknown };
+  if (typeof record.patch === "string") {
+    return [{ path: undefined, type: "patched" }];
+  }
+  if (typeof record.path !== "string") {
     return [];
   }
-  return operations
-    .map((operation) => {
-      if (typeof operation !== "object" || operation === null) {
-        return undefined;
-      }
-      const record = operation as { path?: unknown; type?: unknown };
-      return {
-        path: typeof record.path === "string" ? record.path : undefined,
-        type: typeof record.type === "string" ? record.type : "edited",
-      };
-    })
-    .filter((operation): operation is { path: string | undefined; type: string } => operation !== undefined);
+  if (record.content !== undefined) {
+    return [{ path: record.path, type: "overwritten" }];
+  }
+  if (record.oldString !== undefined || record.newString !== undefined) {
+    return [{ path: record.path, type: "edited" }];
+  }
+  return [];
 }
 
 function getDiffFilesFromInputOperations(argumentsValue: unknown): DiffFile[] {
@@ -316,22 +314,20 @@ function splitLines(value: string): string[] {
 }
 
 function getRawInputOperations(argumentsValue: unknown): RawInputOperation[] {
-  if (typeof argumentsValue !== "object" || argumentsValue === null || !("operations" in argumentsValue)) {
+  if (typeof argumentsValue !== "object" || argumentsValue === null) {
     return [];
   }
-  const operations = (argumentsValue as { operations?: unknown }).operations;
-  if (!Array.isArray(operations)) {
+  const record = argumentsValue as Record<string, unknown>;
+  if (typeof record.patch === "string") {
     return [];
   }
-  return operations
-    .map((operation) => (typeof operation === "object" && operation !== null ? (operation as Record<string, unknown>) : undefined))
-    .filter((operation): operation is Record<string, unknown> => Boolean(operation))
-    .map((operation) => ({
-      type: typeof operation.type === "string" ? operation.type : "edited",
-      path: typeof operation.path === "string" ? operation.path : undefined,
-      oldText: typeof operation.oldText === "string" ? operation.oldText : undefined,
-      newText: typeof operation.newText === "string" ? operation.newText : undefined,
-    }));
+  if (typeof record.path !== "string") {
+    return [];
+  }
+  if (typeof record.oldString === "string" && typeof record.newString === "string") {
+    return [{ type: "edited", path: record.path, oldText: record.oldString, newText: record.newString }];
+  }
+  return [];
 }
 
 function looksLikeUnifiedDiff(value: string): boolean {

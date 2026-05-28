@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Schema } from "ai"
-import { traceRetrieveToolInputSchema } from "@socrates/contracts"
+import { applyPatchToolInputSchema, editToolInputSchema, traceRetrieveToolInputSchema } from "@socrates/contracts"
 import { inputSchemaForAiTool, normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
 
 describe("AI SDK provider metadata", () => {
@@ -64,6 +64,15 @@ describe("AI SDK provider metadata", () => {
         { type: "image", mediaType: "image/png", image: "aGVsbG8=" },
       ],
     })
+  })
+
+  it("keeps flat edit and apply_patch as object schemas without operation unions", () => {
+    const editObject = editToolInputSchema._def.schema
+    expect(editObject._def.typeName).toBe("ZodObject")
+    expect(applyPatchToolInputSchema._def.typeName).toBe("ZodObject")
+    expect("operations" in editObject.shape).toBe(false)
+    expect(editObject.shape.path).toBeDefined()
+    expect(applyPatchToolInputSchema.shape.patch).toBeDefined()
   })
 
   it("exposes trace_retrieve as an object JSON schema for strict providers", async () => {

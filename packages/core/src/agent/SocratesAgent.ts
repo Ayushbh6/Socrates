@@ -49,6 +49,7 @@ export type SocratesAgentTurnInput = {
   maxParallelToolCalls?: number
   dynamicTools?: ModelToolDefinition[] | (() => ModelToolDefinition[])
   abortSignal?: AbortSignal
+  fileFreshness?: import("../tools/types").FileFreshnessTracker
 }
 
 export type SocratesAgentContextPrecomputeInput = {
@@ -205,6 +206,7 @@ export class SocratesAgent {
           requestApproval: input.requestApproval,
           modelCallId,
           stepIndex: step,
+          ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         },
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,

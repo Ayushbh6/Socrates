@@ -721,7 +721,7 @@ Stores file reads, writes, deletes, moves, and patch-related file operations.
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Extra file operation metadata. |
 
-Verified edit operations store full-file hashes in `content_hash_before` and `content_hash_after`. `metadata_json` may include read-back verification state, before/after byte sizes, and line delta. The `edit` tool must not persist a successful completed file operation unless the disk read-back matched the planned content.
+Verified `edit` and `apply_patch` operations store full-file hashes in `content_hash_before` and `content_hash_after`. `metadata_json` may include read-back verification state, before/after byte sizes, and line delta. Mutation tools must not persist a successful completed file operation unless the disk read-back matched the planned content. File freshness for `edit` is harness-tracked from prior `read` results in the active turn, not from model-carried hashes in tool input JSON.
 
 ## `patches`
 

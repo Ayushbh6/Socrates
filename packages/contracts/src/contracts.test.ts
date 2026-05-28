@@ -77,6 +77,7 @@ import {
   agentThinkingDeltaEventSchema,
   bashToolInputSchema,
   bashToolModelInputSchema,
+  applyPatchToolInputSchema,
   editToolInputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
@@ -789,26 +790,16 @@ describe("websocket server event contracts", () => {
 })
 
 describe("tool contracts", () => {
-  it("parses the six V1 model-visible tool inputs", () => {
+  it("parses the seven V1 model-visible tool inputs", () => {
     expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)
-    expect(
-      editToolInputSchema.safeParse({
-        operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }],
-      }).success,
-    ).toBe(true)
-    expect(
-      editToolInputSchema.safeParse({
-        operations: [{ type: "overwrite", path: "README.md", content: "new", baseContentHash: "hash_before" }],
-      }).success,
-    ).toBe(true)
-    expect(
-      editToolInputSchema.safeParse({
-        operations: [{ type: "patch", patch: "--- a/README.md\n+++ b/README.md\n", baseContentHashes: { "README.md": "hash_before" } }],
-      }).success,
-    ).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new" }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new", replaceAll: true }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md" }).success).toBe(false)
+    expect(applyPatchToolInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(true)
     expect(
       readToolOutputSchema.safeParse({
         path: "README.md",

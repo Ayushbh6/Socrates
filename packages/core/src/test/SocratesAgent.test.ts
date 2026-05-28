@@ -40,7 +40,7 @@ describe("SocratesAgent", () => {
     const requestJson = JSON.stringify(seen[0])
     expect(requestJson).toContain("You are Socrates")
     expect(requestJson).toContain("Hi")
-    expect(requestJson).toContain("pass the returned contentHash")
+    expect(requestJson).toContain("Socrates tracks freshness from read results")
     expect(requestJson).toContain("product/user-facing copy should call it Terminal")
     expect(requestJson).toContain("set regex=true")
     expect(requestJson).toContain("compare the reported file and line with the current file contents")
@@ -52,6 +52,7 @@ describe("SocratesAgent", () => {
       "read",
       "search",
       "edit",
+      "apply_patch",
       "bash",
       "trace_retrieve",
       "list_project_resources",
@@ -183,6 +184,7 @@ describe("SocratesAgent", () => {
       }),
       search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
       trace_retrieve: async () => ({
         results: [],
@@ -227,8 +229,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(7)
-    expect(countRequests[1]?.toolCount).toBe(7)
+    expect(countRequests[0]?.toolCount).toBe(8)
+    expect(countRequests[1]?.toolCount).toBe(8)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -291,7 +293,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(7)
+    expect(countRequests[0]?.toolCount).toBe(8)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -309,7 +311,7 @@ describe("SocratesAgent", () => {
             toolCall: {
               toolCallId: "tcall_edit_1",
               toolName: "edit",
-              input: { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
+              input: { path: "README.md", oldString: "old", newString: "new" },
             },
           }
           yield { type: "model.completed", finishReason: "tool-calls" }
@@ -338,6 +340,7 @@ describe("SocratesAgent", () => {
           truncation: { truncated: false, charLimit: 20_000, returnedLength: 57 },
         }
       },
+      apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
       trace_retrieve: async () => ({
         results: [],
@@ -596,6 +599,7 @@ const emptyToolExecutors = (): ToolExecutors => ({
   }),
   search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   bash: async () => bashOk(),
   trace_retrieve: async () => ({
     results: [],

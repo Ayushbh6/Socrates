@@ -5,6 +5,7 @@ export const baseToolNameSchema = z.enum([
   "read",
   "search",
   "edit",
+  "apply_patch",
   "bash",
   "trace_retrieve",
   "list_project_resources",
@@ -115,48 +116,51 @@ export const searchToolOutputSchema = z
   .strict()
 export type SearchToolOutput = z.infer<typeof searchToolOutputSchema>
 
-export const editOperationSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("create"),
-      path: z.string().min(1),
-      content: z.string(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("overwrite"),
-      path: z.string().min(1),
-      content: z.string(),
-      baseContentHash: z.string().min(1).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("replace"),
-      path: z.string().min(1),
-      oldText: z.string().min(1),
-      newText: z.string(),
-      expectedOccurrences: z.number().int().positive().optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("patch"),
-      patch: z.string().min(1),
-      baseContentHashes: z.record(z.string(), z.string().min(1)).optional(),
-    })
-    .strict(),
-])
-export type EditOperation = z.infer<typeof editOperationSchema>
-
 export const editToolInputSchema = z
   .object({
-    operations: z.array(editOperationSchema).min(1).max(20),
+    path: z.string().min(1),
+    content: z.string().optional(),
+    oldString: z.string().min(1).optional(),
+    newString: z.string().optional(),
+    replaceAll: z.boolean().optional(),
     dryRun: z.boolean().optional(),
   })
   .strict()
+  .superRefine((value, ctx) => {
+    const hasContent = value.content !== undefined
+    const hasReplace = value.oldString !== undefined || value.newString !== undefined
+    if (hasContent === hasReplace) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide either content for a whole-file write or oldString/newString for a targeted replace, but not both.",
+      })
+      return
+    }
+    if (!hasContent && !hasReplace) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide content for a whole-file write or oldString/newString for a targeted replace.",
+      })
+      return
+    }
+    if (hasReplace) {
+      if (value.oldString === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "oldString is required for a targeted replace." })
+      }
+      if (value.newString === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "newString is required for a targeted replace." })
+      }
+    }
+  })
 export type EditToolInput = z.infer<typeof editToolInputSchema>
+
+export const applyPatchToolInputSchema = z
+  .object({
+    patch: z.string().min(1),
+    dryRun: z.boolean().optional(),
+  })
+  .strict()
+export type ApplyPatchToolInput = z.infer<typeof applyPatchToolInputSchema>
 
 export const editToolOutputSchema = z
   .object({
@@ -181,6 +185,9 @@ export const editToolOutputSchema = z
   })
   .strict()
 export type EditToolOutput = z.infer<typeof editToolOutputSchema>
+
+export const applyPatchToolOutputSchema = editToolOutputSchema
+export type ApplyPatchToolOutput = EditToolOutput
 
 export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "stale", "awaiting_input", "missing"])
 export type TerminalStatus = z.infer<typeof terminalStatusSchema>

@@ -8,7 +8,9 @@ import {
   __editToolTest,
   ensureWorkspaceScaffold,
   deleteStoredResourceFile,
+  applyPatchWorkspace,
   editWorkspace,
+  FileFreshnessTracker,
   inferResourceMimeType,
   inferResourceKind,
   inspectWorkspacePath,
@@ -363,11 +365,10 @@ describe("workspace tools", () => {
   it("applies precise replacement edits", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
 
-    const result = await editWorkspace(
-      { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
-      { workspacePath },
-    )
+    const result = await editWorkspace({ path: "README.md", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
     expect(result.changedFiles[0]).toMatchObject({ path: "README.md", operation: "edited", verification: "verified" })
@@ -386,26 +387,17 @@ describe("workspace tools", () => {
     expect(result.lineEnding).toBe("crlf")
   })
 
-  it("requires a fresh base hash before overwriting existing files", async () => {
+  it("requires a prior read before overwriting existing files", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+    const tracker = new FileFreshnessTracker()
 
-    await expect(
-      editWorkspace({ operations: [{ type: "overwrite", path: "README.md", content: "hello new world" }] }, { workspacePath }),
-    ).rejects.toMatchObject({ code: "edit_stale_content" })
+    await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "edit_stale_content",
+    })
 
-    await expect(
-      editWorkspace(
-        { operations: [{ type: "overwrite", path: "README.md", content: "hello new world", baseContentHash: "stale" }] },
-        { workspacePath },
-      ),
-    ).rejects.toMatchObject({ code: "edit_stale_content" })
-
-    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath })
-    const result = await editWorkspace(
-      { operations: [{ type: "overwrite", path: "README.md", content: "hello new world", baseContentHash: read.contentHash }] },
-      { workspacePath },
-    )
+    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
+    const result = await editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
     expect(result.changedFiles[0]).toMatchObject({
@@ -429,8 +421,10 @@ describe("workspace tools", () => {
       }
     })
     try {
+      const tracker = new FileFreshnessTracker()
+      await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
       await expect(
-        editWorkspace({ operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] }, { workspacePath }),
+        editWorkspace({ path: "README.md", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker }),
       ).rejects.toMatchObject({ code: "edit_verification_failed" })
     } finally {
       __editToolTest.setAfterWriteHook(undefined)
@@ -442,10 +436,9 @@ describe("workspace tools", () => {
     fs.mkdirSync(path.join(workspacePath, "src"))
     fs.writeFileSync(path.join(workspacePath, "src", "main.py"), "print('old')\n")
 
-    const result = await editWorkspace(
-      { operations: [{ type: "replace", path: "src\\main.py", oldText: "old", newText: "new" }] },
-      { workspacePath },
-    )
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "src/main.py" }, { workspacePath, fileFreshness: tracker })
+    const result = await editWorkspace({ path: "src\\main.py", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "src", "main.py"), "utf8")).toBe("print('new')\n")
     expect(result.changedFiles[0]?.path).toBe(path.join("src", "main.py"))
@@ -455,28 +448,47 @@ describe("workspace tools", () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "server.py"), "alpha\r\nbeta\r\ngamma\r\n")
 
-    await editWorkspace(
-      { operations: [{ type: "replace", path: "server.py", oldText: "beta", newText: "beta = 42" }] },
-      { workspacePath },
-    )
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "server.py" }, { workspacePath, fileFreshness: tracker })
+    await editWorkspace({ path: "server.py", oldString: "beta", newString: "beta = 42" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "server.py"), "utf8")).toBe("alpha\r\nbeta = 42\r\ngamma\r\n")
   })
 
-  it("requires and verifies base hashes for patches touching existing files", async () => {
+  it("replaces every occurrence when replaceAll is set", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "config.py"), "x = 1\ny = 1\nz = 1\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "config.py" }, { workspacePath, fileFreshness: tracker })
+
+    const result = await editWorkspace(
+      { path: "config.py", oldString: "= 1", newString: "= 2", replaceAll: true },
+      { workspacePath, fileFreshness: tracker },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "config.py"), "utf8")).toBe("x = 2\ny = 2\nz = 2\n")
+    expect(result.changedFiles[0]).toMatchObject({ path: "config.py", operation: "edited", verification: "verified" })
+  })
+
+  it("rejects ambiguous replacements when replaceAll is not set", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "config.py"), "x = 1\ny = 1\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "config.py" }, { workspacePath, fileFreshness: tracker })
+
+    await expect(
+      editWorkspace({ path: "config.py", oldString: "= 1", newString: "= 2" }, { workspacePath, fileFreshness: tracker }),
+    ).rejects.toMatchObject({ code: "replace_occurrence_mismatch" })
+    expect(fs.readFileSync(path.join(workspacePath, "config.py"), "utf8")).toBe("x = 1\ny = 1\n")
+  })
+
+  it("applies and verifies unified diff patches", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world\n")
     const patch = ["--- a/README.md", "+++ b/README.md", "@@ -1 +1 @@", "-hello old world", "+hello new world", ""].join("\n")
 
-    await expect(editWorkspace({ operations: [{ type: "patch", patch }] }, { workspacePath })).rejects.toMatchObject({
-      code: "edit_stale_content",
-    })
-
     const read = await readWorkspacePath({ path: "README.md" }, { workspacePath })
-    const result = await editWorkspace(
-      { operations: [{ type: "patch", patch, baseContentHashes: { "README.md": read.contentHash ?? "" } }] },
-      { workspacePath },
-    )
+    const result = await applyPatchWorkspace({ patch }, { workspacePath })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world\n")
     expect(result.changedFiles[0]).toMatchObject({
@@ -491,46 +503,38 @@ describe("workspace tools", () => {
   it("allows env template edits while denying real env files", async () => {
     const workspacePath = tempDir()
 
-    await editWorkspace({ operations: [{ type: "create", path: ".env.example", content: "OPENAI_API_KEY=\n" }] }, { workspacePath })
+    await editWorkspace({ path: ".env.example", content: "OPENAI_API_KEY=\n" }, { workspacePath })
 
     expect(fs.readFileSync(path.join(workspacePath, ".env.example"), "utf8")).toBe("OPENAI_API_KEY=\n")
-    await expect(editWorkspace({ operations: [{ type: "create", path: ".env", content: "OPENAI_API_KEY=secret\n" }] }, { workspacePath })).rejects.toThrow(
-      SocratesError,
-    )
+    await expect(editWorkspace({ path: ".env", content: "OPENAI_API_KEY=secret\n" }, { workspacePath })).rejects.toThrow(SocratesError)
   })
 
-  it("composes multiple replacement edits to the same file before writing", async () => {
+  it("applies sequential replacement edits to the same file", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "strategy.py"), "rate = 0.02\nplt.show()\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "strategy.py" }, { workspacePath, fileFreshness: tracker })
 
+    await editWorkspace({ path: "strategy.py", oldString: "rate = 0.02", newString: "rate = 0.04" }, { workspacePath, fileFreshness: tracker })
     const result = await editWorkspace(
-      {
-        operations: [
-          { type: "replace", path: "strategy.py", oldText: "rate = 0.02", newText: "rate = 0.04" },
-          { type: "replace", path: "strategy.py", oldText: "plt.show()", newText: "plt.savefig('strategy_vs_bh.png')" },
-        ],
-      },
-      { workspacePath },
+      { path: "strategy.py", oldString: "plt.show()", newString: "plt.savefig('strategy_vs_bh.png')" },
+      { workspacePath, fileFreshness: tracker },
     )
 
     expect(fs.readFileSync(path.join(workspacePath, "strategy.py"), "utf8")).toBe(
       "rate = 0.04\nplt.savefig('strategy_vs_bh.png')\n",
     )
     expect(result.changedFiles[0]).toMatchObject({ path: "strategy.py", operation: "edited", verification: "verified" })
-    expect(result.diff).toContain("rate = 0.04")
     expect(result.diff).toContain("plt.savefig('strategy_vs_bh.png')")
   })
 
   it("returns a focused unified diff for small replacement edits", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "strategy.py"), ["alpha", "beta", "gamma", "delta", "omega"].join("\n"))
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "strategy.py" }, { workspacePath, fileFreshness: tracker })
 
-    const result = await editWorkspace(
-      {
-        operations: [{ type: "replace", path: "strategy.py", oldText: "delta", newText: "delta = 42" }],
-      },
-      { workspacePath },
-    )
+    const result = await editWorkspace({ path: "strategy.py", oldString: "delta", newString: "delta = 42" }, { workspacePath, fileFreshness: tracker })
 
     expect(result.diff).toContain("@@ -1,5 +1,5 @@")
     expect(result.diff).toContain("-delta")
