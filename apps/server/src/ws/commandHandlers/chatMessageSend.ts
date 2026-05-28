@@ -319,6 +319,32 @@ export const handleChatMessageSend = async (
         appendAndSend(socket, store, event, "tool")
       }
 
+      if (agentEvent.type === "tool.call.streaming") {
+        // Transient pre-call hint so the UI can show "Editing <file>" during the model
+        // wait. It is replaced by the persisted tool.call.started event, so we do not store it.
+        const event = makeEvent(
+          "tool.call.streaming",
+          {
+            toolCallId: agentEvent.toolCallId,
+            toolName: agentEvent.toolName,
+            category: agentEvent.category,
+            displayName: agentEvent.displayName,
+            ...(agentEvent.argsPreview ? { argsPreview: agentEvent.argsPreview } : {}),
+            ...(agentEvent.pathPreview ? { pathPreview: agentEvent.pathPreview } : {}),
+            modelCallId: agentEvent.modelCallId,
+            stepIndex: agentEvent.stepIndex,
+          },
+          {
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            actor: { type: "tool", id: agentEvent.toolCallId, label: agentEvent.toolName },
+          },
+        )
+        sendEvent(socket, event)
+      }
+
       if (agentEvent.type === "tool.call.output") {
         if (agentEvent.text) {
           store.appendShellOutput(agentEvent.toolCallId, agentEvent.stream, agentEvent.text)

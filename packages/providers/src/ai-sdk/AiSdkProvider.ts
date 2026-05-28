@@ -100,6 +100,7 @@ export class AiSdkProvider implements ModelProvider {
         abortSignal: streamTimeout.signal,
       })
 
+      const streamingToolInputs = new Map<string, { toolName: string; text: string }>()
       for await (const part of result.fullStream) {
         streamTimeout.refresh()
         if (part.type === "reasoning-delta" && part.text && request.runtimeConfig.thinkingEnabled) {
@@ -107,6 +108,17 @@ export class AiSdkProvider implements ModelProvider {
         }
         if (part.type === "text-delta" && part.text) {
           yield { type: "model.answer.delta", text: part.text }
+        }
+        if (part.type === "tool-input-start") {
+          streamingToolInputs.set(part.id, { toolName: part.toolName, text: "" })
+          yield { type: "model.tool_call.streaming", toolCallId: part.id, toolName: part.toolName, argsText: "" }
+        }
+        if (part.type === "tool-input-delta") {
+          const entry = streamingToolInputs.get(part.id)
+          if (entry) {
+            entry.text += part.delta
+            yield { type: "model.tool_call.streaming", toolCallId: part.id, toolName: entry.toolName, argsText: entry.text }
+          }
         }
         if (part.type === "tool-call") {
           yield {

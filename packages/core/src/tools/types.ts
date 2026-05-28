@@ -109,6 +109,17 @@ export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
 
 export type ToolLifecycleEvent =
   | {
+      type: "tool.call.streaming"
+      toolCallId: string
+      toolName: ToolName
+      category: SocratesTool<unknown, unknown>["category"]
+      displayName: string
+      argsPreview?: string
+      pathPreview?: string
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
+    }
+  | {
       type: "tool.call.started"
       toolCallId: string
       toolName: ToolName

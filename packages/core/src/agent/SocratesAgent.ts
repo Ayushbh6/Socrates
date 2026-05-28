@@ -6,6 +6,7 @@ import {
   type ProviderId,
   type RuntimeConfig,
   type ToolExecutionResult,
+  type ToolName,
 } from "@socrates/contracts"
 import fs from "node:fs"
 import path from "node:path"
@@ -157,6 +158,25 @@ export class SocratesAgent {
 
         if (modelEvent.type === "model.answer.delta") {
           stepText += modelEvent.text
+        }
+
+        if (modelEvent.type === "model.tool_call.streaming") {
+          const tool = this.toolRegistry.get(modelEvent.toolName as ToolName)
+          if (tool) {
+            const preview = extractStreamingPreview(modelEvent.toolName, modelEvent.argsText)
+            yield {
+              type: "tool.call.streaming",
+              toolCallId: modelEvent.toolCallId,
+              toolName: tool.name,
+              category: tool.category,
+              displayName: tool.name,
+              ...(preview.argsPreview ? { argsPreview: preview.argsPreview } : {}),
+              ...(preview.pathPreview ? { pathPreview: preview.pathPreview } : {}),
+              ...(modelCallId ? { modelCallId } : {}),
+              stepIndex: step,
+            }
+          }
+          continue
         }
 
         if (modelEvent.type === "model.tool_call.completed") {
@@ -587,6 +607,36 @@ const previewJson = (value: unknown): string => {
     return ""
   }
   return text.length > 500 ? `${text.slice(0, 500)}...` : text
+}
+
+// Pulls a human-friendly hint out of partially streamed tool-call argument text so
+// the UI can show "Editing <file>" / "Running <command>" before the call is fully parsed.
+const extractStreamingPreview = (
+  toolName: string,
+  argsText: string,
+): { pathPreview?: string; argsPreview?: string } => {
+  const readField = (field: string): string | undefined => {
+    const match = argsText.match(new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`))
+    if (!match) {
+      return undefined
+    }
+    try {
+      return JSON.parse(`"${match[1]}"`) as string
+    } catch {
+      return match[1]
+    }
+  }
+
+  if (toolName === "bash") {
+    const command = readField("command")
+    return command ? { argsPreview: command } : {}
+  }
+
+  const path = readField("path")
+  if (path) {
+    return { pathPreview: path, argsPreview: path }
+  }
+  return {}
 }
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {

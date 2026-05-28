@@ -51,6 +51,14 @@ export type ModelEvent =
   | { type: "model.started"; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.reasoning.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.answer.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | {
+      type: "model.tool_call.streaming"
+      toolCallId: string
+      toolName: string
+      argsText: string
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
+    }
   | { type: "model.tool_call.completed"; toolCall: NormalizedToolCall; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.usage"; usage: ModelUsage; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.completed"; usage?: ModelUsage; finishReason?: string; modelCallId?: string | undefined; stepIndex?: number | undefined }

@@ -199,6 +199,19 @@ export const toolCallStartedPayloadSchema = z
   })
   .strict()
 
+export const toolCallStreamingPayloadSchema = z
+  .object({
+    toolCallId: idSchema,
+    toolName: toolNameSchema,
+    category: toolCallCategorySchema,
+    displayName: z.string().min(1),
+    argsPreview: z.string().optional(),
+    pathPreview: z.string().optional(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+
 export const toolCallOutputPayloadSchema = z
   .object({
     toolCallId: idSchema,
@@ -389,6 +402,7 @@ export const turnStartedEventSchema = socketEnvelopeSchema("turn.started", turnS
 export const agentThinkingDeltaEventSchema = socketEnvelopeSchema("agent.thinking.delta", agentThinkingDeltaPayloadSchema)
 export const agentAnswerDeltaEventSchema = socketEnvelopeSchema("agent.answer.delta", agentAnswerDeltaPayloadSchema)
 export const toolCallStartedEventSchema = socketEnvelopeSchema("tool.call.started", toolCallStartedPayloadSchema)
+export const toolCallStreamingEventSchema = socketEnvelopeSchema("tool.call.streaming", toolCallStreamingPayloadSchema)
 export const toolCallOutputEventSchema = socketEnvelopeSchema("tool.call.output", toolCallOutputPayloadSchema)
 export const toolCallCompletedEventSchema = socketEnvelopeSchema("tool.call.completed", toolCallCompletedPayloadSchema)
 export const toolCallFailedEventSchema = socketEnvelopeSchema("tool.call.failed", toolCallFailedPayloadSchema)
@@ -429,6 +443,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   agentThinkingDeltaEventSchema,
   agentAnswerDeltaEventSchema,
   toolCallStartedEventSchema,
+  toolCallStreamingEventSchema,
   toolCallOutputEventSchema,
   toolCallCompletedEventSchema,
   toolCallFailedEventSchema,

@@ -166,6 +166,53 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "tool.call.streaming") {
+        setLiveSteps((current) =>
+          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => {
+            const existing = step.tools.find((tool) => tool.toolCallId === event.payload.toolCallId);
+            if (existing) {
+              return {
+                ...step,
+                tools: step.tools.map((tool) =>
+                  tool.toolCallId === event.payload.toolCallId
+                    ? {
+                        ...tool,
+                        ...(tool.status === "running" ? { phase: "streaming" as const } : {}),
+                        ...(event.payload.pathPreview ? { pathPreview: event.payload.pathPreview } : {}),
+                        ...(event.payload.argsPreview ? { argsPreview: event.payload.argsPreview } : {}),
+                      }
+                    : tool,
+                ),
+              };
+            }
+            return {
+              ...step,
+              tools: [
+                ...step.tools,
+                {
+                  toolCallId: event.payload.toolCallId,
+                  conversationId,
+                  sessionId: event.sessionId ?? "live",
+                  turnId: event.turnId ?? activeTurnId ?? "live",
+                  toolName: event.payload.toolName,
+                  displayName: event.payload.displayName,
+                  category: event.payload.category,
+                  status: "running",
+                  requiresApproval: false,
+                  phase: "streaming",
+                  ...(event.payload.pathPreview ? { pathPreview: event.payload.pathPreview } : {}),
+                  ...(event.payload.argsPreview ? { argsPreview: event.payload.argsPreview } : {}),
+                  modelCallId: event.payload.modelCallId,
+                  stepIndex: event.payload.stepIndex,
+                  output: "",
+                },
+              ],
+            };
+          }),
+        );
+        return;
+      }
+
       if (event.type === "tool.call.started") {
         setLiveSteps((current) =>
           updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({

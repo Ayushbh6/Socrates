@@ -18,6 +18,9 @@ export type ToolTimelineItem = Omit<ConversationToolRun, "approval"> & {
   modelCallId?: string;
   stepIndex?: number;
   approval?: ConversationToolApproval;
+  // Set while the model is still streaming this tool call's arguments (pre-approval/pre-run).
+  phase?: "streaming";
+  pathPreview?: string;
 };
 
 export const toolRunToTimelineItem = (run: ConversationToolRun): ToolTimelineItem => ({
