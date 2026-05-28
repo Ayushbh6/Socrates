@@ -483,3 +483,12 @@ Implemented the verified edit reliability slice after Terminal v2:
 - The Socrates prompt now requires reading before overwrite/patch, refusing to claim unverified edits, comparing stack traces against current file contents, checking file/module existence before cache guesses, distinguishing DB config/credential errors from service availability, and running the smallest meaningful verification after fixes.
 - Regression coverage includes contracts for freshness metadata, workspace tests for stale hashes, read-back verification, Windows-style paths, CRLF preservation, env template policy, patch verification, server tests for persisted edit hashes and recoverable stale-edit failures, and core prompt coverage for debugging discipline.
 - Search now treats regex-looking text queries such as `a|b`, `.*`, `\b`, anchors, and character classes as regex unless `regex: false` is explicit; zero-match literal regex-looking searches return warnings. File search now matches case-insensitively against both full relative paths and basenames, including glob queries. The prompt tells Socrates to set `regex=true` for regex syntax and otherwise search simple terms separately.
+
+## v0.1.1 Runtime Release And Windows Install Note
+
+Published the current Terminal v2 plus verified edit/search runtime as GitHub Release `v0.1.1`:
+
+- `main` includes `d9c3028` (`Use release version in runtime manifest`), `f8738e9` (`Bump CLI version to 0.1.1`), and `4a2f1dc` (`Harden edit verification and search reliability`).
+- The `v0.1.1` GitHub Release contains `SHA256SUMS`, `socrates-runtime-darwin-arm64.zip`, `socrates-runtime-darwin-x64.zip`, and `socrates-runtime-win32-x64.zip`. Existing `@socrates-ai/cli@0.1.0` clients fetch GitHub Releases `latest`, so rerunning `npx @socrates-ai/cli` should download the `v0.1.1` runtime.
+- npm registry publishing of `@socrates-ai/cli@0.1.1` is not complete from this machine because `npm whoami` returned `401 Unauthorized`. `npm publish --access public --dry-run` passed from `apps/cli`, so the remaining npm step is authentication plus real publish.
+- Windows first-run/update extraction is a known serious UX issue: the Windows runtime zip is about 496 MiB and the CLI currently extracts with PowerShell `Expand-Archive`, which can take extremely long on some laptops when combined with many files, NTFS writes, and antivirus scanning. Fixing Windows runtime extraction/package size/progress should be treated as the next release/install-performance priority before broad Windows testing.

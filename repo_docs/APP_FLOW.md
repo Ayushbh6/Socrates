@@ -70,7 +70,7 @@ pnpm desktop:bundle
 npm CLI release flow:
 
 ```text
-push SemVer tag, for example v0.1.0
+push SemVer tag, for example v0.1.1
   -> GitHub Actions builds unsigned runtime zips for macOS arm64, macOS x64, and Windows x64
   -> each runtime zip includes a fixed Node runtime for app processes and native dependency ABI compatibility
   -> SHA256SUMS and runtime zips are attached to GitHub Releases
@@ -80,6 +80,8 @@ push SemVer tag, for example v0.1.0
 ```
 
 The npm CLI path is the primary distribution path until paid desktop signing is available. The signed Tauri release workflow is manual-only and reserved for a future polished desktop release.
+
+The CLI fetches the latest GitHub Release by default, so older published launcher packages can still pick up newer runtime zips. Publishing the npm package version is still useful for launcher metadata and `--version`, but runtime rollout is driven by the GitHub Release assets. Windows runtime extraction currently uses PowerShell `Expand-Archive` and can be very slow on some machines because the Windows archive is larger and contains many files. Improving Windows extraction speed, archive size, and progress reporting is a release-quality priority.
 
 On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
 
