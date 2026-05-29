@@ -29,7 +29,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const mcpRuntime = new McpRuntime(socratesHome ? { socratesHome } : {})
   const terminals = new ConversationTerminalManager(store)
-  terminals.markPersistedRunningTerminalsStale()
+  await terminals.reconcilePersistedTerminals()
   const app = Fastify({ logger: options.logger ?? false })
 
   app.addHook("onClose", async () => {

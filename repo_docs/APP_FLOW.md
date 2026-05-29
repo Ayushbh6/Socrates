@@ -639,12 +639,13 @@ not yet enabled:
 
 ## Tooling And Context Management Target
 
-The first tooling phase exposes six model-visible tools:
+The first tooling phase exposes seven model-visible tools:
 
 ```text
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { Schema } from "ai"
-import { applyPatchToolInputSchema, editToolInputSchema, traceRetrieveToolInputSchema } from "@socrates/contracts"
+import { applyPatchToolInputSchema, editToolInputSchema, editToolModelInputSchema, traceRetrieveToolInputSchema } from "@socrates/contracts"
 import { inputSchemaForAiTool, normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
 
 describe("AI SDK provider metadata", () => {
@@ -66,9 +66,11 @@ describe("AI SDK provider metadata", () => {
     })
   })
 
-  it("keeps flat edit and apply_patch as object schemas without operation unions", () => {
+  it("keeps runtime edit flat while exposing a mutually exclusive model schema", () => {
     const editObject = editToolInputSchema._def.schema
     expect(editObject._def.typeName).toBe("ZodObject")
+    expect(editToolModelInputSchema._def.typeName).toBe("ZodUnion")
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success).toBe(false)
     expect(applyPatchToolInputSchema._def.typeName).toBe("ZodObject")
     expect("operations" in editObject.shape).toBe(false)
     expect(editObject.shape.path).toBeDefined()

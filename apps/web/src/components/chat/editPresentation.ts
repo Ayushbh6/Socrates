@@ -19,6 +19,7 @@ export type DiffFile = {
 
 export type EditFileSummary = {
   path: string;
+  previousPath?: string;
   operation: string;
   added?: number;
   removed?: number;
@@ -52,6 +53,7 @@ export function getEditFileSummaries(tool: ToolTimelineItem): EditFileSummary[] 
       const existing = files.get(file.path);
       files.set(file.path, {
         path: file.path,
+        previousPath: typeof file.previousPath === "string" ? file.previousPath : undefined,
         operation: normalizeOperation(file.operation),
         added: existing?.added,
         removed: existing?.removed,
@@ -64,6 +66,7 @@ export function getEditFileSummaries(tool: ToolTimelineItem): EditFileSummary[] 
     const existing = files.get(file.path);
     files.set(file.path, {
       path: file.path,
+      previousPath: file.previousPath,
       operation: normalizeOperation(file.operation),
       added: existing?.added,
       removed: existing?.removed,
@@ -190,7 +193,7 @@ export function formatApprovalPreview(approval: PendingApproval): string[] {
 
   const files = new Map<string, string>();
   for (const line of approval.actionPreview.split(/\r?\n/)) {
-    const match = line.match(/^\s*(create|overwrite|replace|patch|edit|patched|edited|delete):\s+(.+?)\s*$/i);
+    const match = line.match(/^\s*(create|overwrite|replace|patch|edit|patched|edited|delete|deleted|rename|renamed):\s+(.+?)\s*$/i);
     if (match) {
       files.set(match[2], normalizeOperation(match[1]));
     }
@@ -201,7 +204,7 @@ export function formatApprovalPreview(approval: PendingApproval): string[] {
     .map(([path, operation]) => `${capitalize(operation)} ${path}`);
 }
 
-function getChangedFiles(result: unknown): Array<{ path: string; operation: string }> {
+function getChangedFiles(result: unknown): Array<{ path: string; operation: string; previousPath?: string }> {
   if (typeof result !== "object" || result === null || !("changedFiles" in result)) {
     return [];
   }
@@ -214,12 +217,16 @@ function getChangedFiles(result: unknown): Array<{ path: string; operation: stri
       if (typeof file !== "object" || file === null) {
         return undefined;
       }
-      const record = file as { path?: unknown; operation?: unknown };
+      const record = file as { path?: unknown; operation?: unknown; previousPath?: unknown };
       return typeof record.path === "string"
-        ? { path: record.path, operation: typeof record.operation === "string" ? record.operation : "edited" }
+        ? {
+            path: record.path,
+            operation: typeof record.operation === "string" ? record.operation : "edited",
+            ...(typeof record.previousPath === "string" ? { previousPath: record.previousPath } : {}),
+          }
         : undefined;
     })
-    .filter((file): file is { path: string; operation: string } => Boolean(file));
+    .filter((file): file is { path: string; operation: string; previousPath?: string } => Boolean(file));
 }
 
 function getInputOperations(argumentsValue: unknown): Array<{ path: string | undefined; type: string }> {
@@ -364,6 +371,12 @@ function normalizeOperation(operation: string): string {
     case "patch":
     case "patched":
       return "patched";
+    case "delete":
+    case "deleted":
+      return "deleted";
+    case "rename":
+    case "renamed":
+      return "renamed";
     case "replace":
     case "edit":
     case "edited":

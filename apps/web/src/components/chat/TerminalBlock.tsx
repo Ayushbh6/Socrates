@@ -8,7 +8,7 @@ interface TerminalBlockProps {
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
-  status?: "running" | "exited" | "failed" | "stale" | "awaiting_input";
+  status?: "running" | "exited" | "failed" | "detached" | "stale" | "awaiting_input" | "missing";
   shell?: string;
   // Optional chrome for the persistent Terminal panel; omitted for inline tool output.
   name?: string;
@@ -40,7 +40,7 @@ export function TerminalBlock({
   const out = stdout ?? "";
   const err = stderr ?? "";
   const hasOutput = Boolean(out || err);
-  const failed = status === "failed" || (typeof exitCode === "number" && exitCode !== 0);
+  const failed = status === "failed" || status === "detached" || status === "missing" || (typeof exitCode === "number" && exitCode !== 0);
   const showFooter = (cwd || shell || typeof exitCode === "number" || signal || durationMs !== undefined) && !isRunning;
 
   return (
@@ -74,11 +74,11 @@ export function TerminalBlock({
       {command ? (
         <div className="border-b border-white/5 px-3 py-2 font-mono text-[12px] leading-relaxed text-gray-200">
           <span className="select-none text-teal-400/80">$ </span>
-          <span className="wrap-break-word">{command}</span>
+          <span className="break-words">{command}</span>
         </div>
       ) : null}
       {hasOutput ? (
-        <pre className="max-h-88 overflow-auto whitespace-pre-wrap wrap-break-word px-3 py-3 font-mono text-[12px] leading-relaxed text-gray-100">
+        <pre className="max-h-[22rem] overflow-auto whitespace-pre-wrap break-words px-3 py-3 font-mono text-[12px] leading-relaxed text-gray-100">
           {out}
           {err ? <span className="text-red-300">{out ? `\n${err}` : err}</span> : null}
           {isRunning ? <span className="ml-0.5 inline-block h-[1.05em] w-[7px] translate-y-[2px] animate-pulse bg-gray-300 align-middle" /> : null}
@@ -87,7 +87,7 @@ export function TerminalBlock({
         <div className="px-3 py-5 text-center font-mono text-[12px] text-gray-500">{isRunning ? "Running…" : "No output."}</div>
       )}
       {showFooter ? (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/10 bg-white/3 px-3 py-1.5 font-mono text-[10px] text-gray-400">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/10 bg-white/[0.03] px-3 py-1.5 font-mono text-[10px] text-gray-400">
           {typeof exitCode === "number" ? (
             <span className={failed ? "text-red-300" : "text-emerald-300"}>exit {exitCode}</span>
           ) : null}

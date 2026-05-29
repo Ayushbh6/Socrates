@@ -187,6 +187,7 @@ The V1 model-visible tool set is:
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources

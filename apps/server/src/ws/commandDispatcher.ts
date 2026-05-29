@@ -60,10 +60,16 @@ export const handleInboundMessage = async (
         handleApprovalDecide(store, activeTurns, command)
         return
       case "terminal.stop":
-        terminals.handleStop(command)
+        void terminals.handleStop(command).catch((error) => {
+          if (socket.readyState !== 1) {
+            return
+          }
+          const normalized = normalizeError(error)
+          emitNormalizedError(socket, store, normalized, idsFromCommand(command))
+        })
         return
       case "terminal.input":
-        terminals.handleInput(command)
+        await terminals.handleInput(command)
         return
       case "terminal.rename":
         terminals.handleRename(command)

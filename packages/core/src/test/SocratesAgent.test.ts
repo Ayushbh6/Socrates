@@ -48,7 +48,8 @@ describe("SocratesAgent", () => {
   })
 
   it("exposes the base tool set", () => {
-    expect(createDefaultToolRegistry().modelDefinitions().map((tool) => tool.name)).toEqual([
+    const tools = createDefaultToolRegistry().modelDefinitions()
+    expect(tools.map((tool) => tool.name)).toEqual([
       "read",
       "search",
       "edit",
@@ -58,6 +59,12 @@ describe("SocratesAgent", () => {
       "list_project_resources",
       "mcp_registry",
     ])
+    expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
+    expect(
+      tools
+        .find((tool) => tool.name === "edit")
+        ?.inputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success,
+    ).toBe(false)
   })
 
   it("streams blocking compaction start before the compressor finishes and model call begins", async () => {
@@ -235,6 +242,72 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
+  })
+
+  it("uses internal tool run ids while preserving repeated provider ids in model messages", async () => {
+    const seenMessages: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seenMessages.push(request.messages)
+        calls += 1
+        if (calls <= 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "functions.read:0",
+              toolName: "read",
+              input: { path: `file-${calls}.txt` },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Done." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async (input) => ({
+      path: input.path,
+      kind: "file",
+      content: input.path,
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: input.path.length },
+    })
+
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read two files" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    const started = streamed.filter((event): event is Extract<SocratesAgentEvent, { type: "tool.call.started" }> => event.type === "tool.call.started")
+    expect(started).toHaveLength(2)
+    expect(started.map((event) => event.providerToolCallId)).toEqual(["functions.read:0", "functions.read:0"])
+    expect(new Set(started.map((event) => event.toolCallId)).size).toBe(2)
+    expect(started.every((event) => event.toolCallId.startsWith("tcall_"))).toBe(true)
+    expect(JSON.stringify(seenMessages.at(-1))).toContain('"toolCallId":"functions.read:0"')
+    expect(JSON.stringify(seenMessages.at(-1))).not.toContain(started[0]?.toolCallId)
   })
 
   it("omits tools from the final no-tools call after the per-turn tool budget is exhausted", async () => {

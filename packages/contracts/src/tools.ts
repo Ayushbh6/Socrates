@@ -154,6 +154,25 @@ export const editToolInputSchema = z
   })
 export type EditToolInput = z.infer<typeof editToolInputSchema>
 
+export const editToolModelInputSchema = z.union([
+  z
+    .object({
+      path: z.string().min(1),
+      oldString: z.string().min(1),
+      newString: z.string(),
+      replaceAll: z.boolean().optional(),
+      dryRun: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      path: z.string().min(1),
+      content: z.string(),
+      dryRun: z.boolean().optional(),
+    })
+    .strict(),
+])
+
 export const applyPatchToolInputSchema = z
   .object({
     patch: z.string().min(1),
@@ -168,7 +187,8 @@ export const editToolOutputSchema = z
       z
         .object({
           path: z.string().min(1),
-          operation: z.enum(["created", "overwritten", "edited", "patched"]),
+          operation: z.enum(["created", "overwritten", "edited", "patched", "deleted", "renamed"]),
+          previousPath: z.string().min(1).optional(),
           verification: z.literal("verified").optional(),
           contentHashBefore: z.string().min(1).optional(),
           contentHashAfter: z.string().min(1).optional(),
@@ -189,7 +209,7 @@ export type EditToolOutput = z.infer<typeof editToolOutputSchema>
 export const applyPatchToolOutputSchema = editToolOutputSchema
 export type ApplyPatchToolOutput = EditToolOutput
 
-export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "stale", "awaiting_input", "missing"])
+export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "detached", "stale", "awaiting_input", "missing"])
 export type TerminalStatus = z.infer<typeof terminalStatusSchema>
 
 export const bashTerminalMetadataSchema = z
@@ -278,6 +298,7 @@ export const bashToolOutputSchema = z
     process: z
       .object({
         processId: z.string().min(1),
+        systemPid: z.number().int().positive().optional(),
         status: z.enum(["running", "exited", "stopped", "missing"]),
         exitCode: z.number().int().nullable().optional(),
         signal: z.string().nullable().optional(),
@@ -589,6 +610,7 @@ export type McpRegistryToolOutput = z.infer<typeof mcpRegistryToolOutputSchema>
 export const normalizedToolCallSchema = z
   .object({
     toolCallId: z.string().min(1),
+    providerToolCallId: z.string().min(1).optional(),
     toolName: toolNameSchema,
     input: z.unknown(),
     providerMetadata: providerMetadataSchema.optional(),
@@ -599,6 +621,7 @@ export type NormalizedToolCall = z.infer<typeof normalizedToolCallSchema>
 export const toolExecutionResultSchema = z
   .object({
     toolCallId: z.string().min(1),
+    providerToolCallId: z.string().min(1).optional(),
     toolName: toolNameSchema,
     ok: z.boolean(),
     output: z.unknown().optional(),

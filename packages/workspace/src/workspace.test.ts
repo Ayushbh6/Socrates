@@ -392,6 +392,9 @@ describe("workspace tools", () => {
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
     const tracker = new FileFreshnessTracker()
 
+    await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath })).rejects.toMatchObject({
+      code: "edit_stale_content",
+    })
     await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
       code: "edit_stale_content",
     })
@@ -498,6 +501,116 @@ describe("workspace tools", () => {
       contentHashBefore: read.contentHash,
     })
     expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("applies and verifies new-file patches", async () => {
+    const workspacePath = tempDir()
+    const patch = ["--- /dev/null", "+++ b/new-file.txt", "@@ -0,0 +1 @@", "+created", ""].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath })
+
+    expect(fs.readFileSync(path.join(workspacePath, "new-file.txt"), "utf8")).toBe("created\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "new-file.txt",
+      operation: "created",
+      verification: "verified",
+    })
+    expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("applies and verifies delete patches", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "remove-me.txt"), "delete me\n")
+    const read = await readWorkspacePath({ path: "remove-me.txt" }, { workspacePath })
+    const patch = ["--- a/remove-me.txt", "+++ /dev/null", "@@ -1 +0,0 @@", "-delete me", ""].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath })
+
+    expect(fs.existsSync(path.join(workspacePath, "remove-me.txt"))).toBe(false)
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "remove-me.txt",
+      operation: "deleted",
+      verification: "verified",
+      contentHashBefore: read.contentHash,
+    })
+    expect(result.changedFiles[0]?.contentHashAfter).toBeUndefined()
+  })
+
+  it("applies and verifies pure rename patches", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "old-name.txt"), "same\n")
+    const patch = [
+      "diff --git a/old-name.txt b/new-name.txt",
+      "similarity index 100%",
+      "rename from old-name.txt",
+      "rename to new-name.txt",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath })
+
+    expect(fs.existsSync(path.join(workspacePath, "old-name.txt"))).toBe(false)
+    expect(fs.readFileSync(path.join(workspacePath, "new-name.txt"), "utf8")).toBe("same\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "new-name.txt",
+      previousPath: "old-name.txt",
+      operation: "renamed",
+      verification: "verified",
+    })
+    expect(result.changedFiles[0]?.contentHashBefore).toBe(result.changedFiles[0]?.contentHashAfter)
+  })
+
+  it("applies and verifies rename patches that also change content", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "old-name.txt"), "old\n")
+    const patch = [
+      "diff --git a/old-name.txt b/new-name.txt",
+      "similarity index 50%",
+      "rename from old-name.txt",
+      "rename to new-name.txt",
+      "--- a/old-name.txt",
+      "+++ b/new-name.txt",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath })
+
+    expect(fs.existsSync(path.join(workspacePath, "old-name.txt"))).toBe(false)
+    expect(fs.readFileSync(path.join(workspacePath, "new-name.txt"), "utf8")).toBe("new\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "new-name.txt",
+      previousPath: "old-name.txt",
+      operation: "renamed",
+      verification: "verified",
+    })
+    expect(result.changedFiles[0]?.contentHashBefore).not.toBe(result.changedFiles[0]?.contentHashAfter)
+  })
+
+  it("rejects sensitive create, delete, and rename patches before applying", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, ".env"), "TOKEN=secret\n")
+    fs.writeFileSync(path.join(workspacePath, "safe.txt"), "safe\n")
+
+    const createSensitive = ["--- /dev/null", "+++ b/secret.key", "@@ -0,0 +1 @@", "+secret", ""].join("\n")
+    const deleteSensitive = ["--- a/.env", "+++ /dev/null", "@@ -1 +0,0 @@", "-TOKEN=secret", ""].join("\n")
+    const renameSensitive = [
+      "diff --git a/safe.txt b/credential.txt",
+      "similarity index 100%",
+      "rename from safe.txt",
+      "rename to credential.txt",
+      "",
+    ].join("\n")
+
+    await expect(applyPatchWorkspace({ patch: createSensitive }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    await expect(applyPatchWorkspace({ patch: deleteSensitive }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    await expect(applyPatchWorkspace({ patch: renameSensitive }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    expect(fs.readFileSync(path.join(workspacePath, ".env"), "utf8")).toBe("TOKEN=secret\n")
+    expect(fs.readFileSync(path.join(workspacePath, "safe.txt"), "utf8")).toBe("safe\n")
+    expect(fs.existsSync(path.join(workspacePath, "secret.key"))).toBe(false)
+    expect(fs.existsSync(path.join(workspacePath, "credential.txt"))).toBe(false)
   })
 
   it("allows env template edits while denying real env files", async () => {

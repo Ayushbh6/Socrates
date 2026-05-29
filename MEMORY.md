@@ -475,7 +475,7 @@ Implemented the Codex-like Terminal layer on top of Bash v2:
 Implemented the verified edit reliability slice after Terminal v2:
 
 - `read` now returns full-file freshness metadata: `contentHash`, `mtimeMs`, `sizeBytes`, and text `lineEnding` when applicable. The hash represents the full file bytes, not the truncated preview returned to the model.
-- `edit` remains the only model-visible file mutation tool. It still supports create, overwrite, exact replace, and patch operations, but existing-file overwrites require `baseContentHash`, and patches touching existing files require `baseContentHashes`.
+- Historical note: this slice originally kept patch operations inside `edit` with model-carried base hashes. The current contract later split unified diffs into `apply_patch` and moved edit freshness to the harness-tracked active-turn read state.
 - Non-dry-run edits read/stat/hash before writing, write text through a same-directory temp file, immediately read/stat/hash after writing, and fail with recoverable errors such as `edit_stale_content`, `edit_write_failed`, `edit_verification_failed`, or `patch_verification_failed` when disk state does not match Socrates' plan.
 - `replace` stays lightweight because exact `oldText` must match current disk content. It still verifies disk after writing before reporting success.
 - Completed edit outputs include per-file verification metadata: before/after hashes, before/after byte sizes, line delta, and `verification: "verified"`.
@@ -528,6 +528,7 @@ Split the model-facing file mutation surface to reduce weak-model tool-schema fa
 
 - `edit` is now flat per call: `{ path, content? }` for whole-file create/overwrite, or `{ path, oldString, newString, replaceAll? }` for targeted multiline replace. No `operations[]`, no discriminated union, and no model-carried `baseContentHash` / `expectedOccurrences`.
 - `apply_patch` is a dedicated seventh V1 tool: `{ patch, dryRun? }` for multi-hunk or multi-file unified diffs via git apply.
+- Patch verification is intent-aware: patched/created targets must exist with verified content, deleted targets must be absent, and renamed targets include `previousPath` while verifying old path absence and new path presence.
 - `FileFreshnessTracker` (turn-scoped in `apps/server` `activeTurns`) records `read` `contentHash` values and enforces freshness on existing-file `edit` writes/replaces with recoverable `edit_stale_content`.
 - `packages/workspace` owns tracker + patch helpers; `packages/contracts` owns schemas; `packages/core` registers both tools; frontend `editPresentation` reads flat args and routes `apply_patch` through the same diff UI.
 - Rule 10 / contract docs amended: `apply_patch` is model-visible; patch is no longer a hidden `edit` mode.

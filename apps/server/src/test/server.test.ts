@@ -851,6 +851,36 @@ describe("database migrations", () => {
       ]),
     )
   })
+
+  it("stores repeated provider tool-call ids under unique Socrates tool run ids", () => {
+    const dbPath = tempDbPath()
+    const handle = openDatabase(dbPath)
+    runMigrations(handle)
+    const store = new SocratesStore(handle)
+    try {
+      for (const toolCallId of ["tcall_internal_1", "tcall_internal_2"]) {
+        store.createToolCall({
+          toolCallId,
+          providerToolCallId: "functions.read:0",
+          conversationId: "conv_duplicate_provider",
+          sessionId: "sess_duplicate_provider",
+          turnId: "turn_duplicate_provider",
+          toolName: "read",
+          arguments: { path: "README.md" },
+          requiresApproval: false,
+        })
+        store.completeToolCall(toolCallId, { ok: true })
+      }
+
+      const rows = handle.sqlite
+        .prepare("SELECT id, provider_tool_call_id FROM tool_calls WHERE conversation_id = ? ORDER BY started_at")
+        .all("conv_duplicate_provider") as Array<{ id: string; provider_tool_call_id: string }>
+      expect(rows.map((row) => row.id)).toEqual(["tcall_internal_1", "tcall_internal_2"])
+      expect(rows.map((row) => row.provider_tool_call_id)).toEqual(["functions.read:0", "functions.read:0"])
+    } finally {
+      handle.close()
+    }
+  })
 })
 
 describe("context compaction persistence", () => {
@@ -2589,16 +2619,17 @@ describe("WebSocket API", () => {
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
       const body = parseResponse<{
-        toolRuns: Array<{ toolCallId: string; shell?: { stdout: string; cwd: string }; durationMs?: number }>
+        toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; shell?: { stdout: string; cwd: string }; durationMs?: number }>
       }>(response.payload)
 
-      expect(body.ok).toBe(true)
-      if (body.ok) {
-        expect(body.data.toolRuns).toHaveLength(2)
-        expect(body.data.toolRuns[1]?.toolCallId).toBe("tcall_state")
-        expect(body.data.toolRuns[1]?.shell?.stdout).toBe("ok nested")
-        expect(body.data.toolRuns[1]?.shell?.cwd.endsWith("nested")).toBe(true)
-        expect(body.data.toolRuns[1]?.durationMs).toBeGreaterThanOrEqual(0)
+        expect(body.ok).toBe(true)
+        if (body.ok) {
+          expect(body.data.toolRuns).toHaveLength(2)
+        const stateRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_state")
+        expect(stateRun?.toolCallId).toMatch(/^tcall_/)
+        expect(stateRun?.shell?.stdout).toBe("ok nested")
+        expect(stateRun?.shell?.cwd.endsWith("nested")).toBe(true)
+        expect(stateRun?.durationMs).toBeGreaterThanOrEqual(0)
       }
     } finally {
       socket.close()
@@ -2804,24 +2835,23 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
-      expect(failed.payload.toolCallId).toBe("tcall_break_shell")
+      expect(failed.payload.providerToolCallId).toBe("tcall_break_shell")
       expect(failed.payload.error.code).toBe("shell_protocol_failed")
-      expect(completed.payload.toolCallId).toBe("tcall_after_reset")
+      expect(completed.payload.providerToolCallId).toBe("tcall_after_reset")
 
       const response = await app.inject({
         method: "GET",
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
       const body = parseResponse<{
-        toolRuns: Array<{ toolCallId: string; shell?: { stdout: string; platform?: string; shellKind?: string; shellExecutable?: string } }>
+        toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; shell?: { stdout: string; platform?: string; shellKind?: string; shellExecutable?: string } }>
       }>(response.payload)
 
       expect(body.ok).toBe(true)
       if (body.ok) {
-        expect(body.data.toolRuns.find((run) => run.toolCallId === "tcall_after_reset")?.shell?.stdout).toBe("recovered")
-        expect(body.data.toolRuns.find((run) => run.toolCallId === "tcall_after_reset")?.shell?.shellKind).toBe(
-          process.platform === "win32" ? "powershell" : "posix",
-        )
+        const recoveredRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_after_reset")
+        expect(recoveredRun?.shell?.stdout).toBe("recovered")
+        expect(recoveredRun?.shell?.shellKind).toBe(process.platform === "win32" ? "powershell" : "posix")
       }
 
       const sqlite = new Database(dbPath)
@@ -2876,15 +2906,16 @@ describe("WebSocket API", () => {
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
       const body = parseResponse<{
-        toolRuns: Array<{ toolCallId: string; approval?: { status: string; decision?: string }; shell?: { exitCode?: number | null } }>
+        toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; approval?: { status: string; decision?: string }; shell?: { exitCode?: number | null } }>
       }>(response.payload)
 
       expect(body.ok).toBe(true)
       if (body.ok) {
-        expect(body.data.toolRuns[0]?.toolCallId).toBe("tcall_approval")
-        expect(body.data.toolRuns[0]?.approval?.status).toBe("approved")
-        expect(body.data.toolRuns[0]?.approval?.decision).toBe("approved")
-        expect(body.data.toolRuns[0]?.shell?.exitCode).toBe(0)
+        const approvalRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_approval")
+        expect(approvalRun?.toolCallId).toMatch(/^tcall_/)
+        expect(approvalRun?.approval?.status).toBe("approved")
+        expect(approvalRun?.approval?.decision).toBe("approved")
+        expect(approvalRun?.shell?.exitCode).toBe(0)
         expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "approved.txt"), "utf8")).toBe("approved")
       }
     } finally {
@@ -2915,12 +2946,13 @@ describe("WebSocket API", () => {
       const body = parseResponse<{
         toolRuns: Array<{
           toolCallId: string
+          providerToolCallId?: string
           fileOperations?: Array<{ path: string; contentHashBefore?: string; contentHashAfter?: string; verification?: string }>
         }>
       }>(response.payload)
       expect(body.ok).toBe(true)
       if (body.ok) {
-        const fileOperation = body.data.toolRuns.find((run) => run.toolCallId === "tcall_verified_edit")?.fileOperations?.[0]
+        const fileOperation = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_verified_edit")?.fileOperations?.[0]
         expect(fileOperation).toMatchObject({ path: "README.md", verification: "verified" })
         expect(fileOperation?.contentHashBefore).toMatch(/^[a-f0-9]{64}$/)
         expect(fileOperation?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
@@ -2928,9 +2960,11 @@ describe("WebSocket API", () => {
 
       const sqlite = new Database(dbPath)
       try {
-        const row = sqlite.prepare("SELECT content_hash_before, content_hash_after, metadata_json FROM file_operations WHERE tool_call_id = ?").get(
-          "tcall_verified_edit",
-        ) as { content_hash_before?: string; content_hash_after?: string; metadata_json?: string } | undefined
+        const row = sqlite
+          .prepare(
+            "SELECT f.content_hash_before, f.content_hash_after, f.metadata_json FROM file_operations f JOIN tool_calls t ON t.id = f.tool_call_id WHERE t.provider_tool_call_id = ?",
+          )
+          .get("tcall_verified_edit") as { content_hash_before?: string; content_hash_after?: string; metadata_json?: string } | undefined
         expect(row?.content_hash_before).toMatch(/^[a-f0-9]{64}$/)
         expect(row?.content_hash_after).toMatch(/^[a-f0-9]{64}$/)
         expect(row?.metadata_json).toContain("verified")

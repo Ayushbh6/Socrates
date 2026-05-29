@@ -7,6 +7,7 @@ import { StoreBase } from "./shared"
 export class ToolStore extends StoreBase {
   createToolCall(input: {
     toolCallId: string
+    providerToolCallId?: string
     conversationId: string
     sessionId: string
     turnId: string
@@ -26,6 +27,7 @@ export class ToolStore extends StoreBase {
         sessionId: input.sessionId,
         turnId: input.turnId,
         modelCallId: input.modelCallId,
+        providerToolCallId: input.providerToolCallId,
         toolName: input.toolName,
         status: input.requiresApproval ? "awaiting_approval" : "running",
         argumentsJson: JSON.stringify(input.arguments),
@@ -183,6 +185,7 @@ export class ToolStore extends StoreBase {
     files: Array<{
       path: string
       operation: string
+      previousPath?: string
       contentHashBefore?: string
       contentHashAfter?: string
       sizeBytesBefore?: number
@@ -203,6 +206,7 @@ export class ToolStore extends StoreBase {
           turnId: input.turnId,
           operation: file.operation,
           path: file.path,
+          oldPath: file.previousPath,
           contentHashBefore: file.contentHashBefore,
           contentHashAfter: file.contentHashAfter,
           status: "completed",
@@ -210,6 +214,7 @@ export class ToolStore extends StoreBase {
           completedAt: now,
           metadataJson: JSON.stringify({
             verification: file.verification,
+            previousPath: file.previousPath,
             sizeBytesBefore: file.sizeBytesBefore,
             sizeBytesAfter: file.sizeBytesAfter,
             lineDelta: file.lineDelta,
@@ -225,7 +230,7 @@ export class ToolStore extends StoreBase {
     turnId: string
     toolCallId: string
     diff: string
-    files: Array<{ path: string; operation: string }>
+    files: Array<{ path: string; operation: string; previousPath?: string }>
   }): void {
     this.handle.db
       .insert(patches)
@@ -288,6 +293,7 @@ export class ToolStore extends StoreBase {
             path: row.path,
             operation: row.operation,
             status: row.status,
+            ...(row.oldPath ? { previousPath: row.oldPath } : typeof metadata?.previousPath === "string" ? { previousPath: metadata.previousPath } : {}),
             ...(row.contentHashBefore ? { contentHashBefore: row.contentHashBefore } : {}),
             ...(row.contentHashAfter ? { contentHashAfter: row.contentHashAfter } : {}),
             ...(typeof metadata?.sizeBytesBefore === "number" ? { sizeBytesBefore: metadata.sizeBytesBefore } : {}),
@@ -304,6 +310,8 @@ export class ToolStore extends StoreBase {
 
       return {
         toolCallId: tool.id,
+        toolRunId: tool.id,
+        ...(tool.providerToolCallId ? { providerToolCallId: tool.providerToolCallId } : {}),
         conversationId: tool.conversationId,
         sessionId: tool.sessionId,
         turnId: tool.turnId,
@@ -386,8 +394,14 @@ const isShellKind = (value: unknown): value is "posix" | "powershell" | "cmd" =>
 const isShellProcessStatus = (value: unknown): value is "running" | "exited" | "stopped" | "missing" =>
   value === "running" || value === "exited" || value === "stopped" || value === "missing"
 
-const isTerminalStatus = (value: unknown): value is "running" | "exited" | "stopped" | "stale" | "awaiting_input" | "missing" =>
-  value === "running" || value === "exited" || value === "stopped" || value === "stale" || value === "awaiting_input" || value === "missing"
+const isTerminalStatus = (value: unknown): value is "running" | "exited" | "stopped" | "detached" | "stale" | "awaiting_input" | "missing" =>
+  value === "running" ||
+  value === "exited" ||
+  value === "stopped" ||
+  value === "detached" ||
+  value === "stale" ||
+  value === "awaiting_input" ||
+  value === "missing"
 
 const normalizeToolStatus = (status: string): ConversationToolRun["status"] => {
   if (["running", "awaiting_approval", "completed", "failed", "rejected", "cancelled"].includes(status)) {

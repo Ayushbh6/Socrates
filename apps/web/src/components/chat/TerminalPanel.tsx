@@ -126,7 +126,7 @@ function TerminalPane({ terminal, onStop, onInput }: { terminal: ConversationTer
       }
     >
       {canSendInput ? (
-        <div className={`border-t px-3 py-3 ${needsInput ? "border-amber-400/20 bg-amber-400/5" : "border-white/10 bg-white/3"}`}>
+        <div className={`border-t px-3 py-3 ${needsInput ? "border-amber-400/20 bg-amber-400/5" : "border-white/10 bg-white/[0.03]"}`}>
           {terminal.lastPrompt ? <p className="mb-2 text-xs text-amber-300">{terminal.lastPrompt}</p> : null}
           <div className="mb-2 flex flex-wrap gap-1.5">
             <KeyButton label="↑" title="Arrow up" onClick={() => sendKey("ArrowUp")} />
@@ -167,8 +167,8 @@ function TerminalPane({ terminal, onStop, onInput }: { terminal: ConversationTer
   );
 }
 
-function paneStatus(status: ConversationTerminal["status"]): "running" | "exited" | "failed" | "stale" | "awaiting_input" {
-  if (status === "running" || status === "awaiting_input" || status === "stale" || status === "exited") {
+function paneStatus(status: ConversationTerminal["status"]): "running" | "exited" | "failed" | "detached" | "stale" | "awaiting_input" | "missing" {
+  if (status === "running" || status === "awaiting_input" || status === "detached" || status === "missing" || status === "stale" || status === "exited") {
     return status;
   }
   return "failed";

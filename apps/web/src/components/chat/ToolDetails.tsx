@@ -76,7 +76,9 @@ function EditDetails({ tool }: { tool: ToolTimelineItem }) {
           {files.map((file) => (
             <div key={file.path} className="flex items-center gap-2">
               <span className="font-medium text-brand-text-dark">{capitalize(file.operation)}</span>
-              <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+	              <span className="min-w-0 flex-1 truncate font-mono">
+	                {file.previousPath ? `${file.previousPath} -> ${file.path}` : file.path}
+	              </span>
               {file.added !== undefined || file.removed !== undefined ? (
                 <span className="shrink-0 font-mono">
                   <span className="text-emerald-600">+{file.added ?? 0}</span>{" "}

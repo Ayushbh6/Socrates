@@ -458,12 +458,16 @@ export class SocratesStore {
     return this.terminals.listConversationTerminals(conversationId)
   }
 
+  listActiveTerminals(): ConversationTerminal[] {
+    return this.terminals.listActiveTerminals()
+  }
+
   terminalContextBrief(conversationId: string): string | undefined {
     return this.terminals.terminalContextBrief(conversationId)
   }
 
-  markRunningTerminalsStale(): ConversationTerminal[] {
-    return this.terminals.markRunningStale()
+  markRunningTerminalsDetached(): ConversationTerminal[] {
+    return this.terminals.markRunningDetached()
   }
 
   stopConversationTerminals(conversationId: string): void {

@@ -58,6 +58,7 @@ export type ToolExecutors = {
 export type ApprovalRequest = {
   approvalId: string
   toolCallId: string
+  providerToolCallId?: string | undefined
   toolName: ToolName
   actionKind: "shell_command" | "file_write" | "patch_apply" | "git_commit" | "git_push" | "other"
   title: string
@@ -111,6 +112,7 @@ export type ToolLifecycleEvent =
   | {
       type: "tool.call.streaming"
       toolCallId: string
+      providerToolCallId?: string | undefined
       toolName: ToolName
       category: SocratesTool<unknown, unknown>["category"]
       displayName: string
@@ -122,6 +124,7 @@ export type ToolLifecycleEvent =
   | {
       type: "tool.call.started"
       toolCallId: string
+      providerToolCallId?: string | undefined
       toolName: ToolName
       category: SocratesTool<unknown, unknown>["category"]
       displayName: string
@@ -134,6 +137,7 @@ export type ToolLifecycleEvent =
   | {
       type: "tool.call.output"
       toolCallId: string
+      providerToolCallId?: string | undefined
       stream: "stdout" | "stderr" | "log" | "result"
       text?: string
       data?: unknown
@@ -143,6 +147,7 @@ export type ToolLifecycleEvent =
   | {
       type: "tool.call.completed"
       toolCallId: string
+      providerToolCallId?: string | undefined
       toolName: ToolName
       output: unknown
       summary: string
@@ -157,6 +162,14 @@ export type ToolLifecycleEvent =
       modelCallId?: string | undefined
       stepIndex?: number | undefined
     }
-  | { type: "tool.call.failed"; toolCallId: string; toolName: ToolName; error: SocratesError; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | {
+      type: "tool.call.failed"
+      toolCallId: string
+      providerToolCallId?: string | undefined
+      toolName: ToolName
+      error: SocratesError
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
+    }
   | { type: "approval.requested"; request: ApprovalRequest }
-  | { type: "approval.resolved"; approvalId: string; toolCallId: string; decision: "approved" | "rejected" }
+  | { type: "approval.resolved"; approvalId: string; toolCallId: string; providerToolCallId?: string | undefined; decision: "approved" | "rejected" }

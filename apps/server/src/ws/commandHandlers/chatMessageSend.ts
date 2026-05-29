@@ -163,6 +163,7 @@ export const handleChatMessageSend = async (
           {
             approvalId,
             toolCallId: request.toolCallId,
+            providerToolCallId: request.providerToolCallId,
             actionKind: request.actionKind,
             title: request.title,
             description: request.description,
@@ -288,6 +289,7 @@ export const handleChatMessageSend = async (
         const toolModelCallId = agentEvent.modelCallId ?? latestModelCallId
         store.createToolCall({
           toolCallId: agentEvent.toolCallId,
+          providerToolCallId: agentEvent.providerToolCallId,
           conversationId,
           sessionId: created.sessionId,
           turnId: created.turnId,
@@ -300,6 +302,7 @@ export const handleChatMessageSend = async (
           "tool.call.started",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             toolName: agentEvent.toolName,
             category: agentEvent.category,
             displayName: agentEvent.displayName,
@@ -326,6 +329,7 @@ export const handleChatMessageSend = async (
           "tool.call.streaming",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             toolName: agentEvent.toolName,
             category: agentEvent.category,
             displayName: agentEvent.displayName,
@@ -353,6 +357,7 @@ export const handleChatMessageSend = async (
           "tool.call.output",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             stream: agentEvent.stream,
             text: agentEvent.text,
             data: agentEvent.data,
@@ -416,6 +421,7 @@ export const handleChatMessageSend = async (
           "tool.call.completed",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             summary: agentEvent.summary,
             resultPreview: agentEvent.resultPreview,
             metrics: agentEvent.metrics,
@@ -450,6 +456,7 @@ export const handleChatMessageSend = async (
           "tool.call.failed",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             error: apiError(agentEvent.error.code, agentEvent.error.message, {
               details: agentEvent.error.details,
               recoverable: agentEvent.error.recoverable,
@@ -474,7 +481,12 @@ export const handleChatMessageSend = async (
         }
         const event = makeEvent(
           "approval.resolved",
-          { approvalId: agentEvent.approvalId, toolCallId: agentEvent.toolCallId, decision: agentEvent.decision },
+          {
+            approvalId: agentEvent.approvalId,
+            toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
+            decision: agentEvent.decision,
+          },
           {
             projectId,
             conversationId,

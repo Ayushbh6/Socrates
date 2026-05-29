@@ -5,12 +5,29 @@ import { clampCharLimit, isSensitivePath, resolveWorkspacePath, toWorkspaceRelat
 import { readFileSnapshot, type FileSnapshot } from "./fileMetadata"
 
 type PatchChangedFile = EditToolOutput["changedFiles"][number]
+type PatchOperation = PatchChangedFile["operation"]
+
+type PatchFileChange = {
+  path: string
+  operation: Extract<PatchOperation, "created" | "patched" | "deleted" | "renamed">
+  oldPath?: string
+  newPath?: string
+  previousPath?: string
+}
+
+type PatchSection = {
+  oldPath?: string
+  newPath?: string
+  renameFrom?: string
+  renameTo?: string
+}
 
 type PatchVerificationRecord = {
   path: string
   operation: PatchChangedFile["operation"]
   before: FileSnapshot
   after: FileSnapshot
+  previousPath?: string
   lineDelta?: number
 }
 
@@ -19,34 +36,26 @@ export const applyPatchWorkspace = async (
   context: { workspacePath: string },
 ): Promise<EditToolOutput> => {
   const dryRun = input.dryRun ?? false
-  validatePatch(input.patch, context.workspacePath)
-  const beforeSnapshots = collectPatchSnapshots(input.patch, context.workspacePath)
+  const changes = parsePatchFileChanges(input.patch)
+  validatePatch(changes, context.workspacePath)
+  const beforeSnapshots = collectPatchSnapshots(changes, context.workspacePath)
   const verificationByPath = new Map<string, PatchVerificationRecord>()
 
   if (!dryRun) {
     await applyPatch(context.workspacePath, input.patch)
-    for (const patchPath of pathsFromPatch(input.patch)) {
-      const absolutePath = resolveWorkspacePath(context.workspacePath, patchPath)
-      const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
-      const before = beforeSnapshots.get(relativePath) ?? { exists: false }
-      const after = readFileSnapshot(absolutePath, { includeText: true })
-      verifyPatchedFile(relativePath, before, after)
-      verificationByPath.set(relativePath, {
-        path: relativePath,
-        operation: "patched",
-        before,
-        after,
-        lineDelta: (after.lineCount ?? 0) - (before.lineCount ?? 0),
-      })
+    for (const change of changes) {
+      const verification = verifyPatchChange(change, beforeSnapshots, context.workspacePath)
+      verificationByPath.set(change.path, verification)
     }
   }
 
-  const changedFiles = pathsFromPatch(input.patch).map((patchPath) => {
-    const verification = verificationByPath.get(patchPath)
+  const changedFiles = changes.map((change) => {
+    const verification = verificationByPath.get(change.path)
     return enrichChangedFile(
       {
-        path: patchPath,
-        operation: "patched" as const,
+        path: change.path,
+        operation: change.operation,
+        ...(change.previousPath ? { previousPath: change.previousPath } : {}),
         verification: dryRun ? undefined : ("verified" as const),
       },
       verification,
@@ -61,40 +70,217 @@ export const applyPatchWorkspace = async (
   }
 }
 
-const collectPatchSnapshots = (patchText: string, workspacePath: string): Map<string, FileSnapshot> => {
+const collectPatchSnapshots = (changes: PatchFileChange[], workspacePath: string): Map<string, FileSnapshot> => {
   const snapshots = new Map<string, FileSnapshot>()
-  for (const patchPath of pathsFromPatch(patchText)) {
-    const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
-    const relativePath = toWorkspaceRelativePath(workspacePath, absolutePath)
-    snapshots.set(relativePath, readFileSnapshot(absolutePath, { includeText: true }))
+  for (const change of changes) {
+    for (const patchPath of snapshotPaths(change)) {
+      const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
+      const relativePath = toWorkspaceRelativePath(workspacePath, absolutePath)
+      if (!snapshots.has(relativePath)) {
+        snapshots.set(relativePath, readFileSnapshot(absolutePath, { includeText: true }))
+      }
+    }
   }
   return snapshots
 }
 
-const validatePatch = (patchText: string, workspacePath: string): void => {
-  for (const patchPath of pathsFromPatch(patchText)) {
-    const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
-    if (isSensitivePath(absolutePath)) {
-      throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
-        details: { path: patchPath },
-      })
+const snapshotPaths = (change: PatchFileChange): string[] => {
+  if (change.operation === "created") {
+    return [change.path]
+  }
+  if (change.operation === "deleted") {
+    return [change.oldPath ?? change.path]
+  }
+  if (change.operation === "renamed") {
+    return [change.previousPath ?? change.oldPath ?? change.path, change.path]
+  }
+  return [change.path]
+}
+
+const validatePatch = (changes: PatchFileChange[], workspacePath: string): void => {
+  if (changes.length === 0) {
+    throw new SocratesError("patch_parse_failed", "Patch did not contain any file changes.", { recoverable: true })
+  }
+  for (const change of changes) {
+    for (const patchPath of snapshotPaths(change)) {
+      const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
+      if (isSensitivePath(absolutePath)) {
+        throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
+          details: { path: patchPath },
+        })
+      }
     }
   }
 }
 
-export const pathsFromPatch = (patchText: string): string[] => {
-  const paths = new Set<string>()
-  for (const line of patchText.split("\n")) {
-    if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
-      continue
+const verifyPatchChange = (
+  change: PatchFileChange,
+  beforeSnapshots: Map<string, FileSnapshot>,
+  workspacePath: string,
+): PatchVerificationRecord => {
+  if (change.operation === "created") {
+    const after = readSnapshot(workspacePath, change.path)
+    if (!after.snapshot.exists) {
+      throw new SocratesError("patch_verification_failed", "Created patch target was not present after git apply.", {
+        details: { path: change.path },
+      })
     }
-    const raw = line.slice(4).trim()
-    if (raw === "/dev/null") {
-      continue
-    }
-    paths.add(raw.replace(/^[ab]\//, ""))
+    return verificationRecord(change, beforeSnapshots.get(after.relativePath) ?? { exists: false }, after.snapshot)
   }
-  return [...paths]
+
+  if (change.operation === "deleted") {
+    const beforePath = change.oldPath ?? change.path
+    const after = readSnapshot(workspacePath, beforePath)
+    if (after.snapshot.exists) {
+      throw new SocratesError("patch_verification_failed", "Deleted patch target was still present after git apply.", {
+        details: { path: beforePath, contentHashAfter: after.snapshot.contentHash },
+      })
+    }
+    const before = beforeSnapshots.get(after.relativePath) ?? { exists: false }
+    return verificationRecord(change, before, after.snapshot)
+  }
+
+  if (change.operation === "renamed") {
+    const oldPath = change.previousPath ?? change.oldPath ?? change.path
+    const oldAfter = readSnapshot(workspacePath, oldPath)
+    if (oldAfter.snapshot.exists) {
+      throw new SocratesError("patch_verification_failed", "Renamed patch source was still present after git apply.", {
+        details: { path: oldPath, contentHashAfter: oldAfter.snapshot.contentHash },
+      })
+    }
+    const newAfter = readSnapshot(workspacePath, change.path)
+    if (!newAfter.snapshot.exists) {
+      throw new SocratesError("patch_verification_failed", "Renamed patch target was not present after git apply.", {
+        details: { path: change.path },
+      })
+    }
+    const before = beforeSnapshots.get(oldAfter.relativePath) ?? { exists: false }
+    return verificationRecord(change, before, newAfter.snapshot)
+  }
+
+  const after = readSnapshot(workspacePath, change.path)
+  const before = beforeSnapshots.get(after.relativePath) ?? { exists: false }
+  if (!after.snapshot.exists) {
+    throw new SocratesError("patch_verification_failed", "Patch target was not present after git apply.", {
+      details: { path: change.path, contentHashBefore: before.contentHash },
+    })
+  }
+  if (before.exists && before.contentHash === after.snapshot.contentHash) {
+    throw new SocratesError("patch_verification_failed", "Patch target content did not change after git apply.", {
+      details: { path: change.path, contentHash: after.snapshot.contentHash },
+    })
+  }
+  return verificationRecord(change, before, after.snapshot)
+}
+
+const readSnapshot = (workspacePath: string, patchPath: string): { relativePath: string; snapshot: FileSnapshot } => {
+  const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
+  const relativePath = toWorkspaceRelativePath(workspacePath, absolutePath)
+  return { relativePath, snapshot: readFileSnapshot(absolutePath, { includeText: true }) }
+}
+
+const verificationRecord = (change: PatchFileChange, before: FileSnapshot, after: FileSnapshot): PatchVerificationRecord => ({
+  path: change.path,
+  operation: change.operation,
+  before,
+  after,
+  ...(change.previousPath ? { previousPath: change.previousPath } : {}),
+  lineDelta: (after.lineCount ?? 0) - (before.lineCount ?? 0),
+})
+
+export const pathsFromPatch = (patchText: string): string[] => parsePatchFileChanges(patchText).map((change) => change.path)
+
+export const parsePatchFileChanges = (patchText: string): PatchFileChange[] => {
+  const changes: PatchFileChange[] = []
+  let section: PatchSection = {}
+  let hasSection = false
+
+  const flush = (): void => {
+    const change = sectionToChange(section)
+    if (change) {
+      changes.push(change)
+    }
+    section = {}
+    hasSection = false
+  }
+
+  for (const line of patchText.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      flush()
+      hasSection = true
+      continue
+    }
+    if (line.startsWith("--- ")) {
+      if (!hasSection && (section.oldPath || section.newPath)) {
+        flush()
+      }
+      hasSection = true
+      const oldPath = parsePatchPath(line.slice(4))
+      if (oldPath === undefined) {
+        delete section.oldPath
+      } else {
+        section.oldPath = oldPath
+      }
+      continue
+    }
+    if (line.startsWith("+++ ")) {
+      hasSection = true
+      const newPath = parsePatchPath(line.slice(4))
+      if (newPath === undefined) {
+        delete section.newPath
+      } else {
+        section.newPath = newPath
+      }
+      continue
+    }
+    if (line.startsWith("rename from ")) {
+      hasSection = true
+      section.renameFrom = cleanPatchPath(line.slice("rename from ".length))
+      continue
+    }
+    if (line.startsWith("rename to ")) {
+      hasSection = true
+      section.renameTo = cleanPatchPath(line.slice("rename to ".length))
+    }
+  }
+  flush()
+  return changes
+}
+
+const sectionToChange = (section: PatchSection): PatchFileChange | undefined => {
+  const oldPath = section.renameFrom ?? section.oldPath
+  const newPath = section.renameTo ?? section.newPath
+  if (!oldPath && !newPath) {
+    return undefined
+  }
+  if (!oldPath && newPath) {
+    return { path: newPath, newPath, operation: "created" }
+  }
+  if (oldPath && !newPath) {
+    return { path: oldPath, oldPath, operation: "deleted" }
+  }
+  if (oldPath && newPath && oldPath !== newPath) {
+    return { path: newPath, oldPath, newPath, previousPath: oldPath, operation: "renamed" }
+  }
+  const path = newPath ?? oldPath
+  return path ? { path, oldPath: path, newPath: path, operation: "patched" } : undefined
+}
+
+const parsePatchPath = (value: string): string | undefined => {
+  const cleaned = cleanPatchPath(value)
+  return cleaned === "/dev/null" ? undefined : cleaned
+}
+
+const cleanPatchPath = (value: string): string => {
+  let cleaned = value.trim()
+  const tabIndex = cleaned.indexOf("\t")
+  if (tabIndex >= 0) {
+    cleaned = cleaned.slice(0, tabIndex)
+  }
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) {
+    cleaned = cleaned.slice(1, -1)
+  }
+  return cleaned.replace(/^[ab]\//, "")
 }
 
 const applyPatch = async (workspacePath: string, patchText: string): Promise<void> => {
@@ -131,19 +317,6 @@ const runGitApply = (workspacePath: string, patchText: string, check: boolean): 
     child.stdin.end(patchText)
   })
 
-const verifyPatchedFile = (relativePath: string, before: FileSnapshot, after: FileSnapshot): void => {
-  if (!after.exists) {
-    throw new SocratesError("patch_verification_failed", "Patch target was not present after git apply.", {
-      details: { path: relativePath, contentHashBefore: before.contentHash },
-    })
-  }
-  if (before.exists && before.contentHash === after.contentHash) {
-    throw new SocratesError("patch_verification_failed", "Patch target content did not change after git apply.", {
-      details: { path: relativePath, contentHash: after.contentHash },
-    })
-  }
-}
-
 const enrichChangedFile = (file: PatchChangedFile, verification: PatchVerificationRecord | undefined): PatchChangedFile => {
   if (!verification) {
     return file
@@ -151,6 +324,7 @@ const enrichChangedFile = (file: PatchChangedFile, verification: PatchVerificati
   return {
     ...file,
     verification: "verified",
+    ...(verification.previousPath ? { previousPath: verification.previousPath } : {}),
     contentHashBefore: verification.before.contentHash,
     contentHashAfter: verification.after.contentHash,
     sizeBytesBefore: verification.before.sizeBytes,

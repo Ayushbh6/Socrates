@@ -43,7 +43,7 @@ export const editWorkspace = async (
     if (!before.exists) {
       throw new SocratesError("file_not_found", "Replace edit target does not exist", { details: { path: input.path } })
     }
-    context.fileFreshness?.validate(absolutePath, before.contentHash, context.workspacePath)
+    validateFreshness(context, absolutePath, before.contentHash)
     const oldString = input.oldString ?? ""
     const newString = input.newString ?? ""
     const occurrences = before.content?.split(oldString).length ?? 0
@@ -76,7 +76,7 @@ export const editWorkspace = async (
 
   const content = input.content ?? ""
   if (before.exists) {
-    context.fileFreshness?.validate(absolutePath, before.contentHash, context.workspacePath)
+    validateFreshness(context, absolutePath, before.contentHash)
   }
   return writeSingleFile({
     input,
@@ -88,6 +88,20 @@ export const editWorkspace = async (
     afterContent: content,
     operation: before.exists ? "overwritten" : "created",
   })
+}
+
+const validateFreshness = (
+  context: { workspacePath: string; fileFreshness?: FileFreshnessTracker },
+  absolutePath: string,
+  actualHash: string | undefined,
+): void => {
+  if (!context.fileFreshness) {
+    throw new SocratesError("edit_stale_content", "Read the file before editing it so Socrates can verify freshness.", {
+      details: { path: toWorkspaceRelativePath(context.workspacePath, absolutePath), actualHash },
+      recoverable: true,
+    })
+  }
+  context.fileFreshness.validate(absolutePath, actualHash, context.workspacePath)
 }
 
 const writeSingleFile = async (params: {

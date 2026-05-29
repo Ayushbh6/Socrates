@@ -79,6 +79,7 @@ import {
   bashToolModelInputSchema,
   applyPatchToolInputSchema,
   editToolInputSchema,
+  editToolModelInputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
   mcpRegistryToolModelInputSchema,
@@ -799,6 +800,9 @@ describe("tool contracts", () => {
     expect(editToolInputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new", replaceAll: true }).success).toBe(true)
     expect(editToolInputSchema.safeParse({ path: "README.md" }).success).toBe(false)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new" }).success).toBe(true)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success).toBe(false)
     expect(applyPatchToolInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(true)
     expect(
       readToolOutputSchema.safeParse({
@@ -824,6 +828,17 @@ describe("tool contracts", () => {
             sizeBytesBefore: 3,
             sizeBytesAfter: 5,
             lineDelta: 1,
+          },
+          {
+            path: "renamed.md",
+            previousPath: "old.md",
+            operation: "renamed",
+            verification: "verified",
+          },
+          {
+            path: "deleted.md",
+            operation: "deleted",
+            verification: "verified",
           },
         ],
         diff: "--- a/README.md\n+++ b/README.md\n",

@@ -1534,12 +1534,13 @@ Model-visible V1 tools:
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `patch`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the model-visible surface should remain the six tools above.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the model-visible surface should remain the seven tools above. Unified diff application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -1657,7 +1658,8 @@ Output:
 type EditToolOutput = {
   changedFiles: Array<{
     path: string
-    operation: "created" | "overwritten" | "edited" | "patched"
+	    operation: "created" | "overwritten" | "edited" | "patched" | "deleted" | "renamed"
+	    previousPath?: string
     verification?: "verified"
     contentHashBefore?: string
     contentHashAfter?: string
@@ -1679,7 +1681,7 @@ Rules:
 - For requests to write code, create scripts, build small programs, implement files, or build a small app/tool, the agent should treat the request as a workspace file creation/edit request. It should use `edit` by default, write generated code into the attached workspace/repo rather than `.socrates/`, choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, and avoid pasting a full runnable file into chat. If the user lets Socrates decide, standalone scripts can go in the repo root; multi-file work can use a small well-named folder when natural. Inline code is appropriate only when the user explicitly asks for a snippet or when no write-capable workspace is available.
 - Targeted replacements must fail with helpful errors when `oldString` matches zero times or more than once unless `replaceAll` is true.
 - Existing-file whole-file writes and targeted replacements require a prior `read` of the same path in the active turn. The harness records the returned `contentHash` and rejects stale or unread edits with recoverable `edit_stale_content`.
-- Non-dry-run edits must read/stat/hash before writing, write through a same-directory temp file, immediately read/stat/hash after writing, and return verified metadata. If disk does not match the planned result, the tool must fail loudly with recoverable errors such as `edit_write_failed`, `edit_verification_failed`, or `patch_verification_failed`.
+	- Non-dry-run edits must read/stat/hash before writing, write through a same-directory temp file, immediately read/stat/hash after writing, and return verified metadata. If disk does not match the planned result, the tool must fail loudly with recoverable errors such as `edit_write_failed` or `edit_verification_failed`.
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
@@ -1697,14 +1699,14 @@ type ApplyPatchToolInput = {
 }
 ```
 
-Output reuses `EditToolOutput` (including `operation: "patched"` entries in `changedFiles`).
+Output reuses `EditToolOutput`. `changedFiles` may report `patched`, `created`, `deleted`, or `renamed`; rename entries include `previousPath`.
 
 Rules:
 
 - Requires approval unless the user explicitly runs a full-access mode.
 - Must show a diff or equivalent preview before applying.
 - Uses git apply context matching against current disk; model-facing inputs do not carry content hashes.
-- Non-dry-run patches must verify disk after applying and return the same verified metadata shape as `edit`.
+- Non-dry-run patches must verify disk after applying and return the same verified metadata shape as `edit`. Deleted files verify by being absent; renamed files verify that the old path is absent and the new path exists.
 - File mutations are serialized with `edit`.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.

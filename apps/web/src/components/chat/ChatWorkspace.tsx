@@ -416,12 +416,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     };
   }, [projectId, conversationId]);
 
-  useEffect(() => {
-    if (terminals.some((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input")) {
-      setIsTerminalPanelCollapsed(false);
-    }
-  }, [terminals]);
-
   const handleModelChange = (model: ModelOption) => {
     setSelectedModel(model);
     setSelectedThinkingOption(
@@ -612,6 +606,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const hasTerminals = terminals.length > 0;
   const activeTerminalCount = terminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
   const awaitingTerminalInputCount = terminals.filter((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input").length;
+  const effectiveTerminalPanelCollapsed = isTerminalPanelCollapsed && awaitingTerminalInputCount === 0;
   const tokenLabel = useMemo(() => {
     if (contextUsage) {
       return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
@@ -642,11 +637,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             <button
               type="button"
               className="ml-auto inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
-              title={isTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
-              aria-pressed={!isTerminalPanelCollapsed}
+              title={effectiveTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
+              aria-pressed={!effectiveTerminalPanelCollapsed}
               onClick={() => setIsTerminalPanelCollapsed((current) => !current)}
             >
-              {isTerminalPanelCollapsed ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+              {effectiveTerminalPanelCollapsed ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
               <span className="hidden sm:inline">Terminal</span>
               {activeTerminalCount > 0 ? (
                 <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] text-brand-teal-dark">
@@ -714,7 +709,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           </div>
           <TerminalPanel
             terminals={terminals}
-            isCollapsed={isTerminalPanelCollapsed}
+            isCollapsed={effectiveTerminalPanelCollapsed}
             onToggleCollapsed={() => setIsTerminalPanelCollapsed((current) => !current)}
             onStop={handleTerminalStop}
             onInput={handleTerminalInput}

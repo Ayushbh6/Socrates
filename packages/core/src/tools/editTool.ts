@@ -1,4 +1,4 @@
-import { editToolInputSchema, editToolOutputSchema } from "@socrates/contracts"
+import { editToolInputSchema, editToolModelInputSchema, editToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool } from "./types"
 
 const previewEdit = (input: typeof editToolInputSchema._type): string => {
@@ -39,6 +39,7 @@ export const editTool: SocratesTool<typeof editToolInputSchema._type, typeof edi
   description:
     "Create or modify a file in the active project workspace. Use content for a whole-file write (create or overwrite). Use oldString and newString for a targeted multiline replace; set replaceAll to change every occurrence. Read the file first when overwriting or replacing so Socrates can verify freshness.",
   inputSchema: editToolInputSchema,
+  modelInputSchema: editToolModelInputSchema,
   resultSchema: editToolOutputSchema,
   permission: "mutate",
   executeLane: "mutation",
