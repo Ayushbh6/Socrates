@@ -76,6 +76,16 @@ export const editWorkspace = async (
 
   const content = input.content ?? ""
   if (before.exists) {
+    if (!input.overwrite) {
+      throw new SocratesError(
+        "edit_use_targeted_replace",
+        "Existing-file content writes require explicit overwrite intent. Use oldString/newString for localized edits, or retry with overwrite: true only when replacing the whole file intentionally.",
+        {
+          details: { path: input.path },
+          recoverable: true,
+        },
+      )
+    }
     validateFreshness(context, absolutePath, before.contentHash)
   }
   return writeSingleFile({

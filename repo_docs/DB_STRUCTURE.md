@@ -659,7 +659,7 @@ Stores stdout/stderr chunks for shell commands.
 
 Stores conversation-scoped Terminal sessions started through the model-visible `bash` tool or auto-detached from a long blocking `bash run`.
 
-Terminal sessions are durable conversation runtime state. A Terminal may outlive a single turn, but it is still scoped to one project, one conversation, and one workspace path. On server restart, rows that were `running` or `awaiting_input` are marked `stale`; Socrates does not reattach to orphaned OS processes.
+Terminal sessions are durable conversation runtime state. A Terminal may outlive a single turn, but it is still scoped to one project, one conversation, and one workspace path. On server restart, rows that were `running` or `awaiting_input` are reconciled with the local Terminal supervisor when possible; uncontrollable rows become `detached` or `missing`.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |

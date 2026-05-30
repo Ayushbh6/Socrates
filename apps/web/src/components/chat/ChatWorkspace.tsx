@@ -607,6 +607,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const activeTerminalCount = terminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
   const awaitingTerminalInputCount = terminals.filter((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input").length;
   const effectiveTerminalPanelCollapsed = isTerminalPanelCollapsed && awaitingTerminalInputCount === 0;
+  const workspaceBodyClass = hasTerminals
+    ? effectiveTerminalPanelCollapsed
+      ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_3rem]"
+      : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_380px]"
+    : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
   const tokenLabel = useMemo(() => {
     if (contextUsage) {
       return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
@@ -615,7 +620,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   }, [contextUsage]);
 
   return (
-    <main className="flex h-screen bg-brand-bg">
+    <main className="flex h-screen overflow-hidden bg-brand-bg">
       <ProjectChatSidebar
         projects={sidebarProjects}
         currentProjectId={projectId}
@@ -625,9 +630,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         onExpand={() => setIsSidebarCollapsed(false)}
         onStartChat={handleStartChat}
       />
-      <section className="flex min-w-0 flex-1 flex-col bg-white">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
         <header
-          className={`flex h-14 shrink-0 items-center border-b border-gray-200 ${
+          className={`flex h-14 min-w-0 shrink-0 items-center border-b border-gray-200 ${
             isSidebarCollapsed ? "pl-16 pr-6" : "px-6"
           }`}
         >
@@ -652,8 +657,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             </button>
           ) : null}
         </header>
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-          <div className="flex min-h-0 flex-1 flex-col">
+        <div className={workspaceBodyClass}>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {isLoading ? (
               <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
             ) : error && !conversationData ? (
@@ -686,8 +691,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   isCompacting={isCompacting}
                   onApprovalDecision={handleApprovalDecision}
                 />
-                <div className="border-t border-gray-100 bg-white px-6 py-4">
-                  <div className="mx-auto max-w-3xl">
+                <div className="min-w-0 border-t border-gray-100 bg-white px-6 py-4">
+                  <div className="mx-auto max-w-3xl min-w-0">
                     {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
                     <ChatComposer
                       isSending={isSending}

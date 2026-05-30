@@ -6,7 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
-import { SocratesError } from "@socrates/shared"
+import { SocratesError, type ErrorDetails } from "@socrates/shared"
 
 type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "has"
 type SupervisorRequest = {
@@ -42,22 +42,22 @@ export class TerminalSupervisorClient {
   }
 
   async status(terminalId: string, processId: string | undefined, input: BashToolInput = {}): Promise<BashToolOutput> {
-    const response = await this.request({ method: "status", terminalId, processId, input })
+    const response = await this.request({ method: "status", terminalId, input, ...(processId ? { processId } : {}) })
     return requireOutput(response)
   }
 
   async output(terminalId: string, processId: string | undefined, input: BashToolInput = {}): Promise<BashToolOutput> {
-    const response = await this.request({ method: "output", terminalId, processId, input })
+    const response = await this.request({ method: "output", terminalId, input, ...(processId ? { processId } : {}) })
     return requireOutput(response)
   }
 
   async stop(terminalId: string, processId: string | undefined, input: BashToolInput = {}): Promise<BashToolOutput> {
-    const response = await this.request({ method: "stop", terminalId, processId, input })
+    const response = await this.request({ method: "stop", terminalId, input, ...(processId ? { processId } : {}) })
     return requireOutput(response)
   }
 
   async input(terminalId: string, processId: string | undefined, text: string): Promise<void> {
-    await this.request({ method: "input", terminalId, processId, text })
+    await this.request({ method: "input", terminalId, text, ...(processId ? { processId } : {}) })
   }
 
   async has(terminalId: string): Promise<boolean> {
@@ -146,10 +146,12 @@ export class TerminalSupervisorClient {
         cleanup()
         const response = JSON.parse(line) as SupervisorResponse
         if (!response.ok) {
-          reject(new SocratesError(response.error?.code ?? "terminal_supervisor_failed", response.error?.message ?? "Terminal supervisor request failed.", {
-            details: response.error?.details,
-            recoverable: true,
-          }))
+          reject(
+            new SocratesError(response.error?.code ?? "terminal_supervisor_failed", response.error?.message ?? "Terminal supervisor request failed.", {
+              ...(response.error?.details === undefined ? {} : { details: response.error.details as ErrorDetails }),
+              recoverable: true,
+            }),
+          )
           return
         }
         resolve(response)

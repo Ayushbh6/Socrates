@@ -42,6 +42,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("Hi")
     expect(requestJson).toContain("Socrates tracks freshness from read results")
     expect(requestJson).toContain("product/user-facing copy should call it Terminal")
+    expect(requestJson).toContain("overwrite: true only when intentionally replacing an entire existing file")
     expect(requestJson).toContain("set regex=true")
     expect(requestJson).toContain("compare the reported file and line with the current file contents")
     expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
@@ -577,6 +578,78 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests[0]?.toolCount).toBeGreaterThan(0)
     expect(streamRequests[0]?.tools?.map((tool) => tool.name)).toContain("read")
+  })
+
+  it("hides terminal runtime ids and sequence cursors from model-visible tool results", async () => {
+    const requests: ModelRequestLike[] = []
+    let call = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        requests.push(request)
+        call += 1
+        if (call === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "call_terminal_output",
+              toolName: "bash",
+              input: { operation: "output", name: "dev-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Terminal output checked." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.bash = async () => ({
+      ...bashOk(),
+      operation: "output",
+      stdout: "ready on http://localhost:5173\n",
+      process: {
+        processId: "proc_secret",
+        systemPid: 1234,
+        status: "running",
+        nextOutputSequence: 7,
+      },
+      terminal: {
+        terminalId: "term_secret",
+        name: "dev-server",
+        status: "running",
+        nextOutputSequence: 7,
+      },
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "approve_all",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Check terminal output" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain stream.
+    }
+
+    const secondRequest = JSON.stringify(requests[1]?.messages)
+    expect(secondRequest).toContain("dev-server")
+    expect(secondRequest).toContain("ready on http://localhost:5173")
+    expect(secondRequest).not.toContain("proc_secret")
+    expect(secondRequest).not.toContain("term_secret")
+    expect(secondRequest).not.toContain("nextOutputSequence")
+    expect(secondRequest).not.toContain("systemPid")
   })
 
   it("injects user and project context into the system prompt", async () => {

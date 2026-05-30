@@ -344,6 +344,16 @@ const toAiTools = (tools: NonNullable<ModelRequest["tools"]>) =>
   )
 
 export const inputSchemaForAiTool = (definition: ModelToolDefinition) => {
+  if (definition.name === "edit") {
+    return jsonSchema(editToolJsonSchema, {
+      validate: (value) => {
+        const parsed = definition.inputSchema.safeParse(value)
+        return parsed.success
+          ? { success: true, value: parsed.data }
+          : { success: false, error: new Error(parsed.error.message) }
+      },
+    })
+  }
   if (definition.name !== "trace_retrieve") {
     return definition.inputSchema
   }
@@ -356,6 +366,44 @@ export const inputSchemaForAiTool = (definition: ModelToolDefinition) => {
     },
   })
 }
+
+const editToolJsonSchema: JSONSchema7 = {
+  type: "object",
+  additionalProperties: false,
+  required: ["path"],
+  properties: {
+    path: {
+      type: "string",
+      minLength: 1,
+      description: "Project-relative file path to create or edit.",
+    },
+    oldString: {
+      type: "string",
+      minLength: 1,
+      description: "Exact existing text to replace. Use with newString for targeted edits to existing files.",
+    },
+    newString: {
+      type: "string",
+      description: "Replacement text for oldString. Use an empty string to delete the matched text.",
+    },
+    replaceAll: {
+      type: "boolean",
+      description: "Replace every occurrence of oldString. Omit unless every occurrence should change.",
+    },
+    content: {
+      type: "string",
+      description: "Whole-file content. Use for new files, or with overwrite=true for deliberate full rewrites.",
+    },
+    overwrite: {
+      type: "boolean",
+      description: "Set true only when intentionally replacing the full content of an existing file.",
+    },
+    dryRun: {
+      type: "boolean",
+      description: "Preview the edit without writing it.",
+    },
+  },
+} as const
 
 const traceRetrieveJsonSchema: JSONSchema7 = {
   type: "object",
@@ -439,7 +487,7 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             input: part.input,
-            ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}),
+            ...(part.providerMetadata ? { providerOptions: part.providerMetadata } : {}),
           }
         }
         return {

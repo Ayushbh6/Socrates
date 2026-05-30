@@ -37,7 +37,7 @@ const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof ed
 export const editTool: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type> = {
   name: "edit",
   description:
-    "Create or modify a file in the active project workspace. Use content for a whole-file write (create or overwrite). Use oldString and newString for a targeted multiline replace; set replaceAll to change every occurrence. Read the file first when overwriting or replacing so Socrates can verify freshness.",
+    "Create or modify one file in the active project workspace. For existing files, use oldString and newString for targeted multiline replacement; set replaceAll only when every occurrence should change. Use content for new files. Use content with overwrite: true only for a deliberate full-file rewrite of an existing file. Read existing files first so Socrates can verify freshness.",
   inputSchema: editToolInputSchema,
   modelInputSchema: editToolModelInputSchema,
   resultSchema: editToolOutputSchema,

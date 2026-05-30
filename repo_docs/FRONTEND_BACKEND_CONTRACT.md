@@ -1642,15 +1642,16 @@ Input:
 ```ts
 type EditToolInput = {
   path: string
-  content?: string // whole-file create or overwrite
+  content?: string // new-file content, or full-file content with overwrite: true
   oldString?: string // targeted multiline replace
   newString?: string
   replaceAll?: boolean // default false => oldString must match exactly once
+  overwrite?: true // explicit existing-file full rewrite intent; valid only with content
   dryRun?: boolean
 }
 ```
 
-Exactly one mode per call: provide `content` for a whole-file write, or `oldString`/`newString` for a targeted replace. Model-facing inputs do not carry content hashes.
+Exactly one mode per call: provide `content` for a new file or explicit full-file rewrite, or `oldString`/`newString` for a targeted replace. Model-facing inputs do not carry content hashes. Existing-file `content` without `overwrite: true` is rejected with recoverable `edit_use_targeted_replace` so the model retries with targeted replacement for localized edits.
 
 Output:
 
@@ -1680,7 +1681,7 @@ Rules:
 - Must show a diff or equivalent preview before applying.
 - For requests to write code, create scripts, build small programs, implement files, or build a small app/tool, the agent should treat the request as a workspace file creation/edit request. It should use `edit` by default, write generated code into the attached workspace/repo rather than `.socrates/`, choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, and avoid pasting a full runnable file into chat. If the user lets Socrates decide, standalone scripts can go in the repo root; multi-file work can use a small well-named folder when natural. Inline code is appropriate only when the user explicitly asks for a snippet or when no write-capable workspace is available.
 - Targeted replacements must fail with helpful errors when `oldString` matches zero times or more than once unless `replaceAll` is true.
-- Existing-file whole-file writes and targeted replacements require a prior `read` of the same path in the active turn. The harness records the returned `contentHash` and rejects stale or unread edits with recoverable `edit_stale_content`.
+- Existing-file targeted replacements and explicit whole-file overwrites require a prior `read` of the same path in the active turn. The harness records the returned `contentHash` and rejects stale or unread edits with recoverable `edit_stale_content`.
 	- Non-dry-run edits must read/stat/hash before writing, write through a same-directory temp file, immediately read/stat/hash after writing, and return verified metadata. If disk does not match the planned result, the tool must fail loudly with recoverable errors such as `edit_write_failed` or `edit_verification_failed`.
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
 - Writes outside the active project workspace are denied by default.
@@ -1721,18 +1722,15 @@ Input:
 type BashToolInput = {
   operation?: "run" | "start" | "status" | "output" | "stop"
   command?: string
-  terminalId?: string
   name?: string
   target?: string
-  processId?: string
-  outputSequence?: number
   cwd?: string
   timeoutMs?: number
   charLimit?: number
 }
 ```
 
-`operation` defaults to `"run"`. `run` and `start` require `command`. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. `terminalId` and `processId` remain accepted internally for UI and backwards compatibility, but they are not required or recommended in model-authored inputs.
+`operation` defaults to `"run"`. `run` and `start` require `command`. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. Model-authored inputs do not include `terminalId`, `processId`, or output sequence cursors; those remain internal for UI, persistence, supervisor control, and backwards-compatible server paths.
 
 Output:
 
@@ -1745,6 +1743,8 @@ type BashToolOutput = {
   signal?: string
   stdout: string
   stderr: string
+  message?: string
+  reusedTerminal?: boolean
   durationMs: number
   timedOut: boolean
   truncation: TruncationMetadata
@@ -1781,9 +1781,9 @@ Rules:
 - Default timeout is 120,000 milliseconds.
 - The model-visible compatibility tool id remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
 - `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
-- `start` launches a conversation-scoped Terminal and returns quickly with runtime metadata, shell metadata, status, and `nextOutputSequence`. `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning the command. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
+- `start` launches a conversation-scoped Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
 - `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
-- Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, previously running terminals are marked `stale`; Socrates does not reattach to orphaned OS processes.
+- Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, persisted running terminals are reconciled with the local supervisor where possible; uncontrollable entries become `detached` or `missing`.
 - Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
 - Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; raw stdin is redacted from persistence and model context.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.

@@ -20,7 +20,7 @@ describe("AI SDK provider metadata", () => {
     })
   })
 
-  it("passes provider metadata back on assistant tool-call messages", () => {
+  it("passes provider metadata back as provider options on assistant tool-call messages", () => {
     expect(
       toAiModelMessage({
         role: "assistant",
@@ -42,7 +42,7 @@ describe("AI SDK provider metadata", () => {
           toolCallId: "call_1",
           toolName: "read",
           input: { path: "README.md" },
-          providerMetadata: { google: { thoughtSignature: "sig_1" } },
+          providerOptions: { google: { thoughtSignature: "sig_1" } },
         },
       ],
     })
@@ -75,6 +75,34 @@ describe("AI SDK provider metadata", () => {
     expect("operations" in editObject.shape).toBe(false)
     expect(editObject.shape.path).toBeDefined()
     expect(applyPatchToolInputSchema.shape.patch).toBeDefined()
+  })
+
+  it("exposes edit as an object JSON schema for OpenAI-compatible providers", async () => {
+    const schema = inputSchemaForAiTool({
+      name: "edit",
+      description: "Create or modify one file.",
+      inputSchema: editToolModelInputSchema,
+    }) as Schema
+
+    expect(schema.jsonSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["path"],
+    })
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"None"')
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"anyOf"')
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"oneOf"')
+
+    await expect(Promise.resolve(schema.validate?.({ path: "README.md", oldString: "old", newString: "new" }))).resolves.toEqual({
+      success: true,
+      value: { path: "README.md", oldString: "old", newString: "new" },
+    })
+    await expect(Promise.resolve(schema.validate?.({ path: "README.md", content: "new", overwrite: true }))).resolves.toEqual({
+      success: true,
+      value: { path: "README.md", content: "new", overwrite: true },
+    })
+    const invalid = await Promise.resolve(schema.validate?.({ path: "README.md", content: "new", oldString: "old", newString: "new" }))
+    expect(invalid?.success).toBe(false)
   })
 
   it("exposes trace_retrieve as an object JSON schema for strict providers", async () => {

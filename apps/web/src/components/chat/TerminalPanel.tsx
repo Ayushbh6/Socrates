@@ -29,7 +29,7 @@ export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onSto
 
   if (isCollapsed) {
     return (
-      <aside className="flex h-12 shrink-0 items-center gap-3 border-t border-gray-200 bg-gray-50 px-3 lg:h-auto lg:w-12 lg:flex-col lg:border-l lg:border-t-0 lg:px-0">
+      <aside className="flex h-12 min-w-0 shrink-0 items-center gap-3 overflow-hidden border-t border-gray-200 bg-gray-50 px-3 lg:h-auto lg:w-full lg:flex-col lg:border-l lg:border-t-0 lg:px-0">
         <button
           type="button"
           className="inline-flex size-8 items-center justify-center rounded-md border border-gray-200 bg-white text-brand-text-light shadow-sm hover:text-brand-text-dark lg:mt-3"
@@ -48,7 +48,7 @@ export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onSto
   }
 
   return (
-    <aside className="flex max-h-[45vh] w-full shrink-0 flex-col border-t border-gray-200 bg-gray-50 lg:max-h-none lg:w-[380px] lg:border-l lg:border-t-0">
+    <aside className="flex max-h-[45vh] min-w-0 w-full shrink-0 flex-col overflow-hidden border-t border-gray-200 bg-gray-50 lg:max-h-none lg:border-l lg:border-t-0">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-gray-200 bg-white px-4">
         <div className="flex size-8 items-center justify-center rounded-md bg-gray-950 text-white">
           <SquareTerminal className="size-4" />
@@ -70,8 +70,8 @@ export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onSto
           <ChevronRight className="size-4" />
         </button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-        <div className="space-y-3">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-3">
+        <div className="min-w-0 space-y-3">
           {visibleTerminals.map((terminal) => (
             <TerminalPane key={terminal.terminalId} terminal={terminal} onStop={onStop} onInput={onInput} />
           ))}

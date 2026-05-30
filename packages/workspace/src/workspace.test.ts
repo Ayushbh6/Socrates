@@ -387,20 +387,23 @@ describe("workspace tools", () => {
     expect(result.lineEnding).toBe("crlf")
   })
 
-  it("requires a prior read before overwriting existing files", async () => {
+  it("rejects existing-file content writes unless overwrite is explicit", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
     const tracker = new FileFreshnessTracker()
 
     await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath })).rejects.toMatchObject({
-      code: "edit_stale_content",
+      code: "edit_use_targeted_replace",
     })
     await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
-      code: "edit_stale_content",
+      code: "edit_use_targeted_replace",
     })
 
     const read = await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
-    const result = await editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })
+    await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "edit_use_targeted_replace",
+    })
+    const result = await editWorkspace({ path: "README.md", content: "hello new world", overwrite: true }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
     expect(result.changedFiles[0]).toMatchObject({
@@ -411,6 +414,28 @@ describe("workspace tools", () => {
       sizeBytesAfter: Buffer.byteLength("hello new world"),
     })
     expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("still requires freshness before explicit existing-file overwrite", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+
+    await expect(editWorkspace({ path: "README.md", content: "hello new world", overwrite: true }, { workspacePath })).rejects.toMatchObject({
+      code: "edit_stale_content",
+    })
+  })
+
+  it("creates new files with content without a prior read", async () => {
+    const workspacePath = tempDir()
+
+    const result = await editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath })
+
+    expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "README.md",
+      operation: "created",
+      verification: "verified",
+    })
   })
 
   it("fails loudly when disk verification does not match the planned edit", async () => {

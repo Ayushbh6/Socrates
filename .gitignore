@@ -17,6 +17,7 @@ sprints/
 frontend/.next/
 frontend/out/
 .playwright-cli/
+.playwright-mcp/
 photos/
 test_material/
 app-data/

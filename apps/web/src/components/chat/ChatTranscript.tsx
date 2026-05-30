@@ -53,8 +53,8 @@ export function ChatTranscript({
   const partialTurnsByTurn = new Map(partialTurns.map((turn) => [turn.turnId, turn]));
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-8">
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-6">
+    <div className="min-w-0 flex-1 overflow-y-auto px-6 py-8">
+      <div className="mx-auto flex min-w-0 w-full max-w-4xl flex-col gap-6">
         {messages.map((message) => {
           const tools = message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : [];
           const steps = message.role === "assistant" && message.turnId ? historicalStepsByTurn.get(message.turnId) ?? [] : [];
@@ -73,8 +73,8 @@ export function ChatTranscript({
           );
         })}
         {(hasLiveActivity || isStreaming || isCompacting) && (
-          <div className="flex justify-start">
-            <div className="w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
+          <div className="flex min-w-0 justify-start">
+            <div className="min-w-0 w-full max-w-3xl text-sm leading-6 text-brand-text-dark">
               {liveSteps.map((step, index) => (
                 <ActivityStepView
                   key={step.key}
@@ -110,8 +110,8 @@ function IncompleteTurnBubble({ turn, tools }: { turn?: ConversationPartialTurn;
         : "Stopped before final answer";
 
   return (
-    <div className="flex justify-start">
-      <div className="w-full max-w-3xl rounded-2xl rounded-tl-sm border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-6 text-brand-text-dark">
+    <div className="flex min-w-0 justify-start">
+      <div className="min-w-0 w-full max-w-3xl rounded-2xl rounded-tl-sm border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-6 text-brand-text-dark">
         <StoppedIndicator reason={label} />
         {turn?.reasoning ? <ThinkingBlock content={turn.reasoning} /> : null}
         <ChatToolTimeline tools={tools} />
@@ -153,12 +153,12 @@ function MessageBubble({ message, tools, steps }: { message: Message; tools: Too
   const hasStepAnswers = steps.some((step) => step.answer);
 
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
+    <div className={isUser ? "flex min-w-0 justify-end" : "flex min-w-0 justify-start"}>
       <div
         className={
           isUser
-            ? "max-w-2xl rounded-2xl rounded-tr-sm bg-brand-button px-4 py-3 text-sm leading-6 text-white"
-            : "w-full max-w-3xl text-[15px] leading-7 text-brand-text-dark"
+            ? "min-w-0 max-w-2xl rounded-2xl rounded-tr-sm bg-brand-button px-4 py-3 text-sm leading-6 text-white"
+            : "min-w-0 w-full max-w-3xl text-[15px] leading-7 text-brand-text-dark"
         }
       >
         {isUser ? (
@@ -370,8 +370,8 @@ function CodeBlock({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="mb-4 overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-sm last:mb-0">
-      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2">
+    <div className="mb-4 max-w-full overflow-hidden rounded-xl border border-gray-800 bg-gray-950 shadow-sm last:mb-0">
+      <div className="flex min-w-0 items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2">
         <span className="font-mono text-xs text-gray-300">{language}</span>
         <button
           type="button"
@@ -383,7 +383,7 @@ function CodeBlock({ children }: { children: ReactNode }) {
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre className="max-h-[34rem] overflow-auto p-4 font-mono text-[13px] leading-6 text-gray-100">
+      <pre className="max-h-[34rem] max-w-full overflow-auto p-4 font-mono text-[13px] leading-6 text-gray-100">
         <code className="whitespace-pre text-gray-100">{code}</code>
       </pre>
     </div>

@@ -37,6 +37,7 @@ export class McpRuntime {
   readonly configPath: string
   readonly envPath: string
   readonly registryPath: string
+  private readonly clients = new Map<string, Promise<StdioMcpClient>>()
 
   constructor(options: { socratesHome?: string } = {}) {
     this.socratesHome = options.socratesHome ?? path.join(os.homedir(), ".Socrates")
@@ -74,7 +75,7 @@ export class McpRuntime {
     }))
   }
 
-  async callDynamicTool(dynamicName: string, input: unknown): Promise<unknown> {
+  async callDynamicTool(dynamicName: string, input: unknown, options: { cwd?: string; sessionKey?: string } = {}): Promise<unknown> {
     const parsed = parseDynamicToolName(dynamicName)
     const config = this.readConfig().servers?.[parsed.serverId]
     if (!config?.enabled) {
@@ -83,13 +84,29 @@ export class McpRuntime {
         recoverable: true,
       })
     }
-    const client = new StdioMcpClient(config, this.readEnv())
+    const client = await this.clientFor(parsed.serverId, config, options)
     try {
-      await client.initialize()
-      return await client.request("tools/call", { name: parsed.toolName, arguments: input ?? {} })
-    } finally {
-      client.close()
+      const response = await client.request("tools/call", { name: parsed.toolName, arguments: input ?? {} })
+      if (isMcpToolErrorResponse(response)) {
+        throw new SocratesError("mcp_tool_failed", mcpToolErrorMessage(response), {
+          details: { dynamicName, response },
+          recoverable: true,
+        })
+      }
+      return response
+    } catch (error) {
+      if (client.isClosed) {
+        this.clients.delete(this.clientKey(parsed.serverId, options))
+      }
+      throw error
     }
+  }
+
+  close(): void {
+    for (const clientPromise of this.clients.values()) {
+      void clientPromise.then((client) => client.close()).catch(() => undefined)
+    }
+    this.clients.clear()
   }
 
   private list(): McpRegistryToolOutput {
@@ -212,6 +229,7 @@ export class McpRuntime {
       },
     }
     this.writeConfig(next)
+    this.closeServerClients("playwright")
     this.ensureRegistryDocs()
     return {
       operation: "configure",
@@ -237,20 +255,19 @@ export class McpRuntime {
 
   private ensureRegistryDocs(): void {
     const docsPath = path.join(this.registryPath, "playwright.md")
-    if (!fs.existsSync(docsPath)) {
-      fs.writeFileSync(
-        docsPath,
-        [
-          "# Playwright MCP",
-          "",
-          "Use Playwright MCP when the task needs a real browser: opening local apps, inspecting pages, clicking, typing, taking screenshots, or debugging UI flows.",
-          "",
-          "Call mcp_registry with operation=\"check\" and serverId=\"playwright\" to discover available dynamic tools. Use the returned mcp__playwright__* tool names only after they are exposed in the current turn.",
-          "",
-          "This bundled preset does not require API keys. Browser sessions may create local browser state and should be used only when browser automation is relevant.",
-          "",
-        ].join("\n"),
-      )
+    const docs = [
+      "# Playwright MCP",
+      "",
+      "Use Playwright MCP when the task needs a real browser: opening local apps, inspecting pages, clicking, typing, taking screenshots, or debugging UI flows.",
+      "",
+      "Call mcp_registry with operation=\"check\" and serverName=\"playwright\" to discover available dynamic tools. Use the returned mcp__playwright__* tool names only after they are exposed in the current turn.",
+      "",
+      "This bundled preset does not require API keys. Browser sessions may create local browser state and should be used only when browser automation is relevant.",
+      "",
+    ].join("\n")
+    const existing = fs.existsSync(docsPath) ? fs.readFileSync(docsPath, "utf8") : undefined
+    if (!existing || existing.includes('serverId="playwright"')) {
+      fs.writeFileSync(docsPath, docs)
     }
   }
 
@@ -276,6 +293,50 @@ export class McpRuntime {
   private writeConfig(config: McpConfig): void {
     fs.mkdirSync(path.dirname(this.configPath), { recursive: true })
     fs.writeFileSync(this.configPath, `${JSON.stringify(config, null, 2)}\n`)
+  }
+
+  private async clientFor(serverId: string, config: McpServerConfig, options: { cwd?: string; sessionKey?: string }): Promise<StdioMcpClient> {
+    const key = this.clientKey(serverId, options)
+    const existing = this.clients.get(key)
+    if (existing) {
+      const client = await existing
+      if (!client.isClosed) {
+        return client
+      }
+      this.clients.delete(key)
+    }
+
+    const clientPromise = (async () => {
+      const client = new StdioMcpClient(config, this.readEnv(), {
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        onClose: () => {
+          this.clients.delete(key)
+        },
+      })
+      await client.initialize()
+      return client
+    })()
+    this.clients.set(key, clientPromise)
+    try {
+      return await clientPromise
+    } catch (error) {
+      this.clients.delete(key)
+      throw error
+    }
+  }
+
+  private clientKey(serverId: string, options: { cwd?: string; sessionKey?: string }): string {
+    return [serverId, options.sessionKey ?? "default", options.cwd ? path.resolve(options.cwd) : ""].join("\0")
+  }
+
+  private closeServerClients(serverId: string): void {
+    for (const [key, clientPromise] of this.clients.entries()) {
+      if (!key.startsWith(`${serverId}\0`)) {
+        continue
+      }
+      this.clients.delete(key)
+      void clientPromise.then((client) => client.close()).catch(() => undefined)
+    }
   }
 
   private readEnv(): Record<string, string> {
@@ -387,10 +448,24 @@ const parseToolsList = (response: unknown): McpTool[] => {
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
 
+const isMcpToolErrorResponse = (response: unknown): boolean => asRecord(response)?.isError === true
+
+const mcpToolErrorMessage = (response: unknown): string => {
+  const record = asRecord(response)
+  const content = Array.isArray(record?.content) ? record.content : []
+  for (const part of content) {
+    const item = asRecord(part)
+    if (item?.type === "text" && typeof item.text === "string" && item.text.trim()) {
+      return item.text.trim()
+    }
+  }
+  return "MCP tool returned an error."
+}
+
 const jsonSchemaToZod = (schema: unknown): z.ZodTypeAny => {
   const record = asRecord(schema)
   if (!record || record.type !== "object") {
-    return z.record(z.string(), z.unknown()).optional().default({})
+    return z.object({}).passthrough()
   }
   const properties = asRecord(record.properties) ?? {}
   const required = new Set(Array.isArray(record.required) ? record.required.filter((item): item is string => typeof item === "string") : [])
@@ -431,25 +506,32 @@ class StdioMcpClient {
   private nextId = 1
   private buffer = ""
   private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
+  private closed = false
 
   constructor(
     private readonly config: McpServerConfig,
     private readonly env: Record<string, string>,
+    private readonly options: { cwd?: string; onClose?: () => void } = {},
   ) {}
+
+  get isClosed(): boolean {
+    return this.closed
+  }
 
   async initialize(): Promise<void> {
     this.child = spawn(this.config.command, this.config.args ?? [], {
       env: { ...process.env, ...this.env, ...(this.config.env ?? {}) },
+      cwd: this.options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
     })
     this.child.stdout?.setEncoding("utf8")
     this.child.stdout?.on("data", (chunk) => this.handleData(String(chunk)))
+    this.child.on("error", (error) => {
+      this.markClosed(error)
+    })
     this.child.on("exit", (code, signal) => {
       const error = new Error(`MCP server exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}.`)
-      for (const pending of this.pending.values()) {
-        pending.reject(error)
-      }
-      this.pending.clear()
+      this.markClosed(error)
     })
     await this.request("initialize", {
       protocolVersion: "2024-11-05",
@@ -460,6 +542,9 @@ class StdioMcpClient {
   }
 
   request(method: string, params: unknown): Promise<unknown> {
+    if (this.closed) {
+      return Promise.reject(new Error("MCP server is closed."))
+    }
     const id = this.nextId
     this.nextId += 1
     const message = { jsonrpc: "2.0", id, method, params }
@@ -487,7 +572,17 @@ class StdioMcpClient {
   }
 
   close(): void {
+    if (this.closed) {
+      return
+    }
+    this.closed = true
+    const error = new Error("MCP server was closed.")
+    for (const pending of this.pending.values()) {
+      pending.reject(error)
+    }
+    this.pending.clear()
     this.child?.kill()
+    this.options.onClose?.()
   }
 
   private handleData(chunk: string): void {
@@ -502,7 +597,12 @@ class StdioMcpClient {
       if (!line) {
         continue
       }
-      const message = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { message?: string } }
+      let message: { id?: unknown; result?: unknown; error?: { message?: string } }
+      try {
+        message = JSON.parse(line) as { id?: unknown; result?: unknown; error?: { message?: string } }
+      } catch {
+        continue
+      }
       if (typeof message.id !== "number") {
         continue
       }
@@ -517,5 +617,17 @@ class StdioMcpClient {
         pending.resolve(message.result)
       }
     }
+  }
+
+  private markClosed(error: Error): void {
+    if (this.closed) {
+      return
+    }
+    this.closed = true
+    for (const pending of this.pending.values()) {
+      pending.reject(error)
+    }
+    this.pending.clear()
+    this.options.onClose?.()
   }
 }

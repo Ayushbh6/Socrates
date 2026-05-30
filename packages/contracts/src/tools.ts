@@ -123,6 +123,7 @@ export const editToolInputSchema = z
     oldString: z.string().min(1).optional(),
     newString: z.string().optional(),
     replaceAll: z.boolean().optional(),
+    overwrite: z.literal(true).optional(),
     dryRun: z.boolean().optional(),
   })
   .strict()
@@ -144,6 +145,9 @@ export const editToolInputSchema = z
       return
     }
     if (hasReplace) {
+      if (value.overwrite) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "overwrite is only valid with content whole-file writes." })
+      }
       if (value.oldString === undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, message: "oldString is required for a targeted replace." })
       }
@@ -168,6 +172,7 @@ export const editToolModelInputSchema = z.union([
     .object({
       path: z.string().min(1),
       content: z.string(),
+      overwrite: z.literal(true).optional(),
       dryRun: z.boolean().optional(),
     })
     .strict(),
@@ -259,7 +264,6 @@ export const bashToolModelInputSchema = z
     command: z.string().min(1).optional(),
     name: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
-    outputSequence: z.number().int().nonnegative().optional(),
     cwd: z.string().min(1).optional(),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
@@ -285,6 +289,8 @@ export const bashToolOutputSchema = z
     signal: z.string().nullable().optional(),
     stdout: z.string(),
     stderr: z.string(),
+    message: z.string().optional(),
+    reusedTerminal: z.boolean().optional(),
     durationMs: z.number().int().nonnegative(),
     timedOut: z.boolean(),
     truncation: truncationMetadataSchema,

@@ -66,11 +66,14 @@ export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bas
   execute: (input, context) => context.executors.bash(input, context),
   summary: (output) => {
     const operation = output.operation ?? "run"
+    if (output.reusedTerminal) {
+      return output.message ?? `Reused Terminal ${output.terminal?.name ?? "session"}.`
+    }
     if (operation === "start" && output.process) {
-      return `Started Terminal ${output.terminal?.name ?? output.process.processId}.`
+      return `Started Terminal ${output.terminal?.name ?? "session"}.`
     }
     if ((operation === "status" || operation === "output" || operation === "stop") && output.process) {
-      return `Process ${output.process.processId} is ${output.process.status}.`
+      return `Terminal ${output.terminal?.name ?? "session"} is ${output.process.status}.`
     }
     return `Command exited ${output.exitCode === null ? "without an exit code" : `with code ${output.exitCode}`}.`
   },

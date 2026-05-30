@@ -289,13 +289,13 @@ export const handleChatMessageSend = async (
         const toolModelCallId = agentEvent.modelCallId ?? latestModelCallId
         store.createToolCall({
           toolCallId: agentEvent.toolCallId,
-          providerToolCallId: agentEvent.providerToolCallId,
           conversationId,
           sessionId: created.sessionId,
           turnId: created.turnId,
           toolName: agentEvent.toolName,
           arguments: agentEvent.input ?? agentEvent.argsPreview ?? {},
           requiresApproval: agentEvent.requiresApproval,
+          ...(agentEvent.providerToolCallId ? { providerToolCallId: agentEvent.providerToolCallId } : {}),
           ...(toolModelCallId ? { modelCallId: toolModelCallId } : {}),
         })
         const event = makeEvent(
@@ -663,11 +663,14 @@ const createToolExecutors = (
     }
     return mcpRuntime.handleRegistryTool(input)
   },
-  mcp_dynamic: (input) => {
+  mcp_dynamic: (input, context) => {
     if (!mcpRuntime) {
       throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
     }
-    return mcpRuntime.callDynamicTool(input.dynamicName, input.input)
+    return mcpRuntime.callDynamicTool(input.dynamicName, input.input, {
+      cwd: context.workspacePath,
+      sessionKey: context.conversationId,
+    })
   },
   }
 }

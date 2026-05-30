@@ -677,6 +677,9 @@ const isRuntimeOwnedModelKey = (key: string): boolean =>
   key === "toolCallId" ||
   key === "terminalId" ||
   key === "processId" ||
+  key === "outputSequence" ||
+  key === "nextOutputSequence" ||
+  key === "systemPid" ||
   key === "serverId" ||
   key === "configId" ||
   key === "providerId" ||

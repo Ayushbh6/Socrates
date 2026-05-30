@@ -358,7 +358,7 @@ const createStaleEditAgent = (): SocratesAgent => {
         toolCall: {
           toolCallId: "tcall_stale_edit",
           toolName: "edit",
-          input: { path: "README.md", content: "new" },
+          input: { path: "README.md", content: "new", overwrite: true },
         },
       }
       yield { type: "model.completed" }
@@ -541,6 +541,76 @@ setInterval(() => {}, 1000)
           input: { operation: "start", command, name: "interactive-test" },
         },
       }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createTerminalOutputAgent = (): SocratesAgent => {
+  let step = 0
+  const command = `node -e "console.log('tail-ready'); setInterval(() => {}, 1000)"`
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_tail_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "tail-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield { type: "model.answer.delta", text: "Tail Terminal started." }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 3) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_tail_output",
+            toolName: "bash",
+            input: { operation: "output", name: "tail-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Tail output checked." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createDuplicateTerminalStartAgent = (): SocratesAgent => {
+  let step = 0
+  const command = `node -e "console.log('reuse-ready'); setInterval(() => {}, 1000)"`
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      const toolCallId = step === 1 ? "tcall_reuse_start_first" : "tcall_reuse_start_second"
+      if (step === 1 || step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId,
+            toolName: "bash",
+            input: { operation: "start", command, name: "reuse-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Reuse checked." }
       yield { type: "model.completed" }
     },
   }
@@ -2714,6 +2784,102 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "turn.completed")
     } finally {
+      socket.close()
+    }
+  })
+
+  it("returns persisted terminal output after background polling has drained supervisor output", async () => {
+    const app = await buildTestServer(tempDbPath(), createTerminalOutputAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    let terminalId: string | undefined
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start tail terminal", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      terminalId = startedTerminal.payload.terminalId
+      const startCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(startCompleted.payload.resultPreview).toContain("tail-ready")
+      await waitForEvent(socket, "turn.completed")
+
+      await delay(700)
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Read tail terminal output"))
+      const outputCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(outputCompleted.payload.providerToolCallId).toBe("tcall_tail_output")
+      expect(outputCompleted.payload.resultPreview).toContain("tail-ready")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ terminalId: string; output: { stdout: string } }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const terminal = body.data.terminals.find((item) => item.terminalId === terminalId)
+        expect((terminal?.output.stdout.match(/tail-ready/g) ?? []).length).toBe(1)
+      }
+    } finally {
+      if (socket.readyState === WebSocket.OPEN && terminalId) {
+        sendCommand(socket, {
+          id: createId("evt"),
+          type: "terminal.stop",
+          schemaVersion: 1,
+          timestamp: nowIso(),
+          projectId: project.id,
+          conversationId: conversation.id,
+          actor: { type: "user" },
+          payload: { terminalId, reason: "Test cleanup" },
+        })
+      }
+      socket.close()
+    }
+  })
+
+  it("reuses an already-running named terminal instead of starting a duplicate", async () => {
+    const app = await buildTestServer(tempDbPath(), createDuplicateTerminalStartAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    let terminalId: string | undefined
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start duplicate terminal twice", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      terminalId = startedTerminal.payload.terminalId
+      expect(startedTerminal.payload.name).toBe("reuse-server")
+      const firstCompleted = await waitForEvent(socket, "tool.call.completed")
+      const secondCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(firstCompleted.payload.providerToolCallId).toBe("tcall_reuse_start_first")
+      expect(secondCompleted.payload.providerToolCallId).toBe("tcall_reuse_start_second")
+      expect(secondCompleted.payload.summary).toContain("Reused existing Terminal")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ name: string; status: string }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.terminals.filter((terminal) => terminal.name === "reuse-server" && terminal.status === "running")).toHaveLength(1)
+      }
+    } finally {
+      if (socket.readyState === WebSocket.OPEN && terminalId) {
+        sendCommand(socket, {
+          id: createId("evt"),
+          type: "terminal.stop",
+          schemaVersion: 1,
+          timestamp: nowIso(),
+          projectId: project.id,
+          conversationId: conversation.id,
+          actor: { type: "user" },
+          payload: { terminalId, reason: "Test cleanup" },
+        })
+      }
       socket.close()
     }
   })
