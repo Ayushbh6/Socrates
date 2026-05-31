@@ -4,12 +4,25 @@ import { bashTool } from "./bashTool"
 import { editTool } from "./editTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { mcpRegistryTool } from "./mcpRegistryTool"
+import { projectNotesTool } from "./projectNotesTool"
 import { readTool } from "./readTool"
 import { searchTool } from "./searchTool"
+import { socratesMemoryTool } from "./socratesMemoryTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
 
-const tools = [readTool, searchTool, editTool, applyPatchTool, bashTool, traceRetrieveTool, listProjectResourcesTool, mcpRegistryTool] as const
+const tools = [
+  readTool,
+  searchTool,
+  editTool,
+  applyPatchTool,
+  bashTool,
+  traceRetrieveTool,
+  socratesMemoryTool,
+  projectNotesTool,
+  listProjectResourcesTool,
+  mcpRegistryTool,
+] as const
 
 export type RegisteredTool = (typeof tools)[number]
 

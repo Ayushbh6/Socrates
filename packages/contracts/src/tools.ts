@@ -8,6 +8,8 @@ export const baseToolNameSchema = z.enum([
   "apply_patch",
   "bash",
   "trace_retrieve",
+  "socrates_memory",
+  "project_notes",
   "list_project_resources",
   "mcp_registry",
 ])
@@ -366,6 +368,7 @@ export type TraceRetrieveRole = z.infer<typeof traceRetrieveRoleSchema>
 export const traceRetrieveEntryTypeSchema = z.enum([
   "user_query",
   "assistant_response",
+  "qa_pair",
   "continuation_summary",
   "tool_call",
   "shell",
@@ -374,6 +377,17 @@ export const traceRetrieveEntryTypeSchema = z.enum([
   "error",
 ])
 export type TraceRetrieveEntryType = z.infer<typeof traceRetrieveEntryTypeSchema>
+
+const traceRetrieveMessageEntryTypeSchema = z.enum([
+  "user_query",
+  "assistant_response",
+  "continuation_summary",
+  "tool_call",
+  "shell",
+  "file",
+  "patch",
+  "error",
+])
 
 export const traceRetrieveProvenanceKindSchema = z.enum([
   "original_turn",
@@ -406,6 +420,8 @@ export const traceRetrieveSearchInputSchema = z
     conversationTitle: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
+    conversationOffset: z.number().int().nonnegative().max(10_000).optional(),
+    perConversationLimit: z.number().int().positive().max(20).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
     entryType: traceRetrieveEntryTypeSchema.optional(),
@@ -416,6 +432,8 @@ export const traceRetrieveSearchInputSchema = z
     command: z.string().min(1).optional(),
     createdAfter: z.string().min(1).optional(),
     createdBefore: z.string().min(1).optional(),
+    updatedAfter: z.string().min(1).optional(),
+    updatedBefore: z.string().min(1).optional(),
     limit: z.number().int().positive().max(20).optional(),
     includeRaw: z.boolean().optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
@@ -424,10 +442,10 @@ export const traceRetrieveSearchInputSchema = z
   .superRefine((input, context) => {
     const hasQuery = input.query !== undefined
     const hasTurnNo = input.turnNo !== undefined
-    if (!hasQuery && !hasTurnNo) {
+    if (!hasQuery && !hasTurnNo && input.mode !== undefined && input.mode !== "exact") {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Provide query for text search or turnNo for exact ordinal lookup.",
+        message: "Queryless browse is exact-only; provide query for semantic, combined, or audit search.",
       })
     }
     if (hasTurnNo && !hasQuery && input.mode !== undefined && input.mode !== "exact") {
@@ -444,6 +462,8 @@ const traceRetrieveEmptyStringOptionalKeys = new Set([
   "command",
   "createdAfter",
   "createdBefore",
+  "updatedAfter",
+  "updatedBefore",
   "handle",
   "conversationId",
   "conversationTitle",
@@ -460,9 +480,13 @@ const traceRetrieveSearchOnlyKeys = new Set([
   "mode",
   "conversationTitle",
   "conversationLimit",
+  "conversationOffset",
+  "perConversationLimit",
   "toolNames",
   "createdAfter",
   "createdBefore",
+  "updatedAfter",
+  "updatedBefore",
   "limit",
 ])
 
@@ -475,11 +499,15 @@ const traceRetrieveLooksLikeSearch = (value: Record<string, unknown>): boolean =
   "conversationId" in value ||
   "conversationTitle" in value ||
   "conversationLimit" in value ||
+  "conversationOffset" in value ||
+  "perConversationLimit" in value ||
   "turnNo" in value ||
   "role" in value ||
   "toolNames" in value ||
   "createdAfter" in value ||
   "createdBefore" in value ||
+  "updatedAfter" in value ||
+  "updatedBefore" in value ||
   "limit" in value ||
   ("query" in value && value.operation !== "inspect")
 
@@ -571,12 +599,16 @@ const traceRetrieveModelExactSearchInputSchema = z
     conversationTitle: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
+    conversationOffset: z.number().int().nonnegative().max(10_000).optional(),
+    perConversationLimit: z.number().int().positive().max(20).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
     entryType: traceRetrieveEntryTypeSchema.optional(),
     hasAttachment: z.boolean().optional(),
     createdAfter: z.string().min(1).optional(),
     createdBefore: z.string().min(1).optional(),
+    updatedAfter: z.string().min(1).optional(),
+    updatedBefore: z.string().min(1).optional(),
     limit: z.number().int().positive().max(20).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
@@ -584,10 +616,10 @@ const traceRetrieveModelExactSearchInputSchema = z
   .superRefine((input, context) => {
     const hasQuery = input.query !== undefined
     const hasTurnNo = input.turnNo !== undefined
-    if (!hasQuery && !hasTurnNo) {
+    if (!hasQuery && !hasTurnNo && input.mode !== undefined && input.mode !== "exact") {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Provide query for exact text search or turnNo for exact ordinal lookup.",
+        message: "Queryless browse is exact-only.",
       })
     }
   })
@@ -600,6 +632,8 @@ const traceRetrieveModelSemanticSearchInputSchema = z
     scope: traceRetrieveScopeSchema.optional(),
     conversationTitle: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
+    conversationLimit: z.number().int().positive().max(50).optional(),
+    conversationOffset: z.number().int().nonnegative().max(10_000).optional(),
     limit: z.number().int().positive().max(20).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
@@ -607,6 +641,9 @@ const traceRetrieveModelSemanticSearchInputSchema = z
     hasAttachment: z.boolean().optional(),
     createdAfter: z.string().min(1).optional(),
     createdBefore: z.string().min(1).optional(),
+    updatedAfter: z.string().min(1).optional(),
+    updatedBefore: z.string().min(1).optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
 
@@ -701,6 +738,8 @@ export const traceRetrieveAppliedFiltersSchema = z
     scope: traceRetrieveScopeSchema.optional(),
     mode: traceRetrieveModeSchema.optional(),
     conversationLimit: z.number().int().positive().optional(),
+    conversationOffset: z.number().int().nonnegative().optional(),
+    perConversationLimit: z.number().int().positive().optional(),
     conversationTitle: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
     conversationIds: z.array(z.string().min(1)).optional(),
@@ -712,6 +751,8 @@ export const traceRetrieveAppliedFiltersSchema = z
     turnLimit: z.number().int().positive().optional(),
     createdAfter: z.string().optional(),
     createdBefore: z.string().optional(),
+    updatedAfter: z.string().optional(),
+    updatedBefore: z.string().optional(),
     defaultDateWindowApplied: z.boolean().optional(),
     include: z.array(traceRetrieveIncludeSchema).optional(),
   })
@@ -721,9 +762,33 @@ export const traceRetrieveSearchResultSchema = z
   .object({
     resultNumber: z.number().int().positive(),
     text: z.string(),
-    entryType: traceRetrieveEntryTypeSchema,
+    entryType: traceRetrieveMessageEntryTypeSchema,
     conversationTitle: z.string().min(1),
     conversationId: z.string().min(1),
+    messageId: z.string().min(1).optional(),
+    toolId: z.string().min(1).optional(),
+    turnNo: z.number().int().positive().optional(),
+    messageNo: z.number().int().positive().optional(),
+    provenanceKind: traceRetrieveProvenanceKindSchema.optional(),
+    pairedUserMessageNo: z.number().int().positive().optional(),
+    pairedUserPreview: z.string().optional(),
+  })
+  .strict()
+
+export const traceRetrieveQaPairResultSchema = z
+  .object({
+    resultNumber: z.number().int().positive(),
+    entryType: z.literal("qa_pair"),
+    conversationTitle: z.string().min(1),
+    conversationId: z.string().min(1),
+    turnNo: z.number().int().positive(),
+    turnId: z.string().min(1),
+    userMessageId: z.string().min(1).optional(),
+    assistantMessageId: z.string().min(1).optional(),
+    userText: z.string().optional(),
+    assistantText: z.string().optional(),
+    startedAt: z.string().min(1),
+    completedAt: z.string().nullable().optional(),
     messageId: z.string().min(1).optional(),
     toolId: z.string().min(1).optional(),
     messageNo: z.number().int().positive().optional(),
@@ -737,11 +802,12 @@ export const traceRetrieveExactResultSchema = z
   .object({
     resultNumber: z.number().int().positive().optional(),
     content: z.string(),
-    entryType: traceRetrieveEntryTypeSchema,
+    entryType: traceRetrieveMessageEntryTypeSchema,
     conversationId: z.string().min(1).optional(),
     conversationTitle: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
     toolId: z.string().min(1).optional(),
+    turnNo: z.number().int().positive().optional(),
     messageNo: z.number().int().positive().optional(),
     provenanceKind: traceRetrieveProvenanceKindSchema.optional(),
     pairedUserMessageNo: z.number().int().positive().optional(),
@@ -752,7 +818,7 @@ export const traceRetrieveExactResultSchema = z
 
 export const traceRetrieveToolOutputSchema = z
   .object({
-    results: z.array(z.union([traceRetrieveSearchResultSchema, traceRetrieveExactResultSchema])),
+    results: z.array(z.union([traceRetrieveSearchResultSchema, traceRetrieveQaPairResultSchema, traceRetrieveExactResultSchema])),
     totalMatches: z.number().int().nonnegative(),
     truncation: truncationMetadataSchema,
     appliedFilters: traceRetrieveAppliedFiltersSchema,
@@ -760,6 +826,110 @@ export const traceRetrieveToolOutputSchema = z
   })
   .strict()
 export type TraceRetrieveToolOutput = z.infer<typeof traceRetrieveToolOutputSchema>
+
+export const socratesMemoryScopeSchema = z.enum(["primary", "project"])
+export type SocratesMemoryScope = z.infer<typeof socratesMemoryScopeSchema>
+
+export const socratesMemoryToolInputSchema = z
+  .object({
+    operation: z.enum(["list", "read", "search"]),
+    scope: socratesMemoryScopeSchema.optional(),
+    path: z.string().min(1).optional(),
+    query: z.string().min(1).optional(),
+    modifiedAfter: z.string().min(1).optional(),
+    modifiedBefore: z.string().min(1).optional(),
+    limit: z.number().int().positive().max(50).optional(),
+    offset: z.number().int().nonnegative().optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.operation === "read" && !input.path) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "read requires path." })
+    }
+    if (input.operation === "search" && !input.query) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    }
+  })
+export type SocratesMemoryToolInput = z.infer<typeof socratesMemoryToolInputSchema>
+
+export const socratesMemoryToolOutputSchema = z
+  .object({
+    operation: z.enum(["list", "read", "search"]),
+    scope: socratesMemoryScopeSchema.optional(),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            scope: socratesMemoryScopeSchema,
+            sizeBytes: z.number().int().nonnegative(),
+            modifiedAt: z.string().min(1),
+          })
+          .strict(),
+      )
+      .optional(),
+    content: z.string().optional(),
+    matches: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            scope: socratesMemoryScopeSchema,
+            line: z.number().int().positive().optional(),
+            text: z.string(),
+            modifiedAt: z.string().min(1),
+          })
+          .strict(),
+      )
+      .optional(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type SocratesMemoryToolOutput = z.infer<typeof socratesMemoryToolOutputSchema>
+
+export const projectNotesToolInputSchema = z
+  .object({
+    operation: z.enum(["read", "search", "patch"]),
+    query: z.string().min(1).optional(),
+    oldText: z.string().optional(),
+    newText: z.string().optional(),
+    replaceAll: z.boolean().optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.operation === "search" && !input.query) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    }
+    if (input.operation === "patch" && (input.oldText === undefined || input.newText === undefined)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "patch requires oldText and newText." })
+    }
+  })
+export type ProjectNotesToolInput = z.infer<typeof projectNotesToolInputSchema>
+
+export const projectNotesToolOutputSchema = z
+  .object({
+    operation: z.enum(["read", "search", "patch"]),
+    path: z.string().min(1),
+    content: z.string().optional(),
+    matches: z
+      .array(
+        z
+          .object({
+            line: z.number().int().positive(),
+            text: z.string(),
+          })
+          .strict(),
+      )
+      .optional(),
+    changed: z.boolean().optional(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type ProjectNotesToolOutput = z.infer<typeof projectNotesToolOutputSchema>
 
 export const listProjectResourcesToolInputSchema = z
   .object({

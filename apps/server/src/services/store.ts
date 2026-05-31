@@ -28,10 +28,14 @@ import type {
   InspectWorkspaceResponse,
   PickWorkspaceFolderRequest,
   PickWorkspaceFolderResponse,
+  ProjectNotesToolInput,
+  ProjectNotesToolOutput,
   Project,
   ProjectInstructions,
   ProjectResource,
   ProjectWorkspace,
+  SocratesMemoryToolInput,
+  SocratesMemoryToolOutput,
   TraceRetrieveToolInput,
   UpdateProjectWorkspaceRequest,
   UpdateProjectWorkspaceResponse,
@@ -39,7 +43,7 @@ import type {
   UpsertProjectInstructionsRequest,
   User,
 } from "@socrates/contracts"
-import { createDefaultEmbeddingProvider, type EmbeddingProvider, type ProviderCredentialResolver } from "@socrates/providers"
+import { AiSdkProvider, createDefaultEmbeddingProvider, type EmbeddingProvider, type ModelProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
 import { AttachmentStore } from "./store/attachmentStore"
@@ -51,6 +55,7 @@ import { EmbeddingStore } from "./store/embeddingStore"
 import { FeedbackStore } from "./store/feedbackStore"
 import { InstructionStore } from "./store/instructionStore"
 import { ModelTelemetryStore } from "./store/modelTelemetryStore"
+import { MemoryStore } from "./store/memoryStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
 import type { StoreContext } from "./store/shared"
@@ -99,6 +104,7 @@ export class SocratesStore {
   private readonly tools: ToolStore
   private readonly terminals: TerminalStore
   private readonly traces: TraceStore
+  private readonly memory: MemoryStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
 
@@ -106,6 +112,7 @@ export class SocratesStore {
     private readonly handle: DatabaseHandle,
     embeddingProvider?: EmbeddingProvider,
     credentials?: ProviderCredentialResolver,
+    options: { socratesHome?: string; diaryProvider?: ModelProvider } = {},
   ) {
     this.events = new EventStore(handle)
     const context: StoreContext = {
@@ -128,6 +135,12 @@ export class SocratesStore {
     this.terminals = new TerminalStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     this.traces = new TraceStore(context, this.embeddings)
+    const memoryOptions = {
+      ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
+      ...(options.diaryProvider ? { provider: options.diaryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
+      ...(credentials ? { credentials } : {}),
+    }
+    this.memory = new MemoryStore(context, memoryOptions)
     this.contextCompactions = new ContextCompactionStore(context, this.errors)
   }
 
@@ -169,11 +182,29 @@ export class SocratesStore {
   }
 
   getAgentContext(projectId: string): AgentContext {
-    return this.projects.getAgentContext(projectId)
+    const context = this.projects.getAgentContext(projectId)
+    this.ensureProjectMemory(projectId)
+    return context
   }
 
   getPrimaryWorkspacePath(projectId: string): string {
     return this.projects.getPrimaryWorkspacePath(projectId)
+  }
+
+  ensureProjectMemory(projectId: string): void {
+    this.memory.ensureProjectMemory(projectId, this.primaryWorkspacePathOrUndefined(projectId))
+  }
+
+  buildWakeMemoryContext(projectId: string, userQuery: string): string | undefined {
+    return this.memory.buildWakeContext(projectId, this.primaryWorkspacePathOrUndefined(projectId), userQuery)
+  }
+
+  runSocratesMemoryTool(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
+    return this.memory.runSocratesMemoryTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
+  }
+
+  runProjectNotesTool(projectId: string, workspacePath: string, input: ProjectNotesToolInput): ProjectNotesToolOutput {
+    return this.memory.runProjectNotesTool(projectId, workspacePath, input)
   }
 
   patchProject(projectId: string, input: PatchProjectRequest): Project {
@@ -495,6 +526,14 @@ export class SocratesStore {
     return this.traces.retrieve(projectId, conversationId, input)
   }
 
+  appendDiaryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string }): void {
+    const workspacePath = this.primaryWorkspacePathOrUndefined(input.projectId)
+    this.memory.appendDiaryForTurn({
+      ...input,
+      ...(workspacePath ? { workspacePath } : {}),
+    })
+  }
+
   getProjectEmbeddingStatus(projectId: string) {
     return this.embeddings.getStatus(projectId)
   }
@@ -521,5 +560,13 @@ export class SocratesStore {
 
   appendEvent(input: StoreEventInput): void {
     this.events.appendEvent(input)
+  }
+
+  private primaryWorkspacePathOrUndefined(projectId: string): string | undefined {
+    try {
+      return this.projects.getPrimaryWorkspacePath(projectId)
+    } catch {
+      return undefined
+    }
   }
 }

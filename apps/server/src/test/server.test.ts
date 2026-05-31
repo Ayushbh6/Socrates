@@ -41,13 +41,27 @@ const tempDbPath = (): string => {
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
 
-const buildTestServer = async (dbPath = tempDbPath(), agent = createTestAgent()): Promise<TestServer> => {
-  const app = await buildServer({ dbPath, agent })
+const buildTestServer = async (
+  dbPath = tempDbPath(),
+  agent = createTestAgent(),
+  options: { socratesHome?: string } = {},
+): Promise<TestServer> => {
+  const app = await buildServer({ dbPath, agent, ...options })
   servers.push(app)
   return app
 }
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const waitForFileText = async (filePath: string, text: string): Promise<void> => {
+  const deadline = Date.now() + 2_000
+  while (Date.now() < deadline) {
+    if (fs.existsSync(filePath) && fs.readFileSync(filePath, "utf8").includes(text)) {
+      return
+    }
+    await delay(20)
+  }
+  throw new Error(`Timed out waiting for ${text} in ${filePath}`)
+}
 const psQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
 const nodeCommand = (script: string): string =>
   process.platform === "win32"
@@ -2786,6 +2800,155 @@ describe("WebSocket API", () => {
         createdAfter: new Date(Date.now() + 60_000).toISOString(),
       })
       expect(dateFilteredSearch.results).toHaveLength(0)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("browses recent conversations without query as grouped Q/A pairs", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const older = await createConversation(app, project.id, "Older Investigation")
+    const source = await createConversation(app, project.id, "Latest Investigation")
+    const live = await createConversation(app, project.id, "Live Investigation")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    try {
+      const olderSession = insertTestSession(handle.sqlite, project.id, older.id)
+      insertCompletedTestTurn(handle.sqlite, older.id, olderSession, "Older first user", "Older first assistant", new Date(Date.now() - 7_000).toISOString())
+      const sourceSession = insertTestSession(handle.sqlite, project.id, source.id)
+      insertCompletedTestTurn(handle.sqlite, source.id, sourceSession, "Source first user", "Source first assistant", new Date(Date.now() - 3_000).toISOString())
+      const second = insertCompletedTestTurn(
+        handle.sqlite,
+        source.id,
+        sourceSession,
+        "Source second user",
+        "Source second assistant",
+        new Date(Date.now() - 2_000).toISOString(),
+      )
+
+      const browse = await store.retrieveToolTraces(project.id, live.id, {
+        scope: "recent_conversations",
+        conversationLimit: 1,
+        perConversationLimit: 2,
+      })
+      expect(browse.results).toHaveLength(2)
+      expect(browse.results[0]?.entryType).toBe("qa_pair")
+      expect(browse.results[0]?.conversationTitle).toBe("Latest Investigation")
+      expect(browse.results[0]?.turnNo).toBe(2)
+      expect(JSON.stringify(browse.results[0])).toContain("Source second user")
+      expect(browse.appliedFilters.perConversationLimit).toBe(2)
+
+      const roleBrowse = await store.retrieveToolTraces(project.id, live.id, {
+        scope: "recent_conversations",
+        conversationLimit: 1,
+        perConversationLimit: 1,
+        role: "user",
+      })
+      expect(roleBrowse.results).toHaveLength(1)
+      expect(roleBrowse.results[0]?.entryType).toBe("user_query")
+      expect(roleBrowse.results[0]?.messageId).toBe(second.userMessageId)
+      expect(roleBrowse.results[0]?.messageNo).toBe(2)
+
+      const offsetBrowse = await store.retrieveToolTraces(project.id, live.id, {
+        scope: "recent_conversations",
+        conversationLimit: 1,
+        conversationOffset: 1,
+        perConversationLimit: 1,
+      })
+      expect(offsetBrowse.results[0]?.conversationTitle).toBe("Older Investigation")
+      expect(offsetBrowse.appliedFilters.conversationOffset).toBe(1)
+
+      const futureBrowse = await store.retrieveToolTraces(project.id, live.id, {
+        scope: "project",
+        updatedAfter: new Date(Date.now() + 60_000).toISOString(),
+      })
+      expect(futureBrowse.results).toHaveLength(0)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("creates Socrates memory files, exposes memory tools, and injects first-turn wake context", async () => {
+    const requests: unknown[] = []
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath, createCapturingAgent(requests), { socratesHome })
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Memory Wake")
+
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "start with memory"))
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+    } finally {
+      socket.close()
+    }
+
+    expect(fs.existsSync(path.join(socratesHome, "primary", "identity.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "primary", "tool_usage", "trace_retrieve.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "MEMORY.md"))).toBe(true)
+    expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
+    expect(JSON.stringify(requests[0])).toContain("<socrates_wake_context>")
+    expect(JSON.stringify(requests[0])).toContain("PROJECT_NOTES")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome })
+    try {
+      const listed = store.runSocratesMemoryTool(project.id, { operation: "list", scope: "primary" })
+      expect(listed.files?.some((file) => file.path === "primary/identity.md")).toBe(true)
+      const searched = store.runSocratesMemoryTool(project.id, { operation: "search", scope: "primary", query: "investigation" })
+      expect(searched.matches?.some((match) => match.path.includes("trace_retrieve.md"))).toBe(true)
+      const notesRead = store.runProjectNotesTool(project.id, primaryWorkspace.path as string, { operation: "read" })
+      expect(notesRead.content).toContain("PROJECT_NOTES")
+      const notesPatch = store.runProjectNotesTool(project.id, primaryWorkspace.path as string, {
+        operation: "patch",
+        oldText: "Repo-local notes for Socrates.",
+        newText: "Repo-local notes for Socrates.\n\n- Memory tool smoke note.",
+      })
+      expect(notesPatch.changed).toBe(true)
+      expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")).toContain("Memory tool smoke note")
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("appends diary notes in the background and falls back when the primary diary model fails", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Diary Source")
+    const handle = openDatabase(dbPath)
+    const modelIds: string[] = []
+    const diaryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        modelIds.push(request.modelId)
+        if (request.modelId === "deepseek/deepseek-v4-pro") {
+          throw new Error("primary diary model failed")
+        }
+        yield { type: "model.answer.delta", text: "### Worked On\n- Diary test.\n\n### Learned\n- Fallback works.\n\n### Mistakes\n- None.\n\n### Decisions\n- Keep it short.\n\n### Next\n- Continue." }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, diaryProvider })
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Diary user message", "Diary assistant answer", nowIso())
+      store.appendDiaryForTurn({ projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      const diaryFile = path.join(socratesHome, "projects", project.id, "diary", new Date().getFullYear().toString(), String(new Date().getMonth() + 1).padStart(2, "0"), `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}.md`)
+      await waitForFileText(diaryFile, "Fallback works")
+      expect(modelIds).toEqual(["deepseek/deepseek-v4-pro", "xiaomi/mimo-v2.5-pro"])
+      expect(fs.readFileSync(diaryFile, "utf8")).toContain("Diary test")
+      expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
     } finally {
       await store.close()
     }

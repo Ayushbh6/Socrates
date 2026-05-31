@@ -75,6 +75,21 @@ export const isSensitivePath = (targetPath: string): boolean => {
   )
 }
 
+export const assertNotProjectNotesMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
+  const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
+  if (relativePath !== ".socrates/project_notes.md") {
+    return
+  }
+  throw new SocratesError(
+    "project_notes_dedicated_tool_required",
+    "PROJECT_NOTES.md can only be edited through the project_notes tool. Retry with project_notes operation=\"patch\"; normal read/search may still inspect it.",
+    {
+      recoverable: true,
+      details: { path: requestedPath ?? ".socrates/PROJECT_NOTES.md", tool: "project_notes", operation: "patch" },
+    },
+  )
+}
+
 const isEnvTemplatePath = (base: string): boolean =>
   base === ".env.example" ||
   base === ".env.sample" ||

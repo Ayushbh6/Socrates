@@ -127,6 +127,21 @@ Follow-up fix:
 - Build output under `packages/contracts/dist/` is generated and ignored.
 - `node_modules/` and package-local `node_modules/` are ignored.
 
+## Investigation Memory Direction
+
+- `trace_retrieve` is an investigation tool, not a query-first search box. It supports queryless exact browsing across visible active/archived project conversations with Q/A pair windows, conversation offset, per-conversation limits, title/id/date filters, and role/message filters.
+- Socrates-owned memory now has global primary files under `~/.Socrates/primary/` and project files under `~/.Socrates/projects/<projectId>/`, including one diary markdown file per day.
+- Workspace-local notes live at `<workspace>/.socrates/PROJECT_NOTES.md` and should be accessed through the dedicated `project_notes` tool rather than generic edit tools. Generic `edit` and `apply_patch` mutations to this file are backend-rejected with a recoverable `project_notes_dedicated_tool_required` error; normal `read`/`search` may still inspect it.
+- The main agent can read/search memory through `socrates_memory`; backend-owned diary writing appends structured notes after completed Q/A turns.
+- TODO: move diary and memory synthesis to a dedicated memory sub-agent so the main Socrates agent stays focused on the user turn.
+
+Four-phase action plan for the next memory/tooling slice:
+
+1. Harden memory/project-note scoping and block generic writes to `<workspace>/.socrates/PROJECT_NOTES.md`; writes must go through `project_notes`, while normal reads can remain allowed for now.
+2. Upgrade `socrates_memory` into a true investigation tool with exact/keyword search, queryless browsing, date/time/month ranges, result windows, output caps, and strict current-project diary scoping.
+3. Replace the current diary helper with a dedicated backend memory agent that owns diary writing, evidence aggregation, model fallback, logging, and non-blocking failures.
+4. Add controlled self-updating for global primary docs and tool-usage docs, using evidence-backed backend patches rather than direct main-agent edits.
+
 ## Project Dashboard And Conversation Slice
 
 The current project dashboard and chat slice is implemented end to end across contracts, server, web, and SQLite.

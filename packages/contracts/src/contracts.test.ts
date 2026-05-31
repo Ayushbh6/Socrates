@@ -85,9 +85,13 @@ import {
   listProjectResourcesToolOutputSchema,
   mcpRegistryToolModelInputSchema,
   normalizedToolCallSchema,
+  projectNotesToolInputSchema,
+  projectNotesToolOutputSchema,
   readToolInputSchema,
   readToolOutputSchema,
   searchToolInputSchema,
+  socratesMemoryToolInputSchema,
+  socratesMemoryToolOutputSchema,
   toolExecutionResultSchema,
   traceRetrieveToolInputSchema,
   traceRetrieveToolModelInputSchema,
@@ -870,6 +874,9 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ turnNo: 2, role: "user", scope: "project" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ scope: "recent_conversations", conversationLimit: 3, perConversationLimit: 5 }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ mode: "semantic", scope: "project" }).success).toBe(false)
+    expect(traceRetrieveToolInputSchema.safeParse({ mode: "combined", conversationLimit: 3 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", role: "user" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", entryType: "assistant_response", hasAttachment: false }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
@@ -891,17 +898,18 @@ describe("tool contracts", () => {
     expect(traceRetrieveToolModelInputSchema.safeParse({ toolId: "tcall_1" }).success).toBe(false)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationTitle: "apply patch fix", conversationLimit: 10 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationId: "conv_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ mode: "exact", conversationLimit: 3, conversationOffset: 1, perConversationLimit: 5, updatedAfter: timestamp, updatedBefore: timestamp }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", turnNo: 2 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ turnNo: 2, role: "assistant", conversationTitle: "apply patch fix" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", role: "assistant", entryType: "assistant_response", hasAttachment: true, createdAfter: timestamp, createdBefore: timestamp }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", scope: "project", conversationTitle: "Trace source", conversationId: "conv_1", role: "user", entryType: "user_query", hasAttachment: false, createdAfter: timestamp, createdBefore: timestamp, limit: 10 }).success).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", conversationLimit: 50 }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", conversationLimit: 50 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", turnNo: 2 }).success).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", charLimit: 1000 }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", charLimit: 1000 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", scope: "project", limit: 10 }).success).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", conversationLimit: 50 }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", conversationLimit: 50 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", include: ["messages"] }).success).toBe(false)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", paths: ["README.md"] }).success).toBe(false)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", command: "npm test" }).success).toBe(false)
@@ -943,6 +951,19 @@ describe("tool contracts", () => {
           },
           {
             resultNumber: 2,
+            entryType: "qa_pair",
+            conversationTitle: "Trace source",
+            conversationId: conversation.id,
+            turnNo: 2,
+            turnId: "turn_1",
+            userMessageId: "msg_user_1",
+            assistantMessageId: "msg_assistant_1",
+            userText: "Question",
+            assistantText: "Answer",
+            startedAt: timestamp,
+          },
+          {
+            resultNumber: 3,
             entryType: "user_query",
             content: "Exact source",
             conversationTitle: "Trace source",
@@ -952,10 +973,36 @@ describe("tool contracts", () => {
             provenanceKind: "original_turn",
           },
         ],
-        totalMatches: 2,
+        totalMatches: 3,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
         appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined", turnNo: 2, role: "user" },
         warnings: ["Semantic trace retrieval is not configured for this project. Use the project dashboard to enable semantic search."],
+      }).success,
+    ).toBe(true)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "list", scope: "project", limit: 10 }).success).toBe(true)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "read", path: "project/MEMORY.md", charLimit: 1000 }).success).toBe(true)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search", scope: "primary", query: "trace", modifiedAfter: timestamp }).success).toBe(true)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "read" }).success).toBe(false)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search" }).success).toBe(false)
+    expect(
+      socratesMemoryToolOutputSchema.safeParse({
+        operation: "search",
+        scope: "project",
+        matches: [{ path: "project/MEMORY.md", scope: "project", line: 1, text: "trace", modifiedAt: timestamp }],
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
+      }).success,
+    ).toBe(true)
+    expect(projectNotesToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
+    expect(projectNotesToolInputSchema.safeParse({ operation: "search", query: "decision" }).success).toBe(true)
+    expect(projectNotesToolInputSchema.safeParse({ operation: "patch", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(projectNotesToolInputSchema.safeParse({ operation: "patch", oldText: "old" }).success).toBe(false)
+    expect(
+      projectNotesToolOutputSchema.safeParse({
+        operation: "patch",
+        path: "/tmp/workspace/.socrates/PROJECT_NOTES.md",
+        changed: true,
+        content: "# PROJECT_NOTES",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 15 },
       }).success,
     ).toBe(true)
     expect(listProjectResourcesToolInputSchema.safeParse({ kind: "pdf", limit: 10 }).success).toBe(true)

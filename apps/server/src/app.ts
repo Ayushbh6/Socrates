@@ -25,7 +25,7 @@ export const buildServer = async (options: BuildServerOptions) => {
 
   const socratesHome = options.socratesHome ?? (options.dbPath === ":memory:" ? undefined : path.dirname(options.dbPath))
   const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
-  const store = new SocratesStore(handle, undefined, credentials)
+  const store = new SocratesStore(handle, undefined, credentials, socratesHome ? { socratesHome } : {})
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const mcpRuntime = new McpRuntime(socratesHome ? { socratesHome } : {})
   const terminals = new ConversationTerminalManager(store)

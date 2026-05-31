@@ -35,6 +35,22 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
 
 const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.hardCapTokens
 
+const withWakeContext = (
+  history: ReturnType<SocratesStore["getConversationModelMessages"]>,
+  wakeContext: string | undefined,
+): ReturnType<SocratesStore["getConversationModelMessages"]> => {
+  if (!wakeContext?.trim()) {
+    return history
+  }
+  return [
+    {
+      role: "developer",
+      content: `<socrates_wake_context>\n${wakeContext}\n</socrates_wake_context>`,
+    },
+    ...history,
+  ]
+}
+
 export const handleChatMessageSend = async (
   socket: WebSocket,
   store: SocratesStore,
@@ -70,6 +86,12 @@ export const handleChatMessageSend = async (
   const includeImageParts = selectedModel?.capabilities?.vision === true
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
+  store.ensureProjectMemory(projectId)
+  const wakeContext =
+    history.filter((message) => message.role === "user").length === 1
+      ? store.buildWakeMemoryContext(projectId, command.payload.content)
+      : undefined
+  const modelHistory = withWakeContext(history, wakeContext)
   const terminalContext = store.terminalContextBrief(conversationId)
   const promptContext = {
     ...store.getAgentContext(projectId),
@@ -97,7 +119,7 @@ export const handleChatMessageSend = async (
       providerId: command.payload.runtimeConfig.providerId,
       modelId: command.payload.runtimeConfig.modelId,
       runtimeConfig: command.payload.runtimeConfig,
-      messages: history,
+      messages: modelHistory,
       promptContext,
       workspacePath,
       toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime),
@@ -551,6 +573,7 @@ export const handleChatMessageSend = async (
     )
     appendAndSend(socket, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
+    store.appendDiaryForTurn({ projectId, conversationId, sessionId: created.sessionId, turnId: created.turnId })
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({
@@ -656,6 +679,8 @@ const createToolExecutors = (
     }
   },
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
+  socrates_memory: (input) => Promise.resolve(store.runSocratesMemoryTool(projectId, input)),
+  project_notes: (input, context) => Promise.resolve(store.runProjectNotesTool(projectId, context.workspacePath, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
   mcp_registry: (input) => {
     if (!mcpRuntime) {

@@ -38,6 +38,9 @@ const DEFAULT_LIMIT = 5
 const DEFAULT_CHAR_LIMIT = 20_000
 const DEFAULT_CONVERSATION_LIMIT = 10
 const DEFAULT_TURN_LIMIT = 20
+const DEFAULT_PER_CONVERSATION_LIMIT = 5
+const QUERYLESS_RESULT_UNIT_LIMIT = 20
+const QUERYLESS_OUTPUT_TOKEN_LIMIT = 6_000
 const SNIPPET_CONTEXT_LINES = 8
 const SNIPPET_MIN_CHARS = 1_600
 const SNIPPET_MAX_CHARS = 3_200
@@ -112,10 +115,12 @@ type TurnOrdinalRow = {
   assistantMessageId: string | null
 }
 
-type InternalTraceSearchResult = {
+type TraceMessageEntryType = Exclude<TraceRetrieveEntryType, "qa_pair">
+
+type InternalTraceMessageResult = {
   resultNumber?: number
   text: string
-  entryType: TraceRetrieveEntryType
+  entryType: TraceMessageEntryType
   conversationTitle: string
   conversationId: string
   messageId?: string
@@ -127,6 +132,35 @@ type InternalTraceSearchResult = {
   inspectArgs: TraceRetrieveInspectArgs
   rank: number
   createdAt?: string
+}
+
+type InternalTraceQaPairResult = {
+  resultNumber?: number
+  entryType: "qa_pair"
+  conversationTitle: string
+  conversationId: string
+  turnNo: number
+  turnId: string
+  userMessageId?: string
+  assistantMessageId?: string
+  userText?: string
+  assistantText?: string
+  startedAt: string
+  completedAt?: string | null
+  inspectArgs: TraceRetrieveInspectArgs
+  rank: number
+  createdAt?: string
+}
+
+type InternalTraceSearchResult = InternalTraceMessageResult | InternalTraceQaPairResult
+
+type ResolveConversationOptions = {
+  conversationTitle?: string
+  conversationId?: string
+  conversationOffset?: number
+  conversationLimitProvided?: boolean
+  updatedAfter?: string
+  updatedBefore?: string
 }
 
 const traceDocumentSelect = `td.id AS id,
@@ -296,11 +330,15 @@ export class TraceStore extends StoreBase {
     const hasTextQuery = input.query !== undefined
     const ignoredOrdinalLookup = hasTextQuery && input.turnNo !== undefined
     const conversationLimit = input.turnNo === undefined || ignoredOrdinalLookup ? requestedConversationLimit : DEFAULT_CONVERSATION_LIMIT
+    const conversationOffset = input.conversationOffset ?? 0
+    const perConversationLimit = input.perConversationLimit ?? DEFAULT_PER_CONVERSATION_LIMIT
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
     const include = input.include
     const warnings: string[] = []
     const createdAfter = input.createdAfter
     const createdBefore = input.createdBefore
+    const updatedAfter = input.updatedAfter
+    const updatedBefore = input.updatedBefore
 
     if (scope === "current_conversation") {
       warnings.push(`Only viewing the current chat. Use scope="recent_conversations" or "project" to widen.`)
@@ -322,7 +360,14 @@ export class TraceStore extends StoreBase {
     }
 
     const useOrdinalLookup = input.turnNo !== undefined && !hasTextQuery
-    const conversationIds = this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, input.conversationTitle, input.conversationId)
+    const conversationIds = this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, {
+      ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      conversationOffset,
+      conversationLimitProvided: input.conversationLimit !== undefined,
+      ...(updatedAfter ? { updatedAfter } : {}),
+      ...(updatedBefore ? { updatedBefore } : {}),
+    })
     if (input.conversationTitle && conversationIds.length === 0) {
       warnings.push(`No visible conversation matched conversationTitle="${input.conversationTitle}".`)
     }
@@ -334,10 +379,34 @@ export class TraceStore extends StoreBase {
         scope,
         mode,
         conversationLimit,
+        conversationOffset,
+        conversationLimitProvided: input.conversationLimit !== undefined,
         conversationTitle: input.conversationTitle,
         conversationId: input.conversationId,
         charLimit,
         include,
+        updatedAfter,
+        updatedBefore,
+        warnings,
+      })
+    }
+    if (!hasTextQuery) {
+      return this.searchQuerylessBrowse(projectId, currentConversationId, input, {
+        scope,
+        mode,
+        limit,
+        conversationLimit,
+        conversationOffset,
+        conversationLimitProvided: input.conversationLimit !== undefined,
+        perConversationLimit,
+        conversationTitle: input.conversationTitle,
+        conversationId: input.conversationId,
+        charLimit,
+        conversationIds,
+        createdAfter,
+        createdBefore,
+        updatedAfter,
+        updatedBefore,
         warnings,
       })
     }
@@ -349,12 +418,16 @@ export class TraceStore extends StoreBase {
         mode,
         limit,
         conversationLimit,
+        conversationOffset,
+        conversationLimitProvided: input.conversationLimit !== undefined,
         conversationTitle: input.conversationTitle,
         conversationId: input.conversationId,
         charLimit,
         conversationIds,
         createdAfter,
         createdBefore,
+        updatedAfter,
+        updatedBefore,
         warnings,
       })
     }
@@ -436,7 +509,8 @@ export class TraceStore extends StoreBase {
         operation: "search",
         scope,
         mode,
-        conversationLimit,
+        ...(scope === "project" && input.conversationLimit === undefined ? {} : { conversationLimit }),
+        ...(conversationOffset ? { conversationOffset } : {}),
         ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
         ...(input.conversationId ? { conversationId: input.conversationId } : {}),
         conversationIds,
@@ -445,6 +519,8 @@ export class TraceStore extends StoreBase {
         ...(input.hasAttachment !== undefined ? { hasAttachment: input.hasAttachment } : {}),
         ...(createdAfter ? { createdAfter } : {}),
         ...(createdBefore ? { createdBefore } : {}),
+        ...(updatedAfter ? { updatedAfter } : {}),
+        ...(updatedBefore ? { updatedBefore } : {}),
         ...(include ? { include } : {}),
       },
       warnings: warnings.length > 0 ? warnings : undefined,
@@ -460,12 +536,16 @@ export class TraceStore extends StoreBase {
       mode: TraceRetrieveMode
       limit: number
       conversationLimit: number
+      conversationOffset: number
+      conversationLimitProvided: boolean
       conversationTitle: string | undefined
       conversationId: string | undefined
       charLimit: number
       conversationIds: string[]
       createdAfter: string | undefined
       createdBefore: string | undefined
+      updatedAfter: string | undefined
+      updatedBefore: string | undefined
       warnings: string[]
     },
   ): TraceRetrieveToolOutput {
@@ -504,7 +584,8 @@ export class TraceStore extends StoreBase {
         operation: "search",
         scope: resolved.scope,
         mode: resolved.mode,
-        conversationLimit: resolved.conversationLimit,
+        ...(resolved.scope === "project" && !resolved.conversationLimitProvided ? {} : { conversationLimit: resolved.conversationLimit }),
+        ...(resolved.conversationOffset ? { conversationOffset: resolved.conversationOffset } : {}),
         ...(resolved.conversationTitle ? { conversationTitle: resolved.conversationTitle } : {}),
         ...(resolved.conversationId ? { conversationId: resolved.conversationId } : {}),
         conversationIds: resolved.conversationIds,
@@ -513,10 +594,274 @@ export class TraceStore extends StoreBase {
         ...(input.hasAttachment !== undefined ? { hasAttachment: input.hasAttachment } : {}),
         ...(resolved.createdAfter ? { createdAfter: resolved.createdAfter } : {}),
         ...(resolved.createdBefore ? { createdBefore: resolved.createdBefore } : {}),
+        ...(resolved.updatedAfter ? { updatedAfter: resolved.updatedAfter } : {}),
+        ...(resolved.updatedBefore ? { updatedBefore: resolved.updatedBefore } : {}),
         include: auditInclude,
       },
       warnings: resolved.warnings.length > 0 ? resolved.warnings : undefined,
     }
+  }
+
+  private searchQuerylessBrowse(
+    projectId: string,
+    currentConversationId: string,
+    input: TraceRetrieveSearchInput,
+    resolved: {
+      scope: TraceRetrieveScope
+      mode: TraceRetrieveMode
+      limit: number
+      conversationLimit: number
+      conversationOffset: number
+      conversationLimitProvided: boolean
+      perConversationLimit: number
+      conversationTitle: string | undefined
+      conversationId: string | undefined
+      charLimit: number
+      conversationIds: string[]
+      createdAfter: string | undefined
+      createdBefore: string | undefined
+      updatedAfter: string | undefined
+      updatedBefore: string | undefined
+      warnings: string[]
+    },
+  ): TraceRetrieveToolOutput {
+    const warnings = [...resolved.warnings]
+    if (resolved.conversationIds.length === 0) {
+      warnings.push("No visible conversations matched the queryless browse filters.")
+    }
+    const roleFilter =
+      input.role === "user" || input.role === "assistant"
+        ? input.role
+        : input.entryType === "user_query"
+          ? "user"
+          : input.entryType === "assistant_response"
+            ? "assistant"
+            : undefined
+    const resultUnitLimit = Math.min(input.limit ?? QUERYLESS_RESULT_UNIT_LIMIT, QUERYLESS_RESULT_UNIT_LIMIT)
+    const rawResults =
+      roleFilter !== undefined
+        ? this.querylessBrowseMessages(projectId, currentConversationId, resolved.conversationIds, roleFilter, input, resolved)
+        : this.querylessBrowseQaPairs(projectId, currentConversationId, resolved.conversationIds, input, resolved)
+    const accepted: Array<InternalTraceSearchResult & { resultNumber: number }> = []
+    let tokenBudgetStopped = false
+    for (const result of rawResults) {
+      if (accepted.length >= resultUnitLimit) {
+        break
+      }
+      const numberedCandidate = { ...result, resultNumber: accepted.length + 1 }
+      const publicCandidate = publicTraceSearchResults([...accepted, numberedCandidate])
+      if (estimateTokens(JSON.stringify(publicCandidate)) > QUERYLESS_OUTPUT_TOKEN_LIMIT && accepted.length > 0) {
+        tokenBudgetStopped = true
+        break
+      }
+      accepted.push(numberedCandidate)
+    }
+    if (rawResults.length > accepted.length) {
+      warnings.push(
+        tokenBudgetStopped
+          ? `Queryless browse stopped early near the ${QUERYLESS_OUTPUT_TOKEN_LIMIT} token output budget. Narrow with conversationLimit, perConversationLimit, role, dates, title, or offset.`
+          : `Queryless browse is capped at ${QUERYLESS_RESULT_UNIT_LIMIT} result units. Narrow with conversationLimit, perConversationLimit, role, dates, title, or offset.`,
+      )
+    }
+    this.rememberSearchRefs(projectId, currentConversationId, accepted.map((result) => result.inspectArgs))
+    const publicResults = publicTraceSearchResults(accepted)
+    const text = JSON.stringify(publicResults)
+    return {
+      results: publicResults,
+      totalMatches: publicResults.length,
+      truncation: truncationFor(text, resolved.charLimit),
+      appliedFilters: {
+        operation: "search",
+        scope: resolved.scope,
+        mode: resolved.mode,
+        ...(resolved.scope === "project" && !resolved.conversationLimitProvided ? {} : { conversationLimit: resolved.conversationLimit }),
+        ...(resolved.conversationOffset ? { conversationOffset: resolved.conversationOffset } : {}),
+        perConversationLimit: resolved.perConversationLimit,
+        ...(resolved.conversationTitle ? { conversationTitle: resolved.conversationTitle } : {}),
+        ...(resolved.conversationId ? { conversationId: resolved.conversationId } : {}),
+        conversationIds: resolved.conversationIds,
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.entryType ? { entryType: input.entryType } : {}),
+        ...(input.hasAttachment !== undefined ? { hasAttachment: input.hasAttachment } : {}),
+        ...(resolved.createdAfter ? { createdAfter: resolved.createdAfter } : {}),
+        ...(resolved.createdBefore ? { createdBefore: resolved.createdBefore } : {}),
+        ...(resolved.updatedAfter ? { updatedAfter: resolved.updatedAfter } : {}),
+        ...(resolved.updatedBefore ? { updatedBefore: resolved.updatedBefore } : {}),
+      },
+      warnings: warnings.length > 0 ? warnings : undefined,
+    }
+  }
+
+  private querylessBrowseQaPairs(
+    projectId: string,
+    currentConversationId: string,
+    conversationIds: string[],
+    input: TraceRetrieveSearchInput,
+    resolved: { perConversationLimit: number; createdAfter: string | undefined; createdBefore: string | undefined },
+  ): InternalTraceSearchResult[] {
+    const results: InternalTraceSearchResult[] = []
+    for (const conversationId of conversationIds) {
+      const conversation = this.conversationProvenance(projectId, currentConversationId, conversationId)
+      const rows = this.selectConversationTurnsForBrowse(projectId, conversationId, input, resolved)
+      for (const row of rows) {
+        results.push({
+          entryType: "qa_pair",
+          conversationTitle: conversation.title ?? "Untitled conversation",
+          conversationId,
+          turnNo: row.turnNo,
+          turnId: row.turnId,
+          ...(row.userMessageId ? { userMessageId: row.userMessageId } : {}),
+          ...(row.assistantMessageId ? { assistantMessageId: row.assistantMessageId } : {}),
+          ...(row.userText ? { userText: truncateText(row.userText, input.charLimit ?? DEFAULT_CHAR_LIMIT).text } : {}),
+          ...(row.assistantText ? { assistantText: truncateText(row.assistantText, input.charLimit ?? DEFAULT_CHAR_LIMIT).text } : {}),
+          startedAt: row.startedAt,
+          completedAt: row.completedAt,
+          inspectArgs: { operation: "inspect", turnId: row.turnId },
+          rank: 0,
+          createdAt: row.startedAt,
+        })
+      }
+    }
+    return results
+  }
+
+  private querylessBrowseMessages(
+    projectId: string,
+    currentConversationId: string,
+    conversationIds: string[],
+    role: "user" | "assistant",
+    input: TraceRetrieveSearchInput,
+    resolved: { perConversationLimit: number; createdAfter: string | undefined; createdBefore: string | undefined },
+  ): InternalTraceSearchResult[] {
+    const results: InternalTraceSearchResult[] = []
+    for (const conversationId of conversationIds) {
+      const rows = this.selectConversationTurnsForBrowse(projectId, conversationId, input, resolved)
+      for (const row of rows) {
+        const message =
+          role === "user"
+            ? row.userMessageId && row.userText
+              ? { id: row.userMessageId, content: row.userText, createdAt: row.startedAt }
+              : undefined
+            : row.assistantMessageId && row.assistantText
+              ? { id: row.assistantMessageId, content: row.assistantText, createdAt: row.completedAt ?? row.startedAt }
+              : undefined
+        if (!message) {
+          continue
+        }
+        results.push(
+          this.searchResultFromRawMessage(
+            projectId,
+            currentConversationId,
+            input,
+            {
+              id: message.id,
+              conversationId,
+              sessionId: "",
+              turnId: row.turnId,
+              role,
+              content: message.content,
+              status: "completed",
+              createdAt: message.createdAt,
+              completedAt: message.createdAt,
+            },
+            row.turnNo,
+          ),
+        )
+      }
+    }
+    return results
+  }
+
+  private selectConversationTurnsForBrowse(
+    projectId: string,
+    conversationId: string,
+    input: TraceRetrieveSearchInput,
+    resolved: { perConversationLimit: number; createdAfter: string | undefined; createdBefore: string | undefined },
+  ): Array<{
+    turnId: string
+    turnNo: number
+    startedAt: string
+    completedAt: string | null
+    userMessageId: string | null
+    assistantMessageId: string | null
+    userText: string | null
+    assistantText: string | null
+  }> {
+    if (input.entryType && !["qa_pair", "user_query", "assistant_response"].includes(input.entryType)) {
+      return []
+    }
+    const params: unknown[] = [projectId, conversationId]
+    const where = [
+      "c.project_id = ?",
+      "c.status IN ('active', 'archived')",
+      "t.conversation_id = ?",
+      "t.user_message_id IS NOT NULL",
+    ]
+    const outerWhere: string[] = []
+    if (resolved.createdAfter) {
+      outerWhere.push("ordered.startedAt >= ?")
+      params.push(resolved.createdAfter)
+    }
+    if (resolved.createdBefore) {
+      outerWhere.push("ordered.startedAt <= ?")
+      params.push(resolved.createdBefore)
+    }
+    if (input.hasAttachment === true) {
+      outerWhere.push(
+        `EXISTS (
+          SELECT 1 FROM message_attachments ma
+          WHERE ma.status = 'attached' AND ma.turn_id = ordered.turnId
+        )`,
+      )
+    } else if (input.hasAttachment === false) {
+      outerWhere.push(
+        `NOT EXISTS (
+          SELECT 1 FROM message_attachments ma
+          WHERE ma.status = 'attached' AND ma.turn_id = ordered.turnId
+        )`,
+      )
+    }
+    params.push(resolved.perConversationLimit)
+    return this.handle.sqlite
+      .prepare(
+        `WITH ordered AS (
+           SELECT
+             t.id AS turnId,
+             t.started_at AS startedAt,
+             t.completed_at AS completedAt,
+             t.user_message_id AS userMessageId,
+             t.assistant_message_id AS assistantMessageId,
+             ROW_NUMBER() OVER (ORDER BY t.started_at ASC, t.id ASC) AS turnNo
+           FROM turns t
+           INNER JOIN conversations c ON c.id = t.conversation_id
+           WHERE ${where.join(" AND ")}
+         )
+         SELECT
+           ordered.turnId,
+           ordered.turnNo,
+           ordered.startedAt,
+           ordered.completedAt,
+           ordered.userMessageId,
+           ordered.assistantMessageId,
+           um.content AS userText,
+           am.content AS assistantText
+         FROM ordered
+         LEFT JOIN messages um ON um.id = ordered.userMessageId
+         LEFT JOIN messages am ON am.id = ordered.assistantMessageId
+         ${outerWhere.length > 0 ? `WHERE ${outerWhere.join(" AND ")}` : ""}
+         ORDER BY ordered.startedAt DESC, ordered.turnId DESC
+         LIMIT ?`,
+      )
+      .all(...params) as Array<{
+      turnId: string
+      turnNo: number
+      startedAt: string
+      completedAt: string | null
+      userMessageId: string | null
+      assistantMessageId: string | null
+      userText: string | null
+      assistantText: string | null
+    }>
   }
 
   private inspect(
@@ -693,6 +1038,7 @@ export class TraceStore extends StoreBase {
       currentConversationId,
       "current_conversation",
       DEFAULT_CONVERSATION_LIMIT,
+      {},
     )
     const rows = this.searchTraceDocuments(projectId, {
       query,
@@ -721,10 +1067,14 @@ export class TraceStore extends StoreBase {
       scope: TraceRetrieveScope
       mode: TraceRetrieveMode
       conversationLimit: number
+      conversationOffset: number
+      conversationLimitProvided: boolean
       conversationTitle: string | undefined
       conversationId: string | undefined
       charLimit: number
       include: TraceRetrieveInclude[] | undefined
+      updatedAfter: string | undefined
+      updatedBefore: string | undefined
       warnings: string[]
     },
   ): TraceRetrieveToolOutput {
@@ -736,6 +1086,9 @@ export class TraceStore extends StoreBase {
       resolved.conversationLimit,
       resolved.conversationTitle,
       resolved.conversationId,
+      resolved.conversationOffset,
+      resolved.updatedAfter,
+      resolved.updatedBefore,
     )
     warnings.push(...conversationResolution.warnings)
     const conversationIds = conversationResolution.conversationIds
@@ -778,12 +1131,15 @@ export class TraceStore extends StoreBase {
         operation: "search",
         scope: resolved.scope,
         mode: resolved.mode,
-        conversationLimit: resolved.conversationLimit,
+        ...(resolved.scope === "project" && !resolved.conversationLimitProvided ? {} : { conversationLimit: resolved.conversationLimit }),
+        ...(resolved.conversationOffset ? { conversationOffset: resolved.conversationOffset } : {}),
         ...(resolved.conversationTitle ? { conversationTitle: resolved.conversationTitle } : {}),
         ...(resolved.conversationId ? { conversationId: resolved.conversationId } : {}),
         conversationIds,
         turnNo: input.turnNo as number,
         ...(input.role ? { role: input.role } : {}),
+        ...(resolved.updatedAfter ? { updatedAfter: resolved.updatedAfter } : {}),
+        ...(resolved.updatedBefore ? { updatedBefore: resolved.updatedBefore } : {}),
         ...(resolved.include ? { include: resolved.include } : {}),
       },
       warnings: warnings.length > 0 ? warnings : undefined,
@@ -1080,43 +1436,102 @@ export class TraceStore extends StoreBase {
     currentConversationId: string,
     scope: TraceRetrieveScope,
     conversationLimit: number,
-    conversationTitle?: string,
-    conversationId?: string,
+    options: ResolveConversationOptions = {},
   ): string[] {
-    if (conversationId) {
-      return this.isVisibleConversation(projectId, conversationId) ? [conversationId] : []
+    const conversationOffset = options.conversationOffset ?? 0
+    const dateWhere: string[] = []
+    const dateParams: unknown[] = []
+    if (options.updatedAfter) {
+      dateWhere.push("updated_at >= ?")
+      dateParams.push(options.updatedAfter)
     }
-    if (conversationTitle) {
-      return this.resolveConversationIdsByTitle(projectId, currentConversationId, conversationTitle)
+    if (options.updatedBefore) {
+      dateWhere.push("updated_at <= ?")
+      dateParams.push(options.updatedBefore)
+    }
+    if (options.conversationId) {
+      const row = this.handle.sqlite
+        .prepare(
+          `SELECT id
+           FROM conversations
+           WHERE project_id = ?
+             AND id = ?
+             AND status IN ('active', 'archived')
+             ${dateWhere.length > 0 ? `AND ${dateWhere.join(" AND ")}` : ""}
+           LIMIT 1`,
+        )
+        .get(projectId, options.conversationId, ...dateParams) as { id: string } | undefined
+      return row ? [row.id] : []
+    }
+    if (options.conversationTitle) {
+      return this.resolveConversationIdsByTitle(projectId, currentConversationId, options.conversationTitle, {
+        conversationLimit,
+        conversationOffset,
+        ...(options.conversationLimitProvided !== undefined ? { conversationLimitProvided: options.conversationLimitProvided } : {}),
+        ...(options.updatedAfter ? { updatedAfter: options.updatedAfter } : {}),
+        ...(options.updatedBefore ? { updatedBefore: options.updatedBefore } : {}),
+      })
     }
     if (scope === "current_conversation") {
       return this.isVisibleConversation(projectId, currentConversationId) ? [currentConversationId] : []
     }
-    const rows = this.handle.db
-      .select({ id: conversations.id })
-      .from(conversations)
-      .where(and(eq(conversations.projectId, projectId), inArray(conversations.status, [...VISIBLE_CONVERSATION_STATUSES])))
-      .orderBy(desc(conversations.updatedAt))
-      .limit(scope === "recent_conversations" ? conversationLimit : Math.max(conversationLimit, DEFAULT_CONVERSATION_LIMIT))
-      .all()
-    return rows.map((row) => row.id).filter((id) => id !== currentConversationId)
+    const params: unknown[] = [projectId, currentConversationId, ...dateParams]
+    const limitSql = scope === "recent_conversations" || options.conversationLimitProvided ? " LIMIT ?" : ""
+    const offsetSql = conversationOffset > 0 ? " OFFSET ?" : ""
+    if (limitSql) {
+      params.push(conversationLimit)
+    }
+    if (conversationOffset > 0) {
+      params.push(conversationOffset)
+    }
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT id
+         FROM conversations
+         WHERE project_id = ?
+           AND status IN ('active', 'archived')
+           AND id != ?
+           ${dateWhere.length > 0 ? `AND ${dateWhere.join(" AND ")}` : ""}
+         ORDER BY updated_at DESC, id DESC${limitSql}${offsetSql}`,
+      )
+      .all(...params) as Array<{ id: string }>
+    return rows.map((row) => row.id)
   }
 
-  private resolveConversationIdsByTitle(projectId: string, currentConversationId: string, conversationTitle: string): string[] {
+  private resolveConversationIdsByTitle(
+    projectId: string,
+    currentConversationId: string,
+    conversationTitle: string,
+    options: ResolveConversationOptions & { conversationLimit: number } = { conversationLimit: DEFAULT_CONVERSATION_LIMIT },
+  ): string[] {
     const needle = normalizeConversationTitle(conversationTitle)
     if (!needle) {
       return []
     }
+    const dateWhere: string[] = []
+    const params: unknown[] = [projectId]
+    if (options.updatedAfter) {
+      dateWhere.push("updated_at >= ?")
+      params.push(options.updatedAfter)
+    }
+    if (options.updatedBefore) {
+      dateWhere.push("updated_at <= ?")
+      params.push(options.updatedBefore)
+    }
+    params.push(500)
     const rows = this.handle.sqlite
       .prepare(
         `SELECT id, title
          FROM conversations
          WHERE project_id = ?
            AND status IN ('active', 'archived')
+           ${dateWhere.length > 0 ? `AND ${dateWhere.join(" AND ")}` : ""}
          ORDER BY updated_at DESC
          LIMIT ?`,
       )
-      .all(projectId, 200) as Array<{ id: string; title: string | null }>
+      .all(...params) as Array<{ id: string; title: string | null }>
+    const conversationOffset = options.conversationOffset ?? 0
+    const rankedLimit = options.conversationLimitProvided ? options.conversationLimit : DEFAULT_CONVERSATION_LIMIT
     const ranked = rows
       .map((row) => ({ row, normalizedTitle: normalizeConversationTitle(row.title ?? "") }))
       .filter(({ row, normalizedTitle }) => row.id !== currentConversationId && normalizedTitle)
@@ -1133,7 +1548,7 @@ export class TraceStore extends StoreBase {
         return []
       })
       .sort((left, right) => left.rank - right.rank)
-      .slice(0, DEFAULT_CONVERSATION_LIMIT)
+      .slice(conversationOffset, conversationOffset + rankedLimit)
     return ranked.map(({ row }) => row.id)
   }
 
@@ -1144,9 +1559,19 @@ export class TraceStore extends StoreBase {
     conversationLimit: number,
     conversationTitle?: string,
     conversationId?: string,
+    conversationOffset?: number,
+    updatedAfter?: string,
+    updatedBefore?: string,
   ): { conversationIds: string[]; warnings: string[] } {
     return {
-      conversationIds: this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, conversationTitle, conversationId),
+      conversationIds: this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, {
+        ...(conversationTitle ? { conversationTitle } : {}),
+        ...(conversationId ? { conversationId } : {}),
+        ...(conversationOffset !== undefined ? { conversationOffset } : {}),
+        conversationLimitProvided: conversationLimit !== DEFAULT_CONVERSATION_LIMIT,
+        ...(updatedAfter ? { updatedAfter } : {}),
+        ...(updatedBefore ? { updatedBefore } : {}),
+      }),
       warnings: [],
     }
   }
@@ -2216,7 +2641,7 @@ const appendProvenanceWarnings = (warnings: string[], results: InternalTraceSear
   if (results.length === 0) {
     return
   }
-  const provenanceKinds = new Set(results.map((result) => result.provenanceKind).filter(Boolean))
+  const provenanceKinds = new Set(results.map((result) => ("provenanceKind" in result ? result.provenanceKind : undefined)).filter(Boolean))
   const hasOriginalEvidence = provenanceKinds.has("original_turn") || provenanceKinds.has("attachment_origin")
   if (!hasOriginalEvidence) {
     warnings.push(
@@ -2254,7 +2679,7 @@ const memoryRank = (row: SearchRow, input: TraceRankInput): number =>
 const entryTypeForTraceDocument = (
   row: Pick<TraceDocumentRow, "sourceKind" | "sourceTable">,
   messageRole: "user" | "assistant" | "system" | "tool" | "developer" | undefined,
-): TraceRetrieveEntryType => {
+): TraceMessageEntryType => {
   if (row.sourceTable === "messages") {
     if (messageRole === "user") return "user_query"
     if (messageRole === "assistant") return "assistant_response"
@@ -2269,6 +2694,7 @@ const entryTypeForTraceDocument = (
 }
 
 const entryTypeWeight = (entryType: TraceRetrieveEntryType): number => {
+  if (entryType === "qa_pair") return 0
   if (entryType === "user_query" || entryType === "assistant_response") return 0
   if (entryType === "continuation_summary") return 1
   return 2

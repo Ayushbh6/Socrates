@@ -313,6 +313,40 @@ describe("workspace tools", () => {
     expect(result.warnings).toBeUndefined()
   })
 
+  it("allows reading PROJECT_NOTES.md but rejects generic edits to it", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, ".socrates"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "old note\n")
+
+    const read = await readWorkspacePath({ path: ".socrates/PROJECT_NOTES.md" }, { workspacePath })
+
+    expect(read.content).toBe("old note\n")
+    await expect(
+      editWorkspace({ path: ".socrates/PROJECT_NOTES.md", oldString: "old", newString: "new" }, { workspacePath }),
+    ).rejects.toMatchObject({
+      code: "project_notes_dedicated_tool_required",
+      message: expect.stringContaining("project_notes"),
+      recoverable: true,
+    })
+    await expect(
+      editWorkspace({ path: ".socrates/PROJECT_NOTES.md", content: "new note\n", overwrite: true }, { workspacePath }),
+    ).rejects.toMatchObject({
+      code: "project_notes_dedicated_tool_required",
+      message: expect.stringContaining("PROJECT_NOTES.md can only be edited through the project_notes tool"),
+    })
+    expect(fs.readFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "utf8")).toBe("old note\n")
+  })
+
+  it("rejects generic creation of PROJECT_NOTES.md through edit", async () => {
+    const workspacePath = tempDir()
+
+    await expect(editWorkspace({ path: ".socrates/PROJECT_NOTES.md", content: "new note\n" }, { workspacePath })).rejects.toMatchObject({
+      code: "project_notes_dedicated_tool_required",
+      recoverable: true,
+    })
+    expect(fs.existsSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"))).toBe(false)
+  })
+
   it("searches files and text inside the workspace", async () => {
     const workspacePath = tempDir()
     fs.mkdirSync(path.join(workspacePath, "src"))
@@ -564,6 +598,50 @@ describe("workspace tools", () => {
       verification: "verified",
     })
     expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it.each([
+    [
+      "create",
+      ["*** Begin Patch", "*** Add File: .socrates/PROJECT_NOTES.md", "+new note", "*** End Patch", ""].join("\n"),
+    ],
+    [
+      "update",
+      ["*** Begin Patch", "*** Update File: .socrates/PROJECT_NOTES.md", "@@", "-old note", "+new note", "*** End Patch", ""].join("\n"),
+    ],
+    ["delete", ["*** Begin Patch", "*** Delete File: .socrates/PROJECT_NOTES.md", "*** End Patch", ""].join("\n")],
+    [
+      "rename from",
+      [
+        "*** Begin Patch",
+        "*** Update File: .socrates/PROJECT_NOTES.md",
+        "*** Move to: notes-copy.md",
+        "*** End Patch",
+        "",
+      ].join("\n"),
+    ],
+    [
+      "rename to",
+      [
+        "*** Begin Patch",
+        "*** Update File: notes-copy.md",
+        "*** Move to: .socrates/PROJECT_NOTES.md",
+        "*** End Patch",
+        "",
+      ].join("\n"),
+    ],
+  ])("rejects apply_patch %s operations involving PROJECT_NOTES.md", async (_caseName, patch) => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, ".socrates"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "old note\n")
+    fs.writeFileSync(path.join(workspacePath, "notes-copy.md"), "copy note\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
+      code: "project_notes_dedicated_tool_required",
+      message: expect.stringContaining("project_notes"),
+      recoverable: true,
+    })
+    expect(fs.readFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "utf8")).toBe("old note\n")
   })
 
   it("applies and verifies delete patches", async () => {

@@ -2,7 +2,15 @@ import fs from "node:fs"
 import path from "node:path"
 import type { EditToolInput, EditToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
-import { clampCharLimit, ensureParentDirectory, isSensitivePath, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
+import {
+  assertNotProjectNotesMutation,
+  clampCharLimit,
+  ensureParentDirectory,
+  isSensitivePath,
+  resolveWorkspacePath,
+  toWorkspaceRelativePath,
+  truncateText,
+} from "./common"
 import type { FileFreshnessTracker } from "./fileFreshness"
 import { countLines, hashText, readFileSnapshot, type FileSnapshot } from "./fileMetadata"
 import { withWorkspaceMutationLock } from "./mutationLock"
@@ -35,6 +43,7 @@ const editWorkspaceLocked = async (
 ): Promise<EditToolOutput> => {
   const dryRun = input.dryRun ?? false
   const absolutePath = resolveWorkspacePath(context.workspacePath, input.path)
+  assertNotProjectNotesMutation(context.workspacePath, absolutePath, input.path)
   if (isSensitivePath(absolutePath)) {
     throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
       details: { path: input.path },

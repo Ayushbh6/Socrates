@@ -10,11 +10,15 @@ import type {
   McpRegistryToolInput,
   McpRegistryToolOutput,
   ModelToolDefinition,
+  ProjectNotesToolInput,
+  ProjectNotesToolOutput,
   ReadToolInput,
   ReadToolOutput,
   RuntimeConfig,
   SearchToolInput,
   SearchToolOutput,
+  SocratesMemoryToolInput,
+  SocratesMemoryToolOutput,
   ToolName,
   ToolPermission,
   TraceRetrieveToolInput,
@@ -47,6 +51,8 @@ export type ToolExecutors = {
   apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
+  socrates_memory: (input: SocratesMemoryToolInput, context: ToolExecutorContext) => Promise<SocratesMemoryToolOutput>
+  project_notes: (input: ProjectNotesToolInput, context: ToolExecutorContext) => Promise<ProjectNotesToolOutput>
   list_project_resources: (
     input: ListProjectResourcesToolInput,
     context: ToolExecutorContext,

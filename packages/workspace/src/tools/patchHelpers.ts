@@ -1,7 +1,14 @@
 import { spawn } from "node:child_process"
 import type { ApplyPatchToolInput, EditToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
-import { clampCharLimit, isSensitivePath, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
+import {
+  assertNotProjectNotesMutation,
+  clampCharLimit,
+  isSensitivePath,
+  resolveWorkspacePath,
+  toWorkspaceRelativePath,
+  truncateText,
+} from "./common"
 import type { FileFreshnessTracker } from "./fileFreshness"
 import { readFileSnapshot, type FileSnapshot } from "./fileMetadata"
 import { withWorkspaceMutationLock } from "./mutationLock"
@@ -843,6 +850,7 @@ const validatePatch = (changes: PatchFileChange[], workspacePath: string): void 
   for (const change of changes) {
     for (const patchPath of snapshotPaths(change)) {
       const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
+      assertNotProjectNotesMutation(workspacePath, absolutePath, patchPath)
       if (isSensitivePath(absolutePath)) {
         throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
           details: { path: patchPath },

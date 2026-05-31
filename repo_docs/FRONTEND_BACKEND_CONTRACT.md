@@ -1689,6 +1689,7 @@ Rules:
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
+- Generic `edit` writes to `<workspace>/.socrates/PROJECT_NOTES.md` are rejected with recoverable `project_notes_dedicated_tool_required`; that file remains readable through normal read/search, but mutations must use the dedicated `project_notes` tool.
 
 ### `apply_patch`
 
@@ -1713,6 +1714,7 @@ Rules:
 - Existing-file update, delete, and rename operations require a prior active-turn `read` of the source path. New-file creation does not require a prior read. After a successful patch, another mutation to the same existing path must re-read first.
 - Common structured patch prefix mistakes may be normalized with warnings, but malformed unified diff hunk counts and unsafe structured patch grammar errors must fail before applying with recoverable, corrective messages that steer the model back to structured `patchText`.
 - Non-dry-run patches must verify disk after applying and return the same verified metadata shape as `edit`. Deleted files verify by being absent; renamed files verify that the old path is absent and the new path exists.
+- Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/PROJECT_NOTES.md` is rejected with recoverable `project_notes_dedicated_tool_required`; the model should retry with `project_notes.patch`.
 - File mutations are serialized with `edit`.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
