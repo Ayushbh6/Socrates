@@ -395,6 +395,88 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(seenMessages.at(-1))).not.toContain(started[0]?.toolCallId)
   })
 
+  it("keeps trace retrieval ids model-visible and returns cached warnings for duplicate trace searches", async () => {
+    const seenMessages: unknown[] = []
+    let calls = 0
+    let traceExecutions = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seenMessages.push(request.messages)
+        calls += 1
+        if (calls <= 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: `trace_call_${calls}`,
+              toolName: "trace_retrieve",
+              input: { operation: "search", mode: "exact", query: "staleness guard", conversationTitle: "apply patch fix", limit: 10 },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Found it." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.trace_retrieve = async () => {
+      traceExecutions += 1
+      return {
+        results: [
+          {
+            resultNumber: 1,
+            text: "The staleness guard caught it cold.",
+            entryType: "assistant_response",
+            conversationTitle: "apply patch fix",
+            conversationId: "conv_source",
+            messageId: "msg_assistant_3",
+            messageNo: 3,
+            provenanceKind: "original_turn",
+            pairedUserMessageNo: 3,
+            pairedUserPreview: "ok i have modified the tool exactly for your two concerns",
+          },
+        ],
+        totalMatches: 1,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
+        appliedFilters: { operation: "search", scope: "recent_conversations", mode: "exact", conversationTitle: "apply patch fix" },
+      }
+    }
+
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_live",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Find this old quote" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    expect(traceExecutions).toBe(1)
+    expect(streamed.filter((event) => event.type === "tool.call.completed")).toHaveLength(2)
+    const finalRequest = JSON.stringify(seenMessages.at(-1))
+    expect(finalRequest).toContain("conv_source")
+    expect(finalRequest).toContain("msg_assistant_3")
+    expect(finalRequest).toContain("Identical trace_retrieve input already ran earlier in this turn")
+  })
+
   it("omits tools from the final no-tools call after the per-turn tool budget is exhausted", async () => {
     const countRequests: CountedRequest[] = []
     const streamRequests: ModelRequestLike[] = []

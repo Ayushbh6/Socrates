@@ -1100,7 +1100,7 @@ describe("context compaction persistence", () => {
         scope: "current_conversation",
         include: ["summaries"],
       })
-      expect(search.results.some((result) => result.entryType === "continuation_summary" && result.text.includes("beta decision"))).toBe(true)
+      expect(search.results.some((result) => result.entryType === "continuation_summary" && "text" in result && result.text.includes("beta decision"))).toBe(true)
     } finally {
       await store.close()
     }
@@ -2268,7 +2268,7 @@ describe("WebSocket API", () => {
           scope: "current_conversation",
           include: ["messages"],
         })
-        expect(search.results.some((result) => result.entryType === "user_query" && result.text.includes("Canonical rubric"))).toBe(true)
+        expect(search.results.some((result) => result.entryType === "user_query" && "text" in result && result.text.includes("Canonical rubric"))).toBe(true)
       } finally {
         await store.close()
       }
@@ -2421,7 +2421,7 @@ describe("WebSocket API", () => {
       "Visible assistant reply.",
       new Date(Date.now() - 2_000).toISOString(),
     )
-    const sourceToolCallId = createId("tool")
+    const sourceToolCallId = createId("tcall")
     const now = nowIso()
     handle.sqlite
       .prepare(
@@ -2640,12 +2640,35 @@ describe("WebSocket API", () => {
       const sourceSession = insertTestSession(handle.sqlite, project.id, source.id)
       insertCompletedTestTurn(handle.sqlite, source.id, sourceSession, "Earlier prompt one.", "Earlier answer one.", new Date(Date.now() - 5_000).toISOString())
       insertCompletedTestTurn(handle.sqlite, source.id, sourceSession, "Earlier prompt two.", "Earlier answer two.", new Date(Date.now() - 4_000).toISOString())
+      const stalenessQuote =
+        "The staleness guard caught it cold. Patch B was rejected with a clear error: the expected hash was the pre-patch-A hash, but the file on disk now has patch A's hash. No silent corruption."
+      const investigativeAssistantText = [
+        "Let me set up both tests. First, let me read the current state of the test file and create a reliable anchor for the concurrent-edit simulation.",
+        "context above 1",
+        "context above 2",
+        "context above 3",
+        "context above 4",
+        "context above 5",
+        "context above 6",
+        "context above 7",
+        "context above 8",
+        `**Test A: PASSED.** ${stalenessQuote}`,
+        "context below 1",
+        "context below 2",
+        "context below 3",
+        "context below 4",
+        "context below 5",
+        "context below 6",
+        "context below 7",
+        "context below 8",
+        "Test B: Partial failure error diagnostics. Now let me apply a 3-hunk patch where hunk 2 has a deliberately wrong anchor. I need to re-read first.",
+      ].join("\n")
       const target = insertCompletedTestTurn(
         handle.sqlite,
         source.id,
         sourceSession,
         "ok i have modified the tool exactly for your two concerns, can you maybe run a quick check and tell me if you feell its good now?",
-        "Let me set up both tests. First, let me read the current state of the test file and create a reliable anchor for the concurrent-edit simulation.\n\nTest B: Partial failure error diagnostics. Now let me apply a 3-hunk patch where hunk 2 has a deliberately wrong anchor. I need to re-read first.",
+        investigativeAssistantText,
         new Date(Date.now() - 3_000).toISOString(),
       )
       const liveSession = insertTestSession(handle.sqlite, project.id, live.id)
@@ -2681,7 +2704,24 @@ describe("WebSocket API", () => {
       expect(search.results[0]?.provenanceKind).toBe("original_turn")
       expect(search.results[0]?.pairedUserMessageNo).toBe(3)
       expect(search.results[0]?.pairedUserPreview).toContain("ok i have modified the tool")
-      expect(search.results[0]?.text).toContain("Test B: Partial failure error diagnostics")
+      const firstSearchResult = search.results[0]
+      expect(firstSearchResult && "text" in firstSearchResult ? firstSearchResult.text : "").toContain("Test B: Partial failure error diagnostics")
+
+      const stalenessSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: stalenessQuote,
+        scope: "recent_conversations",
+        conversationLimit: 20,
+        mode: "exact",
+        entryType: "assistant_response",
+        limit: 5,
+      })
+      expect(stalenessSearch.results[0]?.messageId).toBe(target.assistantMessageId)
+      const stalenessText = stalenessSearch.results[0] && "text" in stalenessSearch.results[0] ? stalenessSearch.results[0].text : ""
+      expect(stalenessText).toContain(stalenessQuote)
+      expect(stalenessText).toContain("context above 1")
+      expect(stalenessText).toContain("context above 8")
+      expect(stalenessText).toContain("context below 1")
+      expect(stalenessText).toContain("context below 8")
 
       const inspectByResult = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", resultNumber: 1 })
       expect(inspectByResult.results[0]?.entryType).toBe("assistant_response")
@@ -2700,7 +2740,7 @@ describe("WebSocket API", () => {
             mime_type, size_bytes, uri, status, created_at, updated_at, metadata_json
           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'image', 'attached-proof.png', 'image/png', 12, '.socrates/attachments/attached-proof.png', 'attached', ?, ?, '{}')`,
         )
-        .run(createId("matt"), project.id, source.id, sourceSession, target.turnId, target.userMessageId, createId("art"), nowIso(), nowIso())
+        .run(createId("att"), project.id, source.id, sourceSession, target.turnId, target.userMessageId, createId("art"), nowIso(), nowIso())
       store.indexTurnTraceDocuments(project.id, source.id, target.turnId)
 
       const assistantRoleSearch = await store.retrieveToolTraces(project.id, live.id, {

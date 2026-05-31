@@ -93,6 +93,7 @@ export class SocratesAgent {
     let usedToolCalls = 0
     let confirmedToolErrors = 0
     let forceFinalNoTools = false
+    const duplicateTraceRetrieveResults = new Map<string, unknown>()
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
@@ -258,6 +259,7 @@ export class SocratesAgent {
         },
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,
         maxParallelToolCalls,
+        duplicateTraceRetrieveResults,
       })
 
       for await (const event of batch.events) {
@@ -305,6 +307,7 @@ export class SocratesAgent {
     context: ToolRuntimeContext
     remainingBudget: number
     maxParallelToolCalls: number
+    duplicateTraceRetrieveResults: Map<string, unknown>
   }): { events: AsyncIterable<ToolLifecycleEvent>; done: Promise<{ results: ToolExecutionResult[]; countedToolCalls: number; budgetExhausted: boolean }> } {
     const queue = new AsyncEventQueue<ToolLifecycleEvent>()
     const done = (async () => {
@@ -336,14 +339,16 @@ export class SocratesAgent {
 
       for (let index = 0; index < parallel.length; index += input.maxParallelToolCalls) {
         const chunk = parallel.slice(index, index + input.maxParallelToolCalls)
-        const chunkResults = await Promise.all(chunk.map((toolCall) => this.executeOneToolCall(toolCall, input.context, queue)))
+        const chunkResults = await Promise.all(
+          chunk.map((toolCall) => this.executeOneToolCall(toolCall, input.context, queue, input.duplicateTraceRetrieveResults)),
+        )
         for (const result of chunkResults) {
           results.set(result.toolCallId, result)
         }
       }
 
       for (const toolCall of mutation) {
-        const result = await this.executeOneToolCall(toolCall, input.context, queue)
+        const result = await this.executeOneToolCall(toolCall, input.context, queue, input.duplicateTraceRetrieveResults)
         results.set(result.toolCallId, result)
       }
 
@@ -365,6 +370,7 @@ export class SocratesAgent {
     toolCall: NormalizedToolCall,
     context: ToolRuntimeContext,
     queue: AsyncEventQueue<ToolLifecycleEvent>,
+    duplicateTraceRetrieveResults: Map<string, unknown>,
   ): Promise<ToolExecutionResult> {
     const startedAt = Date.now()
     const tool = this.toolRegistry.get(toolCall.toolName)
@@ -400,6 +406,48 @@ export class SocratesAgent {
         stepIndex: context.stepIndex,
       })
       return toolErrorResult(toolCall, error)
+    }
+
+    const duplicateTraceRetrieveKey = tool.name === "trace_retrieve" ? stableToolInputKey(tool.name, parsed.data) : undefined
+    if (duplicateTraceRetrieveKey) {
+      const duplicateOutput = duplicateTraceRetrieveResults.get(duplicateTraceRetrieveKey)
+      if (duplicateOutput !== undefined) {
+        const output = addDuplicateTraceRetrieveWarning(duplicateOutput)
+        const parsedOutput = tool.resultSchema.parse(output)
+        queue.push({
+          type: "tool.call.started",
+          toolCallId: toolCall.toolCallId,
+          providerToolCallId: toolCall.providerToolCallId,
+          toolName: tool.name,
+          category: tool.category,
+          displayName: tool.name,
+          argsPreview: previewJson(parsed.data),
+          input: parsed.data,
+          requiresApproval: false,
+          modelCallId: context.modelCallId,
+          stepIndex: context.stepIndex,
+        })
+        queue.push({
+          type: "tool.call.completed",
+          toolCallId: toolCall.toolCallId,
+          providerToolCallId: toolCall.providerToolCallId,
+          toolName: tool.name,
+          output: parsedOutput,
+          summary: tool.summary(parsedOutput),
+          resultPreview: tool.resultPreview(parsedOutput),
+          ...(tool.metrics ? { metrics: tool.metrics(parsedOutput) } : {}),
+          durationMs: Date.now() - startedAt,
+          modelCallId: context.modelCallId,
+          stepIndex: context.stepIndex,
+        })
+        return {
+          toolCallId: toolCall.toolCallId,
+          providerToolCallId: toolCall.providerToolCallId,
+          toolName: tool.name,
+          ok: true,
+          output: parsedOutput,
+        }
+      }
     }
 
     try {
@@ -466,6 +514,9 @@ export class SocratesAgent {
         throw new SocratesError("invalid_tool_output", "Tool output did not match the schema", {
           details: parsedOutput.error.flatten(),
         })
+      }
+      if (duplicateTraceRetrieveKey) {
+        duplicateTraceRetrieveResults.set(duplicateTraceRetrieveKey, parsedOutput.data)
       }
       queue.push({
         type: "tool.call.completed",
@@ -649,7 +700,7 @@ const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelT
       toolCallId: modelToolCallId,
       toolName: result.toolName,
       ok: true,
-      output: sanitizeModelVisibleValue(result.output),
+      output: sanitizeModelVisibleValue(result.output, { preserveTraceRetrieveIds: result.toolName === "trace_retrieve" }),
     })
   }
   return toolExecutionResultSchema.parse({
@@ -666,9 +717,9 @@ const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelT
   })
 }
 
-const sanitizeModelVisibleValue = (value: unknown): unknown => {
+const sanitizeModelVisibleValue = (value: unknown, options: { preserveTraceRetrieveIds?: boolean } = {}): unknown => {
   if (Array.isArray(value)) {
-    return value.map(sanitizeModelVisibleValue)
+    return value.map((item) => sanitizeModelVisibleValue(item, options))
   }
   if (!value || typeof value !== "object") {
     return value
@@ -676,42 +727,76 @@ const sanitizeModelVisibleValue = (value: unknown): unknown => {
   const record = value as Record<string, unknown>
   const sanitized: Record<string, unknown> = {}
   for (const [key, child] of Object.entries(record)) {
-    if (isRuntimeOwnedModelKey(key)) {
+    if (isRuntimeOwnedModelKey(key, options)) {
       continue
     }
     if (key === "source" && child && typeof child === "object" && "id" in child) {
       continue
     }
-    sanitized[key] = sanitizeModelVisibleValue(child)
+    sanitized[key] = sanitizeModelVisibleValue(child, options)
   }
   return sanitized
 }
 
-const isRuntimeOwnedModelKey = (key: string): boolean =>
-  key === "id" ||
-  key === "ids" ||
-  key === "handle" ||
-  key === "sourceId" ||
-  key === "sourceIds" ||
-  key === "inspectArgs" ||
-  key === "projectId" ||
-  key === "conversationId" ||
-  key === "conversationIds" ||
-  key === "sessionId" ||
-  key === "turnId" ||
-  key === "messageId" ||
-  key === "toolCallId" ||
-  key === "terminalId" ||
-  key === "processId" ||
-  key === "outputSequence" ||
-  key === "nextOutputSequence" ||
-  key === "systemPid" ||
-  key === "serverId" ||
-  key === "configId" ||
-  key === "providerId" ||
-  key === "modelCallId" ||
-  key.endsWith("Id") ||
-  key.endsWith("Ids")
+const isRuntimeOwnedModelKey = (key: string, options: { preserveTraceRetrieveIds?: boolean } = {}): boolean => {
+  if (options.preserveTraceRetrieveIds && (key === "conversationId" || key === "messageId" || key === "toolId")) {
+    return false
+  }
+  return (
+    key === "id" ||
+    key === "ids" ||
+    key === "handle" ||
+    key === "sourceId" ||
+    key === "sourceIds" ||
+    key === "inspectArgs" ||
+    key === "projectId" ||
+    key === "conversationId" ||
+    key === "conversationIds" ||
+    key === "sessionId" ||
+    key === "turnId" ||
+    key === "messageId" ||
+    key === "toolCallId" ||
+    key === "terminalId" ||
+    key === "processId" ||
+    key === "outputSequence" ||
+    key === "nextOutputSequence" ||
+    key === "systemPid" ||
+    key === "serverId" ||
+    key === "configId" ||
+    key === "providerId" ||
+    key === "modelCallId" ||
+    key.endsWith("Id") ||
+    key.endsWith("Ids")
+  )
+}
+
+const addDuplicateTraceRetrieveWarning = (output: unknown): unknown => {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return output
+  }
+  const cloned = JSON.parse(JSON.stringify(output)) as Record<string, unknown>
+  const warnings = Array.isArray(cloned.warnings) ? cloned.warnings.filter((item): item is string => typeof item === "string") : []
+  cloned.warnings = [
+    ...warnings,
+    "Identical trace_retrieve input already ran earlier in this turn; this cached result was returned. Inspect a resultNumber or change the query, filters, or scope instead of repeating the same search.",
+  ]
+  return cloned
+}
+
+const stableToolInputKey = (toolName: string, input: unknown): string => `${toolName}:${stableJsonStringify(input)}`
+
+const stableJsonStringify = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJsonStringify).join(",")}]`
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJsonStringify(child)}`)
+      .join(",")}}`
+  }
+  return JSON.stringify(value) ?? "undefined"
+}
 
 const previewJson = (value: unknown): string => {
   const text = JSON.stringify(value)

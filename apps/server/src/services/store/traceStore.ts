@@ -38,6 +38,9 @@ const DEFAULT_LIMIT = 5
 const DEFAULT_CHAR_LIMIT = 20_000
 const DEFAULT_CONVERSATION_LIMIT = 10
 const DEFAULT_TURN_LIMIT = 20
+const SNIPPET_CONTEXT_LINES = 8
+const SNIPPET_MIN_CHARS = 1_600
+const SNIPPET_MAX_CHARS = 3_200
 const CHUNK_SIZE = 6_000
 const CHUNK_OVERLAP = 300
 const VISIBLE_CONVERSATION_STATUSES = ["active", "archived"] as const
@@ -580,16 +583,24 @@ export class TraceStore extends StoreBase {
   private searchResultFromTraceRow(row: SearchRow, input: TraceRetrieveSearchInput, currentConversationId: string): InternalTraceSearchResult {
     const conversation = row.conversationId ? this.conversationProvenance(row.projectId, currentConversationId, row.conversationId) : undefined
     const turnNo = row.turnId && row.conversationId ? this.findTurnNo(row.projectId, row.conversationId, row.turnId) : undefined
-    const messageRole = row.sourceTable === "messages" ? this.messageRoleForDocument(row) : undefined
-    const messageNo = messageNoForMatchedMessage(turnNo, row.sourceTable === "messages" ? messageRole : undefined)
-    const pairedUser = row.turnId && messageRole === "assistant" && messageNo ? this.pairedUserReference(row.projectId, row.turnId, messageNo, input.query) : undefined
-    const inspectArgs = inspectArgsForSource(row.handle, row.sourceTable, row.sourceId, row.turnId)
+    const documentMessageRole = row.sourceTable === "messages" ? this.messageRoleForDocument(row) : undefined
+    const rawMessage =
+      row.sourceTable === "messages"
+        ? (this.getRawMessage(row.projectId, row.sourceId) ??
+          (row.turnId && (documentMessageRole === "user" || documentMessageRole === "assistant")
+            ? this.findMessageForTurnRole(row.projectId, row.turnId, documentMessageRole)
+            : undefined))
+        : undefined
+    const resolvedMessageRole = row.sourceTable === "messages" ? (documentMessageRole ?? messageRole(rawMessage?.role ?? "")) : undefined
+    const messageNo = messageNoForMatchedMessage(turnNo, row.sourceTable === "messages" ? resolvedMessageRole : undefined)
+    const pairedUser = row.turnId && resolvedMessageRole === "assistant" && messageNo ? this.pairedUserReference(row.projectId, row.turnId, messageNo, input.query) : undefined
+    const inspectArgs = rawMessage ? ({ operation: "inspect" as const, messageId: rawMessage.id } satisfies TraceRetrieveInspectArgs) : inspectArgsForSource(row.handle, row.sourceTable, row.sourceId, row.turnId)
     return {
-      text: makeSnippet(row.content, input.query),
-      entryType: entryTypeForTraceDocument(row, messageRole),
+      text: makeSnippet(rawMessage?.content ?? row.content, input.query),
+      entryType: entryTypeForTraceDocument(row, resolvedMessageRole),
       conversationTitle: conversation?.title ?? "Untitled conversation",
       conversationId: row.conversationId ?? conversation?.id ?? "",
-      ...(row.sourceTable === "messages" ? { messageId: row.sourceId } : {}),
+      ...(row.sourceTable === "messages" ? { messageId: rawMessage?.id ?? row.sourceId } : {}),
       ...(row.sourceTable === "tool_calls" ? { toolId: row.sourceId } : {}),
       ...(messageNo ? { messageNo } : {}),
       provenanceKind: provenanceKindForTraceDocument(row),
@@ -1491,6 +1502,9 @@ export class TraceStore extends StoreBase {
       toolNames: string[] | undefined
       paths: string[] | undefined
       command: string | undefined
+      role: TraceRetrieveRole | undefined
+      entryType: TraceRetrieveEntryType | undefined
+      hasAttachment: boolean | undefined
       createdAfter: string | undefined
       createdBefore: string | undefined
     },
@@ -1957,14 +1971,114 @@ const makeFtsQuery = (query: string): string => {
 }
 
 const makeSnippet = (content: string, query: string | undefined): string => {
-  const terms = query?.toLowerCase().match(/[a-z0-9_./:-]+/g) ?? []
-  const lower = content.toLowerCase()
-  const index = terms.map((term) => lower.indexOf(term)).find((position) => position >= 0) ?? 0
-  const start = Math.max(index - 160, 0)
-  const end = Math.min(start + 420, content.length)
+  const anchor = bestSnippetAnchor(content, query)
+  const lineBounds = snippetLineBounds(content, anchor, SNIPPET_CONTEXT_LINES)
+  let start = lineBounds.start
+  let end = lineBounds.end
+  if (end - start < SNIPPET_MIN_CHARS) {
+    const target = Math.min(SNIPPET_MIN_CHARS, content.length)
+    const center = Math.min(Math.max(anchor, start), end)
+    start = Math.max(0, center - Math.floor(target / 2))
+    end = Math.min(content.length, start + target)
+    start = Math.max(0, end - target)
+  }
+  if (end - start > SNIPPET_MAX_CHARS) {
+    start = Math.max(0, anchor - Math.floor(SNIPPET_MAX_CHARS / 2))
+    end = Math.min(content.length, start + SNIPPET_MAX_CHARS)
+    start = Math.max(0, end - SNIPPET_MAX_CHARS)
+  }
   const prefix = start > 0 ? "..." : ""
   const suffix = end < content.length ? "..." : ""
   return `${prefix}${content.slice(start, end)}${suffix}`
+}
+
+const bestSnippetAnchor = (content: string, query: string | undefined): number => {
+  if (!query) {
+    return 0
+  }
+  const lower = content.toLowerCase()
+  const normalizedQuery = normalizeSnippetText(query)
+  const exactPhrase = normalizedQuery.length >= 8 ? lower.indexOf(normalizedQuery) : -1
+  if (exactPhrase >= 0) {
+    return exactPhrase
+  }
+
+  const terms = query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 2) ?? []
+  if (terms.length === 0) {
+    return 0
+  }
+  const phraseAnchor = bestContiguousPhraseAnchor(lower, terms)
+  if (phraseAnchor >= 0) {
+    return phraseAnchor
+  }
+  const tokenAnchors = terms.map((term) => lower.indexOf(term)).filter((position) => position >= 0)
+  if (tokenAnchors.length === 0) {
+    return 0
+  }
+  const scored = tokenAnchors.map((position) => ({
+    position,
+    score: terms.filter((term) => lower.slice(Math.max(0, position - 400), Math.min(lower.length, position + 1_200)).includes(term)).length,
+  }))
+  scored.sort((left, right) => right.score - left.score || left.position - right.position)
+  return scored[0]?.position ?? 0
+}
+
+const bestContiguousPhraseAnchor = (lowerContent: string, terms: string[]): number => {
+  const maxTerms = Math.min(terms.length, 12)
+  for (let size = maxTerms; size >= 2; size -= 1) {
+    for (let start = 0; start + size <= terms.length; start += 1) {
+      const phrase = terms.slice(start, start + size).join(" ")
+      const index = lowerContent.indexOf(phrase)
+      if (index >= 0) {
+        return index
+      }
+    }
+  }
+  return -1
+}
+
+const normalizeSnippetText = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[—–]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim()
+
+const snippetLineBounds = (content: string, anchor: number, contextLines: number, floor = 0, ceiling = content.length): { start: number; end: number } => {
+  const lineStarts = [0]
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "\n" && index + 1 < content.length) {
+      lineStarts.push(index + 1)
+    }
+  }
+  const boundedAnchor = Math.min(Math.max(anchor, floor), Math.max(floor, ceiling - 1))
+  const lineIndex = Math.max(0, findLineIndex(lineStarts, boundedAnchor))
+  const startLine = Math.max(0, lineIndex - contextLines)
+  const endLine = Math.min(lineStarts.length - 1, lineIndex + contextLines)
+  const start = Math.max(floor, lineStarts[startLine] ?? 0)
+  const end = Math.min(ceiling, endLine + 1 < lineStarts.length ? (lineStarts[endLine + 1] ?? content.length) : content.length)
+  return { start, end }
+}
+
+const findLineIndex = (lineStarts: number[], offset: number): number => {
+  let low = 0
+  let high = lineStarts.length - 1
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    const start = lineStarts[mid] ?? 0
+    const next = lineStarts[mid + 1] ?? Number.POSITIVE_INFINITY
+    if (offset >= start && offset < next) {
+      return mid
+    }
+    if (offset < start) {
+      high = mid - 1
+    } else {
+      low = mid + 1
+    }
+  }
+  return 0
 }
 
 const sourceKindsForInclude = (include: TraceRetrieveInclude[] | undefined): TraceRetrieveSourceKind[] => {
@@ -2128,7 +2242,13 @@ const provenanceQualityWeight = (quality: string | undefined): number => {
   return 5
 }
 
-const memoryRank = (row: SearchRow, input: { query?: string; command: string | undefined; paths: string[] | undefined }): number =>
+type TraceRankInput = {
+  query?: string | undefined
+  command?: string | undefined
+  paths?: string[] | undefined
+}
+
+const memoryRank = (row: SearchRow, input: TraceRankInput): number =>
   provenanceQualityWeight(provenanceQualityForMatchedRow(row)) * 1000 + scoreTraceRow(row, input)
 
 const entryTypeForTraceDocument = (
@@ -2185,7 +2305,7 @@ const inspectArgsForSource = (handle: string, sourceTable: string, sourceId: str
 
 const traceSearchRefKey = (projectId: string, currentConversationId: string): string => `${projectId}:${currentConversationId}`
 
-const scoreTraceRow = (row: SearchRow, input: { query?: string; command: string | undefined; paths: string[] | undefined }): number => {
+const scoreTraceRow = (row: SearchRow, input: TraceRankInput): number => {
   let score = row.score ?? 0
   if (row.preserveVerbatim) {
     score -= 2
