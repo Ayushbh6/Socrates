@@ -333,8 +333,12 @@ Conversation deletion should remove rows tied to the conversation, including:
 - `voice_inputs`
 - `audio_outputs`
 - `errors`
+- `trace_documents`
+- `trace_documents_fts`
+- `trace_embeddings`
+- `trace_index_jobs`
 
-Conversation deletion must not delete the owning project, project instructions, project resources, or workspace files outside conversation-scoped artifacts.
+Conversation deletion must not delete the owning project, project instructions, project resources, or workspace files outside conversation-scoped artifacts. Chat attachment image files under `.socrates/attachments` remain on disk even when their conversation row is hard-deleted.
 
 ## `sessions`
 
@@ -670,7 +674,7 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `name` | `TEXT` | yes | User/model-facing terminal name. |
 | `command` | `TEXT` | yes | Original command string. |
 | `cwd` | `TEXT` | yes | Last known working directory. |
-| `status` | `TEXT` | yes | `running`, `exited`, `stopped`, `stale`, `awaiting_input`, or `missing`. |
+| `status` | `TEXT` | yes | `running`, `exited`, `stopped`, `detached`, `awaiting_input`, `missing`, or legacy `stale`. |
 | `platform` | `TEXT` | no | Runtime platform such as `darwin`, `linux`, or `win32`. |
 | `shell_kind` | `TEXT` | no | `posix`, `powershell`, or `cmd`. |
 | `shell_executable` | `TEXT` | no | Resolved shell executable. |
@@ -682,7 +686,7 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `last_prompt` | `TEXT` | no | Safe prompt text for awaiting-input UI/model context. Secret-like input itself is never stored here. |
 | `started_at` | `TEXT` | yes | ISO timestamp. |
 | `updated_at` | `TEXT` | yes | ISO timestamp. |
-| `completed_at` | `TEXT` | no | ISO timestamp for exited/stopped/stale completion. |
+| `completed_at` | `TEXT` | no | ISO timestamp for exited, stopped, detached, missing, or legacy stale completion. |
 | `metadata_json` | `TEXT` | no | Extra terminal metadata such as linked tool call id or stop reason. |
 
 ## `terminal_output_chunks`
@@ -1092,7 +1096,7 @@ trace_index_jobs
 - Context compaction summaries.
 - Verbatim anchors for exact high-value user-provided source text.
 
-Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles.
+Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles. Search and inspect must join or validate against visible non-deleted conversations (`active` and `archived`) so orphan trace documents from hard-deleted conversations cannot be returned.
 
 Search and inspect outputs include conversation provenance derived from raw `conversations` rows: id, title when available, status, updated time, and whether the source is from the current conversation. This prevents the agent from guessing whether retrieved evidence came from the current chat or an earlier project conversation.
 
@@ -1108,7 +1112,9 @@ Current retrieval combines:
 
 Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
 
-Inspecting a `conversationId` returns a bounded ordered conversation bundle paged with `startTurnNo` and `turnLimit`. Inspecting a returned `messageId`, `turnId`, or `toolCallId` returns exact bounded source content from trace documents when present, with raw-table fallback for exact sources.
+Inspecting a `conversationId` returns a bounded ordered conversation bundle paged with `startTurnNo` and `turnLimit`. Inspecting a returned `messageId`, `turnId`, `toolCallId`, or `handle` returns exact bounded source content from trace documents when present, with raw-table fallback for exact visible sources. Inspecting ids from deleted conversations returns no result with a deleted/not-found warning.
+
+Conversation hard delete also deletes the conversation's `trace_documents`, `trace_documents_fts` rows, `trace_embeddings`, and `trace_index_jobs`. A cleanup migration removes older orphan trace/index rows that were created before this cascade existed. Chat attachment files under `.socrates/attachments` are intentionally retained on disk and are not proof of active conversation provenance by themselves.
 
 ## Trace Index Tables
 

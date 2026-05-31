@@ -171,6 +171,14 @@ export class SocratesAgent {
           stepText += modelEvent.text
         }
 
+        if (modelEvent.type === "model.reasoning.completed") {
+          assistantParts.push({
+            type: "reasoning",
+            text: modelEvent.text,
+            ...(modelEvent.providerMetadata ? { providerMetadata: modelEvent.providerMetadata } : {}),
+          })
+        }
+
         if (modelEvent.type === "model.tool_call.streaming") {
           const tool = this.toolRegistry.get(modelEvent.toolName as ToolName)
           if (tool) {
@@ -399,7 +407,10 @@ export class SocratesAgent {
       })
 
       if (policy.type === "denied") {
-        throw new SocratesError("tool_denied", policy.reason)
+        throw new SocratesError(policy.code ?? "tool_denied", policy.reason, {
+          ...(policy.details !== undefined ? { details: policy.details } : {}),
+          ...(policy.recoverable !== undefined ? { recoverable: policy.recoverable } : {}),
+        })
       }
 
       if (policy.type === "approval_required") {

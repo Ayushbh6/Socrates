@@ -5,6 +5,7 @@ import { SocratesError } from "@socrates/shared"
 import { clampCharLimit, ensureParentDirectory, isSensitivePath, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
 import type { FileFreshnessTracker } from "./fileFreshness"
 import { countLines, hashText, readFileSnapshot, type FileSnapshot } from "./fileMetadata"
+import { withWorkspaceMutationLock } from "./mutationLock"
 
 type ChangedFile = EditToolOutput["changedFiles"][number]
 
@@ -24,6 +25,11 @@ const editTestHooks: {
 } = { afterWrite: undefined }
 
 export const editWorkspace = async (
+  input: EditToolInput,
+  context: { workspacePath: string; fileFreshness?: FileFreshnessTracker },
+): Promise<EditToolOutput> => withWorkspaceMutationLock(context.workspacePath, () => editWorkspaceLocked(input, context))
+
+const editWorkspaceLocked = async (
   input: EditToolInput,
   context: { workspacePath: string; fileFreshness?: FileFreshnessTracker },
 ): Promise<EditToolOutput> => {
@@ -149,7 +155,6 @@ const writeSingleFile = async (params: {
     editTestHooks.afterWrite?.(state.absolutePath)
     const after = readFileSnapshot(state.absolutePath, { includeText: true })
     verifyWrittenFile(state, after, expectedHash)
-    params.context.fileFreshness?.record(state.absolutePath, after.contentHash, params.context.workspacePath)
     changedFile.verification = "verified"
     changedFile.contentHashAfter = after.contentHash
     changedFile.sizeBytesAfter = after.sizeBytes

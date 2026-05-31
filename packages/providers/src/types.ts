@@ -20,6 +20,7 @@ export type ModelMessageContent = string | ModelMessagePart[]
 
 export type ModelMessagePart =
   | { type: "text"; text: string }
+  | { type: "reasoning"; text: string; providerMetadata?: ProviderMetadata }
   | { type: "image"; mediaType: string; data: string; fileName?: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown; providerMetadata?: ProviderMetadata }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
@@ -50,6 +51,13 @@ export type ModelRequest = {
 export type ModelEvent =
   | { type: "model.started"; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.reasoning.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | {
+      type: "model.reasoning.completed"
+      text: string
+      providerMetadata?: ProviderMetadata | undefined
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
+    }
   | { type: "model.answer.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | {
       type: "model.tool_call.streaming"

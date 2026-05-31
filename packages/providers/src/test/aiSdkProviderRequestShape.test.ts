@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { readToolInputSchema, type ModelToolDefinition, type ProviderId, type RuntimeConfig } from "@socrates/contracts"
 import { AiSdkProvider } from "../ai-sdk/AiSdkProvider"
-import type { ModelRequest } from "../types"
+import type { ModelEvent, ModelRequest } from "../types"
 
 const aiMocks = vi.hoisted(() => ({
   streamText: vi.fn(),
@@ -61,6 +61,74 @@ describe("AI SDK provider request shape", () => {
     expect(Object.keys(options.tools ?? {})).toEqual(["read"])
     expect(options).not.toHaveProperty("toolChoice")
     expect(options).not.toHaveProperty("activeTools")
+  })
+
+  it("emits completed OpenAI reasoning metadata before tool calls", async () => {
+    aiMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {
+        yield {
+          type: "reasoning-start",
+          id: "rs_1:0",
+          providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+        }
+        yield {
+          type: "reasoning-delta",
+          id: "rs_1:0",
+          text: "Need to inspect.",
+          providerMetadata: { openai: { itemId: "rs_1" } },
+        }
+        yield {
+          type: "reasoning-end",
+          id: "rs_1:0",
+          providerMetadata: { openai: { itemId: "rs_1" } },
+        }
+        yield {
+          type: "tool-call",
+          toolCallId: "fc_1",
+          toolName: "read",
+          input: { path: "README.md" },
+          providerMetadata: { openai: { itemId: "fc_item_1" } },
+        }
+        yield { type: "finish", finishReason: "tool-calls", totalUsage: undefined }
+      })(),
+    })
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    const events: ModelEvent[] = []
+    for await (const event of provider.stream({
+      ...modelRequest("openai", "gpt-5.4-mini"),
+      runtimeConfig: {
+        ...runtimeConfig("openai", "gpt-5.4-mini"),
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+      },
+    })) {
+      events.push(event)
+    }
+
+    expect(events.map((event) => event.type)).toEqual([
+      "model.started",
+      "model.reasoning.delta",
+      "model.reasoning.completed",
+      "model.tool_call.completed",
+      "model.completed",
+    ])
+    expect(events[2]).toMatchObject({
+      type: "model.reasoning.completed",
+      text: "Need to inspect.",
+      providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+    })
+    expect(events[3]).toMatchObject({
+      type: "model.tool_call.completed",
+      toolCall: {
+        toolCallId: "fc_1",
+        toolName: "read",
+        input: { path: "README.md" },
+        providerMetadata: { openai: { itemId: "fc_item_1" } },
+      },
+    })
   })
 })
 

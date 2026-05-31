@@ -639,7 +639,7 @@ not yet enabled:
 
 ## Tooling And Context Management Target
 
-The first tooling phase exposes seven model-visible tools:
+The first tooling phase exposes eight base model-visible tools:
 
 ```text
 read
@@ -649,13 +649,14 @@ apply_patch
 bash
 trace_retrieve
 list_project_resources
+mcp_registry
 ```
 
 `read` handles bounded reads of files, directories, PDFs, documents, slide decks, structured data, and images. Its default `charLimit` is 20,000 characters, with a normal backend per-call cap of 80,000 characters and clear truncation metadata. File reads include full-file freshness metadata (`contentHash`, `mtimeMs`, `sizeBytes`, and line endings for text) so later edits can prove they are based on current disk content. The first implementation should use pragmatic local extractors or lightweight parsers rather than overbuilding a full document-processing platform.
 
 `search` handles both file discovery and grep-style text search. It respects ignore files by default, skips nuisance/generated/binary paths by default, defaults to at most 20 results, hard-caps requested results at 50, and returns warnings when output is capped or vendor/generated paths are skipped. Text queries that look like regex syntax (`|`, `.*`, `\b`, character classes, anchors, etc.) are interpreted as regex unless `regex: false` is explicit, and zero-match literal regex-looking searches return a warning. File search matches case-insensitively against both full relative paths and basenames, including glob-style queries.
 
-`edit` is the primary V1 model-visible single-file mutation tool. Existing files should use targeted `oldString`/`newString` replacements; `content` is for new files unless `overwrite: true` explicitly requests a deliberate full-file rewrite. `apply_patch` is the separate unified-diff tool for multi-hunk or multi-file changes. Both require approval unless the user explicitly runs a full-access mode. Non-dry-run mutations read/stat/hash before writing and immediately verify disk after writing; returned `changedFiles` include verified hashes and size/line metadata. Existing-file `edit` calls require a prior `read` in the active turn; the harness tracks freshness from read results instead of model-carried hashes. Stale, unread, non-explicit overwrite, and failed read-back verification cases surface as recoverable tool errors, so Socrates must re-read or switch to targeted replacement rather than claim a write succeeded.
+`edit` is the primary V1 model-visible single-file mutation tool. Existing files should use targeted `oldString`/`newString` replacements; `content` is for new files unless `overwrite: true` explicitly requests a deliberate full-file rewrite. `apply_patch` is the separate multi-hunk or multi-file patch tool. Its model-facing input is `patchText`; models should prefer the structured `*** Begin Patch` envelope with `*** Add File`, `*** Update File`, `*** Delete File`, and `*** Move to` sections because it avoids fragile unified-diff hunk counts. `@@` labels are optional hints, and the old lines inside the hunk are the real match target. Standard unified diffs are still accepted for compatibility when already valid and are applied via `git apply`. Both mutation tools require approval unless the user explicitly runs a full-access mode. Non-dry-run mutations read/stat/hash before writing and immediately verify disk after writing; returned `changedFiles` include verified hashes and size/line metadata. Existing-file edits, patches, deletes, and renames require a prior `read` in the active turn; after a successful mutation, another mutation to the same file must re-read first. The harness tracks freshness from read results instead of model-carried hashes. Stale, unread, non-explicit overwrite, and failed read-back verification cases surface as recoverable tool errors, so Socrates must re-read or switch to targeted replacement rather than claim a write succeeded.
 
 Generated-app debugging should be evidence-first. For stack traces, Socrates should compare the reported file and line with current file contents before guessing. For import errors, it should verify the file tree, package roots, working directory, and target module file before blaming stale caches. For database failures, it should distinguish credentials/config from service availability by inspecting safe config/templates and Terminal logs, then run the smallest meaningful verification after a fix.
 
@@ -669,20 +670,24 @@ Terminal already starts in the active workspace. Commands that begin by changing
 
 The backend also injects compact Python and shell environment hints from the active workspace. Socrates should use existing project-local environments or package-manager workflows when present, use PowerShell-compatible command syntax on Windows, ask before creating a new environment when none is found, and save generated plot artifacts to files instead of blocking on GUI display unless the user explicitly asks.
 
-`trace_retrieve` retrieves previous conversation and execution evidence only when useful. It prevents historical tool dumps from being carried forward in every later prompt while keeping full auditability through SQLite.
+`trace_retrieve` retrieves previous conversation memory only when useful. Normal search prevents historical tool dumps from being carried forward or recursively re-retrieved, while explicit `mode = "audit"` keeps full runtime evidence available through SQLite. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
+
+`mcp_registry` lists, describes, checks, and configures supported MCP servers without exposing opaque server ids to the model. The model-facing path should use human names or supported presets such as Playwright; dynamic MCP tool names may be added to the provider request after the registry/runtime reports them available.
 
 The intended trace retrieval flow is search first, exact inspection second:
 
 ```text
 agent needs older context
   -> trace_retrieve search with natural-language query, scope, and optional conversation hint
-  -> backend searches indexed trace documents with scoped SQLite FTS/exact retrieval
-  -> result returns compact numbered evidence plus provenance
+  -> backend searches clean conversation memory with exact, semantic, or combined retrieval
+  -> result returns compact numbered turn evidence plus provenance quality
   -> if exact wording matters, agent calls trace_retrieve inspect using resultNumber or natural filters
-  -> backend returns bounded raw message/tool/shell/patch/error text
+  -> backend returns bounded raw message/turn/summary text
 ```
 
-The model should not need to know opaque ids before retrieval. `conversationId`, `turnId`, `messageId`, and `toolCallId` remain internal/source-provenance details and compatibility fields, not values Socrates should type into normal tool calls.
+Normal `trace_retrieve` uses `mode = "exact"` by default over the last 10 visible conversations and returns top 5 results. Use exact for names, filenames, paths, dates, ids, commands, and quoted wording; use `mode = "semantic"` for fuzzy conceptual memory; use `mode = "combined"` when exact results are weak or broad recall is needed. Use `mode = "audit"` only for tool calls, shell output, file operations, patches, errors, and runtime debugging.
+
+The model should not need to know opaque ids before retrieval. `conversationId`, `turnId`, `messageId`, `toolCallId`, and `handle` are source-provenance details returned by search results; Socrates may use them for exact follow-up inspection after retrieval, but normal investigation starts with natural search and `resultNumber`.
 
 Ordinal recall uses a stricter path. If the user asks for "the second user message" or "turn 2", Socrates must put the literal number in `turnNo` and, when relevant, set `role` to `user` or `assistant`. The backend does not parse ordinal phrases out of `query`; this avoids false positives such as matching "turn 2" against "turn 20". For project/recent searches, `turnNo` requires a `conversationHint` that resolves to exactly one conversation.
 
@@ -706,13 +711,13 @@ Backend code resolves those hints against project conversations, titles, timesta
 
 `list_project_resources` lists active project resources from backend records, especially uploaded files stored under `.socrates/resources/`. It accepts only `kind` and `limit`, returns filenames and metadata only, and defaults to a modest bounded list. The agent should prefer it before shell directory probing when the user asks about uploaded resources, then call `read` on the returned URI/path when content inspection is needed.
 
-Resource listing syncs direct files from `.socrates/resources/` into backend records first, so files copied there manually from VS Code/Finder are visible to both the dashboard and `list_project_resources`. Chat image attachments live under `.socrates/attachments/` and are not project resources.
+Resource listing syncs direct files from `.socrates/resources/` into backend records first, so files copied there manually from VS Code/Finder are visible to both the dashboard and `list_project_resources`. Chat image attachments live under `.socrates/attachments/` and are not project resources. User messages include attachment references with filename, MIME type, size, and path, so the agent can reopen exact uploaded screenshots/images with `read` when the native image part is no longer in the visible prompt or when prior-image evidence is retrieved with `trace_retrieve`. Attachment files intentionally remain on disk after conversation deletion; if trace has no visible conversation provenance but a file exists in `.socrates/attachments`, Socrates should describe the file and state that the original conversation metadata is unavailable, likely because the conversation was deleted.
 
 Generated code belongs in the attached workspace/repo, not in `.socrates/`. When the user asks Socrates to write code or create a script/program, Socrates should use `edit` to create the file in a sensible repo location. If the location is ambiguous and the user says Socrates can decide, use the repo root for a standalone script or a small well-named folder for natural multi-file work.
 
 Between user queries, Socrates should carry forward final user/assistant dialogue, not full historical tool-call dumps. Within the current turn, tool calls and tool outputs may be passed back to the model until the final answer is reached.
 
-Active/stale Terminal summaries are current-state context, not old transcript replay. The backend injects bounded terminal context into every new turn: terminal id/name, command, cwd, shell/platform, status, exit/signal, awaiting-input state, safe prompt text, and recent stdout/stderr tail. Full terminal logs stay persisted and inspectable through terminal output polling or trace retrieval.
+Active, detached, or missing Terminal summaries are current-state context, not old transcript replay. The backend injects bounded terminal context into every new turn: human Terminal name, command, cwd, shell/platform, status, exit/signal, awaiting-input state, safe prompt text, and recent stdout/stderr tail. Full terminal logs stay persisted and inspectable through terminal output polling or trace retrieval. Opaque terminal ids, process ids, and output cursors stay internal.
 
 Provider-exposed thinking is shown and stored when available, but it is not used as semantic prompt context for later user queries.
 
@@ -741,7 +746,7 @@ trace_retrieve can inspect exact source handles
 
 The context builder should keep recent visible user/assistant messages exact while older turns are represented by compact hidden summaries. When exact older content matters, summaries should point to inspectable handles.
 
-Context compression must preserve active terminal anchors: terminal ids, commands, status, awaiting-input state, latest actionable output/prompt, and source handles for exact recovery. It must not stuff full terminal logs into hidden context.
+Context compression must preserve active terminal anchors: human Terminal names, commands, status, awaiting-input state, latest actionable output/prompt, and source handles for exact recovery. It must not stuff full terminal logs or opaque process handles into hidden context.
 
 Compression applies to both common long-chat growth and long single-turn work. A conversation such as `Q1/A1 ... Q70/A70` should keep recent Q/A pairs as normal `user` and `assistant` messages while older Q/A pairs move into hidden compacted context. A single large task should use the same mechanism before the next model call: keep the current user request and latest critical evidence exact when possible, but compact older current-turn tool outputs into hidden evidence capsules with exact inspect handles.
 
@@ -812,8 +817,10 @@ Current implementation note:
 
 ```text
 trace_retrieve search supports lexical/exact and active project embeddings
+mode = exact is the default lexical search
 mode = combined merges lexical and vector evidence when embeddings are ready
 mode = semantic ranks by vector similarity when embeddings are ready
+mode = audit searches runtime/tool evidence only
 search and inspect results include conversation provenance
 context compaction snapshots are indexed as hidden conversation_summary evidence
 ```

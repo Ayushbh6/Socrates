@@ -44,6 +44,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("product/user-facing copy should call it Terminal")
     expect(requestJson).toContain("overwrite: true only when intentionally replacing an entire existing file")
     expect(requestJson).toContain("set regex=true")
+    expect(requestJson).toContain("search .socrates/attachments directly")
     expect(requestJson).toContain("compare the reported file and line with the current file contents")
     expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
   })
@@ -243,6 +244,89 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
+  })
+
+  it("preserves OpenAI reasoning item metadata when continuing after tool calls", async () => {
+    const seenMessages: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seenMessages.push(request.messages)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.reasoning.completed",
+            text: "",
+            providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "fc_1",
+              toolName: "read",
+              input: { path: "README.md" },
+              providerMetadata: { openai: { itemId: "fc_item_1" } },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Read it." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async () => ({
+      path: "README.md",
+      kind: "file",
+      content: "Socrates",
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: 8 },
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read README" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    const nextRequestMessages = seenMessages.at(-1) as Array<{ role: string; content: unknown }>
+    const assistantMessage = nextRequestMessages.find(
+      (message) =>
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some((part) => (part as { type?: string }).type === "tool-call"),
+    ) as { role: string; content: Array<Record<string, unknown>> }
+
+    expect(assistantMessage.content[0]).toEqual({
+      type: "reasoning",
+      text: "",
+      providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+    })
+    expect(assistantMessage.content[1]).toMatchObject({
+      type: "tool-call",
+      toolCallId: "fc_1",
+      toolName: "read",
+      providerMetadata: { openai: { itemId: "fc_item_1" } },
+    })
   })
 
   it("uses internal tool run ids while preserving repeated provider ids in model messages", async () => {
@@ -684,7 +768,7 @@ describe("SocratesAgent", () => {
         workspaceCommandEnvironment:
           "Workspace Terminal commands run with a sanitized user-workspace environment. NODE_ENV, provider secrets, package-manager omit flags, and CI are not inherited.",
         semanticRetrievalStatus:
-          'Semantic retrieval: ready.\n- Provider/model: openai/text-embedding-3-small.\n- Use trace_retrieve mode="combined" by default.',
+          'Semantic retrieval: ready.\n- Provider/model: openai/text-embedding-3-small.\n- Use trace_retrieve mode="semantic" for fuzzy recall, mode="combined" when exact search is weak.',
       },
     })) {
       // Exhaust the stream.
@@ -701,7 +785,8 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("provider secrets")
     expect(request.system).toContain("Semantic retrieval status:")
     expect(request.system).toContain("Semantic retrieval: ready.")
-    expect(request.system).toContain('mode="combined"')
+    expect(request.system).toContain('mode="exact"')
+    expect(request.system).toContain('mode="audit"')
     expect(request.system).toContain("Do not hardcode or guess absolute workspace paths")
     expect(request.system).toContain("plt.show()")
   })
@@ -722,6 +807,22 @@ describe("bash tool policy", () => {
     if (dockerPolicy.type === "approval_required") {
       expect(dockerPolicy.request.risk).toBe("high")
     }
+  })
+
+  it("rejects empty or comment-only Terminal commands before approval", async () => {
+    const context = {
+      runtimeConfig: { sandboxMode: "workspace_write", approvalMode: "manual" },
+    } as Parameters<typeof bashTool.decidePolicy>[1]
+
+    expect(await bashTool.decidePolicy({ command: "   \n\t" }, context)).toMatchObject({
+      type: "denied",
+      code: "terminal_noop_command",
+    })
+    expect(await bashTool.decidePolicy({ operation: "start", command: "# note\n# another note" }, context)).toMatchObject({
+      type: "denied",
+      code: "terminal_noop_command",
+    })
+    expect(await bashTool.decidePolicy({ command: "# list files\nls" }, context)).toMatchObject({ type: "approval_required" })
   })
 })
 

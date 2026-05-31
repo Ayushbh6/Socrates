@@ -110,7 +110,7 @@ export function ChatComposer({
           </button>
         </div>
       )}
-      <div className={`relative rounded-2xl border bg-white shadow-sm ${isDraggingOver ? "border-brand-teal-dark ring-2 ring-teal-100" : "border-gray-200"}`}>
+      <div className={`relative rounded-xl border bg-white shadow-sm ${isDraggingOver ? "border-brand-teal-dark ring-2 ring-teal-100" : "border-gray-200"}`}>
         {attachments.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-4 pt-3">
             {attachments.map((attachment) => (
@@ -133,7 +133,7 @@ export function ChatComposer({
           </div>
         )}
         <textarea
-          className="block min-h-28 w-full resize-none rounded-2xl bg-white px-5 py-4 pb-16 pr-16 text-base leading-7 text-brand-text-dark outline-none placeholder:text-brand-text-light focus:border-brand-teal-dark"
+          className="block min-h-20 w-full resize-none rounded-xl bg-white px-4 py-3 pb-14 pr-14 text-sm leading-6 text-brand-text-dark outline-none placeholder:text-brand-text-light focus:border-brand-teal-dark"
           placeholder="Write a message..."
           value={content}
           onChange={(event) => setContent(event.target.value)}
@@ -150,7 +150,7 @@ export function ChatComposer({
             }
           }}
         />
-        <div className="absolute bottom-3 left-3 flex items-center gap-2">
+        <div className="absolute bottom-2.5 left-3 flex items-center gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -166,7 +166,7 @@ export function ChatComposer({
           />
           <button
             type="button"
-            className="inline-flex size-10 items-center justify-center rounded-full border border-gray-200 bg-gray-50 text-brand-text-light transition-colors hover:bg-gray-100 hover:text-brand-text-dark disabled:opacity-60"
+            className="inline-flex size-9 items-center justify-center rounded-full border border-gray-200 bg-gray-50 text-brand-text-light transition-colors hover:bg-gray-100 hover:text-brand-text-dark disabled:opacity-60"
             disabled={isSending || isUploading}
             aria-label="Attach image"
             title="Attach image"
@@ -177,7 +177,7 @@ export function ChatComposer({
           <div className="relative">
             <button
               type="button"
-              className="inline-flex h-10 max-w-52 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              className="inline-flex h-9 max-w-52 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
               onClick={() => {
                 setIsModelMenuOpen((current) => !current);
                 setIsThinkingMenuOpen(false);
@@ -217,7 +217,7 @@ export function ChatComposer({
           <div className="relative">
             <button
               type="button"
-              className="inline-flex h-10 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
               disabled={!selectedModel}
               onClick={() => {
                 setIsThinkingMenuOpen((current) => !current);
@@ -256,7 +256,7 @@ export function ChatComposer({
           disabled={isSending ? false : !canSend}
           aria-label={isSending ? "Stop response" : "Send message"}
           onClick={isSending ? onStop : undefined}
-          className="absolute bottom-3 right-3 flex size-10 items-center justify-center rounded-full bg-brand-button text-white transition-colors hover:bg-opacity-90 disabled:bg-gray-200 disabled:text-gray-500"
+          className="absolute bottom-2.5 right-3 flex size-9 items-center justify-center rounded-full bg-brand-button text-white transition-colors hover:bg-opacity-90 disabled:bg-gray-200 disabled:text-gray-500"
         >
           {isSending ? <Square className="size-4 fill-current" /> : <ArrowUp className="size-5" />}
         </button>

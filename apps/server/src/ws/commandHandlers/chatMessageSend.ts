@@ -614,7 +614,7 @@ const createToolExecutors = (
   read: (input, context) => readWorkspacePath(input, withFreshness(context)),
   search: (input, context) => searchWorkspace(input, context),
   edit: (input, context) => editWorkspace(input, withFreshness(context)),
-  apply_patch: (input, context) => applyPatchWorkspace(input, context),
+  apply_patch: (input, context) => applyPatchWorkspace(input, withFreshness(context)),
   bash: async (input, context) => {
     const toolCallId = context.toolCallId ?? "unknown"
     store.createShellCommand({
@@ -904,7 +904,7 @@ const formatSemanticRetrievalStatus = (status: ProjectEmbeddingStatus): string =
   const state = semanticRetrievalState(status)
   const usage =
     status.ready && status.indexedDocuments > 0
-      ? '- Use trace_retrieve mode="combined" by default, mode="semantic" for fuzzy or conceptual recall, and inspect handles before exact claims.'
+      ? '- trace_retrieve supports mode="exact" for lexical search, mode="semantic" for fuzzy conceptual recall, mode="combined" for hybrid recall, and mode="audit" for runtime/tool history. Default remains exact.'
       : "- Treat trace_retrieve as lexical/exact only until indexing is ready. Do not claim semantic retrieval was used."
 
   return [

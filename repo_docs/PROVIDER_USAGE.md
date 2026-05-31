@@ -191,6 +191,7 @@ apply_patch
 bash
 trace_retrieve
 list_project_resources
+mcp_registry
 ```
 
 Provider-specific tool-call formats must not leak into `packages/core/tools`, `apps/server`, or `apps/web`. `packages/providers` adapts provider tool-call deltas and completions into normalized `ModelEvent` values. `packages/core` validates the normalized tool call against schemas from `packages/contracts`, checks permission policy, and dispatches through the tool registry.
@@ -327,7 +328,8 @@ Google
 OpenRouter
   moonshotai/kimi-k2.6
   z-ai/glm-5.1                  no vision
-  xiaomi/mimo-v2.5-pro          no vision
+  xiaomi/mimo-v2.5-pro
+  xiaomi/mimo-v2.5
   x-ai/grok-build-0.1
   qwen/qwen3.6-35b-a3b
   deepseek/deepseek-v4-pro   default
@@ -335,7 +337,7 @@ OpenRouter
   google/gemma-4-31b-it
 ```
 
-Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, MiMo, and the DeepSeek V4 models, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests.
+Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM and the DeepSeek V4 models, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. MiMo Pro is vision-capable and must keep native image paths enabled.
 
 Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
 

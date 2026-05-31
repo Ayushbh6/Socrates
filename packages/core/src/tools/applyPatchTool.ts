@@ -1,8 +1,9 @@
-import { applyPatchToolInputSchema, applyPatchToolOutputSchema } from "@socrates/contracts"
+import { applyPatchToolInputSchema, applyPatchToolModelInputSchema, applyPatchToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool } from "./types"
 
 const previewPatch = (input: typeof applyPatchToolInputSchema._type): string => {
-  const lines = input.patch.split("\n").filter(Boolean).slice(0, 3)
+  const patchText = input.patch ?? (input as typeof input & { patchText?: string }).patchText ?? ""
+  const lines = patchText.split("\n").filter(Boolean).slice(0, 3)
   return lines.length > 0 ? `patch:\n${lines.join("\n")}` : "patch: workspace"
 }
 
@@ -23,7 +24,7 @@ const decidePatchPolicy: SocratesTool<typeof applyPatchToolInputSchema._type, ty
       request: {
         actionKind: "patch_apply",
         title: "Approve patch",
-        description: "Socrates wants to apply a unified diff patch in the active project workspace.",
+        description: "Socrates wants to apply a patch in the active project workspace.",
         actionPreview: preview.diff.trim().length > 0 ? preview.diff : previewPatch(input),
         risk: "medium",
       },
@@ -33,8 +34,9 @@ const decidePatchPolicy: SocratesTool<typeof applyPatchToolInputSchema._type, ty
 export const applyPatchTool: SocratesTool<typeof applyPatchToolInputSchema._type, typeof applyPatchToolOutputSchema._type> = {
   name: "apply_patch",
   description:
-    "Apply a unified diff patch to one or more files in the active project workspace using git apply. Use for multi-hunk or multi-file changes. Read affected files first when exact context matters.",
+    "Apply a patch to one or more files in the active project workspace. Use patchText with the structured *** Begin Patch format by default: *** Update File, @@ hunks, *** Add File, *** Delete File, and *** Move to. This format does not require unified-diff line counts. Read existing files before patching, deleting, or renaming them, and read a file again before another mutation after a successful edit or patch. Standard unified diffs with ---/+++/@@ headers are accepted only when you already have a valid diff. Use for multi-hunk or multi-file changes.",
   inputSchema: applyPatchToolInputSchema,
+  modelInputSchema: applyPatchToolModelInputSchema,
   resultSchema: applyPatchToolOutputSchema,
   permission: "mutate",
   executeLane: "mutation",

@@ -1,8 +1,8 @@
 "use client";
 
 import type { ConversationActivityStep, ConversationPartialTurn, ConversationToolRun, Message, MessageAttachment } from "@socrates/contracts";
-import { Check, ChevronDown, Copy } from "lucide-react";
-import { isValidElement, useState, type ReactNode } from "react";
+import { Check, ChevronDown, Copy, SquareTerminal } from "lucide-react";
+import { isValidElement, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { socratesApiBaseUrl } from "@/lib/api";
@@ -17,6 +17,8 @@ interface ChatTranscriptProps {
   activitySteps?: ConversationActivityStep[];
   liveSteps?: LiveActivityStep[];
   approvals?: PendingApproval[];
+  settledLiveTurns?: Record<string, LiveActivityStep[]>;
+  anchorMessageId?: string | null;
   isStreaming?: boolean;
   isCompacting?: boolean;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
@@ -38,10 +40,14 @@ export function ChatTranscript({
   activitySteps = [],
   liveSteps = [],
   approvals = [],
+  settledLiveTurns = {},
+  anchorMessageId,
   isStreaming,
   isCompacting,
   onApprovalDecision,
 }: ChatTranscriptProps) {
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrolledAnchorRef = useRef<string | null>(null);
   const hasLiveActivity = liveSteps.some((step) => step.reasoning || step.answer || step.tools.length > 0);
   const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !hasLiveActivity);
   const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
@@ -52,22 +58,44 @@ export function ChatTranscript({
   );
   const partialTurnsByTurn = new Map(partialTurns.map((turn) => [turn.turnId, turn]));
 
+  useEffect(() => {
+    if (!anchorMessageId || scrolledAnchorRef.current === anchorMessageId) {
+      return;
+    }
+    const container = scrollContainerRef.current;
+    const target = container?.querySelector<HTMLElement>(`[data-message-id="${cssAttributeValue(anchorMessageId)}"]`);
+    if (!container || !target) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const containerRect = container.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const top = container.scrollTop + targetRect.top - containerRect.top - 18;
+      container.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      scrolledAnchorRef.current = anchorMessageId;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [anchorMessageId, messages.length]);
+
   return (
-    <div className="min-w-0 flex-1 overflow-y-auto px-6 py-8">
-      <div className="mx-auto flex min-w-0 w-full max-w-4xl flex-col gap-6">
+    <div ref={scrollContainerRef} className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
+      <div className="mx-auto flex min-w-0 w-full max-w-4xl flex-col gap-5">
         {messages.map((message) => {
           const tools = message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : [];
           const steps = message.role === "assistant" && message.turnId ? historicalStepsByTurn.get(message.turnId) ?? [] : [];
+          const assistantSettledSteps =
+            message.role === "assistant" && message.turnId ? settledLiveTurns[message.turnId] ?? [] : [];
           const shouldRenderIncompleteTurn =
             message.role === "user" && message.turnId && !assistantTurnIds.has(message.turnId);
           const incompleteTurn = shouldRenderIncompleteTurn ? partialTurnsByTurn.get(message.turnId as string) : undefined;
           const incompleteTools = shouldRenderIncompleteTurn ? historicalToolsByTurn.get(message.turnId as string) ?? [] : [];
+          const settledSteps = shouldRenderIncompleteTurn ? settledLiveTurns[message.turnId as string] ?? [] : [];
 
           return (
             <div key={message.id} className="contents">
-              <MessageBubble message={message} tools={tools} steps={steps} />
+              <MessageBubble message={message} tools={tools} steps={steps} settledSteps={assistantSettledSteps} />
               {shouldRenderIncompleteTurn ? (
-                <IncompleteTurnBubble turn={incompleteTurn} tools={incompleteTools} />
+                <IncompleteTurnBubble turn={incompleteTurn} tools={incompleteTools} liveSteps={settledSteps} />
               ) : null}
             </div>
           );
@@ -96,12 +124,20 @@ export function ChatTranscript({
   );
 }
 
-function IncompleteTurnBubble({ turn, tools }: { turn?: ConversationPartialTurn; tools: ToolTimelineItem[] }) {
-  if (!turn && tools.length === 0) {
+function IncompleteTurnBubble({
+  turn,
+  tools,
+  liveSteps = [],
+}: {
+  turn?: ConversationPartialTurn;
+  tools: ToolTimelineItem[];
+  liveSteps?: LiveActivityStep[];
+}) {
+  if (!turn && tools.length === 0 && liveSteps.length === 0) {
     return null;
   }
 
-  const hasPartialText = Boolean(turn?.answer || turn?.reasoning);
+  const hasPartialText = Boolean(turn?.answer || turn?.reasoning || liveSteps.some((step) => step.reasoning || step.answer));
   const label =
     turn?.status === "running"
       ? "Interrupted turn"
@@ -111,15 +147,18 @@ function IncompleteTurnBubble({ turn, tools }: { turn?: ConversationPartialTurn;
 
   return (
     <div className="flex min-w-0 justify-start">
-      <div className="min-w-0 w-full max-w-3xl rounded-2xl rounded-tl-sm border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-6 text-brand-text-dark">
+      <div className="min-w-0 w-full max-w-3xl rounded-xl rounded-tl-sm border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-6 text-brand-text-dark">
         <StoppedIndicator reason={label} />
-        {turn?.reasoning ? <ThinkingBlock content={turn.reasoning} /> : null}
-        <ChatToolTimeline tools={tools} />
-        {turn?.answer ? (
-          <MarkdownContent content={turn.answer} />
-        ) : hasPartialText ? null : (
-          <p className="text-brand-text-light">No assistant text was streamed before this turn stopped.</p>
+        {liveSteps.length > 0 ? (
+          <AssistantActivityStream steps={liveSteps} fallbackAnswer={turn?.answer} />
+        ) : (
+          <>
+            {turn?.reasoning ? <ThinkingBlock content={turn.reasoning} /> : null}
+            <ChatToolTimeline tools={tools} />
+            {turn?.answer ? <MarkdownContent content={turn.answer} /> : null}
+          </>
         )}
+        {!hasPartialText ? <p className="text-brand-text-light">No assistant text was streamed before this turn stopped.</p> : null}
       </div>
     </div>
   );
@@ -148,17 +187,27 @@ function FirstTokenLoader() {
   );
 }
 
-function MessageBubble({ message, tools, steps }: { message: Message; tools: ToolTimelineItem[]; steps: HistoricalActivityStep[] }) {
+function MessageBubble({
+  message,
+  tools,
+  steps,
+  settledSteps,
+}: {
+  message: Message;
+  tools: ToolTimelineItem[];
+  steps: HistoricalActivityStep[];
+  settledSteps: LiveActivityStep[];
+}) {
   const isUser = message.role === "user";
   const hasStepAnswers = steps.some((step) => step.answer);
 
   return (
-    <div className={isUser ? "flex min-w-0 justify-end" : "flex min-w-0 justify-start"}>
+    <div data-message-id={message.id} className={isUser ? "flex min-w-0 justify-end" : "flex min-w-0 justify-start"}>
       <div
         className={
           isUser
-            ? "min-w-0 max-w-2xl rounded-2xl rounded-tr-sm bg-brand-button px-4 py-3 text-sm leading-6 text-white"
-            : "min-w-0 w-full max-w-3xl text-[15px] leading-7 text-brand-text-dark"
+            ? "min-w-0 max-w-2xl rounded-xl rounded-tr-sm bg-brand-button px-4 py-3 text-sm leading-6 text-white"
+            : "min-w-0 w-full max-w-3xl text-sm leading-6 text-brand-text-dark"
         }
       >
         {isUser ? (
@@ -179,6 +228,8 @@ function MessageBubble({ message, tools, steps }: { message: Message; tools: Too
                 }))}
                 fallbackAnswer={hasStepAnswers ? "" : message.content}
               />
+            ) : settledSteps.length > 0 ? (
+              <AssistantActivityStream steps={settledSteps} fallbackAnswer={message.content} />
             ) : (
               <div className="space-y-4">
                 {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
@@ -229,12 +280,53 @@ function AssistantActivityStream({
   steps: Array<{ key: string; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
   fallbackAnswer?: string;
 }) {
+  const answer = steps
+    .map((step) => step.answer.trim())
+    .filter(Boolean)
+    .join("\n\n") || fallbackAnswer || "";
+  const hasWork = steps.some((step) => step.reasoning || step.tools.length > 0);
   return (
-    <div className="space-y-5">
-      {steps.map((step) => (
-        <ActivityStepView key={step.key} reasoning={step.reasoning} answer={step.answer} tools={step.tools} />
-      ))}
-      {fallbackAnswer ? <MarkdownContent content={fallbackAnswer} /> : null}
+    <div className="space-y-4">
+      {hasWork ? <AssistantWorkGroup steps={steps} /> : null}
+      {answer ? <MarkdownContent content={answer} /> : null}
+    </div>
+  );
+}
+
+function AssistantWorkGroup({
+  steps,
+}: {
+  steps: Array<{ key: string; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
+}) {
+  const tools = steps.flatMap((step) => step.tools);
+  const hasActiveWork = tools.some((tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval");
+  const hasFailedWork = tools.some((tool) => tool.status === "failed" || tool.status === "rejected" || tool.status === "cancelled");
+  const [isOpen, setIsOpen] = useState(hasActiveWork || hasFailedWork);
+  const shouldShowDetails = isOpen || hasActiveWork || hasFailedWork;
+  const summary = summarizeWorkGroup(steps);
+
+  return (
+    <div className="border-y border-gray-100 py-2">
+      <button
+        type="button"
+        className="group flex w-full items-center gap-2 rounded-md py-1.5 text-left text-sm text-brand-text-light hover:text-brand-text-dark"
+        onClick={() => setIsOpen((current) => !current)}
+        aria-expanded={shouldShowDetails}
+      >
+        <SquareTerminal className="size-4 shrink-0 text-brand-text-light" />
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+        <ChevronDown className={`size-4 shrink-0 transition-transform ${shouldShowDetails ? "rotate-180" : ""}`} />
+      </button>
+      {shouldShowDetails ? (
+        <div className="space-y-3 pb-1 pt-2">
+          {steps.map((step) => (
+            <div key={step.key} className="space-y-2">
+              {step.reasoning ? <ThinkingBlock content={step.reasoning} /> : null}
+              <ChatToolTimeline tools={step.tools} />
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -321,7 +413,7 @@ const approvalsForLiveStep = (
 
 function ThinkingBlock({ content, defaultOpen = false }: { content: string; defaultOpen?: boolean }) {
   return (
-    <details className="group rounded-lg bg-gray-50 px-3 py-2 text-sm text-brand-text-light" open={defaultOpen || undefined}>
+    <details className="group rounded-md bg-gray-50 px-3 py-2 text-sm text-brand-text-light" open={defaultOpen || undefined}>
       <summary className="flex cursor-pointer list-none items-center gap-2 text-xs font-medium uppercase tracking-wide text-brand-teal-dark">
         <ChevronDown className="size-3 transition-transform group-open:rotate-180" />
         Thinking
@@ -354,6 +446,13 @@ function MarkdownContent({ content }: { content: string }) {
     </ReactMarkdown>
   );
 }
+
+const summarizeWorkGroup = (steps: Array<{ reasoning: string; tools: ToolTimelineItem[] }>): string => {
+  const toolCount = steps.reduce((sum, step) => sum + step.tools.length, 0);
+  return toolCount > 0 ? `Ran ${toolCount} ${toolCount === 1 ? "tool" : "tools"}` : "Ran tools";
+};
+
+const cssAttributeValue = (value: string): string => value.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
 
 function CodeBlock({ children }: { children: ReactNode }) {
   const [copied, setCopied] = useState(false);

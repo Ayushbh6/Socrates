@@ -17,6 +17,16 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
   }
 
   const command = input.command?.trim() ?? ""
+  if (operation === "run" || operation === "start") {
+    if (isNoopTerminalCommand(command)) {
+      return {
+        type: "denied",
+        code: "terminal_noop_command",
+        recoverable: true,
+        reason: "Terminal is for executable commands, not notes. Use assistant text for notes, or call read, search, MCP, or browser tools for inspection.",
+      }
+    }
+  }
 
   if (context.runtimeConfig.sandboxMode === "read_only" || context.runtimeConfig.approvalMode === "read_only_auto") {
     if (readOnlyCommandPattern.test(command) && !highRiskCommandPattern.test(command)) {
@@ -50,6 +60,14 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
       risk: highRiskCommandPattern.test(command) ? "high" : "medium",
     },
   }
+}
+
+const isNoopTerminalCommand = (command: string): boolean => {
+  const lines = command
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return lines.length === 0 || lines.every((line) => line.startsWith("#"))
 }
 
 export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bashToolOutputSchema._type> = {

@@ -21,7 +21,7 @@ export class FileFreshnessTracker {
       })
     }
     if (actualHash !== expected) {
-      throw new SocratesError("edit_stale_content", "File content changed since Socrates last read it.", {
+      throw new SocratesError("edit_stale_content", "File content changed since Socrates last read it. Read the file again before editing.", {
         details: { path: relativePath, expectedBaseContentHash: expected, actualHash },
         recoverable: true,
       })

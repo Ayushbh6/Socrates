@@ -10,7 +10,7 @@ import { detectLineEnding, hashBuffer } from "./fileMetadata"
 
 const execFileAsync = promisify(execFile)
 
-const nonVisionModelIds = new Set(["z-ai/glm-5.1", "xiaomi/mimo-v2.5-pro", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+const nonVisionModelIds = new Set(["z-ai/glm-5.1", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
 
 export const readWorkspacePath = async (
   input: ReadToolInput,

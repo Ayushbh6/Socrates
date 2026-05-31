@@ -82,7 +82,7 @@ export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
 export type ToolPolicyDecision =
   | { type: "auto" }
   | { type: "approval_required"; request: Omit<ApprovalRequest, "approvalId" | "toolCallId" | "toolName"> }
-  | { type: "denied"; reason: string }
+  | { type: "denied"; reason: string; code?: string; recoverable?: boolean; details?: SocratesError["details"] }
 
 export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
   name: ToolName

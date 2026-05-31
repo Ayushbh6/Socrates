@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
@@ -29,12 +29,24 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [isSending, setIsSending] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [liveSteps, setLiveSteps] = useState<LiveActivityStep[]>([]);
+  const [settledLiveTurns, setSettledLiveTurns] = useState<Record<string, LiveActivityStep[]>>({});
+  const [anchorMessageId, setAnchorMessageId] = useState<string | null>(null);
   const [terminals, setTerminals] = useState<ConversationTerminal[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isTerminalPanelCollapsed, setIsTerminalPanelCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const liveStepsRef = useRef<LiveActivityStep[]>([]);
+
+  useEffect(() => {
+    activeTurnIdRef.current = activeTurnId;
+  }, [activeTurnId]);
+
+  useEffect(() => {
+    liveStepsRef.current = liveSteps;
+  }, [liveSteps]);
 
   const replaceConversationInSidebar = useCallback((conversation: Conversation) => {
     setSidebarProjects((current) =>
@@ -56,6 +68,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setConversationData(conversation);
     setTerminals(conversation.terminals ?? []);
     replaceConversationInSidebar(conversation.conversation);
+    return conversation;
   }, [projectId, conversationId, replaceConversationInSidebar]);
 
   const handleSocketEvent = useCallback(
@@ -69,10 +82,14 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "turn.started") {
+        activeTurnIdRef.current = event.payload.turnId;
+        liveStepsRef.current = [];
         setActiveTurnId(event.payload.turnId);
+        setAnchorMessageId(event.payload.userMessage.id);
         setIsSending(true);
         setIsCompacting(false);
         setLiveSteps([]);
+        setSettledLiveTurns((current) => removeSettledLiveTurn(current, event.payload.turnId));
         setApprovals([]);
         setConversationData((current) => {
           const messages = current?.messages ?? [];
@@ -169,15 +186,18 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       if (event.type === "tool.call.streaming") {
         setLiveSteps((current) =>
           updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => {
-            const existing = step.tools.find((tool) => tool.toolCallId === event.payload.toolCallId);
+            const existing = step.tools.find((tool) =>
+              sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId),
+            );
             if (existing) {
               return {
                 ...step,
                 tools: step.tools.map((tool) =>
-                  tool.toolCallId === event.payload.toolCallId
+                  sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId)
                     ? {
                         ...tool,
                         ...(tool.status === "running" ? { phase: "streaming" as const } : {}),
+                        ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
                         ...(event.payload.pathPreview ? { pathPreview: event.payload.pathPreview } : {}),
                         ...(event.payload.argsPreview ? { argsPreview: event.payload.argsPreview } : {}),
                       }
@@ -191,9 +211,10 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 ...step.tools,
                 {
                   toolCallId: event.payload.toolCallId,
+                  ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
                   conversationId,
                   sessionId: event.sessionId ?? "live",
-                  turnId: event.turnId ?? activeTurnId ?? "live",
+                  turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
                   toolName: event.payload.toolName,
                   displayName: event.payload.displayName,
                   category: event.payload.category,
@@ -218,22 +239,23 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
             ...step,
             tools: [
-              ...step.tools.filter((tool) => tool.toolCallId !== event.payload.toolCallId),
+              ...step.tools.filter((tool) => !sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId)),
               {
-            toolCallId: event.payload.toolCallId,
-            conversationId,
-            sessionId: event.sessionId ?? "live",
-            turnId: event.turnId ?? activeTurnId ?? "live",
-            toolName: event.payload.toolName,
-            displayName: event.payload.displayName,
-            category: event.payload.category,
-            status: event.payload.requiresApproval ? "awaiting_approval" : "running",
-            requiresApproval: event.payload.requiresApproval,
-            argsPreview: event.payload.argsPreview,
-            modelCallId: event.payload.modelCallId,
-            stepIndex: event.payload.stepIndex,
-            output: "",
-          },
+                toolCallId: event.payload.toolCallId,
+                ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
+                conversationId,
+                sessionId: event.sessionId ?? "live",
+                turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
+                toolName: event.payload.toolName,
+                displayName: event.payload.displayName,
+                category: event.payload.category,
+                status: event.payload.requiresApproval ? "awaiting_approval" : "running",
+                requiresApproval: event.payload.requiresApproval,
+                argsPreview: event.payload.argsPreview,
+                modelCallId: event.payload.modelCallId,
+                stepIndex: event.payload.stepIndex,
+                output: "",
+              },
             ],
           })),
         );
@@ -242,7 +264,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.output") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, (tool) =>
+          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) =>
             appendToolOutput(tool, event.payload.stream, event.payload.text ?? ""),
           ),
         );
@@ -251,20 +273,20 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.completed") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, (tool) => ({
-                  ...tool,
-                  status: "completed",
-                  summary: event.payload.summary,
-                  resultPreview: event.payload.resultPreview,
-                  durationMs: event.payload.durationMs,
-                })),
+          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) => ({
+            ...tool,
+            status: "completed",
+            summary: event.payload.summary,
+            resultPreview: event.payload.resultPreview,
+            durationMs: event.payload.durationMs,
+          })),
         );
         return;
       }
 
       if (event.type === "tool.call.failed") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, (tool) => ({
+          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) => ({
             ...tool,
             status: "failed",
             error: event.payload.error.message,
@@ -290,7 +312,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         if (event.payload.toolCallId) {
           const toolCallId = event.payload.toolCallId;
           setLiveSteps((current) =>
-            updateLiveTool(current, toolCallId, (tool) => ({
+            updateLiveTool(current, toolCallId, event.payload.providerToolCallId, (tool) => ({
               ...tool,
               status: event.payload.decision === "approved" ? "running" : "rejected",
             })),
@@ -300,16 +322,29 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "turn.completed") {
+        const completedTurnId = event.payload.turnId;
+        activeTurnIdRef.current = null;
         setIsSending(false);
         setActiveTurnId(null);
-        setLiveSteps([]);
         setApprovals([]);
         setIsCompacting(false);
-        void refreshConversation();
+        void refreshConversation().finally(() => {
+          setSettledLiveTurns((current) => removeSettledLiveTurn(current, completedTurnId));
+          if (!activeTurnIdRef.current) {
+            liveStepsRef.current = [];
+            setLiveSteps([]);
+          }
+        });
         return;
       }
 
       if (event.type === "turn.cancelled") {
+        const cancelledTurnId = event.payload.turnId;
+        const liveSnapshot = liveStepsRef.current;
+        activeTurnIdRef.current = null;
+        if (liveSnapshot.some((step) => step.reasoning || step.answer || step.tools.length > 0)) {
+          setSettledLiveTurns((current) => ({ ...current, [cancelledTurnId]: liveSnapshot }));
+        }
         const partialAssistantMessage = event.payload.partialAssistantMessage;
         setConversationData((current) => {
           if (!current) {
@@ -326,27 +361,38 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         });
         setIsSending(false);
         setActiveTurnId(null);
-        if (partialAssistantMessage) {
-          setLiveSteps([]);
-        }
+        liveStepsRef.current = [];
+        setLiveSteps([]);
         setApprovals([]);
         setIsCompacting(false);
+        void refreshConversation().finally(() => {
+          setSettledLiveTurns((current) => removeSettledLiveTurn(current, cancelledTurnId));
+        });
         return;
       }
 
       if (event.type === "turn.failed" || event.type === "error.created") {
         setIsSending(false);
         setActiveTurnId(null);
+        activeTurnIdRef.current = null;
         setIsCompacting(false);
         setError(event.type === "turn.failed" ? event.payload.error.message : event.payload.error.message);
         if (event.type === "turn.failed") {
+          const failedTurnId = event.payload.turnId;
+          const liveSnapshot = liveStepsRef.current;
+          if (liveSnapshot.some((step) => step.reasoning || step.answer || step.tools.length > 0)) {
+            setSettledLiveTurns((current) => ({ ...current, [failedTurnId]: liveSnapshot }));
+          }
+          liveStepsRef.current = [];
           setLiveSteps([]);
           setApprovals([]);
-          void refreshConversation();
+          void refreshConversation().finally(() => {
+            setSettledLiveTurns((current) => removeSettledLiveTurn(current, failedTurnId));
+          });
         }
       }
     },
-    [activeTurnId, conversationId, projectId, refreshConversation],
+    [conversationId, projectId, refreshConversation],
   );
 
   const { isConnected, sendCommand } = useSocratesSocket({
@@ -377,6 +423,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           setConversationData(conversation);
           setTerminals(conversation.terminals ?? []);
           const reloadActiveTurn = conversation.partialTurns?.find((turn) => turn.status === "running")?.turnId ?? null;
+          activeTurnIdRef.current = reloadActiveTurn;
           setActiveTurnId(reloadActiveTurn);
           setIsSending(Boolean(reloadActiveTurn));
           setLiveSteps([]);
@@ -462,6 +509,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setLiveSteps([]);
     setIsCompacting(false);
     const clientMessageId = `msg_${crypto.randomUUID()}`;
+    setAnchorMessageId(clientMessageId);
     try {
       const optimisticMessage: Message = {
         id: clientMessageId,
@@ -687,11 +735,13 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   activitySteps={conversationData?.activitySteps ?? []}
                   liveSteps={liveSteps}
                   approvals={approvals}
+                  settledLiveTurns={settledLiveTurns}
+                  anchorMessageId={anchorMessageId}
                   isStreaming={isSending}
                   isCompacting={isCompacting}
                   onApprovalDecision={handleApprovalDecision}
                 />
-                <div className="min-w-0 border-t border-gray-100 bg-white px-6 py-4">
+                <div className="min-w-0 border-t border-gray-100 bg-white px-6 py-3">
                   <div className="mx-auto max-w-3xl min-w-0">
                     {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
                     <ChatComposer
@@ -766,12 +816,28 @@ const updateLiveStep = (
 const updateLiveTool = (
   steps: LiveActivityStep[],
   toolCallId: string,
+  providerToolCallId: string | undefined,
   updater: (tool: ToolTimelineItem) => ToolTimelineItem,
 ): LiveActivityStep[] =>
   steps.map((step) => ({
     ...step,
-    tools: step.tools.map((tool) => (tool.toolCallId === toolCallId ? updater(tool) : tool)),
+    tools: step.tools.map((tool) => (sameToolIdentity(tool, toolCallId, providerToolCallId) ? updater(tool) : tool)),
   }));
+
+const sameToolIdentity = (tool: ToolTimelineItem, toolCallId: string, providerToolCallId: string | undefined): boolean =>
+  tool.toolCallId === toolCallId || Boolean(providerToolCallId && tool.providerToolCallId === providerToolCallId);
+
+const removeSettledLiveTurn = (
+  turns: Record<string, LiveActivityStep[]>,
+  turnId: string,
+): Record<string, LiveActivityStep[]> => {
+  if (!turns[turnId]) {
+    return turns;
+  }
+  const next = { ...turns };
+  delete next[turnId];
+  return next;
+};
 
 const upsertTerminal = (terminals: ConversationTerminal[], terminal: ConversationTerminal): ConversationTerminal[] => {
   const existing = terminals.find((item) => item.terminalId === terminal.terminalId);

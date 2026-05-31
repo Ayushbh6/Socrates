@@ -101,10 +101,49 @@ export class AiSdkProvider implements ModelProvider {
       })
 
       const streamingToolInputs = new Map<string, { toolName: string; text: string }>()
+      const streamingReasoning = new Map<string, { text: string; providerMetadata?: ProviderMetadata }>()
+      const flushReasoning = (id?: string): ModelEvent[] => {
+        const entries = id === undefined ? [...streamingReasoning.entries()] : streamingReasoning.has(id) ? [[id, streamingReasoning.get(id)!] as const] : []
+        const events: ModelEvent[] = []
+        for (const [reasoningId, entry] of entries) {
+          streamingReasoning.delete(reasoningId)
+          if (entry.text.length === 0 && !entry.providerMetadata) {
+            continue
+          }
+          events.push({
+            type: "model.reasoning.completed",
+            text: entry.text,
+            ...(entry.providerMetadata ? { providerMetadata: entry.providerMetadata } : {}),
+          })
+        }
+        return events
+      }
       for await (const part of result.fullStream) {
         streamTimeout.refresh()
-        if (part.type === "reasoning-delta" && part.text && request.runtimeConfig.thinkingEnabled) {
-          yield { type: "model.reasoning.delta", text: part.text }
+        if (part.type === "reasoning-start") {
+          streamingReasoning.set(part.id, { text: "", ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}) })
+        }
+        if (part.type === "reasoning-delta") {
+          const text = reasoningDeltaText(part)
+          const entry = streamingReasoning.get(part.id) ?? { text: "", ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}) }
+          entry.text += text
+          if (part.providerMetadata) {
+            entry.providerMetadata = mergeProviderMetadata(entry.providerMetadata, part.providerMetadata)
+          }
+          streamingReasoning.set(part.id, entry)
+          if (text && request.runtimeConfig.thinkingEnabled) {
+            yield { type: "model.reasoning.delta", text }
+          }
+        }
+        if (part.type === "reasoning-end") {
+          const entry = streamingReasoning.get(part.id) ?? { text: "" }
+          if (part.providerMetadata) {
+            entry.providerMetadata = mergeProviderMetadata(entry.providerMetadata, part.providerMetadata)
+            streamingReasoning.set(part.id, entry)
+          }
+          for (const event of flushReasoning(part.id)) {
+            yield event
+          }
         }
         if (part.type === "text-delta" && part.text) {
           yield { type: "model.answer.delta", text: part.text }
@@ -121,6 +160,9 @@ export class AiSdkProvider implements ModelProvider {
           }
         }
         if (part.type === "tool-call") {
+          for (const event of flushReasoning()) {
+            yield event
+          }
           yield {
             type: "model.tool_call.completed",
             toolCall: normalizeAiSdkToolCallPart(part),
@@ -130,6 +172,9 @@ export class AiSdkProvider implements ModelProvider {
           yield { type: "model.usage", usage: mapUsage(part.usage) }
         }
         if (part.type === "finish") {
+          for (const event of flushReasoning()) {
+            yield event
+          }
           yield {
             type: "model.completed",
             finishReason: part.finishReason,
@@ -409,30 +454,27 @@ const traceRetrieveJsonSchema: JSONSchema7 = {
   type: "object",
   additionalProperties: false,
   properties: {
-    operation: { type: "string", enum: ["search", "inspect"], description: "Use search by default; use inspect for returned handles or ids." },
+    operation: { type: "string", enum: ["search", "inspect"], description: "Use search by default; use inspect for a returned resultNumber." },
     query: { type: "string", description: "Search text. Required unless operation is inspect." },
+    resultNumber: { type: "integer", minimum: 1, maximum: 20, description: "Result number from the previous trace_retrieve search to inspect." },
     scope: { type: "string", enum: ["current_conversation", "recent_conversations", "project"] },
     conversationHint: { type: "string" },
-    conversationLimit: { type: "integer", minimum: 1, maximum: 50 },
     turnNo: { type: "integer", minimum: 1, maximum: 10_000 },
     role: { type: "string", enum: ["user", "assistant", "any"] },
-    mode: { type: "string", enum: ["combined", "exact", "semantic"] },
+    mode: { type: "string", enum: ["combined", "exact", "semantic", "audit"] },
+    conversationLimit: { type: "integer", minimum: 1, maximum: 50 },
     include: { type: "array", items: { type: "string", enum: ["messages", "summaries", "tool_calls", "shell", "files", "errors", "decisions"] } },
-    toolNames: { type: "array", items: { type: "string" } },
     paths: { type: "array", items: { type: "string" }, maxItems: 20 },
     command: { type: "string" },
-    createdAfter: { type: "string" },
-    createdBefore: { type: "string" },
-    limit: { type: "integer", minimum: 1, maximum: 20 },
-    includeRaw: { type: "boolean" },
-    charLimit: { type: "integer", minimum: 1, maximum: 80_000 },
-    handle: { type: "string", description: "Trace document handle to inspect." },
-    conversationId: { type: "string" },
-    turnId: { type: "string" },
-    messageId: { type: "string" },
-    toolCallId: { type: "string" },
+    handle: { type: "string", description: "Exact inspect handle returned by a previous trace_retrieve result." },
+    conversationId: { type: "string", description: "Exact conversation id returned by a previous trace_retrieve result." },
+    turnId: { type: "string", description: "Exact turn id returned by a previous trace_retrieve result." },
+    messageId: { type: "string", description: "Exact message id returned by a previous trace_retrieve result." },
+    toolCallId: { type: "string", description: "Exact tool-call id returned by a previous trace_retrieve result." },
     startTurnNo: { type: "integer", minimum: 1, maximum: 10_000 },
     turnLimit: { type: "integer", minimum: 1, maximum: 100 },
+    limit: { type: "integer", minimum: 1, maximum: 20 },
+    charLimit: { type: "integer", minimum: 1, maximum: 80_000 },
   },
 } as const
 
@@ -447,6 +489,24 @@ export const normalizeAiSdkToolCallPart = (part: {
   input: part.input,
   ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}),
 })
+
+const reasoningDeltaText = (part: { text?: unknown; delta?: unknown }): string => {
+  if (typeof part.text === "string") {
+    return part.text
+  }
+  if (typeof part.delta === "string") {
+    return part.delta
+  }
+  return ""
+}
+
+const mergeProviderMetadata = (left: ProviderMetadata | undefined, right: ProviderMetadata): ProviderMetadata => {
+  const merged: ProviderMetadata = { ...(left ?? {}) }
+  for (const [provider, metadata] of Object.entries(right)) {
+    merged[provider] = { ...(merged[provider] ?? {}), ...metadata }
+  }
+  return merged
+}
 
 export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiModelMessage => {
   const role = message.role === "developer" ? "system" : message.role
@@ -477,6 +537,13 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
       content: message.content.map((part) => {
         if (part.type === "text") {
           return { type: "text" as const, text: part.text }
+        }
+        if (part.type === "reasoning") {
+          return {
+            type: "reasoning" as const,
+            text: part.text,
+            ...(part.providerMetadata ? { providerOptions: part.providerMetadata } : {}),
+          }
         }
         if (part.type === "image") {
           return { type: "image" as const, mediaType: part.mediaType, image: imageDataContent(part.data) }

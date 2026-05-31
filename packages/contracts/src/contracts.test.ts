@@ -78,6 +78,7 @@ import {
   bashToolInputSchema,
   bashToolModelInputSchema,
   applyPatchToolInputSchema,
+  applyPatchToolModelInputSchema,
   editToolInputSchema,
   editToolModelInputSchema,
   listProjectResourcesToolInputSchema,
@@ -808,6 +809,10 @@ describe("tool contracts", () => {
     expect(editToolModelInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new", overwrite: true }).success).toBe(false)
     expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success).toBe(false)
     expect(applyPatchToolInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(true)
+    expect(applyPatchToolInputSchema.safeParse({ patchText: "*** Begin Patch\n*** End Patch" }).success).toBe(true)
+    expect(applyPatchToolInputSchema.safeParse({ patch: "one", patchText: "two" }).success).toBe(false)
+    expect(applyPatchToolModelInputSchema.safeParse({ patchText: "*** Begin Patch\n*** End Patch" }).success).toBe(true)
+    expect(applyPatchToolModelInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(false)
     expect(
       readToolOutputSchema.safeParse({
         path: "README.md",
@@ -871,8 +876,17 @@ describe("tool contracts", () => {
     ).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", query: "README", role: "assistant" }).success).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(false)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1" }).success).toBe(false)
+    expect(
+      traceRetrieveToolModelInputSchema.safeParse({ query: "previous screenshots", command: "", paths: [], include: [], createdAfter: "" }).success,
+    ).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationLimit: 10 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", conversationLimit: 50 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "audit", include: ["tool_calls"] }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", conversationId: "conv_1", startTurnNo: 2 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", startTurnNo: 2 }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverId: "srv_1" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", turnNo: 0 }).success).toBe(false)

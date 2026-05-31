@@ -35,6 +35,9 @@ import {
   terminalOutputChunks,
   terminalSessions,
   toolCalls,
+  traceDocuments,
+  traceEmbeddings,
+  traceIndexJobs,
   turnRuntimeConfigs,
   turns,
   voiceInputs,
@@ -309,6 +312,12 @@ export class ConversationStore extends StoreBase {
         .where(eq(terminalSessions.conversationId, conversationId))
         .all()
       const terminalIds = terminalRows.map((row) => row.id)
+      const traceDocumentRows = this.handle.db
+        .select({ id: traceDocuments.id })
+        .from(traceDocuments)
+        .where(and(eq(traceDocuments.projectId, projectId), eq(traceDocuments.conversationId, conversationId)))
+        .all()
+      const traceDocumentIds = traceDocumentRows.map((row) => row.id)
 
       if (shellCommandIds.length > 0) {
         this.handle.db.delete(shellOutputChunks).where(inArray(shellOutputChunks.shellCommandId, shellCommandIds)).run()
@@ -316,6 +325,18 @@ export class ConversationStore extends StoreBase {
       if (terminalIds.length > 0) {
         this.handle.db.delete(terminalOutputChunks).where(inArray(terminalOutputChunks.terminalSessionId, terminalIds)).run()
       }
+      if (traceDocumentIds.length > 0) {
+        this.handle.db.delete(traceEmbeddings).where(inArray(traceEmbeddings.traceDocumentId, traceDocumentIds)).run()
+        const deleteFts = this.handle.sqlite.prepare("DELETE FROM trace_documents_fts WHERE trace_document_id = ?")
+        for (const traceDocumentId of traceDocumentIds) {
+          deleteFts.run(traceDocumentId)
+        }
+        this.handle.db.delete(traceDocuments).where(inArray(traceDocuments.id, traceDocumentIds)).run()
+      }
+      this.handle.db
+        .delete(traceIndexJobs)
+        .where(and(eq(traceIndexJobs.projectId, projectId), eq(traceIndexJobs.conversationId, conversationId)))
+        .run()
       if (turnIds.length > 0) {
         this.handle.db.delete(turnRuntimeConfigs).where(inArray(turnRuntimeConfigs.turnId, turnIds)).run()
         this.handle.db.delete(modelStreamChunks).where(inArray(modelStreamChunks.turnId, turnIds)).run()

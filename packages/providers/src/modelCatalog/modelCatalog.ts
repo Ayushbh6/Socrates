@@ -109,7 +109,6 @@ export const modelCatalog = [
     modelId: "xiaomi/mimo-v2.5-pro",
     label: "MiMo-V2.5-Pro",
     contextWindowTokens: 1048576,
-    capabilities: { vision: false },
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",
   }),
