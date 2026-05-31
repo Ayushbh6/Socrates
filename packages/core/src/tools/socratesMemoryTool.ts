@@ -7,7 +7,7 @@ export const socratesMemoryTool: SocratesTool<
 > = {
   name: "socrates_memory",
   description:
-    "Read-only investigation over Socrates-owned memory under ~/.Socrates. Supports list, read, and lexical search across primary or project memory with path/date/limit/charLimit bounds. Use it for identity, operating principles, learned patterns, project memory, and diary excerpts; it is not a general filesystem tool.",
+    "Read-only investigation over Socrates-owned memory pages under ~/.Socrates. Supports search and read across primary, project, or all readable memory with category filters, queryless browsing, exact/keyword/whole-word/regex search, memoryLimit/memoryOffset page controls, date filters, diary date filters, context windows, and safe output caps. Use it for learned patterns, tool usage docs, project brief, project memory, and diary entries. Identity and operating principles are core soul context and are not exposed through this tool.",
   inputSchema: socratesMemoryToolInputSchema,
   resultSchema: socratesMemoryToolOutputSchema,
   permission: "read",
@@ -16,18 +16,13 @@ export const socratesMemoryTool: SocratesTool<
   decidePolicy: () => ({ type: "auto" }),
   execute: (input, context) => context.executors.socrates_memory(input, context),
   summary: (output) =>
-    output.operation === "list"
-      ? `Listed ${output.files?.length ?? 0} Socrates memory file(s).`
-      : output.operation === "search"
-        ? `Found ${output.matches?.length ?? 0} Socrates memory match(es).`
-        : "Read Socrates memory.",
+    output.operation === "search" ? `Found ${output.results.length} Socrates memory result(s).` : `Read ${output.results.length} Socrates memory result(s).`,
   resultPreview: (output) =>
-    output.content ??
-    output.matches?.map((match) => `${match.path}:${match.line ?? "?"}: ${match.text}`).join("\n") ??
-    output.files?.map((file) => `${file.scope}:${file.path}`).join("\n") ??
-    "",
+    output.results
+      .map((result) => `${result.resultNumber}. ${result.path}${result.lineStart ? `:${result.lineStart}` : ""} ${result.title ?? result.matchedText ?? ""}\n${result.snippet ?? ""}`)
+      .join("\n\n"),
   metrics: (output) => ({
-    filesRead: output.operation === "read" ? 1 : output.files?.length ?? 0,
+    filesRead: output.operation === "read" ? output.results.length : 0,
     searchesRun: output.operation === "search" ? 1 : 0,
   }),
 }

@@ -1538,11 +1538,13 @@ edit
 apply_patch
 bash
 trace_retrieve
+socrates_memory
+project_notes
 list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the base model-visible surface should remain the eight tools above plus any dynamic MCP tools that the MCP runtime explicitly exposes. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the base model-visible surface should remain the tools above plus any dynamic MCP tools that the MCP runtime explicitly exposes. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -1977,6 +1979,51 @@ Rules:
 - Raw messages, tool calls, model calls, events, shell output, patches, and errors remain the source of truth. Trace index rows are retrieval documents over that source data, not replacements for it.
 - Conversation summaries and verbatim anchors must not be inserted as fake user messages.
 - Verbatim anchors preserve exact high-value source chunks such as rubrics, user-provided rules, "use this throughout" instructions, canonical examples, or source-of-truth pasted text.
+
+### `socrates_memory`
+
+Read-only investigation over Socrates-owned memory pages under `~/.Socrates`. This is not conversation retrieval; use `trace_retrieve` for raw chat/tool provenance.
+
+Input:
+
+```ts
+type SocratesMemoryToolInput = {
+  operation: "search" | "read"
+  scope?: "primary" | "project" | "all"
+  category?: "learned_patterns" | "tool_usage" | "project_brief" | "project_memory" | "diary"
+  path?: string
+  query?: string
+  searchMode?: "exact_phrase" | "keyword_all" | "keyword_any" | "whole_word" | "regex"
+  memoryLimit?: number
+  memoryOffset?: number
+  limit?: number
+  offset?: number
+  charLimit?: number
+  contextLines?: number
+  modifiedAfter?: string
+  modifiedBefore?: string
+  diaryDateAfter?: string
+  diaryDateBefore?: string
+  entryAfter?: string
+  entryBefore?: string
+  year?: number
+  month?: number
+  day?: number
+  includeSections?: boolean
+}
+```
+
+Rules:
+
+- `scope` is a memory-page scope: `primary` covers learned patterns and tool-usage docs, `project` covers the current project's brief, project memory, and diary pages, and `all` covers both readable sets.
+- `memoryLimit` and `memoryOffset` control how many memory pages/files are considered. `limit` and `offset` control final returned result units.
+- `path` may be full (`project/diary/2026/06/2026-06-01.md`) or category-relative (`diary/2026/06/2026-06-01.md`).
+- Search is case-insensitive by default and may be queryless for browsing pages/sections.
+- Identity and operating principles are core agent soul context and are not exposed through this tool.
+
+### `project_notes`
+
+Constrained read/search/patch access to the active workspace's `.socrates/PROJECT_NOTES.md`. Generic `edit` and `apply_patch` writes to this file are rejected; normal read/search may still inspect it.
 
 ### `list_project_resources`
 

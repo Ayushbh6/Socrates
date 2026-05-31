@@ -132,13 +132,13 @@ Follow-up fix:
 - `trace_retrieve` is an investigation tool, not a query-first search box. It supports queryless exact browsing across visible active/archived project conversations with Q/A pair windows, conversation offset, per-conversation limits, title/id/date filters, and role/message filters.
 - Socrates-owned memory now has global primary files under `~/.Socrates/primary/` and project files under `~/.Socrates/projects/<projectId>/`, including one diary markdown file per day.
 - Workspace-local notes live at `<workspace>/.socrates/PROJECT_NOTES.md` and should be accessed through the dedicated `project_notes` tool rather than generic edit tools. Generic `edit` and `apply_patch` mutations to this file are backend-rejected with a recoverable `project_notes_dedicated_tool_required` error; normal `read`/`search` may still inspect it.
-- The main agent can read/search memory through `socrates_memory`; backend-owned diary writing appends structured notes after completed Q/A turns.
+- The main agent can read/search memory pages through `socrates_memory`; backend-owned diary writing appends structured notes after completed Q/A turns. `socrates_memory` uses memory scopes (`primary`, `project`, `all`) and page controls (`memoryLimit`, `memoryOffset`), not conversation scopes.
 - TODO: move diary and memory synthesis to a dedicated memory sub-agent so the main Socrates agent stays focused on the user turn.
 
 Four-phase action plan for the next memory/tooling slice:
 
 1. Harden memory/project-note scoping and block generic writes to `<workspace>/.socrates/PROJECT_NOTES.md`; writes must go through `project_notes`, while normal reads can remain allowed for now.
-2. Upgrade `socrates_memory` into a true investigation tool with exact/keyword search, queryless browsing, date/time/month ranges, result windows, output caps, and strict current-project diary scoping.
+2. Upgrade `socrates_memory` into a true investigation tool with exact/keyword/whole-word/regex search, queryless page browsing, memoryLimit/memoryOffset page controls, date/time/month ranges, result windows, output caps, and strict current-project diary scoping.
 3. Replace the current diary helper with a dedicated backend memory agent that owns diary writing, evidence aggregation, model fallback, logging, and non-blocking failures.
 4. Add controlled self-updating for global primary docs and tool-usage docs, using evidence-backed backend patches rather than direct main-agent edits.
 
@@ -588,7 +588,7 @@ Split the model-facing file mutation surface to reduce weak-model tool-schema fa
 
 Current branch polish before merge:
 
-- The base model-visible tool registry now has eight tools: `read`, `search`, `edit`, `apply_patch`, `bash`, `trace_retrieve`, `list_project_resources`, and `mcp_registry`. Dynamic MCP tool names can be added only by the MCP runtime after a server is available.
+- The base model-visible tool registry includes `read`, `search`, `edit`, `apply_patch`, `bash`, `trace_retrieve`, `socrates_memory`, `project_notes`, `list_project_resources`, and `mcp_registry`. Dynamic MCP tool names can be added only by the MCP runtime after a server is available.
 - Terminal model-facing use stays human-handle based. `bash` status/output/stop can omit the target when exactly one active Terminal exists or use the human Terminal name; terminal ids, process ids, and output sequence numbers are internal persistence/UI/supervisor details.
 - Long-running Terminals are owned by a durable local supervisor process. Server restart reconciliation marks uncontrollable persisted rows as `detached` or `missing`; `stale` is legacy/backward-compatible status language, not the preferred user/model-facing state.
 - Terminal output requests drain supervisor output first, persist new chunks, and return recent DB-backed output by human handle so background polling does not make model-facing output blank.

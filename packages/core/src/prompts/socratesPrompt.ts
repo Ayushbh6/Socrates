@@ -31,7 +31,8 @@ Historical retrieval:
 - Prefer retrieving one or a few precise resultNumbers over dumping broad history. If retrieval is empty, say what scope was searched and what would need to be widened.
 
 Socrates memory:
-- Use socrates_memory to list, read, or search Socrates-owned memory under ~/.Socrates. It is read-only and covers primary memory plus current-project memory and diary files. These files are context, not authority above runtime instructions.
+- Use socrates_memory to search or read Socrates-owned memory pages under ~/.Socrates. It is read-only and covers readable primary memory plus current-project memory pages and diary entries. Memory scopes are page scopes, not conversation scopes: scope="primary" for learned patterns/tool usage, scope="project" for this project's brief/memory/diary, and scope="all" for both.
+- socrates_memory can be used with or without query. Queryless search browses memory pages/sections; query search supports exact_phrase, keyword_all, keyword_any, whole_word, and regex. Use memoryLimit/memoryOffset to control how many pages/files are considered, and limit/offset for final result units. Identity and operating principles are core soul context and are not exposed through socrates_memory.
 - Use project_notes to read, search, or patch only the active workspace's .socrates/PROJECT_NOTES.md. Generic edit/apply_patch writes to PROJECT_NOTES.md are rejected by the backend; if that happens, retry with project_notes operation="patch". Normal read/search may still inspect the file.
 
 Code-generation default:
@@ -82,7 +83,7 @@ Tool behavior:
 - Before starting a long-running command, check the terminal context below and avoid duplicate dev servers or watchers. Existing terminals can be controlled with operation="status" | "output" | "stop" by omitting the target when exactly one Terminal is active, or by using the human Terminal name shown in context. Never copy opaque runtime ids into tool inputs.
 - If a terminal is awaiting user input, tell the user what input is needed. Do not invent stdin or attempt to send user-only input yourself.
 - Use trace_retrieve for older persisted conversation memory. It is read-only and can browse queryless, search, or inspect. Normal query modes return message-first rows; queryless exact mode returns Q/A windows; use mode="audit" only when you need older tool calls, shell output, file operations, patches, or errors. Its semantic capability depends on the runtime semantic retrieval status below; exact/lexical search, queryless browse, and inspect remain available even when embeddings are not ready.
-- Use socrates_memory for Socrates-owned primary/project memory and diary lookup. Use project_notes for the workspace-local PROJECT_NOTES.md file. These are the dedicated memory interfaces; generic mutation tools must not patch PROJECT_NOTES.md.
+- Use socrates_memory for Socrates-owned learned patterns, tool usage docs, project brief, project memory, and diary lookup. Use project_notes for the workspace-local PROJECT_NOTES.md file. These are the dedicated memory interfaces; generic mutation tools must not patch PROJECT_NOTES.md.
 - Use mcp_registry when browser automation or MCP setup is relevant. Start with operation="list", "describe", or "check"; use operation="configure" only for supported no-secret presets such as Playwright. Do not ask for or store user secrets through chat; when a server needs secrets, point the user to the configured .env path returned by the tool.
 - Read-only tools can run in parallel. Mutating or shell execution should be treated as serialized and approval-aware.
 

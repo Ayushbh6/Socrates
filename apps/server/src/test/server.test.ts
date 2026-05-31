@@ -2901,10 +2901,54 @@ describe("WebSocket API", () => {
     const handle = openDatabase(dbPath)
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome })
     try {
-      const listed = store.runSocratesMemoryTool(project.id, { operation: "list", scope: "primary" })
-      expect(listed.files?.some((file) => file.path === "primary/identity.md")).toBe(true)
-      const searched = store.runSocratesMemoryTool(project.id, { operation: "search", scope: "primary", query: "investigation" })
-      expect(searched.matches?.some((match) => match.path.includes("trace_retrieve.md"))).toBe(true)
+      const listed = store.runSocratesMemoryTool(project.id, { operation: "search", scope: "all", category: "learned_patterns" })
+      expect(listed.results.some((result) => result.path === "primary/learned_patterns.md")).toBe(true)
+      const searched = store.runSocratesMemoryTool(project.id, {
+        operation: "search",
+        scope: "primary",
+        category: "tool_usage",
+        query: "investigation",
+        searchMode: "keyword_all",
+      })
+      expect(searched.results.some((result) => result.path.includes("trace_retrieve.md"))).toBe(true)
+      const diaryBrowse = store.runSocratesMemoryTool(project.id, { operation: "search", scope: "project", category: "diary", memoryLimit: 1 })
+      expect(diaryBrowse.results[0]?.resultType).toBe("diary_entry")
+      const diaryRead = store.runSocratesMemoryTool(project.id, { operation: "read", path: diaryBrowse.results[0]?.path ?? "" })
+      expect(diaryRead.results[0]?.path).toBe(diaryBrowse.results[0]?.path)
+      const explicitDiary = path.join(socratesHome, "projects", project.id, "diary", "2026", "06", "2026-06-01.md")
+      fs.mkdirSync(path.dirname(explicitDiary), { recursive: true })
+      fs.writeFileSync(
+        explicitDiary,
+        [
+          "# 2026-06-01",
+          "",
+          "## 2026-06-01T10:00:00.000Z Turn turn_a",
+          "",
+          "Worked On",
+          "",
+          "- Built a retrieval lens for memory pages.",
+          "",
+          "## 2026-06-01T12:00:00.000Z Turn turn_b",
+          "",
+          "Learned",
+          "",
+          "- Queryless browse should return diary entries.",
+          "",
+        ].join("\n"),
+      )
+      const exactMemory = store.runSocratesMemoryTool(project.id, {
+        operation: "search",
+        scope: "project",
+        category: "diary",
+        query: "retrieval lens",
+        searchMode: "exact_phrase",
+        year: 2026,
+        month: 6,
+      })
+      expect(exactMemory.results[0]).toMatchObject({ resultType: "diary_entry", diaryDate: "2026-06-01", entryTimestamp: "2026-06-01T10:00:00.000Z" })
+      const shortPathRead = store.runSocratesMemoryTool(project.id, { operation: "read", path: "diary/2026/06/2026-06-01.md", category: "diary" })
+      expect(shortPathRead.results[0]?.path).toBe("project/diary/2026/06/2026-06-01.md")
+      expect(() => store.runSocratesMemoryTool(project.id, { operation: "read", path: "primary/identity.md" })).toThrow(/core agent soul/)
       const notesRead = store.runProjectNotesTool(project.id, primaryWorkspace.path as string, { operation: "read" })
       expect(notesRead.content).toContain("PROJECT_NOTES")
       const notesPatch = store.runProjectNotesTool(project.id, primaryWorkspace.path as string, {

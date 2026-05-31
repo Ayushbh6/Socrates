@@ -209,15 +209,17 @@ edit
 apply_patch
 bash
 trace_retrieve
+socrates_memory
+project_notes
 list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above. Patch application is exposed as `apply_patch`, not as a hidden patch mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above plus dynamic MCP tools explicitly exposed by the MCP runtime. Patch application is exposed as `apply_patch`, not as a hidden patch mode inside `edit`.
 
 Each model-visible tool must live in its own small TypeScript file under `packages/core/tools/`, with a single unified registry that exposes the enabled tools to the agent. Do not put all tools into one large class or one large mixed implementation file.
 
-The `read`, `search`, `trace_retrieve`, `list_project_resources`, and non-configuring `mcp_registry` operations are read-only. They may be auto-allowed when scoped to the project workspace and bounded by output limits.
+The `read`, `search`, `trace_retrieve`, `socrates_memory`, `list_project_resources`, and non-configuring `mcp_registry` operations are read-only. They may be auto-allowed when scoped to the project workspace or Socrates-owned memory and bounded by output limits. `project_notes` is read/search/patch constrained to `<workspace>/.socrates/PROJECT_NOTES.md`.
 
 `trace_retrieve` must stay high-level and intent-based. The model should start with `operation="search"`, choose a retrieval mode, and search by query, scope, and bounded limits. Semantic and combined search stay minimal: `query`, optional `scope`, and optional `limit`. Exact search may use `conversationTitle`, `conversationId`, `conversationLimit`, `turnNo`, and `role`; `conversationTitle` is normalized so case, punctuation, and extra spacing do not make matching brittle. Audit-only filters such as evidence type, path, command, tool name, and `toolId` are for `mode="audit"`. Exact `messageId` and audit `toolId` lookups win over search and return the full source. The model should not be expected to know opaque database ids before retrieval.
 
@@ -264,6 +266,8 @@ Before installing Python packages or running generated Python code, Socrates rec
 Generated plotting/data scripts should save charts or artifacts to files and print their paths by default. Avoid GUI-blocking calls like `plt.show()` unless the user explicitly asks for an interactive window.
 
 `.socrates/` is Socrates-owned memory/runtime/resource storage. It is not the default location for user code, scripts, tests, or normal app/repo changes. The agent should edit `.socrates/` only when the user explicitly asks for Socrates internals, uploaded resources, or runtime/memory storage behavior.
+
+`socrates_memory` retrieves curated memory pages and diary entries, not conversation history. Its scopes are `primary`, `project`, and `all`; page selection uses `memoryLimit`/`memoryOffset`, while final output uses `limit`/`offset`. Use `trace_retrieve` for raw conversation/tool provenance and `socrates_memory` for learned patterns, tool usage docs, project brief, project memory, and diary entries. Identity and operating principles are core agent soul context and are not exposed through `socrates_memory`.
 
 The `bash` tool id is the only V1 model-visible command execution tool, but product/UI/prompt copy should call it Terminal. It may run git, package managers, test commands, Docker, dev servers, and other shell commands, but policy decides whether each command is auto-allowed, approval-gated, or denied. Internally it is platform-native: POSIX on macOS/Linux, PowerShell-first on Windows, and cmd fallback. Do not add separate model-visible PowerShell, cmd, terminal, or process tools without updating contracts. Destructive, network, install, git mutation, delete, migration, and outside-workspace commands require approval by default.
 

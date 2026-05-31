@@ -4,7 +4,9 @@ import path from "node:path"
 import type {
   ProjectNotesToolInput,
   ProjectNotesToolOutput,
+  SocratesMemoryCategory,
   SocratesMemoryScope,
+  SocratesMemorySearchMode,
   SocratesMemoryToolInput,
   SocratesMemoryToolOutput,
   TruncationMetadata,
@@ -17,18 +19,22 @@ import { messages, toolCalls, turns } from "../../db/schema"
 import { StoreBase } from "./shared"
 
 const DEFAULT_CHAR_LIMIT = 20_000
-const DEFAULT_LIST_LIMIT = 25
 const DEFAULT_SEARCH_LIMIT = 20
+const DEFAULT_CONTEXT_LINES = 8
+const MAX_CONTEXT_CHARS = 28_000
 const DIARY_TURN_TOKEN_CAP = 60_000
 const WAKE_CONTEXT_CHAR_LIMIT = 4_000
 
 type MemoryFile = {
   path: string
   absolutePath: string
-  scope: SocratesMemoryScope
+  category: SocratesMemoryCategory
   sizeBytes: number
   modifiedAt: string
+  diaryDate?: string
 }
+
+type MemoryResult = SocratesMemoryToolOutput["results"][number]
 
 type MemoryStoreOptions = {
   socratesHome?: string
@@ -62,9 +68,6 @@ export class MemoryStore extends StoreBase {
 
   runSocratesMemoryTool(projectId: string, workspacePath: string | undefined, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
-    if (input.operation === "list") {
-      return this.listMemory(projectId, input)
-    }
     if (input.operation === "read") {
       return this.readMemory(projectId, input)
     }
@@ -162,87 +165,98 @@ export class MemoryStore extends StoreBase {
     })
   }
 
-  private listMemory(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
-    const scope = input.scope
-    const limit = input.limit ?? DEFAULT_LIST_LIMIT
-    const offset = input.offset ?? 0
-    const files = this.memoryFiles(projectId, scope, input.modifiedAfter, input.modifiedBefore)
-      .slice(offset, offset + limit)
-      .map(({ absolutePath: _absolutePath, ...file }) => file)
-    return {
-      operation: "list",
-      ...(scope ? { scope } : {}),
-      files,
-      truncation: truncationFor(JSON.stringify(files), input.charLimit ?? DEFAULT_CHAR_LIMIT),
-    }
-  }
-
   private readMemory(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
-    const resolved = this.resolveMemoryPath(projectId, input.path as string, input.scope)
-    const content = fs.readFileSync(resolved.absolutePath, "utf8")
+    const scope = input.scope ?? "project"
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
-    const truncated = truncate(content, charLimit)
+    const contextLines = clampContextLines(input.contextLines)
+    const files = input.path ? [this.resolveMemoryPath(projectId, input.path, input.category)] : this.memoryFiles(projectId, input)
+    const results = this.memoryResults(files, input, contextLines, charLimit)
+    const sliced = results.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? DEFAULT_SEARCH_LIMIT)).map(numberResult)
+    const output = capMemoryResults(sliced, charLimit)
     return {
       operation: "read",
-      scope: resolved.scope,
-      content: truncated.text,
-      truncation: truncationFor(content, charLimit),
-      ...(truncated.truncated ? { warnings: ["Socrates memory file was truncated. Re-read with a larger charLimit if needed."] } : {}),
+      scope,
+      ...(input.category ? { category: input.category } : {}),
+      results: output.results,
+      totalMatches: results.length,
+      truncation: output.truncation,
+      ...(output.warnings.length > 0 ? { warnings: output.warnings } : {}),
     }
   }
 
   private searchMemory(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
-    const scope = input.scope
-    const query = input.query as string
+    const scope = input.scope ?? "project"
     const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
-    const matches: NonNullable<SocratesMemoryToolOutput["matches"]> = []
-    for (const file of this.memoryFiles(projectId, scope, input.modifiedAfter, input.modifiedBefore)) {
-      const content = fs.readFileSync(file.absolutePath, "utf8")
-      for (const match of lineMatches(content, query, limit - matches.length)) {
-        matches.push({ path: file.path, scope: file.scope, line: match.line, text: match.text, modifiedAt: file.modifiedAt })
-        if (matches.length >= limit) {
-          break
-        }
-      }
-      if (matches.length >= limit) {
-        break
-      }
-    }
+    const contextLines = clampContextLines(input.contextLines)
+    const files = input.path ? [this.resolveMemoryPath(projectId, input.path, input.category)] : this.memoryFiles(projectId, input)
+    const results = this.memoryResults(files, input, contextLines, charLimit)
+    const sliced = results.slice(input.offset ?? 0, (input.offset ?? 0) + limit).map(numberResult)
+    const output = capMemoryResults(sliced, charLimit)
+    const warnings = [
+      ...output.warnings,
+      ...(results.length > limit + (input.offset ?? 0) ? ["Socrates memory search hit the result limit; narrow query, category, scope, or date filters."] : []),
+    ]
     return {
       operation: "search",
-      ...(scope ? { scope } : {}),
-      matches,
-      truncation: truncationFor(JSON.stringify(matches), charLimit),
-      ...(matches.length >= limit ? { warnings: ["Socrates memory search hit the match limit; narrow the query or scope."] } : {}),
+      scope,
+      ...(input.category ? { category: input.category } : {}),
+      results: output.results,
+      totalMatches: results.length,
+      truncation: output.truncation,
+      ...(warnings.length > 0 ? { warnings } : {}),
     }
   }
 
-  private memoryFiles(projectId: string, scope?: SocratesMemoryScope, modifiedAfter?: string, modifiedBefore?: string): MemoryFile[] {
-    const roots: Array<{ scope: SocratesMemoryScope; root: string }> = []
-    if (!scope || scope === "primary") {
-      roots.push({ scope: "primary", root: path.join(this.socratesHome, "primary") })
-    }
-    if (!scope || scope === "project") {
-      roots.push({ scope: "project", root: this.projectRoot(projectId) })
-    }
-    return roots
-      .flatMap(({ scope: fileScope, root }) => listMarkdownFiles(root).map((absolutePath) => memoryFile(root, fileScope, absolutePath)))
-      .filter((file) => (modifiedAfter ? file.modifiedAt >= modifiedAfter : true))
-      .filter((file) => (modifiedBefore ? file.modifiedAt <= modifiedBefore : true))
+  private memoryResults(files: MemoryFile[], input: SocratesMemoryToolInput, contextLines: number, charLimit: number): MemoryResult[] {
+    const query = input.query?.trim()
+    const mode = input.searchMode ?? "keyword_all"
+    return files.flatMap((file) => {
+      const content = fs.readFileSync(file.absolutePath, "utf8")
+      if (input.includeSections || file.category === "diary") {
+        const sectionResults = sectionMatches(file, content, input, mode, query, contextLines, charLimit)
+        if (sectionResults.length > 0 || query || input.includeSections || file.category === "diary") {
+          return sectionResults
+        }
+      }
+      if (query) {
+        return lineSearchResults(file, content, query, mode, contextLines)
+      }
+      return [fileResult(file, content, charLimit)]
+    })
+  }
+
+  private memoryFiles(projectId: string, input: SocratesMemoryToolInput): MemoryFile[] {
+    const files = this.allMemoryFiles(projectId, input.scope ?? "project", input.category)
+    return files
+      .filter((file) => withinRange(file.modifiedAt, input.modifiedAfter, input.modifiedBefore))
+      .filter((file) => withinDiaryFilters(file, input))
       .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt) || left.path.localeCompare(right.path))
+      .slice(input.memoryOffset ?? 0, (input.memoryOffset ?? 0) + (input.memoryLimit ?? 50))
   }
 
-  private resolveMemoryPath(projectId: string, inputPath: string, scope?: SocratesMemoryScope): MemoryFile {
-    const normalized = inputPath.replaceAll("\\", "/").replace(/^\/+/, "")
-    const inferredScope = normalized.startsWith("primary/") ? "primary" : normalized.startsWith("project/") ? "project" : scope
-    if (!inferredScope) {
-      throw new SocratesError("socrates_memory_scope_required", "Path must start with primary/ or project/, or scope must be provided.", {
+  private allMemoryFiles(projectId: string, scope: SocratesMemoryScope, category?: SocratesMemoryCategory): MemoryFile[] {
+    const primaryRoot = path.join(this.socratesHome, "primary")
+    const projectRoot = this.projectRoot(projectId)
+    const candidates: MemoryFile[] = [
+      memoryFile(primaryRoot, "learned_patterns", path.join(primaryRoot, "learned_patterns.md")),
+      ...listMarkdownFiles(path.join(primaryRoot, "tool_usage")).map((absolutePath) => memoryFile(primaryRoot, "tool_usage", absolutePath)),
+      memoryFile(projectRoot, "project_brief", path.join(projectRoot, "project_brief.md")),
+      memoryFile(projectRoot, "project_memory", path.join(projectRoot, "MEMORY.md")),
+      ...listMarkdownFiles(path.join(projectRoot, "diary")).map((absolutePath) => memoryFile(projectRoot, "diary", absolutePath)),
+    ].filter((file) => fs.existsSync(file.absolutePath))
+    return candidates.filter((file) => (category ? file.category === category : categoryForScope(scope, file.category)))
+  }
+
+  private resolveMemoryPath(projectId: string, inputPath: string, category?: SocratesMemoryCategory): MemoryFile {
+    const normalized = normalizeMemoryPath(inputPath, category)
+    if (normalized === "primary/identity.md" || normalized === "primary/operating_principles.md") {
+      throw new SocratesError("socrates_memory_core_soul_not_tool_visible", "Identity and operating principles are core agent soul files and are not exposed through socrates_memory.", {
         recoverable: true,
       })
     }
+    const root = normalized.startsWith("primary/") ? path.join(this.socratesHome, "primary") : this.projectRoot(projectId)
     const relative = normalized.replace(/^(primary|project)\//, "")
-    const root = inferredScope === "primary" ? path.join(this.socratesHome, "primary") : this.projectRoot(projectId)
     const absolutePath = safeJoin(root, relative)
     if (!absolutePath.endsWith(".md") || !fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
       throw new SocratesError("socrates_memory_file_not_found", "Socrates memory path was not found or is not a markdown file.", {
@@ -250,7 +264,14 @@ export class MemoryStore extends StoreBase {
         details: { path: inputPath },
       })
     }
-    return memoryFile(root, inferredScope, absolutePath)
+    const file = memoryFile(root, inferCategoryFromPath(normalized), absolutePath)
+    if (category && file.category !== category) {
+      throw new SocratesError("socrates_memory_category_mismatch", "Socrates memory path does not match the requested category.", {
+        recoverable: true,
+        details: { path: inputPath, category },
+      })
+    }
+    return file
   }
 
   private projectRoot(projectId: string): string {
@@ -392,16 +413,317 @@ const listMarkdownFiles = (root: string): string[] => {
   })
 }
 
-const memoryFile = (root: string, scope: SocratesMemoryScope, absolutePath: string): MemoryFile => {
+const memoryFile = (root: string, category: SocratesMemoryCategory, absolutePath: string): MemoryFile => {
   const stats = fs.statSync(absolutePath)
+  const relativePath = path.relative(root, absolutePath).replaceAll(path.sep, "/")
+  const pathPrefix = category === "learned_patterns" || category === "tool_usage" ? "primary" : "project"
+  const diaryDate = category === "diary" ? /(\d{4}-\d{2}-\d{2})\.md$/.exec(relativePath)?.[1] : undefined
   return {
-    path: `${scope}/${path.relative(root, absolutePath).replaceAll(path.sep, "/")}`,
+    path: `${pathPrefix}/${relativePath}`,
     absolutePath,
-    scope,
+    category,
     sizeBytes: stats.size,
     modifiedAt: stats.mtime.toISOString(),
+    ...(diaryDate ? { diaryDate } : {}),
   }
 }
+
+const categoryForScope = (scope: SocratesMemoryScope, category: SocratesMemoryCategory): boolean => {
+  if (scope === "all") {
+    return true
+  }
+  if (scope === "primary") {
+    return category === "learned_patterns" || category === "tool_usage"
+  }
+  return category === "project_brief" || category === "project_memory" || category === "diary"
+}
+
+const inferCategoryFromPath = (normalizedPath: string): SocratesMemoryCategory => {
+  if (normalizedPath === "primary/learned_patterns.md") {
+    return "learned_patterns"
+  }
+  if (normalizedPath.startsWith("primary/tool_usage/")) {
+    return "tool_usage"
+  }
+  if (normalizedPath === "project/project_brief.md") {
+    return "project_brief"
+  }
+  if (normalizedPath === "project/MEMORY.md") {
+    return "project_memory"
+  }
+  if (normalizedPath.startsWith("project/diary/")) {
+    return "diary"
+  }
+  throw new SocratesError("socrates_memory_path_not_exposed", "This Socrates memory path is not exposed through socrates_memory.", {
+    recoverable: true,
+    details: { path: normalizedPath },
+  })
+}
+
+const normalizeMemoryPath = (inputPath: string, category?: SocratesMemoryCategory): string => {
+  const normalized = inputPath.replaceAll("\\", "/").replace(/^\/+/, "")
+  if (normalized.startsWith("primary/") || normalized.startsWith("project/")) {
+    return normalized
+  }
+  if (normalized === "identity.md" || normalized === "operating_principles.md") {
+    return `primary/${normalized}`
+  }
+  if (normalized === "learned_patterns.md" || category === "learned_patterns") {
+    return normalized.startsWith("learned_patterns") ? `primary/${normalized}` : `primary/learned_patterns.md`
+  }
+  if (normalized.startsWith("tool_usage/") || category === "tool_usage") {
+    return normalized.startsWith("tool_usage/") ? `primary/${normalized}` : `primary/tool_usage/${normalized}`
+  }
+  if (normalized === "project_brief.md" || category === "project_brief") {
+    return normalized === "project_brief.md" ? "project/project_brief.md" : `project/${normalized}`
+  }
+  if (normalized === "MEMORY.md" || normalized === "memory.md" || category === "project_memory") {
+    return normalized.toLowerCase() === "memory.md" ? "project/MEMORY.md" : `project/${normalized}`
+  }
+  if (normalized.startsWith("diary/") || category === "diary") {
+    return normalized.startsWith("diary/") ? `project/${normalized}` : `project/diary/${normalized}`
+  }
+  return `project/${normalized}`
+}
+
+const withinRange = (value: string | undefined, after?: string, before?: string): boolean => {
+  if (!value) {
+    return !after && !before
+  }
+  return (after ? value >= after : true) && (before ? value <= before : true)
+}
+
+const withinDiaryFilters = (file: MemoryFile, input: SocratesMemoryToolInput): boolean => {
+  if (file.category !== "diary") {
+    return !input.diaryDateAfter && !input.diaryDateBefore && !input.year && !input.month && !input.day
+  }
+  const date = file.diaryDate
+  if (!date) {
+    return false
+  }
+  const [year, month, day] = date.split("-").map(Number)
+  return (
+    withinRange(date, input.diaryDateAfter, input.diaryDateBefore) &&
+    (input.year ? year === input.year : true) &&
+    (input.month ? month === input.month : true) &&
+    (input.day ? day === input.day : true)
+  )
+}
+
+const lineSearchResults = (file: MemoryFile, content: string, query: string, mode: SocratesMemorySearchMode, contextLines: number): MemoryResult[] => {
+  const lines = content.split(/\r?\n/)
+  const compiled = compileSearch(query, mode)
+  return lines.flatMap((line, index) => {
+    const score = compiled.score(line)
+    if (score <= 0) {
+      return []
+    }
+    return [lineWindowResult(file, lines, index, index, line, score, "line_match", contextLines)]
+  })
+}
+
+const sectionMatches = (
+  file: MemoryFile,
+  content: string,
+  input: SocratesMemoryToolInput,
+  mode: SocratesMemorySearchMode,
+  query: string | undefined,
+  contextLines: number,
+  charLimit: number,
+): MemoryResult[] => {
+  const lines = content.split(/\r?\n/)
+  const sections = markdownSections(lines)
+  const compiled = query ? compileSearch(query, mode) : undefined
+  return sections.flatMap((section) => {
+    const text = lines.slice(section.start, section.end + 1).join("\n")
+    const score = compiled ? compiled.score(text) : 1
+    const entryTimestamp = file.category === "diary" ? timestampFromHeading(section.title) : undefined
+    if (file.category === "diary" && !withinRange(entryTimestamp, input.entryAfter, input.entryBefore)) {
+      return []
+    }
+    if (compiled && score <= 0) {
+      return []
+    }
+    const clipped = truncateToContextBudget(text, charLimit)
+    return [
+      {
+        resultNumber: 0,
+        resultType: file.category === "diary" ? "diary_entry" : "section",
+        path: file.path,
+        title: section.title,
+        matchedText: query ? bestMatchingLine(text, query, mode) : section.title,
+        snippet: clipped,
+        modifiedAt: file.modifiedAt,
+        ...(file.diaryDate ? { diaryDate: file.diaryDate } : {}),
+        ...(entryTimestamp ? { entryTimestamp } : {}),
+        lineStart: section.start + 1,
+        lineEnd: section.end + 1,
+        score,
+        inspectArgs: { operation: "read", path: file.path, category: file.category },
+        ...(contextLines > 0
+          ? {
+              contextBefore: truncateToContextBudget(lines.slice(Math.max(0, section.start - contextLines), section.start).join("\n"), MAX_CONTEXT_CHARS),
+              contextAfter: truncateToContextBudget(lines.slice(section.end + 1, Math.min(lines.length, section.end + 1 + contextLines)).join("\n"), MAX_CONTEXT_CHARS),
+            }
+          : {}),
+      },
+    ]
+  })
+}
+
+const fileResult = (file: MemoryFile, content: string, charLimit: number): MemoryResult => ({
+  resultNumber: 0,
+  resultType: "file",
+  path: file.path,
+  title: firstHeading(content),
+  snippet: truncateToContextBudget(content, charLimit),
+  modifiedAt: file.modifiedAt,
+  ...(file.diaryDate ? { diaryDate: file.diaryDate } : {}),
+  lineStart: 1,
+  lineEnd: content.split(/\r?\n/).length,
+  score: 0,
+  inspectArgs: { operation: "read", path: file.path, category: file.category },
+})
+
+const lineWindowResult = (
+  file: MemoryFile,
+  lines: string[],
+  startIndex: number,
+  endIndex: number,
+  matchedText: string,
+  score: number,
+  resultType: MemoryResult["resultType"],
+  contextLines: number,
+): MemoryResult => {
+  const contextBefore = lines.slice(Math.max(0, startIndex - contextLines), startIndex).join("\n")
+  const contextAfter = lines.slice(endIndex + 1, Math.min(lines.length, endIndex + 1 + contextLines)).join("\n")
+  return {
+    resultNumber: 0,
+    resultType,
+    path: file.path,
+    title: nearestHeading(lines, startIndex),
+    matchedText: matchedText.slice(0, 2_000),
+    contextBefore: truncateToContextBudget(contextBefore, MAX_CONTEXT_CHARS),
+    contextAfter: truncateToContextBudget(contextAfter, MAX_CONTEXT_CHARS),
+    snippet: truncateToContextBudget([contextBefore, matchedText, contextAfter].filter(Boolean).join("\n"), MAX_CONTEXT_CHARS),
+    modifiedAt: file.modifiedAt,
+    ...(file.diaryDate ? { diaryDate: file.diaryDate } : {}),
+    lineStart: startIndex + 1,
+    lineEnd: endIndex + 1,
+    score,
+    inspectArgs: { operation: "read", path: file.path, category: file.category },
+  }
+}
+
+const numberResult = (result: MemoryResult, index: number): MemoryResult => ({ ...result, resultNumber: index + 1 })
+
+const capMemoryResults = (results: MemoryResult[], charLimit: number): { results: MemoryResult[]; truncation: TruncationMetadata; warnings: string[] } => {
+  const warnings: string[] = []
+  let used = 0
+  const capped: MemoryResult[] = []
+  for (const result of results) {
+    const serializedLength = JSON.stringify(result).length
+    if (used + serializedLength > charLimit && capped.length > 0) {
+      warnings.push("Socrates memory output was truncated by charLimit; narrow filters or increase charLimit.")
+      break
+    }
+    used += serializedLength
+    capped.push(result)
+  }
+  return {
+    results: capped,
+    truncation: {
+      truncated: capped.length < results.length,
+      charLimit,
+      originalLength: JSON.stringify(results).length,
+      returnedLength: JSON.stringify(capped).length,
+    },
+    warnings,
+  }
+}
+
+const compileSearch = (query: string, mode: SocratesMemorySearchMode): { score: (text: string) => number } => {
+  const lowerQuery = query.toLowerCase()
+  const terms = searchTerms(query)
+  if (mode === "regex") {
+    let regex: RegExp
+    try {
+      regex = new RegExp(query, "i")
+    } catch (error) {
+      throw new SocratesError("socrates_memory_invalid_regex", "socrates_memory regex query is invalid.", {
+        recoverable: true,
+        details: { message: error instanceof Error ? error.message : String(error) },
+      })
+    }
+    return { score: (text) => (regex.test(text) ? 70 : 0) }
+  }
+  if (mode === "exact_phrase") {
+    return { score: (text) => countCaseInsensitive(text, lowerQuery) * 100 }
+  }
+  if (mode === "whole_word") {
+    const regexes = terms.map((term) => new RegExp(`\\b${escapeRegExp(term)}\\b`, "i"))
+    return { score: (text) => (regexes.length > 0 && regexes.every((regex) => regex.test(text)) ? 90 + regexes.length : 0) }
+  }
+  if (mode === "keyword_any") {
+    return { score: (text) => terms.filter((term) => text.toLowerCase().includes(term)).length * 50 }
+  }
+  return {
+    score: (text) => {
+      const lower = text.toLowerCase()
+      const matched = terms.filter((term) => lower.includes(term)).length
+      return terms.length > 0 && matched === terms.length ? 80 + matched : 0
+    },
+  }
+}
+
+const searchTerms = (query: string): string[] => query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 0) ?? []
+
+const countCaseInsensitive = (text: string, lowerNeedle: string): number => {
+  if (!lowerNeedle.trim()) {
+    return 0
+  }
+  return text.toLowerCase().split(lowerNeedle).length - 1
+}
+
+const bestMatchingLine = (text: string, query: string, mode: SocratesMemorySearchMode): string => {
+  const compiled = compileSearch(query, mode)
+  return text.split(/\r?\n/).find((line) => compiled.score(line) > 0)?.slice(0, 2_000) ?? query
+}
+
+const markdownSections = (lines: string[]): Array<{ title: string; start: number; end: number }> => {
+  const headings = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /^#{1,6}\s+/.test(line))
+    .map(({ line, index }) => ({ title: line.replace(/^#{1,6}\s+/, "").trim(), start: index }))
+  if (headings.length === 0) {
+    return lines.length === 0 ? [] : [{ title: "Full file", start: 0, end: lines.length - 1 }]
+  }
+  return headings.map((heading, index) => ({
+    title: heading.title,
+    start: heading.start,
+    end: (headings[index + 1]?.start ?? lines.length) - 1,
+  }))
+}
+
+const firstHeading = (content: string): string | undefined => /^#{1,6}\s+(.+)$/m.exec(content)?.[1]?.trim()
+
+const nearestHeading = (lines: string[], index: number): string | undefined => {
+  for (let cursor = index; cursor >= 0; cursor -= 1) {
+    const heading = /^#{1,6}\s+(.+)$/.exec(lines[cursor] ?? "")
+    if (heading?.[1]) {
+      return heading[1].trim()
+    }
+  }
+  return undefined
+}
+
+const timestampFromHeading = (heading: string): string | undefined => /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z/.exec(heading)?.[0]
+
+const clampContextLines = (value?: number): number => Math.min(value ?? DEFAULT_CONTEXT_LINES, 100)
+
+const truncateToContextBudget = (text: string, charLimit: number): string => truncate(text, Math.min(charLimit, MAX_CONTEXT_CHARS)).text
+
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 const safeJoin = (root: string, relativePath: string): string => {
   const resolved = path.resolve(root, relativePath)

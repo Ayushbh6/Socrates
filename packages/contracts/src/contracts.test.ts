@@ -979,16 +979,30 @@ describe("tool contracts", () => {
         warnings: ["Semantic trace retrieval is not configured for this project. Use the project dashboard to enable semantic search."],
       }).success,
     ).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "list", scope: "project", limit: 10 }).success).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "read", path: "project/MEMORY.md", charLimit: 1000 }).success).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search", scope: "primary", query: "trace", modifiedAfter: timestamp }).success).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "read" }).success).toBe(false)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search" }).success).toBe(false)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search", scope: "project", category: "diary", memoryLimit: 10 }).success).toBe(true)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "read", path: "diary/2026/06/2026-06-01.md", charLimit: 1000 }).success).toBe(true)
+    expect(
+      socratesMemoryToolInputSchema.safeParse({ operation: "search", scope: "primary", category: "tool_usage", query: "trace", searchMode: "keyword_all", modifiedAfter: timestamp }).success,
+    ).toBe(true)
+    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search", searchMode: "regex" }).success).toBe(false)
     expect(
       socratesMemoryToolOutputSchema.safeParse({
         operation: "search",
         scope: "project",
-        matches: [{ path: "project/MEMORY.md", scope: "project", line: 1, text: "trace", modifiedAt: timestamp }],
+        category: "project_memory",
+        results: [
+          {
+            resultNumber: 1,
+            resultType: "line_match",
+            path: "project/MEMORY.md",
+            matchedText: "trace",
+            modifiedAt: timestamp,
+            lineStart: 1,
+            lineEnd: 1,
+            inspectArgs: { operation: "read", path: "project/MEMORY.md", category: "project_memory" },
+          },
+        ],
+        totalMatches: 1,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
       }).success,
     ).toBe(true)

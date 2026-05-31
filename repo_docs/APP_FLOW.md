@@ -639,7 +639,7 @@ not yet enabled:
 
 ## Tooling And Context Management Target
 
-The first tooling phase exposes eight base model-visible tools:
+The current base model-visible tool surface is:
 
 ```text
 read
@@ -648,6 +648,8 @@ edit
 apply_patch
 bash
 trace_retrieve
+socrates_memory
+project_notes
 list_project_resources
 mcp_registry
 ```
@@ -671,6 +673,10 @@ Terminal already starts in the active workspace. Commands that begin by changing
 The backend also injects compact Python and shell environment hints from the active workspace. Socrates should use existing project-local environments or package-manager workflows when present, use PowerShell-compatible command syntax on Windows, ask before creating a new environment when none is found, and save generated plot artifacts to files instead of blocking on GUI display unless the user explicitly asks.
 
 `trace_retrieve` retrieves previous conversation memory only when useful. Normal search prevents historical tool dumps from being carried forward or recursively re-retrieved, while explicit `mode = "audit"` keeps full runtime evidence available through SQLite. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
+
+`socrates_memory` is a read-only investigation tool over Socrates-owned memory pages, not conversation history. It supports only `search` and `read`. Its scopes are memory-page scopes: `primary` for readable global memory such as learned patterns and tool-usage docs, `project` for the current project's brief, project memory, and diary pages, and `all` for both. It supports queryless page/section browsing, exact phrase search, keyword-all/keyword-any search, whole-word search, regex search, `memoryLimit`/`memoryOffset` page controls, date filters, diary date filters, context windows, and safe output caps. Identity and operating principles are core agent soul context and are not exposed through this tool.
+
+`project_notes` is the constrained read/search/patch interface for `<workspace>/.socrates/PROJECT_NOTES.md`. Generic `edit` and `apply_patch` mutations to that path are rejected; normal `read`/`search` may still inspect it.
 
 `mcp_registry` lists, describes, checks, and configures supported MCP servers without exposing opaque server ids to the model. The model-facing path should use human names or supported presets such as Playwright; dynamic MCP tool names may be added to the provider request after the registry/runtime reports them available.
 

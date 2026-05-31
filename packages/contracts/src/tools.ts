@@ -827,62 +827,86 @@ export const traceRetrieveToolOutputSchema = z
   .strict()
 export type TraceRetrieveToolOutput = z.infer<typeof traceRetrieveToolOutputSchema>
 
-export const socratesMemoryScopeSchema = z.enum(["primary", "project"])
+export const socratesMemoryScopeSchema = z.enum(["primary", "project", "all"])
 export type SocratesMemoryScope = z.infer<typeof socratesMemoryScopeSchema>
+
+export const socratesMemoryCategorySchema = z.enum(["learned_patterns", "tool_usage", "project_brief", "project_memory", "diary"])
+export type SocratesMemoryCategory = z.infer<typeof socratesMemoryCategorySchema>
+
+export const socratesMemorySearchModeSchema = z.enum(["exact_phrase", "keyword_all", "keyword_any", "whole_word", "regex"])
+export type SocratesMemorySearchMode = z.infer<typeof socratesMemorySearchModeSchema>
+
+export const socratesMemoryResultTypeSchema = z.enum(["file", "section", "line_match", "diary_entry"])
+export type SocratesMemoryResultType = z.infer<typeof socratesMemoryResultTypeSchema>
 
 export const socratesMemoryToolInputSchema = z
   .object({
-    operation: z.enum(["list", "read", "search"]),
+    operation: z.enum(["search", "read"]),
     scope: socratesMemoryScopeSchema.optional(),
+    category: socratesMemoryCategorySchema.optional(),
     path: z.string().min(1).optional(),
     query: z.string().min(1).optional(),
+    searchMode: socratesMemorySearchModeSchema.optional(),
     modifiedAfter: z.string().min(1).optional(),
     modifiedBefore: z.string().min(1).optional(),
-    limit: z.number().int().positive().max(50).optional(),
+    diaryDateAfter: z.string().min(1).optional(),
+    diaryDateBefore: z.string().min(1).optional(),
+    entryAfter: z.string().min(1).optional(),
+    entryBefore: z.string().min(1).optional(),
+    year: z.number().int().min(1970).max(9999).optional(),
+    month: z.number().int().min(1).max(12).optional(),
+    day: z.number().int().min(1).max(31).optional(),
+    includeSections: z.boolean().optional(),
+    memoryLimit: z.number().int().positive().max(50).optional(),
+    memoryOffset: z.number().int().nonnegative().optional(),
+    limit: z.number().int().positive().max(20).optional(),
     offset: z.number().int().nonnegative().optional(),
+    contextLines: z.number().int().nonnegative().max(100).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
   .superRefine((input, context) => {
-    if (input.operation === "read" && !input.path) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "read requires path." })
-    }
-    if (input.operation === "search" && !input.query) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    if (input.searchMode && !input.query) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["searchMode"], message: "searchMode requires query." })
     }
   })
 export type SocratesMemoryToolInput = z.infer<typeof socratesMemoryToolInputSchema>
 
 export const socratesMemoryToolOutputSchema = z
   .object({
-    operation: z.enum(["list", "read", "search"]),
+    operation: z.enum(["search", "read"]),
     scope: socratesMemoryScopeSchema.optional(),
-    files: z
+    category: socratesMemoryCategorySchema.optional(),
+    results: z
       .array(
         z
           .object({
+            resultNumber: z.number().int().positive(),
+            resultType: socratesMemoryResultTypeSchema,
             path: z.string().min(1),
-            scope: socratesMemoryScopeSchema,
-            sizeBytes: z.number().int().nonnegative(),
+            title: z.string().optional(),
+            matchedText: z.string().optional(),
+            contextBefore: z.string().optional(),
+            contextAfter: z.string().optional(),
+            snippet: z.string().optional(),
             modifiedAt: z.string().min(1),
+            diaryDate: z.string().optional(),
+            entryTimestamp: z.string().optional(),
+            lineStart: z.number().int().positive().optional(),
+            lineEnd: z.number().int().positive().optional(),
+            score: z.number().optional(),
+            inspectArgs: z
+              .object({
+                operation: z.literal("read"),
+                path: z.string().min(1),
+                category: socratesMemoryCategorySchema.optional(),
+              })
+              .strict()
+              .optional(),
           })
           .strict(),
-      )
-      .optional(),
-    content: z.string().optional(),
-    matches: z
-      .array(
-        z
-          .object({
-            path: z.string().min(1),
-            scope: socratesMemoryScopeSchema,
-            line: z.number().int().positive().optional(),
-            text: z.string(),
-            modifiedAt: z.string().min(1),
-          })
-          .strict(),
-      )
-      .optional(),
+      ),
+    totalMatches: z.number().int().nonnegative(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
   })

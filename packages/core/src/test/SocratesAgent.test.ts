@@ -204,8 +204,9 @@ describe("SocratesAgent", () => {
         appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
       }),
       socrates_memory: async () => ({
-        operation: "list",
-        files: [],
+        operation: "search",
+        results: [],
+        totalMatches: 0,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
       }),
       project_notes: async () => ({
@@ -666,8 +667,9 @@ describe("SocratesAgent", () => {
         appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
       }),
       socrates_memory: async () => ({
-        operation: "list",
-        files: [],
+        operation: "search",
+        results: [],
+        totalMatches: 0,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
       }),
       project_notes: async () => ({
@@ -1025,8 +1027,9 @@ const emptyToolExecutors = (): ToolExecutors => ({
     appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
   }),
   socrates_memory: async () => ({
-    operation: "list",
-    files: [],
+    operation: "search",
+    results: [],
+    totalMatches: 0,
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
   }),
   project_notes: async () => ({
