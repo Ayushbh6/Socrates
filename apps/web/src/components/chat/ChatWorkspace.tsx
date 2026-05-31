@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
@@ -29,12 +29,24 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [isSending, setIsSending] = useState(false);
   const [activeTurnId, setActiveTurnId] = useState<string | null>(null);
   const [liveSteps, setLiveSteps] = useState<LiveActivityStep[]>([]);
+  const [settledLiveTurns, setSettledLiveTurns] = useState<Record<string, LiveActivityStep[]>>({});
+  const [anchorMessageId, setAnchorMessageId] = useState<string | null>(null);
   const [terminals, setTerminals] = useState<ConversationTerminal[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isTerminalPanelCollapsed, setIsTerminalPanelCollapsed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const liveStepsRef = useRef<LiveActivityStep[]>([]);
+
+  useEffect(() => {
+    activeTurnIdRef.current = activeTurnId;
+  }, [activeTurnId]);
+
+  useEffect(() => {
+    liveStepsRef.current = liveSteps;
+  }, [liveSteps]);
 
   const replaceConversationInSidebar = useCallback((conversation: Conversation) => {
     setSidebarProjects((current) =>
@@ -56,6 +68,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setConversationData(conversation);
     setTerminals(conversation.terminals ?? []);
     replaceConversationInSidebar(conversation.conversation);
+    return conversation;
   }, [projectId, conversationId, replaceConversationInSidebar]);
 
   const handleSocketEvent = useCallback(
@@ -69,10 +82,14 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "turn.started") {
+        activeTurnIdRef.current = event.payload.turnId;
+        liveStepsRef.current = [];
         setActiveTurnId(event.payload.turnId);
+        setAnchorMessageId(event.payload.userMessage.id);
         setIsSending(true);
         setIsCompacting(false);
         setLiveSteps([]);
+        setSettledLiveTurns((current) => removeSettledLiveTurn(current, event.payload.turnId));
         setApprovals([]);
         setConversationData((current) => {
           const messages = current?.messages ?? [];
@@ -166,27 +183,79 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "tool.call.streaming") {
+        setLiveSteps((current) =>
+          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => {
+            const existing = step.tools.find((tool) =>
+              sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId),
+            );
+            if (existing) {
+              return {
+                ...step,
+                tools: step.tools.map((tool) =>
+                  sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId)
+                    ? {
+                        ...tool,
+                        ...(tool.status === "running" ? { phase: "streaming" as const } : {}),
+                        ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
+                        ...(event.payload.pathPreview ? { pathPreview: event.payload.pathPreview } : {}),
+                        ...(event.payload.argsPreview ? { argsPreview: event.payload.argsPreview } : {}),
+                      }
+                    : tool,
+                ),
+              };
+            }
+            return {
+              ...step,
+              tools: [
+                ...step.tools,
+                {
+                  toolCallId: event.payload.toolCallId,
+                  ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
+                  conversationId,
+                  sessionId: event.sessionId ?? "live",
+                  turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
+                  toolName: event.payload.toolName,
+                  displayName: event.payload.displayName,
+                  category: event.payload.category,
+                  status: "running",
+                  requiresApproval: false,
+                  phase: "streaming",
+                  ...(event.payload.pathPreview ? { pathPreview: event.payload.pathPreview } : {}),
+                  ...(event.payload.argsPreview ? { argsPreview: event.payload.argsPreview } : {}),
+                  modelCallId: event.payload.modelCallId,
+                  stepIndex: event.payload.stepIndex,
+                  output: "",
+                },
+              ],
+            };
+          }),
+        );
+        return;
+      }
+
       if (event.type === "tool.call.started") {
         setLiveSteps((current) =>
           updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
             ...step,
             tools: [
-              ...step.tools.filter((tool) => tool.toolCallId !== event.payload.toolCallId),
+              ...step.tools.filter((tool) => !sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId)),
               {
-            toolCallId: event.payload.toolCallId,
-            conversationId,
-            sessionId: event.sessionId ?? "live",
-            turnId: event.turnId ?? activeTurnId ?? "live",
-            toolName: event.payload.toolName,
-            displayName: event.payload.displayName,
-            category: event.payload.category,
-            status: event.payload.requiresApproval ? "awaiting_approval" : "running",
-            requiresApproval: event.payload.requiresApproval,
-            argsPreview: event.payload.argsPreview,
-            modelCallId: event.payload.modelCallId,
-            stepIndex: event.payload.stepIndex,
-            output: "",
-          },
+                toolCallId: event.payload.toolCallId,
+                ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
+                conversationId,
+                sessionId: event.sessionId ?? "live",
+                turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
+                toolName: event.payload.toolName,
+                displayName: event.payload.displayName,
+                category: event.payload.category,
+                status: event.payload.requiresApproval ? "awaiting_approval" : "running",
+                requiresApproval: event.payload.requiresApproval,
+                argsPreview: event.payload.argsPreview,
+                modelCallId: event.payload.modelCallId,
+                stepIndex: event.payload.stepIndex,
+                output: "",
+              },
             ],
           })),
         );
@@ -195,7 +264,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.output") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, (tool) =>
+          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) =>
             appendToolOutput(tool, event.payload.stream, event.payload.text ?? ""),
           ),
         );
@@ -204,20 +273,20 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.completed") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, (tool) => ({
-                  ...tool,
-                  status: "completed",
-                  summary: event.payload.summary,
-                  resultPreview: event.payload.resultPreview,
-                  durationMs: event.payload.durationMs,
-                })),
+          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) => ({
+            ...tool,
+            status: "completed",
+            summary: event.payload.summary,
+            resultPreview: event.payload.resultPreview,
+            durationMs: event.payload.durationMs,
+          })),
         );
         return;
       }
 
       if (event.type === "tool.call.failed") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, (tool) => ({
+          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) => ({
             ...tool,
             status: "failed",
             error: event.payload.error.message,
@@ -243,7 +312,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         if (event.payload.toolCallId) {
           const toolCallId = event.payload.toolCallId;
           setLiveSteps((current) =>
-            updateLiveTool(current, toolCallId, (tool) => ({
+            updateLiveTool(current, toolCallId, event.payload.providerToolCallId, (tool) => ({
               ...tool,
               status: event.payload.decision === "approved" ? "running" : "rejected",
             })),
@@ -253,16 +322,29 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       }
 
       if (event.type === "turn.completed") {
+        const completedTurnId = event.payload.turnId;
+        activeTurnIdRef.current = null;
         setIsSending(false);
         setActiveTurnId(null);
-        setLiveSteps([]);
         setApprovals([]);
         setIsCompacting(false);
-        void refreshConversation();
+        void refreshConversation().finally(() => {
+          setSettledLiveTurns((current) => removeSettledLiveTurn(current, completedTurnId));
+          if (!activeTurnIdRef.current) {
+            liveStepsRef.current = [];
+            setLiveSteps([]);
+          }
+        });
         return;
       }
 
       if (event.type === "turn.cancelled") {
+        const cancelledTurnId = event.payload.turnId;
+        const liveSnapshot = liveStepsRef.current;
+        activeTurnIdRef.current = null;
+        if (liveSnapshot.some((step) => step.reasoning || step.answer || step.tools.length > 0)) {
+          setSettledLiveTurns((current) => ({ ...current, [cancelledTurnId]: liveSnapshot }));
+        }
         const partialAssistantMessage = event.payload.partialAssistantMessage;
         setConversationData((current) => {
           if (!current) {
@@ -279,27 +361,38 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         });
         setIsSending(false);
         setActiveTurnId(null);
-        if (partialAssistantMessage) {
-          setLiveSteps([]);
-        }
+        liveStepsRef.current = [];
+        setLiveSteps([]);
         setApprovals([]);
         setIsCompacting(false);
+        void refreshConversation().finally(() => {
+          setSettledLiveTurns((current) => removeSettledLiveTurn(current, cancelledTurnId));
+        });
         return;
       }
 
       if (event.type === "turn.failed" || event.type === "error.created") {
         setIsSending(false);
         setActiveTurnId(null);
+        activeTurnIdRef.current = null;
         setIsCompacting(false);
         setError(event.type === "turn.failed" ? event.payload.error.message : event.payload.error.message);
         if (event.type === "turn.failed") {
+          const failedTurnId = event.payload.turnId;
+          const liveSnapshot = liveStepsRef.current;
+          if (liveSnapshot.some((step) => step.reasoning || step.answer || step.tools.length > 0)) {
+            setSettledLiveTurns((current) => ({ ...current, [failedTurnId]: liveSnapshot }));
+          }
+          liveStepsRef.current = [];
           setLiveSteps([]);
           setApprovals([]);
-          void refreshConversation();
+          void refreshConversation().finally(() => {
+            setSettledLiveTurns((current) => removeSettledLiveTurn(current, failedTurnId));
+          });
         }
       }
     },
-    [activeTurnId, conversationId, projectId, refreshConversation],
+    [conversationId, projectId, refreshConversation],
   );
 
   const { isConnected, sendCommand } = useSocratesSocket({
@@ -330,6 +423,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           setConversationData(conversation);
           setTerminals(conversation.terminals ?? []);
           const reloadActiveTurn = conversation.partialTurns?.find((turn) => turn.status === "running")?.turnId ?? null;
+          activeTurnIdRef.current = reloadActiveTurn;
           setActiveTurnId(reloadActiveTurn);
           setIsSending(Boolean(reloadActiveTurn));
           setLiveSteps([]);
@@ -368,12 +462,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       isMounted = false;
     };
   }, [projectId, conversationId]);
-
-  useEffect(() => {
-    if (terminals.some((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input")) {
-      setIsTerminalPanelCollapsed(false);
-    }
-  }, [terminals]);
 
   const handleModelChange = (model: ModelOption) => {
     setSelectedModel(model);
@@ -421,6 +509,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setLiveSteps([]);
     setIsCompacting(false);
     const clientMessageId = `msg_${crypto.randomUUID()}`;
+    setAnchorMessageId(clientMessageId);
     try {
       const optimisticMessage: Message = {
         id: clientMessageId,
@@ -565,6 +654,12 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const hasTerminals = terminals.length > 0;
   const activeTerminalCount = terminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
   const awaitingTerminalInputCount = terminals.filter((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input").length;
+  const effectiveTerminalPanelCollapsed = isTerminalPanelCollapsed && awaitingTerminalInputCount === 0;
+  const workspaceBodyClass = hasTerminals
+    ? effectiveTerminalPanelCollapsed
+      ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_3rem]"
+      : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_380px]"
+    : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
   const tokenLabel = useMemo(() => {
     if (contextUsage) {
       return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
@@ -573,7 +668,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   }, [contextUsage]);
 
   return (
-    <main className="flex h-screen bg-brand-bg">
+    <main className="flex h-screen overflow-hidden bg-brand-bg">
       <ProjectChatSidebar
         projects={sidebarProjects}
         currentProjectId={projectId}
@@ -583,9 +678,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         onExpand={() => setIsSidebarCollapsed(false)}
         onStartChat={handleStartChat}
       />
-      <section className="flex min-w-0 flex-1 flex-col bg-white">
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
         <header
-          className={`flex h-14 shrink-0 items-center border-b border-gray-200 ${
+          className={`flex h-14 min-w-0 shrink-0 items-center border-b border-gray-200 ${
             isSidebarCollapsed ? "pl-16 pr-6" : "px-6"
           }`}
         >
@@ -595,11 +690,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             <button
               type="button"
               className="ml-auto inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
-              title={isTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
-              aria-pressed={!isTerminalPanelCollapsed}
+              title={effectiveTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
+              aria-pressed={!effectiveTerminalPanelCollapsed}
               onClick={() => setIsTerminalPanelCollapsed((current) => !current)}
             >
-              {isTerminalPanelCollapsed ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+              {effectiveTerminalPanelCollapsed ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
               <span className="hidden sm:inline">Terminal</span>
               {activeTerminalCount > 0 ? (
                 <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] text-brand-teal-dark">
@@ -610,8 +705,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             </button>
           ) : null}
         </header>
-        <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-          <div className="flex min-h-0 flex-1 flex-col">
+        <div className={workspaceBodyClass}>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {isLoading ? (
               <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
             ) : error && !conversationData ? (
@@ -640,12 +735,14 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   activitySteps={conversationData?.activitySteps ?? []}
                   liveSteps={liveSteps}
                   approvals={approvals}
+                  settledLiveTurns={settledLiveTurns}
+                  anchorMessageId={anchorMessageId}
                   isStreaming={isSending}
                   isCompacting={isCompacting}
                   onApprovalDecision={handleApprovalDecision}
                 />
-                <div className="border-t border-gray-100 bg-white px-6 py-4">
-                  <div className="mx-auto max-w-3xl">
+                <div className="min-w-0 border-t border-gray-100 bg-white px-6 py-3">
+                  <div className="mx-auto max-w-3xl min-w-0">
                     {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
                     <ChatComposer
                       isSending={isSending}
@@ -667,7 +764,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           </div>
           <TerminalPanel
             terminals={terminals}
-            isCollapsed={isTerminalPanelCollapsed}
+            isCollapsed={effectiveTerminalPanelCollapsed}
             onToggleCollapsed={() => setIsTerminalPanelCollapsed((current) => !current)}
             onStop={handleTerminalStop}
             onInput={handleTerminalInput}
@@ -719,12 +816,28 @@ const updateLiveStep = (
 const updateLiveTool = (
   steps: LiveActivityStep[],
   toolCallId: string,
+  providerToolCallId: string | undefined,
   updater: (tool: ToolTimelineItem) => ToolTimelineItem,
 ): LiveActivityStep[] =>
   steps.map((step) => ({
     ...step,
-    tools: step.tools.map((tool) => (tool.toolCallId === toolCallId ? updater(tool) : tool)),
+    tools: step.tools.map((tool) => (sameToolIdentity(tool, toolCallId, providerToolCallId) ? updater(tool) : tool)),
   }));
+
+const sameToolIdentity = (tool: ToolTimelineItem, toolCallId: string, providerToolCallId: string | undefined): boolean =>
+  tool.toolCallId === toolCallId || Boolean(providerToolCallId && tool.providerToolCallId === providerToolCallId);
+
+const removeSettledLiveTurn = (
+  turns: Record<string, LiveActivityStep[]>,
+  turnId: string,
+): Record<string, LiveActivityStep[]> => {
+  if (!turns[turnId]) {
+    return turns;
+  }
+  const next = { ...turns };
+  delete next[turnId];
+  return next;
+};
 
 const upsertTerminal = (terminals: ConversationTerminal[], terminal: ConversationTerminal): ConversationTerminal[] => {
   const existing = terminals.find((item) => item.terminalId === terminal.terminalId);

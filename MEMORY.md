@@ -247,14 +247,16 @@ Agent/tool runtime:
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources
+mcp_registry
 ```
 
-- `read`, `search`, `trace_retrieve`, and `list_project_resources` are read-only and parallel-capable.
-- `edit` is serialized.
-- `bash` is serialized and does not run concurrently with `edit`.
+- `read`, `search`, `trace_retrieve`, `list_project_resources`, and non-configuring `mcp_registry` operations are read-only and parallel-capable.
+- `edit` and `apply_patch` are serialized mutation tools and share a workspace-level mutation lock.
+- `bash` is serialized and does not run concurrently with file mutations.
 - `maxParallelToolCalls` defaults to `5`.
 - `maxToolCallsPerTurn` defaults to `80`; if the budget is exhausted, Socrates performs a final no-tools model call so the assistant can answer from available evidence.
 - Current-turn tool calls/results are passed back to the model until the final answer is reached.
@@ -266,10 +268,11 @@ Workspace/server implementation:
 - `packages/workspace/src/tools/` owns local filesystem, search, edit, and shell execution helpers.
 - `read` supports bounded file/dir/resource reads, pragmatic text/data extraction, image metadata, and truncation metadata.
 - `search` supports bounded file and text search with ignore handling.
-- `edit` supports create, overwrite, exact multiline replace, and patch-style edits with diff previews and approval policy.
+- `edit` supports new-file content writes, explicit whole-file overwrites with `overwrite: true`, and exact multiline `oldString`/`newString` replacements with diff previews and approval policy.
+- `apply_patch` supports structured `patchText` (`*** Begin Patch`) for multi-hunk, multi-file, create, delete, and rename changes, with intent-aware read-back verification and clear recoverable diagnostics for bad hunks.
 - `bash` is the stable model-visible compatibility id for the Terminal tool. User-facing and prompt copy should say Terminal. It uses platform-native shell adapters: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` as fallback. Do not add separate model-visible PowerShell/cmd/process tools unless the contracts change.
 - `bash` uses one non-interactive persistent shell session per active turn for `operation: "run"`, keeps `cwd`/environment across bash calls in that turn, streams output, enforces timeout/output caps, rejects or times out likely interactive commands, and resets the shell after timeout or shell start/write/protocol failures.
-- `bash` supports conversation-scoped Terminal sessions with `operation: "start"`, then `status`/`output`/`stop` by no target when exactly one active Terminal exists or by human Terminal name when needed. Terminal/process ids remain internal for UI/runtime compatibility. These processes keep bounded in-memory output buffers, stream live output through `tool.call.output` and `terminal.output`, persist terminal/process metadata in `terminal_sessions` and `terminal_output_chunks`, and survive across turns until stopped, deleted with the conversation, cleaned up during workspace switch/shutdown, marked stale on restart, or expired by idle TTL.
+- `bash` supports conversation-scoped Terminal sessions with `operation: "start"`, then `status`/`output`/`stop` by no target when exactly one active Terminal exists or by human Terminal name when needed. Terminal/process ids remain internal for UI/runtime compatibility. Runtime ownership lives in the local Terminal supervisor, while SQLite persists metadata and output. On restart, controllable terminals are reconciled through the supervisor; uncontrollable rows become `detached` or `missing` rather than requiring model-visible process ids.
 - Long blocking `bash run` commands can auto-detach into a conversation Terminal after `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds). The UI/product copy says Terminal while the model-visible tool id remains `bash`.
 - Terminal input is user-only. Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`; the frontend shows a Terminal-scoped input box and the backend persists only redacted input markers.
 - Windows command policy auto-allows safe diagnostics such as `Get-Location`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Command`, `where`, Python version checks, and safe git inspection; installs, dev servers, Docker, network commands, deletes, migrations, and git mutations remain approval-gated by default.
@@ -278,7 +281,7 @@ Workspace/server implementation:
 - The backend injects compact Python environment hints into the Socrates prompt each turn. Existing project-local venvs and package-manager workflows are preferred; when no environment is detected, Socrates should ask before creating one unless the user already requested setup.
 - `apps/server/src/services/store/toolStore.ts` persists tool calls, shell commands/output, file operations, patches, approvals, and trace retrieval data. `apps/server/src/services/store/terminalStore.ts` persists conversation Terminal sessions and output chunks.
 - `apps/server/src/ws/activeTurns.ts` owns active turn state, approval waiters, abort controllers, and per-turn shell session lifecycle.
-- `apps/server/src/ws/conversationTerminals.ts` owns conversation-scoped Terminal process handles, polling, output events, stale marking, user-only stdin, and cleanup.
+- `apps/server/src/ws/conversationTerminals.ts` coordinates conversation-scoped Terminal rows with the durable local Terminal supervisor, output polling, output events, detached/missing reconciliation, user-only stdin, and cleanup.
 - `approval.decide` persists the decision and wakes the waiting active turn.
 
 Provider behavior:
@@ -295,7 +298,7 @@ Frontend behavior:
 - Chat transcripts render a Codex-style inline tool timeline instead of card-heavy separate tool panels.
 - Tool rows are collapsed by default with icon, status, concise summary, duration, and expandable details.
 - Expanded details show inputs, search snippets, read previews, edit diffs, Terminal command/output, trace summaries, resource lists, errors, and completion status.
-- The chat workspace now has a persistent Terminal panel hydrated from `GET /api/projects/:projectId/conversations/:conversationId.terminals` and updated by `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and `terminal.stale`.
+- The chat workspace now has a persistent Terminal panel hydrated from `GET /api/projects/:projectId/conversations/:conversationId.terminals` and updated by `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and compatibility stale/detached/missing state changes.
 - Approval prompts render inline under the relevant tool row with adjacent Approve/Reject actions.
 - Historical `toolRuns` are returned by conversation GET and merged with live WebSocket tool events so completed tool flows reload with conversation history.
 - If a turn is cancelled after assistant text streamed, that visible text is persisted as a cancelled partial assistant message, rendered with a stopped indicator, and included in later semantic history as `user_query -> partial_assistant_response -> new_user_query`. Cancelled turn tools/results/reasoning stay audit/UI-only.
@@ -417,7 +420,7 @@ Implemented the semantic trace retrieval phase:
 - OpenAI credentials remain env-only: server env or a user-selected workspace `.env*` file. The backend reports only key presence and filenames, never secret values.
 - Socrates does not silently install Ollama or pull models. Missing Ollama setup returns explicit guidance such as `ollama pull embeddinggemma`.
 - Embedding generation is async and in-process. Configure/reindex and newly indexed turns enqueue work without blocking chat turns.
-- `trace_retrieve` keeps one model-visible tool. `mode = "combined"` merges lexical and vector evidence when embeddings are ready; `mode = "semantic"` ranks by vector similarity first.
+- `trace_retrieve` keeps one model-visible tool with four modes. `mode = "exact"` is the default lexical search over clean conversation memory; `mode = "semantic"` ranks by vector similarity for fuzzy recall; `mode = "combined"` merges lexical and vector evidence when embeddings are ready; `mode = "audit"` is required for tool calls, shell output, file operations, patches, errors, and other runtime evidence.
 - `trace_retrieve` search and inspect results now include conversation provenance (`conversation.title`, status, updated time, and `isCurrentConversation`) so Socrates can name the source chat correctly and avoid calling earlier project evidence "this conversation".
 - Retrieval only compares vectors for the active project config: provider id, model id, dimensions, and current trace document content hash must match.
 - Raw messages/tools/events remain the source of truth. Embeddings are retrieval rows over `trace_documents`, not fake messages or replacement history.
@@ -475,7 +478,7 @@ Implemented the Codex-like Terminal layer on top of Bash v2:
 Implemented the verified edit reliability slice after Terminal v2:
 
 - `read` now returns full-file freshness metadata: `contentHash`, `mtimeMs`, `sizeBytes`, and text `lineEnding` when applicable. The hash represents the full file bytes, not the truncated preview returned to the model.
-- `edit` remains the only model-visible file mutation tool. It still supports create, overwrite, exact replace, and patch operations, but existing-file overwrites require `baseContentHash`, and patches touching existing files require `baseContentHashes`.
+- Historical note: this slice originally kept patch operations inside `edit` with model-carried base hashes. The current contract later split unified diffs into `apply_patch` and moved edit freshness to the harness-tracked active-turn read state.
 - Non-dry-run edits read/stat/hash before writing, write text through a same-directory temp file, immediately read/stat/hash after writing, and fail with recoverable errors such as `edit_stale_content`, `edit_write_failed`, `edit_verification_failed`, or `patch_verification_failed` when disk state does not match Socrates' plan.
 - `replace` stays lightweight because exact `oldText` must match current disk content. It still verifies disk after writing before reporting success.
 - Completed edit outputs include per-file verification metadata: before/after hashes, before/after byte sizes, line delta, and `verification: "verified"`.
@@ -500,13 +503,16 @@ Prepared the v0.1.2 runtime slice for the npm CLI release path:
 - Vision-capable OpenRouter, OpenAI, and Google calls keep native image parts and the full Socrates tool set in the same AI SDK request. The previous OpenRouter workaround that omitted tools when images were present was removed.
 - Composer image attachments are copied into `<workspace>/.socrates/attachments/` and remain referenced in the user text so Socrates can reopen exact files later. Vision models receive native image parts; non-vision models receive clear omission/reference text instead of image bytes.
 - Context compression no longer serializes base64 image bytes into compressor prompts. Recent native image parts remain available to the actual model call, while compressed history keeps compact metadata and `.socrates/attachments` references.
+- The Socrates master prompt explicitly teaches the agent that chat screenshots/images live under `<workspace>/.socrates/attachments/`, are not project resources, and should be reopened with `read` from known attachment paths when native image parts are unavailable or prior-image evidence must be inspected exactly.
 - The Socrates prompt now explicitly tells vision-capable models to inspect images as native visual inputs and still use tools until enough evidence has been gathered.
 - OpenRouter thinking off remains explicit through `providerOptions.openrouter.reasoning = { effort: "none", exclude: true }`, including provider request-shape coverage.
 - `search` now defaults to 20 results, hard-caps model-requested results at 50, skips generated/vendor folders by default, and emits warnings when output is capped or paths are skipped.
 - Terminal stdin is usable for running Terminals, not only perfectly detected awaiting-input rows. The UI supports raw input plus quick keys for arrow navigation, Enter, Escape, and Ctrl-C.
 - Cancelled streaming preserves partial assistant text through stop/reload instead of letting thinking/tool rows hide or replace the intermediate answer.
 - Model-facing tool schemas and prompt context no longer require Socrates to type opaque runtime ids. `bash` status/output/stop can omit the target when exactly one active Terminal exists or use a human Terminal name such as `dev-server`; terminal ids and process ids remain internal for UI/runtime compatibility only.
-- `trace_retrieve` search returns numbered results and inspect hints. Model-facing inspect should use `resultNumber` or natural filters such as `conversationHint`, `turnNo`, `role`, `query`, `paths`, or `command`; raw ids remain server-side compatibility only.
+- `trace_retrieve` search returns numbered results and inspect hints. Model-facing inspect should start with `resultNumber` or natural filters such as `conversationHint`, `turnNo`, `role`, `query`, `paths`, or `command`; exact ids returned by search (`conversationId`, `turnId`, `messageId`, `toolCallId`, `handle`) may be used for precise follow-up inspection.
+- Trace retrieval is limited to visible non-deleted conversations (`active` and `archived`). Conversation hard delete removes trace docs, FTS rows, embeddings, and index jobs; orphan trace rows from older deletes are cleaned/excluded. `.socrates/attachments` files intentionally remain on disk and are not proof of active conversation provenance by themselves.
+- MiMo Pro is vision-capable in the model catalog and image-read path.
 - Tool results sent back into the next model step are sanitized to strip opaque ids from the model-visible output body while preserving provider-required `toolCallId` in the protocol wrapper and full ids in persistence/UI.
 - `mcp_registry` model-facing inputs prefer `preset` or `serverName`; opaque server ids are internal/backward-compatible.
 - WebSocket reconnect/backoff clears transient connection errors after reconnect and keeps visible assistant/terminal state recoverable through refresh.
@@ -521,3 +527,26 @@ pnpm --filter web typecheck
 pnpm --filter @socrates/workspace test
 pnpm --filter @socrates/providers test
 ```
+
+## Flat Edit And apply_patch Split (feat-123-cursor)
+
+Split the model-facing file mutation surface to reduce weak-model tool-schema failures while preserving capabilities:
+
+- `edit` is now flat per call: `{ path, content, overwrite? }` for new-file content writes or explicit whole-file overwrite, or `{ path, oldString, newString, replaceAll? }` for targeted multiline replace. Existing-file `content` without explicit overwrite intent fails before writing with recoverable `edit_use_targeted_replace`. No `operations[]`, no discriminated union, and no model-carried `baseContentHash` / `expectedOccurrences`.
+- `apply_patch` is a dedicated mutation tool: `{ patchText, dryRun? }` for multi-hunk or multi-file changes. The preferred model input is structured `*** Begin Patch` text with `*** Add File`, `*** Update File`, `*** Delete File`, and `*** Move to`; standard unified diffs remain accepted for compatibility when already valid.
+- Patch verification is intent-aware: patched/created targets must exist with verified content, deleted targets must be absent, and renamed targets include `previousPath` while verifying old path absence and new path presence.
+- `FileFreshnessTracker` (turn-scoped in `apps/server` `activeTurns`) records `read` `contentHash` values and enforces freshness on existing-file `edit` writes/replaces and `apply_patch` update/delete/rename operations with recoverable `edit_stale_content`.
+- `packages/workspace` owns tracker, mutation lock, and patch helpers; `packages/contracts` owns schemas; `packages/core` registers both tools; frontend `editPresentation` reads flat args and routes `apply_patch` through the same diff UI.
+- Rule 10 / contract docs amended: `apply_patch` is model-visible; patch is no longer a hidden `edit` mode.
+
+## feat-123-cursor Merge-Readiness Updates
+
+Current branch polish before merge:
+
+- The base model-visible tool registry now has eight tools: `read`, `search`, `edit`, `apply_patch`, `bash`, `trace_retrieve`, `list_project_resources`, and `mcp_registry`. Dynamic MCP tool names can be added only by the MCP runtime after a server is available.
+- Terminal model-facing use stays human-handle based. `bash` status/output/stop can omit the target when exactly one active Terminal exists or use the human Terminal name; terminal ids, process ids, and output sequence numbers are internal persistence/UI/supervisor details.
+- Long-running Terminals are owned by a durable local supervisor process. Server restart reconciliation marks uncontrollable persisted rows as `detached` or `missing`; `stale` is legacy/backward-compatible status language, not the preferred user/model-facing state.
+- Terminal output requests drain supervisor output first, persist new chunks, and return recent DB-backed output by human handle so background polling does not make model-facing output blank.
+- MCP setup is routed through `mcp_registry`; Playwright can be configured as a no-secret preset and dynamic MCP tools should not require opaque server ids in model-authored inputs.
+- Chat transcript UI now anchors each new user query near the top of the transcript viewport, keeps streamed/partial content visible until hydrated server state arrives, collapses completed tool-heavy work into `Ran X tools`, and uses a more compact composer.
+- Final merge validation for this branch should include package tests for contracts/workspace/core/server/providers, `web` typecheck/lint, `git diff --check`, and a manual Socrates smoke over OpenAI, Gemini, edit, apply_patch, Terminal, MCP/Playwright, and chat streaming UI.

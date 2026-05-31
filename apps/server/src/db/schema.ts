@@ -389,6 +389,7 @@ export const toolCalls = sqliteTable(
     sessionId: text("session_id").notNull(),
     turnId: text("turn_id").notNull(),
     modelCallId: text("model_call_id"),
+    providerToolCallId: text("provider_tool_call_id"),
     toolName: text("tool_name").notNull(),
     status: text("status").notNull(),
     argumentsJson: text("arguments_json").notNull(),

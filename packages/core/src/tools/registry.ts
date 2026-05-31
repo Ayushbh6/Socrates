@@ -1,4 +1,5 @@
 import type { ModelToolDefinition, ToolName } from "@socrates/contracts"
+import { applyPatchTool } from "./applyPatchTool"
 import { bashTool } from "./bashTool"
 import { editTool } from "./editTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
@@ -8,7 +9,7 @@ import { searchTool } from "./searchTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
 
-const tools = [readTool, searchTool, editTool, bashTool, traceRetrieveTool, listProjectResourcesTool, mcpRegistryTool] as const
+const tools = [readTool, searchTool, editTool, applyPatchTool, bashTool, traceRetrieveTool, listProjectResourcesTool, mcpRegistryTool] as const
 
 export type RegisteredTool = (typeof tools)[number]
 

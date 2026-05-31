@@ -35,11 +35,12 @@ describe("model catalog", () => {
     expect(pro?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high"])
   })
 
-  it("marks OpenRouter text-only models as non-vision models", () => {
+  it("marks only OpenRouter text-only models as non-vision models", () => {
     const nonVision = modelCatalog
       .filter((model) => model.capabilities?.vision === false)
       .map((model) => model.modelId)
 
-    expect(nonVision).toEqual(["z-ai/glm-5.1", "xiaomi/mimo-v2.5-pro", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+    expect(nonVision).toEqual(["z-ai/glm-5.1", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+    expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
   })
 })

@@ -77,7 +77,10 @@ import {
   agentThinkingDeltaEventSchema,
   bashToolInputSchema,
   bashToolModelInputSchema,
+  applyPatchToolInputSchema,
+  applyPatchToolModelInputSchema,
   editToolInputSchema,
+  editToolModelInputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
   mcpRegistryToolModelInputSchema,
@@ -789,26 +792,27 @@ describe("websocket server event contracts", () => {
 })
 
 describe("tool contracts", () => {
-  it("parses the six V1 model-visible tool inputs", () => {
+  it("parses the seven V1 model-visible tool inputs", () => {
     expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)
-    expect(
-      editToolInputSchema.safeParse({
-        operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }],
-      }).success,
-    ).toBe(true)
-    expect(
-      editToolInputSchema.safeParse({
-        operations: [{ type: "overwrite", path: "README.md", content: "new", baseContentHash: "hash_before" }],
-      }).success,
-    ).toBe(true)
-    expect(
-      editToolInputSchema.safeParse({
-        operations: [{ type: "patch", patch: "--- a/README.md\n+++ b/README.md\n", baseContentHashes: { "README.md": "hash_before" } }],
-      }).success,
-    ).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new" }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", content: "new", overwrite: true }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new", overwrite: true }).success).toBe(false)
+    expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new", replaceAll: true }).success).toBe(true)
+    expect(editToolInputSchema.safeParse({ path: "README.md" }).success).toBe(false)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new" }).success).toBe(true)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new", overwrite: true }).success).toBe(true)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new", overwrite: true }).success).toBe(false)
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success).toBe(false)
+    expect(applyPatchToolInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(true)
+    expect(applyPatchToolInputSchema.safeParse({ patchText: "*** Begin Patch\n*** End Patch" }).success).toBe(true)
+    expect(applyPatchToolInputSchema.safeParse({ patch: "one", patchText: "two" }).success).toBe(false)
+    expect(applyPatchToolModelInputSchema.safeParse({ patchText: "*** Begin Patch\n*** End Patch" }).success).toBe(true)
+    expect(applyPatchToolModelInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(false)
     expect(
       readToolOutputSchema.safeParse({
         path: "README.md",
@@ -834,6 +838,17 @@ describe("tool contracts", () => {
             sizeBytesAfter: 5,
             lineDelta: 1,
           },
+          {
+            path: "renamed.md",
+            previousPath: "old.md",
+            operation: "renamed",
+            verification: "verified",
+          },
+          {
+            path: "deleted.md",
+            operation: "deleted",
+            verification: "verified",
+          },
         ],
         diff: "--- a/README.md\n+++ b/README.md\n",
         dryRun: false,
@@ -852,6 +867,7 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", name: "dev-server" }).success).toBe(true)
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", terminalId: "term_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)
+    expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", query: "README", role: "assistant" }).success).toBe(true)
@@ -860,8 +876,17 @@ describe("tool contracts", () => {
     ).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", query: "README", role: "assistant" }).success).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(false)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1" }).success).toBe(false)
+    expect(
+      traceRetrieveToolModelInputSchema.safeParse({ query: "previous screenshots", command: "", paths: [], include: [], createdAfter: "" }).success,
+    ).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationLimit: 10 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", conversationLimit: 50 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "audit", include: ["tool_calls"] }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", conversationId: "conv_1", startTurnNo: 2 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", startTurnNo: 2 }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverId: "srv_1" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", turnNo: 0 }).success).toBe(false)

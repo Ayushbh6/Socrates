@@ -177,7 +177,7 @@ type ConversationTerminal = {
   command: string
   cwd: string
   workspacePath: string
-  status: "running" | "exited" | "stopped" | "stale" | "awaiting_input" | "missing"
+  status: "running" | "exited" | "stopped" | "detached" | "stale" | "awaiting_input" | "missing"
   platform?: string
   shellKind?: "posix" | "powershell" | "cmd"
   shellExecutable?: string
@@ -940,11 +940,12 @@ Backend behavior:
 ```text
 load conversation within project
 delete conversation-scoped rows in one transaction
+delete trace_documents, trace_documents_fts, trace_embeddings, and trace_index_jobs for the conversation
 delete conversations row
 emit conversation.deleted event before the final conversation row delete or as a project-scoped event
 ```
 
-This endpoint must not archive the conversation and must not set `conversations.status = "deleted"` in the current V1 flow. It must not delete project resources, project instructions, or the owning project.
+This endpoint must not archive the conversation and must not set `conversations.status = "deleted"` in the current V1 flow. It must not delete project resources, project instructions, the owning project, or retained chat attachment files under `.socrates/attachments`.
 
 ### `POST /api/projects/:projectId/conversations/:conversationId/messages`
 
@@ -1534,12 +1535,14 @@ Model-visible V1 tools:
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources
+mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `patch`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the model-visible surface should remain the six tools above.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the base model-visible surface should remain the eight tools above plus any dynamic MCP tools that the MCP runtime explicitly exposes. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -1634,27 +1637,23 @@ Rules:
 
 ### `edit`
 
-Creates or changes files.
+Creates or changes a single file per call.
 
 Input:
 
 ```ts
 type EditToolInput = {
-  operations: Array<
-    | { type: "create"; path: string; content: string }
-    | { type: "overwrite"; path: string; content: string; baseContentHash?: string }
-    | {
-        type: "replace"
-        path: string
-        oldText: string
-        newText: string
-        expectedOccurrences?: number
-      }
-    | { type: "patch"; patch: string; baseContentHashes?: Record<string, string> }
-  >
+  path: string
+  content?: string // new-file content, or full-file content with overwrite: true
+  oldString?: string // targeted multiline replace
+  newString?: string
+  replaceAll?: boolean // default false => oldString must match exactly once
+  overwrite?: true // explicit existing-file full rewrite intent; valid only with content
   dryRun?: boolean
 }
 ```
+
+Exactly one mode per call: provide `content` for a new file or explicit full-file rewrite, or `oldString`/`newString` for a targeted replace. Model-facing inputs do not carry content hashes. Existing-file `content` without `overwrite: true` is rejected with recoverable `edit_use_targeted_replace` so the model retries with targeted replacement for localized edits.
 
 Output:
 
@@ -1662,7 +1661,8 @@ Output:
 type EditToolOutput = {
   changedFiles: Array<{
     path: string
-    operation: "created" | "overwritten" | "edited" | "patched"
+	    operation: "created" | "overwritten" | "edited" | "patched" | "deleted" | "renamed"
+	    previousPath?: string
     verification?: "verified"
     contentHashBefore?: string
     contentHashAfter?: string
@@ -1682,12 +1682,38 @@ Rules:
 - Requires approval unless the user explicitly runs a full-access mode.
 - Must show a diff or equivalent preview before applying.
 - For requests to write code, create scripts, build small programs, implement files, or build a small app/tool, the agent should treat the request as a workspace file creation/edit request. It should use `edit` by default, write generated code into the attached workspace/repo rather than `.socrates/`, choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, and avoid pasting a full runnable file into chat. If the user lets Socrates decide, standalone scripts can go in the repo root; multi-file work can use a small well-named folder when natural. Inline code is appropriate only when the user explicitly asks for a snippet or when no write-capable workspace is available.
-- Precise replacements must fail with helpful errors when `oldText` matches zero times or more times than expected.
-- `replace` reads current disk content and is allowed without a base hash because exact `oldText` matching proves the edit target is current enough for that precise change.
-- `overwrite` of an existing file requires `baseContentHash` from a prior `read`; stale or missing hashes fail with `edit_stale_content`.
-- `patch` requires `baseContentHashes` for every existing touched file; create-only patch targets do not need hashes.
-- Non-dry-run edits must read/stat/hash before writing, write through a same-directory temp file, immediately read/stat/hash after writing, and return verified metadata. If disk does not match the planned result, the tool must fail loudly with recoverable errors such as `edit_write_failed`, `edit_verification_failed`, or `patch_verification_failed`.
+- Targeted replacements must fail with helpful errors when `oldString` matches zero times or more than once unless `replaceAll` is true.
+- Existing-file targeted replacements and explicit whole-file overwrites require a prior `read` of the same path in the active turn. The harness records the returned `contentHash` and rejects stale or unread edits with recoverable `edit_stale_content`.
+	- Non-dry-run edits must read/stat/hash before writing, write through a same-directory temp file, immediately read/stat/hash after writing, and return verified metadata. If disk does not match the planned result, the tool must fail loudly with recoverable errors such as `edit_write_failed` or `edit_verification_failed`.
+	- After a successful edit, another mutation to the same existing file must re-read first rather than relying on the previous read snapshot.
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
+- Writes outside the active project workspace are denied by default.
+- Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
+
+### `apply_patch`
+
+Applies a patch to one or more workspace files. The preferred model-facing input is `patchText` containing a structured `*** Begin Patch` envelope with file-operation sections; standard unified diffs are also accepted for compatibility when already valid.
+
+Input:
+
+```ts
+type ApplyPatchToolInput = {
+  patch: string
+  dryRun?: boolean
+}
+```
+
+Output reuses `EditToolOutput`. `changedFiles` may report `patched`, `created`, `deleted`, or `renamed`; rename entries include `previousPath`.
+
+Rules:
+
+- Requires approval unless the user explicitly runs a full-access mode.
+- Must show a diff or equivalent preview before applying.
+- Structured patches are normalized before preview/apply. `@@` labels are optional hints; old lines inside each hunk are the real match target. Standard unified diffs use git apply context matching against current disk; model-facing inputs do not carry content hashes.
+- Existing-file update, delete, and rename operations require a prior active-turn `read` of the source path. New-file creation does not require a prior read. After a successful patch, another mutation to the same existing path must re-read first.
+- Common structured patch prefix mistakes may be normalized with warnings, but malformed unified diff hunk counts and unsafe structured patch grammar errors must fail before applying with recoverable, corrective messages that steer the model back to structured `patchText`.
+- Non-dry-run patches must verify disk after applying and return the same verified metadata shape as `edit`. Deleted files verify by being absent; renamed files verify that the old path is absent and the new path exists.
+- File mutations are serialized with `edit`.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
 
@@ -1701,18 +1727,15 @@ Input:
 type BashToolInput = {
   operation?: "run" | "start" | "status" | "output" | "stop"
   command?: string
-  terminalId?: string
   name?: string
   target?: string
-  processId?: string
-  outputSequence?: number
   cwd?: string
   timeoutMs?: number
   charLimit?: number
 }
 ```
 
-`operation` defaults to `"run"`. `run` and `start` require `command`. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. `terminalId` and `processId` remain accepted internally for UI and backwards compatibility, but they are not required or recommended in model-authored inputs.
+`operation` defaults to `"run"`. `run` and `start` require `command`. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. Model-authored inputs do not include `terminalId`, `processId`, or output sequence cursors; those remain internal for UI, persistence, supervisor control, and backwards-compatible server paths.
 
 Output:
 
@@ -1725,6 +1748,8 @@ type BashToolOutput = {
   signal?: string
   stdout: string
   stderr: string
+  message?: string
+  reusedTerminal?: boolean
   durationMs: number
   timedOut: boolean
   truncation: TruncationMetadata
@@ -1745,7 +1770,7 @@ type BashToolOutput = {
   terminal?: {
     terminalId: string
     name: string
-    status: "running" | "exited" | "stopped" | "stale" | "awaiting_input" | "missing"
+    status: "running" | "exited" | "stopped" | "detached" | "stale" | "awaiting_input" | "missing"
     autoDetached?: boolean
     awaitingInput?: boolean
     lastPrompt?: string
@@ -1761,9 +1786,9 @@ Rules:
 - Default timeout is 120,000 milliseconds.
 - The model-visible compatibility tool id remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
 - `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
-- `start` launches a conversation-scoped Terminal and returns quickly with runtime metadata, shell metadata, status, and `nextOutputSequence`. `status`, `output`, and `stop` inspect or terminate that Terminal without rerunning the command. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
+- `start` launches a conversation-scoped Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
 - `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
-- Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, previously running terminals are marked `stale`; Socrates does not reattach to orphaned OS processes.
+- Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, persisted running terminals are reconciled with the local supervisor where possible; uncontrollable entries become `detached` or `missing`.
 - Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
 - Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; raw stdin is redacted from persistence and model context.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
@@ -1784,9 +1809,9 @@ Before Python installs/runs, the backend injects compact workspace environment h
 
 ### `trace_retrieve`
 
-Retrieves older Socrates conversation and execution evidence only when useful. This is a hybrid retrieval tool over project history, not a raw database id lookup.
+Retrieves older Socrates conversation memory and, only in explicit audit mode, execution evidence. Normal search is a conversation-memory tool over visible non-deleted project history, not a raw database id lookup and not a recursive search over prior tool output. Hard-deleted conversations must not appear in search or exact inspect results.
 
-The model-visible interface should stay high-level. Socrates should normally search by natural-language intent, scope, conversation hint, tool kind, path, command, result number, or desired evidence type. Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` are internal compatibility fields and must not be required from the model before retrieval.
+The model-visible interface should stay high-level. Socrates should normally search by natural-language intent, scope, conversation hint, tool kind, path, command, result number, or desired evidence type. Exact ids such as `conversationId`, `turnId`, `messageId`, `toolCallId`, and `handle` may be used for follow-up inspection after they are returned by a search result; they must not be required from the model before retrieval.
 
 `trace_retrieve` supports two conceptual operations:
 
@@ -1812,7 +1837,7 @@ type TraceRetrieveToolInput =
       conversationLimit?: number
       turnNo?: number
       role?: "user" | "assistant" | "any"
-      mode?: "combined" | "exact" | "semantic"
+      mode?: "exact" | "semantic" | "combined" | "audit"
       include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
       toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
       paths?: string[]
@@ -1844,7 +1869,7 @@ type TraceRetrieveToolInput =
 }
 ```
 
-The model-facing schema exposes `resultNumber` and natural inspect filters. Older handle/id-first lookup inputs remain server-side compatibility only and must not be described as the primary model-facing interface.
+The model-facing schema exposes `resultNumber`, natural inspect filters, and exact ids returned by prior retrieval results. The primary workflow remains search first, then inspect by `resultNumber`; id-first lookup is for precise follow-up, not guessing.
 
 Output:
 
@@ -1931,8 +1956,11 @@ Each result should carry source provenance for final-answer wording. `conversati
 
 Rules:
 
-- Retrieval is project-scoped by backend code, not by model-provided ids.
-- The default search mode is `combined`: lexical/exact matching plus semantic embedding search when project embeddings are configured.
+- Retrieval is project-scoped by backend code, not by model-provided ids, and is limited to `active` plus `archived` conversations. Existing orphan trace docs from deleted conversations must be cleaned up and excluded by query joins even before cleanup runs.
+- The default search mode is `exact`: lexical matching for precise words, names, paths, dates, ids, commands, and quoted text. `mode = "semantic"` uses vector search for fuzzy conceptual recall. `mode = "combined"` merges and dedupes exact plus semantic evidence when either route may help. `mode = "audit"` is required for tool calls, shell output, file operations, patches, and errors.
+- Normal `exact`, `semantic`, and `combined` searches return conversation-turn memory results by default, scoped to the last 10 visible conversations and top 5 results unless the model asks for a wider bounded `conversationLimit` or `limit`.
+- Normal search excludes previous `trace_retrieve` outputs, read/bash/tool output, shell logs, file operations, patches, and errors. Runtime evidence remains inspectable through `mode = "audit"`.
+- Image provenance may be claimed only from original message attachments or native message image parts. A later file read, shell listing, or assistant recap is secondary evidence and must not be treated as the origin conversation.
 - The embedding implementation supports OpenAI hosted embeddings and offline Ollama embeddings. Embedding configuration is backend-owned; the frontend must not call embedding providers or know provider SDK details.
 - `mode = "exact"` should prefer literal message text, file paths, command strings, titles, and verbatim anchors.
 - `mode = "semantic"` ranks by vector similarity when the project has a ready active embedding config, and otherwise returns a warning while preserving lexical/exact retrieval behavior.
@@ -1941,7 +1969,7 @@ Rules:
 - For ordinal recall, Socrates must pass structured `turnNo` and optional `role`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn.
 - The backend must not infer ordinal intent from query text. If the query says "second user message" but `turnNo` is omitted, the call is a normal lexical/exact search.
 - `turnNo` with `recent_conversations` or `project` requires `conversationHint`. If the hint resolves to multiple conversations or the turn is out of range, return an empty result with a warning rather than falling back.
-- Search results must include `resultNumber`, human-readable provenance, and natural inspect hints so the model can perform exact follow-up inspection without guessing ids. Internal ids and `inspectArgs` may still be persisted or returned for compatibility, but they are not the preferred model-facing path.
+- Search results must include `resultNumber`, human-readable provenance, and natural inspect hints so the model can perform exact follow-up inspection without guessing ids. Returned exact ids and `inspectArgs` may be used for precise follow-up inspection, but natural search remains the preferred entrypoint.
 - Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
 - `conversationId` inspect returns a bounded ordered conversation bundle. Use `startTurnNo` and `turnLimit` to page by turns.
 - Large outputs must be paged or truncated with `TruncationMetadata`.
@@ -2009,7 +2037,7 @@ current-turn tool calls only
 
 When the context grows too large, compression happens before a provider request is sent. This includes both long conversations and long single-turn tasks. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles.
 
-If older conversation or execution evidence is needed, the agent should call `trace_retrieve` explicitly. Full raw history remains persisted in SQLite for audit and replay.
+If older conversation memory is needed, the agent should call normal `trace_retrieve` explicitly. If older runtime evidence is needed, it should retry with `mode = "audit"`. Full raw history remains persisted in SQLite for audit and replay.
 
 `trace_retrieve` is also the exact-source fallback for compacted context. Context summaries may point to handles such as a prior message, turn, tool call, or verbatim anchor. When exact wording matters, the agent should inspect the handle before answering.
 

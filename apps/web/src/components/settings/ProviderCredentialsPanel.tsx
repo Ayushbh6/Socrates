@@ -34,7 +34,8 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
   }, [onOpenRouterReadyChange, openRouterReady]);
 
   useEffect(() => {
-    setDesktopMode(isTauriRuntime());
+    const timer = window.setTimeout(() => setDesktopMode(isTauriRuntime()), 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   const loadStatus = async () => {

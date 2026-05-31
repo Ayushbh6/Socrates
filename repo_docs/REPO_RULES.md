@@ -206,20 +206,24 @@ The V1 model-visible tool surface is intentionally small:
 read
 search
 edit
+apply_patch
 bash
 trace_retrieve
 list_project_resources
+mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `patch`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, or sub-agent/task tools in the initial tooling phase. Those may exist as internal implementation helpers, but the model should see the smaller surface above. Patch application is exposed as `apply_patch`, not as a hidden patch mode inside `edit`.
 
 Each model-visible tool must live in its own small TypeScript file under `packages/core/tools/`, with a single unified registry that exposes the enabled tools to the agent. Do not put all tools into one large class or one large mixed implementation file.
 
-The `read`, `search`, `trace_retrieve`, and `list_project_resources` tools are read-only. They may be auto-allowed when scoped to the project workspace and bounded by output limits.
+The `read`, `search`, `trace_retrieve`, `list_project_resources`, and non-configuring `mcp_registry` operations are read-only. They may be auto-allowed when scoped to the project workspace and bounded by output limits.
 
 `trace_retrieve` must stay high-level and intent-based. The model should search by query, scope, conversation hint, evidence type, tool name, path, command, or returned result number. It should not be expected to know opaque database ids before retrieval.
 
-`conversationId`, `turnId`, `messageId`, `toolCallId`, terminal ids, process ids, provider ids, and other opaque runtime ids may remain internal for storage, UI events, provider protocol correlation, and backwards compatibility. They must not be required or recommended in model-authored tool inputs.
+`conversationId`, `turnId`, `messageId`, `toolCallId`, `handle`, terminal ids, process ids, provider ids, and other opaque runtime ids may remain internal for storage, UI events, provider protocol correlation, and backwards compatibility. Returned trace ids may be used for precise follow-up `trace_retrieve` inspection, but they must not be required or recommended as the first step in model-authored investigation.
+
+Trace retrieval is limited to visible non-deleted conversations (`active` and `archived`). Hard-deleted conversations must not be searchable or inspectable through orphan `trace_documents`, and conversation hard delete must remove trace documents, FTS rows, trace embeddings, and trace index jobs for that conversation.
 
 Search and inspect results must include conversation provenance when the source belongs to a conversation. Socrates should use `conversation.title` as the human-readable location and must only say a source came from "this conversation" or "current chat" when `conversation.isCurrentConversation` is true.
 
@@ -247,7 +251,9 @@ Verbatim anchors should preserve exact high-value user source material such as r
 
 `list_project_resources` must use backend project resource records and should be preferred before shell probing when the user asks about uploaded project files under `.socrates/resources/`. Its model-visible input is limited to `kind` and `limit`, and its output must stay to filenames/metadata only.
 
-The `edit` tool is the only V1 model-visible file mutation tool. It must cover creating new files, overwriting files, precise multiline replacement, and patch-style edits. It must show a diff or equivalent preview and require approval unless the user explicitly runs a full-access mode.
+Chat screenshots/images are different from project resources. They are stored under `<workspace>/.socrates/attachments/`, tracked by `message_attachments`, and referenced in user messages with filename, MIME type, size, and path. The agent prompt should teach Socrates to use native image parts when available, and to reopen known attachment paths with `read` when prior or exact screenshot inspection is needed. These attachments must not be surfaced through `list_project_resources`. Attachment files may remain after a conversation is deleted; if trace retrieval has no visible provenance, Socrates must not invent the deleted conversation title or message context from the filename alone.
+
+The `edit` tool is the primary V1 model-visible single-file mutation tool. Existing files should use targeted `oldString`/`newString` replacements; whole-file `content` on an existing file requires explicit `overwrite: true` and should be reserved for deliberate rewrites. The separate `apply_patch` tool covers multi-hunk or multi-file patch application. Its preferred model-facing input is `patchText` using the structured `*** Begin Patch` envelope with `*** Add File`, `*** Update File`, `*** Delete File`, and `*** Move to` sections so models do not need to calculate unified-diff hunk counts; `@@` labels are optional hints and exact old lines do the matching. Standard unified diffs remain accepted for compatibility when already valid and are applied via `git apply`. Both must show a diff or equivalent preview and require approval unless the user explicitly runs a full-access mode. The harness tracks file freshness from `read` results; existing-file edits, patches, deletes, and renames require a prior active-turn read, and another mutation to the same file after a successful mutation must re-read first. Model-facing tool inputs must not carry content hashes.
 
 When the user asks Socrates to write code, create a script, build a small program, implement something, or build a small app/tool, Socrates should treat that as a request to create or edit a real workspace file with `edit`, not as a request for a long inline code block. This applies even for small scripts when the workspace is write-capable. Generated code belongs in the attached workspace/repo, not in `.socrates/`. Socrates should choose a sensible path when obvious, ask one concise question only when destination/language/intent is genuinely ambiguous, optionally verify with Terminal, and summarize file path plus run instructions in the final answer. If the user says "wherever" or lets Socrates decide, use the repo root for a standalone script, or a small well-named folder only when the task naturally needs multiple files. It should paste a full runnable file in chat only when the user explicitly asks for inline code or when no write-capable workspace is available.
 

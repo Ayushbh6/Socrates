@@ -11,7 +11,9 @@ import type { ClientCommand, ModelUsage, ProjectEmbeddingStatus, ProjectResource
 import type { McpRuntime } from "@socrates/mcp"
 import { normalizeError, SocratesError } from "@socrates/shared"
 import {
+  applyPatchWorkspace,
   editWorkspace,
+  FileFreshnessTracker,
   formatPythonEnvironmentHints,
   inspectPythonEnvironment,
   isShellSessionResetError,
@@ -98,7 +100,7 @@ export const handleChatMessageSend = async (
       messages: history,
       promptContext,
       workspacePath,
-      toolExecutors: createToolExecutors(store, projectId, activeTurns, terminals, mcpRuntime),
+      toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime),
       dynamicTools: () => mcpRuntime?.getDynamicToolDefinitions("playwright") ?? [],
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
@@ -161,6 +163,7 @@ export const handleChatMessageSend = async (
           {
             approvalId,
             toolCallId: request.toolCallId,
+            providerToolCallId: request.providerToolCallId,
             actionKind: request.actionKind,
             title: request.title,
             description: request.description,
@@ -292,12 +295,14 @@ export const handleChatMessageSend = async (
           toolName: agentEvent.toolName,
           arguments: agentEvent.input ?? agentEvent.argsPreview ?? {},
           requiresApproval: agentEvent.requiresApproval,
+          ...(agentEvent.providerToolCallId ? { providerToolCallId: agentEvent.providerToolCallId } : {}),
           ...(toolModelCallId ? { modelCallId: toolModelCallId } : {}),
         })
         const event = makeEvent(
           "tool.call.started",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             toolName: agentEvent.toolName,
             category: agentEvent.category,
             displayName: agentEvent.displayName,
@@ -317,6 +322,33 @@ export const handleChatMessageSend = async (
         appendAndSend(socket, store, event, "tool")
       }
 
+      if (agentEvent.type === "tool.call.streaming") {
+        // Transient pre-call hint so the UI can show "Editing <file>" during the model
+        // wait. It is replaced by the persisted tool.call.started event, so we do not store it.
+        const event = makeEvent(
+          "tool.call.streaming",
+          {
+            toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
+            toolName: agentEvent.toolName,
+            category: agentEvent.category,
+            displayName: agentEvent.displayName,
+            ...(agentEvent.argsPreview ? { argsPreview: agentEvent.argsPreview } : {}),
+            ...(agentEvent.pathPreview ? { pathPreview: agentEvent.pathPreview } : {}),
+            modelCallId: agentEvent.modelCallId,
+            stepIndex: agentEvent.stepIndex,
+          },
+          {
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            actor: { type: "tool", id: agentEvent.toolCallId, label: agentEvent.toolName },
+          },
+        )
+        sendEvent(socket, event)
+      }
+
       if (agentEvent.type === "tool.call.output") {
         if (agentEvent.text) {
           store.appendShellOutput(agentEvent.toolCallId, agentEvent.stream, agentEvent.text)
@@ -325,6 +357,7 @@ export const handleChatMessageSend = async (
           "tool.call.output",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             stream: agentEvent.stream,
             text: agentEvent.text,
             data: agentEvent.data,
@@ -388,6 +421,7 @@ export const handleChatMessageSend = async (
           "tool.call.completed",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             summary: agentEvent.summary,
             resultPreview: agentEvent.resultPreview,
             metrics: agentEvent.metrics,
@@ -422,6 +456,7 @@ export const handleChatMessageSend = async (
           "tool.call.failed",
           {
             toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
             error: apiError(agentEvent.error.code, agentEvent.error.message, {
               details: agentEvent.error.details,
               recoverable: agentEvent.error.recoverable,
@@ -446,7 +481,12 @@ export const handleChatMessageSend = async (
         }
         const event = makeEvent(
           "approval.resolved",
-          { approvalId: agentEvent.approvalId, toolCallId: agentEvent.toolCallId, decision: agentEvent.decision },
+          {
+            approvalId: agentEvent.approvalId,
+            toolCallId: agentEvent.toolCallId,
+            providerToolCallId: agentEvent.providerToolCallId,
+            decision: agentEvent.decision,
+          },
           {
             projectId,
             conversationId,
@@ -561,13 +601,20 @@ export const handleChatMessageSend = async (
 const createToolExecutors = (
   store: SocratesStore,
   projectId: string,
+  turnId: string,
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
   mcpRuntime?: McpRuntime,
-): ToolExecutors => ({
-  read: (input, context) => readWorkspacePath(input, context),
+): ToolExecutors => {
+  const withFreshness = <C extends object>(context: C): C & { fileFreshness?: FileFreshnessTracker } => {
+    const tracker = activeTurns.getFileFreshness(turnId)
+    return tracker ? { ...context, fileFreshness: tracker } : context
+  }
+  return {
+  read: (input, context) => readWorkspacePath(input, withFreshness(context)),
   search: (input, context) => searchWorkspace(input, context),
-  edit: (input, context) => editWorkspace(input, context),
+  edit: (input, context) => editWorkspace(input, withFreshness(context)),
+  apply_patch: (input, context) => applyPatchWorkspace(input, withFreshness(context)),
   bash: async (input, context) => {
     const toolCallId = context.toolCallId ?? "unknown"
     store.createShellCommand({
@@ -616,13 +663,17 @@ const createToolExecutors = (
     }
     return mcpRuntime.handleRegistryTool(input)
   },
-  mcp_dynamic: (input) => {
+  mcp_dynamic: (input, context) => {
     if (!mcpRuntime) {
       throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
     }
-    return mcpRuntime.callDynamicTool(input.dynamicName, input.input)
+    return mcpRuntime.callDynamicTool(input.dynamicName, input.input, {
+      cwd: context.workspacePath,
+      sessionKey: context.conversationId,
+    })
   },
-})
+  }
+}
 
 const sendContextCompactionEvent = (
   socket: WebSocket,
@@ -853,7 +904,7 @@ const formatSemanticRetrievalStatus = (status: ProjectEmbeddingStatus): string =
   const state = semanticRetrievalState(status)
   const usage =
     status.ready && status.indexedDocuments > 0
-      ? '- Use trace_retrieve mode="combined" by default, mode="semantic" for fuzzy or conceptual recall, and inspect handles before exact claims.'
+      ? '- trace_retrieve supports mode="exact" for lexical search, mode="semantic" for fuzzy conceptual recall, mode="combined" for hybrid recall, and mode="audit" for runtime/tool history. Default remains exact.'
       : "- Treat trace_retrieve as lexical/exact only until indexing is ready. Do not claim semantic retrieval was used."
 
   return [

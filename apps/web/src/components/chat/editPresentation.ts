@@ -19,6 +19,7 @@ export type DiffFile = {
 
 export type EditFileSummary = {
   path: string;
+  previousPath?: string;
   operation: string;
   added?: number;
   removed?: number;
@@ -52,6 +53,7 @@ export function getEditFileSummaries(tool: ToolTimelineItem): EditFileSummary[] 
       const existing = files.get(file.path);
       files.set(file.path, {
         path: file.path,
+        previousPath: typeof file.previousPath === "string" ? file.previousPath : undefined,
         operation: normalizeOperation(file.operation),
         added: existing?.added,
         removed: existing?.removed,
@@ -64,6 +66,7 @@ export function getEditFileSummaries(tool: ToolTimelineItem): EditFileSummary[] 
     const existing = files.get(file.path);
     files.set(file.path, {
       path: file.path,
+      previousPath: file.previousPath,
       operation: normalizeOperation(file.operation),
       added: existing?.added,
       removed: existing?.removed,
@@ -190,7 +193,7 @@ export function formatApprovalPreview(approval: PendingApproval): string[] {
 
   const files = new Map<string, string>();
   for (const line of approval.actionPreview.split(/\r?\n/)) {
-    const match = line.match(/^\s*(create|overwrite|replace|patch|edit|patched|edited|delete):\s+(.+?)\s*$/i);
+    const match = line.match(/^\s*(create|overwrite|replace|patch|edit|patched|edited|delete|deleted|rename|renamed):\s+(.+?)\s*$/i);
     if (match) {
       files.set(match[2], normalizeOperation(match[1]));
     }
@@ -201,7 +204,7 @@ export function formatApprovalPreview(approval: PendingApproval): string[] {
     .map(([path, operation]) => `${capitalize(operation)} ${path}`);
 }
 
-function getChangedFiles(result: unknown): Array<{ path: string; operation: string }> {
+function getChangedFiles(result: unknown): Array<{ path: string; operation: string; previousPath?: string }> {
   if (typeof result !== "object" || result === null || !("changedFiles" in result)) {
     return [];
   }
@@ -214,34 +217,36 @@ function getChangedFiles(result: unknown): Array<{ path: string; operation: stri
       if (typeof file !== "object" || file === null) {
         return undefined;
       }
-      const record = file as { path?: unknown; operation?: unknown };
+      const record = file as { path?: unknown; operation?: unknown; previousPath?: unknown };
       return typeof record.path === "string"
-        ? { path: record.path, operation: typeof record.operation === "string" ? record.operation : "edited" }
+        ? {
+            path: record.path,
+            operation: typeof record.operation === "string" ? record.operation : "edited",
+            ...(typeof record.previousPath === "string" ? { previousPath: record.previousPath } : {}),
+          }
         : undefined;
     })
-    .filter((file): file is { path: string; operation: string } => Boolean(file));
+    .filter((file): file is { path: string; operation: string; previousPath?: string } => Boolean(file));
 }
 
 function getInputOperations(argumentsValue: unknown): Array<{ path: string | undefined; type: string }> {
-  if (typeof argumentsValue !== "object" || argumentsValue === null || !("operations" in argumentsValue)) {
+  if (typeof argumentsValue !== "object" || argumentsValue === null) {
     return [];
   }
-  const operations = (argumentsValue as { operations?: unknown }).operations;
-  if (!Array.isArray(operations)) {
+  const record = argumentsValue as { path?: unknown; content?: unknown; oldString?: unknown; newString?: unknown; patch?: unknown };
+  if (typeof record.patch === "string") {
+    return [{ path: undefined, type: "patched" }];
+  }
+  if (typeof record.path !== "string") {
     return [];
   }
-  return operations
-    .map((operation) => {
-      if (typeof operation !== "object" || operation === null) {
-        return undefined;
-      }
-      const record = operation as { path?: unknown; type?: unknown };
-      return {
-        path: typeof record.path === "string" ? record.path : undefined,
-        type: typeof record.type === "string" ? record.type : "edited",
-      };
-    })
-    .filter((operation): operation is { path: string | undefined; type: string } => operation !== undefined);
+  if (record.content !== undefined) {
+    return [{ path: record.path, type: "overwritten" }];
+  }
+  if (record.oldString !== undefined || record.newString !== undefined) {
+    return [{ path: record.path, type: "edited" }];
+  }
+  return [];
 }
 
 function getDiffFilesFromInputOperations(argumentsValue: unknown): DiffFile[] {
@@ -316,22 +321,20 @@ function splitLines(value: string): string[] {
 }
 
 function getRawInputOperations(argumentsValue: unknown): RawInputOperation[] {
-  if (typeof argumentsValue !== "object" || argumentsValue === null || !("operations" in argumentsValue)) {
+  if (typeof argumentsValue !== "object" || argumentsValue === null) {
     return [];
   }
-  const operations = (argumentsValue as { operations?: unknown }).operations;
-  if (!Array.isArray(operations)) {
+  const record = argumentsValue as Record<string, unknown>;
+  if (typeof record.patch === "string") {
     return [];
   }
-  return operations
-    .map((operation) => (typeof operation === "object" && operation !== null ? (operation as Record<string, unknown>) : undefined))
-    .filter((operation): operation is Record<string, unknown> => Boolean(operation))
-    .map((operation) => ({
-      type: typeof operation.type === "string" ? operation.type : "edited",
-      path: typeof operation.path === "string" ? operation.path : undefined,
-      oldText: typeof operation.oldText === "string" ? operation.oldText : undefined,
-      newText: typeof operation.newText === "string" ? operation.newText : undefined,
-    }));
+  if (typeof record.path !== "string") {
+    return [];
+  }
+  if (typeof record.oldString === "string" && typeof record.newString === "string") {
+    return [{ type: "edited", path: record.path, oldText: record.oldString, newText: record.newString }];
+  }
+  return [];
 }
 
 function looksLikeUnifiedDiff(value: string): boolean {
@@ -368,6 +371,12 @@ function normalizeOperation(operation: string): string {
     case "patch":
     case "patched":
       return "patched";
+    case "delete":
+    case "deleted":
+      return "deleted";
+    case "rename":
+    case "renamed":
+      return "renamed";
     case "replace":
     case "edit":
     case "edited":

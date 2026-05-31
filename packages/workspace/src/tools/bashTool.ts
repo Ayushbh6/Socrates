@@ -25,6 +25,7 @@ type ShellAdapter = {
 
 type RunningProcess = {
   processId: string
+  systemPid?: number
   command: string
   cwd: string
   child: ChildProcessWithoutNullStreams
@@ -332,6 +333,7 @@ export class WorkspaceShellSession {
     const processId = `proc_${randomUUID().replaceAll("-", "")}`
     const processInfo: RunningProcess = {
       processId,
+      ...(child.pid ? { systemPid: child.pid } : {}),
       command: commandText,
       cwd,
       child,
@@ -783,6 +785,7 @@ const shellMetadata = (adapter: ShellAdapter): BashToolOutput["shell"] => ({
 
 const processMetadata = (processInfo: RunningProcess): NonNullable<BashToolOutput["process"]> => ({
   processId: processInfo.processId,
+  ...(processInfo.systemPid ? { systemPid: processInfo.systemPid } : {}),
   status: processInfo.status,
   exitCode: processInfo.exitCode,
   signal: processInfo.signal,

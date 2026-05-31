@@ -1,4 +1,4 @@
-import { createWorkspaceShellSession, type WorkspaceShellSession } from "@socrates/workspace"
+import { createWorkspaceShellSession, FileFreshnessTracker, type WorkspaceShellSession } from "@socrates/workspace"
 
 export class ActiveTurns {
   private readonly turns = new Map<
@@ -7,13 +7,18 @@ export class ActiveTurns {
       controller: AbortController
       approvals: Map<string, (decision: { decision: "approved" | "rejected"; reason?: string }) => void>
       shellSession?: WorkspaceShellSession
+      fileFreshness: FileFreshnessTracker
     }
   >()
 
   create(turnId: string): AbortController {
     const controller = new AbortController()
-    this.turns.set(turnId, { controller, approvals: new Map() })
+    this.turns.set(turnId, { controller, approvals: new Map(), fileFreshness: new FileFreshnessTracker() })
     return controller
+  }
+
+  getFileFreshness(turnId: string): FileFreshnessTracker | undefined {
+    return this.turns.get(turnId)?.fileFreshness
   }
 
   get(turnId: string): AbortController | undefined {

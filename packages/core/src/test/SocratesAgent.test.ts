@@ -40,23 +40,33 @@ describe("SocratesAgent", () => {
     const requestJson = JSON.stringify(seen[0])
     expect(requestJson).toContain("You are Socrates")
     expect(requestJson).toContain("Hi")
-    expect(requestJson).toContain("pass the returned contentHash")
+    expect(requestJson).toContain("Socrates tracks freshness from read results")
     expect(requestJson).toContain("product/user-facing copy should call it Terminal")
+    expect(requestJson).toContain("overwrite: true only when intentionally replacing an entire existing file")
     expect(requestJson).toContain("set regex=true")
+    expect(requestJson).toContain("search .socrates/attachments directly")
     expect(requestJson).toContain("compare the reported file and line with the current file contents")
     expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
   })
 
   it("exposes the base tool set", () => {
-    expect(createDefaultToolRegistry().modelDefinitions().map((tool) => tool.name)).toEqual([
+    const tools = createDefaultToolRegistry().modelDefinitions()
+    expect(tools.map((tool) => tool.name)).toEqual([
       "read",
       "search",
       "edit",
+      "apply_patch",
       "bash",
       "trace_retrieve",
       "list_project_resources",
       "mcp_registry",
     ])
+    expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
+    expect(
+      tools
+        .find((tool) => tool.name === "edit")
+        ?.inputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success,
+    ).toBe(false)
   })
 
   it("streams blocking compaction start before the compressor finishes and model call begins", async () => {
@@ -183,6 +193,7 @@ describe("SocratesAgent", () => {
       }),
       search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
       trace_retrieve: async () => ({
         results: [],
@@ -227,12 +238,161 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(7)
-    expect(countRequests[1]?.toolCount).toBe(7)
+    expect(countRequests[0]?.toolCount).toBe(8)
+    expect(countRequests[1]?.toolCount).toBe(8)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
+  })
+
+  it("preserves OpenAI reasoning item metadata when continuing after tool calls", async () => {
+    const seenMessages: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seenMessages.push(request.messages)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.reasoning.completed",
+            text: "",
+            providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "fc_1",
+              toolName: "read",
+              input: { path: "README.md" },
+              providerMetadata: { openai: { itemId: "fc_item_1" } },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Read it." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async () => ({
+      path: "README.md",
+      kind: "file",
+      content: "Socrates",
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: 8 },
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read README" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    const nextRequestMessages = seenMessages.at(-1) as Array<{ role: string; content: unknown }>
+    const assistantMessage = nextRequestMessages.find(
+      (message) =>
+        message.role === "assistant" &&
+        Array.isArray(message.content) &&
+        message.content.some((part) => (part as { type?: string }).type === "tool-call"),
+    ) as { role: string; content: Array<Record<string, unknown>> }
+
+    expect(assistantMessage.content[0]).toEqual({
+      type: "reasoning",
+      text: "",
+      providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+    })
+    expect(assistantMessage.content[1]).toMatchObject({
+      type: "tool-call",
+      toolCallId: "fc_1",
+      toolName: "read",
+      providerMetadata: { openai: { itemId: "fc_item_1" } },
+    })
+  })
+
+  it("uses internal tool run ids while preserving repeated provider ids in model messages", async () => {
+    const seenMessages: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seenMessages.push(request.messages)
+        calls += 1
+        if (calls <= 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "functions.read:0",
+              toolName: "read",
+              input: { path: `file-${calls}.txt` },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Done." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async (input) => ({
+      path: input.path,
+      kind: "file",
+      content: input.path,
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: input.path.length },
+    })
+
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read two files" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    const started = streamed.filter((event): event is Extract<SocratesAgentEvent, { type: "tool.call.started" }> => event.type === "tool.call.started")
+    expect(started).toHaveLength(2)
+    expect(started.map((event) => event.providerToolCallId)).toEqual(["functions.read:0", "functions.read:0"])
+    expect(new Set(started.map((event) => event.toolCallId)).size).toBe(2)
+    expect(started.every((event) => event.toolCallId.startsWith("tcall_"))).toBe(true)
+    expect(JSON.stringify(seenMessages.at(-1))).toContain('"toolCallId":"functions.read:0"')
+    expect(JSON.stringify(seenMessages.at(-1))).not.toContain(started[0]?.toolCallId)
   })
 
   it("omits tools from the final no-tools call after the per-turn tool budget is exhausted", async () => {
@@ -291,7 +451,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(7)
+    expect(countRequests[0]?.toolCount).toBe(8)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -309,7 +469,7 @@ describe("SocratesAgent", () => {
             toolCall: {
               toolCallId: "tcall_edit_1",
               toolName: "edit",
-              input: { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
+              input: { path: "README.md", oldString: "old", newString: "new" },
             },
           }
           yield { type: "model.completed", finishReason: "tool-calls" }
@@ -338,6 +498,7 @@ describe("SocratesAgent", () => {
           truncation: { truncated: false, charLimit: 20_000, returnedLength: 57 },
         }
       },
+      apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
       trace_retrieve: async () => ({
         results: [],
@@ -503,6 +664,78 @@ describe("SocratesAgent", () => {
     expect(streamRequests[0]?.tools?.map((tool) => tool.name)).toContain("read")
   })
 
+  it("hides terminal runtime ids and sequence cursors from model-visible tool results", async () => {
+    const requests: ModelRequestLike[] = []
+    let call = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        requests.push(request)
+        call += 1
+        if (call === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "call_terminal_output",
+              toolName: "bash",
+              input: { operation: "output", name: "dev-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Terminal output checked." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.bash = async () => ({
+      ...bashOk(),
+      operation: "output",
+      stdout: "ready on http://localhost:5173\n",
+      process: {
+        processId: "proc_secret",
+        systemPid: 1234,
+        status: "running",
+        nextOutputSequence: 7,
+      },
+      terminal: {
+        terminalId: "term_secret",
+        name: "dev-server",
+        status: "running",
+        nextOutputSequence: 7,
+      },
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "approve_all",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Check terminal output" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain stream.
+    }
+
+    const secondRequest = JSON.stringify(requests[1]?.messages)
+    expect(secondRequest).toContain("dev-server")
+    expect(secondRequest).toContain("ready on http://localhost:5173")
+    expect(secondRequest).not.toContain("proc_secret")
+    expect(secondRequest).not.toContain("term_secret")
+    expect(secondRequest).not.toContain("nextOutputSequence")
+    expect(secondRequest).not.toContain("systemPid")
+  })
+
   it("injects user and project context into the system prompt", async () => {
     const seen: unknown[] = []
     const provider: ModelProvider = {
@@ -535,7 +768,7 @@ describe("SocratesAgent", () => {
         workspaceCommandEnvironment:
           "Workspace Terminal commands run with a sanitized user-workspace environment. NODE_ENV, provider secrets, package-manager omit flags, and CI are not inherited.",
         semanticRetrievalStatus:
-          'Semantic retrieval: ready.\n- Provider/model: openai/text-embedding-3-small.\n- Use trace_retrieve mode="combined" by default.',
+          'Semantic retrieval: ready.\n- Provider/model: openai/text-embedding-3-small.\n- Use trace_retrieve mode="semantic" for fuzzy recall, mode="combined" when exact search is weak.',
       },
     })) {
       // Exhaust the stream.
@@ -552,7 +785,8 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("provider secrets")
     expect(request.system).toContain("Semantic retrieval status:")
     expect(request.system).toContain("Semantic retrieval: ready.")
-    expect(request.system).toContain('mode="combined"')
+    expect(request.system).toContain('mode="exact"')
+    expect(request.system).toContain('mode="audit"')
     expect(request.system).toContain("Do not hardcode or guess absolute workspace paths")
     expect(request.system).toContain("plt.show()")
   })
@@ -573,6 +807,22 @@ describe("bash tool policy", () => {
     if (dockerPolicy.type === "approval_required") {
       expect(dockerPolicy.request.risk).toBe("high")
     }
+  })
+
+  it("rejects empty or comment-only Terminal commands before approval", async () => {
+    const context = {
+      runtimeConfig: { sandboxMode: "workspace_write", approvalMode: "manual" },
+    } as Parameters<typeof bashTool.decidePolicy>[1]
+
+    expect(await bashTool.decidePolicy({ command: "   \n\t" }, context)).toMatchObject({
+      type: "denied",
+      code: "terminal_noop_command",
+    })
+    expect(await bashTool.decidePolicy({ operation: "start", command: "# note\n# another note" }, context)).toMatchObject({
+      type: "denied",
+      code: "terminal_noop_command",
+    })
+    expect(await bashTool.decidePolicy({ command: "# list files\nls" }, context)).toMatchObject({ type: "approval_required" })
   })
 })
 
@@ -596,6 +846,7 @@ const emptyToolExecutors = (): ToolExecutors => ({
   }),
   search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   bash: async () => bashOk(),
   trace_retrieve: async () => ({
     results: [],

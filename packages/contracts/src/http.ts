@@ -413,6 +413,8 @@ export const conversationToolApprovalSchema = z
 export const conversationToolRunSchema = z
   .object({
     toolCallId: idSchema,
+    toolRunId: idSchema.optional(),
+    providerToolCallId: z.string().min(1).optional(),
     conversationId: idSchema,
     sessionId: idSchema,
     turnId: idSchema,
@@ -462,6 +464,7 @@ export const conversationToolRunSchema = z
           .object({
             path: z.string().min(1),
             operation: z.string().min(1),
+            previousPath: z.string().min(1).optional(),
             status: z.string().min(1),
             contentHashBefore: z.string().min(1).optional(),
             contentHashAfter: z.string().min(1).optional(),

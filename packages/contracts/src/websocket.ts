@@ -189,6 +189,7 @@ export const toolCallCategorySchema = z.enum(["file", "search", "shell", "git", 
 export const toolCallStartedPayloadSchema = z
   .object({
     toolCallId: idSchema,
+    providerToolCallId: z.string().min(1).optional(),
     toolName: toolNameSchema,
     category: toolCallCategorySchema,
     displayName: z.string().min(1),
@@ -199,9 +200,24 @@ export const toolCallStartedPayloadSchema = z
   })
   .strict()
 
+export const toolCallStreamingPayloadSchema = z
+  .object({
+    toolCallId: idSchema,
+    providerToolCallId: z.string().min(1).optional(),
+    toolName: toolNameSchema,
+    category: toolCallCategorySchema,
+    displayName: z.string().min(1),
+    argsPreview: z.string().optional(),
+    pathPreview: z.string().optional(),
+    modelCallId: idSchema.optional(),
+    stepIndex: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+
 export const toolCallOutputPayloadSchema = z
   .object({
     toolCallId: idSchema,
+    providerToolCallId: z.string().min(1).optional(),
     stream: z.enum(["stdout", "stderr", "log", "result"]),
     text: z.string().optional(),
     data: z.unknown().optional(),
@@ -222,6 +238,7 @@ export const toolCallMetricsSchema = z
 export const toolCallCompletedPayloadSchema = z
   .object({
     toolCallId: idSchema,
+    providerToolCallId: z.string().min(1).optional(),
     summary: z.string().min(1),
     resultPreview: z.string().optional(),
     metrics: toolCallMetricsSchema.optional(),
@@ -234,6 +251,7 @@ export const toolCallCompletedPayloadSchema = z
 export const toolCallFailedPayloadSchema = z
   .object({
     toolCallId: idSchema,
+    providerToolCallId: z.string().min(1).optional(),
     error: apiErrorSchema,
     modelCallId: idSchema.optional(),
     stepIndex: z.number().int().nonnegative().optional(),
@@ -244,6 +262,7 @@ export const approvalRequestedPayloadSchema = z
   .object({
     approvalId: idSchema,
     toolCallId: idSchema.optional(),
+    providerToolCallId: z.string().min(1).optional(),
     actionKind: z.enum(["shell_command", "file_write", "patch_apply", "git_commit", "git_push", "other"]),
     title: z.string().min(1),
     description: z.string().optional(),
@@ -256,6 +275,7 @@ export const approvalResolvedPayloadSchema = z
   .object({
     approvalId: idSchema,
     toolCallId: idSchema.optional(),
+    providerToolCallId: z.string().min(1).optional(),
     decision: z.enum(["approved", "rejected"]),
   })
   .strict()
@@ -389,6 +409,7 @@ export const turnStartedEventSchema = socketEnvelopeSchema("turn.started", turnS
 export const agentThinkingDeltaEventSchema = socketEnvelopeSchema("agent.thinking.delta", agentThinkingDeltaPayloadSchema)
 export const agentAnswerDeltaEventSchema = socketEnvelopeSchema("agent.answer.delta", agentAnswerDeltaPayloadSchema)
 export const toolCallStartedEventSchema = socketEnvelopeSchema("tool.call.started", toolCallStartedPayloadSchema)
+export const toolCallStreamingEventSchema = socketEnvelopeSchema("tool.call.streaming", toolCallStreamingPayloadSchema)
 export const toolCallOutputEventSchema = socketEnvelopeSchema("tool.call.output", toolCallOutputPayloadSchema)
 export const toolCallCompletedEventSchema = socketEnvelopeSchema("tool.call.completed", toolCallCompletedPayloadSchema)
 export const toolCallFailedEventSchema = socketEnvelopeSchema("tool.call.failed", toolCallFailedPayloadSchema)
@@ -429,6 +450,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   agentThinkingDeltaEventSchema,
   agentAnswerDeltaEventSchema,
   toolCallStartedEventSchema,
+  toolCallStreamingEventSchema,
   toolCallOutputEventSchema,
   toolCallCompletedEventSchema,
   toolCallFailedEventSchema,

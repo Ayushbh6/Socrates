@@ -170,9 +170,18 @@ export class TerminalStore extends StoreBase {
     return rows.map((row) => this.mapTerminal(row))
   }
 
+  listActiveTerminals(): ConversationTerminal[] {
+    const rows = this.handle.db
+      .select()
+      .from(terminalSessions)
+      .where(inArray(terminalSessions.status, ["running", "awaiting_input"]))
+      .all()
+    return rows.map((row) => this.mapTerminal(row))
+  }
+
   terminalContextBrief(conversationId: string, limit = 8): string | undefined {
     const terminals = this.listConversationTerminals(conversationId, limit).filter((terminal) =>
-      ["running", "awaiting_input", "stale"].includes(terminal.status),
+      ["running", "awaiting_input", "detached", "missing"].includes(terminal.status),
     )
     if (terminals.length === 0) {
       return undefined
@@ -199,7 +208,7 @@ export class TerminalStore extends StoreBase {
     ].join("\n")
   }
 
-  markRunningStale(): ConversationTerminal[] {
+  markRunningDetached(): ConversationTerminal[] {
     const rows = this.handle.db
       .select()
       .from(terminalSessions)
@@ -207,9 +216,9 @@ export class TerminalStore extends StoreBase {
       .all()
     const now = nowIso()
     for (const row of rows) {
-      this.updateTerminal(row.id, { status: "stale", awaitingInput: false, completedAt: now })
+      this.updateTerminal(row.id, { status: "detached", awaitingInput: false, completedAt: now })
     }
-    return rows.map((row) => this.mapTerminal({ ...row, status: "stale", awaitingInput: false, completedAt: now, updatedAt: now }))
+    return rows.map((row) => this.mapTerminal({ ...row, status: "detached", awaitingInput: false, completedAt: now, updatedAt: now }))
   }
 
   stopConversationTerminals(conversationId: string): void {
@@ -282,7 +291,13 @@ const summarizeOutput = (chunks: TerminalOutputRow[]): ConversationTerminal["out
 }
 
 const toTerminalStatus = (value: string): TerminalStatus =>
-  value === "running" || value === "exited" || value === "stopped" || value === "stale" || value === "awaiting_input" || value === "missing"
+  value === "running" ||
+  value === "exited" ||
+  value === "stopped" ||
+  value === "detached" ||
+  value === "stale" ||
+  value === "awaiting_input" ||
+  value === "missing"
     ? value
     : "missing"
 

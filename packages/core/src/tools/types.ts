@@ -1,4 +1,6 @@
 import type {
+  ApplyPatchToolInput,
+  ApplyPatchToolOutput,
   BashToolInput,
   BashToolOutput,
   EditToolInput,
@@ -20,6 +22,11 @@ import type {
 } from "@socrates/contracts"
 import type { SocratesError } from "@socrates/shared"
 
+export type FileFreshnessTracker = {
+  record: (path: string, contentHash: string | undefined, workspacePath: string) => void
+  validate: (path: string, actualHash: string | undefined, workspacePath: string) => void
+}
+
 export type ToolExecutorContext = {
   projectId: string
   conversationId: string
@@ -28,6 +35,7 @@ export type ToolExecutorContext = {
   toolCallId?: string
   workspacePath: string
   runtimeConfig: RuntimeConfig
+  fileFreshness?: FileFreshnessTracker
   abortSignal?: AbortSignal
   onOutput?: (output: { stream: "stdout" | "stderr" | "log" | "result"; text?: string; data?: unknown }) => void
 }
@@ -36,6 +44,7 @@ export type ToolExecutors = {
   read: (input: ReadToolInput, context: ToolExecutorContext) => Promise<ReadToolOutput>
   search: (input: SearchToolInput, context: ToolExecutorContext) => Promise<SearchToolOutput>
   edit: (input: EditToolInput, context: ToolExecutorContext) => Promise<EditToolOutput>
+  apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
   list_project_resources: (
@@ -49,6 +58,7 @@ export type ToolExecutors = {
 export type ApprovalRequest = {
   approvalId: string
   toolCallId: string
+  providerToolCallId?: string | undefined
   toolName: ToolName
   actionKind: "shell_command" | "file_write" | "patch_apply" | "git_commit" | "git_push" | "other"
   title: string
@@ -72,7 +82,7 @@ export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
 export type ToolPolicyDecision =
   | { type: "auto" }
   | { type: "approval_required"; request: Omit<ApprovalRequest, "approvalId" | "toolCallId" | "toolName"> }
-  | { type: "denied"; reason: string }
+  | { type: "denied"; reason: string; code?: string; recoverable?: boolean; details?: SocratesError["details"] }
 
 export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
   name: ToolName
@@ -100,8 +110,21 @@ export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
 
 export type ToolLifecycleEvent =
   | {
+      type: "tool.call.streaming"
+      toolCallId: string
+      providerToolCallId?: string | undefined
+      toolName: ToolName
+      category: SocratesTool<unknown, unknown>["category"]
+      displayName: string
+      argsPreview?: string
+      pathPreview?: string
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
+    }
+  | {
       type: "tool.call.started"
       toolCallId: string
+      providerToolCallId?: string | undefined
       toolName: ToolName
       category: SocratesTool<unknown, unknown>["category"]
       displayName: string
@@ -114,6 +137,7 @@ export type ToolLifecycleEvent =
   | {
       type: "tool.call.output"
       toolCallId: string
+      providerToolCallId?: string | undefined
       stream: "stdout" | "stderr" | "log" | "result"
       text?: string
       data?: unknown
@@ -123,6 +147,7 @@ export type ToolLifecycleEvent =
   | {
       type: "tool.call.completed"
       toolCallId: string
+      providerToolCallId?: string | undefined
       toolName: ToolName
       output: unknown
       summary: string
@@ -137,6 +162,14 @@ export type ToolLifecycleEvent =
       modelCallId?: string | undefined
       stepIndex?: number | undefined
     }
-  | { type: "tool.call.failed"; toolCallId: string; toolName: ToolName; error: SocratesError; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | {
+      type: "tool.call.failed"
+      toolCallId: string
+      providerToolCallId?: string | undefined
+      toolName: ToolName
+      error: SocratesError
+      modelCallId?: string | undefined
+      stepIndex?: number | undefined
+    }
   | { type: "approval.requested"; request: ApprovalRequest }
-  | { type: "approval.resolved"; approvalId: string; toolCallId: string; decision: "approved" | "rejected" }
+  | { type: "approval.resolved"; approvalId: string; toolCallId: string; providerToolCallId?: string | undefined; decision: "approved" | "rejected" }

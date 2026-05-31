@@ -5,15 +5,16 @@ import { promisify } from "node:util"
 import type { ReadToolInput, ReadToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { clampCharLimit, emptyTruncation, isProbablyBinary, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
+import type { FileFreshnessTracker } from "./fileFreshness"
 import { detectLineEnding, hashBuffer } from "./fileMetadata"
 
 const execFileAsync = promisify(execFile)
 
-const nonVisionModelIds = new Set(["z-ai/glm-5.1", "xiaomi/mimo-v2.5-pro", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+const nonVisionModelIds = new Set(["z-ai/glm-5.1", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
 
 export const readWorkspacePath = async (
   input: ReadToolInput,
-  context: { workspacePath: string; runtimeConfig?: { providerId?: string; modelId?: string } },
+  context: { workspacePath: string; runtimeConfig?: { providerId?: string; modelId?: string }; fileFreshness?: FileFreshnessTracker },
 ): Promise<ReadToolOutput> => {
   const absolutePath = resolveWorkspacePath(context.workspacePath, input.path)
   const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
@@ -132,14 +133,16 @@ export const readWorkspacePath = async (
 
   const text = fileBuffer.toString("utf8")
   const truncated = truncateText(text, charLimit, input.offset)
-  return {
+  const output = {
     path: relativePath,
-    kind: [".csv", ".tsv"].includes(ext) ? "spreadsheet" : "file",
+    kind: [".csv", ".tsv"].includes(ext) ? ("spreadsheet" as const) : ("file" as const),
     content: truncated.text,
     ...fileMetadata,
     lineEnding: detectLineEnding(text),
     truncation: truncated.truncation,
   }
+  context.fileFreshness?.record(absolutePath, fileMetadata.contentHash, context.workspacePath)
+  return output
 }
 
 const tryExtractCommand = async (command: string, args: string[]): Promise<string | null> => {

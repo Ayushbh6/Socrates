@@ -1,12 +1,13 @@
 import type { ToolTimelineItem } from "./ToolTimelineTypes";
 import { DiffView } from "./DiffView";
+import { TerminalBlock } from "./TerminalBlock";
 import { getEditFileSummaries, getPreferredEditDiffFiles } from "./editPresentation";
 
 export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
   if (tool.toolName === "bash") {
     return <TerminalDetails tool={tool} />;
   }
-  if (tool.toolName === "edit") {
+  if (tool.toolName === "edit" || tool.toolName === "apply_patch") {
     return <EditDetails tool={tool} />;
   }
   if (tool.toolName === "search") {
@@ -25,36 +26,40 @@ export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
 }
 
 function TerminalDetails({ tool }: { tool: ToolTimelineItem }) {
-  const command = tool.shell?.command ?? getInputValue(tool, "command") ?? tool.argsPreview;
+  const command = tool.shell?.command ?? getInputValue(tool, "command") ?? commandFromPreview(tool.argsPreview);
   const cwd = tool.shell?.cwd ?? getInputValue(tool, "cwd");
   const commandText = typeof command === "string" ? command : undefined;
   const cwdText = typeof cwd === "string" ? cwd : undefined;
   const shellParts = [tool.shell?.platform, tool.shell?.shellKind, tool.shell?.shellExecutable].filter(Boolean).join(" / ");
+  const stdoutText = tool.stdout ?? tool.output;
+  const status: "running" | "exited" | "failed" | undefined =
+    tool.status === "running"
+      ? "running"
+      : tool.status === "failed"
+        ? "failed"
+        : tool.status === "completed"
+          ? "exited"
+          : undefined;
 
   return (
     <div className="space-y-2">
-      {commandText && <LabeledCode label="Command" value={commandText} />}
-      {cwdText && <MetaLine label="cwd" value={cwdText} />}
-      {shellParts && <MetaLine label="shell" value={shellParts} />}
-      {(tool.shell?.operation || tool.shell?.processId || tool.shell?.processStatus) && (
+      <TerminalBlock
+        {...(commandText ? { command: commandText } : {})}
+        {...(cwdText ? { cwd: cwdText } : {})}
+        {...(stdoutText ? { stdout: stdoutText } : {})}
+        {...(tool.stderr ? { stderr: tool.stderr } : {})}
+        {...(tool.shell?.exitCode !== undefined ? { exitCode: tool.shell.exitCode } : {})}
+        {...(tool.shell?.signal ? { signal: tool.shell.signal } : {})}
+        {...(tool.shell?.durationMs !== undefined ? { durationMs: tool.shell.durationMs } : {})}
+        {...(status ? { status } : {})}
+        {...(shellParts ? { shell: shellParts } : {})}
+      />
+      {(tool.shell?.terminalId || tool.shell?.awaitingInput) && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-brand-text-light">
-          {tool.shell.operation && <span>operation {tool.shell.operation}</span>}
-          {tool.shell.terminalId && <span>terminal {tool.shell.terminalName ?? tool.shell.terminalId}</span>}
-          {tool.shell.processId && <span>process {tool.shell.processId}</span>}
-          {(tool.shell.terminalStatus || tool.shell.processStatus) && <span>status {tool.shell.terminalStatus ?? tool.shell.processStatus}</span>}
-          {tool.shell.awaitingInput && <span>awaiting user input</span>}
-          {tool.shell.nextOutputSequence !== undefined && <span>next output {tool.shell.nextOutputSequence}</span>}
+          {tool.shell?.terminalId && <span>terminal {tool.shell.terminalName ?? tool.shell.terminalId}</span>}
+          {tool.shell?.awaitingInput && <span className="text-amber-600">awaiting user input</span>}
         </div>
       )}
-      {tool.shell && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-brand-text-light">
-          <span>exit {tool.shell.exitCode ?? "none"}</span>
-          {tool.shell.signal && <span>signal {tool.shell.signal}</span>}
-          {tool.shell.durationMs !== undefined && <span>{formatDuration(tool.shell.durationMs)}</span>}
-        </div>
-      )}
-      {tool.stdout || tool.output ? <LabeledCode label="stdout" value={tool.stdout ?? tool.output} tone="dark" /> : null}
-      {tool.stderr ? <LabeledCode label="stderr" value={tool.stderr} tone="error" /> : null}
       {tool.error && <p className="text-xs text-red-600">{tool.error}</p>}
     </div>
   );
@@ -71,7 +76,9 @@ function EditDetails({ tool }: { tool: ToolTimelineItem }) {
           {files.map((file) => (
             <div key={file.path} className="flex items-center gap-2">
               <span className="font-medium text-brand-text-dark">{capitalize(file.operation)}</span>
-              <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+	              <span className="min-w-0 flex-1 truncate font-mono">
+	                {file.previousPath ? `${file.previousPath} -> ${file.path}` : file.path}
+	              </span>
               {file.added !== undefined || file.removed !== undefined ? (
                 <span className="shrink-0 font-mono">
                   <span className="text-emerald-600">+{file.added ?? 0}</span>{" "}
@@ -297,11 +304,30 @@ function formatResource(resource: unknown): string {
   return `${name}${kind}${source}${status}${uri}`.trim();
 }
 
-function formatDuration(durationMs: number): string {
-  if (durationMs < 1_000) {
-    return `${durationMs}ms`;
+function commandFromPreview(preview: string | undefined): string | undefined {
+  if (!preview) {
+    return undefined;
   }
-  return `${(durationMs / 1_000).toFixed(1)}s`;
+  const trimmed = preview.trim();
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as { command?: unknown };
+      if (typeof parsed.command === "string") {
+        return parsed.command;
+      }
+    } catch {
+      const match = trimmed.match(/"command"\s*:\s*"((?:\\.|[^"\\])*)"/);
+      if (match) {
+        try {
+          return JSON.parse(`"${match[1]}"`) as string;
+        } catch {
+          return match[1];
+        }
+      }
+    }
+    return undefined;
+  }
+  return preview;
 }
 
 function capitalize(value: string): string {

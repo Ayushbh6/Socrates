@@ -8,7 +8,9 @@ import {
   __editToolTest,
   ensureWorkspaceScaffold,
   deleteStoredResourceFile,
+  applyPatchWorkspace,
   editWorkspace,
+  FileFreshnessTracker,
   inferResourceMimeType,
   inferResourceKind,
   inspectWorkspacePath,
@@ -31,6 +33,14 @@ const nodeCommand = (script: string): string =>
   process.platform === "win32"
     ? `& ${psQuote(process.execPath)} -e ${psQuote(script)}`
     : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`
+
+const readFreshFiles = async (workspacePath: string, ...paths: string[]): Promise<FileFreshnessTracker> => {
+  const tracker = new FileFreshnessTracker()
+  for (const filePath of paths) {
+    await readWorkspacePath({ path: filePath }, { workspacePath, fileFreshness: tracker })
+  }
+  return tracker
+}
 
 describe("workspace scaffold", () => {
   it("creates .socrates/resources for a start-from-scratch workspace", () => {
@@ -289,6 +299,20 @@ describe("workspace tools", () => {
     expect(result.warnings?.[0]).toContain("does not support native vision")
   })
 
+  it("treats MiMo Pro as vision-capable when reading images", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "screenshot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+
+    const result = await readWorkspacePath(
+      { path: "screenshot.png" },
+      { workspacePath, runtimeConfig: { providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro" } },
+    )
+
+    expect(result.kind).toBe("image")
+    expect(result.image?.nativeVisionSupported).toBe(true)
+    expect(result.warnings).toBeUndefined()
+  })
+
   it("searches files and text inside the workspace", async () => {
     const workspacePath = tempDir()
     fs.mkdirSync(path.join(workspacePath, "src"))
@@ -363,11 +387,10 @@ describe("workspace tools", () => {
   it("applies precise replacement edits", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
 
-    const result = await editWorkspace(
-      { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
-      { workspacePath },
-    )
+    const result = await editWorkspace({ path: "README.md", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
     expect(result.changedFiles[0]).toMatchObject({ path: "README.md", operation: "edited", verification: "verified" })
@@ -386,26 +409,23 @@ describe("workspace tools", () => {
     expect(result.lineEnding).toBe("crlf")
   })
 
-  it("requires a fresh base hash before overwriting existing files", async () => {
+  it("rejects existing-file content writes unless overwrite is explicit", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+    const tracker = new FileFreshnessTracker()
 
-    await expect(
-      editWorkspace({ operations: [{ type: "overwrite", path: "README.md", content: "hello new world" }] }, { workspacePath }),
-    ).rejects.toMatchObject({ code: "edit_stale_content" })
+    await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath })).rejects.toMatchObject({
+      code: "edit_use_targeted_replace",
+    })
+    await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "edit_use_targeted_replace",
+    })
 
-    await expect(
-      editWorkspace(
-        { operations: [{ type: "overwrite", path: "README.md", content: "hello new world", baseContentHash: "stale" }] },
-        { workspacePath },
-      ),
-    ).rejects.toMatchObject({ code: "edit_stale_content" })
-
-    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath })
-    const result = await editWorkspace(
-      { operations: [{ type: "overwrite", path: "README.md", content: "hello new world", baseContentHash: read.contentHash }] },
-      { workspacePath },
-    )
+    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
+    await expect(editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "edit_use_targeted_replace",
+    })
+    const result = await editWorkspace({ path: "README.md", content: "hello new world", overwrite: true }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
     expect(result.changedFiles[0]).toMatchObject({
@@ -416,6 +436,28 @@ describe("workspace tools", () => {
       sizeBytesAfter: Buffer.byteLength("hello new world"),
     })
     expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("still requires freshness before explicit existing-file overwrite", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world")
+
+    await expect(editWorkspace({ path: "README.md", content: "hello new world", overwrite: true }, { workspacePath })).rejects.toMatchObject({
+      code: "edit_stale_content",
+    })
+  })
+
+  it("creates new files with content without a prior read", async () => {
+    const workspacePath = tempDir()
+
+    const result = await editWorkspace({ path: "README.md", content: "hello new world" }, { workspacePath })
+
+    expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "README.md",
+      operation: "created",
+      verification: "verified",
+    })
   })
 
   it("fails loudly when disk verification does not match the planned edit", async () => {
@@ -429,8 +471,10 @@ describe("workspace tools", () => {
       }
     })
     try {
+      const tracker = new FileFreshnessTracker()
+      await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
       await expect(
-        editWorkspace({ operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] }, { workspacePath }),
+        editWorkspace({ path: "README.md", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker }),
       ).rejects.toMatchObject({ code: "edit_verification_failed" })
     } finally {
       __editToolTest.setAfterWriteHook(undefined)
@@ -442,10 +486,9 @@ describe("workspace tools", () => {
     fs.mkdirSync(path.join(workspacePath, "src"))
     fs.writeFileSync(path.join(workspacePath, "src", "main.py"), "print('old')\n")
 
-    const result = await editWorkspace(
-      { operations: [{ type: "replace", path: "src\\main.py", oldText: "old", newText: "new" }] },
-      { workspacePath },
-    )
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "src/main.py" }, { workspacePath, fileFreshness: tracker })
+    const result = await editWorkspace({ path: "src\\main.py", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "src", "main.py"), "utf8")).toBe("print('new')\n")
     expect(result.changedFiles[0]?.path).toBe(path.join("src", "main.py"))
@@ -455,28 +498,48 @@ describe("workspace tools", () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "server.py"), "alpha\r\nbeta\r\ngamma\r\n")
 
-    await editWorkspace(
-      { operations: [{ type: "replace", path: "server.py", oldText: "beta", newText: "beta = 42" }] },
-      { workspacePath },
-    )
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "server.py" }, { workspacePath, fileFreshness: tracker })
+    await editWorkspace({ path: "server.py", oldString: "beta", newString: "beta = 42" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "server.py"), "utf8")).toBe("alpha\r\nbeta = 42\r\ngamma\r\n")
   })
 
-  it("requires and verifies base hashes for patches touching existing files", async () => {
+  it("replaces every occurrence when replaceAll is set", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "config.py"), "x = 1\ny = 1\nz = 1\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "config.py" }, { workspacePath, fileFreshness: tracker })
+
+    const result = await editWorkspace(
+      { path: "config.py", oldString: "= 1", newString: "= 2", replaceAll: true },
+      { workspacePath, fileFreshness: tracker },
+    )
+
+    expect(fs.readFileSync(path.join(workspacePath, "config.py"), "utf8")).toBe("x = 2\ny = 2\nz = 2\n")
+    expect(result.changedFiles[0]).toMatchObject({ path: "config.py", operation: "edited", verification: "verified" })
+  })
+
+  it("rejects ambiguous replacements when replaceAll is not set", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "config.py"), "x = 1\ny = 1\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "config.py" }, { workspacePath, fileFreshness: tracker })
+
+    await expect(
+      editWorkspace({ path: "config.py", oldString: "= 1", newString: "= 2" }, { workspacePath, fileFreshness: tracker }),
+    ).rejects.toMatchObject({ code: "replace_occurrence_mismatch" })
+    expect(fs.readFileSync(path.join(workspacePath, "config.py"), "utf8")).toBe("x = 1\ny = 1\n")
+  })
+
+  it("applies and verifies unified diff patches", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "README.md"), "hello old world\n")
     const patch = ["--- a/README.md", "+++ b/README.md", "@@ -1 +1 @@", "-hello old world", "+hello new world", ""].join("\n")
 
-    await expect(editWorkspace({ operations: [{ type: "patch", patch }] }, { workspacePath })).rejects.toMatchObject({
-      code: "edit_stale_content",
-    })
-
-    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath })
-    const result = await editWorkspace(
-      { operations: [{ type: "patch", patch, baseContentHashes: { "README.md": read.contentHash ?? "" } }] },
-      { workspacePath },
-    )
+    const tracker = new FileFreshnessTracker()
+    const read = await readWorkspacePath({ path: "README.md" }, { workspacePath, fileFreshness: tracker })
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello new world\n")
     expect(result.changedFiles[0]).toMatchObject({
@@ -488,49 +551,474 @@ describe("workspace tools", () => {
     expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
   })
 
-  it("allows env template edits while denying real env files", async () => {
+  it("applies and verifies new-file patches", async () => {
     const workspacePath = tempDir()
+    const patch = ["--- /dev/null", "+++ b/new-file.txt", "@@ -0,0 +1 @@", "+created", ""].join("\n")
 
-    await editWorkspace({ operations: [{ type: "create", path: ".env.example", content: "OPENAI_API_KEY=\n" }] }, { workspacePath })
+    const result = await applyPatchWorkspace({ patch }, { workspacePath })
 
-    expect(fs.readFileSync(path.join(workspacePath, ".env.example"), "utf8")).toBe("OPENAI_API_KEY=\n")
-    await expect(editWorkspace({ operations: [{ type: "create", path: ".env", content: "OPENAI_API_KEY=secret\n" }] }, { workspacePath })).rejects.toThrow(
-      SocratesError,
+    expect(fs.readFileSync(path.join(workspacePath, "new-file.txt"), "utf8")).toBe("created\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "new-file.txt",
+      operation: "created",
+      verification: "verified",
+    })
+    expect(result.changedFiles[0]?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
+  })
+
+  it("applies and verifies delete patches", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "remove-me.txt"), "delete me\n")
+    const tracker = new FileFreshnessTracker()
+    const read = await readWorkspacePath({ path: "remove-me.txt" }, { workspacePath, fileFreshness: tracker })
+    const patch = ["--- a/remove-me.txt", "+++ /dev/null", "@@ -1 +0,0 @@", "-delete me", ""].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.existsSync(path.join(workspacePath, "remove-me.txt"))).toBe(false)
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "remove-me.txt",
+      operation: "deleted",
+      verification: "verified",
+      contentHashBefore: read.contentHash,
+    })
+    expect(result.changedFiles[0]?.contentHashAfter).toBeUndefined()
+  })
+
+  it("applies and verifies pure rename patches", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "old-name.txt"), "same\n")
+    const tracker = await readFreshFiles(workspacePath, "old-name.txt")
+    const patch = [
+      "diff --git a/old-name.txt b/new-name.txt",
+      "similarity index 100%",
+      "rename from old-name.txt",
+      "rename to new-name.txt",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.existsSync(path.join(workspacePath, "old-name.txt"))).toBe(false)
+    expect(fs.readFileSync(path.join(workspacePath, "new-name.txt"), "utf8")).toBe("same\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "new-name.txt",
+      previousPath: "old-name.txt",
+      operation: "renamed",
+      verification: "verified",
+    })
+    expect(result.changedFiles[0]?.contentHashBefore).toBe(result.changedFiles[0]?.contentHashAfter)
+  })
+
+  it("applies and verifies rename patches that also change content", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "old-name.txt"), "old\n")
+    const tracker = await readFreshFiles(workspacePath, "old-name.txt")
+    const patch = [
+      "diff --git a/old-name.txt b/new-name.txt",
+      "similarity index 50%",
+      "rename from old-name.txt",
+      "rename to new-name.txt",
+      "--- a/old-name.txt",
+      "+++ b/new-name.txt",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.existsSync(path.join(workspacePath, "old-name.txt"))).toBe(false)
+    expect(fs.readFileSync(path.join(workspacePath, "new-name.txt"), "utf8")).toBe("new\n")
+    expect(result.changedFiles[0]).toMatchObject({
+      path: "new-name.txt",
+      previousPath: "old-name.txt",
+      operation: "renamed",
+      verification: "verified",
+    })
+    expect(result.changedFiles[0]?.contentHashBefore).not.toBe(result.changedFiles[0]?.contentHashAfter)
+  })
+
+  it("rejects malformed unified diff hunk counts with a constructive error before applying", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "hello\n")
+    const patch = [
+      "--- a/README.md",
+      "+++ b/README.md",
+      "@@ -1,1 +1,2 @@",
+      "-hello",
+      "+hello",
+      "+world",
+      "+extra",
+      "",
+    ].join("\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
+      code: "patch_parse_failed",
+      message: expect.stringContaining("hunk line counts"),
+      details: expect.objectContaining({
+        expectedNewLines: 2,
+        actualNewLines: 3,
+        suggestion: expect.stringContaining("patchText"),
+      }),
+    })
+    expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("hello\n")
+  })
+
+  it("returns a constructive context mismatch error for valid unified diffs that do not apply", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "current\n")
+    const tracker = await readFreshFiles(workspacePath, "README.md")
+    const patch = ["--- a/README.md", "+++ b/README.md", "@@ -1 +1 @@", "-stale", "+next", ""].join("\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "patch_apply_failed",
+      message: expect.stringContaining("current disk"),
+      details: expect.objectContaining({
+        path: "README.md",
+        suggestion: expect.stringContaining("Re-read"),
+      }),
+    })
+    expect(fs.readFileSync(path.join(workspacePath, "README.md"), "utf8")).toBe("current\n")
+  })
+
+  it("returns a constructive error when a middle structured hunk does not match and leaves disk unchanged", async () => {
+    const workspacePath = tempDir()
+    const original = "one\ntwo\nthree\nfour\nfive\n"
+    fs.writeFileSync(path.join(workspacePath, "app.txt"), original)
+    const tracker = await readFreshFiles(workspacePath, "app.txt")
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: app.txt",
+      "@@",
+      "-one",
+      "+ONE",
+      "@@",
+      "-missing-three",
+      "+THREE",
+      "@@",
+      "-five",
+      "+FIVE",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    await expect(applyPatchWorkspace({ patchText: patch }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "patch_context_mismatch",
+      message: expect.stringContaining("expected lines"),
+      details: expect.objectContaining({
+        path: "app.txt",
+        expectedLines: "missing-three",
+        suggestion: expect.stringContaining("Re-read"),
+      }),
+    })
+    expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe(original)
+  })
+
+  it("accepts structured apply_patch updates without unified hunk counts", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "app.txt"), "alpha\nbeta\ngamma\n")
+    const tracker = await readFreshFiles(workspacePath, "app.txt")
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: app.txt",
+      "@@",
+      " beta",
+      "+beta helper",
+      " gamma",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha\nbeta\nbeta helper\ngamma\n")
+    expect(result.changedFiles[0]).toMatchObject({ path: "app.txt", operation: "patched", verification: "verified" })
+    expect(result.warnings?.[0]).toContain("structured apply_patch format")
+    expect(result.diff).toContain("--- a/app.txt")
+    expect(result.diff).toContain("+beta helper")
+  })
+
+  it("treats structured hunk labels as optional hints when exact old lines are present", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(
+      path.join(workspacePath, "leverage_long_run.py"),
+      [
+        "import yfinance as yf",
+        "import pandas as pd",
+        "import matplotlib.pyplot as plt",
+        "import numpy as np",
+        "import warnings",
+        "",
+        "warnings.filterwarnings(\"ignore\", category=FutureWarning)",
+        "",
+      ].join("\n"),
+    )
+    const tracker = await readFreshFiles(workspacePath, "leverage_long_run.py")
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: leverage_long_run.py",
+      "@@ imports",
+      " import yfinance as yf",
+      " import pandas as pd",
+      "+import datetime",
+      " import matplotlib.pyplot as plt",
+      " import numpy as np",
+      " import warnings",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patchText: patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.readFileSync(path.join(workspacePath, "leverage_long_run.py"), "utf8")).toContain(
+      "import pandas as pd\nimport datetime\nimport matplotlib.pyplot as plt",
+    )
+    expect(result.changedFiles[0]).toMatchObject({ path: "leverage_long_run.py", operation: "patched", verification: "verified" })
+  })
+
+  it("uses structured hunk labels as anchors when they match an existing line", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "multi_ctx.txt"), "fn a\nx=10\ny=2\nfn b\nx=10\ny=20\n")
+    const tracker = await readFreshFiles(workspacePath, "multi_ctx.txt")
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: multi_ctx.txt",
+      "@@ fn b",
+      "-x=10",
+      "+x=11",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    await applyPatchWorkspace({ patchText: patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.readFileSync(path.join(workspacePath, "multi_ctx.txt"), "utf8")).toBe("fn a\nx=10\ny=2\nfn b\nx=11\ny=20\n")
+  })
+
+  it("accepts heredoc-wrapped structured patches", async () => {
+    const workspacePath = tempDir()
+    const patch = [
+      "<<PATCH",
+      "*** Begin Patch",
+      "*** Add File: heredoc.txt",
+      "+hello from heredoc",
+      "*** End Patch",
+      "PATCH",
+      "",
+    ].join("\n")
+
+    await applyPatchWorkspace({ patchText: patch }, { workspacePath })
+
+    expect(fs.readFileSync(path.join(workspacePath, "heredoc.txt"), "utf8")).toBe("hello from heredoc\n")
+  })
+
+  it("accepts structured add, delete, and move patches", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "old.txt"), "same\n")
+    fs.writeFileSync(path.join(workspacePath, "remove.txt"), "remove\n")
+    const tracker = await readFreshFiles(workspacePath, "old.txt", "remove.txt")
+    const patch = [
+      "*** Begin Patch",
+      "*** Add File: created.txt",
+      "+created",
+      "*** Update File: old.txt",
+      "*** Move to: new.txt",
+      "*** Delete File: remove.txt",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.readFileSync(path.join(workspacePath, "created.txt"), "utf8")).toBe("created\n")
+    expect(fs.existsSync(path.join(workspacePath, "old.txt"))).toBe(false)
+    expect(fs.readFileSync(path.join(workspacePath, "new.txt"), "utf8")).toBe("same\n")
+    expect(fs.existsSync(path.join(workspacePath, "remove.txt"))).toBe(false)
+    expect(result.changedFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "created.txt", operation: "created" }),
+        expect.objectContaining({ path: "new.txt", operation: "renamed", previousPath: "old.txt" }),
+        expect.objectContaining({ path: "remove.txt", operation: "deleted" }),
+      ]),
     )
   })
 
-  it("composes multiple replacement edits to the same file before writing", async () => {
+  it("normalizes common structured patch prefix mistakes with warnings", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "app.txt"), "alpha\n\nbeta\n")
+    const tracker = await readFreshFiles(workspacePath, "app.txt")
+    const patch = [
+      "*** Begin Patch",
+      "*** Add File: created.txt",
+      "created without plus",
+      "",
+      "*** Update File: app.txt",
+      "alpha",
+      "",
+      "+middle",
+      "beta",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.readFileSync(path.join(workspacePath, "created.txt"), "utf8")).toBe("created without plus\n\n")
+    expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha\n\nmiddle\nbeta\n")
+    expect(result.changedFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "created.txt", operation: "created" }),
+        expect.objectContaining({ path: "app.txt", operation: "patched" }),
+      ]),
+    )
+    expect(result.warnings?.some((warning) => warning.includes("Normalized Add File line"))).toBe(true)
+    expect(result.warnings?.some((warning) => warning.includes("implicit @@ hunk"))).toBe(true)
+    expect(result.warnings?.some((warning) => warning.includes("Normalized context line"))).toBe(true)
+  })
+
+  it("requires a read before patching an existing file", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "app.txt"), "alpha\n")
+    const patch = ["*** Begin Patch", "*** Update File: app.txt", "@@", "-alpha", "+beta", "*** End Patch", ""].join("\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
+      code: "edit_stale_content",
+      message: expect.stringContaining("Read the file before applying a patch"),
+    })
+    expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha\n")
+  })
+
+  it("requires a fresh read before patching the same file again after a successful patch", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "app.txt"), "alpha\nbeta\n")
+    const tracker = await readFreshFiles(workspacePath, "app.txt")
+    const firstPatch = ["*** Begin Patch", "*** Update File: app.txt", "@@", "-alpha", "+alpha = 1", "*** End Patch", ""].join("\n")
+    const secondPatch = ["*** Begin Patch", "*** Update File: app.txt", "@@", "-beta", "+beta = 2", "*** End Patch", ""].join("\n")
+
+    await applyPatchWorkspace({ patch: firstPatch }, { workspacePath, fileFreshness: tracker })
+    await expect(applyPatchWorkspace({ patch: secondPatch }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
+      code: "edit_stale_content",
+      message: expect.stringContaining("Read the file again"),
+    })
+
+    await readWorkspacePath({ path: "app.txt" }, { workspacePath, fileFreshness: tracker })
+    await applyPatchWorkspace({ patch: secondPatch }, { workspacePath, fileFreshness: tracker })
+    expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha = 1\nbeta = 2\n")
+  })
+
+  it("serializes concurrent patches on the same workspace and rejects the stale second mutation", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "app.txt"), "alpha\nbeta\n")
+    const tracker = await readFreshFiles(workspacePath, "app.txt")
+    const firstPatch = ["*** Begin Patch", "*** Update File: app.txt", "@@", "-alpha", "+alpha = 1", "*** End Patch", ""].join("\n")
+    const secondPatch = ["*** Begin Patch", "*** Update File: app.txt", "@@", "-beta", "+beta = 2", "*** End Patch", ""].join("\n")
+
+    const [first, second] = await Promise.allSettled([
+      applyPatchWorkspace({ patchText: firstPatch }, { workspacePath, fileFreshness: tracker }),
+      applyPatchWorkspace({ patchText: secondPatch }, { workspacePath, fileFreshness: tracker }),
+    ])
+
+    expect(first.status).toBe("fulfilled")
+    expect(second.status).toBe("rejected")
+    if (second.status !== "rejected") {
+      throw new Error("expected the second concurrent patch to be rejected")
+    }
+    expect(second.reason).toMatchObject({
+      code: "edit_stale_content",
+      message: expect.stringContaining("Read the file again"),
+    })
+    expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha = 1\nbeta\n")
+  })
+
+  it("rejects sensitive create, delete, and rename patches before applying", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, ".env"), "TOKEN=secret\n")
+    fs.writeFileSync(path.join(workspacePath, "safe.txt"), "safe\n")
+
+    const createSensitive = ["--- /dev/null", "+++ b/secret.key", "@@ -0,0 +1 @@", "+secret", ""].join("\n")
+    const deleteSensitive = ["--- a/.env", "+++ /dev/null", "@@ -1 +0,0 @@", "-TOKEN=secret", ""].join("\n")
+    const renameSensitive = [
+      "diff --git a/safe.txt b/credential.txt",
+      "similarity index 100%",
+      "rename from safe.txt",
+      "rename to credential.txt",
+      "",
+    ].join("\n")
+
+    await expect(applyPatchWorkspace({ patch: createSensitive }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    await expect(applyPatchWorkspace({ patch: deleteSensitive }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    await expect(applyPatchWorkspace({ patch: renameSensitive }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    expect(fs.readFileSync(path.join(workspacePath, ".env"), "utf8")).toBe("TOKEN=secret\n")
+    expect(fs.readFileSync(path.join(workspacePath, "safe.txt"), "utf8")).toBe("safe\n")
+    expect(fs.existsSync(path.join(workspacePath, "secret.key"))).toBe(false)
+    expect(fs.existsSync(path.join(workspacePath, "credential.txt"))).toBe(false)
+  })
+
+  it("rejects sensitive structured patches before reading or applying", async () => {
+    const workspacePath = tempDir()
+    const patch = ["*** Begin Patch", "*** Add File: secret.key", "+secret", "*** End Patch", ""].join("\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    expect(fs.existsSync(path.join(workspacePath, "secret.key"))).toBe(false)
+  })
+
+  it("allows env template edits while denying real env files", async () => {
+    const workspacePath = tempDir()
+
+    await editWorkspace({ path: ".env.example", content: "OPENAI_API_KEY=\n" }, { workspacePath })
+
+    expect(fs.readFileSync(path.join(workspacePath, ".env.example"), "utf8")).toBe("OPENAI_API_KEY=\n")
+    await expect(editWorkspace({ path: ".env", content: "OPENAI_API_KEY=secret\n" }, { workspacePath })).rejects.toThrow(SocratesError)
+  })
+
+  it("applies sequential replacement edits to the same file", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "strategy.py"), "rate = 0.02\nplt.show()\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "strategy.py" }, { workspacePath, fileFreshness: tracker })
 
+    await editWorkspace({ path: "strategy.py", oldString: "rate = 0.02", newString: "rate = 0.04" }, { workspacePath, fileFreshness: tracker })
+    await readWorkspacePath({ path: "strategy.py" }, { workspacePath, fileFreshness: tracker })
     const result = await editWorkspace(
-      {
-        operations: [
-          { type: "replace", path: "strategy.py", oldText: "rate = 0.02", newText: "rate = 0.04" },
-          { type: "replace", path: "strategy.py", oldText: "plt.show()", newText: "plt.savefig('strategy_vs_bh.png')" },
-        ],
-      },
-      { workspacePath },
+      { path: "strategy.py", oldString: "plt.show()", newString: "plt.savefig('strategy_vs_bh.png')" },
+      { workspacePath, fileFreshness: tracker },
     )
 
     expect(fs.readFileSync(path.join(workspacePath, "strategy.py"), "utf8")).toBe(
       "rate = 0.04\nplt.savefig('strategy_vs_bh.png')\n",
     )
     expect(result.changedFiles[0]).toMatchObject({ path: "strategy.py", operation: "edited", verification: "verified" })
-    expect(result.diff).toContain("rate = 0.04")
     expect(result.diff).toContain("plt.savefig('strategy_vs_bh.png')")
+  })
+
+  it("requires a fresh read before a second edit to the same file", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "strategy.py"), "rate = 0.02\nplt.show()\n")
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "strategy.py" }, { workspacePath, fileFreshness: tracker })
+
+    await editWorkspace({ path: "strategy.py", oldString: "rate = 0.02", newString: "rate = 0.04" }, { workspacePath, fileFreshness: tracker })
+
+    await expect(
+      editWorkspace(
+        { path: "strategy.py", oldString: "plt.show()", newString: "plt.savefig('strategy_vs_bh.png')" },
+        { workspacePath, fileFreshness: tracker },
+      ),
+    ).rejects.toMatchObject({
+      code: "edit_stale_content",
+      message: expect.stringContaining("Read the file again"),
+    })
   })
 
   it("returns a focused unified diff for small replacement edits", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "strategy.py"), ["alpha", "beta", "gamma", "delta", "omega"].join("\n"))
+    const tracker = new FileFreshnessTracker()
+    await readWorkspacePath({ path: "strategy.py" }, { workspacePath, fileFreshness: tracker })
 
-    const result = await editWorkspace(
-      {
-        operations: [{ type: "replace", path: "strategy.py", oldText: "delta", newText: "delta = 42" }],
-      },
-      { workspacePath },
-    )
+    const result = await editWorkspace({ path: "strategy.py", oldString: "delta", newString: "delta = 42" }, { workspacePath, fileFreshness: tracker })
 
     expect(result.diff).toContain("@@ -1,5 +1,5 @@")
     expect(result.diff).toContain("-delta")

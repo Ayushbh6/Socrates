@@ -5,6 +5,7 @@ export const baseToolNameSchema = z.enum([
   "read",
   "search",
   "edit",
+  "apply_patch",
   "bash",
   "trace_retrieve",
   "list_project_resources",
@@ -115,48 +116,107 @@ export const searchToolOutputSchema = z
   .strict()
 export type SearchToolOutput = z.infer<typeof searchToolOutputSchema>
 
-export const editOperationSchema = z.discriminatedUnion("type", [
-  z
-    .object({
-      type: z.literal("create"),
-      path: z.string().min(1),
-      content: z.string(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("overwrite"),
-      path: z.string().min(1),
-      content: z.string(),
-      baseContentHash: z.string().min(1).optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("replace"),
-      path: z.string().min(1),
-      oldText: z.string().min(1),
-      newText: z.string(),
-      expectedOccurrences: z.number().int().positive().optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("patch"),
-      patch: z.string().min(1),
-      baseContentHashes: z.record(z.string(), z.string().min(1)).optional(),
-    })
-    .strict(),
-])
-export type EditOperation = z.infer<typeof editOperationSchema>
-
 export const editToolInputSchema = z
   .object({
-    operations: z.array(editOperationSchema).min(1).max(20),
+    path: z.string().min(1),
+    content: z.string().optional(),
+    oldString: z.string().min(1).optional(),
+    newString: z.string().optional(),
+    replaceAll: z.boolean().optional(),
+    overwrite: z.literal(true).optional(),
     dryRun: z.boolean().optional(),
   })
   .strict()
+  .superRefine((value, ctx) => {
+    const hasContent = value.content !== undefined
+    const hasReplace = value.oldString !== undefined || value.newString !== undefined
+    if (hasContent === hasReplace) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide either content for a whole-file write or oldString/newString for a targeted replace, but not both.",
+      })
+      return
+    }
+    if (!hasContent && !hasReplace) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide content for a whole-file write or oldString/newString for a targeted replace.",
+      })
+      return
+    }
+    if (hasReplace) {
+      if (value.overwrite) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "overwrite is only valid with content whole-file writes." })
+      }
+      if (value.oldString === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "oldString is required for a targeted replace." })
+      }
+      if (value.newString === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "newString is required for a targeted replace." })
+      }
+    }
+  })
 export type EditToolInput = z.infer<typeof editToolInputSchema>
+
+export const editToolModelInputSchema = z.union([
+  z
+    .object({
+      path: z.string().min(1),
+      oldString: z.string().min(1),
+      newString: z.string(),
+      replaceAll: z.boolean().optional(),
+      dryRun: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      path: z.string().min(1),
+      content: z.string(),
+      overwrite: z.literal(true).optional(),
+      dryRun: z.boolean().optional(),
+    })
+    .strict(),
+])
+
+export const applyPatchToolInputSchema = z
+  .object({
+    patch: z.string().min(1).optional(),
+    patchText: z
+      .string()
+      .min(1)
+      .describe(
+        "Patch text to apply. Prefer structured format: *** Begin Patch, then file sections like *** Update File: path with @@ hunks, *** Add File: path, or *** Delete File: path, ending with *** End Patch. In Update hunks, prefix unchanged lines with space, removed lines with -, and added lines with +. Add File content lines should start with +.",
+      )
+      .optional(),
+    dryRun: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.patch === undefined && value.patchText === undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide patchText." })
+    }
+    if (value.patch !== undefined && value.patchText !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Provide either patchText or patch, not both." })
+    }
+  })
+  .transform((value) => ({
+    patch: value.patch ?? value.patchText ?? "",
+    ...(value.dryRun === undefined ? {} : { dryRun: value.dryRun }),
+  }))
+export type ApplyPatchToolInput = z.input<typeof applyPatchToolInputSchema>
+export type NormalizedApplyPatchToolInput = z.output<typeof applyPatchToolInputSchema>
+
+export const applyPatchToolModelInputSchema = z
+  .object({
+    patchText: z
+      .string()
+      .min(1)
+      .describe(
+        "Patch text to apply. Prefer structured format: *** Begin Patch, then file sections like *** Update File: path with @@ hunks, *** Add File: path, or *** Delete File: path, ending with *** End Patch. In Update hunks, prefix unchanged lines with space, removed lines with -, and added lines with +. Add File content lines should start with +. Read existing files before patching them.",
+      ),
+    dryRun: z.boolean().optional(),
+  })
+  .strict()
 
 export const editToolOutputSchema = z
   .object({
@@ -164,7 +224,8 @@ export const editToolOutputSchema = z
       z
         .object({
           path: z.string().min(1),
-          operation: z.enum(["created", "overwritten", "edited", "patched"]),
+          operation: z.enum(["created", "overwritten", "edited", "patched", "deleted", "renamed"]),
+          previousPath: z.string().min(1).optional(),
           verification: z.literal("verified").optional(),
           contentHashBefore: z.string().min(1).optional(),
           contentHashAfter: z.string().min(1).optional(),
@@ -182,7 +243,10 @@ export const editToolOutputSchema = z
   .strict()
 export type EditToolOutput = z.infer<typeof editToolOutputSchema>
 
-export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "stale", "awaiting_input", "missing"])
+export const applyPatchToolOutputSchema = editToolOutputSchema
+export type ApplyPatchToolOutput = EditToolOutput
+
+export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "detached", "stale", "awaiting_input", "missing"])
 export type TerminalStatus = z.infer<typeof terminalStatusSchema>
 
 export const bashTerminalMetadataSchema = z
@@ -232,7 +296,6 @@ export const bashToolModelInputSchema = z
     command: z.string().min(1).optional(),
     name: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
-    outputSequence: z.number().int().nonnegative().optional(),
     cwd: z.string().min(1).optional(),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
@@ -258,6 +321,8 @@ export const bashToolOutputSchema = z
     signal: z.string().nullable().optional(),
     stdout: z.string(),
     stderr: z.string(),
+    message: z.string().optional(),
+    reusedTerminal: z.boolean().optional(),
     durationMs: z.number().int().nonnegative(),
     timedOut: z.boolean(),
     truncation: truncationMetadataSchema,
@@ -271,6 +336,7 @@ export const bashToolOutputSchema = z
     process: z
       .object({
         processId: z.string().min(1),
+        systemPid: z.number().int().positive().optional(),
         status: z.enum(["running", "exited", "stopped", "missing"]),
         exitCode: z.number().int().nullable().optional(),
         signal: z.string().nullable().optional(),
@@ -288,7 +354,7 @@ export type BashToolOutput = z.infer<typeof bashToolOutputSchema>
 export const traceRetrieveScopeSchema = z.enum(["current_conversation", "recent_conversations", "project"])
 export type TraceRetrieveScope = z.infer<typeof traceRetrieveScopeSchema>
 
-export const traceRetrieveModeSchema = z.enum(["combined", "exact", "semantic"])
+export const traceRetrieveModeSchema = z.enum(["combined", "exact", "semantic", "audit"])
 export type TraceRetrieveMode = z.infer<typeof traceRetrieveModeSchema>
 
 export const traceRetrieveIncludeSchema = z.enum(["messages", "summaries", "tool_calls", "shell", "files", "errors", "decisions"])
@@ -333,6 +399,37 @@ export const traceRetrieveSearchInputSchema = z
   .strict()
 export type TraceRetrieveSearchInput = z.infer<typeof traceRetrieveSearchInputSchema>
 
+const traceRetrieveEmptyStringOptionalKeys = new Set([
+  "command",
+  "conversationHint",
+  "createdAfter",
+  "createdBefore",
+  "handle",
+  "conversationId",
+  "turnId",
+  "messageId",
+  "toolCallId",
+])
+
+const traceRetrieveEmptyArrayOptionalKeys = new Set(["include", "paths", "toolNames"])
+
+export const normalizeTraceRetrieveInput = (value: unknown): unknown => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value
+  }
+  const normalized: Record<string, unknown> = { ...(value as Record<string, unknown>) }
+  for (const [key, fieldValue] of Object.entries(normalized)) {
+    if (traceRetrieveEmptyStringOptionalKeys.has(key) && typeof fieldValue === "string" && fieldValue.trim().length === 0) {
+      delete normalized[key]
+      continue
+    }
+    if (traceRetrieveEmptyArrayOptionalKeys.has(key) && Array.isArray(fieldValue) && fieldValue.length === 0) {
+      delete normalized[key]
+    }
+  }
+  return normalized
+}
+
 export const traceRetrieveInspectArgsSchema = z
   .object({
     operation: z.literal("inspect"),
@@ -363,10 +460,29 @@ export type TraceRetrieveInspectArgs = z.infer<typeof traceRetrieveInspectArgsSc
 export const traceRetrieveInspectInputSchema = traceRetrieveInspectArgsSchema
 export type TraceRetrieveInspectInput = z.infer<typeof traceRetrieveInspectInputSchema>
 
-export const traceRetrieveToolInputSchema = z.union([traceRetrieveSearchInputSchema, traceRetrieveInspectInputSchema])
+export const traceRetrieveToolInputSchema = z.preprocess(
+  normalizeTraceRetrieveInput,
+  z.union([traceRetrieveSearchInputSchema, traceRetrieveInspectInputSchema]),
+)
 export type TraceRetrieveToolInput = z.infer<typeof traceRetrieveToolInputSchema>
 
-export const traceRetrieveModelSearchInputSchema = traceRetrieveSearchInputSchema.omit({ includeRaw: true })
+export const traceRetrieveModelSearchInputSchema = z
+  .object({
+    operation: z.literal("search").optional(),
+    query: z.string().min(1),
+    scope: traceRetrieveScopeSchema.optional(),
+    conversationHint: z.string().min(1).optional(),
+    conversationLimit: z.number().int().positive().max(50).optional(),
+    turnNo: z.number().int().positive().max(10_000).optional(),
+    role: traceRetrieveRoleSchema.optional(),
+    mode: traceRetrieveModeSchema.optional(),
+    include: z.array(traceRetrieveIncludeSchema).optional(),
+    paths: z.array(z.string().min(1)).max(20).optional(),
+    command: z.string().min(1).optional(),
+    limit: z.number().int().positive().max(20).optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
 export const traceRetrieveModelInspectInputSchema = z
   .object({
     operation: z.literal("inspect"),
@@ -377,16 +493,40 @@ export const traceRetrieveModelInspectInputSchema = z
     role: traceRetrieveRoleSchema.optional(),
     paths: z.array(z.string().min(1)).max(20).optional(),
     command: z.string().min(1).optional(),
+    handle: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    turnId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    toolCallId: z.string().min(1).optional(),
     startTurnNo: z.number().int().positive().max(10_000).optional(),
     turnLimit: z.number().int().positive().max(100).optional(),
     include: z.array(traceRetrieveIncludeSchema).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
-  .refine((input) => Boolean(input.resultNumber ?? input.query ?? input.conversationHint ?? input.turnNo ?? input.command ?? input.paths), {
-    message: "inspect requires resultNumber or natural filters",
-  })
-export const traceRetrieveToolModelInputSchema = z.union([traceRetrieveModelSearchInputSchema, traceRetrieveModelInspectInputSchema])
+  .refine(
+    (input) =>
+      Boolean(
+        input.resultNumber ??
+          input.query ??
+          input.conversationHint ??
+          input.turnNo ??
+          input.command ??
+          input.paths ??
+          input.handle ??
+          input.conversationId ??
+          input.turnId ??
+          input.messageId ??
+          input.toolCallId,
+      ),
+    {
+      message: "inspect requires resultNumber, natural filters, handle, conversationId, turnId, messageId, or toolCallId",
+    },
+  )
+export const traceRetrieveToolModelInputSchema = z.preprocess(
+  normalizeTraceRetrieveInput,
+  z.union([traceRetrieveModelSearchInputSchema, traceRetrieveModelInspectInputSchema]),
+)
 
 export const traceRetrieveSourceSchema = z
   .object({
@@ -445,7 +585,13 @@ export const traceRetrieveSearchResultSchema = z
     score: z.number().optional(),
     preserveVerbatim: z.boolean().optional(),
     turnNo: z.number().int().positive().optional(),
+    userMessageId: z.string().min(1).optional(),
+    assistantMessageId: z.string().min(1).optional(),
     messageRole: messageRoleSchema.optional(),
+    provenanceQuality: z
+      .enum(["original_turn", "attachment_origin", "secondary_mention", "continuation_summary", "audit_event"])
+      .optional(),
+    matchReason: z.string().min(1).optional(),
     createdAt: z.string().optional(),
     metadata: z.unknown().optional(),
   })
@@ -582,6 +728,7 @@ export type McpRegistryToolOutput = z.infer<typeof mcpRegistryToolOutputSchema>
 export const normalizedToolCallSchema = z
   .object({
     toolCallId: z.string().min(1),
+    providerToolCallId: z.string().min(1).optional(),
     toolName: toolNameSchema,
     input: z.unknown(),
     providerMetadata: providerMetadataSchema.optional(),
@@ -592,6 +739,7 @@ export type NormalizedToolCall = z.infer<typeof normalizedToolCallSchema>
 export const toolExecutionResultSchema = z
   .object({
     toolCallId: z.string().min(1),
+    providerToolCallId: z.string().min(1).optional(),
     toolName: toolNameSchema,
     ok: z.boolean(),
     output: z.unknown().optional(),

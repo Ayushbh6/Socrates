@@ -322,15 +322,73 @@ const createVerifiedEditAgent = (): SocratesAgent => {
         yield {
           type: "model.tool_call.completed",
           toolCall: {
+            toolCallId: "tcall_read_readme",
+            toolName: "read",
+            input: { path: "README.md" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
             toolCallId: "tcall_verified_edit",
             toolName: "edit",
-            input: { operations: [{ type: "replace", path: "README.md", oldText: "old", newText: "new" }] },
+            input: { path: "README.md", oldString: "old", newString: "new" },
           },
         }
         yield { type: "model.completed" }
         return
       }
       yield { type: "model.answer.delta", text: "Verified edit done." }
+      yield { type: "model.completed", usage: { inputTokens: 3, outputTokens: 3, totalTokens: 6 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createVerifiedPatchAgent = (): SocratesAgent => {
+  let step = 0
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_read_patch_target",
+            toolName: "read",
+            input: { path: "README.md" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_verified_patch",
+            toolName: "apply_patch",
+            input: {
+              patchText: [
+                "*** Begin Patch",
+                "*** Update File: README.md",
+                "@@",
+                "-hello old world",
+                "+hello patched world",
+                "*** End Patch",
+              ].join("\n"),
+            },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Verified patch done." }
       yield { type: "model.completed", usage: { inputTokens: 3, outputTokens: 3, totalTokens: 6 } }
     },
   }
@@ -346,7 +404,7 @@ const createStaleEditAgent = (): SocratesAgent => {
         toolCall: {
           toolCallId: "tcall_stale_edit",
           toolName: "edit",
-          input: { operations: [{ type: "overwrite", path: "README.md", content: "new" }] },
+          input: { path: "README.md", content: "new", overwrite: true },
         },
       }
       yield { type: "model.completed" }
@@ -535,6 +593,76 @@ setInterval(() => {}, 1000)
   return new SocratesAgent(provider)
 }
 
+const createTerminalOutputAgent = (): SocratesAgent => {
+  let step = 0
+  const command = `node -e "console.log('tail-ready'); setInterval(() => {}, 1000)"`
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_tail_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "tail-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield { type: "model.answer.delta", text: "Tail Terminal started." }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 3) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_tail_output",
+            toolName: "bash",
+            input: { operation: "output", name: "tail-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Tail output checked." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createDuplicateTerminalStartAgent = (): SocratesAgent => {
+  let step = 0
+  const command = `node -e "console.log('reuse-ready'); setInterval(() => {}, 1000)"`
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      const toolCallId = step === 1 ? "tcall_reuse_start_first" : "tcall_reuse_start_second"
+      if (step === 1 || step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId,
+            toolName: "bash",
+            input: { operation: "start", command, name: "reuse-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Reuse checked." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createTestEmbeddingProvider = (): EmbeddingProvider => ({
   async check() {
     return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
@@ -555,7 +683,7 @@ const createTestEmbeddingProvider = (): EmbeddingProvider => ({
 
 const testEmbeddingVector = (value: string): number[] => {
   const lower = value.toLowerCase()
-  if (lower.includes("blue-lantern-42")) {
+  if (lower.includes("blue-lantern-42") || lower.includes("fuzzy blue memory")) {
     return [1, 0, 0]
   }
   if (lower.includes("ordinary")) {
@@ -838,6 +966,36 @@ describe("database migrations", () => {
         "schema_migrations",
       ]),
     )
+  })
+
+  it("stores repeated provider tool-call ids under unique Socrates tool run ids", () => {
+    const dbPath = tempDbPath()
+    const handle = openDatabase(dbPath)
+    runMigrations(handle)
+    const store = new SocratesStore(handle)
+    try {
+      for (const toolCallId of ["tcall_internal_1", "tcall_internal_2"]) {
+        store.createToolCall({
+          toolCallId,
+          providerToolCallId: "functions.read:0",
+          conversationId: "conv_duplicate_provider",
+          sessionId: "sess_duplicate_provider",
+          turnId: "turn_duplicate_provider",
+          toolName: "read",
+          arguments: { path: "README.md" },
+          requiresApproval: false,
+        })
+        store.completeToolCall(toolCallId, { ok: true })
+      }
+
+      const rows = handle.sqlite
+        .prepare("SELECT id, provider_tool_call_id FROM tool_calls WHERE conversation_id = ? ORDER BY started_at")
+        .all("conv_duplicate_provider") as Array<{ id: string; provider_tool_call_id: string }>
+      expect(rows.map((row) => row.id)).toEqual(["tcall_internal_1", "tcall_internal_2"])
+      expect(rows.map((row) => row.provider_tool_call_id)).toEqual(["functions.read:0", "functions.read:0"])
+    } finally {
+      handle.close()
+    }
   })
 })
 
@@ -1848,14 +2006,16 @@ describe("WebSocket API", () => {
         expect(indexed.fts_count).toBeGreaterThanOrEqual(indexed.document_count)
 
         const search = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello Socrates" })
-        expect(search.appliedFilters.scope).toBe("current_conversation")
-        expect(search.appliedFilters.defaultDateWindowApplied).toBe(true)
-        expect(search.warnings?.join(" ")).toContain("Only viewing the current chat")
-        expect(search.results.some((result) => result.kind === "message" && result.title.includes("User"))).toBe(true)
+        expect(search.appliedFilters.scope).toBe("recent_conversations")
+        expect(search.appliedFilters.mode).toBe("exact")
+        expect(search.appliedFilters.conversationLimit).toBe(10)
+        expect(search.appliedFilters.defaultDateWindowApplied).toBeUndefined()
+        expect(search.warnings?.join(" ") ?? "").not.toContain("Only viewing the current chat")
+        expect(search.results.some((result) => result.kind === "turn_summary" && result.userMessageId)).toBe(true)
         expect(search.results[0]?.conversation?.title).toBe(conversation.title)
         expect(search.results[0]?.conversation?.isCurrentConversation).toBe(true)
 
-        const handleResult = search.results.find((result) => result.kind === "message" && result.title.includes("User"))
+        const handleResult = search.results.find((result) => result.kind === "turn_summary" && result.userMessageId)
         expect(handleResult).toBeDefined()
         if (handleResult) {
           const inspected = await store.retrieveToolTraces(project.id, conversation.id, { operation: "inspect", handle: handleResult.handle })
@@ -1877,7 +2037,8 @@ describe("WebSocket API", () => {
 
   it("uploads chat image attachments, sends image-only messages, and hydrates attachments", async () => {
     const requests: unknown[] = []
-    const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createCapturingAgent(requests))
     await onboard(app)
     const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
@@ -1962,6 +2123,17 @@ describe("WebSocket API", () => {
     }
     expect(JSON.stringify(requests[0])).toContain("\"type\":\"image\"")
     expect(JSON.stringify(requests[0])).toContain(".socrates/attachments/")
+
+    const sqlite = new Database(dbPath)
+    try {
+      const traceRow = sqlite
+        .prepare("SELECT content FROM trace_documents WHERE source_kind = 'message' AND content LIKE ? LIMIT 1")
+        .get("%.socrates/attachments/%") as { content: string } | undefined
+      expect(traceRow?.content).toContain("screenshot.png")
+      expect(traceRow?.content).toContain(".socrates/attachments/")
+    } finally {
+      sqlite.close()
+    }
   })
 
   it("omits chat image bytes for non-vision models", async () => {
@@ -2095,7 +2267,7 @@ describe("WebSocket API", () => {
           mode: "exact",
           include: ["messages"],
         })
-        expect(search.results.some((result) => result.kind === "verbatim_anchor" && result.preserveVerbatim)).toBe(true)
+        expect(search.results.some((result) => result.kind === "turn_summary" && result.preserveVerbatim)).toBe(true)
       } finally {
         await store.close()
       }
@@ -2224,6 +2396,197 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("scopes trace retrieval to visible conversations and cleans trace data on hard delete", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const source = await createConversation(app, project.id, "Visible Trace Source")
+    const live = await createConversation(app, project.id, "Trace Live")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    const sourceSessionId = insertTestSession(handle.sqlite, project.id, source.id)
+    const sourceTurn = insertCompletedTestTurn(
+      handle.sqlite,
+      source.id,
+      sourceSessionId,
+      "The active trace key is VISIBLE-TOKEN-91.",
+      "Visible assistant reply.",
+      new Date(Date.now() - 2_000).toISOString(),
+    )
+    const sourceToolCallId = createId("tool")
+    const now = nowIso()
+    handle.sqlite
+      .prepare(
+        `INSERT INTO tool_calls (
+          id, conversation_id, session_id, turn_id, tool_name, status, arguments_json, result_json,
+          requires_approval, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, 'read', 'completed', ?, ?, 0, ?, ?)`,
+      )
+      .run(
+        sourceToolCallId,
+        source.id,
+        sourceSessionId,
+        sourceTurn.turnId,
+        JSON.stringify({ path: ".socrates/attachments/visible.png" }),
+        JSON.stringify({ path: ".socrates/attachments/visible.png", kind: "image" }),
+        now,
+        now,
+      )
+    store.indexTurnTraceDocuments(project.id, source.id, sourceTurn.turnId)
+
+    const sourceTraceDocId = handle.sqlite
+      .prepare("SELECT id FROM trace_documents WHERE conversation_id = ? LIMIT 1")
+      .get(source.id) as { id: string }
+    handle.sqlite
+      .prepare(
+        `INSERT INTO trace_embeddings
+          (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
+         SELECT ?, project_id, id, 'openai', 'text-embedding-3-small', 3, content_hash, '[1,0,0]', 'completed', ?, ?, ?
+         FROM trace_documents
+         WHERE id = ?`,
+      )
+      .run(createId("temb"), now, now, now, sourceTraceDocId.id)
+
+    const orphanConversationId = createId("conv")
+    const orphanTurnId = createId("turn")
+    const orphanMessageId = createId("msg")
+    const orphanHandle = createId("tdoc")
+    handle.sqlite
+      .prepare(
+        `INSERT INTO trace_documents (
+          id, project_id, conversation_id, turn_id, source_kind, source_table, source_id, handle, title, summary,
+          content, content_hash, importance, preserve_verbatim, chunk_index, token_count_estimate, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'message', 'messages', ?, ?, 'Deleted screenshot message', 'Orphaned deleted trace',
+          'ORPHAN-SCREENSHOT-777 should be invisible.', 'orphan-hash', 'normal', 0, 0, 12, '{"role":"user"}', ?, ?)`,
+      )
+      .run(orphanHandle, project.id, orphanConversationId, orphanTurnId, orphanMessageId, orphanHandle, now, now)
+    handle.sqlite
+      .prepare(
+        `INSERT INTO trace_documents_fts (trace_document_id, title, summary, content, metadata_text)
+         VALUES (?, 'Deleted screenshot message', 'Orphaned deleted trace', 'ORPHAN-SCREENSHOT-777 should be invisible.', '{"role":"user"}')`,
+      )
+      .run(orphanHandle)
+    handle.sqlite
+      .prepare(
+        `INSERT INTO trace_embeddings
+          (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
+         VALUES (?, ?, ?, 'openai', 'text-embedding-3-small', 3, 'orphan-hash', '[0,1,0]', 'completed', ?, ?, ?)`,
+      )
+      .run(createId("temb"), project.id, orphanHandle, now, now, now)
+    handle.sqlite
+      .prepare(
+        `INSERT INTO trace_index_jobs (id, project_id, conversation_id, turn_id, job_kind, status, attempts, created_at, started_at, completed_at)
+         VALUES (?, ?, ?, ?, 'build_trace_documents', 'completed', 1, ?, ?, ?)`,
+      )
+      .run(createId("tjob"), project.id, orphanConversationId, orphanTurnId, now, now, now)
+
+    try {
+      const orphanSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "ORPHAN-SCREENSHOT-777",
+        scope: "project",
+        mode: "exact",
+      })
+      expect(orphanSearch.results).toHaveLength(0)
+      const orphanInspectByHandle = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", handle: orphanHandle })
+      expect(orphanInspectByHandle.results).toHaveLength(0)
+      expect(orphanInspectByHandle.warnings?.join(" ")).toContain("may have been deleted")
+      const orphanInspectByMessage = await store.retrieveToolTraces(project.id, live.id, {
+        operation: "inspect",
+        messageId: orphanMessageId,
+      })
+      expect(orphanInspectByMessage.results).toHaveLength(0)
+
+      const visibleSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "VISIBLE-TOKEN-91",
+        scope: "project",
+        mode: "exact",
+      })
+      expect(visibleSearch.results[0]?.conversation?.title).toBe("Visible Trace Source")
+      expect(visibleSearch.results[0]?.messageId).toBe(sourceTurn.userMessageId)
+      expect(visibleSearch.results[0]?.kind).toBe("turn_summary")
+
+      const inspectByResult = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", resultNumber: 1 })
+      expect(JSON.stringify(inspectByResult.results)).toContain("VISIBLE-TOKEN-91")
+
+      const toolOnlyNormalSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: ".socrates/attachments/visible.png",
+        scope: "project",
+        mode: "exact",
+      })
+      expect(toolOnlyNormalSearch.results).toHaveLength(0)
+      await expect(
+        store.retrieveToolTraces(project.id, live.id, {
+          query: ".socrates/attachments/visible.png",
+          include: ["tool_calls"],
+        }),
+      ).rejects.toThrow('mode="audit"')
+      const toolOnlyAuditSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: ".socrates/attachments/visible.png",
+        scope: "project",
+        mode: "audit",
+        include: ["tool_calls"],
+      })
+      expect(toolOnlyAuditSearch.results[0]?.provenanceQuality).toBe("audit_event")
+      expect(toolOnlyAuditSearch.results[0]?.toolCallId).toBe(sourceToolCallId)
+
+      const inspectByMessage = await store.retrieveToolTraces(project.id, live.id, {
+        operation: "inspect",
+        messageId: sourceTurn.userMessageId,
+      })
+      expect(JSON.stringify(inspectByMessage.results)).toContain("VISIBLE-TOKEN-91")
+      const inspectByTool = await store.retrieveToolTraces(project.id, live.id, {
+        operation: "inspect",
+        toolCallId: sourceToolCallId,
+      })
+      expect(JSON.stringify(inspectByTool.results)).toContain(".socrates/attachments/visible.png")
+      const inspectByTurn = await store.retrieveToolTraces(project.id, live.id, {
+        operation: "inspect",
+        turnId: sourceTurn.turnId,
+      })
+      expect(JSON.stringify(inspectByTurn.results)).toContain("VISIBLE-TOKEN-91")
+      const inspectByConversation = await store.retrieveToolTraces(project.id, live.id, {
+        operation: "inspect",
+        conversationId: source.id,
+      })
+      expect(JSON.stringify(inspectByConversation.results)).toContain("VISIBLE-TOKEN-91")
+    } finally {
+      await store.close()
+    }
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: `/api/projects/${project.id}/conversations/${source.id}`,
+    })
+    const deleteBody = parseResponse<{ deletedConversationId: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+
+    const sqlite = new Database(dbPath)
+    try {
+      const row = sqlite
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM trace_documents WHERE conversation_id = ?) AS document_count,
+             (SELECT COUNT(*) FROM trace_documents_fts WHERE trace_document_id = ?) AS fts_count,
+             (SELECT COUNT(*) FROM trace_embeddings WHERE trace_document_id = ?) AS embedding_count,
+             (SELECT COUNT(*) FROM trace_index_jobs WHERE conversation_id = ?) AS job_count`,
+        )
+        .get(source.id, sourceTraceDocId.id, sourceTraceDocId.id, source.id) as {
+        document_count: number
+        fts_count: number
+        embedding_count: number
+        job_count: number
+      }
+      expect(row.document_count).toBe(0)
+      expect(row.fts_count).toBe(0)
+      expect(row.embedding_count).toBe(0)
+      expect(row.job_count).toBe(0)
+    } finally {
+      sqlite.close()
+    }
+  })
+
   it("uses semantic retrieval for active provider rows", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
@@ -2281,8 +2644,18 @@ describe("WebSocket API", () => {
         include: ["messages"],
       })
       expect(semantic.warnings?.join(" ") ?? "").not.toContain("not configured")
-      expect(semantic.results[0]?.kind).toBe("message")
+      expect(semantic.results[0]?.kind).toBe("turn_summary")
       expect(JSON.stringify(semantic.results[0])).toContain(target.userMessageId)
+
+      const combined = await store.retrieveToolTraces(project.id, conversation.id, {
+        query: "fuzzy blue memory",
+        mode: "combined",
+        include: ["messages"],
+      })
+      expect(combined.warnings?.join(" ") ?? "").not.toContain("not configured")
+      expect(combined.appliedFilters.mode).toBe("combined")
+      expect(combined.results[0]?.kind).toBe("turn_summary")
+      expect(JSON.stringify(combined.results[0])).toContain(target.userMessageId)
 
       handle.sqlite
         .prepare(
@@ -2577,16 +2950,17 @@ describe("WebSocket API", () => {
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
       const body = parseResponse<{
-        toolRuns: Array<{ toolCallId: string; shell?: { stdout: string; cwd: string }; durationMs?: number }>
+        toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; shell?: { stdout: string; cwd: string }; durationMs?: number }>
       }>(response.payload)
 
-      expect(body.ok).toBe(true)
-      if (body.ok) {
-        expect(body.data.toolRuns).toHaveLength(2)
-        expect(body.data.toolRuns[1]?.toolCallId).toBe("tcall_state")
-        expect(body.data.toolRuns[1]?.shell?.stdout).toBe("ok nested")
-        expect(body.data.toolRuns[1]?.shell?.cwd.endsWith("nested")).toBe(true)
-        expect(body.data.toolRuns[1]?.durationMs).toBeGreaterThanOrEqual(0)
+        expect(body.ok).toBe(true)
+        if (body.ok) {
+          expect(body.data.toolRuns).toHaveLength(2)
+        const stateRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_state")
+        expect(stateRun?.toolCallId).toMatch(/^tcall_/)
+        expect(stateRun?.shell?.stdout).toBe("ok nested")
+        expect(stateRun?.shell?.cwd.endsWith("nested")).toBe(true)
+        expect(stateRun?.durationMs).toBeGreaterThanOrEqual(0)
       }
     } finally {
       socket.close()
@@ -2671,6 +3045,102 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "turn.completed")
     } finally {
+      socket.close()
+    }
+  })
+
+  it("returns persisted terminal output after background polling has drained supervisor output", async () => {
+    const app = await buildTestServer(tempDbPath(), createTerminalOutputAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    let terminalId: string | undefined
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start tail terminal", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      terminalId = startedTerminal.payload.terminalId
+      const startCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(startCompleted.payload.resultPreview).toContain("tail-ready")
+      await waitForEvent(socket, "turn.completed")
+
+      await delay(700)
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Read tail terminal output"))
+      const outputCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(outputCompleted.payload.providerToolCallId).toBe("tcall_tail_output")
+      expect(outputCompleted.payload.resultPreview).toContain("tail-ready")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ terminalId: string; output: { stdout: string } }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const terminal = body.data.terminals.find((item) => item.terminalId === terminalId)
+        expect((terminal?.output.stdout.match(/tail-ready/g) ?? []).length).toBe(1)
+      }
+    } finally {
+      if (socket.readyState === WebSocket.OPEN && terminalId) {
+        sendCommand(socket, {
+          id: createId("evt"),
+          type: "terminal.stop",
+          schemaVersion: 1,
+          timestamp: nowIso(),
+          projectId: project.id,
+          conversationId: conversation.id,
+          actor: { type: "user" },
+          payload: { terminalId, reason: "Test cleanup" },
+        })
+      }
+      socket.close()
+    }
+  })
+
+  it("reuses an already-running named terminal instead of starting a duplicate", async () => {
+    const app = await buildTestServer(tempDbPath(), createDuplicateTerminalStartAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    let terminalId: string | undefined
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start duplicate terminal twice", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      terminalId = startedTerminal.payload.terminalId
+      expect(startedTerminal.payload.name).toBe("reuse-server")
+      const firstCompleted = await waitForEvent(socket, "tool.call.completed")
+      const secondCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(firstCompleted.payload.providerToolCallId).toBe("tcall_reuse_start_first")
+      expect(secondCompleted.payload.providerToolCallId).toBe("tcall_reuse_start_second")
+      expect(secondCompleted.payload.summary).toContain("Reused existing Terminal")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ name: string; status: string }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.terminals.filter((terminal) => terminal.name === "reuse-server" && terminal.status === "running")).toHaveLength(1)
+      }
+    } finally {
+      if (socket.readyState === WebSocket.OPEN && terminalId) {
+        sendCommand(socket, {
+          id: createId("evt"),
+          type: "terminal.stop",
+          schemaVersion: 1,
+          timestamp: nowIso(),
+          projectId: project.id,
+          conversationId: conversation.id,
+          actor: { type: "user" },
+          payload: { terminalId, reason: "Test cleanup" },
+        })
+      }
       socket.close()
     }
   })
@@ -2792,24 +3262,23 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
-      expect(failed.payload.toolCallId).toBe("tcall_break_shell")
+      expect(failed.payload.providerToolCallId).toBe("tcall_break_shell")
       expect(failed.payload.error.code).toBe("shell_protocol_failed")
-      expect(completed.payload.toolCallId).toBe("tcall_after_reset")
+      expect(completed.payload.providerToolCallId).toBe("tcall_after_reset")
 
       const response = await app.inject({
         method: "GET",
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
       const body = parseResponse<{
-        toolRuns: Array<{ toolCallId: string; shell?: { stdout: string; platform?: string; shellKind?: string; shellExecutable?: string } }>
+        toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; shell?: { stdout: string; platform?: string; shellKind?: string; shellExecutable?: string } }>
       }>(response.payload)
 
       expect(body.ok).toBe(true)
       if (body.ok) {
-        expect(body.data.toolRuns.find((run) => run.toolCallId === "tcall_after_reset")?.shell?.stdout).toBe("recovered")
-        expect(body.data.toolRuns.find((run) => run.toolCallId === "tcall_after_reset")?.shell?.shellKind).toBe(
-          process.platform === "win32" ? "powershell" : "posix",
-        )
+        const recoveredRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_after_reset")
+        expect(recoveredRun?.shell?.stdout).toBe("recovered")
+        expect(recoveredRun?.shell?.shellKind).toBe(process.platform === "win32" ? "powershell" : "posix")
       }
 
       const sqlite = new Database(dbPath)
@@ -2864,15 +3333,16 @@ describe("WebSocket API", () => {
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
       const body = parseResponse<{
-        toolRuns: Array<{ toolCallId: string; approval?: { status: string; decision?: string }; shell?: { exitCode?: number | null } }>
+        toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; approval?: { status: string; decision?: string }; shell?: { exitCode?: number | null } }>
       }>(response.payload)
 
       expect(body.ok).toBe(true)
       if (body.ok) {
-        expect(body.data.toolRuns[0]?.toolCallId).toBe("tcall_approval")
-        expect(body.data.toolRuns[0]?.approval?.status).toBe("approved")
-        expect(body.data.toolRuns[0]?.approval?.decision).toBe("approved")
-        expect(body.data.toolRuns[0]?.shell?.exitCode).toBe(0)
+        const approvalRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_approval")
+        expect(approvalRun?.toolCallId).toMatch(/^tcall_/)
+        expect(approvalRun?.approval?.status).toBe("approved")
+        expect(approvalRun?.approval?.decision).toBe("approved")
+        expect(approvalRun?.shell?.exitCode).toBe(0)
         expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "approved.txt"), "utf8")).toBe("approved")
       }
     } finally {
@@ -2892,6 +3362,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Edit README", { approvalMode: "approve_all" }))
       await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
@@ -2902,12 +3373,13 @@ describe("WebSocket API", () => {
       const body = parseResponse<{
         toolRuns: Array<{
           toolCallId: string
+          providerToolCallId?: string
           fileOperations?: Array<{ path: string; contentHashBefore?: string; contentHashAfter?: string; verification?: string }>
         }>
       }>(response.payload)
       expect(body.ok).toBe(true)
       if (body.ok) {
-        const fileOperation = body.data.toolRuns.find((run) => run.toolCallId === "tcall_verified_edit")?.fileOperations?.[0]
+        const fileOperation = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_verified_edit")?.fileOperations?.[0]
         expect(fileOperation).toMatchObject({ path: "README.md", verification: "verified" })
         expect(fileOperation?.contentHashBefore).toMatch(/^[a-f0-9]{64}$/)
         expect(fileOperation?.contentHashAfter).toMatch(/^[a-f0-9]{64}$/)
@@ -2915,9 +3387,11 @@ describe("WebSocket API", () => {
 
       const sqlite = new Database(dbPath)
       try {
-        const row = sqlite.prepare("SELECT content_hash_before, content_hash_after, metadata_json FROM file_operations WHERE tool_call_id = ?").get(
-          "tcall_verified_edit",
-        ) as { content_hash_before?: string; content_hash_after?: string; metadata_json?: string } | undefined
+        const row = sqlite
+          .prepare(
+            "SELECT f.content_hash_before, f.content_hash_after, f.metadata_json FROM file_operations f JOIN tool_calls t ON t.id = f.tool_call_id WHERE t.provider_tool_call_id = ?",
+          )
+          .get("tcall_verified_edit") as { content_hash_before?: string; content_hash_after?: string; metadata_json?: string } | undefined
         expect(row?.content_hash_before).toMatch(/^[a-f0-9]{64}$/)
         expect(row?.content_hash_after).toMatch(/^[a-f0-9]{64}$/)
         expect(row?.metadata_json).toContain("verified")
@@ -2925,6 +3399,28 @@ describe("WebSocket API", () => {
         sqlite.close()
       }
       expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello new world")
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("uses active-turn freshness for apply_patch after reading the target", async () => {
+    const app = await buildTestServer(tempDbPath(), createVerifiedPatchAgent())
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    fs.writeFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "hello old world\n")
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Patch README", { approvalMode: "approve_all" }))
+      await waitForEvent(socket, "tool.call.completed")
+      const patchCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(patchCompleted.payload.providerToolCallId).toBe("tcall_verified_patch")
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello patched world\n")
     } finally {
       socket.close()
     }

@@ -6,6 +6,7 @@ import {
   type ProviderId,
   type RuntimeConfig,
   type ToolExecutionResult,
+  type ToolName,
 } from "@socrates/contracts"
 import fs from "node:fs"
 import path from "node:path"
@@ -49,6 +50,7 @@ export type SocratesAgentTurnInput = {
   maxParallelToolCalls?: number
   dynamicTools?: ModelToolDefinition[] | (() => ModelToolDefinition[])
   abortSignal?: AbortSignal
+  fileFreshness?: import("../tools/types").FileFreshnessTracker
 }
 
 export type SocratesAgentContextPrecomputeInput = {
@@ -138,7 +140,18 @@ export class SocratesAgent {
       })
       const assistantParts: ModelMessagePart[] = []
       const toolCalls: NormalizedToolCall[] = []
+      const toolRunIds = new Map<string, string>()
       let stepText = ""
+      const toolRunIdFor = (providerToolCallId: string): string => {
+        const key = `${modelCallId ?? "model"}:${step}:${providerToolCallId}`
+        const existing = toolRunIds.get(key)
+        if (existing) {
+          return existing
+        }
+        const toolRunId = createId("tcall")
+        toolRunIds.set(key, toolRunId)
+        return toolRunId
+      }
 
       for await (const modelEvent of this.provider.stream({
         providerId: input.providerId,
@@ -158,10 +171,42 @@ export class SocratesAgent {
           stepText += modelEvent.text
         }
 
+        if (modelEvent.type === "model.reasoning.completed") {
+          assistantParts.push({
+            type: "reasoning",
+            text: modelEvent.text,
+            ...(modelEvent.providerMetadata ? { providerMetadata: modelEvent.providerMetadata } : {}),
+          })
+        }
+
+        if (modelEvent.type === "model.tool_call.streaming") {
+          const tool = this.toolRegistry.get(modelEvent.toolName as ToolName)
+          if (tool) {
+            const preview = extractStreamingPreview(modelEvent.toolName, modelEvent.argsText)
+            yield {
+              type: "tool.call.streaming",
+              toolCallId: toolRunIdFor(modelEvent.toolCallId),
+              providerToolCallId: modelEvent.toolCallId,
+              toolName: tool.name,
+              category: tool.category,
+              displayName: tool.name,
+              ...(preview.argsPreview ? { argsPreview: preview.argsPreview } : {}),
+              ...(preview.pathPreview ? { pathPreview: preview.pathPreview } : {}),
+              ...(modelCallId ? { modelCallId } : {}),
+              stepIndex: step,
+            }
+          }
+          continue
+        }
+
         if (modelEvent.type === "model.tool_call.completed") {
           const parsed = normalizedToolCallSchema.safeParse(modelEvent.toolCall)
           if (parsed.success) {
-            toolCalls.push(parsed.data)
+            toolCalls.push({
+              ...parsed.data,
+              toolCallId: toolRunIdFor(parsed.data.toolCallId),
+              providerToolCallId: parsed.data.toolCallId,
+            })
           }
         }
 
@@ -185,7 +230,7 @@ export class SocratesAgent {
       assistantParts.push(
         ...toolCalls.map((toolCall) => ({
           type: "tool-call" as const,
-          toolCallId: toolCall.toolCallId,
+          toolCallId: toolCall.providerToolCallId ?? toolCall.toolCallId,
           toolName: toolCall.toolName,
           input: toolCall.input,
           ...(toolCall.providerMetadata ? { providerMetadata: toolCall.providerMetadata } : {}),
@@ -205,6 +250,7 @@ export class SocratesAgent {
           requestApproval: input.requestApproval,
           modelCallId,
           stepIndex: step,
+          ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
         },
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,
@@ -223,9 +269,9 @@ export class SocratesAgent {
         role: "tool",
         content: execution.results.map((result) => ({
           type: "tool-result",
-          toolCallId: result.toolCallId,
+          toolCallId: result.providerToolCallId ?? result.toolCallId,
           toolName: result.toolName,
-          output: sanitizeToolExecutionResultForModel(result),
+          output: sanitizeToolExecutionResultForModel(result, result.providerToolCallId ?? result.toolCallId),
         })),
       })
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
@@ -259,7 +305,13 @@ export class SocratesAgent {
         if (countedToolCalls >= input.remainingBudget) {
           budgetExhausted = true
           const error = new SocratesError("tool_budget_exhausted", "The per-turn tool-call budget was exhausted.")
-          queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error })
+          queue.push({
+            type: "tool.call.failed",
+            toolCallId: toolCall.toolCallId,
+            providerToolCallId: toolCall.providerToolCallId,
+            toolName: toolCall.toolName,
+            error,
+          })
           results.set(toolCall.toolCallId, toolErrorResult(toolCall, error))
           continue
         }
@@ -309,7 +361,15 @@ export class SocratesAgent {
         return this.executeDynamicMcpToolCall(toolCall, context, queue, startedAt)
       }
       const error = new SocratesError("tool_not_found", "Tool is not registered", { details: { toolName: toolCall.toolName } })
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
+      queue.push({
+        type: "tool.call.failed",
+        toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
+        toolName: toolCall.toolName,
+        error,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
       return toolErrorResult(toolCall, error)
     }
 
@@ -318,7 +378,15 @@ export class SocratesAgent {
       const error = new SocratesError("invalid_tool_input", "Tool input did not match the schema", {
         details: parsed.error.flatten(),
       })
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
+      queue.push({
+        type: "tool.call.failed",
+        toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
+        toolName: toolCall.toolName,
+        error,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
       return toolErrorResult(toolCall, error)
     }
 
@@ -327,6 +395,7 @@ export class SocratesAgent {
       queue.push({
         type: "tool.call.started",
         toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
         toolName: tool.name,
         category: tool.category,
         displayName: tool.name,
@@ -338,7 +407,10 @@ export class SocratesAgent {
       })
 
       if (policy.type === "denied") {
-        throw new SocratesError("tool_denied", policy.reason)
+        throw new SocratesError(policy.code ?? "tool_denied", policy.reason, {
+          ...(policy.details !== undefined ? { details: policy.details } : {}),
+          ...(policy.recoverable !== undefined ? { recoverable: policy.recoverable } : {}),
+        })
       }
 
       if (policy.type === "approval_required") {
@@ -346,12 +418,19 @@ export class SocratesAgent {
         const request: ApprovalRequest = {
           approvalId,
           toolCallId: toolCall.toolCallId,
+          providerToolCallId: toolCall.providerToolCallId,
           toolName: tool.name,
           ...policy.request,
         }
         queue.push({ type: "approval.requested", request })
         const decision = await context.requestApproval(request)
-        queue.push({ type: "approval.resolved", approvalId, toolCallId: toolCall.toolCallId, decision: decision.decision })
+        queue.push({
+          type: "approval.resolved",
+          approvalId,
+          toolCallId: toolCall.toolCallId,
+          providerToolCallId: toolCall.providerToolCallId,
+          decision: decision.decision,
+        })
         if (decision.decision !== "approved") {
           throw new SocratesError("tool_approval_rejected", decision.reason ?? "The user rejected this tool call.")
         }
@@ -360,7 +439,15 @@ export class SocratesAgent {
       const output = await tool.execute(parsed.data, {
         ...context,
         toolCallId: toolCall.toolCallId,
-        onOutput: (output) => queue.push({ type: "tool.call.output", toolCallId: toolCall.toolCallId, modelCallId: context.modelCallId, stepIndex: context.stepIndex, ...output }),
+        onOutput: (output) =>
+          queue.push({
+            type: "tool.call.output",
+            toolCallId: toolCall.toolCallId,
+            providerToolCallId: toolCall.providerToolCallId,
+            modelCallId: context.modelCallId,
+            stepIndex: context.stepIndex,
+            ...output,
+          }),
       })
       const parsedOutput = tool.resultSchema.safeParse(output)
       if (!parsedOutput.success) {
@@ -371,6 +458,7 @@ export class SocratesAgent {
       queue.push({
         type: "tool.call.completed",
         toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
         toolName: tool.name,
         output: parsedOutput.data,
         summary: tool.summary(parsedOutput.data),
@@ -382,13 +470,22 @@ export class SocratesAgent {
       })
       return {
         toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
         toolName: tool.name,
         ok: true,
         output: parsedOutput.data,
       }
     } catch (error) {
       const normalized = normalizeError(error)
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: tool.name, error: normalized, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
+      queue.push({
+        type: "tool.call.failed",
+        toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
+        toolName: tool.name,
+        error: normalized,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
       return toolErrorResult(toolCall, normalized)
     }
   }
@@ -403,6 +500,7 @@ export class SocratesAgent {
       queue.push({
         type: "tool.call.started",
         toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
         toolName: toolCall.toolName,
         category: "mcp",
         displayName: toolCall.toolName,
@@ -417,12 +515,21 @@ export class SocratesAgent {
         {
           ...context,
           toolCallId: toolCall.toolCallId,
-          onOutput: (output) => queue.push({ type: "tool.call.output", toolCallId: toolCall.toolCallId, modelCallId: context.modelCallId, stepIndex: context.stepIndex, ...output }),
+          onOutput: (output) =>
+            queue.push({
+              type: "tool.call.output",
+              toolCallId: toolCall.toolCallId,
+              providerToolCallId: toolCall.providerToolCallId,
+              modelCallId: context.modelCallId,
+              stepIndex: context.stepIndex,
+              ...output,
+            }),
         },
       )
       queue.push({
         type: "tool.call.completed",
         toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
         toolName: toolCall.toolName,
         output,
         summary: `${toolCall.toolName} completed.`,
@@ -431,10 +538,18 @@ export class SocratesAgent {
         modelCallId: context.modelCallId,
         stepIndex: context.stepIndex,
       })
-      return { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, ok: true, output }
+      return { toolCallId: toolCall.toolCallId, providerToolCallId: toolCall.providerToolCallId, toolName: toolCall.toolName, ok: true, output }
     } catch (error) {
       const normalized = normalizeError(error)
-      queue.push({ type: "tool.call.failed", toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, error: normalized, modelCallId: context.modelCallId, stepIndex: context.stepIndex })
+      queue.push({
+        type: "tool.call.failed",
+        toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
+        toolName: toolCall.toolName,
+        error: normalized,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
       return toolErrorResult(toolCall, normalized)
     }
   }
@@ -503,6 +618,7 @@ const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({
     toolCallId: toolCall.toolCallId,
+    providerToolCallId: toolCall.providerToolCallId,
     toolName: toolCall.toolName,
     ok: false,
     error: {
@@ -512,17 +628,17 @@ const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): To
     },
   })
 
-const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult): ToolExecutionResult => {
+const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelToolCallId: string): ToolExecutionResult => {
   if (result.ok) {
     return toolExecutionResultSchema.parse({
-      toolCallId: result.toolCallId,
+      toolCallId: modelToolCallId,
       toolName: result.toolName,
       ok: true,
       output: sanitizeModelVisibleValue(result.output),
     })
   }
   return toolExecutionResultSchema.parse({
-    toolCallId: result.toolCallId,
+    toolCallId: modelToolCallId,
     toolName: result.toolName,
     ok: false,
     error: result.error
@@ -572,6 +688,9 @@ const isRuntimeOwnedModelKey = (key: string): boolean =>
   key === "toolCallId" ||
   key === "terminalId" ||
   key === "processId" ||
+  key === "outputSequence" ||
+  key === "nextOutputSequence" ||
+  key === "systemPid" ||
   key === "serverId" ||
   key === "configId" ||
   key === "providerId" ||
@@ -585,6 +704,36 @@ const previewJson = (value: unknown): string => {
     return ""
   }
   return text.length > 500 ? `${text.slice(0, 500)}...` : text
+}
+
+// Pulls a human-friendly hint out of partially streamed tool-call argument text so
+// the UI can show "Editing <file>" / "Running <command>" before the call is fully parsed.
+const extractStreamingPreview = (
+  toolName: string,
+  argsText: string,
+): { pathPreview?: string; argsPreview?: string } => {
+  const readField = (field: string): string | undefined => {
+    const match = argsText.match(new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`))
+    if (!match) {
+      return undefined
+    }
+    try {
+      return JSON.parse(`"${match[1]}"`) as string
+    } catch {
+      return match[1]
+    }
+  }
+
+  if (toolName === "bash") {
+    const command = readField("command")
+    return command ? { argsPreview: command } : {}
+  }
+
+  const path = readField("path")
+  if (path) {
+    return { pathPreview: path, argsPreview: path }
+  }
+  return {}
 }
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {

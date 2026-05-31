@@ -17,6 +17,16 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
   }
 
   const command = input.command?.trim() ?? ""
+  if (operation === "run" || operation === "start") {
+    if (isNoopTerminalCommand(command)) {
+      return {
+        type: "denied",
+        code: "terminal_noop_command",
+        recoverable: true,
+        reason: "Terminal is for executable commands, not notes. Use assistant text for notes, or call read, search, MCP, or browser tools for inspection.",
+      }
+    }
+  }
 
   if (context.runtimeConfig.sandboxMode === "read_only" || context.runtimeConfig.approvalMode === "read_only_auto") {
     if (readOnlyCommandPattern.test(command) && !highRiskCommandPattern.test(command)) {
@@ -52,6 +62,14 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
   }
 }
 
+const isNoopTerminalCommand = (command: string): boolean => {
+  const lines = command
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  return lines.length === 0 || lines.every((line) => line.startsWith("#"))
+}
+
 export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bashToolOutputSchema._type> = {
   name: "bash",
   description:
@@ -66,11 +84,14 @@ export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bas
   execute: (input, context) => context.executors.bash(input, context),
   summary: (output) => {
     const operation = output.operation ?? "run"
+    if (output.reusedTerminal) {
+      return output.message ?? `Reused Terminal ${output.terminal?.name ?? "session"}.`
+    }
     if (operation === "start" && output.process) {
-      return `Started Terminal ${output.terminal?.name ?? output.process.processId}.`
+      return `Started Terminal ${output.terminal?.name ?? "session"}.`
     }
     if ((operation === "status" || operation === "output" || operation === "stop") && output.process) {
-      return `Process ${output.process.processId} is ${output.process.status}.`
+      return `Terminal ${output.terminal?.name ?? "session"} is ${output.process.status}.`
     }
     return `Command exited ${output.exitCode === null ? "without an exit code" : `with code ${output.exitCode}`}.`
   },

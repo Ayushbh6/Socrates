@@ -12,9 +12,12 @@ interface ChatToolTimelineProps {
 export function ChatToolTimeline({ tools, approvals = [], onApprovalDecision }: ChatToolTimelineProps) {
   const orphanApprovals = approvals.filter((approval) => approval.toolCallId && !tools.some((tool) => tool.toolCallId === approval.toolCallId));
   const hasPendingApproval = approvals.some((approval) => approval.status === "pending");
-  const [isOpen, setIsOpen] = useState(hasPendingApproval);
+  const hasActiveWork = tools.some(
+    (tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval",
+  );
+  const [isOpen, setIsOpen] = useState(hasPendingApproval || hasActiveWork);
   const summary = useMemo(() => summarizeToolGroup(tools, approvals), [tools, approvals]);
-  const shouldShowDetails = isOpen || hasPendingApproval;
+  const shouldShowDetails = isOpen || hasPendingApproval || hasActiveWork;
 
   if (tools.length === 0 && approvals.length === 0) {
     return null;
@@ -78,6 +81,11 @@ const summarizeToolGroup = (tools: ToolTimelineItem[], approvals: PendingApprova
     return approvals.length === 1 ? "Waiting for approval" : `Waiting for ${approvals.length} approvals`;
   }
 
+  const activeTool = tools.find((tool) => tool.phase === "streaming" || tool.status === "running");
+  if (activeTool) {
+    return activeToolLabel(activeTool);
+  }
+
   const counts = {
     read: 0,
     search: 0,
@@ -121,6 +129,28 @@ const summarizeToolGroup = (tools: ToolTimelineItem[], approvals: PendingApprova
   }
 
   return parts.length > 0 ? sentenceCase(parts.join(", ")) : "Ran tools";
+};
+
+const activeToolLabel = (tool: ToolTimelineItem): string => {
+  const target = tool.pathPreview ? tool.pathPreview.split(/[\\/]/).pop() ?? tool.pathPreview : undefined;
+  switch (tool.toolName) {
+    case "edit":
+      return target ? `Editing ${target}` : "Editing file";
+    case "apply_patch":
+      return target ? `Patching ${target}` : "Applying patch";
+    case "bash":
+      return "Running command";
+    case "read":
+      return target ? `Reading ${target}` : "Reading file";
+    case "search":
+      return "Searching";
+    case "trace_retrieve":
+      return "Retrieving trace evidence";
+    case "list_project_resources":
+      return "Listing resources";
+    default:
+      return `Working on ${tool.displayName}`;
+  }
 };
 
 const phrase = (count: number, verb: string, singular: string, plural = `${singular}s`): string | null =>

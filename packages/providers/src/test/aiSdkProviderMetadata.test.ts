@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest"
 import type { Schema } from "ai"
-import { traceRetrieveToolInputSchema } from "@socrates/contracts"
+import {
+  applyPatchToolInputSchema,
+  applyPatchToolModelInputSchema,
+  editToolInputSchema,
+  editToolModelInputSchema,
+  traceRetrieveToolModelInputSchema,
+} from "@socrates/contracts"
 import { inputSchemaForAiTool, normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
 
 describe("AI SDK provider metadata", () => {
@@ -20,7 +26,7 @@ describe("AI SDK provider metadata", () => {
     })
   })
 
-  it("passes provider metadata back on assistant tool-call messages", () => {
+  it("passes provider metadata back as provider options on assistant tool-call messages", () => {
     expect(
       toAiModelMessage({
         role: "assistant",
@@ -42,7 +48,45 @@ describe("AI SDK provider metadata", () => {
           toolCallId: "call_1",
           toolName: "read",
           input: { path: "README.md" },
-          providerMetadata: { google: { thoughtSignature: "sig_1" } },
+          providerOptions: { google: { thoughtSignature: "sig_1" } },
+        },
+      ],
+    })
+  })
+
+  it("passes OpenAI reasoning metadata back as provider options on assistant reasoning parts", () => {
+    expect(
+      toAiModelMessage({
+        role: "assistant",
+        content: [
+          {
+            type: "reasoning",
+            text: "",
+            providerMetadata: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+          },
+          {
+            type: "tool-call",
+            toolCallId: "fc_1",
+            toolName: "read",
+            input: { path: "README.md" },
+            providerMetadata: { openai: { itemId: "fc_item_1" } },
+          },
+        ],
+      }),
+    ).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "reasoning",
+          text: "",
+          providerOptions: { openai: { itemId: "rs_1", reasoningEncryptedContent: null } },
+        },
+        {
+          type: "tool-call",
+          toolCallId: "fc_1",
+          toolName: "read",
+          input: { path: "README.md" },
+          providerOptions: { openai: { itemId: "fc_item_1" } },
         },
       ],
     })
@@ -66,24 +110,98 @@ describe("AI SDK provider metadata", () => {
     })
   })
 
+  it("keeps runtime schemas flat while exposing model-friendly schemas", () => {
+    const editObject = editToolInputSchema._def.schema
+    expect(editObject._def.typeName).toBe("ZodObject")
+    expect(editToolModelInputSchema._def.typeName).toBe("ZodUnion")
+    expect(editToolModelInputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success).toBe(false)
+    expect("operations" in editObject.shape).toBe(false)
+    expect(editObject.shape.path).toBeDefined()
+    expect(applyPatchToolInputSchema.safeParse({ patch: "--- a/README.md\n+++ b/README.md\n" }).success).toBe(true)
+    expect(applyPatchToolInputSchema.safeParse({ patchText: "*** Begin Patch\n*** End Patch" }).success).toBe(true)
+    expect(applyPatchToolModelInputSchema._def.typeName).toBe("ZodObject")
+    expect(applyPatchToolModelInputSchema.shape.patchText).toBeDefined()
+    expect("patch" in applyPatchToolModelInputSchema.shape).toBe(false)
+  })
+
+  it("exposes edit as an object JSON schema for OpenAI-compatible providers", async () => {
+    const schema = inputSchemaForAiTool({
+      name: "edit",
+      description: "Create or modify one file.",
+      inputSchema: editToolModelInputSchema,
+    }) as Schema
+
+    expect(schema.jsonSchema).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["path"],
+    })
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"None"')
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"anyOf"')
+    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"oneOf"')
+
+    await expect(Promise.resolve(schema.validate?.({ path: "README.md", oldString: "old", newString: "new" }))).resolves.toEqual({
+      success: true,
+      value: { path: "README.md", oldString: "old", newString: "new" },
+    })
+    await expect(Promise.resolve(schema.validate?.({ path: "README.md", content: "new", overwrite: true }))).resolves.toEqual({
+      success: true,
+      value: { path: "README.md", content: "new", overwrite: true },
+    })
+    const invalid = await Promise.resolve(schema.validate?.({ path: "README.md", content: "new", oldString: "old", newString: "new" }))
+    expect(invalid?.success).toBe(false)
+  })
+
   it("exposes trace_retrieve as an object JSON schema for strict providers", async () => {
     const schema = inputSchemaForAiTool({
       name: "trace_retrieve",
       description: "Search or inspect previous trace documents.",
-      inputSchema: traceRetrieveToolInputSchema,
+      inputSchema: traceRetrieveToolModelInputSchema,
     }) as Schema
 
     expect(schema.jsonSchema).toMatchObject({
       type: "object",
       additionalProperties: false,
     })
-    expect(JSON.stringify(schema.jsonSchema)).not.toContain('"None"')
+    const serialized = JSON.stringify(schema.jsonSchema)
+    expect(serialized).not.toContain('"None"')
+    expect(serialized).toContain("handle")
+    expect(serialized).toContain("conversationId")
+    expect(serialized).toContain("turnId")
+    expect(serialized).toContain("messageId")
+    expect(serialized).toContain("toolCallId")
+    expect(serialized).toContain("conversationLimit")
+    expect(serialized).toContain("audit")
+    expect(serialized).not.toContain("includeRaw")
 
     await expect(Promise.resolve(schema.validate?.({ query: "screenshot" }))).resolves.toEqual({
       success: true,
       value: { query: "screenshot" },
     })
+    await expect(Promise.resolve(schema.validate?.({ query: "terminal output", mode: "audit", include: ["shell"], conversationLimit: 25 }))).resolves.toEqual({
+      success: true,
+      value: { query: "terminal output", mode: "audit", include: ["shell"], conversationLimit: 25 },
+    })
+    await expect(
+      Promise.resolve(
+        schema.validate?.({
+          query: "previous screenshots",
+          command: "",
+          paths: [],
+          include: [],
+          handle: "",
+          conversationId: "",
+        }),
+      ),
+    ).resolves.toEqual({
+      success: true,
+      value: { query: "previous screenshots" },
+    })
     const invalid = await Promise.resolve(schema.validate?.({ operation: "inspect" }))
     expect(invalid?.success).toBe(false)
+    await expect(Promise.resolve(schema.validate?.({ operation: "inspect", messageId: "msg_1" }))).resolves.toEqual({
+      success: true,
+      value: { operation: "inspect", messageId: "msg_1" },
+    })
   })
 })
