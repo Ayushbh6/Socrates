@@ -561,7 +561,7 @@ Exactly one completed snapshot per conversation may be marked active/latest thro
 | `session_id` | `TEXT` | yes | FK to `sessions.id`. |
 | `turn_id` | `TEXT` | no | FK to `turns.id` when the snapshot was produced during or after a turn. |
 | `previous_snapshot_id` | `TEXT` | no | Previous snapshot in the compaction chain. |
-| `status` | `TEXT` | yes | `running`, `completed`, or `failed`. |
+| `status` | `TEXT` | yes | `running`, `completed`, `no_op`, or `failed`. |
 | `active` | `INTEGER` | yes | Boolean. True only for the latest completed snapshot for a conversation. |
 | `reason` | `TEXT` | yes | `precompute`, `threshold`, `emergency`, or `manual`. |
 | `source_message_ids_json` | `TEXT` | yes | JSON ids for source messages included in the snapshot input. |
@@ -746,6 +746,92 @@ Stores proposed and applied patches.
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 | `applied_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Extra patch metadata. |
+
+## `memory_agent_jobs`
+
+Stores each backend memory-agent batch. The job is triggered after completed turns when the project evidence buffer reaches the token cap or the 5-minute idle threshold.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `memjob_...`. |
+| `project_id` | `TEXT` | yes | Project whose memory is being updated. |
+| `conversation_id` | `TEXT` | no | Representative/latest conversation id for the batch. |
+| `session_id` | `TEXT` | no | Representative/latest session id for the batch. |
+| `turn_id` | `TEXT` | no | Representative/latest turn id for the batch. |
+| `status` | `TEXT` | yes | `running`, `completed`, or `failed`. |
+| `trigger` | `TEXT` | yes | Why the batch ran, such as `buffer_limit` or `idle`. |
+| `provider_id` | `TEXT` | yes | Provider used for the memory-agent call. |
+| `model_id` | `TEXT` | yes | Model used, including fallback when fallback succeeded. |
+| `fallback_model_ids_json` | `TEXT` | no | Ordered fallback model ids considered for the job. |
+| `evidence_turn_ids_json` | `TEXT` | yes | Turn ids included in the sanitized evidence batch. |
+| `evidence_tokens_estimate` | `INTEGER` | yes | Estimated input evidence tokens. |
+| `output_json` | `TEXT` | no | Parsed strict JSON memory-agent output when available. |
+| `error_id` | `TEXT` | no | FK to `errors.id` when failed. |
+| `started_at` | `TEXT` | yes | ISO timestamp. |
+| `completed_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Batch metadata, model attempts, and truncation notes. |
+
+## `memory_agent_actions`
+
+Stores each proposed, applied, or rejected memory edit produced by a memory-agent job.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `memact_...`. |
+| `job_id` | `TEXT` | yes | FK to `memory_agent_jobs.id`. |
+| `project_id` | `TEXT` | yes | Owning project scope. |
+| `turn_id` | `TEXT` | no | Source/representative turn for the action. |
+| `target_kind` | `TEXT` | yes | `diary`, `learned_patterns`, `tool_usage`, or `soul`. |
+| `target_path` | `TEXT` | yes | Memory file path being changed. |
+| `status` | `TEXT` | yes | `proposed`, `awaiting_confirmation`, `applied`, or `rejected`. |
+| `requires_confirmation` | `INTEGER` | yes | Boolean; true for soul patches. |
+| `confirmation_id` | `TEXT` | no | FK to `memory_agent_confirmations.id`. |
+| `before_hash` | `TEXT` | no | SHA-256 hash before patch application. |
+| `after_hash` | `TEXT` | no | SHA-256 hash after patch application. |
+| `patch_json` | `TEXT` | yes | Backend-controlled patch proposal with expected hash, old text, new text, rationale, and source turn ids. |
+| `rationale` | `TEXT` | no | Concise evidence-backed rationale. |
+| `error` | `TEXT` | no | Rejection/failure reason. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `applied_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Extra validation and confirmation metadata. |
+
+## `memory_agent_confirmations`
+
+Stores the internal second-call confirmation flow for soul edits.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `memconf_...`. |
+| `job_id` | `TEXT` | yes | FK to `memory_agent_jobs.id`. |
+| `action_id` | `TEXT` | yes | FK to `memory_agent_actions.id`. |
+| `project_id` | `TEXT` | yes | Project that triggered the proposal. |
+| `document` | `TEXT` | yes | `identity` or `operating_principles`. |
+| `prompt_text` | `TEXT` | yes | Exact confirmation prompt shown to the model. |
+| `response_text` | `TEXT` | no | Raw model response. |
+| `decision` | `TEXT` | no | `yes`, `no`, or `invalid`; only `yes` applies. |
+| `provider_id` | `TEXT` | yes | Provider used for confirmation. |
+| `model_id` | `TEXT` | yes | Model used for confirmation. |
+| `requested_at` | `TEXT` | yes | ISO timestamp. |
+| `decided_at` | `TEXT` | no | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Confirmation metadata and normalized decision details. |
+
+## `notifications`
+
+Stores durable top-right notification-center items.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `note_...`. |
+| `project_id` | `TEXT` | no | Optional project scope. |
+| `conversation_id` | `TEXT` | no | Optional conversation scope. |
+| `turn_id` | `TEXT` | no | Optional source turn. |
+| `type` | `TEXT` | yes | Notification type, for example `memory.soul.updated`. |
+| `title` | `TEXT` | yes | Short user-facing title. |
+| `body` | `TEXT` | no | User-facing body text. |
+| `severity` | `TEXT` | yes | `info`, `success`, `warning`, or `error`. |
+| `payload_json` | `TEXT` | no | Structured details such as changed docs, rationale, confirmation decision, and compact diff. |
+| `read_at` | `TEXT` | no | ISO timestamp when read; null means unread. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
 
 ## `errors`
 
@@ -983,6 +1069,20 @@ patch.proposed
 patch.applied
 patch.rejected
 patch.failed
+
+memory.agent.started
+memory.agent.completed
+memory.agent.failed
+memory.diary.appended
+memory.primary.updated
+memory.primary.update_rejected
+memory.soul.confirmation.requested
+memory.soul.confirmation.resolved
+memory.soul.updated
+memory.soul.update_rejected
+
+notification.created
+notification.read
 
 error.created
 artifact.created

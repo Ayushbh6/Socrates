@@ -36,5 +36,9 @@ export type IdPrefix =
   | "tjob"
   | "embcfg"
   | "temb"
+  | "memjob"
+  | "memact"
+  | "memconf"
+  | "note"
 
 export const createId = (prefix: IdPrefix): string => `${prefix}_${randomUUID().replaceAll("-", "")}`

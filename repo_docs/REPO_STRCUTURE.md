@@ -328,6 +328,9 @@ tools/
   editTool.ts
   bashTool.ts
   traceRetrieveTool.ts
+  socratesMemoryTool.ts
+  projectNotesTool.ts
+  soulTool.ts
   listProjectResourcesTool.ts
 ```
 
@@ -399,6 +402,7 @@ bash
 trace_retrieve
 socrates_memory
 project_notes
+soul
 list_project_resources
 mcp_registry
 ```
@@ -409,7 +413,7 @@ Reader implementations should stay pragmatic. The initial `read` implementation 
 
 The `read`, `edit`, and `apply_patch` implementations together own file freshness and verification. `read` returns full-file content hashes and file metadata. `edit` is the single-file mutation tool for targeted replacements, new-file writes, and explicit whole-file overwrites; existing-file `content` writes require `overwrite: true`, and all existing-file edits require a prior active-turn `read`, with freshness tracked by the harness rather than model-carried hashes. `apply_patch` exposes `patchText` to the model and accepts the structured `*** Begin Patch` envelope for model-friendly multi-file changes, with `@@` labels treated as optional hints and exact old lines used for matching. Existing-file patch, delete, and rename operations also require a prior active-turn `read`; after any successful edit or patch, another mutation to the same path must re-read first. Standard unified diffs remain accepted for compatibility when already valid; structured patches are normalized, applied, and verified with patched, created, deleted, and renamed intent. Non-dry-run writes must read/stat/hash before mutation, verify disk after mutation, and report recoverable workspace errors rather than successful edits when freshness or read-back checks fail. Workspace mutation helpers also enforce the project-notes boundary: `<workspace>/.socrates/PROJECT_NOTES.md` can be read normally but cannot be created, edited, patched, deleted, or renamed through generic `edit`/`apply_patch`; mutations must go through `project_notes`.
 
-`apps/server/src/services/store/memoryStore.ts` owns Socrates memory scaffolding, wake context, `socrates_memory`, `project_notes`, and current diary writing. `socrates_memory` is read-only and memory-page oriented: `primary`, `project`, and `all` scopes select readable memory pages, `memoryLimit`/`memoryOffset` page those files, and final results return bounded file/section/line/diary-entry windows. It does not expose identity or operating principles.
+`apps/server/src/services/store/memoryStore.ts` owns Socrates memory scaffolding, wake context, `socrates_memory`, `project_notes`, `soul`, the buffered backend memory agent, diary writing, primary doc patches, and soul confirmation. `socrates_memory` is read-only and memory-page oriented: `primary`, `project`, and `all` scopes select readable memory pages, `memoryLimit`/`memoryOffset` page those files, and final results return bounded file/section/line/diary-entry windows. It does not expose identity or operating principles; those are read through the dedicated read-only `soul` tool. Memory-agent actions and confirmations are persisted in SQLite, and applied soul updates create durable notification rows through `apps/server/src/services/store/notificationStore.ts`.
 
 The `bash` implementation is the compatibility id for the Terminal tool and remains a real escape hatch. Even when a structured reader/searcher exists, approved Terminal commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on commands that overlap with `read` or `search`. Terminal uses shell adapters in `packages/workspace/src/tools/bashTool.ts`: POSIX on macOS/Linux, `powershell.exe` then `pwsh` on Windows, and `cmd.exe` only as fallback. Blocking `run` uses a workspace-owned non-interactive shell session that is created lazily per active turn, reused for later Terminal calls in that turn, and disposed when the turn completes, fails, or is cancelled. `start`/`status`/`output`/`stop` are server-level conversation Terminal operations managed by `apps/server/src/ws/conversationTerminals.ts`; they own conversation-scoped process handles, bounded output buffers, persistence in `terminal_sessions`/`terminal_output_chunks`, WebSocket terminal events, auto-detach, supervisor reconciliation, user-only stdin, and cleanup on stop/delete/workspace switch/shutdown/TTL. Model-facing Terminal control uses natural targeting only: omit the target when exactly one active Terminal exists or pass the human Terminal name; opaque terminal/process ids and output cursors stay internal for UI/runtime compatibility. Duplicate starts with an already-running human name reuse the existing Terminal and return recent DB-backed output instead of spawning another process. Because Terminal already starts in the active workspace, commands that begin by changing into a guessed external absolute path are rejected with a recoverable tool error; relative workspace navigation and approved external destination arguments remain allowed. Spawn, write, protocol, and timeout failures reset the active shell session before later Terminal calls.
 

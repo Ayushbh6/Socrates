@@ -10,6 +10,7 @@ export const baseToolNameSchema = z.enum([
   "trace_retrieve",
   "socrates_memory",
   "project_notes",
+  "soul",
   "list_project_resources",
   "mcp_registry",
 ])
@@ -117,6 +118,37 @@ export const searchToolOutputSchema = z
   })
   .strict()
 export type SearchToolOutput = z.infer<typeof searchToolOutputSchema>
+
+export const soulDocumentSchema = z.enum(["identity", "operating_principles", "both"])
+export type SoulDocument = z.infer<typeof soulDocumentSchema>
+
+export const soulToolInputSchema = z
+  .object({
+    operation: z.literal("read"),
+    document: soulDocumentSchema,
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+export type SoulToolInput = z.infer<typeof soulToolInputSchema>
+
+export const soulDocumentOutputSchema = z
+  .object({
+    document: z.enum(["identity", "operating_principles"]),
+    path: z.string().min(1),
+    content: z.string(),
+    truncation: truncationMetadataSchema,
+  })
+  .strict()
+
+export const soulToolOutputSchema = z
+  .object({
+    operation: z.literal("read"),
+    documents: z.array(soulDocumentOutputSchema),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type SoulToolOutput = z.infer<typeof soulToolOutputSchema>
 
 export const editToolInputSchema = z
   .object({

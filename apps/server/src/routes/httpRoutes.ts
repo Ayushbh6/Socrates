@@ -11,6 +11,9 @@ import {
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
   inspectWorkspaceRequestSchema,
+  listNotificationsResponseSchema,
+  markAllNotificationsReadResponseSchema,
+  markNotificationReadResponseSchema,
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
   providerIdSchema,
@@ -30,6 +33,13 @@ const resourceParamsSchema = z.object({ projectId: z.string().min(1), resourceId
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
 const attachmentParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1), attachmentId: z.string().min(1) }).strict()
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
+const notificationParamsSchema = z.object({ notificationId: z.string().min(1) }).strict()
+const notificationsQuerySchema = z
+  .object({
+    unreadOnly: z.enum(["true", "false"]).optional(),
+    limit: z.coerce.number().int().positive().max(100).optional(),
+  })
+  .strict()
 
 type HttpRouteHooks = {
   onConversationDelete?: (conversationId: string) => void
@@ -102,6 +112,42 @@ export const registerHttpRoutes = async (
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
 
   app.get("/api/models", async () => ok(listModels()))
+
+  app.get("/api/notifications", async (request, reply) => {
+    try {
+      const query = parseBody(notificationsQuerySchema, request.query)
+      return ok(
+        listNotificationsResponseSchema.parse(
+          store.listNotifications({
+            ...(query.unreadOnly === undefined ? {} : { unreadOnly: query.unreadOnly === "true" }),
+            ...(query.limit === undefined ? {} : { limit: query.limit }),
+          }),
+        ),
+      )
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/notifications/:notificationId/read", async (request, reply) => {
+    try {
+      const { notificationId } = parseParams(notificationParamsSchema, request.params)
+      return ok(markNotificationReadResponseSchema.parse(store.markNotificationRead(notificationId)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/notifications/read-all", async (_request, reply) => {
+    try {
+      return ok(markAllNotificationsReadResponseSchema.parse(store.markAllNotificationsRead()))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
 
   app.get("/api/provider-credentials/status", async () => ok(credentials.listStatus()))
 

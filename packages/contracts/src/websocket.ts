@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { apiErrorSchema } from "./api"
-import { idSchema, messageSchema, timestampSchema } from "./entities"
+import { idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
 import { providerIdSchema, thinkingEffortSchema } from "./models"
 import { terminalStatusSchema, toolNameSchema } from "./tools"
 
@@ -316,6 +316,95 @@ export const contextCompactionFailedPayloadSchema = z
   })
   .strict()
 
+export const memoryAgentStartedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    projectId: idSchema,
+    trigger: z.enum(["buffer_limit", "idle", "manual", "turn_completed"]),
+    evidenceTokensEstimate: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const memoryAgentCompletedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    status: z.enum(["completed", "no_op"]),
+    modelId: z.string().min(1),
+    diaryAppended: z.boolean(),
+    actionsApplied: z.number().int().nonnegative(),
+    actionsRejected: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const memoryAgentFailedPayloadSchema = z
+  .object({
+    jobId: idSchema.optional(),
+    error: apiErrorSchema,
+  })
+  .strict()
+
+export const memoryDiaryAppendedPayloadSchema = z
+  .object({
+    jobId: idSchema.optional(),
+    path: z.string().min(1),
+  })
+  .strict()
+
+export const memoryPrimaryUpdatedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    actionId: idSchema,
+    path: z.string().min(1),
+    targetKind: z.enum(["learned_patterns", "tool_usage"]),
+    rationale: z.string().min(1).optional(),
+  })
+  .strict()
+
+export const memorySoulConfirmationRequestedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    actionId: idSchema,
+    confirmationId: idSchema,
+    document: z.enum(["identity", "operating_principles"]),
+    prompt: z.string().min(1),
+  })
+  .strict()
+
+export const memorySoulConfirmationResolvedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    actionId: idSchema,
+    confirmationId: idSchema,
+    document: z.enum(["identity", "operating_principles"]),
+    decision: z.enum(["yes", "no", "invalid"]),
+  })
+  .strict()
+
+export const memorySoulUpdatedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    actionId: idSchema,
+    confirmationId: idSchema,
+    document: z.enum(["identity", "operating_principles"]),
+    path: z.string().min(1),
+    notificationId: idSchema,
+    rationale: z.string().min(1).optional(),
+  })
+  .strict()
+
+export const notificationCreatedPayloadSchema = z
+  .object({
+    notification: notificationSchema,
+  })
+  .strict()
+
+export const notificationReadPayloadSchema = z
+  .object({
+    notificationId: idSchema,
+    unreadCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
 export const modelUsageSchema = z
   .object({
     inputTokens: z.number().int().nonnegative().optional(),
@@ -431,6 +520,22 @@ export const contextCompactionFailedEventSchema = socketEnvelopeSchema(
   "context.compaction.failed",
   contextCompactionFailedPayloadSchema,
 )
+export const memoryAgentStartedEventSchema = socketEnvelopeSchema("memory.agent.started", memoryAgentStartedPayloadSchema)
+export const memoryAgentCompletedEventSchema = socketEnvelopeSchema("memory.agent.completed", memoryAgentCompletedPayloadSchema)
+export const memoryAgentFailedEventSchema = socketEnvelopeSchema("memory.agent.failed", memoryAgentFailedPayloadSchema)
+export const memoryDiaryAppendedEventSchema = socketEnvelopeSchema("memory.diary.appended", memoryDiaryAppendedPayloadSchema)
+export const memoryPrimaryUpdatedEventSchema = socketEnvelopeSchema("memory.primary.updated", memoryPrimaryUpdatedPayloadSchema)
+export const memorySoulConfirmationRequestedEventSchema = socketEnvelopeSchema(
+  "memory.soul.confirmation.requested",
+  memorySoulConfirmationRequestedPayloadSchema,
+)
+export const memorySoulConfirmationResolvedEventSchema = socketEnvelopeSchema(
+  "memory.soul.confirmation.resolved",
+  memorySoulConfirmationResolvedPayloadSchema,
+)
+export const memorySoulUpdatedEventSchema = socketEnvelopeSchema("memory.soul.updated", memorySoulUpdatedPayloadSchema)
+export const notificationCreatedEventSchema = socketEnvelopeSchema("notification.created", notificationCreatedPayloadSchema)
+export const notificationReadEventSchema = socketEnvelopeSchema("notification.read", notificationReadPayloadSchema)
 export const messageCompletedEventSchema = socketEnvelopeSchema("message.completed", messageCompletedPayloadSchema)
 export const turnCompletedEventSchema = socketEnvelopeSchema("turn.completed", turnCompletedPayloadSchema)
 export const turnFailedEventSchema = socketEnvelopeSchema("turn.failed", turnFailedPayloadSchema)
@@ -460,6 +565,16 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   contextCompactionStartedEventSchema,
   contextCompactionCompletedEventSchema,
   contextCompactionFailedEventSchema,
+  memoryAgentStartedEventSchema,
+  memoryAgentCompletedEventSchema,
+  memoryAgentFailedEventSchema,
+  memoryDiaryAppendedEventSchema,
+  memoryPrimaryUpdatedEventSchema,
+  memorySoulConfirmationRequestedEventSchema,
+  memorySoulConfirmationResolvedEventSchema,
+  memorySoulUpdatedEventSchema,
+  notificationCreatedEventSchema,
+  notificationReadEventSchema,
   messageCompletedEventSchema,
   turnCompletedEventSchema,
   turnFailedEventSchema,

@@ -18,9 +18,12 @@ import {
   getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
   inspectWorkspaceResponseSchema,
+  listNotificationsResponseSchema,
   listProjectsResponseSchema,
   listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
+  markAllNotificationsReadResponseSchema,
+  markNotificationReadResponseSchema,
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
   setProviderCredentialSessionResponseSchema,
@@ -55,7 +58,10 @@ import {
   type GetProviderCredentialsStatusResponse,
   type InspectWorkspaceRequest,
   type InspectWorkspaceResponse,
+  type ListNotificationsResponse,
   type ListProjectsResponse,
+  type MarkAllNotificationsReadResponse,
+  type MarkNotificationReadResponse,
   type ListModelsHttpResponse,
   type ListProjectConversationsResponse,
   type PickWorkspaceFolderRequest,
@@ -171,6 +177,35 @@ export const api = {
 
   listModels: () =>
     request<typeof listModelsHttpResponseSchema>("/api/models", listModelsHttpResponseSchema) as Promise<ListModelsHttpResponse>,
+
+  listNotifications: (input: { unreadOnly?: boolean; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (input.unreadOnly !== undefined) {
+      params.set("unreadOnly", input.unreadOnly ? "true" : "false");
+    }
+    if (input.limit !== undefined) {
+      params.set("limit", String(input.limit));
+    }
+    const query = params.toString();
+    return request<typeof listNotificationsResponseSchema>(
+      `/api/notifications${query ? `?${query}` : ""}`,
+      listNotificationsResponseSchema,
+    ) as Promise<ListNotificationsResponse>;
+  },
+
+  markNotificationRead: (notificationId: string) =>
+    request<typeof markNotificationReadResponseSchema>(
+      `/api/notifications/${encodeURIComponent(notificationId)}/read`,
+      markNotificationReadResponseSchema,
+      { method: "POST" },
+    ) as Promise<MarkNotificationReadResponse>,
+
+  markAllNotificationsRead: () =>
+    request<typeof markAllNotificationsReadResponseSchema>(
+      "/api/notifications/read-all",
+      markAllNotificationsReadResponseSchema,
+      { method: "POST" },
+    ) as Promise<MarkAllNotificationsReadResponse>,
 
   getProviderCredentialStatus: () =>
     request<typeof getProviderCredentialsStatusResponseSchema>(

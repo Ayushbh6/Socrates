@@ -4,6 +4,7 @@ import {
   messageAttachmentSchema,
   idSchema,
   messageSchema,
+  notificationSchema,
   projectInstructionsSchema,
   projectResourceKindSchema,
   projectResourceSchema,
@@ -572,6 +573,27 @@ export const deleteConversationResponseSchema = z
   })
   .strict()
 
+export const listNotificationsResponseSchema = z
+  .object({
+    notifications: z.array(notificationSchema),
+    unreadCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const markNotificationReadResponseSchema = z
+  .object({
+    notification: notificationSchema,
+    unreadCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
+export const markAllNotificationsReadResponseSchema = z
+  .object({
+    notifications: z.array(notificationSchema),
+    unreadCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
 export const createConversationMessageRequestSchema = z
   .object({
     content: z.string().min(1),
@@ -621,5 +643,8 @@ export type GetConversationResponse = z.infer<typeof getConversationResponseSche
 export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>
 export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>
 export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
+export type ListNotificationsResponse = z.infer<typeof listNotificationsResponseSchema>
+export type MarkNotificationReadResponse = z.infer<typeof markNotificationReadResponseSchema>
+export type MarkAllNotificationsReadResponse = z.infer<typeof markAllNotificationsReadResponseSchema>
 export type CreateConversationMessageRequest = z.infer<typeof createConversationMessageRequestSchema>
 export type CreateConversationMessageResponse = z.infer<typeof createConversationMessageResponseSchema>

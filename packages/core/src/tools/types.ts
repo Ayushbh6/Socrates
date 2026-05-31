@@ -17,6 +17,8 @@ import type {
   RuntimeConfig,
   SearchToolInput,
   SearchToolOutput,
+  SoulToolInput,
+  SoulToolOutput,
   SocratesMemoryToolInput,
   SocratesMemoryToolOutput,
   ToolName,
@@ -53,6 +55,7 @@ export type ToolExecutors = {
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
   socrates_memory: (input: SocratesMemoryToolInput, context: ToolExecutorContext) => Promise<SocratesMemoryToolOutput>
   project_notes: (input: ProjectNotesToolInput, context: ToolExecutorContext) => Promise<ProjectNotesToolOutput>
+  soul: (input: SoulToolInput, context: ToolExecutorContext) => Promise<SoulToolOutput>
   list_project_resources: (
     input: ListProjectResourcesToolInput,
     context: ToolExecutorContext,

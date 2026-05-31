@@ -1,5 +1,5 @@
-import type { Conversation, Message, MessageAttachment, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, User } from "@socrates/contracts"
-import type { artifacts, conversations, messageAttachments, messages, projectInstructions, projectResources, projectWorkspaces, projects, users } from "./schema"
+import type { Conversation, Message, MessageAttachment, Notification, Project, ProjectInstructions, ProjectResource, ProjectWorkspace, User } from "@socrates/contracts"
+import type { artifacts, conversations, messageAttachments, messages, notifications, projectInstructions, projectResources, projectWorkspaces, projects, users } from "./schema"
 
 type UserRow = typeof users.$inferSelect
 type ProjectRow = typeof projects.$inferSelect
@@ -10,6 +10,7 @@ type ArtifactRow = typeof artifacts.$inferSelect
 type ConversationRow = typeof conversations.$inferSelect
 type MessageRow = typeof messages.$inferSelect
 type MessageAttachmentRow = typeof messageAttachments.$inferSelect
+type NotificationRow = typeof notifications.$inferSelect
 
 const parseMessageMetadata = (
   metadataJson: string | null,
@@ -121,5 +122,19 @@ export const mapMessageAttachment = (row: MessageAttachmentRow): MessageAttachme
   uri: row.uri,
   url: `/api/projects/${encodeURIComponent(row.projectId)}/conversations/${encodeURIComponent(row.conversationId)}/attachments/${encodeURIComponent(row.id)}/content`,
   status: row.status as MessageAttachment["status"],
+  createdAt: row.createdAt,
+})
+
+export const mapNotification = (row: NotificationRow): Notification => ({
+  id: row.id,
+  ...(row.projectId ? { projectId: row.projectId } : {}),
+  ...(row.conversationId ? { conversationId: row.conversationId } : {}),
+  ...(row.turnId ? { turnId: row.turnId } : {}),
+  type: row.type,
+  title: row.title,
+  ...(row.body ? { body: row.body } : {}),
+  severity: row.severity as Notification["severity"],
+  ...(row.payloadJson ? { payload: JSON.parse(row.payloadJson) as unknown } : {}),
+  ...(row.readAt ? { readAt: row.readAt } : {}),
   createdAt: row.createdAt,
 })

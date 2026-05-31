@@ -41,11 +41,24 @@ import {
   getProjectResponseSchema,
   inspectWorkspaceRequestSchema,
   inspectWorkspaceResponseSchema,
+  listNotificationsResponseSchema,
   listProjectConversationsResponseSchema,
   listProjectResourcesResponseSchema,
   listProjectsResponseSchema,
+  markAllNotificationsReadResponseSchema,
+  markNotificationReadResponseSchema,
   messageCompletedEventSchema,
   messageSchema,
+  memoryAgentCompletedEventSchema,
+  memoryAgentFailedEventSchema,
+  memoryAgentStartedEventSchema,
+  memoryDiaryAppendedEventSchema,
+  memoryPrimaryUpdatedEventSchema,
+  memorySoulConfirmationRequestedEventSchema,
+  memorySoulConfirmationResolvedEventSchema,
+  memorySoulUpdatedEventSchema,
+  notificationCreatedEventSchema,
+  notificationReadEventSchema,
   patchProjectRequestSchema,
   patchProjectResponseSchema,
   pickWorkspaceFolderRequestSchema,
@@ -90,6 +103,8 @@ import {
   readToolInputSchema,
   readToolOutputSchema,
   searchToolInputSchema,
+  soulToolInputSchema,
+  soulToolOutputSchema,
   socratesMemoryToolInputSchema,
   socratesMemoryToolOutputSchema,
   toolExecutionResultSchema,
@@ -522,6 +537,19 @@ describe("http contracts", () => {
     expect(updateConversationRequestSchema.safeParse({ title: "" }).success).toBe(false)
     expect(updateConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
     expect(deleteConversationResponseSchema.safeParse({ deletedConversationId: conversation.id }).success).toBe(true)
+    const notification = {
+      id: "note_1",
+      projectId: project.id,
+      type: "memory.soul.updated",
+      title: "Socrates soul updated",
+      body: "identity was updated",
+      severity: "info",
+      payload: { diff: "--- old\n+++ new" },
+      createdAt: timestamp,
+    }
+    expect(listNotificationsResponseSchema.safeParse({ notifications: [notification], unreadCount: 1 }).success).toBe(true)
+    expect(markNotificationReadResponseSchema.safeParse({ notification: { ...notification, readAt: timestamp }, unreadCount: 0 }).success).toBe(true)
+    expect(markAllNotificationsReadResponseSchema.safeParse({ notifications: [{ ...notification, readAt: timestamp }], unreadCount: 0 }).success).toBe(true)
     expect(createConversationMessageRequestSchema.safeParse({ content: "Hello" }).success).toBe(true)
     expect(createConversationMessageRequestSchema.safeParse({ content: "" }).success).toBe(false)
     expect(createConversationMessageResponseSchema.safeParse({ conversation, message: userMessage }).success).toBe(true)
@@ -686,6 +714,83 @@ describe("websocket server event contracts", () => {
         },
       }),
     ),
+    memoryAgentStartedEventSchema.safeParse(
+      envelope("memory.agent.started", {
+        jobId: "memjob_1",
+        projectId: project.id,
+        trigger: "idle",
+        evidenceTokensEstimate: 1200,
+      }),
+    ),
+    memoryAgentCompletedEventSchema.safeParse(
+      envelope("memory.agent.completed", {
+        jobId: "memjob_1",
+        status: "completed",
+        modelId: "deepseek/deepseek-v4-pro",
+        diaryAppended: true,
+        actionsApplied: 1,
+        actionsRejected: 0,
+      }),
+    ),
+    memoryAgentFailedEventSchema.safeParse(
+      envelope("memory.agent.failed", {
+        jobId: "memjob_1",
+        error: {
+          code: "memory_agent_failed",
+          message: "failed",
+        },
+      }),
+    ),
+    memoryDiaryAppendedEventSchema.safeParse(envelope("memory.diary.appended", { jobId: "memjob_1", path: "/tmp/diary.md" })),
+    memoryPrimaryUpdatedEventSchema.safeParse(
+      envelope("memory.primary.updated", {
+        jobId: "memjob_1",
+        actionId: "memact_1",
+        path: "/tmp/learned_patterns.md",
+        targetKind: "learned_patterns",
+      }),
+    ),
+    memorySoulConfirmationRequestedEventSchema.safeParse(
+      envelope("memory.soul.confirmation.requested", {
+        jobId: "memjob_1",
+        actionId: "memact_1",
+        confirmationId: "memconf_1",
+        document: "identity",
+        prompt: "You are about to make changes to the soul. Are you sure?",
+      }),
+    ),
+    memorySoulConfirmationResolvedEventSchema.safeParse(
+      envelope("memory.soul.confirmation.resolved", {
+        jobId: "memjob_1",
+        actionId: "memact_1",
+        confirmationId: "memconf_1",
+        document: "identity",
+        decision: "yes",
+      }),
+    ),
+    memorySoulUpdatedEventSchema.safeParse(
+      envelope("memory.soul.updated", {
+        jobId: "memjob_1",
+        actionId: "memact_1",
+        confirmationId: "memconf_1",
+        document: "identity",
+        path: "/tmp/identity.md",
+        notificationId: "note_1",
+      }),
+    ),
+    notificationCreatedEventSchema.safeParse(
+      envelope("notification.created", {
+        notification: {
+          id: "note_1",
+          projectId: project.id,
+          type: "memory.soul.updated",
+          title: "Socrates soul updated",
+          severity: "info",
+          createdAt: timestamp,
+        },
+      }),
+    ),
+    notificationReadEventSchema.safeParse(envelope("notification.read", { notificationId: "note_1", unreadCount: 0 })),
     messageCompletedEventSchema.safeParse(
       envelope("message.completed", {
         message: assistantMessage,
@@ -801,6 +906,22 @@ describe("tool contracts", () => {
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)
+    expect(soulToolInputSchema.safeParse({ operation: "read", document: "both", charLimit: 20_000 }).success).toBe(true)
+    expect(soulToolInputSchema.safeParse({ operation: "patch", document: "identity" }).success).toBe(false)
+    expect(
+      soulToolOutputSchema.safeParse({
+        operation: "read",
+        documents: [
+          {
+            document: "identity",
+            path: "primary/identity.md",
+            content: "# Identity",
+            truncation: { truncated: false, charLimit: 20_000, returnedLength: 10 },
+          },
+        ],
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
+      }).success,
+    ).toBe(true)
     expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new" }).success).toBe(true)
     expect(editToolInputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(editToolInputSchema.safeParse({ path: "README.md", content: "new", overwrite: true }).success).toBe(true)

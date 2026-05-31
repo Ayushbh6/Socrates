@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import type {
+  Notification,
   ProjectNotesToolInput,
   ProjectNotesToolOutput,
+  SoulToolInput,
+  SoulToolOutput,
   SocratesMemoryCategory,
   SocratesMemoryScope,
   SocratesMemorySearchMode,
@@ -13,17 +17,20 @@ import type {
 } from "@socrates/contracts"
 import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
-import { SocratesError } from "@socrates/shared"
-import { eq } from "drizzle-orm"
-import { messages, toolCalls, turns } from "../../db/schema"
+import { createId, nowIso, SocratesError } from "@socrates/shared"
+import { eq, inArray } from "drizzle-orm"
+import { events, fileOperations, memoryAgentActions, memoryAgentConfirmations, memoryAgentJobs, messages, patches, shellCommands, shellOutputChunks, toolCalls, turns } from "../../db/schema"
 import { StoreBase } from "./shared"
 
 const DEFAULT_CHAR_LIMIT = 20_000
 const DEFAULT_SEARCH_LIMIT = 20
 const DEFAULT_CONTEXT_LINES = 8
 const MAX_CONTEXT_CHARS = 28_000
-const DIARY_TURN_TOKEN_CAP = 60_000
+const MEMORY_AGENT_TOKEN_CAP = 60_000
+const DEFAULT_MEMORY_AGENT_IDLE_MS = 5 * 60 * 1000
 const WAKE_CONTEXT_CHAR_LIMIT = 4_000
+const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
+const MEMORY_AGENT_MODELS = ["deepseek/deepseek-v4-pro", "xiaomi/mimo-v2.5-pro"] as const
 
 type MemoryFile = {
   path: string
@@ -40,10 +47,60 @@ type MemoryStoreOptions = {
   socratesHome?: string
   provider?: ModelProvider
   credentials?: ProviderCredentialResolver
+  memoryAgentIdleMs?: number
+  createNotification?: (input: {
+    projectId?: string
+    conversationId?: string
+    turnId?: string
+    type: string
+    title: string
+    body?: string
+    severity?: Notification["severity"]
+    payload?: unknown
+  }) => Notification
 }
+
+type MemoryAgentEvidenceEntry = {
+  projectId: string
+  conversationId: string
+  sessionId: string
+  turnId: string
+  text: string
+  tokens: number
+}
+
+type MemoryAgentBuffer = {
+  entries: MemoryAgentEvidenceEntry[]
+  timer?: ReturnType<typeof setTimeout>
+}
+
+type MemoryPatchProposal = {
+  path?: string
+  document?: "identity" | "operating_principles"
+  oldText?: string
+  newText?: string
+  expectedBeforeHash?: string
+  rationale?: string
+  sourceTurnIds?: string[]
+}
+
+type MemoryAgentOutput = {
+  no_op?: boolean
+  diaryAppend?: string | { markdown?: string }
+  learnedPatternPatches?: MemoryPatchProposal[]
+  toolUsageDocPatches?: MemoryPatchProposal[]
+  soulPatchProposals?: MemoryPatchProposal[]
+}
+
+const scopedIds = (input: { conversationId?: string; sessionId?: string; turnId?: string }) => ({
+  ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+  ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+  ...(input.turnId ? { turnId: input.turnId } : {}),
+})
 
 export class MemoryStore extends StoreBase {
   private readonly socratesHome: string
+  private readonly memoryBuffers = new Map<string, MemoryAgentBuffer>()
 
   constructor(context: ConstructorParameters<typeof StoreBase>[0], private readonly options: MemoryStoreOptions = {}) {
     super(context)
@@ -122,6 +179,30 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  runSoulTool(projectId: string, workspacePath: string | undefined, input: SoulToolInput): SoulToolOutput {
+    this.ensureProjectMemory(projectId, workspacePath)
+    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
+    const requested = input.document === "both" ? (["identity", "operating_principles"] as const) : ([input.document] as const)
+    const documents = requested.map((document) => {
+      const absolutePath = this.soulPath(document)
+      const content = fs.readFileSync(absolutePath, "utf8")
+      const clipped = truncate(content, charLimit)
+      return {
+        document,
+        path: `primary/${document}.md`,
+        content: clipped.text,
+        truncation: truncationFor(content, charLimit),
+      }
+    })
+    const serialized = JSON.stringify(documents)
+    return {
+      operation: "read",
+      documents,
+      truncation: truncationFor(serialized, charLimit),
+      ...(serialized.length > charLimit ? { warnings: ["Soul output was truncated. Re-read one document with a larger charLimit if needed."] } : {}),
+    }
+  }
+
   buildWakeContext(projectId: string, workspacePath: string | undefined, userQuery: string): string | undefined {
     this.ensureProjectMemory(projectId, workspacePath)
     const sections: string[] = ["First user query in this conversation. Use this as quiet wake context, not as user-visible text."]
@@ -152,13 +233,13 @@ export class MemoryStore extends StoreBase {
   }
 
   appendDiaryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): void {
-    void this.appendDiaryForTurnAsync(input).catch((error) => {
+    void this.enqueueMemoryAgentForTurn(input).catch((error) => {
       this.appendEvent({
         projectId: input.projectId,
         conversationId: input.conversationId,
         sessionId: input.sessionId,
         turnId: input.turnId,
-        type: "memory.diary.failed",
+        type: "memory.agent.failed",
         source: "server",
         payload: { message: error instanceof Error ? error.message : String(error) },
       })
@@ -288,7 +369,11 @@ export class MemoryStore extends StoreBase {
     return listMarkdownFiles(path.join(this.projectRoot(projectId), "diary")).sort((left, right) => right.localeCompare(left))[0]
   }
 
-  private async appendDiaryForTurnAsync(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): Promise<void> {
+  private soulPath(document: "identity" | "operating_principles"): string {
+    return path.join(this.socratesHome, "primary", `${document}.md`)
+  }
+
+  private async enqueueMemoryAgentForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): Promise<void> {
     this.ensureProjectMemory(input.projectId, input.workspacePath)
     if (!this.options.provider) {
       return
@@ -299,7 +384,7 @@ export class MemoryStore extends StoreBase {
         conversationId: input.conversationId,
         sessionId: input.sessionId,
         turnId: input.turnId,
-        type: "memory.diary.skipped",
+        type: "memory.agent.skipped",
         source: "server",
         payload: { reason: "OpenRouter credential is not configured." },
       })
@@ -309,35 +394,158 @@ export class MemoryStore extends StoreBase {
     if (!turnEvidence.trim()) {
       return
     }
-    const cappedEvidence = capByEstimatedTokens(turnEvidence, DIARY_TURN_TOKEN_CAP)
-    const candidates = ["deepseek/deepseek-v4-pro", "xiaomi/mimo-v2.5-pro"]
-    let note = ""
-    let lastError: unknown
-    for (const modelId of candidates) {
-      try {
-        note = await this.runDiaryModel(modelId, cappedEvidence)
-        if (note.trim()) {
-          break
-        }
-      } catch (error) {
-        lastError = error
-      }
-    }
-    if (!note.trim()) {
-      throw lastError ?? new SocratesError("memory_diary_empty", "Diary model returned no note.", { recoverable: true })
-    }
-    const diaryPath = this.diaryPath(input.projectId, new Date())
-    ensureFile(diaryPath, `# ${formatDiaryDate(new Date())}\n\n`)
-    fs.appendFileSync(diaryPath, `\n## ${new Date().toISOString()} Turn ${input.turnId}\n\n${normalizeDiaryNote(note)}\n`)
-    this.appendEvent({
+    const entry: MemoryAgentEvidenceEntry = {
       projectId: input.projectId,
       conversationId: input.conversationId,
       sessionId: input.sessionId,
       turnId: input.turnId,
-      type: "memory.diary.appended",
+      text: turnEvidence,
+      tokens: estimateTextTokens(turnEvidence).inputTokens,
+    }
+    const buffer = this.memoryBuffers.get(input.projectId) ?? { entries: [] }
+    buffer.entries.push(entry)
+    if (buffer.timer) {
+      clearTimeout(buffer.timer)
+    }
+    const totalTokens = buffer.entries.reduce((sum, item) => sum + item.tokens, 0)
+    if (totalTokens >= MEMORY_AGENT_TOKEN_CAP) {
+      this.memoryBuffers.delete(input.projectId)
+      await this.runMemoryAgentBatch(input.projectId, buffer.entries, "buffer_limit")
+      return
+    }
+    const idleMs = this.options.memoryAgentIdleMs ?? DEFAULT_MEMORY_AGENT_IDLE_MS
+    buffer.timer = setTimeout(() => {
+      const current = this.memoryBuffers.get(input.projectId)
+      if (!current) {
+        return
+      }
+      this.memoryBuffers.delete(input.projectId)
+      void this.runMemoryAgentBatch(input.projectId, current.entries, "idle").catch((error) => {
+        this.appendEvent({
+          projectId: input.projectId,
+          conversationId: input.conversationId,
+          sessionId: input.sessionId,
+          turnId: input.turnId,
+          type: "memory.agent.failed",
+          source: "server",
+          payload: { message: error instanceof Error ? error.message : String(error) },
+        })
+      })
+    }, idleMs)
+    buffer.timer.unref?.()
+    this.memoryBuffers.set(input.projectId, buffer)
+  }
+
+  private async runMemoryAgentBatch(projectId: string, entries: MemoryAgentEvidenceEntry[], trigger: "buffer_limit" | "idle" | "manual" | "turn_completed"): Promise<void> {
+    if (entries.length === 0 || !this.options.provider) {
+      return
+    }
+    const latest = entries[entries.length - 1]
+    const jobId = createId("memjob")
+    const startedAt = nowIso()
+    const evidenceTokensEstimate = entries.reduce((sum, entry) => sum + entry.tokens, 0)
+    this.handle.db
+      .insert(memoryAgentJobs)
+      .values({
+        id: jobId,
+        projectId,
+        conversationId: latest?.conversationId,
+        sessionId: latest?.sessionId,
+        turnId: latest?.turnId,
+        status: "running",
+        trigger,
+        providerId: "openrouter",
+        modelId: MEMORY_AGENT_MODELS[0],
+        fallbackModelIdsJson: JSON.stringify(MEMORY_AGENT_MODELS.slice(1)),
+        evidenceTurnIdsJson: JSON.stringify(entries.map((entry) => entry.turnId)),
+        evidenceTokensEstimate,
+        startedAt,
+      })
+      .run()
+    this.appendEvent({
+      projectId,
+      ...scopedIds(latest ?? {}),
+      type: "memory.agent.started",
       source: "server",
-      payload: { path: diaryPath },
+      payload: { jobId, projectId, trigger, evidenceTokensEstimate },
     })
+
+    try {
+      let parsed: MemoryAgentOutput | undefined
+      let usedModelId: string = MEMORY_AGENT_MODELS[0]
+      let lastError: unknown
+      const cappedEvidence = capByEstimatedTokens(this.buildMemoryAgentInput(projectId, entries), MEMORY_AGENT_TOKEN_CAP)
+      for (const modelId of MEMORY_AGENT_MODELS) {
+        try {
+          parsed = parseMemoryAgentOutput(await this.runMemoryAgentModel(modelId, cappedEvidence))
+          usedModelId = modelId
+          break
+        } catch (error) {
+          lastError = error
+        }
+      }
+      if (!parsed) {
+        throw lastError ?? new SocratesError("memory_agent_empty", "Memory agent returned no parseable output.", { recoverable: true })
+      }
+      const applied = await this.applyMemoryAgentOutput(projectId, jobId, latest, parsed, usedModelId)
+      this.handle.db
+        .update(memoryAgentJobs)
+        .set({
+          status: applied.noOp ? "no_op" : "completed",
+          modelId: usedModelId,
+          outputJson: JSON.stringify(parsed),
+          completedAt: nowIso(),
+        })
+        .where(eq(memoryAgentJobs.id, jobId))
+        .run()
+      this.appendEvent({
+        projectId,
+        ...scopedIds(latest ?? {}),
+        type: "memory.agent.completed",
+        source: "server",
+        payload: {
+          jobId,
+          status: applied.noOp ? "no_op" : "completed",
+          modelId: usedModelId,
+          diaryAppended: applied.diaryAppended,
+          actionsApplied: applied.actionsApplied,
+          actionsRejected: applied.actionsRejected,
+        },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.handle.db.update(memoryAgentJobs).set({ status: "failed", completedAt: nowIso(), metadataJson: JSON.stringify({ error: message }) }).where(eq(memoryAgentJobs.id, jobId)).run()
+      this.appendEvent({
+        projectId,
+        ...scopedIds(latest ?? {}),
+        type: "memory.agent.failed",
+        source: "server",
+        payload: { jobId, error: { code: "memory_agent_failed", message } },
+      })
+    }
+  }
+
+  private buildMemoryAgentInput(projectId: string, entries: MemoryAgentEvidenceEntry[]): string {
+    const primaryRoot = path.join(this.socratesHome, "primary")
+    const targetSnippets = [
+      ["identity.md", readIfExists(path.join(primaryRoot, "identity.md"))],
+      ["operating_principles.md", readIfExists(path.join(primaryRoot, "operating_principles.md"))],
+      ["learned_patterns.md", readIfExists(path.join(primaryRoot, "learned_patterns.md"))],
+      ["tool_usage/trace_retrieve.md", readIfExists(path.join(primaryRoot, "tool_usage", "trace_retrieve.md"))],
+      ["tool_usage/edit_tools_and_bash.md", readIfExists(path.join(primaryRoot, "tool_usage", "edit_tools_and_bash.md"))],
+      ["tool_usage/read_tools.md", readIfExists(path.join(primaryRoot, "tool_usage", "read_tools.md"))],
+    ] as const
+    return [
+      `Project: ${projectId}`,
+      `Evidence turn ids: ${entries.map((entry) => entry.turnId).join(", ")}`,
+      "Current target memory files with hashes:",
+      ...targetSnippets.map(([label, content]) => {
+        const text = content ?? ""
+        return `--- ${label}\nsha256: ${hashText(text)}\n${truncate(text, 8_000).text}`
+      }),
+      "Turn evidence:",
+      ...entries.map((entry) => entry.text),
+    ].join("\n\n")
   }
 
   private turnEvidence(projectId: string, turnId: string): string {
@@ -347,21 +555,42 @@ export class MemoryStore extends StoreBase {
     }
     const messageRows = this.handle.db.select().from(messages).where(eq(messages.turnId, turnId)).orderBy(messages.createdAt).all()
     const toolRows = this.handle.db.select().from(toolCalls).where(eq(toolCalls.turnId, turnId)).orderBy(toolCalls.startedAt).all()
+    const toolIds = toolRows.map((tool) => tool.id)
+    const fileRows = this.handle.db.select().from(fileOperations).where(eq(fileOperations.turnId, turnId)).orderBy(fileOperations.startedAt).all()
+    const patchRows = this.handle.db.select().from(patches).where(eq(patches.turnId, turnId)).orderBy(patches.createdAt).all()
+    const shellRows = this.handle.db.select().from(shellCommands).where(eq(shellCommands.turnId, turnId)).orderBy(shellCommands.startedAt).all()
+    const shellChunks =
+      shellRows.length > 0
+        ? this.handle.db.select().from(shellOutputChunks).where(inArray(shellOutputChunks.shellCommandId, shellRows.map((row) => row.id))).orderBy(shellOutputChunks.sequence).all()
+        : []
+    const eventRows = this.handle.db.select().from(events).where(eq(events.turnId, turnId)).orderBy(events.sequence).all()
     return [
       `Project: ${projectId}`,
       `Turn: ${turnId}`,
       ...messageRows.map((message) => `[${message.role}]\n${sanitizeForDiary(message.content)}`),
       ...toolRows.map((tool) => `[tool ${tool.toolName} ${tool.status}]\nArguments: ${sanitizeForDiary(tool.argumentsJson)}\nResult: ${sanitizeForDiary(tool.resultJson ?? "")}`),
+      ...fileRows.map((file) => `[file ${file.operation} ${file.status}]\n${file.path}\nBefore: ${file.contentHashBefore ?? ""}\nAfter: ${file.contentHashAfter ?? ""}\nMetadata: ${sanitizeForDiary(file.metadataJson ?? "")}`),
+      ...patchRows.map((patch) => `[patch ${patch.status}]\n${sanitizeForDiary(patch.diffText).slice(0, 8_000)}`),
+      ...shellRows.map((shell) => {
+        const output = shellChunks
+          .filter((chunk) => chunk.shellCommandId === shell.id)
+          .map((chunk) => `[${chunk.stream}] ${chunk.text}`)
+          .join("\n")
+        return `[shell ${shell.status}]\n${sanitizeForDiary(shell.command)}\n${sanitizeForDiary(output).slice(0, 8_000)}`
+      }),
+      ...eventRows
+        .filter((event) => !["agent.answer.delta", "agent.thinking.delta"].includes(event.type))
+        .map((event) => `[event ${event.type}]\n${sanitizeForDiary(event.payloadJson).slice(0, 4_000)}`),
+      toolIds.length > 0 ? `Tool ids: ${toolIds.join(", ")}` : "",
     ].join("\n\n")
   }
 
-  private async runDiaryModel(modelId: string, evidence: string): Promise<string> {
+  private async runMemoryAgentModel(modelId: string, evidence: string): Promise<string> {
     let text = ""
     for await (const event of this.options.provider!.stream({
       providerId: "openrouter",
       modelId,
-      system:
-        "You write concise private Socrates project diary notes. Use exactly these markdown headings: Worked On, Learned, Mistakes, Decisions, Next. Record only durable project/product learning. Do not include secrets or long quotes.",
+      system: MEMORY_AGENT_SYSTEM_PROMPT,
       messages: [{ role: "user", content: evidence }],
       runtimeConfig: {
         providerId: "openrouter",
@@ -381,9 +610,339 @@ export class MemoryStore extends StoreBase {
     }
     return text
   }
+
+  private async applyMemoryAgentOutput(
+    projectId: string,
+    jobId: string,
+    latest: MemoryAgentEvidenceEntry | undefined,
+    output: MemoryAgentOutput,
+    modelId: string,
+  ): Promise<{ noOp: boolean; diaryAppended: boolean; actionsApplied: number; actionsRejected: number }> {
+    let diaryAppended = false
+    let actionsApplied = 0
+    let actionsRejected = 0
+    const diaryMarkdown = typeof output.diaryAppend === "string" ? output.diaryAppend : output.diaryAppend?.markdown
+    if (diaryMarkdown?.trim()) {
+      const diaryPath = this.diaryPath(projectId, new Date())
+      ensureFile(diaryPath, `# ${formatDiaryDate(new Date())}\n\n`)
+      fs.appendFileSync(diaryPath, `\n## ${new Date().toISOString()} Memory Agent Batch ${jobId}\n\n${normalizeDiaryNote(diaryMarkdown)}\n`)
+      diaryAppended = true
+      this.appendEvent({
+        projectId,
+        ...scopedIds(latest ?? {}),
+        type: "memory.diary.appended",
+        source: "server",
+        payload: { jobId, path: diaryPath },
+      })
+    }
+    for (const patch of output.learnedPatternPatches ?? []) {
+      const result = this.applyPrimaryPatch(projectId, jobId, latest?.turnId, "learned_patterns", path.join(this.socratesHome, "primary", "learned_patterns.md"), patch)
+      actionsApplied += result.applied ? 1 : 0
+      actionsRejected += result.applied ? 0 : 1
+    }
+    for (const patch of output.toolUsageDocPatches ?? []) {
+      const result = this.applyPrimaryPatch(projectId, jobId, latest?.turnId, "tool_usage", this.resolveToolUsagePatchPath(patch.path), patch)
+      actionsApplied += result.applied ? 1 : 0
+      actionsRejected += result.applied ? 0 : 1
+    }
+    for (const patch of output.soulPatchProposals ?? []) {
+      const result = await this.applySoulPatch(projectId, jobId, latest, patch, modelId)
+      actionsApplied += result.applied ? 1 : 0
+      actionsRejected += result.applied ? 0 : 1
+    }
+    return {
+      noOp: output.no_op === true && !diaryAppended && actionsApplied === 0 && actionsRejected === 0,
+      diaryAppended,
+      actionsApplied,
+      actionsRejected,
+    }
+  }
+
+  private applyPrimaryPatch(
+    projectId: string,
+    jobId: string,
+    turnId: string | undefined,
+    targetKind: "learned_patterns" | "tool_usage",
+    targetPath: string,
+    patch: MemoryPatchProposal,
+  ): { applied: boolean; actionId: string; error?: string } {
+    const action = this.createMemoryAction(projectId, jobId, turnId, targetKind, targetPath, patch, false)
+    const current = readIfExists(targetPath) ?? ""
+    const validation = validateMemoryPatch(current, patch)
+    if (!validation.ok) {
+      this.rejectMemoryAction(action.actionId, validation.error)
+      this.appendEvent({ projectId, ...(turnId ? { turnId } : {}), type: "memory.primary.update_rejected", source: "server", payload: { jobId, actionId: action.actionId, path: targetPath, reason: validation.error } })
+      return { applied: false, actionId: action.actionId, error: validation.error }
+    }
+    fs.writeFileSync(targetPath, validation.next)
+    const afterHash = hashText(validation.next)
+    this.handle.db.update(memoryAgentActions).set({ status: "applied", afterHash, appliedAt: nowIso() }).where(eq(memoryAgentActions.id, action.actionId)).run()
+    this.appendEvent({
+      projectId,
+      ...(turnId ? { turnId } : {}),
+      type: "memory.primary.updated",
+      source: "server",
+      payload: { jobId, actionId: action.actionId, path: targetPath, targetKind, rationale: patch.rationale },
+    })
+    return { applied: true, actionId: action.actionId }
+  }
+
+  private async applySoulPatch(
+    projectId: string,
+    jobId: string,
+    latest: MemoryAgentEvidenceEntry | undefined,
+    patch: MemoryPatchProposal,
+    modelId: string,
+  ): Promise<{ applied: boolean; actionId: string; error?: string }> {
+    const document = patch.document
+    const targetPath = document === "identity" || document === "operating_principles" ? this.soulPath(document) : this.soulPath("identity")
+    const action = this.createMemoryAction(projectId, jobId, latest?.turnId, "soul", targetPath, patch, true)
+    if (document !== "identity" && document !== "operating_principles") {
+      const error = "Soul patch must target identity or operating_principles."
+      this.rejectMemoryAction(action.actionId, error)
+      return { applied: false, actionId: action.actionId, error }
+    }
+    const current = readIfExists(targetPath) ?? ""
+    const preflight = validateMemoryPatch(current, patch)
+    if (!preflight.ok) {
+      this.rejectMemoryAction(action.actionId, preflight.error)
+      return { applied: false, actionId: action.actionId, error: preflight.error }
+    }
+
+    const confirmationId = createId("memconf")
+    this.handle.db
+      .insert(memoryAgentConfirmations)
+      .values({
+        id: confirmationId,
+        jobId,
+        actionId: action.actionId,
+        projectId,
+        document,
+        promptText: SOUL_CONFIRMATION_PROMPT,
+        providerId: "openrouter",
+        modelId,
+        requestedAt: nowIso(),
+        metadataJson: JSON.stringify({ targetPath, rationale: patch.rationale }),
+      })
+      .run()
+    this.handle.db.update(memoryAgentActions).set({ status: "awaiting_confirmation", confirmationId }).where(eq(memoryAgentActions.id, action.actionId)).run()
+    this.appendEvent({
+      projectId,
+      ...scopedIds(latest ?? {}),
+      type: "memory.soul.confirmation.requested",
+      source: "server",
+      payload: { jobId, actionId: action.actionId, confirmationId, document, prompt: SOUL_CONFIRMATION_PROMPT },
+    })
+
+    const confirmationText = await this.runSoulConfirmationModel(modelId, targetPath, patch)
+    const normalized = confirmationText.trim().toLowerCase()
+    const decision = normalized === "yes" ? "yes" : normalized === "no" ? "no" : "invalid"
+    this.handle.db.update(memoryAgentConfirmations).set({ responseText: confirmationText, decision, decidedAt: nowIso() }).where(eq(memoryAgentConfirmations.id, confirmationId)).run()
+    this.appendEvent({
+      projectId,
+      ...scopedIds(latest ?? {}),
+      type: "memory.soul.confirmation.resolved",
+      source: "server",
+      payload: { jobId, actionId: action.actionId, confirmationId, document, decision },
+    })
+    if (decision !== "yes") {
+      const error = `Soul confirmation returned ${decision}.`
+      this.rejectMemoryAction(action.actionId, error)
+      return { applied: false, actionId: action.actionId, error }
+    }
+
+    const latestContent = readIfExists(targetPath) ?? ""
+    const validation = validateMemoryPatch(latestContent, patch)
+    if (!validation.ok) {
+      this.rejectMemoryAction(action.actionId, validation.error)
+      return { applied: false, actionId: action.actionId, error: validation.error }
+    }
+    fs.writeFileSync(targetPath, validation.next)
+    const afterHash = hashText(validation.next)
+    this.handle.db.update(memoryAgentActions).set({ status: "applied", afterHash, appliedAt: nowIso() }).where(eq(memoryAgentActions.id, action.actionId)).run()
+    const notification = this.options.createNotification?.({
+      projectId,
+      ...(latest?.conversationId ? { conversationId: latest.conversationId } : {}),
+      ...(latest?.turnId ? { turnId: latest.turnId } : {}),
+      type: "memory.soul.updated",
+      title: "Socrates soul updated",
+      body: `${document.replace("_", " ")} was updated by the backend memory agent.`,
+      severity: "info",
+      payload: {
+        jobId,
+        actionId: action.actionId,
+        confirmationId,
+        document,
+        path: `primary/${document}.md`,
+        rationale: patch.rationale,
+        diff: simpleDiff(patch.oldText ?? "", patch.newText ?? ""),
+      },
+    })
+    this.appendEvent({
+      projectId,
+      ...scopedIds(latest ?? {}),
+      type: "memory.soul.updated",
+      source: "server",
+      payload: { jobId, actionId: action.actionId, confirmationId, document, path: targetPath, notificationId: notification?.id ?? createId("note"), rationale: patch.rationale },
+    })
+    return { applied: true, actionId: action.actionId }
+  }
+
+  private createMemoryAction(
+    projectId: string,
+    jobId: string,
+    turnId: string | undefined,
+    targetKind: "learned_patterns" | "tool_usage" | "soul",
+    targetPath: string,
+    patch: MemoryPatchProposal,
+    requiresConfirmation: boolean,
+  ): { actionId: string; beforeHash: string } {
+    const content = readIfExists(targetPath) ?? ""
+    const beforeHash = hashText(content)
+    const actionId = createId("memact")
+    this.handle.db
+      .insert(memoryAgentActions)
+      .values({
+        id: actionId,
+        jobId,
+        projectId,
+        turnId,
+        targetKind,
+        targetPath,
+        status: "proposed",
+        requiresConfirmation,
+        beforeHash,
+        patchJson: JSON.stringify(patch),
+        rationale: patch.rationale,
+        createdAt: nowIso(),
+      })
+      .run()
+    return { actionId, beforeHash }
+  }
+
+  private rejectMemoryAction(actionId: string, error: string): void {
+    this.handle.db.update(memoryAgentActions).set({ status: "rejected", error }).where(eq(memoryAgentActions.id, actionId)).run()
+  }
+
+  private async runSoulConfirmationModel(modelId: string, targetPath: string, patch: MemoryPatchProposal): Promise<string> {
+    let text = ""
+    for await (const event of this.options.provider!.stream({
+      providerId: "openrouter",
+      modelId,
+      system: [
+        "You are the Socrates backend memory agent confirming a proposed edit to a core soul document.",
+        "Consider the target path, rationale, and exact patch. This is an internal self-confirmation test.",
+        "If the edit is evidence-backed, narrow, durable, and appropriate for identity/principles, answer yes.",
+        "If it is speculative, unsafe, noisy, too broad, or not durable, answer no.",
+        `Target path: ${targetPath}`,
+        `Rationale: ${patch.rationale ?? ""}`,
+        `Old text:\n${patch.oldText ?? ""}`,
+        `New text:\n${patch.newText ?? ""}`,
+      ].join("\n\n"),
+      messages: [{ role: "user", content: SOUL_CONFIRMATION_PROMPT }],
+      runtimeConfig: {
+        providerId: "openrouter",
+        modelId,
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "read_only_auto",
+        sandboxMode: "read_only",
+      },
+    })) {
+      if (event.type === "model.answer.delta") {
+        text += event.text
+      }
+      if (event.type === "model.failed") {
+        throw event.error
+      }
+    }
+    return text
+  }
+
+  private resolveToolUsagePatchPath(inputPath: string | undefined): string {
+    const root = path.join(this.socratesHome, "primary", "tool_usage")
+    if (!inputPath) {
+      return path.join(root, "trace_retrieve.md")
+    }
+    const normalized = inputPath.replaceAll("\\", "/").replace(/^primary\/tool_usage\//, "").replace(/^tool_usage\//, "")
+    const resolved = safeJoin(root, normalized)
+    if (!resolved.endsWith(".md")) {
+      throw new SocratesError("memory_agent_tool_usage_path_invalid", "Tool-usage memory patch target must be a markdown file.", {
+        recoverable: true,
+        details: { path: inputPath },
+      })
+    }
+    return resolved
+  }
 }
 
 const projectNotesPath = (workspacePath: string): string => path.join(workspacePath, ".socrates", "PROJECT_NOTES.md")
+
+const MEMORY_AGENT_SYSTEM_PROMPT = [
+  "You are the Socrates backend memory agent. You maintain private Socrates memory after user turns; you are not the chat assistant.",
+  "Return exactly one JSON object and no markdown fence, prose, prefix, or suffix.",
+  "Allowed top-level keys: no_op, diaryAppend, learnedPatternPatches, toolUsageDocPatches, soulPatchProposals.",
+  "If there is no durable learning, return {\"no_op\":true}.",
+  "diaryAppend should be concise markdown using exactly these headings: Worked On, Learned, Mistakes, Decisions, Next.",
+  "learnedPatternPatches, toolUsageDocPatches, and soulPatchProposals are arrays of patch objects.",
+  "Patch object schema: {\"path\": optional string, \"document\": optional \"identity\"|\"operating_principles\", \"expectedBeforeHash\": optional sha256, \"oldText\": exact existing text, \"newText\": replacement text, \"rationale\": short reason, \"sourceTurnIds\": array of source turn ids}.",
+  "Only propose patches when the evidence clearly supports a durable memory update. Prefer no_op over speculative edits.",
+  "Never include secrets, credentials, private keys, long verbatim quotes, or sensitive user data. Redact them if they appear in evidence.",
+  "Never invent identity changes. Soul proposals must be rare, narrow, evidence-backed, and appropriate for long-lived identity or operating principles.",
+  "Tool-usage docs should explain exact usage patterns, common mistakes, and investigation workflows in polished markdown.",
+  "Do not write project brief or project MEMORY updates in this phase.",
+].join("\n")
+
+const parseMemoryAgentOutput = (text: string): MemoryAgentOutput => {
+  const trimmed = text.trim()
+  const jsonText = trimmed.startsWith("{") ? trimmed : trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1)
+  const parsed = JSON.parse(jsonText) as MemoryAgentOutput
+  return {
+    ...(parsed.no_op === true ? { no_op: true } : {}),
+    ...(typeof parsed.diaryAppend === "string" || (parsed.diaryAppend && typeof parsed.diaryAppend === "object") ? { diaryAppend: parsed.diaryAppend } : {}),
+    ...(Array.isArray(parsed.learnedPatternPatches) ? { learnedPatternPatches: parsed.learnedPatternPatches.map(normalizeMemoryPatch).filter(Boolean) as MemoryPatchProposal[] } : {}),
+    ...(Array.isArray(parsed.toolUsageDocPatches) ? { toolUsageDocPatches: parsed.toolUsageDocPatches.map(normalizeMemoryPatch).filter(Boolean) as MemoryPatchProposal[] } : {}),
+    ...(Array.isArray(parsed.soulPatchProposals) ? { soulPatchProposals: parsed.soulPatchProposals.map(normalizeMemoryPatch).filter(Boolean) as MemoryPatchProposal[] } : {}),
+  }
+}
+
+const normalizeMemoryPatch = (value: unknown): MemoryPatchProposal | undefined => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined
+  }
+  const record = value as Record<string, unknown>
+  return {
+    ...(typeof record.path === "string" ? { path: record.path } : {}),
+    ...(record.document === "identity" || record.document === "operating_principles" ? { document: record.document } : {}),
+    ...(typeof record.oldText === "string" ? { oldText: record.oldText } : {}),
+    ...(typeof record.newText === "string" ? { newText: record.newText } : {}),
+    ...(typeof record.expectedBeforeHash === "string" ? { expectedBeforeHash: record.expectedBeforeHash } : {}),
+    ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
+    ...(Array.isArray(record.sourceTurnIds) ? { sourceTurnIds: record.sourceTurnIds.filter((item): item is string => typeof item === "string") } : {}),
+  }
+}
+
+const validateMemoryPatch = (current: string, patch: MemoryPatchProposal): { ok: true; next: string } | { ok: false; error: string } => {
+  if (patch.expectedBeforeHash && patch.expectedBeforeHash !== hashText(current)) {
+    return { ok: false, error: "Expected before hash did not match current file." }
+  }
+  if (!patch.oldText || patch.newText === undefined) {
+    return { ok: false, error: "Memory patch must include oldText and newText." }
+  }
+  const occurrences = countOccurrences(current, patch.oldText)
+  if (occurrences === 0) {
+    return { ok: false, error: "oldText was not found in target memory file." }
+  }
+  if (occurrences > 1) {
+    return { ok: false, error: "oldText matched more than once in target memory file." }
+  }
+  return { ok: true, next: current.replace(patch.oldText, patch.newText) }
+}
+
+const hashText = (text: string): string => createHash("sha256").update(text).digest("hex")
+
+const simpleDiff = (oldText: string, newText: string): string =>
+  [`--- old`, `+++ new`, ...oldText.split(/\r?\n/).map((line) => `-${line}`), ...newText.split(/\r?\n/).map((line) => `+${line}`)].join("\n")
 
 const ensureFile = (filePath: string, content: string): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })

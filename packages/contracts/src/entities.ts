@@ -146,6 +146,23 @@ export const messageSchema = z
   })
   .strict()
 
+export const notificationSeveritySchema = z.enum(["info", "success", "warning", "error"])
+export const notificationSchema = z
+  .object({
+    id: idSchema,
+    projectId: idSchema.optional(),
+    conversationId: idSchema.optional(),
+    turnId: idSchema.optional(),
+    type: z.string().min(1),
+    title: z.string().min(1),
+    body: z.string().optional(),
+    severity: notificationSeveritySchema,
+    payload: z.unknown().optional(),
+    readAt: timestampSchema.optional(),
+    createdAt: timestampSchema,
+  })
+  .strict()
+
 export type User = z.infer<typeof userSchema>
 export type Project = z.infer<typeof projectSchema>
 export type ProjectWorkspace = z.infer<typeof projectWorkspaceSchema>
@@ -154,3 +171,4 @@ export type ProjectInstructions = z.infer<typeof projectInstructionsSchema>
 export type Conversation = z.infer<typeof conversationSchema>
 export type MessageAttachment = z.infer<typeof messageAttachmentSchema>
 export type Message = z.infer<typeof messageSchema>
+export type Notification = z.infer<typeof notificationSchema>

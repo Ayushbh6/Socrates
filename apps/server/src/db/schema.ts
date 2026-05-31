@@ -587,6 +587,104 @@ export const errors = sqliteTable(
   }),
 )
 
+export const memoryAgentJobs = sqliteTable(
+  "memory_agent_jobs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id"),
+    sessionId: text("session_id"),
+    turnId: text("turn_id"),
+    status: text("status").notNull(),
+    trigger: text("trigger").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    fallbackModelIdsJson: text("fallback_model_ids_json"),
+    evidenceTurnIdsJson: text("evidence_turn_ids_json").notNull(),
+    evidenceTokensEstimate: integer("evidence_tokens_estimate").notNull(),
+    outputJson: text("output_json"),
+    errorId: text("error_id"),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    projectStatusIdx: index("memory_agent_jobs_project_status_idx").on(table.projectId, table.status),
+    turnIdx: index("memory_agent_jobs_turn_idx").on(table.turnId),
+  }),
+)
+
+export const memoryAgentActions = sqliteTable(
+  "memory_agent_actions",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    projectId: text("project_id").notNull(),
+    turnId: text("turn_id"),
+    targetKind: text("target_kind").notNull(),
+    targetPath: text("target_path").notNull(),
+    status: text("status").notNull(),
+    requiresConfirmation: integer("requires_confirmation", { mode: "boolean" }).notNull(),
+    confirmationId: text("confirmation_id"),
+    beforeHash: text("before_hash"),
+    afterHash: text("after_hash"),
+    patchJson: text("patch_json").notNull(),
+    rationale: text("rationale"),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+    appliedAt: text("applied_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    jobIdx: index("memory_agent_actions_job_idx").on(table.jobId),
+    targetIdx: index("memory_agent_actions_target_idx").on(table.targetKind, table.status),
+  }),
+)
+
+export const memoryAgentConfirmations = sqliteTable(
+  "memory_agent_confirmations",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    actionId: text("action_id").notNull(),
+    projectId: text("project_id").notNull(),
+    document: text("document").notNull(),
+    promptText: text("prompt_text").notNull(),
+    responseText: text("response_text"),
+    decision: text("decision"),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    requestedAt: text("requested_at").notNull(),
+    decidedAt: text("decided_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    jobIdx: index("memory_agent_confirmations_job_idx").on(table.jobId),
+    actionIdx: index("memory_agent_confirmations_action_idx").on(table.actionId),
+  }),
+)
+
+export const notifications = sqliteTable(
+  "notifications",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id"),
+    conversationId: text("conversation_id"),
+    turnId: text("turn_id"),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    body: text("body"),
+    severity: text("severity").notNull(),
+    payloadJson: text("payload_json"),
+    readAt: text("read_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    projectReadIdx: index("notifications_project_read_idx").on(table.projectId, table.readAt),
+    createdIdx: index("notifications_created_idx").on(table.createdAt),
+  }),
+)
+
 export const traceDocuments = sqliteTable(
   "trace_documents",
   {

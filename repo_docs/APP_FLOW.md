@@ -650,6 +650,7 @@ bash
 trace_retrieve
 socrates_memory
 project_notes
+soul
 list_project_resources
 mcp_registry
 ```
@@ -677,6 +678,10 @@ The backend also injects compact Python and shell environment hints from the act
 `socrates_memory` is a read-only investigation tool over Socrates-owned memory pages, not conversation history. It supports only `search` and `read`. Its scopes are memory-page scopes: `primary` for readable global memory such as learned patterns and tool-usage docs, `project` for the current project's brief, project memory, and diary pages, and `all` for both. It supports queryless page/section browsing, exact phrase search, keyword-all/keyword-any search, whole-word search, regex search, `memoryLimit`/`memoryOffset` page controls, date filters, diary date filters, context windows, and safe output caps. Identity and operating principles are core agent soul context and are not exposed through this tool.
 
 `project_notes` is the constrained read/search/patch interface for `<workspace>/.socrates/PROJECT_NOTES.md`. Generic `edit` and `apply_patch` mutations to that path are rejected; normal `read`/`search` may still inspect it.
+
+`soul` is the read-only model-visible access path for core identity and operating principles. It can read `identity`, `operating_principles`, or `both`, with bounded output and truncation metadata. It cannot write. Soul edits are backend memory-agent owned: the memory agent proposes exact oldText/newText patches, the backend verifies target text and hashes, then a second internal model call must answer the literal confirmation prompt `You are about to make changes to the soul. Are you sure?` with exact `yes` before the patch is applied. Applied soul updates are audited and create persistent top-right notifications with compact diffs.
+
+The backend memory agent replaces the old diary-only helper. Completed turn evidence is buffered up to about 60k estimated tokens or a 5-minute idle flush, then DeepSeek v4 Pro is called with MiMo fallback. The agent must return strict JSON with diary append text and optional evidence-backed patches for learned patterns, tool usage docs, or soul proposals. Failures are logged in events and memory-agent tables and must not fail the user chat turn.
 
 `mcp_registry` lists, describes, checks, and configures supported MCP servers without exposing opaque server ids to the model. The model-facing path should use human names or supported presets such as Playwright; dynamic MCP tool names may be added to the provider request after the registry/runtime reports them available.
 

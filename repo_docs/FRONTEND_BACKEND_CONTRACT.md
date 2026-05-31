@@ -245,6 +245,10 @@ GET    /api/projects/:projectId/conversations/:conversationId
 PATCH  /api/projects/:projectId/conversations/:conversationId
 DELETE /api/projects/:projectId/conversations/:conversationId
 POST   /api/projects/:projectId/conversations/:conversationId/messages
+
+GET    /api/notifications
+POST   /api/notifications/:notificationId/read
+POST   /api/notifications/read-all
 ```
 
 `POST /api/projects/:projectId/conversations/:conversationId/messages` remains available as a simple no-AI persistence endpoint, but the chat UI now uses the WebSocket `chat.message.send` command for real agent turns.
@@ -992,6 +996,43 @@ append the returned user message to the transcript
 refresh local conversation title from the response
 ```
 
+### Notification Endpoints
+
+Notifications are durable UI state for backend-owned notices such as applied soul updates. They are stored in SQLite, not as transient toasts.
+
+```ts
+type ListNotificationsResponse = {
+  notifications: Notification[]
+  unreadCount: number
+}
+
+type MarkNotificationReadResponse = {
+  notification: Notification
+  unreadCount: number
+}
+
+type MarkAllNotificationsReadResponse = {
+  notifications: Notification[]
+  unreadCount: number
+}
+```
+
+Routes:
+
+```text
+GET  /api/notifications?unreadOnly=true&limit=20
+POST /api/notifications/:notificationId/read
+POST /api/notifications/read-all
+```
+
+Frontend behavior:
+
+```text
+show a top-right notification center with unread count
+open a detail drawer for notification payloads such as soul-update diffs
+mark individual or all notifications read through these endpoints
+```
+
 ## WebSocket Connection
 
 The chat page opens one WebSocket connection for live agent events.
@@ -1278,7 +1319,18 @@ Sent when a tool call begins or is registered.
 ```ts
 type ToolCallStartedPayload = {
   toolCallId: string
-  toolName: "read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources"
+  toolName:
+    | "read"
+    | "search"
+    | "edit"
+    | "apply_patch"
+    | "bash"
+    | "trace_retrieve"
+    | "socrates_memory"
+    | "project_notes"
+    | "soul"
+    | "list_project_resources"
+    | "mcp_registry"
   category: "file" | "search" | "shell" | "git" | "patch" | "resource" | "trace" | "other"
   displayName: string
   argsPreview?: string
@@ -1432,6 +1484,30 @@ type ContextCompactionFailedPayload = {
 }
 ```
 
+### Memory And Notification Events
+
+The backend memory agent buffers completed-turn evidence until the project batch reaches about 60k estimated tokens or the 5-minute idle flush runs. It must never block or fail the user's chat turn. Its lifecycle and user-visible notice events are contract-validated:
+
+```text
+memory.agent.started
+memory.agent.completed
+memory.agent.failed
+memory.diary.appended
+memory.primary.updated
+memory.soul.confirmation.requested
+memory.soul.confirmation.resolved
+memory.soul.updated
+notification.created
+notification.read
+```
+
+Rules:
+
+- Memory-agent events are audit/runtime events for background synthesis, diary writes, primary doc updates, and soul confirmation.
+- `memory.soul.confirmation.requested` and `memory.soul.confirmation.resolved` persist the internal yes/no confirmation flow before a soul patch can apply.
+- `notification.created` carries the full notification row. `notification.read` carries the notification id plus updated unread count.
+- The frontend should update the notification badge from `notification.created` and `notification.read`, while HTTP remains the reload/source-of-truth path.
+
 ### `message.completed`
 
 Sent when an assistant message is finalized.
@@ -1540,6 +1616,7 @@ bash
 trace_retrieve
 socrates_memory
 project_notes
+soul
 list_project_resources
 mcp_registry
 ```
@@ -2020,6 +2097,43 @@ Rules:
 - `path` may be full (`project/diary/2026/06/2026-06-01.md`) or category-relative (`diary/2026/06/2026-06-01.md`).
 - Search is case-insensitive by default and may be queryless for browsing pages/sections.
 - Identity and operating principles are core agent soul context and are not exposed through this tool.
+
+### `soul`
+
+Read-only access to the core agent soul documents. This tool exists because identity and operating principles are special runtime context, not ordinary searchable memory pages.
+
+Input:
+
+```ts
+type SoulToolInput = {
+  operation: "read"
+  document: "identity" | "operating_principles" | "both"
+  charLimit?: number
+}
+```
+
+Output:
+
+```ts
+type SoulToolOutput = {
+  operation: "read"
+  documents: Array<{
+    document: "identity" | "operating_principles"
+    path: string
+    content: string
+    truncation: TruncationMetadata
+  }>
+  truncation: TruncationMetadata
+  warnings?: string[]
+}
+```
+
+Rules:
+
+- `soul` can only read `~/.Socrates/primary/identity.md` and `~/.Socrates/primary/operating_principles.md`.
+- The main agent cannot edit these files through model-visible tools. Soul updates are proposed and applied only by the backend memory agent through verified patches.
+- A proposed soul update must create a confirmation record and run the exact prompt `You are about to make changes to the soul. Are you sure?` followed by `Reply exactly yes or no.` Only an exact normalized `yes` applies the patch.
+- Applied soul updates create durable notifications with rationale and compact diff payloads.
 
 ### `project_notes`
 

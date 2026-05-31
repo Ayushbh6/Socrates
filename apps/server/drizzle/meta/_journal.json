@@ -57,6 +57,13 @@
       "when": 1780252800000,
       "tag": "0007_trace_visible_conversation_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1780339200000,
+      "tag": "0008_memory_agent_notifications",
+      "breakpoints": true
     }
   ]
 }

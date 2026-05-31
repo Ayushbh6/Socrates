@@ -681,6 +681,7 @@ const createToolExecutors = (
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   socrates_memory: (input) => Promise.resolve(store.runSocratesMemoryTool(projectId, input)),
   project_notes: (input, context) => Promise.resolve(store.runProjectNotesTool(projectId, context.workspacePath, input)),
+  soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
   mcp_registry: (input) => {
     if (!mcpRuntime) {

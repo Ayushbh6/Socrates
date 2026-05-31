@@ -1,9 +1,9 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Eye, EyeOff } from "lucide-react";
+import { Bell, Eye, EyeOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, ServerEvent } from "@socrates/contracts";
+import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
 import { ChatComposer } from "./ChatComposer";
@@ -36,6 +36,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isTerminalPanelCollapsed, setIsTerminalPanelCollapsed] = useState(false);
+  const [notifications, setNotifications] = useState<SocratesNotification[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
@@ -75,6 +78,20 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     (event: ServerEvent) => {
       if (event.type === "connection.ready") {
         setError(null);
+        return;
+      }
+      if (event.type === "notification.created") {
+        setNotifications((current) => [event.payload.notification, ...current.filter((item) => item.id !== event.payload.notification.id)]);
+        setUnreadNotificationCount((current) => current + (event.payload.notification.readAt ? 0 : 1));
+        return;
+      }
+      if (event.type === "notification.read") {
+        setNotifications((current) =>
+          current.map((item) =>
+            item.id === event.payload.notificationId ? { ...item, readAt: item.readAt ?? new Date().toISOString() } : item,
+          ),
+        );
+        setUnreadNotificationCount(event.payload.unreadCount);
         return;
       }
       if (event.conversationId && event.conversationId !== conversationId) {
@@ -407,10 +424,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       setIsLoading(true);
       setError(null);
       try {
-        const [conversation, projectsResponse, modelsResponse] = await Promise.all([
+        const [conversation, projectsResponse, modelsResponse, notificationsResponse] = await Promise.all([
           api.getConversation(projectId, conversationId),
           api.listProjects(),
           api.listModels(),
+          api.listNotifications({ limit: 20 }),
         ]);
         const projectConversations = await Promise.all(
           projectsResponse.projects.map(async ({ project }) => ({
@@ -431,6 +449,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           setIsCompacting(false);
           setSidebarProjects(projectConversations);
           setModels(modelsResponse.models);
+          setNotifications(notificationsResponse.notifications);
+          setUnreadNotificationCount(notificationsResponse.unreadCount);
           const defaultModel =
             modelsResponse.models.find(
               (model) =>
@@ -646,6 +666,26 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     sendCommand(command);
   };
 
+  const handleNotificationRead = async (notificationId: string) => {
+    try {
+      const response = await api.markNotificationRead(notificationId);
+      setNotifications((current) => current.map((item) => (item.id === notificationId ? response.notification : item)));
+      setUnreadNotificationCount(response.unreadCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not mark notification read.");
+    }
+  };
+
+  const handleAllNotificationsRead = async () => {
+    try {
+      const response = await api.markAllNotificationsRead();
+      setNotifications(response.notifications);
+      setUnreadNotificationCount(response.unreadCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not mark notifications read.");
+    }
+  };
+
   const messages: Message[] = conversationData?.messages ?? [];
   const toolRuns = conversationData?.toolRuns ?? [];
   const partialTurns = conversationData?.partialTurns ?? [];
@@ -686,10 +726,19 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         >
           <h1 className="truncate text-sm font-medium text-brand-text-dark">{conversationTitle}</h1>
           {tokenLabel ? <span className="ml-4 shrink-0 font-mono text-xs text-brand-text-light">{tokenLabel}</span> : null}
+          <NotificationCenter
+            notifications={notifications}
+            unreadCount={unreadNotificationCount}
+            isOpen={isNotificationCenterOpen}
+            onToggle={() => setIsNotificationCenterOpen((current) => !current)}
+            onClose={() => setIsNotificationCenterOpen(false)}
+            onRead={handleNotificationRead}
+            onReadAll={handleAllNotificationsRead}
+          />
           {hasTerminals ? (
             <button
               type="button"
-              className="ml-auto inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+              className="ml-2 inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
               title={effectiveTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
               aria-pressed={!effectiveTerminalPanelCollapsed}
               onClick={() => setIsTerminalPanelCollapsed((current) => !current)}
@@ -772,6 +821,97 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         </div>
       </section>
     </main>
+  );
+}
+
+function NotificationCenter({
+  notifications,
+  unreadCount,
+  isOpen,
+  onToggle,
+  onClose,
+  onRead,
+  onReadAll,
+}: {
+  notifications: SocratesNotification[];
+  unreadCount: number;
+  isOpen: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  onRead: (notificationId: string) => void;
+  onReadAll: () => void;
+}) {
+  return (
+    <div className="relative ml-auto shrink-0">
+      <button
+        type="button"
+        className="relative inline-flex size-9 items-center justify-center rounded-md border border-gray-200 bg-white text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+        title="Notifications"
+        aria-label="Notifications"
+        onClick={onToggle}
+      >
+        <Bell className="size-4" />
+        {unreadCount > 0 ? (
+          <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-brand-button px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
+            {unreadCount}
+          </span>
+        ) : null}
+      </button>
+      {isOpen ? (
+        <div className="absolute right-0 top-11 z-30 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
+            <div>
+              <p className="text-sm font-semibold text-brand-text-dark">Notifications</p>
+              <p className="text-xs text-brand-text-light">{unreadCount} unread</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" className="text-xs font-medium text-brand-teal-dark hover:underline" onClick={onReadAll}>
+                Mark all read
+              </button>
+              <button type="button" className="rounded-md p-1 text-brand-text-light hover:bg-gray-50" title="Close" onClick={onClose}>
+                <X className="size-4" />
+              </button>
+            </div>
+          </div>
+          <div className="max-h-96 overflow-auto">
+            {notifications.length === 0 ? (
+              <div className="px-3 py-6 text-center text-sm text-brand-text-light">No notifications yet.</div>
+            ) : (
+              notifications.map((notification) => {
+                const payload = notification.payload && typeof notification.payload === "object" ? (notification.payload as Record<string, unknown>) : {};
+                const diff = typeof payload.diff === "string" ? payload.diff : undefined;
+                const rationale = typeof payload.rationale === "string" ? payload.rationale : undefined;
+                return (
+                  <button
+                    key={notification.id}
+                    type="button"
+                    className={`block w-full border-b border-gray-100 px-3 py-3 text-left hover:bg-gray-50 ${
+                      notification.readAt ? "bg-white" : "bg-teal-50/40"
+                    }`}
+                    onClick={() => onRead(notification.id)}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-brand-text-dark">{notification.title}</p>
+                        {notification.body ? <p className="mt-1 text-xs text-brand-text-light">{notification.body}</p> : null}
+                      </div>
+                      {!notification.readAt ? <span className="mt-1 size-2 shrink-0 rounded-full bg-brand-teal" /> : null}
+                    </div>
+                    {rationale ? <p className="mt-2 text-xs text-brand-text-dark">{rationale}</p> : null}
+                    {diff ? (
+                      <pre className="mt-2 max-h-32 overflow-auto rounded-md border border-gray-100 bg-gray-50 p-2 font-mono text-[11px] leading-4 text-brand-text-dark">
+                        {diff}
+                      </pre>
+                    ) : null}
+                    <p className="mt-2 font-mono text-[10px] text-brand-text-light">{new Date(notification.createdAt).toLocaleString()}</p>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

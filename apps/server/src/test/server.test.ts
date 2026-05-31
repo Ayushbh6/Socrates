@@ -976,6 +976,10 @@ describe("database migrations", () => {
         "voice_inputs",
         "audio_outputs",
         "message_feedback",
+        "memory_agent_jobs",
+        "memory_agent_actions",
+        "memory_agent_confirmations",
+        "notifications",
         "session_state",
         "schema_migrations",
       ]),
@@ -2979,11 +2983,16 @@ describe("WebSocket API", () => {
         if (request.modelId === "deepseek/deepseek-v4-pro") {
           throw new Error("primary diary model failed")
         }
-        yield { type: "model.answer.delta", text: "### Worked On\n- Diary test.\n\n### Learned\n- Fallback works.\n\n### Mistakes\n- None.\n\n### Decisions\n- Keep it short.\n\n### Next\n- Continue." }
+        yield {
+          type: "model.answer.delta",
+          text: JSON.stringify({
+            diaryAppend: "### Worked On\n- Diary test.\n\n### Learned\n- Fallback works.\n\n### Mistakes\n- None.\n\n### Decisions\n- Keep it short.\n\n### Next\n- Continue.",
+          }),
+        }
         yield { type: "model.completed" }
       },
     }
-    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, diaryProvider })
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, diaryProvider, memoryAgentIdleMs: 25 })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Diary user message", "Diary assistant answer", nowIso())
@@ -2993,6 +3002,70 @@ describe("WebSocket API", () => {
       expect(modelIds).toEqual(["deepseek/deepseek-v4-pro", "xiaomi/mimo-v2.5-pro"])
       expect(fs.readFileSync(diaryFile, "utf8")).toContain("Diary test")
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("confirms soul updates internally before applying them and creates a notification", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Soul Source")
+    const handle = openDatabase(dbPath)
+    const seenPrompts: string[] = []
+    let callIndex = 0
+    const memoryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seenPrompts.push(`${request.system}\n\n${request.messages.map((message) => message.content).join("\n")}`)
+        callIndex += 1
+        if (callIndex === 1) {
+          yield {
+            type: "model.answer.delta",
+            text: JSON.stringify({
+              diaryAppend: "### Worked On\n- Soul update test.\n\n### Learned\n- Confirmation is required.\n\n### Mistakes\n- None.\n\n### Decisions\n- Keep soul edits gated.\n\n### Next\n- Continue.",
+              soulPatchProposals: [
+                {
+                  document: "identity",
+                  oldText: "Socrates is a local-first project partner.",
+                  newText: "Socrates is a local-first project partner with evidence-backed memory.",
+                  rationale: "The backend memory-agent flow is now a durable identity capability.",
+                  sourceTurnIds: [],
+                },
+              ],
+            }),
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "yes" }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, diaryProvider: memoryProvider, memoryAgentIdleMs: 25 })
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Update soul carefully", "I will use the backend memory agent.", nowIso())
+      store.appendDiaryForTurn({ projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      const identityPath = path.join(socratesHome, "primary", "identity.md")
+      await waitForFileText(identityPath, "evidence-backed memory")
+      const confirmation = handle.sqlite.prepare("SELECT decision, response_text FROM memory_agent_confirmations").get() as {
+        decision: string
+        response_text: string
+      }
+      expect(confirmation.decision).toBe("yes")
+      expect(confirmation.response_text).toBe("yes")
+      const action = handle.sqlite.prepare("SELECT status, target_kind FROM memory_agent_actions").get() as { status: string; target_kind: string }
+      expect(action).toMatchObject({ status: "applied", target_kind: "soul" })
+      const notifications = store.listNotifications()
+      expect(notifications.unreadCount).toBe(1)
+      expect(notifications.notifications[0]?.type).toBe("memory.soul.updated")
+      expect(JSON.stringify(notifications.notifications[0]?.payload)).toContain("evidence-backed memory")
+      expect(seenPrompts[0]).toContain("Return exactly one JSON object")
+      expect(seenPrompts[1]).toContain("You are about to make changes to the soul. Are you sure?")
     } finally {
       await store.close()
     }

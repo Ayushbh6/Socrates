@@ -21,6 +21,9 @@ import type {
   CheckProjectEmbeddingsRequest,
   ConfigureProjectEmbeddingsRequest,
   FeedbackSubmitPayload,
+  ListNotificationsResponse,
+  MarkAllNotificationsReadResponse,
+  MarkNotificationReadResponse,
   Message,
   MessageAttachment,
   PatchProjectRequest,
@@ -36,6 +39,8 @@ import type {
   ProjectWorkspace,
   SocratesMemoryToolInput,
   SocratesMemoryToolOutput,
+  SoulToolInput,
+  SoulToolOutput,
   TraceRetrieveToolInput,
   UpdateProjectWorkspaceRequest,
   UpdateProjectWorkspaceResponse,
@@ -56,6 +61,7 @@ import { FeedbackStore } from "./store/feedbackStore"
 import { InstructionStore } from "./store/instructionStore"
 import { ModelTelemetryStore } from "./store/modelTelemetryStore"
 import { MemoryStore } from "./store/memoryStore"
+import { NotificationStore } from "./store/notificationStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
 import type { StoreContext } from "./store/shared"
@@ -105,6 +111,7 @@ export class SocratesStore {
   private readonly terminals: TerminalStore
   private readonly traces: TraceStore
   private readonly memory: MemoryStore
+  private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
 
@@ -112,7 +119,7 @@ export class SocratesStore {
     private readonly handle: DatabaseHandle,
     embeddingProvider?: EmbeddingProvider,
     credentials?: ProviderCredentialResolver,
-    options: { socratesHome?: string; diaryProvider?: ModelProvider } = {},
+    options: { socratesHome?: string; diaryProvider?: ModelProvider; memoryAgentIdleMs?: number } = {},
   ) {
     this.events = new EventStore(handle)
     const context: StoreContext = {
@@ -135,10 +142,13 @@ export class SocratesStore {
     this.terminals = new TerminalStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     this.traces = new TraceStore(context, this.embeddings)
+    this.notifications = new NotificationStore(context)
     const memoryOptions = {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
       ...(options.diaryProvider ? { provider: options.diaryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
+      ...(options.memoryAgentIdleMs === undefined ? {} : { memoryAgentIdleMs: options.memoryAgentIdleMs }),
       ...(credentials ? { credentials } : {}),
+      createNotification: (input: Parameters<NotificationStore["createNotification"]>[0]) => this.notifications.createNotification(input),
     }
     this.memory = new MemoryStore(context, memoryOptions)
     this.contextCompactions = new ContextCompactionStore(context, this.errors)
@@ -205,6 +215,22 @@ export class SocratesStore {
 
   runProjectNotesTool(projectId: string, workspacePath: string, input: ProjectNotesToolInput): ProjectNotesToolOutput {
     return this.memory.runProjectNotesTool(projectId, workspacePath, input)
+  }
+
+  runSoulTool(projectId: string, input: SoulToolInput): SoulToolOutput {
+    return this.memory.runSoulTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
+  }
+
+  listNotifications(input: { unreadOnly?: boolean; limit?: number } = {}): ListNotificationsResponse {
+    return this.notifications.listNotifications(input)
+  }
+
+  markNotificationRead(notificationId: string): MarkNotificationReadResponse {
+    return this.notifications.markRead(notificationId)
+  }
+
+  markAllNotificationsRead(): MarkAllNotificationsReadResponse {
+    return this.notifications.markAllRead()
   }
 
   patchProject(projectId: string, input: PatchProjectRequest): Project {
