@@ -518,6 +518,14 @@ Prepared the v0.1.2 runtime slice for the npm CLI release path:
 - `mcp_registry` model-facing inputs prefer `preset` or `serverName`; opaque server ids are internal/backward-compatible.
 - WebSocket reconnect/backoff clears transient connection errors after reconnect and keeps visible assistant/terminal state recoverable through refresh.
 
+## v0.1.3 Trace Retrieval Evidence Windows
+
+Prepared the v0.1.3 runtime slice for the npm CLI release path:
+
+- `trace_retrieve` search snippets now use broader investigation windows centered on the best exact phrase or dense word match, with surrounding line context and raw-message fallback for verbatim anchors.
+- The agent preserves model-visible `conversationId`, `messageId`, and `toolId` in `trace_retrieve` outputs and returns a cached warning for duplicate identical `trace_retrieve` calls in one turn.
+- `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.3`; the runtime manifest should resolve to `0.1.3` locally and to `v0.1.3` under the GitHub release workflow.
+
 ## Trace Retrieve Memory Overhaul And Slim Output
 
 Current `trace_retrieve` direction after the May 31 cleanup:
