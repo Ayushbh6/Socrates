@@ -1069,7 +1069,7 @@ describe("context compaction persistence", () => {
         contextTokensEstimate: 165000,
         targetTokens: 120000,
         compressorProviderId: "openrouter",
-        compressorModelId: "qwen/qwen3.6-35b-a3b",
+        compressorModelId: "stepfun/step-3.7-flash",
         sourceMessageIds: ["msg_old_2"],
         sourceTurnIds: ["turn_old_2"],
       })
@@ -1097,9 +1097,10 @@ describe("context compaction persistence", () => {
 
       const search = await store.retrieveToolTraces(projectId, conversationId, {
         query: "beta decision",
+        scope: "current_conversation",
         include: ["summaries"],
       })
-      expect(search.results.some((result) => result.kind === "conversation_summary" && result.sourceId === secondSnapshotId)).toBe(true)
+      expect(search.results.some((result) => result.entryType === "continuation_summary" && result.text.includes("beta decision"))).toBe(true)
     } finally {
       await store.close()
     }
@@ -2005,27 +2006,26 @@ describe("WebSocket API", () => {
         expect(indexed.document_count).toBeGreaterThanOrEqual(3)
         expect(indexed.fts_count).toBeGreaterThanOrEqual(indexed.document_count)
 
-        const search = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello Socrates" })
-        expect(search.appliedFilters.scope).toBe("recent_conversations")
+        const search = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello Socrates", scope: "current_conversation" })
+        expect(search.appliedFilters.scope).toBe("current_conversation")
         expect(search.appliedFilters.mode).toBe("exact")
         expect(search.appliedFilters.conversationLimit).toBe(10)
         expect(search.appliedFilters.defaultDateWindowApplied).toBeUndefined()
-        expect(search.warnings?.join(" ") ?? "").not.toContain("Only viewing the current chat")
-        expect(search.results.some((result) => result.kind === "turn_summary" && result.userMessageId)).toBe(true)
-        expect(search.results[0]?.conversation?.title).toBe(conversation.title)
-        expect(search.results[0]?.conversation?.isCurrentConversation).toBe(true)
+        expect(search.warnings?.join(" ") ?? "").toContain("Only viewing the current chat")
+        expect(search.results.some((result) => result.entryType === "user_query" && result.messageId)).toBe(true)
+        expect(search.results[0]?.conversationTitle).toBe(conversation.title)
+        expect(search.results[0]?.conversationId).toBe(conversation.id)
 
-        const handleResult = search.results.find((result) => result.kind === "turn_summary" && result.userMessageId)
-        expect(handleResult).toBeDefined()
-        if (handleResult) {
-          const inspected = await store.retrieveToolTraces(project.id, conversation.id, { operation: "inspect", handle: handleResult.handle })
-          expect(inspected.results[0]?.kind).toBe("exact_source")
-          expect(inspected.results[0]?.conversation?.title).toBe(conversation.title)
-          expect(inspected.results[0]?.conversation?.isCurrentConversation).toBe(true)
+        const messageResult = search.results.find((result) => result.entryType === "user_query" && result.messageId)
+        expect(messageResult).toBeDefined()
+        if (messageResult) {
+          const inspected = await store.retrieveToolTraces(project.id, conversation.id, { operation: "inspect", resultNumber: messageResult.resultNumber })
+          expect(inspected.results[0]?.entryType).toBe("user_query")
+          expect(inspected.results[0]?.conversationTitle).toBe(conversation.title)
           expect(JSON.stringify(inspected.results[0])).toContain("Hello Socrates")
         }
 
-        const semantic = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic" })
+        const semantic = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic", scope: "current_conversation" })
         expect(semantic.warnings?.join(" ")).toContain("Semantic trace retrieval is not configured")
       } finally {
         await store.close()
@@ -2265,9 +2265,10 @@ describe("WebSocket API", () => {
         const search = await store.retrieveToolTraces(project.id, conversation.id, {
           query: "canonical rubric exact assignment rules",
           mode: "exact",
+          scope: "current_conversation",
           include: ["messages"],
         })
-        expect(search.results.some((result) => result.kind === "turn_summary" && result.preserveVerbatim)).toBe(true)
+        expect(search.results.some((result) => result.entryType === "user_query" && result.text.includes("Canonical rubric"))).toBe(true)
       } finally {
         await store.close()
       }
@@ -2300,45 +2301,51 @@ describe("WebSocket API", () => {
       insertCompletedTestTurn(handle.sqlite, source.id, sessionId, "Third ordinary user message", "Third assistant reply", new Date(Date.now() - 1_000).toISOString())
 
       const ordinal = await store.retrieveToolTraces(project.id, live.id, {
-        query: "what did I say in the second user message",
         scope: "project",
-        conversationHint: "Ordinal Source",
         turnNo: 2,
         role: "user",
       })
-      expect(ordinal.results[0]?.kind).toBe("message")
-      expect(ordinal.results[0]?.sourceId).toBe(second.userMessageId)
-      expect(ordinal.results[0]?.conversation?.title).toBe("Ordinal Source")
-      expect(ordinal.results[0]?.conversation?.isCurrentConversation).toBe(false)
-      expect(ordinal.results[0]?.turnNo).toBe(2)
-      expect(ordinal.results[0]?.messageRole).toBe("user")
-      expect(JSON.stringify(ordinal.results[0])).toContain(`"inspectArgs":{"operation":"inspect","messageId":"${second.userMessageId}"}`)
+      expect(ordinal.results[0]?.entryType).toBe("user_query")
+      expect(ordinal.results[0]?.messageId).toBe(second.userMessageId)
+      expect(ordinal.results[0]?.conversationTitle).toBe("Ordinal Source")
+      expect(ordinal.results[0]?.conversationId).toBe(source.id)
+      expect(ordinal.results[0]?.messageNo).toBe(2)
 
       const inspected = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", messageId: second.userMessageId })
-      expect(inspected.results[0]?.conversation?.title).toBe("Ordinal Source")
-      expect(inspected.results[0]?.conversation?.isCurrentConversation).toBe(false)
+      expect(inspected.results[0]?.conversationTitle).toBe("Ordinal Source")
+      expect(inspected.results[0]?.entryType).toBe("user_query")
       expect(JSON.stringify(inspected.results)).toContain("BLUE-LANTERN-42")
 
       const lexicalOnly = await store.retrieveToolTraces(project.id, live.id, {
         query: "what did I say in the second user message",
         scope: "project",
-        conversationHint: "Ordinal Source",
       })
       expect(JSON.stringify(lexicalOnly.results)).not.toContain("BLUE-LANTERN-42")
 
-      const broad = await store.retrieveToolTraces(project.id, live.id, {
-        query: "second user message",
+      const mixedSelector = await store.retrieveToolTraces(project.id, live.id, {
+        query: "what did I say in the second user message",
         scope: "project",
         turnNo: 2,
         role: "user",
       })
-      expect(broad.results).toHaveLength(0)
-      expect(broad.warnings?.join(" ")).toContain("requires conversationHint")
+      expect(JSON.stringify(mixedSelector.results)).not.toContain("BLUE-LANTERN-42")
+      expect(mixedSelector.appliedFilters.turnNo).toBeUndefined()
+      expect(mixedSelector.appliedFilters.role).toBe("user")
+      expect(mixedSelector.warnings?.join(" ")).toContain("both query and turnNo")
+      expect(mixedSelector.warnings?.join(" ")).toContain("turnNo was ignored")
+      expect(mixedSelector.warnings?.join(" ")).toContain("role kept as a query filter")
+      expect(mixedSelector.warnings?.join(" ")).toContain("without query")
+
+      const broad = await store.retrieveToolTraces(project.id, live.id, {
+        scope: "project",
+        turnNo: 2,
+        role: "user",
+      })
+      expect(broad.results[0]?.entryType).toBe("user_query")
+      expect(broad.results[0]?.messageId).toBe(second.userMessageId)
 
       const outOfRange = await store.retrieveToolTraces(project.id, live.id, {
-        query: "fifth user message",
         scope: "project",
-        conversationHint: "Ordinal Source",
         turnNo: 5,
         role: "user",
       })
@@ -2349,7 +2356,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("requires a precise conversation hint for broad turnNo lookup and inspects ordered conversation bundles", async () => {
+  it("returns broad turnNo matches and inspects ordered conversation bundles", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
@@ -2369,14 +2376,13 @@ describe("WebSocket API", () => {
       insertCompletedTestTurn(handle.sqlite, second.id, secondSession, "Second conversation turn three", "Assistant turn three", new Date(Date.now() - 2_000).toISOString())
 
       const ambiguous = await store.retrieveToolTraces(project.id, live.id, {
-        query: "first shared source",
         scope: "project",
-        conversationHint: "Shared Ordinal",
         turnNo: 1,
         role: "user",
       })
-      expect(ambiguous.results).toHaveLength(0)
-      expect(ambiguous.warnings?.join(" ")).toContain("matched multiple conversations")
+      expect(ambiguous.results).toHaveLength(2)
+      expect(ambiguous.results.every((result) => result.entryType === "user_query")).toBe(true)
+      expect(ambiguous.results.map((result) => result.conversationTitle)).toEqual(["Shared Ordinal", "Shared Ordinal"])
 
       const bundle = await store.retrieveToolTraces(project.id, live.id, {
         operation: "inspect",
@@ -2384,7 +2390,7 @@ describe("WebSocket API", () => {
         startTurnNo: 2,
         turnLimit: 2,
       })
-      expect(bundle.results[0]?.kind).toBe("exact_source")
+      expect(bundle.results[0]?.entryType).toBe("continuation_summary")
       expect(JSON.stringify(bundle.results)).toContain("[turn 2")
       expect(JSON.stringify(bundle.results)).toContain("Second conversation turn two")
       expect(JSON.stringify(bundle.results)).toContain("[turn 3")
@@ -2503,9 +2509,30 @@ describe("WebSocket API", () => {
         scope: "project",
         mode: "exact",
       })
-      expect(visibleSearch.results[0]?.conversation?.title).toBe("Visible Trace Source")
+      expect(visibleSearch.results[0]?.conversationTitle).toBe("Visible Trace Source")
       expect(visibleSearch.results[0]?.messageId).toBe(sourceTurn.userMessageId)
-      expect(visibleSearch.results[0]?.kind).toBe("turn_summary")
+      expect(visibleSearch.results[0]?.entryType).toBe("user_query")
+
+      const titleScopedSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "VISIBLE-TOKEN-91",
+        scope: "project",
+        conversationTitle: "  visible   trace-source  ",
+        conversationLimit: 50,
+        mode: "exact",
+      })
+      expect(titleScopedSearch.appliedFilters.conversationTitle).toBe("  visible   trace-source  ")
+      expect(titleScopedSearch.appliedFilters.conversationIds).toEqual([source.id])
+      expect(titleScopedSearch.results[0]?.conversationTitle).toBe("Visible Trace Source")
+
+      const idScopedSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "VISIBLE-TOKEN-91",
+        scope: "project",
+        conversationId: source.id,
+        mode: "exact",
+      })
+      expect(idScopedSearch.appliedFilters.conversationId).toBe(source.id)
+      expect(idScopedSearch.appliedFilters.conversationIds).toEqual([source.id])
+      expect(idScopedSearch.results[0]?.conversationTitle).toBe("Visible Trace Source")
 
       const inspectByResult = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", resultNumber: 1 })
       expect(JSON.stringify(inspectByResult.results)).toContain("VISIBLE-TOKEN-91")
@@ -2528,19 +2555,31 @@ describe("WebSocket API", () => {
         mode: "audit",
         include: ["tool_calls"],
       })
-      expect(toolOnlyAuditSearch.results[0]?.provenanceQuality).toBe("audit_event")
-      expect(toolOnlyAuditSearch.results[0]?.toolCallId).toBe(sourceToolCallId)
+      expect(toolOnlyAuditSearch.results[0]?.entryType).toBe("tool_call")
+      expect(toolOnlyAuditSearch.results[0]?.toolId).toBe(sourceToolCallId)
 
       const inspectByMessage = await store.retrieveToolTraces(project.id, live.id, {
         operation: "inspect",
         messageId: sourceTurn.userMessageId,
       })
       expect(JSON.stringify(inspectByMessage.results)).toContain("VISIBLE-TOKEN-91")
+      const shortcutInspectByMessage = await store.retrieveToolTraces(project.id, live.id, {
+        query: "ignored when exact messageId is present",
+        messageId: sourceTurn.userMessageId,
+      } as never)
+      expect(shortcutInspectByMessage.appliedFilters.operation).toBe("inspect")
+      expect(JSON.stringify(shortcutInspectByMessage.results)).toContain("VISIBLE-TOKEN-91")
       const inspectByTool = await store.retrieveToolTraces(project.id, live.id, {
         operation: "inspect",
         toolCallId: sourceToolCallId,
       })
       expect(JSON.stringify(inspectByTool.results)).toContain(".socrates/attachments/visible.png")
+      const shortcutInspectByTool = await store.retrieveToolTraces(project.id, live.id, {
+        mode: "audit",
+        toolId: sourceToolCallId,
+      } as never)
+      expect(shortcutInspectByTool.appliedFilters.operation).toBe("inspect")
+      expect(JSON.stringify(shortcutInspectByTool.results)).toContain(".socrates/attachments/visible.png")
       const inspectByTurn = await store.retrieveToolTraces(project.id, live.id, {
         operation: "inspect",
         turnId: sourceTurn.turnId,
@@ -2584,6 +2623,170 @@ describe("WebSocket API", () => {
       expect(row.job_count).toBe(0)
     } finally {
       sqlite.close()
+    }
+  })
+
+  it("excludes the active conversation from default memory search and inspects the matched assistant message directly", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const source = await createConversation(app, project.id, "apply patch fix")
+    const live = await createConversation(app, project.id, "trace retrieve test 2")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    try {
+      const sourceSession = insertTestSession(handle.sqlite, project.id, source.id)
+      insertCompletedTestTurn(handle.sqlite, source.id, sourceSession, "Earlier prompt one.", "Earlier answer one.", new Date(Date.now() - 5_000).toISOString())
+      insertCompletedTestTurn(handle.sqlite, source.id, sourceSession, "Earlier prompt two.", "Earlier answer two.", new Date(Date.now() - 4_000).toISOString())
+      const target = insertCompletedTestTurn(
+        handle.sqlite,
+        source.id,
+        sourceSession,
+        "ok i have modified the tool exactly for your two concerns, can you maybe run a quick check and tell me if you feell its good now?",
+        "Let me set up both tests. First, let me read the current state of the test file and create a reliable anchor for the concurrent-edit simulation.\n\nTest B: Partial failure error diagnostics. Now let me apply a 3-hunk patch where hunk 2 has a deliberately wrong anchor. I need to re-read first.",
+        new Date(Date.now() - 3_000).toISOString(),
+      )
+      const liveSession = insertTestSession(handle.sqlite, project.id, live.id)
+      insertCompletedTestTurn(
+        handle.sqlite,
+        live.id,
+        liveSession,
+        'hey can you find which conversation this text is from , "Test B: Partial failure error diagnostics. Now let me apply a 3-hunk patch where hunk 2 has a deliberately wrong anchor. I need to re-read first."',
+        "Working on it.",
+        new Date(Date.now() - 2_000).toISOString(),
+      )
+      store.indexTurnTraceDocuments(project.id, source.id, target.turnId)
+      const liveTargetTurn = handle.sqlite
+        .prepare("SELECT id FROM turns WHERE conversation_id = ? ORDER BY started_at DESC LIMIT 1")
+        .get(live.id) as { id: string }
+      store.indexTurnTraceDocuments(project.id, live.id, liveTargetTurn.id)
+
+      const search = await store.retrieveToolTraces(project.id, live.id, {
+        query:
+          "Test B: Partial failure error diagnostics. Now let me apply a 3-hunk patch where hunk 2 has a deliberately wrong anchor. I need to re-read first.",
+        scope: "recent_conversations",
+        conversationLimit: 20,
+        mode: "exact",
+        limit: 10,
+      })
+
+      expect(search.results.length).toBeGreaterThan(0)
+      expect(search.results[0]?.conversationTitle).toBe("apply patch fix")
+      expect(search.results[0]?.conversationId).toBe(source.id)
+      expect(search.results[0]?.messageId).toBe(target.assistantMessageId)
+      expect(search.results[0]?.entryType).toBe("assistant_response")
+      expect(search.results[0]?.messageNo).toBe(3)
+      expect(search.results[0]?.provenanceKind).toBe("original_turn")
+      expect(search.results[0]?.pairedUserMessageNo).toBe(3)
+      expect(search.results[0]?.pairedUserPreview).toContain("ok i have modified the tool")
+      expect(search.results[0]?.text).toContain("Test B: Partial failure error diagnostics")
+
+      const inspectByResult = await store.retrieveToolTraces(project.id, live.id, { operation: "inspect", resultNumber: 1 })
+      expect(inspectByResult.results[0]?.entryType).toBe("assistant_response")
+      expect(inspectByResult.results[0]?.conversationTitle).toBe("apply patch fix")
+      expect(inspectByResult.results[0]?.messageId).toBe(target.assistantMessageId)
+      expect(inspectByResult.results[0]?.messageNo).toBe(3)
+      expect(inspectByResult.results[0]?.provenanceKind).toBe("original_turn")
+      expect(inspectByResult.results[0]?.pairedUserMessageNo).toBe(3)
+      expect(inspectByResult.results[0]?.pairedUserPreview).toContain("ok i have modified the tool")
+      expect(JSON.stringify(inspectByResult.results[0])).toContain("Test B: Partial failure error diagnostics")
+
+      handle.sqlite
+        .prepare(
+          `INSERT INTO message_attachments (
+            id, project_id, conversation_id, session_id, turn_id, message_id, artifact_id, kind, file_name,
+            mime_type, size_bytes, uri, status, created_at, updated_at, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'image', 'attached-proof.png', 'image/png', 12, '.socrates/attachments/attached-proof.png', 'attached', ?, ?, '{}')`,
+        )
+        .run(createId("matt"), project.id, source.id, sourceSession, target.turnId, target.userMessageId, createId("art"), nowIso(), nowIso())
+      store.indexTurnTraceDocuments(project.id, source.id, target.turnId)
+
+      const assistantRoleSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "3-hunk patch wrong anchor",
+        scope: "recent_conversations",
+        mode: "exact",
+        role: "assistant",
+      })
+      expect(assistantRoleSearch.results[0]?.messageId).toBe(target.assistantMessageId)
+      expect(assistantRoleSearch.appliedFilters.role).toBe("assistant")
+
+      const userRoleSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "3-hunk patch wrong anchor",
+        scope: "recent_conversations",
+        mode: "exact",
+        role: "user",
+      })
+      expect(userRoleSearch.results).toHaveLength(0)
+
+      const assistantEntryTypeSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "3-hunk patch wrong anchor",
+        scope: "recent_conversations",
+        mode: "exact",
+        entryType: "assistant_response",
+      })
+      expect(assistantEntryTypeSearch.results[0]?.messageId).toBe(target.assistantMessageId)
+      expect(assistantEntryTypeSearch.appliedFilters.entryType).toBe("assistant_response")
+
+      const attachmentSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "ok i have modified the tool",
+        scope: "recent_conversations",
+        mode: "exact",
+        hasAttachment: true,
+      })
+      expect(attachmentSearch.results[0]?.messageId).toBe(target.userMessageId)
+      expect(attachmentSearch.results[0]?.provenanceKind).toBe("attachment_origin")
+      expect(attachmentSearch.appliedFilters.hasAttachment).toBe(true)
+
+      const dateFilteredSearch = await store.retrieveToolTraces(project.id, live.id, {
+        query: "Test B: Partial failure error diagnostics",
+        scope: "recent_conversations",
+        mode: "exact",
+        createdAfter: new Date(Date.now() + 60_000).toISOString(),
+      })
+      expect(dateFilteredSearch.results).toHaveLength(0)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("marks secondary attachment mentions so deleted-source provenance is not invented", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const source = await createConversation(app, project.id, "trace retrieve recap")
+    const live = await createConversation(app, project.id, "deleted screenshot lookup")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    try {
+      const sourceSession = insertTestSession(handle.sqlite, project.id, source.id)
+      const recap = insertCompletedTestTurn(
+        handle.sqlite,
+        source.id,
+        sourceSession,
+        "Please continue.",
+        "I found traces from a previous conversation was titled \"The\" and screenshots you shared previously, including Screenshot 2026-05-31 at 1.16.46 PM.png.",
+        new Date(Date.now() - 3_000).toISOString(),
+      )
+      store.indexTurnTraceDocuments(project.id, source.id, recap.turnId)
+
+      const search = await store.retrieveToolTraces(project.id, live.id, {
+        query: "Screenshot 2026-05-31 1.16.46 PM.png",
+        scope: "project",
+        mode: "exact",
+        limit: 10,
+      })
+
+      expect(search.results.length).toBeGreaterThan(0)
+      expect(search.results[0]?.entryType).toBe("assistant_response")
+      expect(search.results[0]?.provenanceKind).toBe("secondary_mention")
+      expect(search.warnings?.join(" ")).toContain("Only secondary mentions")
+      expect(search.warnings?.join(" ")).toContain("No original visible message attachment provenance")
+    } finally {
+      await store.close()
     }
   })
 
@@ -2641,21 +2844,23 @@ describe("WebSocket API", () => {
       const semantic = await store.retrieveToolTraces(project.id, conversation.id, {
         query: "BLUE-LANTERN-42",
         mode: "semantic",
+        scope: "current_conversation",
         include: ["messages"],
       })
       expect(semantic.warnings?.join(" ") ?? "").not.toContain("not configured")
-      expect(semantic.results[0]?.kind).toBe("turn_summary")
-      expect(JSON.stringify(semantic.results[0])).toContain(target.userMessageId)
+      expect(semantic.results[0]?.entryType).toBe("user_query")
+      expect(semantic.results[0]?.messageId).toBe(target.userMessageId)
 
       const combined = await store.retrieveToolTraces(project.id, conversation.id, {
         query: "fuzzy blue memory",
         mode: "combined",
+        scope: "current_conversation",
         include: ["messages"],
       })
       expect(combined.warnings?.join(" ") ?? "").not.toContain("not configured")
       expect(combined.appliedFilters.mode).toBe("combined")
-      expect(combined.results[0]?.kind).toBe("turn_summary")
-      expect(JSON.stringify(combined.results[0])).toContain(target.userMessageId)
+      expect(combined.results[0]?.entryType).toBe("user_query")
+      expect(combined.results[0]?.messageId).toBe(target.userMessageId)
 
       handle.sqlite
         .prepare(
@@ -2670,6 +2875,7 @@ describe("WebSocket API", () => {
       const stillSemantic = await store.retrieveToolTraces(project.id, conversation.id, {
         query: "BLUE-LANTERN-42",
         mode: "semantic",
+        scope: "current_conversation",
         include: ["messages"],
       })
       expect(JSON.stringify(stillSemantic.results[0])).toContain(target.userMessageId)

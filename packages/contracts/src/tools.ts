@@ -363,6 +363,27 @@ export type TraceRetrieveInclude = z.infer<typeof traceRetrieveIncludeSchema>
 export const traceRetrieveRoleSchema = z.enum(["user", "assistant", "any"])
 export type TraceRetrieveRole = z.infer<typeof traceRetrieveRoleSchema>
 
+export const traceRetrieveEntryTypeSchema = z.enum([
+  "user_query",
+  "assistant_response",
+  "continuation_summary",
+  "tool_call",
+  "shell",
+  "file",
+  "patch",
+  "error",
+])
+export type TraceRetrieveEntryType = z.infer<typeof traceRetrieveEntryTypeSchema>
+
+export const traceRetrieveProvenanceKindSchema = z.enum([
+  "original_turn",
+  "attachment_origin",
+  "secondary_mention",
+  "continuation_summary",
+  "audit_event",
+])
+export type TraceRetrieveProvenanceKind = z.infer<typeof traceRetrieveProvenanceKindSchema>
+
 export const traceRetrieveSourceKindSchema = z.enum([
   "message",
   "tool_call",
@@ -379,13 +400,16 @@ export type TraceRetrieveSourceKind = z.infer<typeof traceRetrieveSourceKindSche
 export const traceRetrieveSearchInputSchema = z
   .object({
     operation: z.literal("search").optional(),
-    query: z.string().min(1),
+    mode: traceRetrieveModeSchema.optional(),
+    query: z.string().min(1).optional(),
     scope: traceRetrieveScopeSchema.optional(),
-    conversationHint: z.string().min(1).optional(),
+    conversationTitle: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
-    mode: traceRetrieveModeSchema.optional(),
+    entryType: traceRetrieveEntryTypeSchema.optional(),
+    hasAttachment: z.boolean().optional(),
     include: z.array(traceRetrieveIncludeSchema).optional(),
     toolNames: z.array(toolNameSchema).optional(),
     paths: z.array(z.string().min(1)).max(20).optional(),
@@ -397,21 +421,67 @@ export const traceRetrieveSearchInputSchema = z
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
+  .superRefine((input, context) => {
+    const hasQuery = input.query !== undefined
+    const hasTurnNo = input.turnNo !== undefined
+    if (!hasQuery && !hasTurnNo) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide query for text search or turnNo for exact ordinal lookup.",
+      })
+    }
+    if (hasTurnNo && !hasQuery && input.mode !== undefined && input.mode !== "exact") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["mode"],
+        message: "turnNo ordinal lookup is exact-only; omit mode or use mode=\"exact\".",
+      })
+    }
+  })
 export type TraceRetrieveSearchInput = z.infer<typeof traceRetrieveSearchInputSchema>
 
 const traceRetrieveEmptyStringOptionalKeys = new Set([
   "command",
-  "conversationHint",
   "createdAfter",
   "createdBefore",
   "handle",
   "conversationId",
+  "conversationTitle",
   "turnId",
   "messageId",
+  "toolId",
   "toolCallId",
 ])
 
 const traceRetrieveEmptyArrayOptionalKeys = new Set(["include", "paths", "toolNames"])
+
+const traceRetrieveSearchOnlyKeys = new Set([
+  "scope",
+  "mode",
+  "conversationTitle",
+  "conversationLimit",
+  "toolNames",
+  "createdAfter",
+  "createdBefore",
+  "limit",
+])
+
+const traceRetrieveInspectOnlyKeys = new Set(["resultNumber", "handle", "turnId", "messageId", "toolId", "toolCallId", "startTurnNo", "turnLimit"])
+
+const traceRetrieveLooksLikeSearch = (value: Record<string, unknown>): boolean =>
+  value.operation === "search" ||
+  "scope" in value ||
+  "mode" in value ||
+  "conversationId" in value ||
+  "conversationTitle" in value ||
+  "conversationLimit" in value ||
+  "turnNo" in value ||
+  "role" in value ||
+  "toolNames" in value ||
+  "createdAfter" in value ||
+  "createdBefore" in value ||
+  "limit" in value ||
+  ("query" in value && value.operation !== "inspect")
 
 export const normalizeTraceRetrieveInput = (value: unknown): unknown => {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -427,6 +497,33 @@ export const normalizeTraceRetrieveInput = (value: unknown): unknown => {
       delete normalized[key]
     }
   }
+  if (normalized.operation === "inspect") {
+    if (typeof normalized.toolId === "string" && normalized.toolCallId === undefined) {
+      normalized.toolCallId = normalized.toolId
+    }
+    delete normalized.toolId
+    for (const key of traceRetrieveSearchOnlyKeys) {
+      delete normalized[key]
+    }
+  } else if (typeof normalized.messageId === "string") {
+    return {
+      operation: "inspect",
+      messageId: normalized.messageId,
+      ...(typeof normalized.charLimit === "number" ? { charLimit: normalized.charLimit } : {}),
+    }
+  } else if (typeof normalized.toolId === "string" || typeof normalized.toolCallId === "string") {
+    if (normalized.mode === "audit") {
+      return {
+        operation: "inspect",
+        toolCallId: typeof normalized.toolId === "string" ? normalized.toolId : normalized.toolCallId,
+        ...(typeof normalized.charLimit === "number" ? { charLimit: normalized.charLimit } : {}),
+      }
+    }
+  } else if (traceRetrieveLooksLikeSearch(normalized)) {
+    for (const key of traceRetrieveInspectOnlyKeys) {
+      delete normalized[key]
+    }
+  }
   return normalized
 }
 
@@ -435,7 +532,6 @@ export const traceRetrieveInspectArgsSchema = z
     operation: z.literal("inspect"),
     resultNumber: z.number().int().positive().max(20).optional(),
     query: z.string().min(1).optional(),
-    conversationHint: z.string().min(1).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
     paths: z.array(z.string().min(1)).max(20).optional(),
@@ -452,7 +548,7 @@ export const traceRetrieveInspectArgsSchema = z
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
-  .refine((input) => Boolean(input.resultNumber ?? input.query ?? input.conversationHint ?? input.turnNo ?? input.command ?? input.paths ?? input.handle ?? input.conversationId ?? input.turnId ?? input.messageId ?? input.toolCallId), {
+  .refine((input) => Boolean(input.resultNumber ?? input.query ?? input.turnNo ?? input.command ?? input.paths ?? input.handle ?? input.conversationId ?? input.turnId ?? input.messageId ?? input.toolCallId), {
     message: "inspect requires resultNumber, natural filters, handle, conversationId, turnId, messageId, or toolCallId",
   })
 export type TraceRetrieveInspectArgs = z.infer<typeof traceRetrieveInspectArgsSchema>
@@ -466,41 +562,97 @@ export const traceRetrieveToolInputSchema = z.preprocess(
 )
 export type TraceRetrieveToolInput = z.infer<typeof traceRetrieveToolInputSchema>
 
-export const traceRetrieveModelSearchInputSchema = z
+const traceRetrieveModelExactSearchInputSchema = z
   .object({
     operation: z.literal("search").optional(),
-    query: z.string().min(1),
+    mode: z.literal("exact").optional(),
+    query: z.string().min(1).optional(),
     scope: traceRetrieveScopeSchema.optional(),
-    conversationHint: z.string().min(1).optional(),
+    conversationTitle: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
-    mode: traceRetrieveModeSchema.optional(),
-    include: z.array(traceRetrieveIncludeSchema).optional(),
-    paths: z.array(z.string().min(1)).max(20).optional(),
-    command: z.string().min(1).optional(),
+    entryType: traceRetrieveEntryTypeSchema.optional(),
+    hasAttachment: z.boolean().optional(),
+    createdAfter: z.string().min(1).optional(),
+    createdBefore: z.string().min(1).optional(),
     limit: z.number().int().positive().max(20).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
+  .superRefine((input, context) => {
+    const hasQuery = input.query !== undefined
+    const hasTurnNo = input.turnNo !== undefined
+    if (!hasQuery && !hasTurnNo) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Provide query for exact text search or turnNo for exact ordinal lookup.",
+      })
+    }
+  })
+
+const traceRetrieveModelSemanticSearchInputSchema = z
+  .object({
+    operation: z.literal("search").optional(),
+    mode: z.enum(["semantic", "combined"]),
+    query: z.string().min(1),
+    scope: traceRetrieveScopeSchema.optional(),
+    conversationTitle: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    limit: z.number().int().positive().max(20).optional(),
+    turnNo: z.number().int().positive().max(10_000).optional(),
+    role: traceRetrieveRoleSchema.optional(),
+    entryType: traceRetrieveEntryTypeSchema.optional(),
+    hasAttachment: z.boolean().optional(),
+    createdAfter: z.string().min(1).optional(),
+    createdBefore: z.string().min(1).optional(),
+  })
+  .strict()
+
+const traceRetrieveModelAuditSearchInputSchema = z
+  .object({
+    operation: z.literal("search").optional(),
+    mode: z.literal("audit"),
+    query: z.string().min(1),
+    scope: traceRetrieveScopeSchema.optional(),
+    conversationTitle: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
+    conversationLimit: z.number().int().positive().max(50).optional(),
+    turnNo: z.number().int().positive().max(10_000).optional(),
+    role: traceRetrieveRoleSchema.optional(),
+    entryType: traceRetrieveEntryTypeSchema.optional(),
+    hasAttachment: z.boolean().optional(),
+    include: z.array(traceRetrieveIncludeSchema).optional(),
+    paths: z.array(z.string().min(1)).max(20).optional(),
+    command: z.string().min(1).optional(),
+    toolId: z.string().min(1).optional(),
+    limit: z.number().int().positive().max(20).optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+
+export const traceRetrieveModelSearchInputSchema = z.union([
+  traceRetrieveModelExactSearchInputSchema,
+  traceRetrieveModelSemanticSearchInputSchema,
+  traceRetrieveModelAuditSearchInputSchema,
+])
+
 export const traceRetrieveModelInspectInputSchema = z
   .object({
     operation: z.literal("inspect"),
     resultNumber: z.number().int().positive().max(20).optional(),
     query: z.string().min(1).optional(),
-    conversationHint: z.string().min(1).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
-    paths: z.array(z.string().min(1)).max(20).optional(),
-    command: z.string().min(1).optional(),
     handle: z.string().min(1).optional(),
     conversationId: z.string().min(1).optional(),
     turnId: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
+    toolId: z.string().min(1).optional(),
     toolCallId: z.string().min(1).optional(),
     startTurnNo: z.number().int().positive().max(10_000).optional(),
     turnLimit: z.number().int().positive().max(100).optional(),
-    include: z.array(traceRetrieveIncludeSchema).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
@@ -509,14 +661,12 @@ export const traceRetrieveModelInspectInputSchema = z
       Boolean(
         input.resultNumber ??
           input.query ??
-          input.conversationHint ??
           input.turnNo ??
-          input.command ??
-          input.paths ??
           input.handle ??
           input.conversationId ??
           input.turnId ??
           input.messageId ??
+          input.toolId ??
           input.toolCallId,
       ),
     {
@@ -551,9 +701,13 @@ export const traceRetrieveAppliedFiltersSchema = z
     scope: traceRetrieveScopeSchema.optional(),
     mode: traceRetrieveModeSchema.optional(),
     conversationLimit: z.number().int().positive().optional(),
+    conversationTitle: z.string().min(1).optional(),
+    conversationId: z.string().min(1).optional(),
     conversationIds: z.array(z.string().min(1)).optional(),
     turnNo: z.number().int().positive().optional(),
     role: traceRetrieveRoleSchema.optional(),
+    entryType: traceRetrieveEntryTypeSchema.optional(),
+    hasAttachment: z.boolean().optional(),
     startTurnNo: z.number().int().positive().optional(),
     turnLimit: z.number().int().positive().optional(),
     createdAfter: z.string().optional(),
@@ -565,58 +719,34 @@ export const traceRetrieveAppliedFiltersSchema = z
 
 export const traceRetrieveSearchResultSchema = z
   .object({
-    resultNumber: z.number().int().positive().optional(),
-    handle: z.string().min(1),
-    kind: traceRetrieveSourceKindSchema,
-    projectId: z.string().min(1),
-    conversationId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
+    resultNumber: z.number().int().positive(),
+    text: z.string(),
+    entryType: traceRetrieveEntryTypeSchema,
+    conversationTitle: z.string().min(1),
+    conversationId: z.string().min(1),
     messageId: z.string().min(1).optional(),
-    toolCallId: z.string().min(1).optional(),
-    sourceId: z.string().min(1),
-    source: traceRetrieveSourceSchema,
-    conversation: traceRetrieveConversationProvenanceSchema.optional(),
-    inspectArgs: traceRetrieveInspectArgsSchema,
-    inspectHint: z.string().min(1).optional(),
-    conversationTitle: z.string().min(1).optional(),
-    title: z.string().min(1),
-    snippet: z.string().optional(),
-    summary: z.string().optional(),
-    score: z.number().optional(),
-    preserveVerbatim: z.boolean().optional(),
-    turnNo: z.number().int().positive().optional(),
-    userMessageId: z.string().min(1).optional(),
-    assistantMessageId: z.string().min(1).optional(),
-    messageRole: messageRoleSchema.optional(),
-    provenanceQuality: z
-      .enum(["original_turn", "attachment_origin", "secondary_mention", "continuation_summary", "audit_event"])
-      .optional(),
-    matchReason: z.string().min(1).optional(),
-    createdAt: z.string().optional(),
-    metadata: z.unknown().optional(),
+    toolId: z.string().min(1).optional(),
+    messageNo: z.number().int().positive().optional(),
+    provenanceKind: traceRetrieveProvenanceKindSchema.optional(),
+    pairedUserMessageNo: z.number().int().positive().optional(),
+    pairedUserPreview: z.string().optional(),
   })
   .strict()
 
 export const traceRetrieveExactResultSchema = z
   .object({
     resultNumber: z.number().int().positive().optional(),
-    handle: z.string().min(1),
-    kind: z.literal("exact_source"),
-    projectId: z.string().min(1),
-    conversationId: z.string().min(1).optional(),
-    turnId: z.string().min(1).optional(),
-    messageId: z.string().min(1).optional(),
-    toolCallId: z.string().min(1).optional(),
-    sourceId: z.string().min(1),
-    title: z.string().min(1),
     content: z.string(),
-    source: traceRetrieveSourceSchema,
-    conversation: traceRetrieveConversationProvenanceSchema.optional(),
+    entryType: traceRetrieveEntryTypeSchema,
+    conversationId: z.string().min(1).optional(),
     conversationTitle: z.string().min(1).optional(),
-    turnNo: z.number().int().positive().optional(),
-    messageRole: messageRoleSchema.optional(),
-    truncation: truncationMetadataSchema,
-    metadata: z.unknown().optional(),
+    messageId: z.string().min(1).optional(),
+    toolId: z.string().min(1).optional(),
+    messageNo: z.number().int().positive().optional(),
+    provenanceKind: traceRetrieveProvenanceKindSchema.optional(),
+    pairedUserMessageNo: z.number().int().positive().optional(),
+    pairedUserPreview: z.string().optional(),
+    truncation: truncationMetadataSchema.optional(),
   })
   .strict()
 

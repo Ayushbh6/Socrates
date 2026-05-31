@@ -130,8 +130,8 @@ export const modelCatalog = [
   }),
   makeModel({
     providerId: "openrouter",
-    modelId: "qwen/qwen3.6-35b-a3b",
-    label: "Qwen3.6 35B A3B",
+    modelId: "stepfun/step-3.7-flash",
+    label: "Step 3.7 Flash",
     contextWindowTokens: 262144,
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",

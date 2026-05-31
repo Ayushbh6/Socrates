@@ -1100,7 +1100,7 @@ Retrieval should be project-scoped by backend code and support natural-language 
 
 Search and inspect outputs include conversation provenance derived from raw `conversations` rows: id, title when available, status, updated time, and whether the source is from the current conversation. This prevents the agent from guessing whether retrieved evidence came from the current chat or an earlier project conversation.
 
-Structured ordinal recall is supported through `trace_retrieve` search fields, not a new table. `turnNo` counts user/Q&A turns in the resolved conversation, and optional `role` selects the user message, assistant message, or whole turn. The lookup reads exact raw `turns` and `messages` rows as the source of truth and returns inspect handles/ids; it does not backfill trace documents or infer ordinals from query text.
+Structured ordinal recall is supported through `trace_retrieve` search fields, not a new table. `turnNo` counts user/Q&A turns in the resolved conversation, and optional `role` selects the user message, assistant message, or both messages for the turn. `turnNo` is an exact ordinal selector, not a search hint. If a model sends both text `query` and `turnNo`, the backend runs the query search, ignores `turnNo`, keeps `role` as a query sub-filter, and returns a warning explaining that exact turn lookup requires `turnNo` without `query`. Query search may also narrow by `role`, `entryType`, `hasAttachment`, `createdAfter`, `createdBefore`, `conversationTitle`, and `conversationId`. The ordinal lookup reads exact raw `turns` and `messages` rows as the source of truth and returns slim message-first rows with `entryType`, `messageId`, `messageNo`, `conversationTitle`, and `conversationId`; it does not backfill trace documents or infer ordinals from query text.
 
 Current retrieval combines:
 
@@ -1109,6 +1109,7 @@ Current retrieval combines:
 - Reranking that boosts exact path/title/command matches, verbatim anchors, recent relevant evidence, and high-importance source docs.
 - Exact `turnNo` lookup before FTS when the model supplies a structured ordinal selector.
 - Optional semantic search over active project embeddings when configured.
+- Provenance marking distinguishes original turns, original attachment-bearing messages, secondary mentions, summaries, and audit evidence so the agent cannot treat later recaps or retained attachment files as deleted-conversation proof.
 
 Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
 
@@ -1310,10 +1311,10 @@ Compressor model selection:
 
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash, thinking off
-fallback: OpenRouter qwen/qwen3.6-35b-a3b, thinking off
+fallback: OpenRouter stepfun/step-3.7-flash, thinking off
 ```
 
-The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, trace-handle quality, output length, latency, and cost. The latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower token usage; Qwen remains the runtime fallback. Compression outputs remain summaries and handles over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
+The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, trace-handle quality, output length, latency, and cost. The latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower token usage; Step 3.7 Flash remains the runtime fallback. Compression outputs remain summaries and handles over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
 
 ## Context Window Tracking
 

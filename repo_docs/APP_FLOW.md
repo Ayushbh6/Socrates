@@ -678,18 +678,18 @@ The intended trace retrieval flow is search first, exact inspection second:
 
 ```text
 agent needs older context
-  -> trace_retrieve search with natural-language query, scope, and optional conversation hint
+  -> trace_retrieve search with query, mode, scope, and bounded limits
   -> backend searches clean conversation memory with exact, semantic, or combined retrieval
-  -> result returns compact numbered turn evidence plus provenance quality
-  -> if exact wording matters, agent calls trace_retrieve inspect using resultNumber or natural filters
-  -> backend returns bounded raw message/turn/summary text
+  -> result returns compact numbered message-first evidence rows
+  -> if exact wording matters, agent calls trace_retrieve inspect using resultNumber, messageId, or toolId
+  -> backend returns bounded raw message, summary, or audit evidence
 ```
 
-Normal `trace_retrieve` uses `mode = "exact"` by default over the last 10 visible conversations and returns top 5 results. Use exact for names, filenames, paths, dates, ids, commands, and quoted wording; use `mode = "semantic"` for fuzzy conceptual memory; use `mode = "combined"` when exact results are weak or broad recall is needed. Use `mode = "audit"` only for tool calls, shell output, file operations, patches, errors, and runtime debugging.
+Normal `trace_retrieve` uses `mode = "exact"` by default over the last 10 visible conversations and returns top 5 results. Use exact for names, filenames, paths, dates, ids, commands, and quoted wording. Use `mode = "semantic"` for fuzzy conceptual memory and `mode = "combined"` for hybrid recall; both intentionally take only `query`, optional `scope`, and optional `limit`. Use `mode = "audit"` only for tool calls, shell output, file operations, patches, errors, and runtime debugging. If `messageId` is present it returns that exact message; if `mode = "audit"` and `toolId` is present it returns that exact tool call. `conversationTitle` narrows exact/audit search to matching visible conversation titles using normalized, case-insensitive, punctuation/space-tolerant matching; `conversationId` can narrow same-title conversations after search returns it.
 
-The model should not need to know opaque ids before retrieval. `conversationId`, `turnId`, `messageId`, `toolCallId`, and `handle` are source-provenance details returned by search results; Socrates may use them for exact follow-up inspection after retrieval, but normal investigation starts with natural search and `resultNumber`.
+Normal search rows are intentionally small: `resultNumber`, `text`, `entryType`, `conversationTitle`, `conversationId`, plus `messageId` and `messageNo` when the row is an exact `user_query` or `assistant_response`. `entryType = "continuation_summary"` is fallback evidence only and must not be treated as original message provenance. The model should not need opaque ids before retrieval; after search, it may use `resultNumber`, `messageId`, or audit `toolId` for exact follow-up inspection.
 
-Ordinal recall uses a stricter path. If the user asks for "the second user message" or "turn 2", Socrates must put the literal number in `turnNo` and, when relevant, set `role` to `user` or `assistant`. The backend does not parse ordinal phrases out of `query`; this avoids false positives such as matching "turn 2" against "turn 20". For project/recent searches, `turnNo` requires a `conversationHint` that resolves to exactly one conversation.
+Ordinal recall uses a stricter path. If the user asks for one turn such as "the second user message" or "turn 4", Socrates must put the literal integer in `turnNo` and, when relevant, set `role` to `user` or `assistant`; omitting role returns the user and assistant message rows for that turn. `turnNo` is for single-turn lookup and takes precedence over `conversationLimit`; use `conversationLimit` for broad multi-conversation recall. The backend does not parse ordinal phrases out of `query`; this avoids false positives such as matching "turn 2" against "turn 20". Project/recent ordinal searches may return multiple matching visible conversations, so Socrates should inspect the relevant result before making exact claims.
 
 Supported retrieval scopes should include:
 
@@ -829,14 +829,14 @@ Compressor-model selection:
 
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash with thinking off
-fallback: OpenRouter qwen/qwen3.6-35b-a3b with thinking off
+fallback: OpenRouter stepfun/step-3.7-flash with thinking off
 ```
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
 
 The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. Blocking active-turn compaction emits `started` before awaiting the compressor model so the UI can show a small `Compacting conversation context...` state during the wait. Background precompute remains silent in the live UI and does not add transcript messages.
 
-When showing or answering from retrieved history, Socrates must use the returned conversation provenance. If `conversation.isCurrentConversation` is false, the answer should say the evidence came from an earlier project conversation or use `conversation.title`; it should only say "this conversation" or "current chat" when the provenance says the result is from the current conversation.
+When showing or answering from retrieved history, Socrates must use the returned `conversationTitle` and `entryType`. It should report message numbers only when the row has `entryType` of `user_query` or `assistant_response` and includes `messageNo`; `continuation_summary` rows are fallback leads, not exact message provenance.
 
 Semantic retrieval is available through two first-class options:
 

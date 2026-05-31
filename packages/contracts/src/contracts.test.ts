@@ -869,6 +869,9 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ turnNo: 2, role: "user", scope: "project" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", role: "user" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ query: "README", entryType: "assistant_response", hasAttachment: false }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ operation: "inspect", query: "README", role: "assistant" }).success).toBe(true)
     expect(
@@ -879,12 +882,43 @@ describe("tool contracts", () => {
     expect(
       traceRetrieveToolModelInputSchema.safeParse({ query: "previous screenshots", command: "", paths: [], include: [], createdAfter: "" }).success,
     ).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationLimit: 10 }).success).toBe(true)
-    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", conversationLimit: 50 }).success).toBe(true)
+    expect(
+      traceRetrieveToolModelInputSchema.safeParse({ query: "previous screenshots", messageId: "msg_1", conversationId: "conv_1", mode: "exact" })
+        .success,
+    ).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ messageId: "msg_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ mode: "audit", toolId: "tcall_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ toolId: "tcall_1" }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationTitle: "apply patch fix", conversationLimit: 10 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationId: "conv_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", turnNo: 2 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ turnNo: 2, role: "assistant", conversationTitle: "apply patch fix" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", role: "assistant", entryType: "assistant_response", hasAttachment: true, createdAfter: timestamp, createdBefore: timestamp }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", scope: "project", conversationTitle: "Trace source", conversationId: "conv_1", role: "user", entryType: "user_query", hasAttachment: false, createdAfter: timestamp, createdBefore: timestamp, limit: 10 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", conversationLimit: 50 }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", turnNo: 2 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", charLimit: 1000 }).success).toBe(false)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", scope: "project", limit: 10 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", conversationLimit: 50 }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", include: ["messages"] }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "combined", paths: ["README.md"] }).success).toBe(false)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "semantic", command: "npm test" }).success).toBe(false)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "audit", include: ["tool_calls"] }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "audit", paths: ["README.md"], command: "npm test" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", handle: "tdoc_1" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1" }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", messageId: "msg_1", command: "npm test" }).success).toBe(false)
+    expect(
+      traceRetrieveToolModelInputSchema.safeParse({
+        operation: "inspect",
+        messageId: "msg_1",
+        scope: "project",
+        mode: "exact",
+        conversationLimit: 10,
+      }).success,
+    ).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", conversationId: "conv_1", startTurnNo: 2 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", startTurnNo: 2 }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(true)
@@ -897,53 +931,25 @@ describe("tool contracts", () => {
         results: [
           {
             resultNumber: 1,
-            handle: "tdoc_1",
-            kind: "message",
-            projectId: project.id,
-            conversationId: conversation.id,
-            turnId: "turn_1",
-            messageId: "msg_1",
-            sourceId: "msg_1",
-            source: { table: "messages", id: "msg_1" },
-            conversation: {
-              id: conversation.id,
-              title: "Trace source",
-              status: "active",
-              updatedAt: "2026-05-25T00:00:00.000Z",
-              isCurrentConversation: false,
-            },
+            text: "README context",
+            entryType: "user_query",
             conversationTitle: "Trace source",
-            inspectArgs: { operation: "inspect", messageId: "msg_1" },
-            inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
-            title: "User message",
-            snippet: "README context",
-            score: 0.5,
-            turnNo: 2,
-            messageRole: "user",
+            conversationId: conversation.id,
+            messageId: "msg_1",
+            messageNo: 2,
+            provenanceKind: "original_turn",
+            pairedUserMessageNo: 2,
+            pairedUserPreview: "Question",
           },
           {
             resultNumber: 2,
-            handle: "tdoc_2",
-            kind: "exact_source",
-            projectId: project.id,
-            conversationId: conversation.id,
-            turnId: "turn_1",
-            messageId: "msg_1",
-            sourceId: "msg_1",
-            title: "User message",
+            entryType: "user_query",
             content: "Exact source",
-            source: { table: "messages", id: "msg_1" },
-            conversation: {
-              id: conversation.id,
-              title: "Trace source",
-              status: "active",
-              updatedAt: "2026-05-25T00:00:00.000Z",
-              isCurrentConversation: true,
-            },
             conversationTitle: "Trace source",
-            turnNo: 2,
-            messageRole: "user",
-            truncation: { truncated: false, charLimit: 20_000, returnedLength: 12 },
+            conversationId: conversation.id,
+            messageId: "msg_1",
+            messageNo: 2,
+            provenanceKind: "original_turn",
           },
         ],
         totalMatches: 2,

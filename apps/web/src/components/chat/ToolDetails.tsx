@@ -188,38 +188,18 @@ function TraceDetails({ tool }: { tool: ToolTimelineItem }) {
 
 function formatTraceResult(result: unknown): string {
   const record = asRecord(result);
-  const handle = typeof record?.handle === "string" ? record.handle : "trace";
-  const kind = typeof record?.kind === "string" ? record.kind : "result";
-  const title = typeof record?.title === "string" ? record.title : "";
+  const resultNumber = typeof record?.resultNumber === "number" ? `${record.resultNumber}. ` : "";
+  const entryType = typeof record?.entryType === "string" ? record.entryType : "result";
   const messageId = typeof record?.messageId === "string" ? record.messageId : undefined;
-  const toolCallId = typeof record?.toolCallId === "string" ? record.toolCallId : undefined;
-  const turnId = typeof record?.turnId === "string" ? record.turnId : undefined;
-  const conversation = asRecord(record?.conversation);
-  const conversationTitle = typeof conversation?.title === "string" ? conversation.title : undefined;
-  const isCurrentConversation = typeof conversation?.isCurrentConversation === "boolean" ? conversation.isCurrentConversation : undefined;
-  const turnNo = typeof record?.turnNo === "number" ? record.turnNo : undefined;
-  const messageRole = typeof record?.messageRole === "string" ? record.messageRole : undefined;
-  const inspectArgs = record?.inspectArgs ? JSON.stringify(record.inspectArgs) : undefined;
-  const ids = [messageId ? `message ${messageId}` : undefined, toolCallId ? `tool ${toolCallId}` : undefined, turnId ? `turn ${turnId}` : undefined]
+  const toolId = typeof record?.toolId === "string" ? record.toolId : undefined;
+  const conversationTitle = typeof record?.conversationTitle === "string" ? record.conversationTitle : undefined;
+  const conversationId = typeof record?.conversationId === "string" ? record.conversationId : undefined;
+  const messageNo = typeof record?.messageNo === "number" ? record.messageNo : undefined;
+  const ids = [messageId ? `message ${messageId}` : undefined, toolId ? `tool ${toolId}` : undefined, conversationId ? `conversation ${conversationId}` : undefined]
     .filter(Boolean)
     .join(" ");
-  const provenance = [
-    conversationTitle ? `conversation "${conversationTitle}"` : undefined,
-    isCurrentConversation === undefined ? undefined : isCurrentConversation ? "current chat" : "earlier chat",
-    turnNo ? `turn ${turnNo}` : undefined,
-    messageRole ? `role ${messageRole}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(" ");
-  const body =
-    typeof record?.content === "string"
-      ? record.content
-      : typeof record?.snippet === "string"
-        ? record.snippet
-        : typeof record?.summary === "string"
-          ? record.summary
-          : "";
-  return `${handle} ${kind} ${title}${provenance ? `\n  ${provenance}` : ""}${ids ? `\n  ${ids}` : ""}${inspectArgs ? `\n  inspect ${inspectArgs}` : ""}${
+  const body = typeof record?.content === "string" ? record.content : typeof record?.text === "string" ? record.text : "";
+  return `${resultNumber}${entryType}${messageNo ? ` ${messageNo}` : ""}${conversationTitle ? ` — ${conversationTitle}` : ""}${ids ? `\n  ${ids}` : ""}${
     body ? `\n  ${body.replace(/\s+/g, " ").slice(0, 280)}` : ""
   }`.trim();
 }

@@ -46,7 +46,8 @@ export type SocratesAgentTurnInput = {
   }) => string
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
   contextCompression?: ContextCompressionRuntime
-    maxToolCallsPerTurn?: number
+  maxToolCallsPerTurn?: number
+  maxConfirmedToolErrorsPerTurn?: number
   maxParallelToolCalls?: number
   dynamicTools?: ModelToolDefinition[] | (() => ModelToolDefinition[])
   abortSignal?: AbortSignal
@@ -87,8 +88,10 @@ export class SocratesAgent {
     const system = buildSocratesSystemPrompt(input.promptContext)
     const messages: ModelMessage[] = [...input.messages]
     const maxToolCallsPerTurn = input.maxToolCallsPerTurn ?? 80
+    const maxConfirmedToolErrorsPerTurn = input.maxConfirmedToolErrorsPerTurn ?? 10
     const maxParallelToolCalls = input.maxParallelToolCalls ?? 5
     let usedToolCalls = 0
+    let confirmedToolErrors = 0
     let forceFinalNoTools = false
 
     for (let step = 0; ; step += 1) {
@@ -263,6 +266,8 @@ export class SocratesAgent {
 
       const execution = await batch.done
       usedToolCalls += execution.countedToolCalls
+      const confirmedToolErrorResults = execution.results.filter(isConfirmedToolErrorResult)
+      confirmedToolErrors += confirmedToolErrorResults.length
 
       messages.push({ role: "assistant", content: assistantParts })
       messages.push({
@@ -277,7 +282,14 @@ export class SocratesAgent {
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
 
-      if (execution.budgetExhausted || usedToolCalls >= maxToolCallsPerTurn) {
+      if (maxConfirmedToolErrorsPerTurn > 0 && confirmedToolErrors >= maxConfirmedToolErrorsPerTurn) {
+        const recentCodes = [...new Set(confirmedToolErrorResults.map((result) => result.error?.code).filter(Boolean))]
+        messages.push({
+          role: "user",
+          content: `There have been ${confirmedToolErrors} confirmed tool-call execution errors this turn${recentCodes.length > 0 ? ` (latest codes: ${recentCodes.join(", ")})` : ""}. Do not call more tools. Give the best final answer from the evidence already available, and mention any remaining uncertainty or the exact tool-error blocker.`,
+        })
+        forceFinalNoTools = true
+      } else if (execution.budgetExhausted || usedToolCalls >= maxToolCallsPerTurn) {
         messages.push({
           role: "user",
           content:
@@ -614,6 +626,9 @@ const attachModelMetadata = (event: ModelEvent, modelCallId: string | undefined,
 }) as ModelEvent
 
 const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/.test(toolName)
+
+const isConfirmedToolErrorResult = (result: ToolExecutionResult): boolean =>
+  result.ok === false && typeof result.error?.code === "string" && result.error.code.length > 0 && typeof result.error.message === "string" && result.error.message.length > 0
 
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({

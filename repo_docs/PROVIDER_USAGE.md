@@ -331,7 +331,7 @@ OpenRouter
   xiaomi/mimo-v2.5-pro
   xiaomi/mimo-v2.5
   x-ai/grok-build-0.1
-  qwen/qwen3.6-35b-a3b
+  stepfun/step-3.7-flash
   deepseek/deepseek-v4-pro   default
   deepseek/deepseek-v4-flash    no vision
   google/gemma-4-31b-it
@@ -384,7 +384,7 @@ The locked fallback compressor is:
 
 ```text
 providerId = openrouter
-modelId = qwen/qwen3.6-35b-a3b
+modelId = stepfun/step-3.7-flash
 thinking = off
 ```
 
@@ -403,7 +403,7 @@ The local/release evaluation gate should continue to run both models on the same
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
 
-The current evaluation selected `deepseek/deepseek-v4-flash` because both candidates preserved all required facts and DeepSeek used fewer output/total tokens. `qwen/qwen3.6-35b-a3b` remains the runtime fallback if the primary compressor call fails.
+The current evaluation selected `deepseek/deepseek-v4-flash` because both candidates preserved all required facts and DeepSeek used fewer output/total tokens. `stepfun/step-3.7-flash` remains the runtime fallback if the primary compressor call fails.
 
 The compressor model is an internal runtime choice. The frontend should not hardcode or expose compressor provider mappings unless a later settings surface is explicitly designed.
 
@@ -591,7 +591,8 @@ turn completes or is cancelled
   -> server creates trace_documents
   -> server enqueues trace_index_jobs
   -> trace_retrieve can use lexical search immediately
-  -> trace_retrieve inspect can return exact bounded source by handle
+  -> trace_retrieve normal search returns slim message-first rows
+  -> trace_retrieve inspect can return exact bounded source by resultNumber, messageId, toolId, or compatible handle
   -> if semantic search is configured, server enqueues embed_trace_documents
   -> embedding runner stores trace_embeddings asynchronously
 ```

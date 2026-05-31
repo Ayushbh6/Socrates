@@ -344,7 +344,7 @@ describe("context compression", () => {
     expect(prepared.tokenCount.inputTokens).toBe(7)
   })
 
-  it("uses Qwen fallback when the DeepSeek primary compressor fails", async () => {
+  it("uses Step fallback when the DeepSeek primary compressor fails", async () => {
     const requests: ModelRequest[] = []
     const completedModels: string[] = []
     const provider: ModelProvider = {
@@ -390,13 +390,13 @@ describe("context compression", () => {
 
     expect(requests.map((request) => `${request.providerId}:${request.modelId}`)).toEqual([
       "openrouter:deepseek/deepseek-v4-flash",
-      "openrouter:qwen/qwen3.6-35b-a3b",
+      "openrouter:stepfun/step-3.7-flash",
     ])
     expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
       "context.compaction.started",
       "context.compaction.completed",
     ])
-    expect(completedModels).toEqual(["openrouter:qwen/qwen3.6-35b-a3b"])
+    expect(completedModels).toEqual(["openrouter:stepfun/step-3.7-flash"])
   })
 
   it("precomputes a snapshot at the lower threshold without returning packed messages", async () => {

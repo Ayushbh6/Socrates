@@ -457,6 +457,70 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
   })
 
+  it("omits tools after ten confirmed tool execution errors", async () => {
+    const countRequests: CountedRequest[] = []
+    const streamRequests: ModelRequestLike[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls <= 10) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: `tcall_bad_trace_${calls}`,
+              toolName: "trace_retrieve",
+              input: { query: "README", role: "system" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "The tool calls are invalid." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    const streamed: SocratesAgentEvent[] = []
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Find this old quote" }],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    const failed = streamed.filter((event) => event.type === "tool.call.failed")
+    expect(failed).toHaveLength(10)
+    expect(countRequests).toHaveLength(11)
+    expect(countRequests[0]?.toolCount).toBe(8)
+    expect(countRequests[10]?.toolCount).toBe(0)
+    expect(streamRequests[10]?.tools).toHaveLength(0)
+    expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
+    expect(JSON.stringify(countRequests[10]?.messages)).toContain("invalid_tool_input")
+  })
+
   it("includes dry-run edit diff in approval requests before applying the edit", async () => {
     let calls = 0
     const provider: ModelProvider = {

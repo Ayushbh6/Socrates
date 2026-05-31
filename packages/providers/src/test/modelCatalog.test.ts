@@ -23,7 +23,7 @@ describe("model catalog", () => {
       "openrouter/xiaomi/mimo-v2.5-pro",
       "openrouter/xiaomi/mimo-v2.5",
       "openrouter/x-ai/grok-build-0.1",
-      "openrouter/qwen/qwen3.6-35b-a3b",
+      "openrouter/stepfun/step-3.7-flash",
       "openrouter/deepseek/deepseek-v4-pro",
       "openrouter/deepseek/deepseek-v4-flash",
       "openrouter/google/gemma-4-31b-it",

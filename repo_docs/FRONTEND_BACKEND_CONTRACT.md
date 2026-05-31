@@ -1811,18 +1811,19 @@ Before Python installs/runs, the backend injects compact workspace environment h
 
 Retrieves older Socrates conversation memory and, only in explicit audit mode, execution evidence. Normal search is a conversation-memory tool over visible non-deleted project history, not a raw database id lookup and not a recursive search over prior tool output. Hard-deleted conversations must not appear in search or exact inspect results.
 
-The model-visible interface should stay high-level. Socrates should normally search by natural-language intent, scope, conversation hint, tool kind, path, command, result number, or desired evidence type. Exact ids such as `conversationId`, `turnId`, `messageId`, `toolCallId`, and `handle` may be used for follow-up inspection after they are returned by a search result; they must not be required from the model before retrieval.
+The model-visible interface should stay high-level and flat. Socrates should normally start with `operation="search"`, choose a retrieval `mode`, and provide the smallest useful input. Returned `resultNumber`, `conversationId`, `messageId`, and audit `toolId` may be used for follow-up inspection after search; they must not be required from the model before retrieval.
 
 `trace_retrieve` supports two conceptual operations:
 
 ```text
 search
   broad retrieval over indexed history
-  returns compact numbered evidence, snippets, scores, provenance, and inspect hints
+  returns compact numbered message-first evidence rows
+  uses either query text search or turnNo ordinal lookup; mixed query plus turnNo runs query and warns
 
 inspect
   exact bounded retrieval by returned resultNumber or natural filters
-  returns raw source text or exact tool evidence when precision matters
+  returns bounded raw source text or exact tool evidence when precision matters
 ```
 
 Input:
@@ -1831,17 +1832,34 @@ Input:
 type TraceRetrieveToolInput =
   | {
       operation?: "search"
+      mode?: "exact" | "semantic" | "combined" | "audit"
       query: string
       scope?: "current_conversation" | "recent_conversations" | "project"
-      conversationHint?: string
+      conversationTitle?: string
+      conversationId?: string
       conversationLimit?: number
-      turnNo?: number
       role?: "user" | "assistant" | "any"
-      mode?: "exact" | "semantic" | "combined" | "audit"
+      entryType?: "user_query" | "assistant_response" | "continuation_summary" | "tool_call" | "shell" | "file" | "patch" | "error"
+      hasAttachment?: boolean
       include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
       toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
       paths?: string[]
       command?: string
+      messageId?: string
+      toolId?: string
+      limit?: number
+      includeRaw?: boolean
+      charLimit?: number
+    }
+  | {
+      operation?: "search"
+      mode?: "exact"
+      turnNo: number
+      role?: "user" | "assistant" | "any"
+      scope?: "current_conversation" | "recent_conversations" | "project"
+      conversationTitle?: string
+      conversationId?: string
+      conversationLimit?: number
       limit?: number
       includeRaw?: boolean
       charLimit?: number
@@ -1850,7 +1868,6 @@ type TraceRetrieveToolInput =
       operation: "inspect"
       resultNumber?: number
       query?: string
-      conversationHint?: string
       turnNo?: number
       role?: "user" | "assistant" | "any"
       paths?: string[]
@@ -1859,6 +1876,7 @@ type TraceRetrieveToolInput =
       conversationId?: string
       turnId?: string
       messageId?: string
+      toolId?: string
       toolCallId?: string
       startTurnNo?: number
       turnLimit?: number
@@ -1877,71 +1895,47 @@ Output:
 type TraceRetrieveToolOutput = {
   results: Array<
     | {
-        resultNumber?: number
-        handle: string
-        kind: "message" | "tool_call" | "shell" | "file" | "patch" | "error" | "turn_summary" | "conversation_summary" | "verbatim_anchor"
-        projectId: string
-        conversationId?: string
-        turnId?: string
+        resultNumber: number
+        text: string
+        entryType:
+          | "user_query"
+          | "assistant_response"
+          | "continuation_summary"
+          | "tool_call"
+          | "shell"
+          | "file"
+          | "patch"
+          | "error"
+        conversationTitle: string
+        conversationId: string
         messageId?: string
-        toolCallId?: string
-        sourceId: string
-        source: {
-          table: string
-          id: string
-        }
-        conversation?: {
-          id: string
-          title?: string
-          status?: "active" | "archived" | "deleted"
-          updatedAt?: string
-          isCurrentConversation: boolean
-        }
-        inspectArgs: {
-          operation: "inspect"
-          resultNumber?: number
-          handle?: string
-          conversationId?: string
-          turnId?: string
-          messageId?: string
-          toolCallId?: string
-        }
-        title: string
-        snippet?: string
-        summary?: string
-        score?: number
-        preserveVerbatim?: boolean
-        turnNo?: number
-        messageRole?: "user" | "assistant" | "system" | "tool" | "developer"
-        createdAt?: string
-        metadata?: unknown
+        toolId?: string
+        messageNo?: number
+        provenanceKind?: "original_turn" | "attachment_origin" | "secondary_mention" | "continuation_summary" | "audit_event"
+        pairedUserMessageNo?: number
+        pairedUserPreview?: string
       }
     | {
-        handle: string
-        kind: "exact_source"
-        projectId: string
-        conversationId?: string
-        turnId?: string
-        messageId?: string
-        toolCallId?: string
-        sourceId: string
-        title: string
+        resultNumber?: number
         content: string
-        source: {
-          table: string
-          id: string
-        }
-        conversation?: {
-          id: string
-          title?: string
-          status?: "active" | "archived" | "deleted"
-          updatedAt?: string
-          isCurrentConversation: boolean
-        }
-        turnNo?: number
-        messageRole?: "user" | "assistant" | "system" | "tool" | "developer"
-        truncation: TruncationMetadata
-        metadata?: unknown
+        entryType:
+          | "user_query"
+          | "assistant_response"
+          | "continuation_summary"
+          | "tool_call"
+          | "shell"
+          | "file"
+          | "patch"
+          | "error"
+        conversationId?: string
+        conversationTitle?: string
+        messageId?: string
+        toolId?: string
+        messageNo?: number
+        provenanceKind?: "original_turn" | "attachment_origin" | "secondary_mention" | "continuation_summary" | "audit_event"
+        pairedUserMessageNo?: number
+        pairedUserPreview?: string
+        truncation?: TruncationMetadata
       }
   >
   totalMatches: number
@@ -1952,24 +1946,27 @@ type TraceRetrieveToolOutput = {
 
 The current output shape uses `results`. The older `traces` array shape has been removed.
 
-Each result should carry source provenance for final-answer wording. `conversation.title` is the preferred human-readable location, and `conversation.isCurrentConversation` tells the agent whether it is safe to describe the evidence as coming from "this conversation" or "the current chat". If `isCurrentConversation` is false, UI and model-facing summaries should describe it as an earlier project conversation or use the conversation title.
+Normal search results are deliberately small. `text` is a bounded verbatim excerpt. `entryType` tells Socrates whether the evidence is a `user_query`, `assistant_response`, `continuation_summary`, or audit/runtime row. `provenanceKind` separates original turns and original attachment-bearing messages from secondary mentions, summaries, and audit evidence. `messageId` and `messageNo` are present only when the row is an exact user or assistant message. Assistant rows may include `pairedUserMessageNo` and `pairedUserPreview` so Socrates can report `user_query x / assistant_response y` without guessing. `conversationTitle` is the preferred human-readable location; `conversationId` is returned for disambiguating same-title conversations.
 
 Rules:
 
 - Retrieval is project-scoped by backend code, not by model-provided ids, and is limited to `active` plus `archived` conversations. Existing orphan trace docs from deleted conversations must be cleaned up and excluded by query joins even before cleanup runs.
 - The default search mode is `exact`: lexical matching for precise words, names, paths, dates, ids, commands, and quoted text. `mode = "semantic"` uses vector search for fuzzy conceptual recall. `mode = "combined"` merges and dedupes exact plus semantic evidence when either route may help. `mode = "audit"` is required for tool calls, shell output, file operations, patches, and errors.
-- Normal `exact`, `semantic`, and `combined` searches return conversation-turn memory results by default, scoped to the last 10 visible conversations and top 5 results unless the model asks for a wider bounded `conversationLimit` or `limit`.
+- Normal `exact`, `semantic`, and `combined` searches return message-first evidence rows by default, scoped to the last 10 visible conversations and top 5 results unless the model asks for a wider bounded `conversationLimit` or `limit`. Query search can be narrowed with `role`, `entryType`, `hasAttachment`, `createdAfter`, `createdBefore`, `conversationTitle`, and `conversationId` when those filters are known.
 - Normal search excludes previous `trace_retrieve` outputs, read/bash/tool output, shell logs, file operations, patches, and errors. Runtime evidence remains inspectable through `mode = "audit"`.
 - Image provenance may be claimed only from original message attachments or native message image parts. A later file read, shell listing, or assistant recap is secondary evidence and must not be treated as the origin conversation.
 - The embedding implementation supports OpenAI hosted embeddings and offline Ollama embeddings. Embedding configuration is backend-owned; the frontend must not call embedding providers or know provider SDK details.
+- If `messageId` is present, it returns that exact full message with metadata and takes precedence over search fields. If `toolId` is present with `mode = "audit"`, it returns that exact full tool call with metadata and takes precedence over search fields.
+- `conversationTitle` narrows exact/audit search to matching visible conversation titles. Matching is normalized for case, punctuation, diacritics, and repeated/extra spaces.
 - `mode = "exact"` should prefer literal message text, file paths, command strings, titles, and verbatim anchors.
 - `mode = "semantic"` ranks by vector similarity when the project has a ready active embedding config, and otherwise returns a warning while preserving lexical/exact retrieval behavior.
-- `conversationHint` is a natural-language hint such as a title fragment, "two conversations ago", or "the previous chat about retrieval tools". Backend code resolves it against project conversations, titles, timestamps, and indexed summaries.
 - `conversationLimit` bounds project-wide or recent-conversation searches; default should be modest.
-- For ordinal recall, Socrates must pass structured `turnNo` and optional `role`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn.
+- For ordinal recall, Socrates must pass structured `turnNo` and optional `role`, without `query`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn, and omitted role returns both user and assistant messages for that turn.
 - The backend must not infer ordinal intent from query text. If the query says "second user message" but `turnNo` is omitted, the call is a normal lexical/exact search.
-- `turnNo` with `recent_conversations` or `project` requires `conversationHint`. If the hint resolves to multiple conversations or the turn is out of range, return an empty result with a warning rather than falling back.
-- Search results must include `resultNumber`, human-readable provenance, and natural inspect hints so the model can perform exact follow-up inspection without guessing ids. Returned exact ids and `inspectArgs` may be used for precise follow-up inspection, but natural search remains the preferred entrypoint.
+- If the model sends `query` combined with `turnNo`, the backend must run query search, ignore `turnNo`, keep `role` as a query sub-filter, and include a warning telling Socrates to select either query search or one exact turn. `turnNo` remains an ordinal selector, not a text-search hint.
+- `turnNo` with `recent_conversations` or `project` may return multiple visible conversation matches, and it takes precedence over `conversationLimit`. If the turn is out of range, return an empty result with a warning rather than falling back.
+- If search results contain only `secondary_mention`, `continuation_summary`, or `audit_event` provenance, the tool should warn that no visible original source was found. If an image/attachment query lacks `attachment_origin`, Socrates must not invent a deleted conversation title from later recaps or retained files.
+- Search results must include `resultNumber`, `entryType`, `text`, `conversationTitle`, `conversationId`, and exact ids when available so the model can perform follow-up inspection without guessing. Do not expose trace handles, storage source tables, source ids, turn ids, scores, metadata, or inspect argument blobs in normal search output.
 - Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
 - `conversationId` inspect returns a bounded ordered conversation bundle. Use `startTurnNo` and `turnLimit` to page by turns.
 - Large outputs must be paged or truncated with `TruncationMetadata`.

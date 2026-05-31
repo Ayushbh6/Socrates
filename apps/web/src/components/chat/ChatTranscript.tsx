@@ -302,7 +302,7 @@ function AssistantWorkGroup({
   const hasActiveWork = tools.some((tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval");
   const hasFailedWork = tools.some((tool) => tool.status === "failed" || tool.status === "rejected" || tool.status === "cancelled");
   const [isOpen, setIsOpen] = useState(hasActiveWork || hasFailedWork);
-  const shouldShowDetails = isOpen || hasActiveWork || hasFailedWork;
+  const shouldShowDetails = isOpen || hasActiveWork;
   const summary = summarizeWorkGroup(steps);
 
   return (

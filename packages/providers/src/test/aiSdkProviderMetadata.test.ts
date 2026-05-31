@@ -165,13 +165,18 @@ describe("AI SDK provider metadata", () => {
     })
     const serialized = JSON.stringify(schema.jsonSchema)
     expect(serialized).not.toContain('"None"')
+    expect(serialized).not.toContain('"oneOf"')
+    expect(serialized).not.toContain('"anyOf"')
     expect(serialized).toContain("handle")
     expect(serialized).toContain("conversationId")
     expect(serialized).toContain("turnId")
     expect(serialized).toContain("messageId")
+    expect(serialized).toContain("toolId")
     expect(serialized).toContain("toolCallId")
     expect(serialized).toContain("conversationLimit")
+    expect(serialized).toContain("conversationTitle")
     expect(serialized).toContain("audit")
+    expect(serialized).not.toContain("conversationHint")
     expect(serialized).not.toContain("includeRaw")
 
     await expect(Promise.resolve(schema.validate?.({ query: "screenshot" }))).resolves.toEqual({
@@ -182,6 +187,13 @@ describe("AI SDK provider metadata", () => {
       success: true,
       value: { query: "terminal output", mode: "audit", include: ["shell"], conversationLimit: 25 },
     })
+    await expect(Promise.resolve(schema.validate?.({ query: "old decision", mode: "semantic", scope: "project", limit: 8 }))).resolves.toEqual({
+      success: true,
+      value: { query: "old decision", mode: "semantic", scope: "project", limit: 8 },
+    })
+    expect((await Promise.resolve(schema.validate?.({ query: "old decision", mode: "semantic", conversationLimit: 25 })))?.success).toBe(false)
+    expect((await Promise.resolve(schema.validate?.({ query: "old decision", mode: "combined", conversationLimit: 25 })))?.success).toBe(false)
+    expect((await Promise.resolve(schema.validate?.({ query: "README", mode: "exact", include: ["messages"] })))?.success).toBe(false)
     await expect(
       Promise.resolve(
         schema.validate?.({
@@ -197,9 +209,45 @@ describe("AI SDK provider metadata", () => {
       success: true,
       value: { query: "previous screenshots" },
     })
+    await expect(
+      Promise.resolve(
+        schema.validate?.({
+          query: "previous screenshots",
+          conversationId: "conv_1",
+          messageId: "msg_1",
+          mode: "exact",
+        }),
+      ),
+    ).resolves.toEqual({
+      success: true,
+      value: { operation: "inspect", messageId: "msg_1" },
+    })
+    await expect(Promise.resolve(schema.validate?.({ messageId: "msg_1" }))).resolves.toEqual({
+      success: true,
+      value: { operation: "inspect", messageId: "msg_1" },
+    })
+    await expect(Promise.resolve(schema.validate?.({ mode: "audit", toolId: "tcall_1" }))).resolves.toEqual({
+      success: true,
+      value: { operation: "inspect", toolCallId: "tcall_1" },
+    })
+    expect((await Promise.resolve(schema.validate?.({ toolId: "tcall_1" })))?.success).toBe(false)
     const invalid = await Promise.resolve(schema.validate?.({ operation: "inspect" }))
     expect(invalid?.success).toBe(false)
     await expect(Promise.resolve(schema.validate?.({ operation: "inspect", messageId: "msg_1" }))).resolves.toEqual({
+      success: true,
+      value: { operation: "inspect", messageId: "msg_1" },
+    })
+    await expect(
+      Promise.resolve(
+        schema.validate?.({
+          operation: "inspect",
+          messageId: "msg_1",
+          scope: "project",
+          mode: "exact",
+          conversationLimit: 25,
+        }),
+      ),
+    ).resolves.toEqual({
       success: true,
       value: { operation: "inspect", messageId: "msg_1" },
     })

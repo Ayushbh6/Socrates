@@ -348,8 +348,8 @@ Planned the next `trace_retrieve` direction before implementation.
 Key decisions:
 
 - `trace_retrieve` should evolve from V0 tool-call lookup into hybrid search/inspect retrieval over Socrates history.
-- The model-facing interface should be high-level: natural-language `query`, scope, conversation hint, evidence type, tool name, path, command, returned `resultNumber`, and natural inspect filters.
-- Opaque ids such as `conversationId`, `turnId`, `messageId`, and `toolCallId` should be follow-up handles returned by search or backend-filled context, not values the model must know upfront.
+- The model-facing interface should be high-level: natural-language `query`, `mode`, `scope`, optional title/id narrowing, returned `resultNumber`, and exact follow-up ids only after search.
+- Opaque ids such as `conversationId`, `messageId`, and `toolId` should be follow-up handles returned by search or backend-filled context, not values the model must know upfront. `conversationId` is allowed as an optional exact narrowing input when same-title conversations collide.
 - Retrieval should support broad search first, then exact bounded inspect of a returned `resultNumber` or natural filter when precision matters.
 - The backend should introduce an internal trace index layer:
 
@@ -379,10 +379,10 @@ repo_docs/REPO_RULES.md
 
 ## Trace Retrieval Search/Inspect Implementation
 
-Implemented the retrieval-only `trace_retrieve` upgrade:
+Implemented the retrieval-only `trace_retrieve` upgrade. This section describes the first version of the tool; the current model-visible shape is summarized in the later "Trace Retrieve Memory Overhaul And Slim Output" section.
 
 - Replaced the V0 `traces` output with search/inspect `results`.
-- Search accepts natural `query`, scope, conversation hints, evidence filters, tool/path/command filters, date filters, and bounded limits.
+- Search accepts natural `query`, scope, evidence filters, tool/path/command filters, date filters, and bounded limits.
 - Inspect accepts returned `resultNumber`, natural filters, or server-side compatibility ids and returns exact bounded source content.
 - Added `trace_documents` and `trace_index_jobs`, plus internal SQLite FTS for lexical trace search.
 - `TraceStore` owns trace indexing, FTS search, exact inspect, and immediate `build_trace_documents` job processing after completed, failed, and cancelled turns.
@@ -396,13 +396,14 @@ TODO:
 
 ## Trace Retrieve Precision Upgrade
 
-Implemented the `turnNo` precision upgrade for `trace_retrieve`:
+Implemented the `turnNo` precision upgrade for `trace_retrieve`. Current output is message-first and slim, not the older turn-envelope shape.
 
 - Search accepts structured `turnNo` and optional `role` for ordinal recall.
 - `turnNo` counts user/Q&A turns inside the resolved conversation. `turnNo: 2, role: "user"` means the user message in the second turn.
+- `turnNo` should not be combined with `query`; it is an exact ordinal selector that returns that one Q/A turn, not a text-search hint. If both are sent, the backend runs the query search, ignores `turnNo`, keeps `role` as a query sub-filter, and returns a warning telling Socrates to select either query search or one exact turn.
 - There is intentionally no natural-language ordinal fallback. If Socrates puts "second user message" only in `query` and omits `turnNo`, the backend runs ordinary search.
-- Broad ordinal lookup with `scope = "recent_conversations"` or `scope = "project"` requires a `conversationHint`; ambiguous hints and out-of-range turn numbers return warnings instead of fallback results.
-- Search results now include `resultNumber`, inspect hints, conversation provenance, and server-side compatibility source ids for persistence/UI. The model should prefer `resultNumber` over raw ids.
+- Broad ordinal lookup with `scope = "recent_conversations"` or `scope = "project"` should be narrowed with `conversationTitle` or `conversationId` when the user clearly names a conversation. Ambiguous or out-of-range turn numbers return warnings instead of fallback results.
+- Search results now include slim message-first rows with `resultNumber`, `text`, `entryType`, `conversationTitle`, `conversationId`, and exact `messageId`/`messageNo` or `toolId` when available. The model should prefer `resultNumber` or returned exact ids for follow-up inspect.
 - Inspecting `conversationId` returns an ordered bounded conversation bundle using `startTurnNo` and `turnLimit`.
 - Exact inspect can fall back to raw persisted rows for returned `messageId`, `toolCallId`, or `turnId` when trace documents are absent. Raw tables remain the source of truth; this is not a trace backfill.
 
@@ -421,7 +422,7 @@ Implemented the semantic trace retrieval phase:
 - Socrates does not silently install Ollama or pull models. Missing Ollama setup returns explicit guidance such as `ollama pull embeddinggemma`.
 - Embedding generation is async and in-process. Configure/reindex and newly indexed turns enqueue work without blocking chat turns.
 - `trace_retrieve` keeps one model-visible tool with four modes. `mode = "exact"` is the default lexical search over clean conversation memory; `mode = "semantic"` ranks by vector similarity for fuzzy recall; `mode = "combined"` merges lexical and vector evidence when embeddings are ready; `mode = "audit"` is required for tool calls, shell output, file operations, patches, errors, and other runtime evidence.
-- `trace_retrieve` search and inspect results now include conversation provenance (`conversation.title`, status, updated time, and `isCurrentConversation`) so Socrates can name the source chat correctly and avoid calling earlier project evidence "this conversation".
+- `trace_retrieve` search and inspect results now include slim conversation provenance (`conversationTitle`, `conversationId`) so Socrates can name the source chat correctly and avoid calling earlier project evidence "this conversation".
 - Retrieval only compares vectors for the active project config: provider id, model id, dimensions, and current trace document content hash must match.
 - Raw messages/tools/events remain the source of truth. Embeddings are retrieval rows over `trace_documents`, not fake messages or replacement history.
 
@@ -440,7 +441,7 @@ Key decisions:
 - Raw messages, tool calls, shell output, patches, errors, and events remain in SQLite as the source of truth. Compaction changes only what is sent to the model.
 - Compaction summaries must not be fake user or assistant messages.
 - The locked primary compressor model is OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
-- The locked fallback compressor model is OpenRouter `qwen/qwen3.6-plus` with thinking off.
+- The locked fallback compressor model is OpenRouter `stepfun/step-3.7-flash` with thinking off.
 - The compressor-model gate compares summary faithfulness, preservation of decisions/rules, usefulness of trace handles, concision, latency, and cost; the latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower output/token usage.
 
 ## Context Compression, Recovery, And Diff UI Implementation
@@ -448,7 +449,7 @@ Key decisions:
 Implemented the first contextual compression and recovery slice:
 
 - `packages/core/src/context/contextCompression.ts` owns provider-call-boundary context estimation, packing, compressor prompts, synchronous compaction near `160k`, post-turn precompute near `145k`, a packed-context target near `120k`, and a hard cap of `180k` estimated tokens.
-- Compression is enabled by default through the runtime path and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`. It uses OpenRouter `deepseek/deepseek-v4-flash` as the primary compressor and keeps OpenRouter `qwen/qwen3.6-plus` as fallback. Both compressor routes use explicit OpenRouter thinking off.
+- Compression is enabled by default through the runtime path and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`. It uses OpenRouter `deepseek/deepseek-v4-flash` as the primary compressor and keeps OpenRouter `stepfun/step-3.7-flash` as fallback. Both compressor routes use explicit OpenRouter thinking off.
 - `context_compaction_snapshots` stores append-only compaction snapshots with an active/latest marker, previous snapshot id, source ids, structured summary JSON, rendered hidden context, source handles, estimates, compressor model, usage, status, timing, and errors.
 - Completed compaction snapshots are indexed into `trace_documents` as hidden `conversation_summary` evidence so `trace_retrieve` can search and inspect summary provenance without creating fake chat messages.
 - The WebSocket stream now includes typed `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed` events. Blocking active-turn compaction emits `started` before awaiting the compressor model, while background precompute stays silent in the live UI. The frontend renders only a subtle `Compacting conversation context...` state.
@@ -465,7 +466,7 @@ Implemented the first contextual compression and recovery slice:
 
 Implemented the Codex-like Terminal layer on top of Bash v2:
 
-- `packages/contracts` now extends `bash` input/output with `terminalId`, terminal metadata, terminal statuses, conversation `terminals`, and WebSocket commands/events for `terminal.stop`, `terminal.input`, `terminal.rename`, `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and `terminal.stale`.
+- `packages/contracts` extends internal `bash`/Terminal output with `terminalId`, terminal metadata, terminal statuses, conversation `terminals`, and WebSocket commands/events for `terminal.stop`, `terminal.input`, `terminal.rename`, `terminal.started`, `terminal.output`, `terminal.status`, `terminal.input.requested`, `terminal.completed`, `terminal.stopped`, and legacy/backward-compatible `terminal.stale` paths.
 - `apps/server` added `terminal_sessions` and `terminal_output_chunks` plus `TerminalStore`. `shell_commands` remains per-tool provenance and can link to terminal metadata; full long-running Terminal logs live in terminal tables.
 - `ConversationTerminalManager` lives at `apps/server/src/ws/conversationTerminals.ts` and owns conversation-scoped process state. It routes `bash start/status/output/stop`, auto-detaches likely long-running `run` commands, broadcasts terminal events, detects conservative user-input prompts, redacts stdin markers, marks persisted running terminals stale on startup, and cleans up on stop/delete/shutdown/TTL.
 - Terminal scope is `projectId + conversationId + workspacePath`. Multiple named Terminals can exist in one conversation. They survive turn completion, but are not reattached after server restart.
@@ -510,12 +511,31 @@ Prepared the v0.1.2 runtime slice for the npm CLI release path:
 - Terminal stdin is usable for running Terminals, not only perfectly detected awaiting-input rows. The UI supports raw input plus quick keys for arrow navigation, Enter, Escape, and Ctrl-C.
 - Cancelled streaming preserves partial assistant text through stop/reload instead of letting thinking/tool rows hide or replace the intermediate answer.
 - Model-facing tool schemas and prompt context no longer require Socrates to type opaque runtime ids. `bash` status/output/stop can omit the target when exactly one active Terminal exists or use a human Terminal name such as `dev-server`; terminal ids and process ids remain internal for UI/runtime compatibility only.
-- `trace_retrieve` search returns numbered results and inspect hints. Model-facing inspect should start with `resultNumber` or natural filters such as `conversationHint`, `turnNo`, `role`, `query`, `paths`, or `command`; exact ids returned by search (`conversationId`, `turnId`, `messageId`, `toolCallId`, `handle`) may be used for precise follow-up inspection.
+- `trace_retrieve` search returns numbered slim message-first rows. Model-facing inspect should start with `resultNumber` or returned exact ids such as `messageId`, `conversationId`, or audit `toolId`; natural filters such as `turnNo`, `role`, `query`, `paths`, or `command` remain available where they are appropriate. `conversationHint` is no longer model-facing; use normalized `conversationTitle` or exact `conversationId`.
 - Trace retrieval is limited to visible non-deleted conversations (`active` and `archived`). Conversation hard delete removes trace docs, FTS rows, embeddings, and index jobs; orphan trace rows from older deletes are cleaned/excluded. `.socrates/attachments` files intentionally remain on disk and are not proof of active conversation provenance by themselves.
 - MiMo Pro is vision-capable in the model catalog and image-read path.
 - Tool results sent back into the next model step are sanitized to strip opaque ids from the model-visible output body while preserving provider-required `toolCallId` in the protocol wrapper and full ids in persistence/UI.
 - `mcp_registry` model-facing inputs prefer `preset` or `serverName`; opaque server ids are internal/backward-compatible.
 - WebSocket reconnect/backoff clears transient connection errors after reconnect and keeps visible assistant/terminal state recoverable through refresh.
+
+## Trace Retrieve Memory Overhaul And Slim Output
+
+Current `trace_retrieve` direction after the May 31 cleanup:
+
+- Normal retrieval is a conversation-memory tool over visible non-deleted conversations only. It must not surface hard-deleted conversation provenance, orphan trace docs, or previous `trace_retrieve` output as normal evidence.
+- `mode = "exact"` is the default lexical path for quoted text, names, file paths, commands, titles, dates, ids, and literal wording.
+- `mode = "semantic"` is the vector path for fuzzy recall and should keep model input minimal: `operation`, `mode`, `query`, optional `scope`, and optional `limit`.
+- `mode = "combined"` merges lexical and semantic evidence and should also keep model input minimal: `operation`, `mode`, `query`, optional `scope`, and optional `limit`.
+- `mode = "audit"` is required for runtime/tool evidence such as tool calls, shell output, file operations, patches, and errors.
+- `conversationTitle` replaces the older `conversationHint` input. Matching is normalized for case, punctuation, diacritics, and repeated or extra whitespace. `conversationId` can narrow same-title collisions.
+- Query search can be narrowed with model-facing sub-filters: `role`, `entryType`, `hasAttachment`, `createdAfter`, `createdBefore`, `conversationTitle`, and `conversationId`. `turnNo` is not a sub-filter; it remains exclusive ordinal lookup.
+- Normal search output is intentionally slim and message-first: each row should have `resultNumber`, `text`, `entryType`, `provenanceKind`, `conversationTitle`, `conversationId`, plus `messageId` and `messageNo` for exact user/assistant messages or `toolId` for audit rows. Assistant rows can include `pairedUserMessageNo` and `pairedUserPreview` so Socrates can answer `user_query x / assistant_response y` without inferring the pair.
+- `entryType = "user_query"` means `messageNo` is the user query number; `entryType = "assistant_response"` means `messageNo` is the assistant response number. `entryType = "continuation_summary"` is fallback evidence only and must not be treated as original message provenance.
+- Normal search output must not expose storage/debug fields such as `turnId`, `turnNo`, split `userMessageNo`/`assistantMessageNo`, `inspectArgs`, trace handles, source tables, source ids, raw scores, provenance debug data, project ids, or metadata blobs.
+- Exact inspect output should also stay slim: `content`, `entryType`, optional `provenanceKind`, `conversationTitle`, `conversationId`, `messageId`, `toolId`, `messageNo`, paired user metadata for assistant messages, and truncation metadata only when bounded.
+- The Socrates prompt should teach the simple path first: search, read the returned `entryType`/`messageNo`/`conversationTitle`, and inspect only when full exact text or deeper audit evidence is needed.
+- Previous-image questions should use `trace_retrieve` first for active conversation provenance. If no active provenance is found, Socrates may search/read `.socrates/attachments/`, but it must say the file exists without active conversation metadata rather than inventing a deleted conversation title.
+- Current status: contracts/server/core/providers/web/docs have been updated and package tests passed, but the user reported live-model behavior is still not reliable enough. A new chat should start by testing the slim output contract directly against the failing quoted-line prompt, then inspect live tool results before adding more complexity.
 
 Validation commands passed for this slice:
 

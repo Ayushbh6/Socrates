@@ -29,7 +29,7 @@ export const DEFAULT_COMPRESSOR_MODEL = {
 
 export const DEFAULT_COMPRESSOR_FALLBACK_MODEL = {
   providerId: "openrouter" as ProviderId,
-  modelId: "qwen/qwen3.6-35b-a3b",
+  modelId: "stepfun/step-3.7-flash",
 } as const
 
 export type ContextCompressionReason = "precompute" | "threshold" | "emergency" | "manual"
@@ -677,7 +677,7 @@ Output schema:
 Faithfulness rules:
 - Do not invent facts, file paths, command results, user preferences, or decisions.
 - If unsure, mark status "uncertain" and add a natural inspect reference instead of making a claim.
-- Do not fabricate retrieval references. Prefer natural queries, turnNo, role, path, command, and conversationHint over opaque ids.
+- Do not fabricate retrieval references. Prefer natural queries, exact quoted text, turnNo, role, path, and command over opaque ids.
 - Preserve strict repo rules, provider rules, schema/history rules, current user goals, latest failures, pending decisions, and exact source/code/rubric anchors.
 - Copy exact wording for strict rules and locked decisions when the source text is available. Paraphrase only ordinary explanatory context.
 - Summarize bulky evidence, but keep enough natural trace_retrieve references for exact inspection.

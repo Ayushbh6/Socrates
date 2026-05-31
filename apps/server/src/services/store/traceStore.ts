@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto"
 import type {
   TraceRetrieveInclude,
+  TraceRetrieveEntryType,
   TraceRetrieveInspectArgs,
   TraceRetrieveInspectInput,
   TraceRetrieveMode,
+  TraceRetrieveProvenanceKind,
   TraceRetrieveRole,
   TraceRetrieveSearchInput,
   TraceRetrieveScope,
@@ -11,6 +13,7 @@ import type {
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
 } from "@socrates/contracts"
+import { normalizeTraceRetrieveInput, traceRetrieveToolInputSchema } from "@socrates/contracts"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { and, desc, eq, inArray } from "drizzle-orm"
@@ -106,11 +109,21 @@ type TurnOrdinalRow = {
   assistantMessageId: string | null
 }
 
-type TurnMemoryRow = TurnOrdinalRow & {
-  userContent: string | null
-  assistantContent: string | null
-  userCreatedAt: string | null
-  assistantCreatedAt: string | null
+type InternalTraceSearchResult = {
+  resultNumber?: number
+  text: string
+  entryType: TraceRetrieveEntryType
+  conversationTitle: string
+  conversationId: string
+  messageId?: string
+  toolId?: string
+  messageNo?: number
+  provenanceKind?: TraceRetrieveProvenanceKind
+  pairedUserMessageNo?: number
+  pairedUserPreview?: string
+  inspectArgs: TraceRetrieveInspectArgs
+  rank: number
+  createdAt?: string
 }
 
 const traceDocumentSelect = `td.id AS id,
@@ -234,10 +247,15 @@ export class TraceStore extends StoreBase {
   }
 
   async retrieve(projectId: string, currentConversationId: string, input: TraceRetrieveToolInput): Promise<TraceRetrieveToolOutput> {
-    if (input.operation === "inspect") {
-      return this.inspect(projectId, currentConversationId, input)
+    const parsed = traceRetrieveToolInputSchema.safeParse(normalizeTraceRetrieveInput(input))
+    if (!parsed.success) {
+      throw new SocratesError("trace_retrieve_invalid_input", parsed.error.message, { recoverable: true })
     }
-    return this.search(projectId, currentConversationId, input)
+    const normalizedInput = parsed.data
+    if (normalizedInput.operation === "inspect") {
+      return this.inspect(projectId, currentConversationId, normalizedInput)
+    }
+    return this.search(projectId, currentConversationId, normalizedInput)
   }
 
   private buildTurnDocuments(projectId: string, conversationId: string, turnId: string): number {
@@ -271,7 +289,10 @@ export class TraceStore extends StoreBase {
     const scope = input.scope ?? "recent_conversations"
     const mode = input.mode ?? "exact"
     const limit = input.limit ?? DEFAULT_LIMIT
-    const conversationLimit = input.conversationLimit ?? DEFAULT_CONVERSATION_LIMIT
+    const requestedConversationLimit = input.conversationLimit ?? DEFAULT_CONVERSATION_LIMIT
+    const hasTextQuery = input.query !== undefined
+    const ignoredOrdinalLookup = hasTextQuery && input.turnNo !== undefined
+    const conversationLimit = input.turnNo === undefined || ignoredOrdinalLookup ? requestedConversationLimit : DEFAULT_CONVERSATION_LIMIT
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
     const include = input.include
     const warnings: string[] = []
@@ -284,6 +305,11 @@ export class TraceStore extends StoreBase {
     if (input.includeRaw) {
       warnings.push(`Search returns compact snippets only. Use operation="inspect" with a returned handle for exact source text.`)
     }
+    if (ignoredOrdinalLookup) {
+      warnings.push(
+        `trace_retrieve received both query and turnNo. This is not allowed for exact turn selection, so turnNo was ignored and query search was run${input.role ? " with role kept as a query filter" : ""}. To retrieve one exact Q/A turn, call trace_retrieve with turnNo and optional role, without query.`,
+      )
+    }
     if (mode !== "audit" && requiresAuditMode(input)) {
       throw new SocratesError(
         "trace_audit_mode_required",
@@ -292,24 +318,36 @@ export class TraceStore extends StoreBase {
       )
     }
 
-    const conversationIds = this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, input.conversationHint)
-    if (input.turnNo !== undefined) {
+    const useOrdinalLookup = input.turnNo !== undefined && !hasTextQuery
+    const conversationIds = this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, input.conversationTitle, input.conversationId)
+    if (input.conversationTitle && conversationIds.length === 0) {
+      warnings.push(`No visible conversation matched conversationTitle="${input.conversationTitle}".`)
+    }
+    if (input.conversationId && conversationIds.length === 0) {
+      warnings.push(`No visible conversation matched conversationId="${input.conversationId}".`)
+    }
+    if (useOrdinalLookup) {
       return this.searchOrdinalTurn(projectId, currentConversationId, input, {
         scope,
         mode,
         conversationLimit,
+        conversationTitle: input.conversationTitle,
+        conversationId: input.conversationId,
         charLimit,
         include,
         warnings,
       })
     }
 
+    const query = input.query ?? ""
     if (mode === "audit") {
       return this.searchAuditTraceDocuments(projectId, currentConversationId, input, {
         scope,
         mode,
         limit,
         conversationLimit,
+        conversationTitle: input.conversationTitle,
+        conversationId: input.conversationId,
         charLimit,
         conversationIds,
         createdAfter,
@@ -322,7 +360,7 @@ export class TraceStore extends StoreBase {
       mode === "semantic"
         ? []
         : this.searchTraceDocuments(projectId, {
-            query: input.query,
+            query,
             mode,
             conversationIds,
             sourceKinds: normalSourceKindsForInclude(include),
@@ -330,6 +368,9 @@ export class TraceStore extends StoreBase {
             toolNames: input.toolNames,
             paths: input.paths,
             command: input.command,
+            role: input.role,
+            entryType: input.entryType,
+            hasAttachment: input.hasAttachment,
             createdAfter,
             createdBefore,
             limit,
@@ -337,13 +378,16 @@ export class TraceStore extends StoreBase {
     const semanticRows =
       mode === "combined" || mode === "semantic"
         ? await this.searchSemanticTraceDocuments(projectId, {
-            query: input.query,
+            query,
             conversationIds,
             sourceKinds: normalSourceKindsForInclude(include),
             include: undefined,
             toolNames: input.toolNames,
             paths: input.paths,
             command: input.command,
+            role: input.role,
+            entryType: input.entryType,
+            hasAttachment: input.hasAttachment,
             createdAfter,
             createdBefore,
             limit,
@@ -358,7 +402,7 @@ export class TraceStore extends StoreBase {
     const fallbackRows =
       mode === "semantic" && rows.length === 0
         ? this.searchTraceDocuments(projectId, {
-            query: input.query,
+            query,
             mode,
             conversationIds,
             sourceKinds: normalSourceKindsForInclude(include),
@@ -366,6 +410,9 @@ export class TraceStore extends StoreBase {
             toolNames: input.toolNames,
             paths: input.paths,
             command: input.command,
+            role: input.role,
+            entryType: input.entryType,
+            hasAttachment: input.hasAttachment,
             createdAfter,
             createdBefore,
             limit,
@@ -374,18 +421,25 @@ export class TraceStore extends StoreBase {
 
     const results = this.numberSearchResults(this.memoryResultsFromTraceRows(projectId, currentConversationId, fallbackRows, input, limit))
     this.rememberSearchRefs(projectId, currentConversationId, results.map((result) => result.inspectArgs))
+    appendProvenanceWarnings(warnings, results, query)
 
-    const text = JSON.stringify(results)
+    const publicResults = publicTraceSearchResults(results)
+    const text = JSON.stringify(publicResults)
     return {
-      results,
-      totalMatches: results.length,
+      results: publicResults,
+      totalMatches: publicResults.length,
       truncation: truncationFor(text, charLimit),
       appliedFilters: {
         operation: "search",
         scope,
         mode,
         conversationLimit,
+        ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
         conversationIds,
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.entryType ? { entryType: input.entryType } : {}),
+        ...(input.hasAttachment !== undefined ? { hasAttachment: input.hasAttachment } : {}),
         ...(createdAfter ? { createdAfter } : {}),
         ...(createdBefore ? { createdBefore } : {}),
         ...(include ? { include } : {}),
@@ -403,6 +457,8 @@ export class TraceStore extends StoreBase {
       mode: TraceRetrieveMode
       limit: number
       conversationLimit: number
+      conversationTitle: string | undefined
+      conversationId: string | undefined
       charLimit: number
       conversationIds: string[]
       createdAfter: string | undefined
@@ -411,14 +467,18 @@ export class TraceStore extends StoreBase {
     },
   ): TraceRetrieveToolOutput {
     const auditInclude = input.include ?? ["tool_calls", "shell", "files", "errors"]
+    const query = input.query ?? ""
     const rows = this.searchTraceDocuments(projectId, {
-      query: input.query,
+      query,
       mode: "exact",
       conversationIds: resolved.conversationIds,
       include: auditInclude,
       toolNames: input.toolNames,
       paths: input.paths,
       command: input.command,
+      role: input.role,
+      entryType: input.entryType,
+      hasAttachment: input.hasAttachment,
       createdAfter: resolved.createdAfter,
       createdBefore: resolved.createdBefore,
       limit: resolved.limit,
@@ -426,22 +486,28 @@ export class TraceStore extends StoreBase {
     const results = this.numberSearchResults(
       rows.map((row) => ({
         ...this.searchResultFromTraceRow(row, input, currentConversationId),
-        provenanceQuality: "audit_event" as const,
-        matchReason: auditMatchReason(row),
+        rank: memoryRank(row, input),
       })),
     )
     this.rememberSearchRefs(projectId, currentConversationId, results.map((result) => result.inspectArgs))
-    const text = JSON.stringify(results)
+    appendProvenanceWarnings(resolved.warnings, results, query)
+    const publicResults = publicTraceSearchResults(results)
+    const text = JSON.stringify(publicResults)
     return {
-      results,
-      totalMatches: results.length,
+      results: publicResults,
+      totalMatches: publicResults.length,
       truncation: truncationFor(text, resolved.charLimit),
       appliedFilters: {
         operation: "search",
         scope: resolved.scope,
         mode: resolved.mode,
         conversationLimit: resolved.conversationLimit,
+        ...(resolved.conversationTitle ? { conversationTitle: resolved.conversationTitle } : {}),
+        ...(resolved.conversationId ? { conversationId: resolved.conversationId } : {}),
         conversationIds: resolved.conversationIds,
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.entryType ? { entryType: input.entryType } : {}),
+        ...(input.hasAttachment !== undefined ? { hasAttachment: input.hasAttachment } : {}),
         ...(resolved.createdAfter ? { createdAfter: resolved.createdAfter } : {}),
         ...(resolved.createdBefore ? { createdBefore: resolved.createdBefore } : {}),
         include: auditInclude,
@@ -466,30 +532,34 @@ export class TraceStore extends StoreBase {
             ? this.buildTurnBundle(projectId, input.turnId, include)
             : doc.content
       const truncated = truncateText(content, charLimit)
+      const turnNo = doc.turnId && doc.conversationId ? this.findTurnNo(projectId, doc.conversationId, doc.turnId) : undefined
+      const rawMessage = doc.sourceTable === "messages" ? this.getRawMessage(projectId, doc.sourceId) : undefined
+      const resolvedMessageRole = doc.sourceTable === "messages" ? (this.messageRoleForDocument(doc) ?? messageRole(rawMessage?.role ?? "")) : undefined
+      const conversation = doc.conversationId ? this.conversationProvenance(projectId, currentConversationId, doc.conversationId) : undefined
+      const messageNo = messageNoForMatchedMessage(turnNo, doc.sourceTable === "messages" ? resolvedMessageRole : undefined)
+      const pairedUser = doc.turnId && resolvedMessageRole === "assistant" && messageNo ? this.pairedUserReference(projectId, doc.turnId, messageNo, input.query) : undefined
       return {
         ...(input.resultNumber ? { resultNumber: input.resultNumber } : {}),
-        handle: doc.handle,
-        kind: "exact_source" as const,
-        projectId: doc.projectId,
-        ...(doc.conversationId ? { conversationId: doc.conversationId } : {}),
-        ...(doc.turnId ? { turnId: doc.turnId } : {}),
-        ...(doc.sourceTable === "messages" ? { messageId: doc.sourceId } : {}),
-        ...(doc.sourceTable === "tool_calls" ? { toolCallId: doc.sourceId } : {}),
-        sourceId: doc.sourceId,
-        title: doc.title,
         content: truncated.text,
-        source: { table: doc.sourceTable, id: doc.sourceId },
-        ...(doc.conversationId ? { conversation: this.conversationProvenance(projectId, currentConversationId, doc.conversationId) } : {}),
-        ...(doc.turnId && doc.conversationId ? { turnNo: this.findTurnNo(projectId, doc.conversationId, doc.turnId) } : {}),
-        ...(doc.sourceTable === "messages" ? { messageRole: this.messageRoleForDocument(doc) } : {}),
-        truncation: {
-          truncated: truncated.truncated,
-          charLimit,
-          originalLength: content.length,
-          returnedLength: truncated.text.length,
-          ...(truncated.truncated ? { nextOffset: truncated.text.length } : {}),
-        },
-        ...(doc.metadataJson ? { metadata: parseJson(doc.metadataJson) } : {}),
+        entryType: entryTypeForTraceDocument(doc, resolvedMessageRole),
+        ...(doc.conversationId ? { conversationId: doc.conversationId } : {}),
+        ...(conversation?.title ? { conversationTitle: conversation.title } : {}),
+        ...(doc.sourceTable === "messages" ? { messageId: doc.sourceId } : {}),
+        ...(doc.sourceTable === "tool_calls" ? { toolId: doc.sourceId } : {}),
+        ...(messageNo ? { messageNo } : {}),
+        provenanceKind: provenanceKindForTraceDocument(doc),
+        ...pairedUser,
+        ...(truncated.truncated
+          ? {
+              truncation: {
+                truncated: true,
+                charLimit,
+                originalLength: content.length,
+                returnedLength: truncated.text.length,
+                nextOffset: truncated.text.length,
+              },
+            }
+          : {}),
       }
     })
     const text = JSON.stringify(results)
@@ -507,31 +577,26 @@ export class TraceStore extends StoreBase {
     }
   }
 
-  private searchResultFromTraceRow(row: SearchRow, input: TraceRetrieveSearchInput, currentConversationId: string) {
+  private searchResultFromTraceRow(row: SearchRow, input: TraceRetrieveSearchInput, currentConversationId: string): InternalTraceSearchResult {
     const conversation = row.conversationId ? this.conversationProvenance(row.projectId, currentConversationId, row.conversationId) : undefined
+    const turnNo = row.turnId && row.conversationId ? this.findTurnNo(row.projectId, row.conversationId, row.turnId) : undefined
+    const messageRole = row.sourceTable === "messages" ? this.messageRoleForDocument(row) : undefined
+    const messageNo = messageNoForMatchedMessage(turnNo, row.sourceTable === "messages" ? messageRole : undefined)
+    const pairedUser = row.turnId && messageRole === "assistant" && messageNo ? this.pairedUserReference(row.projectId, row.turnId, messageNo, input.query) : undefined
+    const inspectArgs = inspectArgsForSource(row.handle, row.sourceTable, row.sourceId, row.turnId)
     return {
-      handle: row.handle,
-      kind: normalizeResultKind(row.sourceKind),
-      projectId: row.projectId,
-      ...(row.conversationId ? { conversationId: row.conversationId } : {}),
-      ...(row.turnId ? { turnId: row.turnId } : {}),
+      text: makeSnippet(row.content, input.query),
+      entryType: entryTypeForTraceDocument(row, messageRole),
+      conversationTitle: conversation?.title ?? "Untitled conversation",
+      conversationId: row.conversationId ?? conversation?.id ?? "",
       ...(row.sourceTable === "messages" ? { messageId: row.sourceId } : {}),
-      ...(row.sourceTable === "tool_calls" ? { toolCallId: row.sourceId } : {}),
-      sourceId: row.sourceId,
-      source: { table: row.sourceTable, id: row.sourceId },
-      ...(conversation ? { conversation } : {}),
-      ...(conversation?.title ? { conversationTitle: conversation.title } : {}),
-      inspectArgs: inspectArgsForSource(row.handle, row.sourceTable, row.sourceId, row.turnId),
-      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
-      title: row.title,
-      snippet: makeSnippet(row.content, input.query),
-      ...(row.summary ? { summary: row.summary } : {}),
-      score: scoreTraceRow(row, { query: input.query, command: input.command, paths: input.paths }),
-      ...(row.preserveVerbatim ? { preserveVerbatim: true } : {}),
-      ...(row.turnId && row.conversationId ? { turnNo: this.findTurnNo(row.projectId, row.conversationId, row.turnId) } : {}),
-      ...(row.sourceTable === "messages" ? { messageRole: this.messageRoleForDocument(row) } : {}),
+      ...(row.sourceTable === "tool_calls" ? { toolId: row.sourceId } : {}),
+      ...(messageNo ? { messageNo } : {}),
+      provenanceKind: provenanceKindForTraceDocument(row),
+      ...pairedUser,
+      inspectArgs,
+      rank: memoryRank(row, input),
       createdAt: row.createdAt,
-      ...(row.metadataJson ? { metadata: parseJson(row.metadataJson) } : {}),
     }
   }
 
@@ -546,126 +611,38 @@ export class TraceStore extends StoreBase {
     input: TraceRetrieveSearchInput,
     limit: number,
   ) {
-    const bestByTurnId = new Map<string, SearchRow>()
+    const bestByMessageId = new Map<string, SearchRow>()
     const summaryRows: SearchRow[] = []
     for (const row of rows) {
-      if (row.sourceKind === "conversation_summary") {
+      if (row.sourceKind === "conversation_summary" || row.sourceKind === "turn_summary") {
         summaryRows.push(row)
         continue
       }
-      if (!row.turnId || !row.conversationId) {
+      if (row.sourceTable !== "messages" || !row.conversationId) {
         continue
       }
-      const existing = bestByTurnId.get(row.turnId)
+      const existing = bestByMessageId.get(row.sourceId)
       if (!existing || memoryRank(row, input) < memoryRank(existing, input)) {
-        bestByTurnId.set(row.turnId, row)
+        bestByMessageId.set(row.sourceId, row)
       }
     }
 
-    const turnResults = [...bestByTurnId.values()]
-      .map((row) => {
-        const turn = row.turnId ? this.getMemoryTurn(projectId, row.turnId) : undefined
-        return turn ? this.searchResultFromMemoryTurn(projectId, currentConversationId, input, turn, row) : undefined
-      })
-      .filter((result): result is NonNullable<typeof result> => Boolean(result))
+    const messageResults = [...bestByMessageId.values()].map((row) => this.searchResultFromTraceRow(row, input, currentConversationId))
+    const summaryResults = summaryRows.map((row) => this.searchResultFromTraceRow(row, input, currentConversationId))
 
-    const summaryResults = summaryRows.map((row) => ({
-      ...this.searchResultFromTraceRow(row, input, currentConversationId),
-      provenanceQuality: "continuation_summary" as const,
-      matchReason: "Matched a continuation summary. Use inspect for exact source handles before quoting it.",
-    }))
-
-    return [...turnResults, ...summaryResults]
+    return [...messageResults, ...summaryResults]
       .sort((left, right) => {
-        const qualityDelta = provenanceQualityWeight(left.provenanceQuality) - provenanceQualityWeight(right.provenanceQuality)
+        const qualityDelta = entryTypeWeight(left.entryType) - entryTypeWeight(right.entryType)
         if (qualityDelta !== 0) {
           return qualityDelta
         }
-        const scoreDelta = (left.score ?? 0) - (right.score ?? 0)
+        const scoreDelta = left.rank - right.rank
         if (scoreDelta !== 0) {
           return scoreDelta
         }
         return (right.createdAt ?? "").localeCompare(left.createdAt ?? "")
       })
       .slice(0, limit)
-  }
-
-  private getMemoryTurn(projectId: string, turnId: string): TurnMemoryRow | undefined {
-    return this.handle.sqlite
-      .prepare(
-        `SELECT
-           t.id,
-           t.conversation_id AS conversationId,
-           t.status,
-           t.started_at AS startedAt,
-           t.completed_at AS completedAt,
-           t.failed_at AS failedAt,
-           t.cancelled_at AS cancelledAt,
-           t.user_message_id AS userMessageId,
-           t.assistant_message_id AS assistantMessageId,
-           um.content AS userContent,
-           am.content AS assistantContent,
-           um.created_at AS userCreatedAt,
-           am.created_at AS assistantCreatedAt
-         FROM turns t
-         INNER JOIN conversations c ON c.id = t.conversation_id
-         LEFT JOIN messages um ON um.id = t.user_message_id
-         LEFT JOIN messages am ON am.id = t.assistant_message_id
-         WHERE c.project_id = ? AND c.status IN ('active', 'archived') AND t.id = ?
-         LIMIT 1`,
-      )
-      .get(projectId, turnId) as TurnMemoryRow | undefined
-  }
-
-  private searchResultFromMemoryTurn(
-    projectId: string,
-    currentConversationId: string,
-    input: TraceRetrieveSearchInput,
-    turn: TurnMemoryRow,
-    matchedRow: SearchRow,
-  ) {
-    const traceDoc = this.findTraceDocumentForSource(projectId, "turns", turn.id)
-    const handle = traceDoc?.handle ?? matchedRow.handle
-    const conversation = this.conversationProvenance(projectId, currentConversationId, turn.conversationId)
-    const turnNo = this.findTurnNo(projectId, turn.conversationId, turn.id)
-    const userText = turn.userContent ?? ""
-    const assistantText = turn.assistantContent ?? ""
-    const combined = [`User: ${userText}`, assistantText ? `Assistant: ${assistantText}` : ""].filter(Boolean).join("\n\n")
-    const provenanceQuality = provenanceQualityForMatchedRow(matchedRow)
-    const matchedRole = this.messageRoleForDocument(matchedRow)
-    return {
-      handle,
-      kind: "turn_summary" as const,
-      projectId,
-      conversationId: turn.conversationId,
-      turnId: turn.id,
-      ...(turn.userMessageId ? { userMessageId: turn.userMessageId } : {}),
-      ...(turn.assistantMessageId ? { assistantMessageId: turn.assistantMessageId } : {}),
-      ...(matchedRow.sourceTable === "messages" ? { messageId: matchedRow.sourceId } : {}),
-      sourceId: turn.id,
-      source: { table: "turns", id: turn.id },
-      conversation,
-      ...(conversation.title ? { conversationTitle: conversation.title } : {}),
-      inspectArgs: { operation: "inspect" as const, turnId: turn.id },
-      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
-      title: `Conversation turn${turnNo ? ` ${turnNo}` : ""}`,
-      snippet: makeSnippet(combined, input.query),
-      summary: summarizeText(combined, 360),
-      score: memoryRank(matchedRow, input),
-      ...(matchedRow.preserveVerbatim ? { preserveVerbatim: true } : {}),
-      ...(turnNo ? { turnNo } : {}),
-      ...(matchedRole ? { messageRole: matchedRole } : {}),
-      provenanceQuality,
-      matchReason: matchReasonForMemoryRow(matchedRow, input),
-      createdAt: turn.startedAt,
-      metadata: {
-        status: turn.status,
-        matchedSourceKind: matchedRow.sourceKind,
-        matchedSourceTable: matchedRow.sourceTable,
-        matchedSourceId: matchedRow.sourceId,
-        matchedRole,
-      },
-    }
   }
 
   private rememberSearchRefs(projectId: string, currentConversationId: string, refs: TraceRetrieveInspectArgs[]): void {
@@ -682,9 +659,8 @@ export class TraceStore extends StoreBase {
       const resolved = this.resolveOrdinalConversationIds(
         projectId,
         currentConversationId,
-        input.conversationHint ? "recent_conversations" : "current_conversation",
+        "current_conversation",
         DEFAULT_CONVERSATION_LIMIT,
-        input.conversationHint,
       )
       const conversationId = resolved.conversationIds.length === 1 ? resolved.conversationIds[0] : undefined
       if (!conversationId) {
@@ -704,9 +680,8 @@ export class TraceStore extends StoreBase {
     const conversationIds = this.resolveConversationIds(
       projectId,
       currentConversationId,
-      input.conversationHint ? "recent_conversations" : "current_conversation",
+      "current_conversation",
       DEFAULT_CONVERSATION_LIMIT,
-      input.conversationHint,
     )
     const rows = this.searchTraceDocuments(projectId, {
       query,
@@ -716,12 +691,15 @@ export class TraceStore extends StoreBase {
       toolNames: undefined,
       paths: input.paths,
       command: input.command,
+      role: input.role,
+      entryType: undefined,
+      hasAttachment: undefined,
       createdAfter: undefined,
       createdBefore: undefined,
       limit: 1,
     })
     const row = rows[0]
-    return row ? this.searchResultFromTraceRow(row, { query, mode: "exact", paths: input.paths, command: input.command }, currentConversationId) : undefined
+    return row ? this.searchResultFromTraceRow(row, { query, mode: "exact", paths: input.paths, command: input.command, role: input.role }, currentConversationId) : undefined
   }
 
   private searchOrdinalTurn(
@@ -732,6 +710,8 @@ export class TraceStore extends StoreBase {
       scope: TraceRetrieveScope
       mode: TraceRetrieveMode
       conversationLimit: number
+      conversationTitle: string | undefined
+      conversationId: string | undefined
       charLimit: number
       include: TraceRetrieveInclude[] | undefined
       warnings: string[]
@@ -743,40 +723,53 @@ export class TraceStore extends StoreBase {
       currentConversationId,
       resolved.scope,
       resolved.conversationLimit,
-      input.conversationHint,
+      resolved.conversationTitle,
+      resolved.conversationId,
     )
     warnings.push(...conversationResolution.warnings)
     const conversationIds = conversationResolution.conversationIds
-    let results: Array<ReturnType<TraceStore["searchResultFromRawMessage"]> | ReturnType<TraceStore["searchResultFromRawTurn"]>> = []
+    let results: InternalTraceSearchResult[] = []
 
-    if (conversationIds.length === 1) {
-      const turn = this.findTurnByNumber(projectId, conversationIds[0] as string, input.turnNo as number)
+    for (const conversationId of conversationIds) {
+      const turn = this.findTurnByNumber(projectId, conversationId, input.turnNo as number)
       if (!turn) {
-        warnings.push(`No turn number ${input.turnNo} was found in the resolved conversation.`)
+        continue
       } else if (input.role === "user" || input.role === "assistant") {
         const message = this.findMessageForTurnRole(projectId, turn.id, input.role)
         if (message) {
-          results = [this.searchResultFromRawMessage(projectId, currentConversationId, input, message, input.turnNo as number)]
-        } else {
-          warnings.push(`Turn number ${input.turnNo} has no ${input.role} message in the resolved conversation.`)
+          results.push(this.searchResultFromRawMessage(projectId, currentConversationId, input, message, input.turnNo as number))
         }
       } else {
-        results = [this.searchResultFromRawTurn(projectId, currentConversationId, input, turn, input.turnNo as number)]
+        const userMessage = this.findMessageForTurnRole(projectId, turn.id, "user")
+        const assistantMessage = this.findMessageForTurnRole(projectId, turn.id, "assistant")
+        if (userMessage) {
+          results.push(this.searchResultFromRawMessage(projectId, currentConversationId, input, userMessage, input.turnNo as number))
+        }
+        if (assistantMessage) {
+          results.push(this.searchResultFromRawMessage(projectId, currentConversationId, input, assistantMessage, input.turnNo as number))
+        }
       }
+    }
+    results = results.slice(0, DEFAULT_LIMIT)
+    if (results.length === 0) {
+      warnings.push(`No turn number ${input.turnNo} matched the selected scope.`)
     }
 
     const numberedResults = this.numberSearchResults(results)
     this.rememberSearchRefs(projectId, currentConversationId, numberedResults.map((result) => result.inspectArgs))
-    const text = JSON.stringify(numberedResults)
+    const publicResults = publicTraceSearchResults(numberedResults)
+    const text = JSON.stringify(publicResults)
     return {
-      results: numberedResults,
-      totalMatches: numberedResults.length,
+      results: publicResults,
+      totalMatches: publicResults.length,
       truncation: truncationFor(text, resolved.charLimit),
       appliedFilters: {
         operation: "search",
         scope: resolved.scope,
         mode: resolved.mode,
         conversationLimit: resolved.conversationLimit,
+        ...(resolved.conversationTitle ? { conversationTitle: resolved.conversationTitle } : {}),
+        ...(resolved.conversationId ? { conversationId: resolved.conversationId } : {}),
         conversationIds,
         turnNo: input.turnNo as number,
         ...(input.role ? { role: input.role } : {}),
@@ -1076,13 +1069,14 @@ export class TraceStore extends StoreBase {
     currentConversationId: string,
     scope: TraceRetrieveScope,
     conversationLimit: number,
-    conversationHint?: string,
+    conversationTitle?: string,
+    conversationId?: string,
   ): string[] {
-    if (conversationHint) {
-      const hinted = this.resolveConversationHint(projectId, currentConversationId, conversationHint, conversationLimit)
-      if (hinted.length > 0) {
-        return hinted
-      }
+    if (conversationId) {
+      return this.isVisibleConversation(projectId, conversationId) ? [conversationId] : []
+    }
+    if (conversationTitle) {
+      return this.resolveConversationIdsByTitle(projectId, currentConversationId, conversationTitle)
     }
     if (scope === "current_conversation") {
       return this.isVisibleConversation(projectId, currentConversationId) ? [currentConversationId] : []
@@ -1094,30 +1088,42 @@ export class TraceStore extends StoreBase {
       .orderBy(desc(conversations.updatedAt))
       .limit(scope === "recent_conversations" ? conversationLimit : Math.max(conversationLimit, DEFAULT_CONVERSATION_LIMIT))
       .all()
-    return rows.map((row) => row.id)
+    return rows.map((row) => row.id).filter((id) => id !== currentConversationId)
   }
 
-  private resolveConversationHint(projectId: string, currentConversationId: string, hint: string, limit: number): string[] {
-    const normalized = hint.toLowerCase()
-    const rows = this.handle.db
-      .select({ id: conversations.id, title: conversations.title })
-      .from(conversations)
-      .where(and(eq(conversations.projectId, projectId), inArray(conversations.status, [...VISIBLE_CONVERSATION_STATUSES])))
-      .orderBy(desc(conversations.updatedAt))
-      .limit(Math.max(limit, DEFAULT_CONVERSATION_LIMIT))
-      .all()
-    const currentIndex = rows.findIndex((row) => row.id === currentConversationId)
-    const offset = conversationOffset(normalized)
-    if (offset !== undefined && currentIndex >= 0 && rows[currentIndex + offset]) {
-      const row = rows[currentIndex + offset]
-      return row ? [row.id] : []
+  private resolveConversationIdsByTitle(projectId: string, currentConversationId: string, conversationTitle: string): string[] {
+    const needle = normalizeConversationTitle(conversationTitle)
+    if (!needle) {
+      return []
     }
-    const titleMatches = rows.filter((row) => row.title && normalized.includes(row.title.toLowerCase()))
-    if (titleMatches.length > 0) {
-      return titleMatches.map((row) => row.id)
-    }
-    const fuzzy = rows.filter((row) => row.title && row.title.toLowerCase().includes(normalized))
-    return fuzzy.map((row) => row.id)
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT id, title
+         FROM conversations
+         WHERE project_id = ?
+           AND status IN ('active', 'archived')
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .all(projectId, 200) as Array<{ id: string; title: string | null }>
+    const ranked = rows
+      .map((row) => ({ row, normalizedTitle: normalizeConversationTitle(row.title ?? "") }))
+      .filter(({ row, normalizedTitle }) => row.id !== currentConversationId && normalizedTitle)
+      .flatMap(({ row, normalizedTitle }) => {
+        if (normalizedTitle === needle) {
+          return [{ row, rank: 0 }]
+        }
+        if (normalizedTitle.includes(needle)) {
+          return [{ row, rank: 1 }]
+        }
+        if (needle.includes(normalizedTitle)) {
+          return [{ row, rank: 2 }]
+        }
+        return []
+      })
+      .sort((left, right) => left.rank - right.rank)
+      .slice(0, DEFAULT_CONVERSATION_LIMIT)
+    return ranked.map(({ row }) => row.id)
   }
 
   private resolveOrdinalConversationIds(
@@ -1125,28 +1131,13 @@ export class TraceStore extends StoreBase {
     currentConversationId: string,
     scope: TraceRetrieveScope,
     conversationLimit: number,
-    conversationHint: string | undefined,
+    conversationTitle?: string,
+    conversationId?: string,
   ): { conversationIds: string[]; warnings: string[] } {
-    if (conversationHint) {
-      const hinted = this.resolveConversationHint(projectId, currentConversationId, conversationHint, conversationLimit)
-      if (hinted.length === 0) {
-        return { conversationIds: [], warnings: [`No conversation matched the provided conversationHint for turnNo lookup.`] }
-      }
-      if (hinted.length > 1) {
-        return {
-          conversationIds: hinted,
-          warnings: [`conversationHint matched multiple conversations for turnNo lookup. Use a more specific conversationHint.`],
-        }
-      }
-      return { conversationIds: hinted, warnings: [] }
+    return {
+      conversationIds: this.resolveConversationIds(projectId, currentConversationId, scope, conversationLimit, conversationTitle, conversationId),
+      warnings: [],
     }
-    if (scope !== "current_conversation") {
-      return {
-        conversationIds: [],
-        warnings: [`turnNo search with scope="${scope}" requires conversationHint to avoid ambiguous ordinal matches.`],
-      }
-    }
-    return { conversationIds: this.isVisibleConversation(projectId, currentConversationId) ? [currentConversationId] : [], warnings: [] }
   }
 
   private findTurnByNumber(projectId: string, conversationId: string, turnNo: number): TurnOrdinalRow | undefined {
@@ -1193,64 +1184,44 @@ export class TraceStore extends StoreBase {
       .get(projectId, turnId, role) as MessageOrdinalRow | undefined
   }
 
+  private pairedUserReference(
+    projectId: string,
+    turnId: string,
+    messageNo: number,
+    query: string | undefined,
+  ): { pairedUserMessageNo: number; pairedUserPreview: string } | undefined {
+    const userMessage = this.findMessageForTurnRole(projectId, turnId, "user")
+    return userMessage
+      ? {
+          pairedUserMessageNo: messageNo,
+          pairedUserPreview: makeSnippet(userMessage.content, query),
+        }
+      : undefined
+  }
+
   private searchResultFromRawMessage(
     projectId: string,
     currentConversationId: string,
     input: TraceRetrieveSearchInput,
     row: MessageOrdinalRow,
     turnNo: number,
-  ) {
-    const traceDoc = this.findTraceDocumentForSource(projectId, "messages", row.id)
-    const handle = traceDoc?.handle ?? `message:${row.id}`
+  ): InternalTraceSearchResult {
     const conversation = this.conversationProvenance(projectId, currentConversationId, row.conversationId)
+    const role = messageRole(row.role)
+    const entryType = role === "user" ? "user_query" : role === "assistant" ? "assistant_response" : "continuation_summary"
+    const pairedUser = role === "assistant" ? this.pairedUserReference(projectId, row.turnId, turnNo, input.query) : undefined
     return {
-      handle,
-      kind: "message" as const,
-      projectId,
+      text: makeSnippet(row.content, input.query),
+      entryType,
+      conversationTitle: conversation.title ?? "Untitled conversation",
       conversationId: row.conversationId,
-      turnId: row.turnId,
       messageId: row.id,
-      sourceId: row.id,
-      source: { table: "messages", id: row.id },
-      conversation,
-      ...(conversation.title ? { conversationTitle: conversation.title } : {}),
       inspectArgs: { operation: "inspect" as const, messageId: row.id },
-      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
-      title: `${capitalize(row.role)} message in turn ${turnNo}`,
-      snippet: makeSnippet(row.content, input.query),
-      summary: summarizeText(row.content, 240),
-      score: 0,
-      turnNo,
-      ...(messageRole(row.role) ? { messageRole: messageRole(row.role) } : {}),
+      ...(role === "user" || role === "assistant" ? { messageNo: turnNo } : {}),
+      provenanceKind: "original_turn",
+      ...pairedUser,
+      rank: entryType === "continuation_summary" ? 2_000 : 0,
       createdAt: row.createdAt,
-      metadata: { role: row.role, status: row.status, turnNo },
-    }
-  }
-
-  private searchResultFromRawTurn(projectId: string, currentConversationId: string, input: TraceRetrieveSearchInput, row: TurnOrdinalRow, turnNo: number) {
-    const traceDoc = this.findTraceDocumentForSource(projectId, "turns", row.id)
-    const content = this.buildTurnBundle(projectId, row.id, input.include)
-    const handle = traceDoc?.handle ?? `turn:${row.id}`
-    const conversation = this.conversationProvenance(projectId, currentConversationId, row.conversationId)
-    return {
-      handle,
-      kind: "turn_summary" as const,
-      projectId,
-      conversationId: row.conversationId,
-      turnId: row.id,
-      sourceId: row.id,
-      source: { table: "turns", id: row.id },
-      conversation,
-      ...(conversation.title ? { conversationTitle: conversation.title } : {}),
-      inspectArgs: { operation: "inspect" as const, turnId: row.id },
-      inspectHint: "Inspect with operation=\"inspect\" and this resultNumber.",
-      title: `Turn ${turnNo}`,
-      snippet: makeSnippet(content, input.query),
-      summary: summarizeText(content, 300),
-      score: 0,
-      turnNo,
-      createdAt: row.startedAt,
-      metadata: { status: row.status, turnNo },
     }
   }
 
@@ -1366,6 +1337,9 @@ export class TraceStore extends StoreBase {
       toolNames: string[] | undefined
       paths: string[] | undefined
       command: string | undefined
+      role: TraceRetrieveRole | undefined
+      entryType: TraceRetrieveEntryType | undefined
+      hasAttachment: boolean | undefined
       createdAfter: string | undefined
       createdBefore: string | undefined
       limit: number
@@ -1385,6 +1359,7 @@ export class TraceStore extends StoreBase {
       where.push(`td.source_kind IN (${sourceKinds.map(() => "?").join(", ")})`)
       params.push(...sourceKinds)
     }
+    appendMessageFacetFilters(where, params, input)
     if (input.createdAfter) {
       where.push("td.created_at >= ?")
       params.push(input.createdAfter)
@@ -1450,6 +1425,9 @@ export class TraceStore extends StoreBase {
       toolNames: string[] | undefined
       paths: string[] | undefined
       command: string | undefined
+      role: TraceRetrieveRole | undefined
+      entryType: TraceRetrieveEntryType | undefined
+      hasAttachment: boolean | undefined
       createdAfter: string | undefined
       createdBefore: string | undefined
       limit: number
@@ -1532,6 +1510,7 @@ export class TraceStore extends StoreBase {
       where.push(`td.source_kind IN (${sourceKinds.map(() => "?").join(", ")})`)
       params.push(...sourceKinds)
     }
+    appendMessageFacetFilters(where, params, input)
     if (input.createdAfter) {
       where.push("td.created_at >= ?")
       params.push(input.createdAfter)
@@ -1579,7 +1558,7 @@ export class TraceStore extends StoreBase {
       const ref = refs[input.resultNumber - 1]
       return ref ? this.resolveInspectDocuments(projectId, currentConversationId, ref) : []
     }
-    if (input.query || input.conversationHint || input.turnNo || input.command || input.paths) {
+    if (input.query || input.turnNo || input.command || input.paths) {
       const query = input.query ?? input.command ?? input.paths?.join(" ") ?? `turn ${input.turnNo ?? ""}`.trim()
       const searchResult = this.searchOrdinalOrNaturalInspectCandidate(projectId, currentConversationId, input, query)
       const ref = searchResult?.inspectArgs
@@ -1977,8 +1956,8 @@ const makeFtsQuery = (query: string): string => {
   return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ")
 }
 
-const makeSnippet = (content: string, query: string): string => {
-  const terms = query.toLowerCase().match(/[a-z0-9_./:-]+/g) ?? []
+const makeSnippet = (content: string, query: string | undefined): string => {
+  const terms = query?.toLowerCase().match(/[a-z0-9_./:-]+/g) ?? []
   const lower = content.toLowerCase()
   const index = terms.map((term) => lower.indexOf(term)).find((position) => position >= 0) ?? 0
   const start = Math.max(index - 160, 0)
@@ -2025,17 +2004,68 @@ const normalSourceKindsForInclude = (include: TraceRetrieveInclude[] | undefined
   return requested.length === 0 ? [...allowed] : requested.filter((kind) => allowed.has(kind))
 }
 
-const runtimeIncludeItems = new Set<TraceRetrieveInclude>(["tool_calls", "shell", "files", "errors", "decisions"])
+const runtimeIncludeItems = new Set<TraceRetrieveInclude>(["tool_calls", "shell", "files", "errors"])
 
 const requiresAuditMode = (input: TraceRetrieveSearchInput): boolean =>
-  Boolean(input.toolNames?.length || input.command || input.include?.some((item) => runtimeIncludeItems.has(item)))
+  Boolean(
+    input.toolNames?.length ||
+      input.command ||
+      input.paths?.length ||
+      input.include?.some((item) => runtimeIncludeItems.has(item)) ||
+      (input.entryType !== undefined && runtimeEntryTypes.has(input.entryType)),
+  )
+
+const runtimeEntryTypes = new Set<TraceRetrieveEntryType>(["tool_call", "shell", "file", "patch", "error"])
+
+const appendMessageFacetFilters = (
+  where: string[],
+  params: unknown[],
+  input: {
+    role: TraceRetrieveRole | undefined
+    entryType: TraceRetrieveEntryType | undefined
+    hasAttachment: boolean | undefined
+  },
+): void => {
+  if (input.role === "user" || input.role === "assistant") {
+    where.push("td.metadata_json LIKE ?")
+    params.push(`%"role":"${input.role}"%`)
+  }
+  if (input.entryType === "user_query") {
+    where.push("td.source_table = 'messages'")
+    where.push("td.metadata_json LIKE ?")
+    params.push(`%"role":"user"%`)
+  } else if (input.entryType === "assistant_response") {
+    where.push("td.source_table = 'messages'")
+    where.push("td.metadata_json LIKE ?")
+    params.push(`%"role":"assistant"%`)
+  } else if (input.entryType === "continuation_summary") {
+    where.push("(td.source_kind IN ('turn_summary', 'conversation_summary') OR (td.source_table = 'messages' AND td.metadata_json NOT LIKE ? AND td.metadata_json NOT LIKE ?))")
+    params.push(`%"role":"user"%`, `%"role":"assistant"%`)
+  } else if (input.entryType === "tool_call") {
+    where.push("td.source_kind = 'tool_call'")
+  } else if (input.entryType === "shell") {
+    where.push("td.source_kind = 'shell'")
+  } else if (input.entryType === "file") {
+    where.push("td.source_kind = 'file'")
+  } else if (input.entryType === "patch") {
+    where.push("td.source_kind = 'patch'")
+  } else if (input.entryType === "error") {
+    where.push("td.source_kind = 'error'")
+  }
+  if (input.hasAttachment === true) {
+    where.push("td.source_table = 'messages'")
+    where.push("json_extract(td.metadata_json, '$.attachmentCount') > 0")
+  } else if (input.hasAttachment === false) {
+    where.push("(td.metadata_json IS NULL OR COALESCE(json_extract(td.metadata_json, '$.attachmentCount'), 0) = 0)")
+  }
+}
 
 const parseMetadataRecord = (metadataJson: string | null): Record<string, unknown> => {
   const parsed = parseJson(metadataJson)
   return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {}
 }
 
-const isSecondaryMention = (row: SearchRow): boolean => {
+const isSecondaryMention = (row: Pick<TraceDocumentRow, "metadataJson" | "content">): boolean => {
   const metadata = parseMetadataRecord(row.metadataJson)
   const role = typeof metadata.role === "string" ? metadata.role : undefined
   if (role !== "assistant") {
@@ -2047,8 +2077,11 @@ const isSecondaryMention = (row: SearchRow): boolean => {
 }
 
 const provenanceQualityForMatchedRow = (
-  row: SearchRow,
+  row: Pick<TraceDocumentRow, "sourceKind" | "metadataJson" | "content">,
 ): "original_turn" | "attachment_origin" | "secondary_mention" | "continuation_summary" | "audit_event" => {
+  if (row.sourceKind === "tool_call" || row.sourceKind === "shell" || row.sourceKind === "file" || row.sourceKind === "patch" || row.sourceKind === "error") {
+    return "audit_event"
+  }
   const metadata = parseMetadataRecord(row.metadataJson)
   if (typeof metadata.attachmentCount === "number" && metadata.attachmentCount > 0) {
     return "attachment_origin"
@@ -2062,6 +2095,30 @@ const provenanceQualityForMatchedRow = (
   return "original_turn"
 }
 
+const provenanceKindForTraceDocument = (row: Pick<TraceDocumentRow, "sourceKind" | "metadataJson" | "sourceTable" | "content">): TraceRetrieveProvenanceKind =>
+  provenanceQualityForMatchedRow(row)
+
+const appendProvenanceWarnings = (warnings: string[], results: InternalTraceSearchResult[], query: string | undefined): void => {
+  if (results.length === 0) {
+    return
+  }
+  const provenanceKinds = new Set(results.map((result) => result.provenanceKind).filter(Boolean))
+  const hasOriginalEvidence = provenanceKinds.has("original_turn") || provenanceKinds.has("attachment_origin")
+  if (!hasOriginalEvidence) {
+    warnings.push(
+      "Only secondary mentions, summaries, or audit evidence matched. Do not treat these rows as original source provenance; if the user asked for an origin, report that no visible original conversation source was found.",
+    )
+  }
+  if (looksLikeAttachmentProvenanceQuery(query) && !provenanceKinds.has("attachment_origin")) {
+    warnings.push(
+      "No original visible message attachment provenance matched this image/attachment query. Attachment files or later mentions can outlive deleted conversations and are not proof of the source conversation.",
+    )
+  }
+}
+
+const looksLikeAttachmentProvenanceQuery = (query: string | undefined): boolean =>
+  Boolean(query && /\b(attachment|attachments|screenshot|screenshots|image|images|photo|png|jpe?g|webp|gif|\.socrates\/attachments)\b/i.test(query))
+
 const provenanceQualityWeight = (quality: string | undefined): number => {
   if (quality === "attachment_origin") return 0
   if (quality === "original_turn") return 1
@@ -2071,47 +2128,41 @@ const provenanceQualityWeight = (quality: string | undefined): number => {
   return 5
 }
 
-const memoryRank = (row: SearchRow, input: { query: string; command: string | undefined; paths: string[] | undefined }): number =>
+const memoryRank = (row: SearchRow, input: { query?: string; command: string | undefined; paths: string[] | undefined }): number =>
   provenanceQualityWeight(provenanceQualityForMatchedRow(row)) * 1000 + scoreTraceRow(row, input)
 
-const matchReasonForMemoryRow = (row: SearchRow, input: TraceRetrieveSearchInput): string => {
-  const quality = provenanceQualityForMatchedRow(row)
-  if (quality === "attachment_origin") {
-    return "Matched an attached image reference on the original message."
+const entryTypeForTraceDocument = (
+  row: Pick<TraceDocumentRow, "sourceKind" | "sourceTable">,
+  messageRole: "user" | "assistant" | "system" | "tool" | "developer" | undefined,
+): TraceRetrieveEntryType => {
+  if (row.sourceTable === "messages") {
+    if (messageRole === "user") return "user_query"
+    if (messageRole === "assistant") return "assistant_response"
+    return "continuation_summary"
   }
-  if (quality === "secondary_mention") {
-    return "Matched a later assistant recap or mention; this is not original provenance."
-  }
-  if (quality === "continuation_summary") {
-    return "Matched a continuation summary for the turn."
-  }
-  if (input.mode === "semantic") {
-    return "Matched semantically against original conversation memory."
-  }
-  if (input.mode === "combined") {
-    return "Matched by hybrid lexical/semantic conversation memory."
-  }
-  return "Matched lexical conversation memory."
+  if (row.sourceKind === "tool_call") return "tool_call"
+  if (row.sourceKind === "shell") return "shell"
+  if (row.sourceKind === "file") return "file"
+  if (row.sourceKind === "patch") return "patch"
+  if (row.sourceKind === "error") return "error"
+  return "continuation_summary"
 }
 
-const auditMatchReason = (row: SearchRow): string => `Matched audit evidence from ${row.sourceKind}.`
-
-const normalizeResultKind = (value: string): TraceRetrieveSourceKind => {
-  if (
-    value === "message" ||
-    value === "tool_call" ||
-    value === "shell" ||
-    value === "file" ||
-    value === "patch" ||
-    value === "error" ||
-    value === "turn_summary" ||
-    value === "conversation_summary" ||
-    value === "verbatim_anchor"
-  ) {
-    return value
-  }
-  return "message"
+const entryTypeWeight = (entryType: TraceRetrieveEntryType): number => {
+  if (entryType === "user_query" || entryType === "assistant_response") return 0
+  if (entryType === "continuation_summary") return 1
+  return 2
 }
+
+const messageNoForMatchedMessage = (
+  turnNo: number | undefined,
+  messageRole: "user" | "assistant" | "system" | "tool" | "developer" | undefined,
+): number | undefined => {
+  return turnNo && (messageRole === "user" || messageRole === "assistant") ? turnNo : undefined
+}
+
+const publicTraceSearchResults = (results: Array<InternalTraceSearchResult & { resultNumber: number }>): TraceRetrieveToolOutput["results"] =>
+  results.map(({ inspectArgs: _inspectArgs, rank: _rank, createdAt: _createdAt, ...result }) => result)
 
 const messageRole = (value: string): "user" | "assistant" | "system" | "tool" | "developer" | undefined =>
   value === "user" || value === "assistant" || value === "system" || value === "tool" || value === "developer" ? value : undefined
@@ -2134,7 +2185,7 @@ const inspectArgsForSource = (handle: string, sourceTable: string, sourceId: str
 
 const traceSearchRefKey = (projectId: string, currentConversationId: string): string => `${projectId}:${currentConversationId}`
 
-const scoreTraceRow = (row: SearchRow, input: { query: string; command: string | undefined; paths: string[] | undefined }): number => {
+const scoreTraceRow = (row: SearchRow, input: { query?: string; command: string | undefined; paths: string[] | undefined }): number => {
   let score = row.score ?? 0
   if (row.preserveVerbatim) {
     score -= 2
@@ -2202,15 +2253,14 @@ const countBy = (values: string[]): Record<string, number> =>
     return counts
   }, {})
 
-const conversationOffset = (hint: string): number | undefined => {
-  if (/\btwo conversations ago\b|\b2 conversations ago\b/.test(hint)) {
-    return 2
-  }
-  if (/\bprevious conversation\b|\blast conversation\b|\bone conversation ago\b|\b1 conversation ago\b/.test(hint)) {
-    return 1
-  }
-  return undefined
-}
+const normalizeConversationTitle = (title: string): string =>
+  title
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
 
 const capitalize = (text: string): string => (text.length === 0 ? text : `${text[0]?.toUpperCase()}${text.slice(1)}`)
 
