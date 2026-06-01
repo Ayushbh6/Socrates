@@ -185,6 +185,7 @@ When a workspace is created or attached, Socrates creates this project-local sca
 ```text
 <workspace>/.socrates/
 <workspace>/.socrates/resources/
+<workspace>/.socrates/repo_docs/
 ```
 
 Socrates should not edit the workspace root `.gitignore` in V1.
@@ -193,7 +194,7 @@ For active V1 projects, `path` must be present on the primary workspace row.
 
 Workspace paths can be changed from the project dashboard. A change must preserve exactly one active primary workspace: mark the old primary row `detached` with `is_primary = 0`, then insert a new `active` row with `is_primary = 1`. Workspace switching is blocked while any turn in the project is queued, running, or awaiting approval.
 
-When attaching a folder that already contains `.socrates`, the backend requires an explicit scaffold action. `use_existing` preserves the directory and ensures `.socrates/resources/`; `reset` deletes only that selected folder's `.socrates` directory before recreating `.socrates/resources/`.
+When attaching a folder that already contains `.socrates`, the backend requires an explicit scaffold action. `use_existing` preserves the directory and ensures `.socrates/resources/` plus missing `.socrates/repo_docs/` templates; `reset` deletes only that selected folder's `.socrates` directory before recreating `.socrates/resources/` and repo-doc templates.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -758,7 +759,7 @@ Stores each backend memory-agent batch. The job is triggered after completed tur
 | `conversation_id` | `TEXT` | no | Representative/latest conversation id for the batch. |
 | `session_id` | `TEXT` | no | Representative/latest session id for the batch. |
 | `turn_id` | `TEXT` | no | Representative/latest turn id for the batch. |
-| `status` | `TEXT` | yes | `running`, `completed`, or `failed`. |
+| `status` | `TEXT` | yes | `running`, `completed`, `no_op`, or `failed`. |
 | `trigger` | `TEXT` | yes | Why the batch ran, such as `buffer_limit` or `idle`. |
 | `provider_id` | `TEXT` | yes | Provider used for the memory-agent call. |
 | `model_id` | `TEXT` | yes | Model used, including fallback when fallback succeeded. |

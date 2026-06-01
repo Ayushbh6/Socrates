@@ -131,7 +131,9 @@ Follow-up fix:
 
 - `trace_retrieve` is an investigation tool, not a query-first search box. It supports queryless exact browsing across visible active/archived project conversations with Q/A pair windows, conversation offset, per-conversation limits, title/id/date filters, and role/message filters.
 - Socrates-owned memory now has global primary files under `~/.Socrates/primary/` and project files under `~/.Socrates/projects/<projectId>/`, including one diary markdown file per day.
+- Bundled primary tool-usage docs are installed from server assets into `~/.Socrates/primary/tool_usage/`: `trace_retrieve.md`, `edit_tools_and_bash.md`, `read_tools.md`, and `memory_tools.md`.
 - Workspace-local notes live at `<workspace>/.socrates/PROJECT_NOTES.md` and should be accessed through the dedicated `project_notes` tool rather than generic edit tools. Generic `edit` and `apply_patch` mutations to this file are backend-rejected with a recoverable `project_notes_dedicated_tool_required` error; normal `read`/`search` may still inspect it.
+- Workspace-local repo doctrine lives at `<workspace>/.socrates/repo_docs/` with the six-doc structure from this repo: `REPO_RULES.md`, `APP_FLOW.md`, `FRONTEND_BACKEND_CONTRACT.md`, `DB_STRUCTURE.md`, `PROVIDER_USAGE.md`, and `REPO_STRCUTURE.md`. Socrates reads/searches/patches those files through `repo_docs`; generic `edit` and `apply_patch` mutations are rejected with `repo_docs_dedicated_tool_required`.
 - The main agent can read/search memory pages through `socrates_memory`; `soul` gives read-only access to identity and operating principles. `socrates_memory` uses memory scopes (`primary`, `project`, `all`) and page controls (`memoryLimit`, `memoryOffset`), not conversation scopes.
 - Backend memory synthesis now runs through a buffered memory agent. It gathers completed-turn evidence until about 60k estimated tokens or a 5-minute idle flush, calls DeepSeek v4 Pro with MiMo fallback, appends diary notes, and can patch primary docs through verified oldText/newText edits.
 - Soul updates are gated by an internal second model confirmation prompt: `You are about to make changes to the soul. Are you sure?` Only exact `yes` applies the patch. Applied soul updates create persistent notifications with compact diffs.
@@ -266,12 +268,17 @@ edit
 apply_patch
 bash
 trace_retrieve
+socrates_memory
+project_notes
+repo_docs
+soul
 list_project_resources
 mcp_registry
 ```
 
-- `read`, `search`, `trace_retrieve`, `list_project_resources`, and non-configuring `mcp_registry` operations are read-only and parallel-capable.
+- `read`, `search`, `trace_retrieve`, `socrates_memory`, `soul`, `list_project_resources`, and non-configuring `mcp_registry` operations are read-only and parallel-capable.
 - `edit` and `apply_patch` are serialized mutation tools and share a workspace-level mutation lock.
+- `project_notes` and `repo_docs` are constrained serialized mutation tools for Socrates-owned workspace markdown surfaces.
 - `bash` is serialized and does not run concurrently with file mutations.
 - `maxParallelToolCalls` defaults to `5`.
 - `maxToolCallsPerTurn` defaults to `80`; if the budget is exhausted, Socrates performs a final no-tools model call so the assistant can answer from available evidence.
@@ -589,7 +596,7 @@ Split the model-facing file mutation surface to reduce weak-model tool-schema fa
 
 Current branch polish before merge:
 
-- The base model-visible tool registry includes `read`, `search`, `edit`, `apply_patch`, `bash`, `trace_retrieve`, `socrates_memory`, `project_notes`, `soul`, `list_project_resources`, and `mcp_registry`. Dynamic MCP tool names can be added only by the MCP runtime after a server is available.
+- The base model-visible tool registry includes `read`, `search`, `edit`, `apply_patch`, `bash`, `trace_retrieve`, `socrates_memory`, `project_notes`, `repo_docs`, `soul`, `list_project_resources`, and `mcp_registry`. Dynamic MCP tool names can be added only by the MCP runtime after a server is available.
 - Terminal model-facing use stays human-handle based. `bash` status/output/stop can omit the target when exactly one active Terminal exists or use the human Terminal name; terminal ids, process ids, and output sequence numbers are internal persistence/UI/supervisor details.
 - Long-running Terminals are owned by a durable local supervisor process. Server restart reconciliation marks uncontrollable persisted rows as `detached` or `missing`; `stale` is legacy/backward-compatible status language, not the preferred user/model-facing state.
 - Terminal output requests drain supervisor output first, persist new chunks, and return recent DB-backed output by human handle so background polling does not make model-facing output blank.

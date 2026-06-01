@@ -45,6 +45,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("overwrite: true only when intentionally replacing an entire existing file")
     expect(requestJson).toContain("set regex=true")
     expect(requestJson).toContain("search .socrates/attachments directly")
+    expect(requestJson).toContain("Use repo_docs for durable repo doctrine")
     expect(requestJson).toContain("compare the reported file and line with the current file contents")
     expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
   })
@@ -60,6 +61,7 @@ describe("SocratesAgent", () => {
       "trace_retrieve",
       "socrates_memory",
       "project_notes",
+      "repo_docs",
       "soul",
       "list_project_resources",
       "mcp_registry",
@@ -216,6 +218,12 @@ describe("SocratesAgent", () => {
         content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
+      repo_docs: async () => ({
+        operation: "read",
+        paths: [".socrates/repo_docs/REPO_RULES.md"],
+        content: "- .socrates/repo_docs/REPO_RULES.md",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 36 },
+      }),
       soul: async () => ({
         operation: "read",
         documents: [],
@@ -258,8 +266,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(11)
-    expect(countRequests[1]?.toolCount).toBe(11)
+    expect(countRequests[0]?.toolCount).toBe(12)
+    expect(countRequests[1]?.toolCount).toBe(12)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -553,7 +561,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(11)
+    expect(countRequests[0]?.toolCount).toBe(12)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -616,7 +624,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(11)
+    expect(countRequests[0]?.toolCount).toBe(12)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -625,9 +633,11 @@ describe("SocratesAgent", () => {
 
   it("includes dry-run edit diff in approval requests before applying the edit", async () => {
     let calls = 0
+    const streamRequests: ModelRequestLike[] = []
     const provider: ModelProvider = {
       countTokens: fakeCountTokens,
-      async *stream() {
+      async *stream(request) {
+        streamRequests.push(request)
         calls += 1
         if (calls === 1) {
           yield {
@@ -684,6 +694,12 @@ describe("SocratesAgent", () => {
         content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
+      repo_docs: async () => ({
+        operation: "read",
+        paths: [".socrates/repo_docs/REPO_RULES.md"],
+        content: "- .socrates/repo_docs/REPO_RULES.md",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 36 },
+      }),
       soul: async () => ({
         operation: "read",
         documents: [],
@@ -727,6 +743,8 @@ describe("SocratesAgent", () => {
     expect(editDryRuns).toEqual([true, false])
     expect(approvals[0]).toContain("-old")
     expect(approvals[0]).toContain("+new")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Quiet backend reminder")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs")
   })
 
   it("feeds read image results back to vision-capable models as native image parts", async () => {
@@ -1048,6 +1066,12 @@ const emptyToolExecutors = (): ToolExecutors => ({
     path: ".socrates/PROJECT_NOTES.md",
     content: "",
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+  }),
+  repo_docs: async () => ({
+    operation: "read",
+    paths: [".socrates/repo_docs/REPO_RULES.md"],
+    content: "- .socrates/repo_docs/REPO_RULES.md",
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 36 },
   }),
   soul: async () => ({
     operation: "read",

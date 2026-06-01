@@ -33,6 +33,8 @@ import type {
   PickWorkspaceFolderResponse,
   ProjectNotesToolInput,
   ProjectNotesToolOutput,
+  RepoDocsToolInput,
+  RepoDocsToolOutput,
   Project,
   ProjectInstructions,
   ProjectResource,
@@ -180,7 +182,9 @@ export class SocratesStore {
   }
 
   createProject(input: CreateProjectRequest): { project: Project; primaryWorkspace: ProjectWorkspace } {
-    return this.projects.createProject(input)
+    const created = this.projects.createProject(input)
+    this.ensureProjectMemory(created.project.id)
+    return created
   }
 
   getProjectDashboard(projectId: string): ProjectDashboard {
@@ -215,6 +219,10 @@ export class SocratesStore {
 
   runProjectNotesTool(projectId: string, workspacePath: string, input: ProjectNotesToolInput): ProjectNotesToolOutput {
     return this.memory.runProjectNotesTool(projectId, workspacePath, input)
+  }
+
+  runRepoDocsTool(projectId: string, workspacePath: string, input: RepoDocsToolInput): RepoDocsToolOutput {
+    return this.memory.runRepoDocsTool(projectId, workspacePath, input)
   }
 
   runSoulTool(projectId: string, input: SoulToolInput): SoulToolOutput {

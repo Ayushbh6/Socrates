@@ -347,6 +347,26 @@ describe("workspace tools", () => {
     expect(fs.existsSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"))).toBe(false)
   })
 
+  it("allows reading repo docs but rejects generic edits to them", async () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, ".socrates", "repo_docs"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, ".socrates", "repo_docs", "REPO_RULES.md"), "old rule\n")
+
+    const read = await readWorkspacePath({ path: ".socrates/repo_docs/REPO_RULES.md" }, { workspacePath })
+    const search = await searchWorkspace({ mode: "text", query: "old rule", path: ".socrates/repo_docs" }, { workspacePath })
+
+    expect(read.content).toBe("old rule\n")
+    expect(search.matches[0]?.path).toBe(".socrates/repo_docs/REPO_RULES.md")
+    await expect(
+      editWorkspace({ path: ".socrates/repo_docs/REPO_RULES.md", oldString: "old", newString: "new" }, { workspacePath }),
+    ).rejects.toMatchObject({
+      code: "repo_docs_dedicated_tool_required",
+      message: expect.stringContaining("repo_docs"),
+      recoverable: true,
+    })
+    expect(fs.readFileSync(path.join(workspacePath, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")).toBe("old rule\n")
+  })
+
   it("searches files and text inside the workspace", async () => {
     const workspacePath = tempDir()
     fs.mkdirSync(path.join(workspacePath, "src"))
@@ -642,6 +662,50 @@ describe("workspace tools", () => {
       recoverable: true,
     })
     expect(fs.readFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "utf8")).toBe("old note\n")
+  })
+
+  it.each([
+    [
+      "create",
+      ["*** Begin Patch", "*** Add File: .socrates/repo_docs/REPO_RULES.md", "+new rule", "*** End Patch", ""].join("\n"),
+    ],
+    [
+      "update",
+      ["*** Begin Patch", "*** Update File: .socrates/repo_docs/REPO_RULES.md", "@@", "-old rule", "+new rule", "*** End Patch", ""].join("\n"),
+    ],
+    ["delete", ["*** Begin Patch", "*** Delete File: .socrates/repo_docs/REPO_RULES.md", "*** End Patch", ""].join("\n")],
+    [
+      "rename from",
+      [
+        "*** Begin Patch",
+        "*** Update File: .socrates/repo_docs/REPO_RULES.md",
+        "*** Move to: repo-rules-copy.md",
+        "*** End Patch",
+        "",
+      ].join("\n"),
+    ],
+    [
+      "rename to",
+      [
+        "*** Begin Patch",
+        "*** Update File: repo-rules-copy.md",
+        "*** Move to: .socrates/repo_docs/REPO_RULES.md",
+        "*** End Patch",
+        "",
+      ].join("\n"),
+    ],
+  ])("rejects apply_patch %s operations involving repo docs", async (_caseName, patch) => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, ".socrates", "repo_docs"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, ".socrates", "repo_docs", "REPO_RULES.md"), "old rule\n")
+    fs.writeFileSync(path.join(workspacePath, "repo-rules-copy.md"), "copy rule\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
+      code: "repo_docs_dedicated_tool_required",
+      message: expect.stringContaining("repo_docs"),
+      recoverable: true,
+    })
+    expect(fs.readFileSync(path.join(workspacePath, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")).toBe("old rule\n")
   })
 
   it("applies and verifies delete patches", async () => {

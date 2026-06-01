@@ -4,6 +4,7 @@ import type { EditToolInput, EditToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import {
   assertNotProjectNotesMutation,
+  assertNotRepoDocsMutation,
   clampCharLimit,
   ensureParentDirectory,
   isSensitivePath,
@@ -44,6 +45,7 @@ const editWorkspaceLocked = async (
   const dryRun = input.dryRun ?? false
   const absolutePath = resolveWorkspacePath(context.workspacePath, input.path)
   assertNotProjectNotesMutation(context.workspacePath, absolutePath, input.path)
+  assertNotRepoDocsMutation(context.workspacePath, absolutePath, input.path)
   if (isSensitivePath(absolutePath)) {
     throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
       details: { path: input.path },

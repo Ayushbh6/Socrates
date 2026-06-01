@@ -6,6 +6,7 @@ import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { mcpRegistryTool } from "./mcpRegistryTool"
 import { projectNotesTool } from "./projectNotesTool"
 import { readTool } from "./readTool"
+import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
 import { soulTool } from "./soulTool"
 import { socratesMemoryTool } from "./socratesMemoryTool"
@@ -21,6 +22,7 @@ const tools = [
   traceRetrieveTool,
   socratesMemoryTool,
   projectNotesTool,
+  repoDocsTool,
   soulTool,
   listProjectResourcesTool,
   mcpRegistryTool,

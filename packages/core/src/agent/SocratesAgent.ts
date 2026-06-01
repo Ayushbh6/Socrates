@@ -283,6 +283,13 @@ export class SocratesAgent {
       })
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
+      if (shouldNudgeRepoDocsAlignment(execution.results)) {
+        messages.push({
+          role: "developer",
+          content:
+            'Quiet backend reminder: if this turn changed durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or important pitfalls, inspect/update `.socrates/repo_docs/` with the repo_docs tool before the final answer. Skip this if no durable repo doctrine changed.',
+        })
+      }
 
       if (maxConfirmedToolErrorsPerTurn > 0 && confirmedToolErrors >= maxConfirmedToolErrorsPerTurn) {
         const recentCodes = [...new Set(confirmedToolErrorResults.map((result) => result.error?.code).filter(Boolean))]
@@ -680,6 +687,29 @@ const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__
 
 const isConfirmedToolErrorResult = (result: ToolExecutionResult): boolean =>
   result.ok === false && typeof result.error?.code === "string" && result.error.code.length > 0 && typeof result.error.message === "string" && result.error.message.length > 0
+
+const shouldNudgeRepoDocsAlignment = (results: ToolExecutionResult[]): boolean => {
+  if (results.some((result) => result.ok && result.toolName === "repo_docs")) {
+    return false
+  }
+  return results.some((result) => {
+    if (!result.ok) {
+      return false
+    }
+    if (result.toolName === "bash") {
+      return true
+    }
+    if (result.toolName !== "edit" && result.toolName !== "apply_patch") {
+      return false
+    }
+    const output = result.output as { changedFiles?: unknown; dryRun?: unknown } | undefined
+    if (output?.dryRun === true) {
+      return false
+    }
+    const changedFiles = output?.changedFiles
+    return Array.isArray(changedFiles) && changedFiles.length > 0
+  })
+}
 
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({

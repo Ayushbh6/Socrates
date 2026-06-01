@@ -100,6 +100,8 @@ import {
   normalizedToolCallSchema,
   projectNotesToolInputSchema,
   projectNotesToolOutputSchema,
+  repoDocsToolInputSchema,
+  repoDocsToolOutputSchema,
   readToolInputSchema,
   readToolOutputSchema,
   searchToolInputSchema,
@@ -901,7 +903,7 @@ describe("websocket server event contracts", () => {
 })
 
 describe("tool contracts", () => {
-  it("parses the seven V1 model-visible tool inputs", () => {
+  it("parses the V1 model-visible tool inputs", () => {
     expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
@@ -1131,6 +1133,20 @@ describe("tool contracts", () => {
     expect(projectNotesToolInputSchema.safeParse({ operation: "search", query: "decision" }).success).toBe(true)
     expect(projectNotesToolInputSchema.safeParse({ operation: "patch", oldText: "old", newText: "new" }).success).toBe(true)
     expect(projectNotesToolInputSchema.safeParse({ operation: "patch", oldText: "old" }).success).toBe(false)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "REPO_RULES.md" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "search", query: "contract", path: "FRONTEND_BACKEND_CONTRACT.md" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "patch", path: "APP_FLOW.md", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "patch", oldText: "old", newText: "new" }).success).toBe(false)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "../README.md" }).success).toBe(false)
+    expect(
+      repoDocsToolOutputSchema.safeParse({
+        operation: "search",
+        paths: [".socrates/repo_docs/REPO_RULES.md"],
+        matches: [{ path: ".socrates/repo_docs/REPO_RULES.md", line: 1, text: "# Repo Rules" }],
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 30 },
+      }).success,
+    ).toBe(true)
     expect(
       projectNotesToolOutputSchema.safeParse({
         operation: "patch",

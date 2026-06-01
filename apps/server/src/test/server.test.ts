@@ -1202,6 +1202,7 @@ describe("HTTP API", () => {
     expect(project.status).toBe("active")
     expect(primaryWorkspace.path).toBeTruthy()
     expect(fs.statSync(path.join(primaryWorkspace.path ?? "", ".socrates", "resources")).isDirectory()).toBe(true)
+    expect(fs.statSync(path.join(primaryWorkspace.path ?? "", ".socrates", "repo_docs")).isDirectory()).toBe(true)
 
     const listResponse = await app.inject({ method: "GET", url: "/api/projects" })
     const listBody = parseResponse<
@@ -1278,6 +1279,30 @@ describe("HTTP API", () => {
     if (!duplicateBody.ok) {
       expect(duplicateBody.error.code).toBe("workspace_already_attached")
     }
+  })
+
+  it("preserves existing workspace repo docs when attaching an existing .socrates folder", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const workspacePath = tempDir()
+    const repoDocsPath = path.join(workspacePath, ".socrates", "repo_docs")
+    fs.mkdirSync(repoDocsPath, { recursive: true })
+    fs.writeFileSync(path.join(repoDocsPath, "REPO_RULES.md"), "# Existing Rules\n\n- Preserve me.\n")
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Existing Repo Docs",
+        creationMode: "existing_folder",
+        workspacePath,
+        scaffoldAction: "use_existing",
+      },
+    })
+    const body = parseResponse<{ project: Project; primaryWorkspace: ProjectWorkspace }>(response.payload)
+    expect(body.ok).toBe(true)
+    expect(fs.readFileSync(path.join(repoDocsPath, "REPO_RULES.md"), "utf8")).toContain("Preserve me.")
+    expect(fs.existsSync(path.join(repoDocsPath, "APP_FLOW.md"))).toBe(true)
   })
 
   it("inspects workspaces and requires explicit action for an existing .socrates folder", async () => {
@@ -2897,8 +2922,11 @@ describe("WebSocket API", () => {
 
     expect(fs.existsSync(path.join(socratesHome, "primary", "identity.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "primary", "tool_usage", "trace_retrieve.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "primary", "tool_usage", "memory_tools.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "MEMORY.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
+    expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_RULES.md"))).toBe(true)
+    expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_STRCUTURE.md"))).toBe(true)
     expect(JSON.stringify(requests[0])).toContain("<socrates_wake_context>")
     expect(JSON.stringify(requests[0])).toContain("PROJECT_NOTES")
 
@@ -2915,6 +2943,14 @@ describe("WebSocket API", () => {
         searchMode: "keyword_all",
       })
       expect(searched.results.some((result) => result.path.includes("trace_retrieve.md"))).toBe(true)
+      const memoryTools = store.runSocratesMemoryTool(project.id, {
+        operation: "read",
+        path: "primary/tool_usage/memory_tools.md",
+        charLimit: 12_000,
+      })
+      expect(memoryTools.results[0]?.snippet).toContain("socrates_memory")
+      expect(memoryTools.results[0]?.snippet).toContain("project_notes")
+      expect(memoryTools.results[0]?.snippet).toContain("soul")
       const diaryBrowse = store.runSocratesMemoryTool(project.id, { operation: "search", scope: "project", category: "diary", memoryLimit: 1 })
       expect(diaryBrowse.results[0]?.resultType).toBe("diary_entry")
       const diaryRead = store.runSocratesMemoryTool(project.id, { operation: "read", path: diaryBrowse.results[0]?.path ?? "" })
@@ -2962,6 +2998,26 @@ describe("WebSocket API", () => {
       })
       expect(notesPatch.changed).toBe(true)
       expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")).toContain("Memory tool smoke note")
+      const repoDocsIndex = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, { operation: "read" })
+      expect(repoDocsIndex.paths).toContain(".socrates/repo_docs/REPO_RULES.md")
+      const repoDocsSearch = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, { operation: "search", query: "durable", path: "REPO_RULES.md" })
+      expect(repoDocsSearch.matches?.[0]?.path).toBe(".socrates/repo_docs/REPO_RULES.md")
+      const repoDocsPatch = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, {
+        operation: "patch",
+        path: "REPO_RULES.md",
+        oldText: "Keep it short, current, and practical.",
+        newText: "Keep it short, current, practical, and easy for future agents to trust.",
+      })
+      expect(repoDocsPatch.changed).toBe(true)
+      expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")).toContain("future agents")
+      expect(() =>
+        store.runRepoDocsTool(project.id, primaryWorkspace.path as string, {
+          operation: "patch",
+          path: "REPO_RULES.md",
+          oldText: "- ",
+          newText: "- changed ",
+        }),
+      ).toThrow(/oldText matched more than once/)
     } finally {
       await store.close()
     }

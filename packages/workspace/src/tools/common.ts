@@ -90,6 +90,21 @@ export const assertNotProjectNotesMutation = (workspacePath: string, targetPath:
   )
 }
 
+export const assertNotRepoDocsMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
+  const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
+  if (!relativePath.startsWith(".socrates/repo_docs/") || !relativePath.endsWith(".md")) {
+    return
+  }
+  throw new SocratesError(
+    "repo_docs_dedicated_tool_required",
+    ".socrates/repo_docs/*.md can only be edited through the repo_docs tool. Retry with repo_docs operation=\"patch\"; normal read/search may still inspect these files.",
+    {
+      recoverable: true,
+      details: { path: requestedPath ?? relativePath, tool: "repo_docs", operation: "patch" },
+    },
+  )
+}
+
 const isEnvTemplatePath = (base: string): boolean =>
   base === ".env.example" ||
   base === ".env.sample" ||

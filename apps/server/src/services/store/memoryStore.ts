@@ -2,10 +2,13 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import type {
   Notification,
   ProjectNotesToolInput,
   ProjectNotesToolOutput,
+  RepoDocsToolInput,
+  RepoDocsToolOutput,
   SoulToolInput,
   SoulToolOutput,
   SocratesMemoryCategory,
@@ -31,6 +34,8 @@ const DEFAULT_MEMORY_AGENT_IDLE_MS = 5 * 60 * 1000
 const WAKE_CONTEXT_CHAR_LIMIT = 4_000
 const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
 const MEMORY_AGENT_MODELS = ["deepseek/deepseek-v4-pro", "xiaomi/mimo-v2.5-pro"] as const
+const TOOL_USAGE_DOC_NAMES = ["trace_retrieve.md", "edit_tools_and_bash.md", "read_tools.md", "memory_tools.md"] as const
+const REPO_DOC_NAMES = ["REPO_RULES.md", "APP_FLOW.md", "FRONTEND_BACKEND_CONTRACT.md", "DB_STRUCTURE.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
 
 type MemoryFile = {
   path: string
@@ -111,15 +116,14 @@ export class MemoryStore extends StoreBase {
     ensureFile(path.join(this.socratesHome, "primary", "identity.md"), "# Identity\n\nSocrates is a local-first project partner. User edits here are context, not higher authority than runtime instructions.\n")
     ensureFile(path.join(this.socratesHome, "primary", "operating_principles.md"), "# Operating Principles\n\n- Prefer evidence over assumption.\n- Keep project memory concise and inspectable.\n")
     ensureFile(path.join(this.socratesHome, "primary", "learned_patterns.md"), "# Learned Patterns\n\nAdd durable cross-project lessons here.\n")
-    ensureFile(path.join(this.socratesHome, "primary", "tool_usage", "trace_retrieve.md"), "# trace_retrieve\n\nUse as an investigation tool: browse recent/project conversations without query, then search or inspect precise evidence.\n")
-    ensureFile(path.join(this.socratesHome, "primary", "tool_usage", "edit_tools_and_bash.md"), "# Edit Tools And Terminal\n\nRead before changing files. Use patch/edit for file writes and Terminal for execution or verification.\n")
-    ensureFile(path.join(this.socratesHome, "primary", "tool_usage", "read_tools.md"), "# Read Tools\n\nUse bounded reads and targeted searches. Prefer project resources for uploaded files and trace retrieval for older conversation evidence.\n")
+    ensureBundledToolUsageDocs(path.join(this.socratesHome, "primary", "tool_usage"))
 
     ensureFile(path.join(this.projectRoot(projectId), "project_brief.md"), "# Project Brief\n\nShort project summary and current operating context.\n")
     ensureFile(path.join(this.projectRoot(projectId), "MEMORY.md"), "# Project Memory\n\nDurable project-specific notes and decisions.\n")
     ensureFile(this.diaryPath(projectId, new Date()), `# ${formatDiaryDate(new Date())}\n\n`)
     if (workspacePath) {
       ensureFile(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "# PROJECT_NOTES\n\nRepo-local notes for Socrates. Users may edit this file directly.\n")
+      ensureBundledRepoDocs(path.join(workspacePath, ".socrates", "repo_docs"))
     }
   }
 
@@ -173,6 +177,80 @@ export class MemoryStore extends StoreBase {
     return {
       operation: "patch",
       path: notesPath,
+      changed: next !== content,
+      content: truncate(next, charLimit).text,
+      truncation: truncationFor(next, charLimit),
+    }
+  }
+
+  runRepoDocsTool(projectId: string, workspacePath: string, input: RepoDocsToolInput): RepoDocsToolOutput {
+    this.ensureProjectMemory(projectId, workspacePath)
+    const docsRoot = repoDocsRoot(workspacePath)
+    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
+    if (input.operation === "read") {
+      if (!input.path) {
+        const paths = [...REPO_DOC_NAMES].map((name) => `.socrates/repo_docs/${name}`)
+        const content = paths.map((docPath) => `- ${docPath}`).join("\n")
+        return {
+          operation: "read",
+          paths,
+          content,
+          truncation: truncationFor(content, charLimit),
+        }
+      }
+      const absolutePath = repoDocPath(docsRoot, input.path)
+      const content = fs.readFileSync(absolutePath, "utf8")
+      const truncated = truncate(content, charLimit)
+      return {
+        operation: "read",
+        path: `.socrates/repo_docs/${input.path}`,
+        content: truncated.text,
+        truncation: truncationFor(content, charLimit),
+        ...(truncated.truncated ? { warnings: [`${input.path} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
+      }
+    }
+
+    if (input.operation === "search") {
+      const query = input.query ?? ""
+      const docNames = input.path ? [input.path] : [...REPO_DOC_NAMES]
+      const matches = docNames.flatMap((name) => {
+        const content = fs.readFileSync(repoDocPath(docsRoot, name), "utf8")
+        return lineMatches(content, query, DEFAULT_SEARCH_LIMIT).map((match) => ({
+          path: `.socrates/repo_docs/${name}`,
+          line: match.line,
+          text: match.text,
+        }))
+      }).slice(0, DEFAULT_SEARCH_LIMIT)
+      const serialized = JSON.stringify(matches)
+      return {
+        operation: "search",
+        ...(input.path ? { path: `.socrates/repo_docs/${input.path}` } : { paths: docNames.map((name) => `.socrates/repo_docs/${name}`) }),
+        matches,
+        truncation: truncationFor(serialized, charLimit),
+        ...(matches.length === DEFAULT_SEARCH_LIMIT ? { warnings: ["repo_docs search hit the match limit; narrow the query or path."] } : {}),
+      }
+    }
+
+    const name = input.path as (typeof REPO_DOC_NAMES)[number]
+    const absolutePath = repoDocPath(docsRoot, name)
+    const content = fs.readFileSync(absolutePath, "utf8")
+    const oldText = input.oldText ?? ""
+    const newText = input.newText ?? ""
+    const occurrences = oldText.length === 0 ? 0 : countOccurrences(content, oldText)
+    if (oldText.length === 0 || occurrences === 0) {
+      throw new SocratesError("repo_docs_patch_failed", "oldText was not found in the selected repo doc.", { recoverable: true })
+    }
+    if (!input.replaceAll && occurrences > 1) {
+      throw new SocratesError("repo_docs_patch_ambiguous", "oldText matched more than once. Retry with a longer oldText or replaceAll=true.", {
+        recoverable: true,
+        details: { path: `.socrates/repo_docs/${name}`, occurrences },
+      })
+    }
+    const next = input.replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
+    fs.writeFileSync(absolutePath, next)
+    return {
+      operation: "patch",
+      path: `.socrates/repo_docs/${name}`,
       changed: next !== content,
       content: truncate(next, charLimit).text,
       truncation: truncationFor(next, charLimit),
@@ -534,6 +612,7 @@ export class MemoryStore extends StoreBase {
       ["tool_usage/trace_retrieve.md", readIfExists(path.join(primaryRoot, "tool_usage", "trace_retrieve.md"))],
       ["tool_usage/edit_tools_and_bash.md", readIfExists(path.join(primaryRoot, "tool_usage", "edit_tools_and_bash.md"))],
       ["tool_usage/read_tools.md", readIfExists(path.join(primaryRoot, "tool_usage", "read_tools.md"))],
+      ["tool_usage/memory_tools.md", readIfExists(path.join(primaryRoot, "tool_usage", "memory_tools.md"))],
     ] as const
     return [
       `Project: ${projectId}`,
@@ -877,6 +956,78 @@ export class MemoryStore extends StoreBase {
 }
 
 const projectNotesPath = (workspacePath: string): string => path.join(workspacePath, ".socrates", "PROJECT_NOTES.md")
+const repoDocsRoot = (workspacePath: string): string => path.join(workspacePath, ".socrates", "repo_docs")
+
+const repoDocPath = (docsRoot: string, name: (typeof REPO_DOC_NAMES)[number]): string => path.join(docsRoot, name)
+
+const bundledToolUsageDocsDir = (): string => {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    path.resolve(moduleDir, "../../memory/defaults/primary/tool_usage"),
+    path.resolve(moduleDir, "memory/defaults/primary/tool_usage"),
+    path.resolve(process.cwd(), "src/memory/defaults/primary/tool_usage"),
+    path.resolve(process.cwd(), "dist/memory/defaults/primary/tool_usage"),
+  ]
+  const found = candidates.find((candidate) => fs.existsSync(candidate))
+  if (!found) {
+    throw new SocratesError("socrates_memory_assets_missing", "Bundled Socrates tool-usage memory docs were not found.", {
+      recoverable: false,
+      details: { candidates },
+    })
+  }
+  return found
+}
+
+const bundledRepoDocsDir = (): string => {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    path.resolve(moduleDir, "../../memory/defaults/workspace/repo_docs"),
+    path.resolve(moduleDir, "memory/defaults/workspace/repo_docs"),
+    path.resolve(process.cwd(), "src/memory/defaults/workspace/repo_docs"),
+    path.resolve(process.cwd(), "dist/memory/defaults/workspace/repo_docs"),
+  ]
+  const found = candidates.find((candidate) => fs.existsSync(candidate))
+  if (!found) {
+    throw new SocratesError("repo_docs_assets_missing", "Bundled Socrates workspace repo-doc templates were not found.", {
+      recoverable: false,
+      details: { candidates },
+    })
+  }
+  return found
+}
+
+const ensureBundledToolUsageDocs = (targetDir: string): void => {
+  const sourceDir = bundledToolUsageDocsDir()
+  fs.mkdirSync(targetDir, { recursive: true })
+  for (const name of TOOL_USAGE_DOC_NAMES) {
+    const sourcePath = path.join(sourceDir, name)
+    const targetPath = path.join(targetDir, name)
+    const content = fs.readFileSync(sourcePath, "utf8")
+    if (!fs.existsSync(targetPath) || isLegacyToolUsageSeed(name, fs.readFileSync(targetPath, "utf8"))) {
+      fs.writeFileSync(targetPath, content)
+    }
+  }
+}
+
+const ensureBundledRepoDocs = (targetDir: string): void => {
+  const sourceDir = bundledRepoDocsDir()
+  fs.mkdirSync(targetDir, { recursive: true })
+  for (const name of REPO_DOC_NAMES) {
+    ensureFile(path.join(targetDir, name), fs.readFileSync(path.join(sourceDir, name), "utf8"))
+  }
+}
+
+const isLegacyToolUsageSeed = (name: string, content: string): boolean => {
+  const trimmed = content.trim()
+  if (trimmed.length > 500) {
+    return false
+  }
+  return (
+    (name === "trace_retrieve.md" && trimmed.includes("Use as an investigation tool: browse recent/project conversations without query")) ||
+    (name === "edit_tools_and_bash.md" && trimmed.includes("Use patch/edit for file writes and Terminal for execution")) ||
+    (name === "read_tools.md" && trimmed.includes("Use bounded reads and targeted searches"))
+  )
+}
 
 const MEMORY_AGENT_SYSTEM_PROMPT = [
   "You are the Socrates backend memory agent. You maintain private Socrates memory after user turns; you are not the chat assistant.",

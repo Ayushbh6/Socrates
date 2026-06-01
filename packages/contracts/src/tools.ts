@@ -10,6 +10,7 @@ export const baseToolNameSchema = z.enum([
   "trace_retrieve",
   "socrates_memory",
   "project_notes",
+  "repo_docs",
   "soul",
   "list_project_resources",
   "mcp_registry",
@@ -986,6 +987,66 @@ export const projectNotesToolOutputSchema = z
   })
   .strict()
 export type ProjectNotesToolOutput = z.infer<typeof projectNotesToolOutputSchema>
+
+export const repoDocFileSchema = z.enum([
+  "REPO_RULES.md",
+  "APP_FLOW.md",
+  "FRONTEND_BACKEND_CONTRACT.md",
+  "DB_STRUCTURE.md",
+  "PROVIDER_USAGE.md",
+  "REPO_STRCUTURE.md",
+])
+export type RepoDocFile = z.infer<typeof repoDocFileSchema>
+
+export const repoDocsToolInputSchema = z
+  .object({
+    operation: z.enum(["read", "search", "patch"]),
+    path: repoDocFileSchema.optional(),
+    query: z.string().min(1).optional(),
+    oldText: z.string().optional(),
+    newText: z.string().optional(),
+    replaceAll: z.boolean().optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.operation === "search" && !input.query) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    }
+    if (input.operation === "patch") {
+      if (!input.path) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "patch requires path." })
+      }
+      if (input.oldText === undefined || input.newText === undefined) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "patch requires oldText and newText." })
+      }
+    }
+  })
+export type RepoDocsToolInput = z.infer<typeof repoDocsToolInputSchema>
+
+export const repoDocsToolOutputSchema = z
+  .object({
+    operation: z.enum(["read", "search", "patch"]),
+    path: z.string().min(1).optional(),
+    paths: z.array(z.string().min(1)).optional(),
+    content: z.string().optional(),
+    matches: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1),
+            line: z.number().int().positive(),
+            text: z.string(),
+          })
+          .strict(),
+      )
+      .optional(),
+    changed: z.boolean().optional(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type RepoDocsToolOutput = z.infer<typeof repoDocsToolOutputSchema>
 
 export const listProjectResourcesToolInputSchema = z
   .object({

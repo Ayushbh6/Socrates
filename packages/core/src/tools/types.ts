@@ -14,6 +14,8 @@ import type {
   ProjectNotesToolOutput,
   ReadToolInput,
   ReadToolOutput,
+  RepoDocsToolInput,
+  RepoDocsToolOutput,
   RuntimeConfig,
   SearchToolInput,
   SearchToolOutput,
@@ -55,6 +57,7 @@ export type ToolExecutors = {
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
   socrates_memory: (input: SocratesMemoryToolInput, context: ToolExecutorContext) => Promise<SocratesMemoryToolOutput>
   project_notes: (input: ProjectNotesToolInput, context: ToolExecutorContext) => Promise<ProjectNotesToolOutput>
+  repo_docs: (input: RepoDocsToolInput, context: ToolExecutorContext) => Promise<RepoDocsToolOutput>
   soul: (input: SoulToolInput, context: ToolExecutorContext) => Promise<SoulToolOutput>
   list_project_resources: (
     input: ListProjectResourcesToolInput,

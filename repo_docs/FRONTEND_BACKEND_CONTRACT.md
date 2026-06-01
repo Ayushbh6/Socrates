@@ -1328,6 +1328,7 @@ type ToolCallStartedPayload = {
     | "trace_retrieve"
     | "socrates_memory"
     | "project_notes"
+    | "repo_docs"
     | "soul"
     | "list_project_resources"
     | "mcp_registry"
@@ -1616,6 +1617,7 @@ bash
 trace_retrieve
 socrates_memory
 project_notes
+repo_docs
 soul
 list_project_resources
 mcp_registry
@@ -1769,6 +1771,7 @@ Rules:
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
 - Generic `edit` writes to `<workspace>/.socrates/PROJECT_NOTES.md` are rejected with recoverable `project_notes_dedicated_tool_required`; that file remains readable through normal read/search, but mutations must use the dedicated `project_notes` tool.
+- Generic `edit` writes to `<workspace>/.socrates/repo_docs/*.md` are rejected with recoverable `repo_docs_dedicated_tool_required`; those files remain readable through normal read/search, but mutations must use the dedicated `repo_docs` tool.
 
 ### `apply_patch`
 
@@ -1794,6 +1797,7 @@ Rules:
 - Common structured patch prefix mistakes may be normalized with warnings, but malformed unified diff hunk counts and unsafe structured patch grammar errors must fail before applying with recoverable, corrective messages that steer the model back to structured `patchText`.
 - Non-dry-run patches must verify disk after applying and return the same verified metadata shape as `edit`. Deleted files verify by being absent; renamed files verify that the old path is absent and the new path exists.
 - Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/PROJECT_NOTES.md` is rejected with recoverable `project_notes_dedicated_tool_required`; the model should retry with `project_notes.patch`.
+- Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/repo_docs/*.md` is rejected with recoverable `repo_docs_dedicated_tool_required`; the model should retry with `repo_docs.patch`.
 - File mutations are serialized with `edit`.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
@@ -2097,6 +2101,7 @@ Rules:
 - `path` may be full (`project/diary/2026/06/2026-06-01.md`) or category-relative (`diary/2026/06/2026-06-01.md`).
 - Search is case-insensitive by default and may be queryless for browsing pages/sections.
 - Identity and operating principles are core agent soul context and are not exposed through this tool.
+- The server runtime bundles primary tool-usage docs and installs them under `~/.Socrates/primary/tool_usage/`: `trace_retrieve.md`, `edit_tools_and_bash.md`, `read_tools.md`, and `memory_tools.md`.
 
 ### `soul`
 
@@ -2138,6 +2143,32 @@ Rules:
 ### `project_notes`
 
 Constrained read/search/patch access to the active workspace's `.socrates/PROJECT_NOTES.md`. Generic `edit` and `apply_patch` writes to this file are rejected; normal read/search may still inspect it.
+
+### `repo_docs`
+
+Constrained read/search/patch access to durable workspace doctrine under `.socrates/repo_docs/`. Generic `edit` and `apply_patch` writes to these files are rejected; normal read/search may still inspect them.
+
+Input:
+
+```ts
+type RepoDocsToolInput = {
+  operation: "read" | "search" | "patch"
+  path?: "REPO_RULES.md" | "APP_FLOW.md" | "FRONTEND_BACKEND_CONTRACT.md" | "DB_STRUCTURE.md" | "PROVIDER_USAGE.md" | "REPO_STRCUTURE.md"
+  query?: string
+  oldText?: string
+  newText?: string
+  replaceAll?: boolean
+  charLimit?: number
+}
+```
+
+Rules:
+
+- Project access creates missing template files only; existing user-edited repo docs are preserved.
+- `read` with no path returns a bounded index of the six docs.
+- `search` requires `query` and searches all docs unless `path` narrows it.
+- `patch` requires one allowlisted `path` plus exact `oldText`/`newText`.
+- After meaningful code, contract, data, workflow, or architecture changes, the backend quietly reminds Socrates to consider whether these docs need alignment.
 
 ### `list_project_resources`
 
