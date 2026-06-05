@@ -222,7 +222,7 @@ It owns:
 
 It must not own agent logic, provider logic, workspace operations, persistence, or frontend UI behavior.
 
-The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Current Windows extraction uses PowerShell `Expand-Archive`, which is correct but can be very slow for the large Windows runtime zip and many extracted files. Keep installer/extraction optimization inside the CLI/desktop packaging layer, not in agent/workspace packages.
+The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Windows extraction should use `tar.exe` first and PowerShell `Expand-Archive` only as a fallback. Runtime zip creation must archive direct root entries such as `launcher.mjs` and `manifest.json`, not `.` or a wrapper directory, so older npm launchers can extract the latest GitHub runtime reliably. Keep installer/extraction optimization inside the CLI/desktop packaging layer, not in agent/workspace packages.
 
 ### `apps/server`
 

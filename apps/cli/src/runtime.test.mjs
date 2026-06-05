@@ -7,10 +7,12 @@ import {
   parseArgs,
   parseSha256Sums,
   platformArchFor,
+  powerShellSingleQuoted,
   runtimeAssetName,
   runtimeDirFor,
   selectAsset,
   verifyChecksum,
+  zipExtractCommandsFor,
 } from "./runtime.mjs";
 
 describe("Socrates CLI runtime helpers", () => {
@@ -51,6 +53,17 @@ describe("Socrates CLI runtime helpers", () => {
     const assets = [{ name: "socrates-runtime-darwin-arm64.zip", url: "https://example.test/runtime.zip" }];
     expect(selectAsset(assets, "socrates-runtime-darwin-arm64.zip")).toEqual(assets[0]);
     expect(() => selectAsset(assets, "SHA256SUMS")).toThrow(/missing SHA256SUMS/);
+  });
+
+  it("prefers Windows tar extraction before falling back to PowerShell Expand-Archive", () => {
+    const commands = zipExtractCommandsFor("win32", "C:\\Users\\O'Neil\\.Socrates\\cache\\runtime.zip", "C:\\Users\\O'Neil\\.Socrates\\runtime");
+    expect(commands[0]).toEqual({
+      command: "tar.exe",
+      args: ["-xf", "C:\\Users\\O'Neil\\.Socrates\\cache\\runtime.zip", "-C", "C:\\Users\\O'Neil\\.Socrates\\runtime"],
+    });
+    expect(commands[1].command).toBe("powershell.exe");
+    expect(commands[1].args[2]).toContain("O''Neil");
+    expect(powerShellSingleQuoted("C:\\Users\\O'Neil")).toBe("'C:\\Users\\O''Neil'");
   });
 
   it("verifies checksum files", async () => {

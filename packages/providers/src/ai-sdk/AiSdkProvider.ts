@@ -405,11 +405,26 @@ export const inputSchemaForAiTool = (definition: ModelToolDefinition) => {
   return jsonSchema(traceRetrieveJsonSchema, {
     validate: (value) => {
       const parsed = definition.inputSchema.safeParse(value)
-      return parsed.success
-        ? { success: true, value: parsed.data }
-        : { success: false, error: new Error(parsed.error.message) }
+      if (!parsed.success) {
+        return { success: false, error: new Error(parsed.error.message) }
+      }
+      const strictError = validateStrictTraceRetrieveInput(parsed.data)
+      return strictError
+        ? { success: false, error: new Error(strictError) }
+        : { success: true, value: parsed.data }
     },
   })
+}
+
+const validateStrictTraceRetrieveInput = (value: Record<string, unknown>) => {
+  if (value.mode !== "semantic" && value.mode !== "combined") {
+    return undefined
+  }
+  const allowedKeys = new Set(["operation", "mode", "query", "scope", "limit"])
+  const disallowedKeys = Object.keys(value).filter((key) => !allowedKeys.has(key))
+  return disallowedKeys.length > 0
+    ? `mode=${value.mode} only accepts query, scope, and limit. Remove: ${disallowedKeys.join(", ")}.`
+    : undefined
 }
 
 const editToolJsonSchema: JSONSchema7 = {

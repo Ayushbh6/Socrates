@@ -16,26 +16,32 @@ const archivePath = path.join(outputDir, archiveName);
 
 const run = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
+    const { env, maxOutputChars = 24000, streamOutput = true, ...spawnOptions } = options;
     let output = "";
     const child = spawn(command, args, {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
-      ...options,
+      ...spawnOptions,
       env: {
         ...process.env,
-        ...options.env,
+        ...env,
       },
     });
     const capture = (chunk, stream) => {
       const text = chunk.toString();
-      output = `${output}${text}`.slice(-24000);
-      stream.write(chunk);
+      output = `${output}${text}`;
+      if (Number.isFinite(maxOutputChars)) {
+        output = output.slice(-maxOutputChars);
+      }
+      if (streamOutput) {
+        stream.write(chunk);
+      }
     };
     child.stdout.on("data", (chunk) => capture(chunk, process.stdout));
     child.stderr.on("data", (chunk) => capture(chunk, process.stderr));
     child.once("exit", (code) => {
       if (code === 0) {
-        resolve();
+        resolve(output);
       } else {
         emitGithubError(output);
         reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
@@ -69,11 +75,18 @@ await run(nodeCommand, [path.join(desktopRoot, "scripts", "build-runtime.mjs")],
 
 fs.rmSync(archivePath, { force: true });
 
-if (process.platform === "win32") {
-  await run("tar.exe", ["-a", "-cf", archivePath, "-C", runtimeDir, "."]);
-} else {
-  await run("zip", ["-qr", archivePath, "."], { cwd: runtimeDir });
+const archiveEntries = fs.readdirSync(runtimeDir).sort();
+if (archiveEntries.length === 0) {
+  throw new Error(`Runtime directory is empty: ${runtimeDir}`);
 }
+
+if (process.platform === "win32") {
+  await run("tar.exe", ["-a", "-cf", archivePath, "-C", runtimeDir, ...archiveEntries]);
+} else {
+  await run("zip", ["-qr", archivePath, ...archiveEntries], { cwd: runtimeDir });
+}
+
+await assertArchiveLayout(archivePath);
 
 const manifest = JSON.parse(fs.readFileSync(path.join(runtimeDir, "manifest.json"), "utf8"));
 if (manifest.runtimeKind !== "cli" || typeof manifest.node !== "string") {
@@ -82,3 +95,36 @@ if (manifest.runtimeKind !== "cli" || typeof manifest.node !== "string") {
 
 const sizeMb = Math.round((fs.statSync(archivePath).size / 1024 / 1024) * 10) / 10;
 console.log(`Created ${archivePath} (${sizeMb} MB) on ${os.platform()}/${os.arch()}`);
+
+async function assertArchiveLayout(archivePath) {
+  const entries = await listArchiveEntries(archivePath);
+  const dotPrefixedEntries = entries.filter((entry) => entry === "./" || entry.startsWith("./"));
+  if (dotPrefixedEntries.length > 0) {
+    throw new Error(
+      `Runtime archive entries must not be prefixed with "./"; found ${dotPrefixedEntries.slice(0, 5).join(", ")}`,
+    );
+  }
+
+  const entrySet = new Set(entries);
+  for (const requiredEntry of ["launcher.mjs", "manifest.json"]) {
+    if (!entrySet.has(requiredEntry)) {
+      const nestedMatches = entries.filter((entry) => entry.endsWith(`/${requiredEntry}`));
+      throw new Error(
+        `Runtime archive must contain ${requiredEntry} at the zip root.${
+          nestedMatches.length > 0 ? ` Found nested entries: ${nestedMatches.slice(0, 5).join(", ")}` : ""
+        }`,
+      );
+    }
+  }
+}
+
+async function listArchiveEntries(archivePath) {
+  const output =
+    process.platform === "win32"
+      ? await run("tar.exe", ["-tf", archivePath], { maxOutputChars: Number.POSITIVE_INFINITY, streamOutput: false })
+      : await run("unzip", ["-Z1", archivePath], { maxOutputChars: Number.POSITIVE_INFINITY, streamOutput: false });
+  return output
+    .split(/\r?\n/)
+    .map((entry) => entry.trim().replaceAll("\\", "/"))
+    .filter(Boolean);
+}

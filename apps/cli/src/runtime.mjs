@@ -262,16 +262,42 @@ const downloadFile = async (url, target) => {
 };
 
 const extractZip = async (archivePath, targetDir) => {
-  if (process.platform === "win32") {
-    await run("powershell.exe", [
-      "-NoProfile",
-      "-Command",
-      `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${targetDir}' -Force`,
-    ]);
-    return;
+  const commands = zipExtractCommandsFor(process.platform, archivePath, targetDir);
+  let lastError;
+  for (let index = 0; index < commands.length; index += 1) {
+    const { command, args } = commands[index];
+    try {
+      await run(command, args);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (index < commands.length - 1) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+    }
   }
-  await run("unzip", ["-q", archivePath, "-d", targetDir]);
+  throw lastError;
 };
+
+export const zipExtractCommandsFor = (platform, archivePath, targetDir) => {
+  if (platform === "win32") {
+    return [
+      { command: "tar.exe", args: ["-xf", archivePath, "-C", targetDir] },
+      {
+        command: "powershell.exe",
+        args: [
+          "-NoProfile",
+          "-Command",
+          `Expand-Archive -LiteralPath ${powerShellSingleQuoted(archivePath)} -DestinationPath ${powerShellSingleQuoted(targetDir)} -Force`,
+        ],
+      },
+    ];
+  }
+  return [{ command: "unzip", args: ["-q", archivePath, "-d", targetDir] }];
+};
+
+export const powerShellSingleQuoted = (value) => `'${String(value).replaceAll("'", "''")}'`;
 
 const run = (command, args) =>
   new Promise((resolve, reject) => {

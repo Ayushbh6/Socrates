@@ -89,7 +89,7 @@ This section records the initial backend foundation. Some bullets describe the s
 - Future local app packaging must use a backend/native filesystem bridge for project workspace selection and creation.
 - Added `apps/desktop` as the Tauri desktop shell. `pnpm desktop:dev` starts the existing server and web dev services when needed and opens the web UI in a native window. The desktop shell is launch/bundling glue only; it must not duplicate agent, provider, workspace, or contract logic.
 - Added internal-tester packaging flow: `pnpm desktop:runtime` assembles ignored runtime resources, and `pnpm desktop:bundle` runs Tauri build for the native app bundle. The runtime bundles an official Node distribution matching the builder Node version, a deployed server sidecar, Drizzle migrations, and a Next standalone web sidecar. Packaged Tauri starts the launcher, waits for local readiness, then navigates the main window to the local web server.
-- Pivoted primary distribution to npm CLI: `@socrates-ai/cli` launches Socrates with `npx`, downloads unsigned platform runtime zips from GitHub Releases, verifies `SHA256SUMS`, extracts under `~/.Socrates/runtimes/`, starts local backend/web sidecars, and opens the browser. SemVer tags now publish npm runtime zips; signed Tauri desktop release remains manual/future. CLI/browser credentials persist in `~/.Socrates/.env`; Tauri credentials use OS keychain. Credential APIs expose only status/source and must never return raw key values.
+- Pivoted primary distribution to npm CLI: `@socrates-ai/cli` launches Socrates with `npx`, downloads unsigned platform runtime zips from GitHub Releases, verifies `SHA256SUMS`, extracts under `~/.Socrates/runtimes/`, starts local backend/web sidecars, and opens the browser. SemVer tags now publish npm runtime zips; signed Tauri desktop release remains manual/future. Windows CLI extraction should use `tar.exe` first and only fall back to PowerShell `Expand-Archive`; runtime zips must place `launcher.mjs` and `manifest.json` directly at the archive root, with no `./` prefix. CLI/browser credentials persist in `~/.Socrates/.env`; Tauri credentials use OS keychain. Credential APIs expose only status/source and must never return raw key values.
 - Do not rely on browser-only filesystem APIs for the core project model. Socrates needs durable absolute workspace paths so the backend agent can create folders, write `.socrates/`, store resources, scan repos, and run tools.
 - Dev V1 may use a backend filesystem bridge or temporary path input. Proper local app V1 should wrap the web UI in Tauri or Electron and use native folder dialogs.
 - Added DB-backed HTTP routes for onboarding, projects, resources, and conversations.
@@ -518,7 +518,7 @@ Published the current Terminal v2 plus verified edit/search runtime as GitHub Re
 - `main` includes `d9c3028` (`Use release version in runtime manifest`), `f8738e9` (`Bump CLI version to 0.1.1`), and `4a2f1dc` (`Harden edit verification and search reliability`).
 - The `v0.1.1` GitHub Release contains `SHA256SUMS`, `socrates-runtime-darwin-arm64.zip`, `socrates-runtime-darwin-x64.zip`, and `socrates-runtime-win32-x64.zip`. Existing `@socrates-ai/cli@0.1.0` clients fetch GitHub Releases `latest`, so rerunning `npx @socrates-ai/cli` should download the `v0.1.1` runtime.
 - npm registry publishing of `@socrates-ai/cli@0.1.1` is not complete from this machine because `npm whoami` returned `401 Unauthorized`. `npm publish --access public --dry-run` passed from `apps/cli`, so the remaining npm step is authentication plus real publish.
-- Windows first-run/update extraction is a known serious UX issue: the Windows runtime zip is about 496 MiB and the CLI currently extracts with PowerShell `Expand-Archive`, which can take extremely long on some laptops when combined with many files, NTFS writes, and antivirus scanning. Fixing Windows runtime extraction/package size/progress should be treated as the next release/install-performance priority before broad Windows testing.
+- Historical Windows first-run/update note: the Windows runtime zip is about 500 MiB, and PowerShell `Expand-Archive` was slow and unreliable with `./`-prefixed archive entries. The v0.1.4 recovery path switches CLI extraction to `tar.exe` first, keeps PowerShell only as fallback, and changes runtime archive creation to reject `./`-prefixed or nested root launcher entries.
 
 ## v0.1.2 Vision, Tooling, And Runtime-Owned Handles
 
@@ -548,6 +548,15 @@ Prepared the v0.1.3 runtime slice for the npm CLI release path:
 - `trace_retrieve` search snippets now use broader investigation windows centered on the best exact phrase or dense word match, with surrounding line context and raw-message fallback for verbatim anchors.
 - The agent preserves model-visible `conversationId`, `messageId`, and `toolId` in `trace_retrieve` outputs and returns a cached warning for duplicate identical `trace_retrieve` calls in one turn.
 - `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.3`; the runtime manifest should resolve to `0.1.3` locally and to `v0.1.3` under the GitHub release workflow.
+
+## v0.1.4 Windows Runtime Extraction Recovery
+
+Prepared the v0.1.4 recovery slice for the npm CLI release path:
+
+- The live `v0.1.3` Windows release asset checksum matched `SHA256SUMS`, and `unzip` showed `./launcher.mjs` and `./manifest.json` at the archive root, but Windows PowerShell `Expand-Archive` could still leave the CLI unable to find `launcher.mjs` after extraction.
+- `@socrates-ai/cli` now uses `tar.exe -xf` first on Windows and falls back to PowerShell only if `tar.exe` fails. The PowerShell fallback now quotes apostrophes safely.
+- `apps/desktop/scripts/build-runtime-archive.mjs` now archives explicit runtime root entries instead of `.`, then validates that `launcher.mjs` and `manifest.json` are direct root entries and no zip entry starts with `./`.
+- `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.4`; a `v0.1.4` GitHub Release should allow even older npm launchers to fetch a Windows runtime archive without `./`-prefixed entries.
 
 ## Trace Retrieve Memory Overhaul And Slim Output
 
