@@ -130,6 +130,37 @@ describe("AI SDK provider request shape", () => {
       },
     })
   })
+
+  it("emits provider response metadata for persistence", async () => {
+    aiMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {
+        yield {
+          type: "response-metadata",
+          id: "gen_123",
+          modelId: "deepseek/deepseek-v4-flash",
+          timestamp: new Date("2026-06-05T10:00:00.000Z"),
+        }
+        yield { type: "finish", finishReason: "stop", totalUsage: undefined }
+      })(),
+    })
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    const events: ModelEvent[] = []
+    for await (const event of provider.stream(modelRequest("openrouter", "deepseek/deepseek-v4-flash"))) {
+      events.push(event)
+    }
+
+    expect(events).toContainEqual({
+      type: "model.response.metadata",
+      response: {
+        id: "gen_123",
+        modelId: "deepseek/deepseek-v4-flash",
+        timestamp: new Date("2026-06-05T10:00:00.000Z"),
+      },
+    })
+  })
 })
 
 const readTool: ModelToolDefinition = {

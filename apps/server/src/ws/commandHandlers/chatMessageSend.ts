@@ -7,9 +7,10 @@ import {
   type SocratesAgent,
   type ToolExecutors,
 } from "@socrates/core"
-import type { ClientCommand, ModelUsage, ProjectEmbeddingStatus, ProjectResource } from "@socrates/contracts"
+import type { ClientCommand, ProjectEmbeddingStatus, ProjectResource } from "@socrates/contracts"
 import type { McpRuntime } from "@socrates/mcp"
-import { normalizeError, SocratesError } from "@socrates/shared"
+import type { ModelProvider, ModelUsage } from "@socrates/providers"
+import { normalizeError, nowIso, SocratesError } from "@socrates/shared"
 import {
   applyPatchWorkspace,
   editWorkspace,
@@ -21,6 +22,7 @@ import {
   searchWorkspace,
 } from "@socrates/workspace"
 import { apiError } from "../../http"
+import { generateConversationTitle } from "../../services/conversationTitleGenerator"
 import type { SocratesStore } from "../../services/store"
 import type { ActiveTurns } from "../activeTurns"
 import type { ConversationTerminalManager } from "../conversationTerminals"
@@ -59,6 +61,7 @@ export const handleChatMessageSend = async (
   terminals: ConversationTerminalManager,
   command: Extract<ClientCommand, { type: "chat.message.send" }>,
   mcpRuntime?: McpRuntime,
+  titleProvider?: ModelProvider,
 ): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
   const created = store.createTurnFromUserMessage(projectId, conversationId, command.payload)
@@ -82,6 +85,81 @@ export const handleChatMessageSend = async (
     ),
   )
 
+  if (created.shouldGenerateTitle) {
+    const placeholderConversation = store.getConversation(projectId, conversationId).conversation
+    appendAndSend(
+      socket,
+      store,
+      makeEvent(
+        "conversation.updated",
+        { conversation: placeholderConversation },
+        {
+          projectId,
+          conversationId,
+          sessionId: created.sessionId,
+          turnId: created.turnId,
+          actor: { type: "system" },
+        },
+      ),
+      "server",
+    )
+  }
+
+  if (created.shouldGenerateTitle && titleProvider) {
+    const titleUsageSourceId = `title_${created.turnId}`
+    const titleStartedAt = nowIso()
+    void generateConversationTitle({
+      provider: titleProvider,
+      projectId,
+      conversationId,
+      message: created.userMessage,
+      fallbackTitle: created.fallbackTitle,
+      abortSignal: abortController.signal,
+    })
+      .then((result) => {
+        if (result?.usage) {
+          store.recordConversationTitleUsage({
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            sourceId: titleUsageSourceId,
+            providerId: result.providerId,
+            modelId: result.modelId,
+            status: "completed",
+            startedAt: titleStartedAt,
+            completedAt: nowIso(),
+            usage: toStoredUsage(result.usage),
+          })
+        }
+        const title = result?.title.trim()
+        if (!title || title === created.fallbackTitle) {
+          return
+        }
+        const conversation = store.autoTitleConversation(projectId, conversationId, title, created.fallbackTitle)
+        if (!conversation || socket.readyState !== 1) {
+          return
+        }
+        appendAndSend(
+          socket,
+          store,
+          makeEvent(
+            "conversation.updated",
+            { conversation },
+            {
+              projectId,
+              conversationId,
+              sessionId: created.sessionId,
+              turnId: created.turnId,
+              actor: { type: "system" },
+            },
+          ),
+          "server",
+        )
+      })
+      .catch(() => undefined)
+  }
+
   const selectedModel = findModelOption(command.payload.runtimeConfig.providerId, command.payload.runtimeConfig.modelId)
   const includeImageParts = selectedModel?.capabilities?.vision === true
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
@@ -98,17 +176,20 @@ export const handleChatMessageSend = async (
     workspaceGuidance: formatPythonEnvironmentHints(inspectPythonEnvironment(workspacePath)),
     workspaceCommandEnvironment: formatWorkspaceCommandEnvironmentBrief(),
     semanticRetrievalStatus: formatSemanticRetrievalStatus(store.getProjectEmbeddingStatus(projectId)),
-    mcpRuntimeBrief: "MCP available on demand: Playwright. Use mcp_registry when browser automation or MCP setup is relevant.",
+    mcpRuntimeBrief:
+      "MCP is available on demand through mcp_registry. Browser automation presets such as Playwright are discoverable there; dynamic MCP tool lists/schemas are not included in this prompt or first tool call surface.",
     ...(terminalContext ? { terminalContext } : {}),
   }
   const modelCallIds: string[] = []
   const latestUsageByModelCallId = new Map<string, ModelUsage>()
+  const responseMetadataByModelCallId = new Map<string, unknown>()
   let latestModelCallId: string | undefined
 
   let answerText = ""
   let reasoningText = ""
   let latestUsage: ModelUsage | undefined
   let lastAnswerModelCallId: string | undefined
+  const exposedMcpServers = new Set<string>()
 
   try {
     for await (const agentEvent of agent.streamTurn({
@@ -119,11 +200,15 @@ export const handleChatMessageSend = async (
       providerId: command.payload.runtimeConfig.providerId,
       modelId: command.payload.runtimeConfig.modelId,
       runtimeConfig: command.payload.runtimeConfig,
+      cacheKey: providerCacheKey(projectId, conversationId),
       messages: modelHistory,
       promptContext,
       workspacePath,
-      toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime),
-      dynamicTools: () => mcpRuntime?.getDynamicToolDefinitions("playwright") ?? [],
+      toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime, {
+        exposeMcpServer: (serverId) => exposedMcpServers.add(serverId),
+      }),
+      dynamicTools: () =>
+        mcpRuntime ? [...exposedMcpServers].flatMap((serverId) => mcpRuntime.getDynamicToolDefinitions(serverId)) : [],
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
       maxToolCallsPerTurn: 80,
@@ -300,6 +385,13 @@ export const handleChatMessageSend = async (
           if (agentEvent.usage) {
             latestUsageByModelCallId.set(modelCallId, agentEvent.usage)
           }
+        }
+      }
+
+      if (agentEvent.type === "model.response.metadata") {
+        const modelCallId = agentEvent.modelCallId ?? latestModelCallId
+        if (modelCallId) {
+          responseMetadataByModelCallId.set(modelCallId, agentEvent.response)
         }
       }
 
@@ -536,15 +628,20 @@ export const handleChatMessageSend = async (
       store.completeModelCall({
         modelCallId,
         response: { messageId: assistantMessage.id, finish: "completed" },
+        ...(responseMetadataByModelCallId.has(modelCallId)
+          ? { providerResponse: responseMetadataByModelCallId.get(modelCallId) }
+          : {}),
         ...(latestUsageByModelCallId.get(modelCallId) ? { usage: toStoredUsage(latestUsageByModelCallId.get(modelCallId) as ModelUsage) } : {}),
       })
     }
+    const turnUsageReport = store.buildTurnUsageReport(created.turnId)
 
     const messageCompleted = makeEvent(
       "message.completed",
       {
         message: assistantMessage,
         ...(latestUsage ? { usage: toContractUsage(latestUsage) } : {}),
+        ...(turnUsageReport ? { turnUsageReport } : {}),
       },
       {
         projectId,
@@ -562,6 +659,7 @@ export const handleChatMessageSend = async (
         turnId: created.turnId,
         assistantMessageId: assistantMessage.id,
         summary: "Agent response completed.",
+        ...(turnUsageReport ? { turnUsageReport } : {}),
       },
       {
         projectId,
@@ -628,6 +726,7 @@ const createToolExecutors = (
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
   mcpRuntime?: McpRuntime,
+  options: { exposeMcpServer?: (serverId: string) => void } = {},
 ): ToolExecutors => {
   const withFreshness = <C extends object>(context: C): C & { fileFreshness?: FileFreshnessTracker } => {
     const tracker = activeTurns.getFileFreshness(turnId)
@@ -684,11 +783,15 @@ const createToolExecutors = (
   repo_docs: (input, context) => Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
-  mcp_registry: (input) => {
+  mcp_registry: async (input) => {
     if (!mcpRuntime) {
       throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
     }
-    return mcpRuntime.handleRegistryTool(input)
+    const output = await mcpRuntime.handleRegistryTool(input)
+    if (output.tools && output.tools.length > 0) {
+      options.exposeMcpServer?.(output.server?.id ?? input.serverName ?? input.serverId ?? input.preset ?? "playwright")
+    }
+    return output
   },
   mcp_dynamic: (input, context) => {
     if (!mcpRuntime) {
@@ -966,20 +1069,35 @@ const semanticRetrievalState = (status: ProjectEmbeddingStatus): string => {
   return status.status ?? "not ready"
 }
 
+const providerCacheKey = (projectId: string, conversationId: string): string => `project:${projectId}:conversation:${conversationId}`
+
 const ensureParagraphBoundary = (text: string): string => (text.endsWith("\n\n") ? "" : "\n\n")
 
 const toContractUsage = (usage: ModelUsage) => ({
   ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
   ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
   ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+  ...(usage.cachedInputTokens === undefined ? {} : { cachedInputTokens: usage.cachedInputTokens }),
+  ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+  ...(usage.uncachedInputTokens === undefined ? {} : { uncachedInputTokens: usage.uncachedInputTokens }),
   ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+  ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
+  ...(usage.costSource === undefined ? {} : { costSource: usage.costSource }),
 })
 
 const toStoredUsage = (usage: ModelUsage) => ({
   ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
   ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
   ...(usage.reasoningTokens === undefined ? {} : { reasoningTokens: usage.reasoningTokens }),
+  ...(usage.cachedInputTokens === undefined ? {} : { cachedInputTokens: usage.cachedInputTokens }),
+  ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens: usage.cacheWriteTokens }),
+  ...(usage.uncachedInputTokens === undefined ? {} : { uncachedInputTokens: usage.uncachedInputTokens }),
   ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+  ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
+  ...(usage.costSource === undefined ? {} : { costSource: usage.costSource }),
+  ...(usage.pricingSnapshot === undefined ? {} : { pricingSnapshot: usage.pricingSnapshot }),
+  ...(usage.providerMetadata === undefined ? {} : { providerMetadata: usage.providerMetadata }),
+  ...(usage.raw === undefined ? {} : { raw: usage.raw }),
 })
 
 const isBashOutput = (

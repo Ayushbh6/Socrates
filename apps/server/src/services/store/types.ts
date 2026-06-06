@@ -1,6 +1,8 @@
 import type {
   Conversation,
+  ConversationCostUsage,
   Message,
+  TurnUsageReport,
   Project,
   ProjectEmbeddingStatus,
   ProjectInstructions,
@@ -29,6 +31,8 @@ export type CreatedTurn = {
   turnId: string
   runtimeConfigId: string
   userMessage: Message
+  shouldGenerateTitle: boolean
+  fallbackTitle: string
 }
 
 export type StoredModelUsage = {
@@ -36,8 +40,19 @@ export type StoredModelUsage = {
   outputTokens?: number
   reasoningTokens?: number
   cachedInputTokens?: number
+  cacheWriteTokens?: number
+  uncachedInputTokens?: number
   totalTokens?: number
+  costUsd?: number
+  costSource?: "provider_reported" | "computed" | "unknown"
+  pricingSnapshot?: unknown
+  providerMetadata?: unknown
   raw?: unknown
+}
+
+export type ConversationUsageReportBundle = {
+  costUsage: ConversationCostUsage
+  turnUsageReports: TurnUsageReport[]
 }
 
 export type ConversationModelMessage = {

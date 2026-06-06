@@ -204,24 +204,24 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   };
 
   return (
-    <main className="min-h-screen bg-brand-bg py-12 px-6 flex justify-center">
-      <div className="w-full max-w-5xl">
+    <main className="flex min-h-screen justify-center overflow-y-auto bg-brand-bg px-6 py-10 md:h-screen md:overflow-hidden">
+      <div className="w-full max-w-6xl md:flex md:min-h-0 md:flex-col">
         <BackLink href="/projects" label="All projects" />
         
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-12 mt-4">
+        <div className="mt-4 grid grid-cols-1 gap-10 md:min-h-0 md:flex-1 md:grid-cols-[minmax(0,1fr)_360px]">
           {/* Main Column - Left (2/3 width) */}
-          <div className="md:col-span-2">
+          <div className="flex min-h-0 flex-col">
             {isLoading && <p className="text-sm text-brand-text-light">Loading project...</p>}
             {error && <p className="text-sm text-red-600">{error}</p>}
             {data && (
-              <>
+              <div className="shrink-0">
                 <h1 className="text-4xl font-serif text-brand-text-dark mb-2">{data.project.name}</h1>
                 {data.project.description && (
                   <p className="line-clamp-2 max-w-2xl text-base leading-7 text-brand-text-light">
                     {truncatePreview(data.project.description, 80)}
                   </p>
                 )}
-              </>
+              </div>
             )}
             
             <StartChatAction isStarting={isStartingChat} onStart={handleStartNewChat} />
@@ -235,7 +235,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
           </div>
 
           {/* Resources Column - Right (1/3 width) */}
-          <div className="md:col-span-1 border border-gray-200 bg-white rounded-3xl px-6 pb-2 shadow-sm self-start">
+          <div className="min-h-0 overflow-y-auto rounded-3xl border border-gray-200 bg-white px-6 pb-2 shadow-sm">
             <WorkspacePanel
               workspace={data?.primaryWorkspace}
               isSaving={isSavingWorkspace}

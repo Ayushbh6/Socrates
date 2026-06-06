@@ -11,11 +11,14 @@ export const activeTurnStatuses = ["queued", "running", "awaiting_approval"]
 export const defaultConversationTitle = "New conversation"
 
 export const deriveConversationTitle = (content: string): string => {
-  const firstWord = content.trim().split(/\s+/)[0] ?? defaultConversationTitle
-  if (firstWord.length <= 10) {
-    return firstWord
+  const normalized = content.trim().replace(/\s+/g, " ")
+  if (!normalized) {
+    return "Image chat..."
   }
-  return `${firstWord.slice(0, 10)}...`
+  if (normalized.length <= 15) {
+    return normalized
+  }
+  return `${normalized.slice(0, 15).trimEnd()}...`
 }
 
 export type StoreContext = {

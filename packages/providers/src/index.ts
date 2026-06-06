@@ -5,6 +5,8 @@ export { OllamaEmbeddingProvider, normalizeBaseUrl } from "./embeddings/OllamaEm
 export { OpenAiEmbeddingProvider } from "./embeddings/OpenAiEmbeddingProvider"
 export { ProviderRouter } from "./ProviderRouter"
 export { envProviderApiKey, envProviderCredentialResolver } from "./credentials"
+export { openRouterProviderRoutingByModelId, openRouterProviderRoutingForModel } from "./openRouterRouting"
+export type { OpenRouterProviderRouting } from "./openRouterRouting"
 export {
   DEFAULT_TOKEN_SAFETY_MARGIN_PERCENT,
   countModelRequestLocally,
@@ -14,6 +16,7 @@ export {
   type TokenCountResult,
 } from "./tokenCounting"
 export { defaultModel, findModelOption, listModels, modelCatalog } from "./modelCatalog/modelCatalog"
+export { computeUsageCost, normalizeProviderUsage, pricingSnapshotForModel } from "./usage"
 export type {
   EmbeddingCheckRequest,
   EmbeddingCheckResult,
@@ -27,5 +30,6 @@ export type {
   ModelProvider,
   ModelRequest,
   ModelUsage,
+  PricingSnapshot,
   ProviderCredentialResolver,
 } from "./types"

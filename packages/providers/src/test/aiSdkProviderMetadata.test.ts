@@ -7,7 +7,7 @@ import {
   editToolModelInputSchema,
   traceRetrieveToolModelInputSchema,
 } from "@socrates/contracts"
-import { inputSchemaForAiTool, normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
+import { inputSchemaForAiTool, mapUsage, normalizeAiSdkToolCallPart, toAiModelMessage } from "../ai-sdk/AiSdkProvider"
 
 describe("AI SDK provider metadata", () => {
   it("preserves Gemini thought signatures from streamed tool calls", () => {
@@ -108,6 +108,52 @@ describe("AI SDK provider metadata", () => {
         { type: "image", mediaType: "image/png", image: "aGVsbG8=" },
       ],
     })
+  })
+
+  it("passes final provider metadata into normalized usage", () => {
+    const usage = mapUsage(
+      "openrouter",
+      "deepseek/deepseek-v4-flash",
+      {
+        inputTokens: 1000,
+        outputTokens: 100,
+        totalTokens: 1100,
+        inputTokenDetails: {},
+        outputTokenDetails: {},
+        raw: {
+          prompt_tokens: 1000,
+          completion_tokens: 100,
+          total_tokens: 1100,
+        },
+      } as never,
+      {
+        openrouter: {
+          provider: "DeepSeek",
+          usage: {
+            cost: 0.0012,
+            promptTokensDetails: {
+              cachedTokens: 700,
+            },
+          },
+        },
+      },
+    )
+
+    expect(usage.providerMetadata).toEqual({
+      openrouter: {
+        provider: "DeepSeek",
+        usage: {
+          cost: 0.0012,
+          promptTokensDetails: {
+            cachedTokens: 700,
+          },
+        },
+      },
+    })
+    expect(usage.costUsd).toBe(0.0012)
+    expect(usage.costSource).toBe("provider_reported")
+    expect(usage.cachedInputTokens).toBe(700)
+    expect(usage.raw).toMatchObject({ prompt_tokens: 1000 })
   })
 
   it("keeps runtime schemas flat while exposing model-friendly schemas", () => {

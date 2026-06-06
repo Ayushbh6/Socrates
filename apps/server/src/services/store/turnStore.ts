@@ -105,7 +105,14 @@ export class TurnStore extends StoreBase {
       payload: { turnId, userMessage },
     })
 
-    return { sessionId, turnId, runtimeConfigId, userMessage }
+    return {
+      sessionId,
+      turnId,
+      runtimeConfigId,
+      userMessage,
+      shouldGenerateTitle: shouldDeriveTitle,
+      fallbackTitle: nextTitle ?? defaultConversationTitle,
+    }
   }
 
   completeAgentTurn(input: {

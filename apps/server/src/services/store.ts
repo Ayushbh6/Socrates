@@ -10,6 +10,7 @@ import type {
   Conversation,
   ConversationActivityStep,
   ConversationContextUsage,
+  ConversationCostUsage,
   ConversationPartialTurn,
   ConversationTerminal,
   ConversationTokenUsage,
@@ -74,6 +75,7 @@ import { TurnStore } from "./store/turnStore"
 import type {
   AgentContext,
   ConversationModelMessage,
+  ConversationUsageReportBundle,
   CreatedTurn,
   ProjectDashboard,
   ProjectListItem,
@@ -87,6 +89,7 @@ import { UserStore } from "./store/userStore"
 export type {
   AgentContext,
   ConversationModelMessage,
+  ConversationUsageReportBundle,
   CreatedTurn,
   ProjectDashboard,
   ProjectListItem,
@@ -304,12 +307,17 @@ export class SocratesStore {
     partialTurns?: ConversationPartialTurn[]
     activitySteps?: ConversationActivityStep[]
     tokenUsage: ConversationTokenUsage
+    costUsage: ConversationCostUsage
+    turnUsageReports?: ConversationUsageReportBundle["turnUsageReports"]
     contextUsage?: ConversationContextUsage
   } {
     const conversation = this.conversations.getConversation(projectId, conversationId)
     const toolRuns = this.tools.getConversationToolRuns(conversationId)
+    const usageReports = this.modelTelemetry.getConversationUsageReportBundle(conversationId)
     return {
       ...conversation,
+      costUsage: usageReports.costUsage,
+      ...(usageReports.turnUsageReports.length > 0 ? { turnUsageReports: usageReports.turnUsageReports } : {}),
       toolRuns,
       activitySteps: this.modelTelemetry.getConversationActivitySteps(conversationId, toolRuns),
       terminals: this.terminals.listConversationTerminals(conversationId),
@@ -322,6 +330,10 @@ export class SocratesStore {
     input: CreateConversationMessageRequest,
   ): { conversation: Conversation; message: Message } {
     return this.conversations.createConversationUserMessage(projectId, conversationId, input)
+  }
+
+  autoTitleConversation(projectId: string, conversationId: string, title: string, expectedTitle?: string): Conversation | undefined {
+    return this.conversations.autoTitleConversation(projectId, conversationId, title, expectedTitle)
   }
 
   deleteConversation(projectId: string, conversationId: string): { deletedConversationId: string } {
@@ -409,6 +421,22 @@ export class SocratesStore {
     this.modelTelemetry.recordContextUsageSnapshot(input)
   }
 
+  recordConversationTitleUsage(input: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId: string
+    sourceId: string
+    providerId: string
+    modelId: string
+    status: string
+    startedAt?: string
+    completedAt?: string
+    usage?: StoredModelUsage
+  }): void {
+    this.modelTelemetry.recordConversationTitleUsage(input)
+  }
+
   getLatestContextCompactionSnapshot(conversationId: string): ContextCompactionSummary | undefined {
     return this.contextCompactions.getLatestActive(conversationId)
   }
@@ -422,6 +450,22 @@ export class SocratesStore {
   completeContextCompactionSnapshot(input: CompleteCompactionSnapshotInput): void {
     const completed = this.contextCompactions.complete(input)
     if (completed) {
+      this.modelTelemetry.recordContextCompactionUsage({
+        projectId: completed.projectId,
+        conversationId: completed.conversationId,
+        sessionId: completed.sessionId,
+        snapshotId: completed.snapshotId,
+        providerId: completed.providerId,
+        modelId: completed.modelId,
+        status: completed.status,
+        ...(completed.turnId ? { turnId: completed.turnId } : {}),
+        ...(completed.startedAt ? { startedAt: completed.startedAt } : {}),
+        ...(completed.completedAt ? { completedAt: completed.completedAt } : {}),
+        ...(completed.usage ? { usage: completed.usage } : {}),
+      })
+      if (completed.turnId) {
+        this.modelTelemetry.buildTurnUsageReport(completed.turnId)
+      }
       this.traces.indexCompactionSnapshot(completed)
     }
   }
@@ -432,6 +476,10 @@ export class SocratesStore {
 
   getConversationTokenUsage(conversationId: string): ConversationTokenUsage {
     return this.modelTelemetry.getConversationTokenUsage(conversationId)
+  }
+
+  buildTurnUsageReport(turnId: string) {
+    return this.modelTelemetry.buildTurnUsageReport(turnId)
   }
 
   completePlaceholderTurn(projectId: string, conversationId: string, turnId: string): Message | null {

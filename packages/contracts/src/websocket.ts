@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { apiErrorSchema } from "./api"
-import { idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
-import { providerIdSchema, thinkingEffortSchema } from "./models"
+import { conversationSchema, idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
+import { providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
 import { terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const schemaVersionSchema = z.literal(1)
@@ -164,6 +164,12 @@ export const turnStartedPayloadSchema = z
   .object({
     turnId: idSchema,
     userMessage: messageSchema,
+  })
+  .strict()
+
+export const conversationUpdatedPayloadSchema = z
+  .object({
+    conversation: conversationSchema,
   })
   .strict()
 
@@ -410,7 +416,12 @@ export const modelUsageSchema = z
     inputTokens: z.number().int().nonnegative().optional(),
     outputTokens: z.number().int().nonnegative().optional(),
     reasoningTokens: z.number().int().nonnegative().optional(),
+    cachedInputTokens: z.number().int().nonnegative().optional(),
+    cacheWriteTokens: z.number().int().nonnegative().optional(),
+    uncachedInputTokens: z.number().int().nonnegative().optional(),
     totalTokens: z.number().int().nonnegative().optional(),
+    costUsd: z.number().nonnegative().optional(),
+    costSource: z.enum(["provider_reported", "computed", "unknown"]).optional(),
   })
   .strict()
 
@@ -418,6 +429,7 @@ export const messageCompletedPayloadSchema = z
   .object({
     message: messageSchema,
     usage: modelUsageSchema.optional(),
+    turnUsageReport: turnUsageReportSchema.optional(),
   })
   .strict()
 
@@ -426,6 +438,7 @@ export const turnCompletedPayloadSchema = z
     turnId: idSchema,
     assistantMessageId: idSchema.optional(),
     summary: z.string().optional(),
+    turnUsageReport: turnUsageReportSchema.optional(),
   })
   .strict()
 
@@ -495,6 +508,7 @@ export const terminalInputRequestedPayloadSchema = terminalEventPayloadBaseSchem
 
 export const connectionReadyEventSchema = socketEnvelopeSchema("connection.ready", connectionReadyPayloadSchema)
 export const turnStartedEventSchema = socketEnvelopeSchema("turn.started", turnStartedPayloadSchema)
+export const conversationUpdatedEventSchema = socketEnvelopeSchema("conversation.updated", conversationUpdatedPayloadSchema)
 export const agentThinkingDeltaEventSchema = socketEnvelopeSchema("agent.thinking.delta", agentThinkingDeltaPayloadSchema)
 export const agentAnswerDeltaEventSchema = socketEnvelopeSchema("agent.answer.delta", agentAnswerDeltaPayloadSchema)
 export const toolCallStartedEventSchema = socketEnvelopeSchema("tool.call.started", toolCallStartedPayloadSchema)
@@ -552,6 +566,7 @@ export const terminalStaleEventSchema = socketEnvelopeSchema("terminal.stale", t
 export const serverEventSchema = z.discriminatedUnion("type", [
   connectionReadyEventSchema,
   turnStartedEventSchema,
+  conversationUpdatedEventSchema,
   agentThinkingDeltaEventSchema,
   agentAnswerDeltaEventSchema,
   toolCallStartedEventSchema,

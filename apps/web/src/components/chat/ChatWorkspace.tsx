@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { Bell, Eye, EyeOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ClientCommand, Conversation, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent } from "@socrates/contracts";
+import type { ClientCommand, Conversation, ConversationCostUsage, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent, TurnUsageReport } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
 import { ChatComposer } from "./ChatComposer";
@@ -98,6 +98,12 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "conversation.updated") {
+        setConversationData((current) => (current ? { ...current, conversation: event.payload.conversation } : current));
+        replaceConversationInSidebar(event.payload.conversation);
+        return;
+      }
+
       if (event.type === "turn.started") {
         activeTurnIdRef.current = event.payload.turnId;
         liveStepsRef.current = [];
@@ -125,6 +131,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 toolRuns: [],
                 terminals: [],
                 tokenUsage: { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+                costUsage: emptyCostUsage(),
               };
         });
         return;
@@ -345,6 +352,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         setActiveTurnId(null);
         setApprovals([]);
         setIsCompacting(false);
+        if (event.payload.turnUsageReport) {
+          setConversationData((current) => (current ? applyTurnUsageReport(current, event.payload.turnUsageReport as TurnUsageReport) : current));
+        }
         void refreshConversation().finally(() => {
           setSettledLiveTurns((current) => removeSettledLiveTurn(current, completedTurnId));
           if (!activeTurnIdRef.current) {
@@ -409,7 +419,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         }
       }
     },
-    [conversationId, projectId, refreshConversation],
+    [conversationId, projectId, refreshConversation, replaceConversationInSidebar],
   );
 
   const { isConnected, sendCommand } = useSocratesSocket({
@@ -559,6 +569,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               toolRuns: [],
               terminals: [],
               tokenUsage: { totalTokens: 0, inputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+              costUsage: emptyCostUsage(),
             },
       );
 
@@ -706,6 +717,25 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     }
     return null;
   }, [contextUsage]);
+  const costUsage = conversationData?.costUsage;
+  const costLabel = useMemo(() => {
+    if (!costUsage || costUsage.turnCount === 0) {
+      return null;
+    }
+    return costUsage.totalCostUsd === undefined ? "$--" : formatDollarCost(costUsage.totalCostUsd);
+  }, [costUsage]);
+  const costTitle = useMemo(() => {
+    if (!costUsage) {
+      return undefined;
+    }
+    if (costUsage.hasUnknownCost) {
+      return "Cost includes unavailable provider/pricing data";
+    }
+    if (costUsage.hasComputedCost) {
+      return "Cost estimated from pricing";
+    }
+    return "Provider-reported cost";
+  }, [costUsage]);
 
   return (
     <main className="flex h-screen overflow-hidden bg-brand-bg">
@@ -726,6 +756,12 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         >
           <h1 className="truncate text-sm font-medium text-brand-text-dark">{conversationTitle}</h1>
           {tokenLabel ? <span className="ml-4 shrink-0 font-mono text-xs text-brand-text-light">{tokenLabel}</span> : null}
+          {costLabel ? (
+            <span className="ml-3 shrink-0 font-mono text-xs text-brand-text-light" title={costTitle}>
+              {costLabel}
+              {costUsage?.hasComputedCost || costUsage?.hasUnknownCost ? "*" : ""}
+            </span>
+          ) : null}
           <NotificationCenter
             notifications={notifications}
             unreadCount={unreadNotificationCount}
@@ -989,6 +1025,56 @@ const upsertTerminal = (terminals: ConversationTerminal[], terminal: Conversatio
         : terminal.output;
   return [{ ...existing, ...terminal, output }, ...terminals.filter((item) => item.terminalId !== terminal.terminalId)];
 };
+
+const emptyCostUsage = (): ConversationCostUsage => ({
+  totalTokens: 0,
+  cachedInputTokens: 0,
+  cacheWriteTokens: 0,
+  turnCount: 0,
+  costSource: "unknown",
+  hasComputedCost: false,
+  hasUnknownCost: false,
+});
+
+const applyTurnUsageReport = (conversation: GetConversationResponse, report: TurnUsageReport): GetConversationResponse => {
+  const reports = [...(conversation.turnUsageReports ?? []).filter((item) => item.turnId !== report.turnId), report];
+  return {
+    ...conversation,
+    turnUsageReports: reports,
+    costUsage: aggregateCostUsage(reports),
+  };
+};
+
+const aggregateCostUsage = (reports: TurnUsageReport[]): ConversationCostUsage => {
+  const knownCostReports = reports.filter((report) => report.totalCostUsd !== undefined);
+  const totalCostUsd =
+    knownCostReports.length > 0 ? knownCostReports.reduce((sum, report) => sum + (report.totalCostUsd ?? 0), 0) : undefined;
+  const hasComputedCost = reports.some((report) => report.costSource === "computed" || report.costSource === "mixed" || report.qualityFlags.includes("computed_cost_present"));
+  const hasUnknownCost = reports.some((report) => report.costSource === "unknown" || report.costSource === "mixed" || report.qualityFlags.includes("unknown_cost_present"));
+  return {
+    ...(totalCostUsd === undefined ? {} : { totalCostUsd }),
+    totalTokens: reports.reduce((sum, report) => sum + report.totalTokens, 0),
+    cachedInputTokens: reports.reduce((sum, report) => sum + report.cachedInputTokens, 0),
+    cacheWriteTokens: reports.reduce((sum, report) => sum + report.cacheWriteTokens, 0),
+    turnCount: reports.length,
+    costSource: aggregateCostSource(reports.map((report) => report.costSource)),
+    hasComputedCost,
+    hasUnknownCost,
+  };
+};
+
+const aggregateCostSource = (sources: ConversationCostUsage["costSource"][]): ConversationCostUsage["costSource"] => {
+  const unique = new Set(sources);
+  if (unique.size === 0) {
+    return "unknown";
+  }
+  if (unique.size === 1) {
+    return unique.values().next().value ?? "unknown";
+  }
+  return "mixed";
+};
+
+const formatDollarCost = (value: number): string => `$${value.toFixed(value < 0.01 ? 4 : 2)}`;
 
 const terminalEventToConversationTerminal = (
   event: Extract<

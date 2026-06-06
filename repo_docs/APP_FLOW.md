@@ -688,7 +688,7 @@ Primary tool-usage docs are bundled with the server runtime and copied into `~/.
 
 The backend memory agent replaces the old diary-only helper. Completed turn evidence is buffered up to about 60k estimated tokens or a 5-minute idle flush, then DeepSeek v4 Pro is called with MiMo fallback. The agent must return strict JSON with diary append text and optional evidence-backed patches for learned patterns, tool usage docs, or soul proposals. Failures are logged in events and memory-agent tables and must not fail the user chat turn.
 
-`mcp_registry` lists, describes, checks, and configures supported MCP servers without exposing opaque server ids to the model. The model-facing path should use human names or supported presets such as Playwright; dynamic MCP tool names may be added to the provider request after the registry/runtime reports them available.
+`mcp_registry` lists, describes, checks, and configures supported MCP servers without exposing opaque server ids to the model. The system prompt carries only concise registry-first guidance; it must not dump MCP server tool lists or schemas. The first provider call exposes only the core tools plus `mcp_registry`; dynamic `mcp__...` tool names may be added to later same-turn provider requests only after the registry/runtime reports them available.
 
 The intended trace retrieval flow is search first, exact inspection second:
 
@@ -792,7 +792,7 @@ The estimate is provider-aware. Before each model call, Socrates counts the asse
 
 Compression is enabled by default and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`.
 
-The chat header displays the latest estimated model-facing context usage, for example `23,433 tokens`. It does not display cumulative provider token spend. Provider-reported token usage remains persisted for diagnostics and cost accounting.
+The chat header displays the latest estimated model-facing context usage, for example `23,433 tokens`, plus the cumulative conversation cost from completed turn usage reports. Provider-reported token usage remains persisted for compatibility diagnostics, but `turn_usage_reports` and `ai_usage_events` are the source of truth for cost/cache reporting. If exact provider cost is unavailable, computed costs are clearly marked through usage quality flags and the frontend cost marker.
 
 Example:
 
@@ -849,6 +849,8 @@ fallback: OpenRouter stepfun/step-3.7-flash with thinking off
 ```
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
+
+OpenRouter cache-friendly routing uses a stable project/conversation `session_id`. For multi-provider cache-capable models, Socrates avoids manual `provider.order` so OpenRouter sticky routing can keep later same-conversation calls on the same upstream provider. Strict provider pins remain only for single-provider routes and title-generation routes. OpenRouter usage metadata is persisted with routed provider, raw usage, cache-read/write tokens, and provider response metadata; when provider cost is absent, Socrates computes a marked estimate from the versioned endpoint-pricing snapshot in `packages/providers`.
 
 The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. Blocking active-turn compaction emits `started` before awaiting the compressor model so the UI can show a small `Compacting conversation context...` state during the wait. Background precompute remains silent in the live UI and does not add transcript messages.
 
@@ -932,15 +934,16 @@ user sends first message
   -> create assistant message on completion
   -> persist model_calls, model_stream_chunks, model_usage, context_usage_snapshots when a context window is known, and events
   -> update conversations.updated_at
-  -> if title is still "New conversation", update it from the first word of the message
+  -> if this is the first user message, set a short placeholder title and start background generated-title replacement
 ```
 
 Conversation title behavior:
 
 - A newly created conversation starts with the persisted title `New conversation`.
-- When the first user message is sent, the backend updates the conversation title from the first word of the message.
-- If the first word is longer than 10 characters, the title uses the first 10 characters followed by `...`.
-- If the first word is 10 characters or shorter, the title is the first word as written.
+- When the first user message is sent, the backend immediately updates the conversation title to the first 15 normalized characters followed by `...` when truncated.
+- If the first message is image-only, the immediate placeholder is `Image chat...`.
+- In the WebSocket chat path, the backend then generates a personalized title from the first text/image message. It tries OpenRouter `meta-llama/llama-4-maverick` pinned to DeepInfra first, and falls back to OpenRouter `qwen/qwen3.5-flash-02-23` pinned to Alibaba if Llama does not return a title.
+- Generated title updates are emitted as `conversation.updated` so the sidebar/header can replace the placeholder without a full refresh.
 - Later user messages do not auto-rename the conversation.
 - Manual rename through the conversation row menu overrides the title.
 

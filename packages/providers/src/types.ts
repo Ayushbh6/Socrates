@@ -30,13 +30,36 @@ export type ModelUsage = {
   outputTokens?: number
   reasoningTokens?: number
   cachedInputTokens?: number
+  cacheWriteTokens?: number
+  uncachedInputTokens?: number
   totalTokens?: number
+  costUsd?: number
+  costSource?: "provider_reported" | "computed" | "unknown"
+  pricingSnapshot?: PricingSnapshot
+  providerMetadata?: unknown
   raw?: unknown
+}
+
+export type PricingSnapshot = {
+  providerId: ProviderId
+  modelId: string
+  routedProvider?: string
+  source: string
+  sourceUrl?: string
+  currency: "USD"
+  unit: "per_1m_tokens"
+  inputUsdPer1M: number
+  cachedInputUsdPer1M?: number
+  cacheWriteInputUsdPer1M?: number
+  outputUsdPer1M: number
+  effectiveAt: string
 }
 
 export type ModelRequest = {
   providerId: ProviderId
   modelId: string
+  sessionId?: string
+  cacheKey?: string
   system: string
   messages: ModelMessage[]
   runtimeConfig: RuntimeConfig
@@ -68,6 +91,7 @@ export type ModelEvent =
       stepIndex?: number | undefined
     }
   | { type: "model.tool_call.completed"; toolCall: NormalizedToolCall; modelCallId?: string | undefined; stepIndex?: number | undefined }
+  | { type: "model.response.metadata"; response: unknown; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.usage"; usage: ModelUsage; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.completed"; usage?: ModelUsage; finishReason?: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.failed"; error: Error; modelCallId?: string | undefined; stepIndex?: number | undefined }

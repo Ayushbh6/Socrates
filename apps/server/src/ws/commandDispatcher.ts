@@ -1,6 +1,7 @@
 import type { WebSocket } from "ws"
 import type { SocratesAgent } from "@socrates/core"
 import type { McpRuntime } from "@socrates/mcp"
+import type { ModelProvider } from "@socrates/providers"
 import { clientCommandSchema } from "@socrates/contracts"
 import { normalizeError } from "@socrates/shared"
 import { apiError } from "../http"
@@ -21,6 +22,7 @@ export const handleInboundMessage = async (
   terminals: ConversationTerminalManager,
   raw: string,
   mcpRuntime?: McpRuntime,
+  titleProvider?: ModelProvider,
 ): Promise<void> => {
   let parsedJson: unknown
   try {
@@ -48,7 +50,7 @@ export const handleInboundMessage = async (
   try {
     switch (command.type) {
       case "chat.message.send":
-        void handleChatMessageSend(socket, store, agent, activeTurns, terminals, command, mcpRuntime).catch((error) => {
+        void handleChatMessageSend(socket, store, agent, activeTurns, terminals, command, mcpRuntime, titleProvider).catch((error) => {
           const normalized = normalizeError(error)
           emitNormalizedError(socket, store, normalized, idsFromCommand(command))
         })

@@ -64,6 +64,20 @@
       "when": 1780339200000,
       "tag": "0008_memory_agent_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1780425600000,
+      "tag": "0009_ai_usage_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1780512000000,
+      "tag": "0010_model_usage_metadata",
+      "breakpoints": true
     }
   ]
 }

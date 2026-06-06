@@ -19,7 +19,9 @@ import {
   type TokenCountResult,
 } from "../tokenCounting"
 import { envProviderCredentialResolver } from "../credentials"
+import { openRouterProviderRoutingForModel } from "../openRouterRouting"
 import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage, ProviderCredentialResolver } from "../types"
+import { normalizeProviderUsage } from "../usage"
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 type ProviderOptions = Record<string, Record<string, JsonValue>>
@@ -102,6 +104,7 @@ export class AiSdkProvider implements ModelProvider {
 
       const streamingToolInputs = new Map<string, { toolName: string; text: string }>()
       const streamingReasoning = new Map<string, { text: string; providerMetadata?: ProviderMetadata }>()
+      let latestUsageProviderMetadata: ProviderMetadata | undefined
       const flushReasoning = (id?: string): ModelEvent[] => {
         const entries = id === undefined ? [...streamingReasoning.entries()] : streamingReasoning.has(id) ? [[id, streamingReasoning.get(id)!] as const] : []
         const events: ModelEvent[] = []
@@ -120,6 +123,7 @@ export class AiSdkProvider implements ModelProvider {
       }
       for await (const part of result.fullStream) {
         streamTimeout.refresh()
+        const providerPart = part as { type: string; providerMetadata?: ProviderMetadata }
         if (part.type === "reasoning-start") {
           streamingReasoning.set(part.id, { text: "", ...(part.providerMetadata ? { providerMetadata: part.providerMetadata } : {}) })
         }
@@ -168,17 +172,26 @@ export class AiSdkProvider implements ModelProvider {
             toolCall: normalizeAiSdkToolCallPart(part),
           }
         }
+        if (providerPart.type === "response-metadata") {
+          yield { type: "model.response.metadata", response: responseMetadataForStorage(part) }
+        }
         if (part.type === "finish-step") {
-          yield { type: "model.usage", usage: mapUsage(part.usage) }
+          if (part.providerMetadata) {
+            latestUsageProviderMetadata = mergeProviderMetadata(latestUsageProviderMetadata, part.providerMetadata)
+          }
+          yield { type: "model.usage", usage: mapUsage(request.providerId, request.modelId, part.usage, part.providerMetadata) }
         }
         if (part.type === "finish") {
           for (const event of flushReasoning()) {
             yield event
           }
+          if (providerPart.providerMetadata) {
+            latestUsageProviderMetadata = mergeProviderMetadata(latestUsageProviderMetadata, providerPart.providerMetadata)
+          }
           yield {
             type: "model.completed",
             finishReason: part.finishReason,
-            usage: mapUsage(part.totalUsage),
+            usage: mapUsage(request.providerId, request.modelId, part.totalUsage, providerPart.providerMetadata ?? latestUsageProviderMetadata),
           }
         }
         if (part.type === "error") {
@@ -695,23 +708,39 @@ const toToolResultOutput = (output: unknown) =>
     ? { type: "text" as const, value: output }
     : { type: "json" as const, value: output === undefined ? null : (output as never) }
 
-export const mapUsage = (usage: LanguageModelUsage | undefined): ModelUsage => {
+export const mapUsage = (
+  providerId: ModelRequest["providerId"],
+  modelId: string,
+  usage: LanguageModelUsage | undefined,
+  providerMetadata?: ProviderMetadata,
+): ModelUsage => {
   if (!usage) {
-    return {}
+    return providerMetadata ? { providerMetadata } : {}
   }
 
-  return {
-    ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
-    ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
-    ...(usage.outputTokenDetails.reasoningTokens === undefined
-      ? {}
-      : { reasoningTokens: usage.outputTokenDetails.reasoningTokens }),
-    ...(usage.inputTokenDetails.cacheReadTokens === undefined
-      ? {}
-      : { cachedInputTokens: usage.inputTokenDetails.cacheReadTokens }),
-    ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
-    ...(usage.raw === undefined ? {} : { raw: usage.raw }),
-  }
+  return normalizeProviderUsage({
+    providerId,
+    modelId,
+    usage: {
+      ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+      ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+      ...(usage.outputTokenDetails.reasoningTokens === undefined
+        ? {}
+        : { reasoningTokens: usage.outputTokenDetails.reasoningTokens }),
+      ...(usage.inputTokenDetails.cacheReadTokens === undefined
+        ? {}
+        : { cachedInputTokens: usage.inputTokenDetails.cacheReadTokens }),
+      ...(usage.inputTokenDetails.cacheWriteTokens === undefined
+        ? {}
+        : { cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens }),
+      ...(usage.inputTokenDetails.noCacheTokens === undefined
+        ? {}
+        : { uncachedInputTokens: usage.inputTokenDetails.noCacheTokens }),
+      ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
+      ...(usage.raw === undefined ? {} : { raw: usage.raw }),
+      ...(providerMetadata ? { providerMetadata } : {}),
+    },
+  })
 }
 
 const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => {
@@ -743,14 +772,28 @@ const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => 
   }
 }
 
-export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => ({
-  openrouter: {
-    usage: { include: true },
-    reasoning: request.runtimeConfig.thinkingEnabled
-      ? { enabled: true, exclude: false }
-      : { enabled: false, effort: "none", exclude: true },
-  },
-})
+export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => {
+  const providerRouting = openRouterProviderRoutingForModel(request.modelId)
+  const shouldSendProviderRouting = providerRouting && Object.keys(providerRouting).length > 0
+  return {
+    openrouter: {
+      usage: { include: true },
+      ...(request.cacheKey ?? request.sessionId ? { extraBody: { session_id: request.cacheKey ?? request.sessionId } } : {}),
+      ...(shouldSendProviderRouting ? { provider: providerRouting } : {}),
+      reasoning: request.runtimeConfig.thinkingEnabled
+        ? { enabled: true, exclude: false }
+        : { enabled: false, effort: "none", exclude: true },
+    },
+  }
+}
+
+const responseMetadataForStorage = (part: unknown): unknown => {
+  if (!part || typeof part !== "object") {
+    return part
+  }
+  const { type: _type, ...metadata } = part as Record<string, unknown>
+  return metadata
+}
 
 const normalizeProviderError = (error: unknown): Error => {
   if (error instanceof Error) {

@@ -88,6 +88,7 @@ Tool behavior:
 - Use trace_retrieve for older persisted conversation memory. It is read-only and can browse queryless, search, or inspect. Normal query modes return message-first rows; queryless exact mode returns Q/A windows; use mode="audit" only when you need older tool calls, shell output, file operations, patches, or errors. Its semantic capability depends on the runtime semantic retrieval status below; exact/lexical search, queryless browse, and inspect remain available even when embeddings are not ready.
 - Use repo_docs for durable repo doctrine such as architecture, contracts, data rules, provider usage, workflows, and pitfalls. Use socrates_memory for Socrates-owned learned patterns, tool usage docs, project brief, project memory, and diary lookup. Use project_notes for quick workspace-local PROJECT_NOTES.md notes. These are dedicated interfaces; generic mutation tools must not patch PROJECT_NOTES.md or .socrates/repo_docs/*.md.
 - Use mcp_registry when browser automation or MCP setup is relevant. Start with operation="list", "describe", or "check"; use operation="configure" only for supported no-secret presets such as Playwright. Do not ask for or store user secrets through chat; when a server needs secrets, point the user to the configured .env path returned by the tool.
+- MCP server tool lists and schemas are intentionally not embedded in this prompt or the initial tool surface. mcp_registry is the only base MCP-facing tool; dynamic mcp__... tool names may be used only after mcp_registry exposes them during the current turn.
 - Read-only tools can run in parallel. Mutating or shell execution should be treated as serialized and approval-aware.
 
 Operational examples:
@@ -152,7 +153,7 @@ export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): stri
       : context.semanticRetrievalStatus
   const mcpRuntimeBrief =
     context.mcpRuntimeBrief === undefined || context.mcpRuntimeBrief.length === 0
-      ? "MCP available on demand: Playwright. Use mcp_registry for details when browser automation or MCP setup is relevant."
+      ? "MCP available on demand through mcp_registry. Dynamic MCP tool details are not included in this prompt or initial tool schemas."
       : context.mcpRuntimeBrief
   const terminalContext =
     context.terminalContext === undefined || context.terminalContext.length === 0 ? "No active or recent terminals." : context.terminalContext

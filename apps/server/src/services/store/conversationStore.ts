@@ -16,6 +16,7 @@ import {
   approvals,
   artifacts,
   audioOutputs,
+  aiUsageEvents,
   contextUsageSnapshots,
   conversations,
   errors,
@@ -39,6 +40,7 @@ import {
   traceEmbeddings,
   traceIndexJobs,
   turnRuntimeConfigs,
+  turnUsageReports,
   turns,
   voiceInputs,
 } from "../../db/schema"
@@ -120,6 +122,41 @@ export class ConversationStore extends StoreBase {
       source: "server",
       payload: { projectId, conversationId, title },
     })
+
+    return mapConversation(this.mustGetConversationRow(projectId, conversationId))
+  }
+
+  autoTitleConversation(
+    projectId: string,
+    conversationId: string,
+    title: string,
+    expectedTitle = defaultConversationTitle,
+  ): Conversation | undefined {
+    this.mustGetConversationRow(projectId, conversationId)
+    const nextTitle = title.trim()
+    if (!nextTitle) {
+      return
+    }
+
+    const now = nowIso()
+    const result = this.handle.db
+      .update(conversations)
+      .set({
+        title: nextTitle,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(conversations.projectId, projectId),
+          eq(conversations.id, conversationId),
+          eq(conversations.title, expectedTitle),
+        ),
+      )
+      .run()
+
+    if (result.changes === 0) {
+      return
+    }
 
     return mapConversation(this.mustGetConversationRow(projectId, conversationId))
   }
@@ -341,6 +378,8 @@ export class ConversationStore extends StoreBase {
         this.handle.db.delete(turnRuntimeConfigs).where(inArray(turnRuntimeConfigs.turnId, turnIds)).run()
         this.handle.db.delete(modelStreamChunks).where(inArray(modelStreamChunks.turnId, turnIds)).run()
         this.handle.db.delete(modelUsage).where(inArray(modelUsage.turnId, turnIds)).run()
+        this.handle.db.delete(aiUsageEvents).where(inArray(aiUsageEvents.turnId, turnIds)).run()
+        this.handle.db.delete(turnUsageReports).where(inArray(turnUsageReports.turnId, turnIds)).run()
       }
       if (sessionIds.length > 0) {
         this.handle.db.delete(sessionState).where(inArray(sessionState.sessionId, sessionIds)).run()

@@ -9,6 +9,7 @@ import { and, desc, eq } from "drizzle-orm"
 import { contextCompactionSnapshots } from "../../db/schema"
 import { StoreBase } from "./shared"
 import type { ErrorStore } from "./errorStore"
+import type { StoredModelUsage } from "./types"
 
 export type CompletedCompactionSnapshotRecord = {
   projectId: string
@@ -16,6 +17,12 @@ export type CompletedCompactionSnapshotRecord = {
   sessionId: string
   turnId?: string
   snapshotId: string
+  providerId: string
+  modelId: string
+  status: string
+  startedAt?: string
+  completedAt?: string
+  usage?: StoredModelUsage
   renderedSummary: string
   sourceHandles: Array<Record<string, unknown>>
 }
@@ -112,6 +119,12 @@ export class ContextCompactionStore extends StoreBase {
       sessionId: row.sessionId,
       ...(row.turnId ? { turnId: row.turnId } : {}),
       snapshotId: input.snapshotId,
+      providerId: input.compressorProviderId ?? row.compressorProviderId,
+      modelId: input.compressorModelId ?? row.compressorModelId,
+      status: "completed",
+      startedAt: row.startedAt,
+      completedAt: now,
+      ...(input.usage ? { usage: input.usage } : {}),
       renderedSummary: input.renderedSummary,
       sourceHandles: input.sourceHandles,
     }

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { idSchema } from "./entities"
 
 export const providerIdSchema = z.enum(["openai", "google", "openrouter"])
 
@@ -65,6 +66,63 @@ export const conversationContextUsageSchema = z
   })
   .strict()
 
+export const aiUsageCostSourceSchema = z.enum(["provider_reported", "computed", "unknown", "mixed"])
+
+export const aiUsageSourceKindSchema = z.enum(["main_model_call", "context_compaction", "conversation_title"])
+
+export const usageBreakdownItemSchema = z
+  .object({
+    key: z.string().min(1),
+    providerId: providerIdSchema.optional(),
+    modelId: z.string().min(1).optional(),
+    sourceKind: aiUsageSourceKindSchema.optional(),
+    sourceId: idSchema.optional(),
+    status: z.string().min(1).optional(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    reasoningTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative(),
+    cacheWriteTokens: z.number().int().nonnegative(),
+    uncachedInputTokens: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    costUsd: z.number().nonnegative().optional(),
+    costSource: aiUsageCostSourceSchema.optional(),
+  })
+  .strict()
+
+export const turnUsageReportSchema = z
+  .object({
+    turnId: idSchema,
+    totalCostUsd: z.number().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    reasoningTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative(),
+    cacheWriteTokens: z.number().int().nonnegative(),
+    uncachedInputTokens: z.number().int().nonnegative(),
+    costSource: aiUsageCostSourceSchema,
+    providerBreakdown: z.array(usageBreakdownItemSchema),
+    modelBreakdown: z.array(usageBreakdownItemSchema),
+    callBreakdown: z.array(usageBreakdownItemSchema),
+    compactionBreakdown: z.array(usageBreakdownItemSchema),
+    qualityFlags: z.array(z.string().min(1)),
+  })
+  .strict()
+
+export const conversationCostUsageSchema = z
+  .object({
+    totalCostUsd: z.number().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative(),
+    cachedInputTokens: z.number().int().nonnegative(),
+    cacheWriteTokens: z.number().int().nonnegative(),
+    turnCount: z.number().int().nonnegative(),
+    costSource: aiUsageCostSourceSchema,
+    hasComputedCost: z.boolean(),
+    hasUnknownCost: z.boolean(),
+  })
+  .strict()
+
 export type ProviderId = z.infer<typeof providerIdSchema>
 export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>
 export type ModelThinkingOption = z.infer<typeof modelThinkingOptionSchema>
@@ -72,3 +130,8 @@ export type ModelOption = z.infer<typeof modelOptionSchema>
 export type ListModelsResponse = z.infer<typeof listModelsResponseSchema>
 export type ConversationTokenUsage = z.infer<typeof conversationTokenUsageSchema>
 export type ConversationContextUsage = z.infer<typeof conversationContextUsageSchema>
+export type AiUsageCostSource = z.infer<typeof aiUsageCostSourceSchema>
+export type AiUsageSourceKind = z.infer<typeof aiUsageSourceKindSchema>
+export type UsageBreakdownItem = z.infer<typeof usageBreakdownItemSchema>
+export type TurnUsageReport = z.infer<typeof turnUsageReportSchema>
+export type ConversationCostUsage = z.infer<typeof conversationCostUsageSchema>

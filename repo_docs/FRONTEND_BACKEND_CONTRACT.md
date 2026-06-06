@@ -864,6 +864,17 @@ type GetConversationResponse = {
     outputTokens: number
     reasoningTokens: number
   }
+  costUsage: {
+    totalCostUsd?: number
+    totalTokens: number
+    cachedInputTokens: number
+    cacheWriteTokens: number
+    turnCount: number
+    costSource: "provider_reported" | "computed" | "unknown" | "mixed"
+    hasComputedCost: boolean
+    hasUnknownCost: boolean
+  }
+  turnUsageReports?: TurnUsageReport[]
   contextUsage?: {
     providerId: string
     modelId: string
@@ -883,7 +894,9 @@ Cancelled turns may include a cancelled partial assistant message when user-visi
 
 `partialTurns` contains incomplete turn text recovered from persisted `model_stream_chunks` for running, failed, or cancelled turns that do not have a completed assistant message row. It lets the frontend show recovered answer text, reasoning, and historical tool runs after reload instead of making the last user query look unanswered. A returned `partialTurns` item with `status = "running"` should restore the active stop-button state.
 
-`tokenUsage` remains cumulative provider-reported usage for diagnostics and cost accounting. `contextUsage` is the model-facing context budget count for the latest provider call, not cumulative spend. The chat header should use `contextUsage.contextUsedTokens` when available, not `tokenUsage.totalTokens`.
+`tokenUsage` remains cumulative provider-reported usage for compatibility diagnostics. `costUsage` is the source for conversation cost/cache reporting and is materialized from completed `turnUsageReports`. The chat header shows `contextUsage.contextUsedTokens` when available and a small cumulative `costUsage.totalCostUsd` label beside it; computed or unknown costs should be marked subtly. `contextUsage` is the model-facing context budget count for the latest provider call, not cumulative spend.
+
+OpenRouter cost reports should prefer exact `providerMetadata.openrouter.usage.cost` when available. If provider cost is absent, the backend may return a computed cost from its versioned OpenRouter endpoint-pricing snapshot and mark the report `computed`; if neither exact nor computed cost is possible, `hasUnknownCost` remains true. OpenRouter routed-provider metadata and generation response metadata are persisted for audit and are not sent to the frontend as raw prompt/request dumps.
 
 The backend computes `contextUsage.contextUsedTokens` from the assembled provider-call payload: system prompt, visible messages, hidden compaction summaries, current-turn tool calls/results, and the tool definitions/schemas available for that call. Completed previous turns still contribute only visible user queries and final assistant answers; historical tool evidence stays in audit/tool tables unless it is part of the active turn or a hidden compaction summary.
 
@@ -977,14 +990,27 @@ create messages row with role = "user" and status = "completed"
 complete the turn immediately in the no-AI UI slice so the conversation can accept another message
 update conversations.updated_at
 if the conversation title is "New conversation" and this is the first user message:
-  update the title from the first word of the message
+  update the title to the immediate 15-character placeholder
 ```
 
 Title derivation:
 
 ```text
-first word length <= 10 -> title = first word
-first word length > 10 -> title = first 10 characters + "..."
+non-empty text length <= 15 -> title = normalized first-message text
+non-empty text length > 15 -> title = first 15 normalized characters + "..."
+image-only first message -> title = "Image chat..."
+```
+
+WebSocket chat title generation:
+
+```text
+normal chat send uses WebSocket chat.message.send
+after the first user message is saved, emit conversation.updated with the placeholder title
+generate a personalized title from the first text/image message
+primary title model: openrouter meta-llama/llama-4-maverick, pinned to DeepInfra
+fallback title model: openrouter qwen/qwen3.5-flash-02-23, pinned to Alibaba
+if a generated title is returned and the title is still the placeholder, update the conversation and emit conversation.updated
+record title-generation usage into ai_usage_events with source_kind = conversation_title when provider usage is available
 ```
 
 Frontend behavior:
@@ -993,7 +1019,7 @@ Frontend behavior:
 normal chat send uses WebSocket chat.message.send, not this endpoint
 after the first message is saved, move composer from centered state to bottom state
 append the returned user message to the transcript
-refresh local conversation title from the response
+refresh local conversation title from conversation.updated or the response
 ```
 
 ### Notification Endpoints
@@ -1623,7 +1649,7 @@ list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the base model-visible surface should remain the tools above plus any dynamic MCP tools that the MCP runtime explicitly exposes. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the base model-visible surface should remain the tools above plus `mcp_registry`. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 

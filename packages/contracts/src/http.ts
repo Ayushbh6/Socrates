@@ -14,7 +14,7 @@ import {
   projectWorkspaceSchema,
   userSchema,
 } from "./entities"
-import { conversationContextUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema } from "./models"
+import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, turnUsageReportSchema } from "./models"
 import { providerIdSchema } from "./models"
 import { terminalStatusSchema, toolNameSchema } from "./tools"
 
@@ -551,6 +551,8 @@ export const getConversationResponseSchema = z
     terminals: z.array(conversationTerminalSchema).optional(),
     partialTurns: z.array(conversationPartialTurnSchema).optional(),
     tokenUsage: conversationTokenUsageSchema,
+    costUsage: conversationCostUsageSchema,
+    turnUsageReports: z.array(turnUsageReportSchema).optional(),
     contextUsage: conversationContextUsageSchema.optional(),
   })
   .strict()

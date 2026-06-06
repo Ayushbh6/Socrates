@@ -66,6 +66,7 @@ describe("SocratesAgent", () => {
       "list_project_resources",
       "mcp_registry",
     ])
+    expect(tools.map((tool) => tool.name).some((name) => name.startsWith("mcp__playwright__"))).toBe(false)
     expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(
       tools
@@ -986,6 +987,8 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("provider secrets")
     expect(request.system).toContain("Semantic retrieval status:")
     expect(request.system).toContain("Semantic retrieval: ready.")
+    expect(request.system).toContain("mcp_registry is the only base MCP-facing tool")
+    expect(request.system).not.toContain("mcp__playwright__")
     expect(request.system).toContain('mode="exact"')
     expect(request.system).toContain('mode="audit"')
     expect(request.system).toContain("Do not hardcode or guess absolute workspace paths")

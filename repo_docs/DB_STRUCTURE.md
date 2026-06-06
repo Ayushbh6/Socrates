@@ -513,11 +513,24 @@ Stores token usage and cost for model calls.
 | `output_tokens` | `INTEGER` | no | Visible answer output tokens. |
 | `reasoning_tokens` | `INTEGER` | no | Reasoning/thinking tokens if provider reports them. |
 | `cached_input_tokens` | `INTEGER` | no | Cached input tokens if provider reports them. |
+| `cache_write_tokens` | `INTEGER` | no | Cache-write tokens when provider reports or normalizes them. |
+| `uncached_input_tokens` | `INTEGER` | no | Input tokens not served from cache when derivable. |
 | `tool_call_tokens` | `INTEGER` | no | Tool-call-related tokens if separately reported. |
 | `total_tokens` | `INTEGER` | no | Total tokens reported or calculated. |
 | `cost_usd` | `REAL` | no | Estimated or provider-reported cost. |
+| `cost_source` | `TEXT` | no | `provider_reported`, `computed`, or `unknown`. |
+| `pricing_snapshot_json` | `TEXT` | no | Versioned pricing snapshot for computed costs. |
 | `raw_usage_json` | `TEXT` | no | Raw usage object from provider. |
+| `metadata_json` | `TEXT` | no | Provider usage metadata, for example OpenRouter routed provider and provider usage fields. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
+
+## `ai_usage_events`
+
+Canonical append/update ledger for billable AI work tied to a visible turn. Rows use `source_kind` (`main_model_call`, `context_compaction`, or `conversation_title`) plus `source_id` to connect model calls, compaction snapshots, and title generation to provider/model/status, token totals, cache read/write tokens, `cost_usd`, `cost_source`, `pricing_snapshot_json`, raw provider usage metadata, and provider metadata.
+
+## `turn_usage_reports`
+
+Materialized completed-turn cost/cache report keyed by `turn_id`. Stores cumulative token/cache/cost totals plus provider/model/call/compaction breakdown JSON and quality flags such as computed or unknown cost sources. `model_usage` remains compatibility storage; UI/API cost reporting should use `turn_usage_reports` and `ai_usage_events`.
 
 ## `context_usage_snapshots`
 

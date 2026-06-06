@@ -44,7 +44,7 @@ const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-se
 const buildTestServer = async (
   dbPath = tempDbPath(),
   agent = createTestAgent(),
-  options: { socratesHome?: string } = {},
+  options: { socratesHome?: string; titleProvider?: ModelProvider | false } = {},
 ): Promise<TestServer> => {
   const app = await buildServer({ dbPath, agent, ...options })
   servers.push(app)
@@ -116,6 +116,42 @@ const createTestAgent = (): SocratesAgent => {
   }
   return new SocratesAgent(provider)
 }
+
+const createTitleProvider = (title: string, requestedModelIds: string[] = []): ModelProvider => ({
+  countTokens: fakeCountTokens,
+  async *stream(request) {
+    requestedModelIds.push(request.modelId)
+    yield { type: "model.answer.delta", text: title }
+    yield {
+      type: "model.completed",
+      usage: {
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+      },
+    }
+  },
+})
+
+const createFallbackTitleProvider = (title: string, requestedModelIds: string[]): ModelProvider => ({
+  countTokens: fakeCountTokens,
+  async *stream(request) {
+    requestedModelIds.push(request.modelId)
+    if (request.modelId === "meta-llama/llama-4-maverick") {
+      yield { type: "model.failed", error: new Error("Primary title model unavailable") }
+      return
+    }
+    yield { type: "model.answer.delta", text: title }
+    yield {
+      type: "model.completed",
+      usage: {
+        inputTokens: 8,
+        outputTokens: 4,
+        totalTokens: 12,
+      },
+    }
+  },
+})
 
 const createCapturingAgent = (requests: unknown[]): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
@@ -956,6 +992,8 @@ describe("database migrations", () => {
         "model_calls",
         "model_stream_chunks",
         "model_usage",
+        "ai_usage_events",
+        "turn_usage_reports",
         "context_usage_snapshots",
         "context_compaction_snapshots",
         "tool_calls",
@@ -1011,6 +1049,128 @@ describe("database migrations", () => {
         .all("conv_duplicate_provider") as Array<{ id: string; provider_tool_call_id: string }>
       expect(rows.map((row) => row.id)).toEqual(["tcall_internal_1", "tcall_internal_2"])
       expect(rows.map((row) => row.provider_tool_call_id)).toEqual(["functions.read:0", "functions.read:0"])
+    } finally {
+      handle.close()
+    }
+  })
+
+  it("materializes AI usage events into completed turn cost reports", () => {
+    const dbPath = tempDbPath()
+    const handle = openDatabase(dbPath)
+    runMigrations(handle)
+    const store = new SocratesStore(handle)
+    const now = nowIso()
+    const userId = createId("user")
+    const projectId = createId("proj")
+    const conversationId = createId("conv")
+    const sessionId = createId("sess")
+    const turnId = createId("turn")
+    const snapshotId = createId("ctxcmp")
+
+    try {
+      handle.sqlite
+        .prepare("INSERT INTO users (id, display_name, onboarding_completed, created_at, updated_at) VALUES (?, ?, 1, ?, ?)")
+        .run(userId, "Ayush", now, now)
+      handle.sqlite
+        .prepare("INSERT INTO projects (id, user_id, name, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
+        .run(projectId, userId, "Usage Test", now, now)
+      handle.sqlite
+        .prepare("INSERT INTO conversations (id, project_id, user_id, title, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)")
+        .run(conversationId, projectId, userId, "Usage", now, now)
+      handle.sqlite
+        .prepare("INSERT INTO sessions (id, project_id, conversation_id, status, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?)")
+        .run(sessionId, projectId, conversationId, now, now)
+      handle.sqlite
+        .prepare("INSERT INTO turns (id, session_id, conversation_id, status, started_at, completed_at) VALUES (?, ?, ?, 'completed', ?, ?)")
+        .run(turnId, sessionId, conversationId, now, now)
+
+      const modelCallId = store.createModelCall({
+        conversationId,
+        sessionId,
+        turnId,
+        runtimeConfigId: "rtc_usage",
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        request: { modelId: "gpt-5.4-mini" },
+      })
+      store.completeModelCall({
+        modelCallId,
+        response: { ok: true },
+        providerResponse: { id: "gen_1", provider: "OpenAI" },
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 100,
+          cachedInputTokens: 400,
+          uncachedInputTokens: 600,
+          totalTokens: 1100,
+          costUsd: 0.00093,
+          costSource: "computed",
+          pricingSnapshot: { source: "test" },
+          providerMetadata: { openai: { requestId: "resp_1" } },
+          raw: { provider: "openai" },
+        },
+      })
+
+      store.startContextCompactionSnapshot({
+        snapshotId,
+        projectId,
+        conversationId,
+        sessionId,
+        turnId,
+        reason: "threshold",
+        contextTokensEstimate: 1000,
+        targetTokens: 400,
+        compressorProviderId: "openrouter",
+        compressorModelId: "deepseek/deepseek-v4-flash",
+        sourceMessageIds: [],
+        sourceTurnIds: [turnId],
+      })
+      store.completeContextCompactionSnapshot({
+        snapshotId,
+        summary: { retained: [] },
+        renderedSummary: "Compacted.",
+        sourceHandles: [],
+        inputTokensEstimate: 200,
+        outputTokensEstimate: 50,
+        contextTokensAfter: 450,
+        compressorProviderId: "openrouter",
+        compressorModelId: "deepseek/deepseek-v4-flash",
+        usage: {
+          inputTokens: 200,
+          outputTokens: 50,
+          totalTokens: 250,
+          costUsd: 0.0004,
+          costSource: "provider_reported",
+          raw: { provider: "openrouter" },
+        },
+      })
+
+      const report = store.buildTurnUsageReport(turnId)
+      expect(report?.totalTokens).toBe(1350)
+      expect(report?.totalCostUsd).toBeCloseTo(0.00133)
+      expect(report?.costSource).toBe("mixed")
+      expect(report?.callBreakdown).toHaveLength(1)
+      expect(report?.compactionBreakdown).toHaveLength(1)
+
+      const persisted = handle.sqlite
+        .prepare(
+          `SELECT mc.provider_response_json AS providerResponseJson,
+                  mu.metadata_json AS modelUsageMetadataJson,
+                  aue.metadata_json AS ledgerMetadataJson
+           FROM model_calls mc
+           INNER JOIN model_usage mu ON mu.model_call_id = mc.id
+           INNER JOIN ai_usage_events aue ON aue.source_id = mc.id
+           WHERE mc.id = ?`,
+        )
+        .get(modelCallId) as { providerResponseJson: string; modelUsageMetadataJson: string; ledgerMetadataJson: string }
+      expect(JSON.parse(persisted.providerResponseJson)).toEqual({ id: "gen_1", provider: "OpenAI" })
+      expect(JSON.parse(persisted.modelUsageMetadataJson)).toEqual({ providerMetadata: { openai: { requestId: "resp_1" } } })
+      expect(JSON.parse(persisted.ledgerMetadataJson)).toEqual({ providerMetadata: { openai: { requestId: "resp_1" } } })
+
+      const conversation = store.getConversation(projectId, conversationId)
+      expect(conversation.costUsage.totalCostUsd).toBeCloseTo(0.00133)
+      expect(conversation.costUsage.hasComputedCost).toBe(true)
+      expect(conversation.turnUsageReports?.[0]?.turnId).toBe(turnId)
     } finally {
       handle.close()
     }
@@ -1840,7 +2000,7 @@ describe("HTTP API", () => {
     if (!messageBody.ok) {
       throw new Error("Expected message creation success")
     }
-    expect(messageBody.data.conversation.title).toBe("Extraordin...")
+    expect(messageBody.data.conversation.title).toBe("Extraordinary p...")
     expect(messageBody.data.message.role).toBe("user")
     expect(messageBody.data.message.content).toBe("Extraordinary planning starts now")
 
@@ -1852,7 +2012,7 @@ describe("HTTP API", () => {
     const secondMessageBody = parseResponse<{ conversation: Conversation; message: Message }>(secondMessageResponse.payload)
     expect(secondMessageBody.ok).toBe(true)
     if (secondMessageBody.ok) {
-      expect(secondMessageBody.data.conversation.title).toBe("Extraordin...")
+      expect(secondMessageBody.data.conversation.title).toBe("Extraordinary p...")
     }
 
     sqlite = new Database(dbPath)
@@ -2073,6 +2233,64 @@ describe("WebSocket API", () => {
       } finally {
         await store.close()
       }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("uses a first-message placeholder title and replaces it with a generated title", async () => {
+    const requestedTitleModels: string[] = []
+    const app = await buildTestServer(tempDbPath(), createTestAgent(), {
+      titleProvider: createTitleProvider("Screenshot Debugging Plan", requestedTitleModels),
+    })
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "New conversation")
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Extraordinary planning starts now"))
+
+      const placeholderUpdate = await waitForEvent(socket, "conversation.updated")
+      expect(placeholderUpdate.payload.conversation.title).toBe("Extraordinary p...")
+
+      const generatedUpdate = await waitForEvent(socket, "conversation.updated")
+      expect(generatedUpdate.payload.conversation.title).toBe("Screenshot Debugging Plan")
+      expect(requestedTitleModels).toEqual(["meta-llama/llama-4-maverick"])
+
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ conversation: Conversation }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.conversation.title).toBe("Screenshot Debugging Plan")
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("falls back to Qwen title generation when Llama does not return a title", async () => {
+    const requestedTitleModels: string[] = []
+    const app = await buildTestServer(tempDbPath(), createTestAgent(), {
+      titleProvider: createFallbackTitleProvider("Fallback Screenshot Title", requestedTitleModels),
+    })
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "New conversation")
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Please title this screenshot chat"))
+
+      await waitForEvent(socket, "conversation.updated")
+      const generatedUpdate = await waitForEvent(socket, "conversation.updated")
+      expect(generatedUpdate.payload.conversation.title).toBe("Fallback Screenshot Title")
+      expect(requestedTitleModels).toEqual(["meta-llama/llama-4-maverick", "qwen/qwen3.5-flash-02-23"])
     } finally {
       socket.close()
     }

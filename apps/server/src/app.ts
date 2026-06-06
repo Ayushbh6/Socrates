@@ -9,6 +9,7 @@ import { registerWebSocketRoutes } from "./ws/websocket"
 import { ConversationTerminalManager } from "./ws/conversationTerminals"
 import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
 import { McpRuntime } from "@socrates/mcp"
+import { AiSdkProvider, type ModelProvider } from "@socrates/providers"
 import { ProviderCredentialStore } from "./services/providerCredentials"
 
 export type BuildServerOptions = {
@@ -16,6 +17,7 @@ export type BuildServerOptions = {
   logger?: boolean
   databaseHandle?: DatabaseHandle
   agent?: SocratesAgent
+  titleProvider?: ModelProvider | false
   socratesHome?: string
 }
 
@@ -27,6 +29,8 @@ export const buildServer = async (options: BuildServerOptions) => {
   const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
   const store = new SocratesStore(handle, undefined, credentials, socratesHome ? { socratesHome } : {})
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
+  const titleProvider =
+    options.titleProvider === false ? undefined : options.titleProvider ?? (options.agent ? undefined : new AiSdkProvider(credentials))
   const mcpRuntime = new McpRuntime(socratesHome ? { socratesHome } : {})
   const terminals = new ConversationTerminalManager(store)
   await terminals.reconcilePersistedTerminals()
@@ -48,7 +52,7 @@ export const buildServer = async (options: BuildServerOptions) => {
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   })
 
-  await registerWebSocketRoutes(app, store, terminals, agent, mcpRuntime)
+  await registerWebSocketRoutes(app, store, terminals, agent, mcpRuntime, titleProvider)
   await registerHttpRoutes(app, store, credentials, {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),

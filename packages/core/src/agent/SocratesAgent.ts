@@ -26,6 +26,7 @@ export type SocratesAgentTurnInput = {
   projectId?: string
   conversationId?: string
   sessionId?: string
+  cacheKey?: string
   turnId?: string
   providerId: ProviderId
   modelId: string
@@ -160,6 +161,8 @@ export class SocratesAgent {
       for await (const modelEvent of this.provider.stream({
         providerId: input.providerId,
         modelId: input.modelId,
+        ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+        ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
         system,
         messages: preparedContext.messages,
         runtimeConfig: input.runtimeConfig,

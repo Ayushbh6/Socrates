@@ -170,6 +170,7 @@ export type ModelEvent =
   | { type: "model.answer.completed" }
   | { type: "model.tool_call.delta"; toolCallId: string; delta: unknown }
   | { type: "model.tool_call.completed"; toolCall: NormalizedToolCall }
+  | { type: "model.response.metadata"; response: unknown }
   | { type: "model.usage"; usage: ModelUsage }
   | { type: "model.completed" }
   | { type: "model.failed"; error: ModelError }
@@ -194,6 +195,8 @@ list_project_resources
 mcp_registry
 ```
 
+MCP dynamic tool details must stay out of the system prompt and out of the first provider-call tool schemas. The first call exposes only the core Socrates tools plus `mcp_registry`; if the model checks/configures a server and the runtime exposes tools in that same turn, later provider calls may include the returned `mcp__...` tool definitions.
+
 Provider-specific tool-call formats must not leak into `packages/core/tools`, `apps/server`, or `apps/web`. `packages/providers` adapts provider tool-call deltas and completions into normalized `ModelEvent` values. `packages/core` validates the normalized tool call against schemas from `packages/contracts`, checks permission policy, and dispatches through the tool registry.
 
 The provider request may include these tools, but the provider layer must treat the tool definitions as data from Socrates. It must not define filesystem, shell, git, patch, or trace behavior itself.
@@ -201,6 +204,8 @@ The provider request may include these tools, but the provider layer must treat 
 The `bash` tool id is stable for provider compatibility, but product and prompt copy should call it Terminal. Provider adapters must pass the Socrates tool schema through unchanged; core/server/workspace own POSIX, PowerShell, cmd, and conversation-scoped Terminal behavior. Prompt guidance should tell the model to use PowerShell-compatible commands on Windows, use `operation: "start"` for dev servers/watchers/long commands, inspect existing terminal context before starting duplicates, use `operation: "status"`/`"output"`/`"stop"` with no target when exactly one active Terminal exists or with the human Terminal name when needed, and ask the user when a Terminal awaits input. Providers must not invent separate terminal, process, PowerShell, or cmd tools.
 
 Normalized tool calls may carry opaque provider metadata required for same-turn continuation, for example `providerMetadata.google.thoughtSignature` on Gemini function calls. Providers must preserve this metadata when normalizing tool-call parts and when converting same-turn assistant tool-call messages back into provider messages. Core may carry it only in the active in-memory turn loop; server history loading must not add old thought signatures to later prompts.
+
+Usage metadata is different from same-turn continuation metadata. The provider adapter must pass final-chunk `providerMetadata` into `ModelUsage` so OpenRouter `usage.cost`, routed provider name, cache-read fields, and raw usage metadata reach `model_usage` and `ai_usage_events`. Provider response metadata such as generation ids should be emitted through `model.response.metadata` and persisted on `model_calls.provider_response_json`.
 
 Image handling depends on provider capability. Providers with native vision support may receive image inputs through the normalized message/tool-result path when the user or `read` tool supplies an image. Vision-capable OpenRouter, OpenAI, and Google calls must keep native image parts and Socrates tool schemas in the same AI SDK request; images are not a reason to strip tools. Non-vision providers receive bounded omission/reference text, OCR text, image metadata, or a generated visual description when available. Provider adapters must keep this normalized so vision support does not leak provider-specific image payloads into `apps/web`, `apps/server`, or unrelated core code.
 
@@ -213,6 +218,55 @@ It should not be carried forward as semantic prompt context between later user q
 The next user query should normally receive previous final user/assistant dialogue, selected project context, retrieved memory/trace summaries when relevant, and current-turn tool results. It should not receive old reasoning streams just because they were available.
 
 Gemini thought signatures are not user-visible thinking text. They are opaque same-turn provider metadata for tool-call continuation, and follow the same no-future-turn-history rule.
+
+## OpenRouter Routing, Caching, And Cost
+
+OpenRouter calls send a stable `session_id` derived from project and conversation identity:
+
+```text
+project:<projectId>:conversation:<conversationId>
+```
+
+This key must not include turn ids, timestamps, model-call ids, or other volatile data. It is intended to let OpenRouter keep repeated same-conversation calls on the same upstream provider when prompt caching is available.
+
+For multi-provider cache-capable models, Socrates should not send `provider.order`, `provider.only`, or `provider.ignore` by default. Manual provider ordering disables OpenRouter automatic sticky routing, so these models rely on `session_id` and captured routed-provider metadata for cache affinity and cost audit:
+
+```text
+moonshotai/kimi-k2.6
+z-ai/glm-5.1
+xiaomi/mimo-v2.5-pro
+deepseek/deepseek-v4-pro
+google/gemma-4-31b-it
+```
+
+Single-provider or deliberately pinned routes still use strict provider routing:
+
+```text
+xiaomi/mimo-v2.5 -> Xiaomi
+x-ai/grok-build-0.1 -> xAI
+stepfun/step-3.7-flash -> StepFun
+deepseek/deepseek-v4-flash -> DeepInfra
+meta-llama/llama-4-maverick title generation -> DeepInfra
+qwen/qwen3.5-flash-02-23 title fallback -> Alibaba
+```
+
+DeepSeek V4 Flash is pinned because a live smoke run with only `session_id` routed consecutive same-session calls to different upstream providers, so automatic sticky routing was not reliable enough for cache-hit verification on this model. The local OpenRouter account's privacy/data policy currently blocks the official `DeepSeek` endpoint, while `DeepInfra` is available and cache-priced for this model. This route keeps `allow_fallbacks: false` but uses `require_parameters: false`; otherwise OpenRouter can reject cache/session body fields during endpoint filtering.
+
+Cost accounting order is:
+
+```text
+1. Provider-reported exact cost from OpenRouter usage metadata.
+2. Computed cost from a versioned OpenRouter endpoint-pricing snapshot when exact cost is absent.
+3. Unknown cost when neither provider cost nor pricing snapshot is available.
+```
+
+Computed OpenRouter costs price uncached input, cache-read input, cache-write input, and output separately. If an endpoint does not publish cache-write pricing, cache writes are priced as normal input. Raw provider usage and provider metadata should remain stored for audit.
+
+There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash pinned-provider path. It makes two paid OpenRouter calls with the same model, same stable `session_id`, strict `DeepInfra` provider pin, and stable prompt prefix, then expects the same routed provider and cache-read metadata on the second call:
+
+```bash
+SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
+```
 
 ## Provider-Specific Escape Hatch
 
@@ -246,13 +300,18 @@ export type ModelUsage = {
   outputTokens?: number
   reasoningTokens?: number
   cachedInputTokens?: number
+  cacheWriteTokens?: number
+  uncachedInputTokens?: number
   totalTokens?: number
   costUsd?: number
+  costSource?: "provider_reported" | "computed" | "unknown"
+  pricingSnapshot?: unknown
+  providerMetadata?: unknown
   raw?: unknown
 }
 ```
 
-This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability.
+This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. OpenRouter cost/cache fields should use provider-reported usage metadata first. OpenAI and Google may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
 
 ## V1 Provider Plan
 
@@ -363,6 +422,8 @@ Google -> providerOptions.google.thinkingConfig.thinkingLevel
 OpenRouter on -> providerOptions.openrouter.reasoning enabled
 OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude true
 ```
+
+OpenRouter model requests also include strict provider routing for every OpenRouter catalog model. `packages/providers/src/openRouterRouting.ts` is the authoritative map. Routes use `provider.order`, `allow_fallbacks: false`, and `require_parameters: true` so cache/cost behavior stays auditable and OpenRouter does not silently route outside the curated provider list. Official providers are preferred where available, with model-specific fallbacks for availability.
 
 OpenRouter streams can arrive in provider-side bursts after a long first-token delay. Socrates applies AI SDK `smoothStream` only on OpenRouter calls to re-chunk bursty text into a steadier word-level stream. This improves perceived streaming once chunks arrive; it does not reduce upstream time-to-first-token.
 
