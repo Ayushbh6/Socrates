@@ -234,7 +234,7 @@ Use `operation: "run"` for finite commands.
 
 ## Long-Running Commands
 
-Use `operation: "start"` for dev servers, watchers, long installs, or commands likely to run for more than one minute.
+Use `operation: "start"` for dev servers, background workers, watchers, long installs, or commands likely to run for more than 15 seconds.
 
 ```json
 {

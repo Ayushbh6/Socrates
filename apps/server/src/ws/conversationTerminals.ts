@@ -30,7 +30,7 @@ type TerminalManagerOptions = {
 type ShellOutput = { stream: "stdout" | "stderr" | "log" | "result" | "pty"; text?: string; data?: unknown }
 type TerminalSnapshot = ReturnType<SocratesStore["listConversationTerminals"]>[number]
 
-const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_DETACH_MS ?? "60000", 10)
+const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_DETACH_MS ?? "15000", 10)
 const defaultIdleTtlMs = Number.parseInt(process.env.SOCRATES_TERMINAL_IDLE_TTL_MS ?? "7200000", 10)
 const terminalInitialOutputDrainMs = 500
 const terminalInitialOutputPollMs = 50
