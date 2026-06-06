@@ -7,6 +7,7 @@ import { createId, nowIso } from "@socrates/shared"
 import type { SocratesStore } from "../services/store"
 import { ActiveTurns } from "./activeTurns"
 import type { ConversationTerminalManager } from "./conversationTerminals"
+import { ConversationSubscriptions } from "./conversationSubscriptions"
 import { handleInboundMessage } from "./commandDispatcher"
 import { makeEvent, sendEvent } from "./eventSender"
 
@@ -21,6 +22,7 @@ export const registerWebSocketRoutes = async (
   await app.register(websocket)
 
   const activeTurns = new ActiveTurns()
+  const subscriptions = new ConversationSubscriptions()
 
   app.addHook("onClose", async () => {
     activeTurns.abortAll()
@@ -35,7 +37,7 @@ export const registerWebSocketRoutes = async (
     sendEvent(socket, ready)
 
     socket.on("message", (raw) => {
-      void handleInboundMessage(socket, store, agent, activeTurns, terminals, raw.toString(), mcpRuntime, titleProvider)
+      void handleInboundMessage(socket, store, agent, activeTurns, terminals, subscriptions, raw.toString(), mcpRuntime, titleProvider)
     })
   })
 }

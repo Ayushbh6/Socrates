@@ -1061,7 +1061,9 @@ mark individual or all notifications read through these endpoints
 
 ## WebSocket Connection
 
-The chat page opens one WebSocket connection for live agent events.
+The chat page opens one WebSocket connection for live agent events and subscribes that socket to the active conversation with `chat.conversation.subscribe`.
+
+Active turns are conversation-owned, not browser-socket-owned. The backend must keep the provider/tool stream running across browser refreshes, route changes, tab switches, temporary tab sleep, or reconnects while the local backend process is still alive. Events are persisted first, then broadcast to currently subscribed sockets for that conversation. If no browser is currently subscribed, the turn still continues and future subscribers recover through replay plus HTTP hydration.
 
 The current chat UI sends user messages through `chat.message.send`. The backend creates/reuses the session, stores the user message, creates the running turn, persists the runtime config, loads model-facing history from prior user messages and final assistant answers, injects backend-owned Socrates prompt context, and calls `packages/core`.
 
@@ -1071,7 +1073,9 @@ Suggested URL:
 /ws
 ```
 
-The frontend should identify the active project and conversation in the first command.
+The frontend should identify the active project and conversation in the first command. A chat page should subscribe on initial connect and every reconnect. Returning to a conversation with an active turn should request active-turn replay before relying only on fresh deltas.
+
+Closing the app/backend process is the boundary for V1. Since V1 has no true pause/resume, startup reconciliation marks any previously active turn as stopped/cancelled so the UI does not show a fake live stop button for work that cannot still be running.
 
 WebSocket payloads use JSON.
 
@@ -1123,6 +1127,8 @@ The frontend sends commands to the backend.
 V1 command set:
 
 ```text
+chat.conversation.subscribe
+chat.conversation.unsubscribe
 chat.message.send
 chat.turn.cancel
 approval.decide
@@ -1130,6 +1136,26 @@ feedback.submit
 terminal.stop
 terminal.input
 terminal.rename
+```
+
+### `chat.conversation.subscribe`
+
+Subscribes the current WebSocket to a project conversation and optionally replays the persisted active-turn event stream.
+
+```ts
+type ChatConversationSubscribePayload = {
+  replayActiveTurn?: boolean
+}
+```
+
+Default frontend behavior should send `replayActiveTurn: true` on initial connect and reconnect. The backend should replay persisted active-turn server events only to the subscribing socket, then broadcast future live events to every socket currently subscribed to that conversation.
+
+### `chat.conversation.unsubscribe`
+
+Unsubscribes the current WebSocket from a conversation. Socket close also removes all subscriptions for that socket.
+
+```ts
+type ChatConversationUnsubscribePayload = {}
 ```
 
 ### `chat.message.send`

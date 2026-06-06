@@ -50,6 +50,7 @@ import type {
   UpdateConversationRequest,
   UpsertProjectInstructionsRequest,
   User,
+  ServerEvent,
 } from "@socrates/contracts"
 import { AiSdkProvider, createDefaultEmbeddingProvider, type EmbeddingProvider, type ModelProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
@@ -162,6 +163,20 @@ export class SocratesStore {
   async close(): Promise<void> {
     await this.embeddings.dispose()
     this.handle.close()
+  }
+
+  cancelStaleActiveTurns(reason = "Socrates stopped before this response completed."): number {
+    const rows = this.handle.sqlite
+      .prepare("SELECT id FROM turns WHERE status IN ('queued', 'running', 'awaiting_approval') ORDER BY started_at")
+      .all() as Array<{ id: string }>
+    for (const row of rows) {
+      try {
+        this.cancelTurn(row.id, reason)
+      } catch {
+        // Startup reconciliation should not block the app if one stale row is already inconsistent.
+      }
+    }
+    return rows.length
   }
 
   getCurrentUser(): User | null {
@@ -292,6 +307,10 @@ export class SocratesStore {
     return this.conversations.createConversation(projectId, input)
   }
 
+  listActiveTurnServerEvents(projectId: string, conversationId: string): ServerEvent[] {
+    return this.events.listActiveTurnServerEvents(projectId, conversationId)
+  }
+
   updateConversationTitle(projectId: string, conversationId: string, input: UpdateConversationRequest): Conversation {
     return this.conversations.updateConversationTitle(projectId, conversationId, input)
   }
@@ -378,7 +397,7 @@ export class SocratesStore {
     this.modelTelemetry.appendModelStreamChunk(input)
   }
 
-  completeModelCall(input: { modelCallId: string; response: unknown; usage?: StoredModelUsage }): void {
+  completeModelCall(input: { modelCallId: string; response: unknown; providerResponse?: unknown; usage?: StoredModelUsage }): void {
     this.modelTelemetry.completeModelCall(input)
   }
 

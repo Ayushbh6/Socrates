@@ -4,6 +4,8 @@ import {
   approvalDecideCommandSchema,
   approvalRequestedEventSchema,
   approvalResolvedEventSchema,
+  chatConversationSubscribeCommandSchema,
+  chatConversationUnsubscribeCommandSchema,
   chatMessageSendCommandSchema,
   chatTurnCancelCommandSchema,
   checkProjectEmbeddingsRequestSchema,
@@ -615,6 +617,10 @@ describe("websocket client command contracts", () => {
       }),
     ),
     chatTurnCancelCommandSchema.safeParse(envelope("chat.turn.cancel", { turnId: "turn_1", reason: "User stopped" })),
+    chatConversationSubscribeCommandSchema.safeParse(
+      envelope("chat.conversation.subscribe", { replayActiveTurn: true }),
+    ),
+    chatConversationUnsubscribeCommandSchema.safeParse(envelope("chat.conversation.unsubscribe", {})),
     approvalDecideCommandSchema.safeParse(
       envelope("approval.decide", { approvalId: "appr_1", decision: "approved" }),
     ),

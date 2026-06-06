@@ -16,18 +16,21 @@ const socketUrlFromApiBase = (baseUrl: string): string => {
 type UseSocratesSocketInput = {
   onEvent: (event: ServerEvent) => void;
   onError?: (message: string | null) => void;
+  onConnected?: (sendCommand: (command: ClientCommand) => void) => void;
 };
 
-export function useSocratesSocket({ onEvent, onError }: UseSocratesSocketInput) {
+export function useSocratesSocket({ onEvent, onError, onConnected }: UseSocratesSocketInput) {
   const socketRef = useRef<WebSocket | null>(null);
   const eventHandlerRef = useRef(onEvent);
   const errorHandlerRef = useRef(onError);
+  const connectedHandlerRef = useRef<UseSocratesSocketInput["onConnected"]>(undefined);
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
     eventHandlerRef.current = onEvent;
     errorHandlerRef.current = onError;
-  }, [onEvent, onError]);
+    connectedHandlerRef.current = onConnected;
+  }, [onEvent, onError, onConnected]);
 
   useEffect(() => {
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -44,6 +47,12 @@ export function useSocratesSocket({ onEvent, onError }: UseSocratesSocketInput) 
             reconnectAttempts = 0;
             setIsConnected(true);
             errorHandlerRef.current?.(null);
+            connectedHandlerRef.current?.((command) => {
+              if (socket.readyState !== WebSocket.OPEN) {
+                throw new Error("Socrates is not connected yet.");
+              }
+              socket.send(JSON.stringify(command));
+            });
           }
         };
         socket.onclose = () => {

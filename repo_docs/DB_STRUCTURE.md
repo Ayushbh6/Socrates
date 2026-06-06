@@ -425,13 +425,15 @@ Stores human-visible chat messages.
 | `completed_at` | `TEXT` | no | Set when streaming completes. |
 | `metadata_json` | `TEXT` | no | Message metadata. Completed assistant messages may store `reasoning`. Cancelled partial assistant messages store `partial: true`, `cancelled: true`, and optional `cancellationReason`. |
 
-If a turn is running, failed, or cancelled and has streamed chunks but no completed assistant `messages` row, the HTTP conversation load can recover a `partialTurns` view from `model_stream_chunks`. That recovery is response data, not a fake message row. The `messages` table remains for real visible user/assistant messages and persisted cancelled partial assistant messages.
+If a turn is running, failed, or cancelled and has streamed chunks but no completed assistant `messages` row, the HTTP conversation load can recover a `partialTurns` view from `model_stream_chunks`. That recovery is response data, not a fake message row. The `messages` table remains for real visible user/assistant messages and persisted cancelled partial assistant messages. On backend startup, stale active turns from a previous app/process close are reconciled as cancelled/stopped, using any persisted stream chunks as partial assistant text when available.
 
 ## `events`
 
 Stores the complete chronological audit trail.
 
 This table is append-only except for rare maintenance/migration work.
+
+Live chat resilience depends on this table. WebSocket turn events are persisted before broadcast, and `chat.conversation.subscribe` can replay the stored active-turn events to a newly connected socket after refresh, route navigation, or reconnect.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |

@@ -569,6 +569,7 @@ Composer behavior:
 - The send button on the right sends the message when the input has non-empty trimmed text.
 - Sending the first message creates the first session and turn for the conversation.
 - The frontend should not call any model provider directly.
+- The chat page subscribes its WebSocket to the active conversation with `chat.conversation.subscribe` on initial connect and reconnect.
 - The frontend sends `chat.message.send` over WebSocket for the real AI path.
 - The older no-AI HTTP message endpoint remains available but is not the normal chat UI send path.
 
@@ -582,6 +583,8 @@ turn.completed / turn.failed / turn.cancelled -> show send arrow again
 ```
 
 V1 uses cancel/stop, not true pause/resume.
+
+Active AI turns continue while the local backend process is alive even if the browser refreshes, the user switches conversations, the tab sleeps, or the socket reconnects. Live events are persisted and then broadcast to the sockets currently subscribed to that conversation. Returning to a running conversation replays the active-turn event stream and hydrates persisted partial text through HTTP. Closing the app/backend process stops that runtime boundary; on next startup, stale active turns are reconciled as stopped/cancelled rather than shown as still live.
 
 If assistant answer text has already streamed when the user stops a turn, the backend persists that visible text as a cancelled partial assistant message. The transcript keeps showing it with a stopped indicator, and later model turns receive the semantic shape `user_query -> partial_assistant_response -> new_user_query`. Tool calls/results/reasoning from the cancelled turn remain persisted for audit/UI only.
 

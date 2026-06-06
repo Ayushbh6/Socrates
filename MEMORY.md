@@ -570,6 +570,17 @@ Prepared the v0.1.5 runtime slice for the npm CLI release path:
 - The latest dedicated `memory-work-v1` branch remains separate from this release branch. `main` contains older baseline memory/trace tooling, but does not include `memory-work-v1` commit `eedd16c`.
 - `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.5`; pushing tag `v0.1.5` should publish the matching GitHub runtime assets through `Release npm Runtime`.
 
+## Live Chat Persistence And Reconnect Resilience
+
+Current chat streaming direction after the v0.1.5 launch:
+
+- Active AI turns are conversation-owned, not browser-socket-owned. Refreshing the browser, switching conversations, switching tabs, minimizing the browser, or reconnecting a sleeping tab must not cancel or fail the running model/tool stream while the local backend process is still alive.
+- The chat page sends `chat.conversation.subscribe` on initial WebSocket connect and every reconnect. The backend tracks subscribed sockets per conversation in `apps/server/src/ws/conversationSubscriptions.ts`.
+- Turn events are persisted first and then broadcast to every socket currently subscribed to that conversation. If no socket is subscribed, the turn still continues and later subscribers recover from persisted active-turn events plus HTTP `partialTurns`.
+- `chat.conversation.subscribe` can replay the persisted active-turn event stream to the newly connected socket so returning to an in-progress conversation rebuilds the visible answer/tool state before receiving fresh deltas.
+- WebSocket sends are non-fatal: a closed browser socket must not throw inside the running turn and convert a healthy provider stream into `turn.failed`.
+- Closing the app/backend process remains the V1 runtime boundary. Since V1 has stop/cancel but no true pause/resume, backend startup reconciles stale `queued`/`running`/`awaiting_approval` turns as stopped/cancelled, preserving streamed chunks as partial assistant text when available.
+
 ## Trace Retrieve Memory Overhaul And Slim Output
 
 Current `trace_retrieve` direction after the May 31 cleanup:

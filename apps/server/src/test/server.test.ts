@@ -219,6 +219,20 @@ const createCancellablePartialAgent = (requests: unknown[]): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createReconnectStreamingAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield { type: "model.answer.delta", text: "Part one." }
+      await delay(150)
+      yield { type: "model.answer.delta", text: " Part two." }
+      await delay(50)
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 4, totalTokens: 8 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createApprovalWaitingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
@@ -823,7 +837,9 @@ const createConversation = async (app: TestServer, projectId: string, title = "T
 }
 
 const connectWebSocket = async (app: TestServer): Promise<WebSocket> => {
-  await app.listen({ host: "127.0.0.1", port: 0 })
+  if (!app.server.listening) {
+    await app.listen({ host: "127.0.0.1", port: 0 })
+  }
   const address = app.server.address()
   if (!address || typeof address === "string") {
     throw new Error("Could not resolve test server address")
@@ -937,6 +953,19 @@ const chatMessageCommand = (projectId: string, conversationId: string, content: 
       approvalMode: "manual",
       sandboxMode: "workspace_write",
     },
+  },
+})
+
+const chatSubscribeCommand = (projectId: string, conversationId: string) => ({
+  id: createId("evt"),
+  type: "chat.conversation.subscribe",
+  schemaVersion: 1,
+  timestamp: nowIso(),
+  projectId,
+  conversationId,
+  actor: { type: "user" },
+  payload: {
+    replayActiveTurn: true,
   },
 })
 
@@ -4242,6 +4271,47 @@ describe("WebSocket API", () => {
       expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello old world")
     } finally {
       socket.close()
+    }
+  })
+
+  it("keeps an active turn running when the original WebSocket disconnects and replays it to a new subscriber", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createReconnectStreamingAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const firstSocket = await connectWebSocket(app)
+    let secondSocket: WebSocket | undefined
+    try {
+      await waitForEvent(firstSocket, "connection.ready")
+      sendCommand(firstSocket, chatMessageCommand(project.id, conversation.id, "Reconnect while streaming"))
+
+      const started = await waitForEvent(firstSocket, "turn.started")
+      const firstDelta = await waitForEvent(firstSocket, "agent.answer.delta")
+      expect(firstDelta.payload.text).toBe("Part one.")
+      firstSocket.close()
+
+      secondSocket = await connectWebSocket(app)
+      await waitForEvent(secondSocket, "connection.ready")
+      sendCommand(secondSocket, chatSubscribeCommand(project.id, conversation.id))
+
+      const replayedDelta = await waitForEvent(secondSocket, "agent.answer.delta")
+      expect(replayedDelta.payload.text).toBe("Part one.")
+      const completed = await waitForEvent(secondSocket, "turn.completed")
+      expect(completed.payload.turnId).toBe(started.payload.turnId)
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ messages: Message[] }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.messages.find((message) => message.role === "assistant")?.content).toBe("Part one. Part two.")
+      }
+    } finally {
+      firstSocket.close()
+      secondSocket?.close()
     }
   })
 

@@ -28,6 +28,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   const socratesHome = options.socratesHome ?? (options.dbPath === ":memory:" ? undefined : path.dirname(options.dbPath))
   const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
   const store = new SocratesStore(handle, undefined, credentials, socratesHome ? { socratesHome } : {})
+  store.cancelStaleActiveTurns()
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const titleProvider =
     options.titleProvider === false ? undefined : options.titleProvider ?? (options.agent ? undefined : new AiSdkProvider(credentials))

@@ -26,7 +26,8 @@ import { generateConversationTitle } from "../../services/conversationTitleGener
 import type { SocratesStore } from "../../services/store"
 import type { ActiveTurns } from "../activeTurns"
 import type { ConversationTerminalManager } from "../conversationTerminals"
-import { appendAndSend, makeEvent, sendEvent } from "../eventSender"
+import type { ConversationSubscriptions } from "../conversationSubscriptions"
+import { appendAndEmit, makeEvent, type EventSink } from "../eventSender"
 
 const requireCommandScope = (command: ClientCommand): { projectId: string; conversationId: string } => {
   if (!command.projectId || !command.conversationId) {
@@ -59,16 +60,18 @@ export const handleChatMessageSend = async (
   agent: SocratesAgent,
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
+  subscriptions: ConversationSubscriptions,
   command: Extract<ClientCommand, { type: "chat.message.send" }>,
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
 ): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
+  subscriptions.subscribe(socket, conversationId)
+  const emitEvent: EventSink = (event) => subscriptions.emit(event, socket)
   const created = store.createTurnFromUserMessage(projectId, conversationId, command.payload)
   const abortController = activeTurns.create(created.turnId)
 
-  sendEvent(
-    socket,
+  emitEvent(
     makeEvent(
       "turn.started",
       {
@@ -87,8 +90,8 @@ export const handleChatMessageSend = async (
 
   if (created.shouldGenerateTitle) {
     const placeholderConversation = store.getConversation(projectId, conversationId).conversation
-    appendAndSend(
-      socket,
+    appendAndEmit(
+      emitEvent,
       store,
       makeEvent(
         "conversation.updated",
@@ -137,11 +140,11 @@ export const handleChatMessageSend = async (
           return
         }
         const conversation = store.autoTitleConversation(projectId, conversationId, title, created.fallbackTitle)
-        if (!conversation || socket.readyState !== 1) {
+        if (!conversation) {
           return
         }
-        appendAndSend(
-          socket,
+        appendAndEmit(
+          emitEvent,
           store,
           makeEvent(
             "conversation.updated",
@@ -236,7 +239,7 @@ export const handleChatMessageSend = async (
         latestModelCallId = modelCallId
         const model = findModelOption(modelRequest.providerId, modelRequest.modelId)
         if (model?.contextWindowTokens) {
-          sendContextUsageSnapshot(socket, store, {
+          sendContextUsageSnapshot(emitEvent, store, {
             projectId,
             conversationId,
             sessionId: created.sessionId,
@@ -285,7 +288,7 @@ export const handleChatMessageSend = async (
             actor: { type: "system" },
           },
         )
-        appendAndSend(socket, store, event, "server")
+        appendAndEmit(emitEvent, store, event, "server")
         return activeTurns.waitForApproval(created.turnId, approvalId, abortController.signal)
       },
       abortSignal: abortController.signal,
@@ -295,7 +298,7 @@ export const handleChatMessageSend = async (
         agentEvent.type === "context.compaction.completed" ||
         agentEvent.type === "context.compaction.failed"
       ) {
-        sendContextCompactionEvent(socket, store, agentEvent, {
+        sendContextCompactionEvent(emitEvent, store, agentEvent, {
           projectId,
           conversationId,
           sessionId: created.sessionId,
@@ -335,7 +338,7 @@ export const handleChatMessageSend = async (
             actor: { type: "main_agent" },
           },
         )
-        appendAndSend(socket, store, event, "core")
+        appendAndEmit(emitEvent, store, event, "core")
       }
 
       if (agentEvent.type === "model.answer.delta") {
@@ -367,7 +370,7 @@ export const handleChatMessageSend = async (
             actor: { type: "main_agent" },
           },
         )
-        appendAndSend(socket, store, event, "core")
+        appendAndEmit(emitEvent, store, event, "core")
       }
 
       if (agentEvent.type === "model.usage") {
@@ -433,7 +436,7 @@ export const handleChatMessageSend = async (
             actor: { type: "tool", id: agentEvent.toolCallId, label: agentEvent.toolName },
           },
         )
-        appendAndSend(socket, store, event, "tool")
+        appendAndEmit(emitEvent, store, event, "tool")
       }
 
       if (agentEvent.type === "tool.call.streaming") {
@@ -460,7 +463,7 @@ export const handleChatMessageSend = async (
             actor: { type: "tool", id: agentEvent.toolCallId, label: agentEvent.toolName },
           },
         )
-        sendEvent(socket, event)
+        emitEvent(event)
       }
 
       if (agentEvent.type === "tool.call.output") {
@@ -486,7 +489,7 @@ export const handleChatMessageSend = async (
             actor: { type: "tool", id: agentEvent.toolCallId },
           },
         )
-        appendAndSend(socket, store, event, "tool")
+        appendAndEmit(emitEvent, store, event, "tool")
       }
 
       if (agentEvent.type === "tool.call.completed") {
@@ -551,7 +554,7 @@ export const handleChatMessageSend = async (
             actor: { type: "tool", id: agentEvent.toolCallId, label: agentEvent.toolName },
           },
         )
-        appendAndSend(socket, store, event, "tool")
+        appendAndEmit(emitEvent, store, event, "tool")
       }
 
       if (agentEvent.type === "tool.call.failed") {
@@ -586,7 +589,7 @@ export const handleChatMessageSend = async (
             actor: { type: "tool", id: agentEvent.toolCallId, label: agentEvent.toolName },
           },
         )
-        appendAndSend(socket, store, event, "tool")
+        appendAndEmit(emitEvent, store, event, "tool")
       }
 
       if (agentEvent.type === "approval.resolved") {
@@ -609,7 +612,7 @@ export const handleChatMessageSend = async (
             actor: { type: "system" },
           },
         )
-        appendAndSend(socket, store, event, "server")
+        appendAndEmit(emitEvent, store, event, "server")
       }
     }
 
@@ -651,7 +654,7 @@ export const handleChatMessageSend = async (
         actor: { type: "main_agent" },
       },
     )
-    appendAndSend(socket, store, messageCompleted, "core")
+    appendAndEmit(emitEvent, store, messageCompleted, "core")
 
     const turnCompleted = makeEvent(
       "turn.completed",
@@ -669,7 +672,7 @@ export const handleChatMessageSend = async (
         actor: { type: "main_agent" },
       },
     )
-    appendAndSend(socket, store, turnCompleted, "core")
+    appendAndEmit(emitEvent, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
     store.appendDiaryForTurn({ projectId, conversationId, sessionId: created.sessionId, turnId: created.turnId })
 
@@ -712,7 +715,7 @@ export const handleChatMessageSend = async (
         actor: { type: "main_agent" },
       },
     )
-    appendAndSend(socket, store, failed, "core")
+    appendAndEmit(emitEvent, store, failed, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
   } finally {
     activeTurns.delete(created.turnId)
@@ -806,14 +809,14 @@ const createToolExecutors = (
 }
 
 const sendContextCompactionEvent = (
-  socket: WebSocket,
+  emitEvent: EventSink,
   store: SocratesStore,
   agentEvent: ContextCompactionLifecycleEvent,
   context: { projectId: string; conversationId: string; sessionId: string; turnId: string },
 ): void => {
   if (agentEvent.type === "context.compaction.started") {
-    appendAndSend(
-      socket,
+    appendAndEmit(
+      emitEvent,
       store,
       makeEvent(
         "context.compaction.started",
@@ -834,8 +837,8 @@ const sendContextCompactionEvent = (
   }
 
   if (agentEvent.type === "context.compaction.completed") {
-    appendAndSend(
-      socket,
+    appendAndEmit(
+      emitEvent,
       store,
       makeEvent(
         "context.compaction.completed",
@@ -855,8 +858,8 @@ const sendContextCompactionEvent = (
     return
   }
 
-  appendAndSend(
-    socket,
+  appendAndEmit(
+    emitEvent,
     store,
     makeEvent(
       "context.compaction.failed",
@@ -874,7 +877,7 @@ const sendContextCompactionEvent = (
 }
 
 const sendContextUsageSnapshot = (
-  socket: WebSocket,
+  emitEvent: EventSink,
   store: SocratesStore,
   input: {
     projectId: string
@@ -903,8 +906,8 @@ const sendContextUsageSnapshot = (
     contextUsedTokens: input.contextUsedTokens,
     metadata: input.metadata ?? { source: "model_context_estimate" },
   })
-  appendAndSend(
-    socket,
+  appendAndEmit(
+    emitEvent,
     store,
     makeEvent(
       "context.usage.snapshot",

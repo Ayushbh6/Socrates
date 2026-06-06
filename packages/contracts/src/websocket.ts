@@ -84,6 +84,14 @@ export const chatTurnCancelPayloadSchema = z
   })
   .strict()
 
+export const chatConversationSubscribePayloadSchema = z
+  .object({
+    replayActiveTurn: z.boolean().optional(),
+  })
+  .strict()
+
+export const chatConversationUnsubscribePayloadSchema = z.object({}).strict()
+
 export const approvalDecidePayloadSchema = z
   .object({
     approvalId: idSchema,
@@ -137,6 +145,14 @@ export const feedbackSubmitPayloadSchema = z
 
 export const chatMessageSendCommandSchema = socketEnvelopeSchema("chat.message.send", chatMessageSendPayloadSchema)
 export const chatTurnCancelCommandSchema = socketEnvelopeSchema("chat.turn.cancel", chatTurnCancelPayloadSchema)
+export const chatConversationSubscribeCommandSchema = socketEnvelopeSchema(
+  "chat.conversation.subscribe",
+  chatConversationSubscribePayloadSchema,
+)
+export const chatConversationUnsubscribeCommandSchema = socketEnvelopeSchema(
+  "chat.conversation.unsubscribe",
+  chatConversationUnsubscribePayloadSchema,
+)
 export const approvalDecideCommandSchema = socketEnvelopeSchema("approval.decide", approvalDecidePayloadSchema)
 export const terminalStopCommandSchema = socketEnvelopeSchema("terminal.stop", terminalStopPayloadSchema)
 export const terminalInputCommandSchema = socketEnvelopeSchema("terminal.input", terminalInputPayloadSchema)
@@ -146,6 +162,8 @@ export const feedbackSubmitCommandSchema = socketEnvelopeSchema("feedback.submit
 export const clientCommandSchema = z.discriminatedUnion("type", [
   chatMessageSendCommandSchema,
   chatTurnCancelCommandSchema,
+  chatConversationSubscribeCommandSchema,
+  chatConversationUnsubscribeCommandSchema,
   approvalDecideCommandSchema,
   terminalStopCommandSchema,
   terminalInputCommandSchema,
@@ -612,6 +630,8 @@ export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>
 export type ModelUsage = z.infer<typeof modelUsageSchema>
 export type ChatMessageSendPayload = z.infer<typeof chatMessageSendPayloadSchema>
 export type ChatTurnCancelPayload = z.infer<typeof chatTurnCancelPayloadSchema>
+export type ChatConversationSubscribePayload = z.infer<typeof chatConversationSubscribePayloadSchema>
+export type ChatConversationUnsubscribePayload = z.infer<typeof chatConversationUnsubscribePayloadSchema>
 export type ApprovalDecidePayload = z.infer<typeof approvalDecidePayloadSchema>
 export type TerminalStopPayload = z.infer<typeof terminalStopPayloadSchema>
 export type TerminalInputPayload = z.infer<typeof terminalInputPayloadSchema>

@@ -279,6 +279,7 @@ WebSocket transport is split under `apps/server/src/ws/`:
 ws/
   websocket.ts
   activeTurns.ts
+  conversationSubscriptions.ts
   conversationTerminals.ts
   eventSender.ts
   commandDispatcher.ts
@@ -291,8 +292,9 @@ ws/
 
 Rules for WebSocket files:
 
-- Keep `websocket.ts` focused on Fastify registration, connection setup, `connection.ready`, conversation Terminal manager setup, and shutdown cleanup.
+- Keep `websocket.ts` focused on Fastify registration, connection setup, `connection.ready`, conversation subscription setup, conversation Terminal manager setup, and shutdown cleanup.
 - Put command parsing and dispatch in `commandDispatcher.ts`.
+- Keep conversation socket membership and active-turn replay routing in `conversationSubscriptions.ts`.
 - Put typed event construction, sending, persisted event appending, and WebSocket error emission in `eventSender.ts`.
 - Put command-specific behavior in one handler file per command.
 - Keep all emitted events contract-validated through `packages/contracts`.
@@ -574,6 +576,7 @@ HTTP is still used for simple request/response operations:
 ```text
 apps/web
   routes through /welcome, /onboarding, /projects, project dashboard, and project chat
+  subscribes the chat WebSocket to the active conversation with `chat.conversation.subscribe`
   sends user messages through WebSocket `chat.message.send`
   renders backend-owned model/thinking controls from `GET /api/models`
   or captures voice input and sends the transcript as a user message
@@ -590,7 +593,7 @@ packages/core
   emits typed events
 
 apps/server
-  streams typed events over WebSocket
+  persists typed events, then streams them to sockets currently subscribed to the conversation
 
 apps/web
   renders chat, thinking, tool calls, approvals, diffs, terminal output, voice state, read-aloud state, and feedback controls

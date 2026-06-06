@@ -26,6 +26,7 @@ interface ChatTranscriptProps {
 
 export type LiveActivityStep = {
   key: string;
+  turnId?: string;
   modelCallId?: string;
   stepIndex: number;
   reasoning: string;
@@ -53,6 +54,7 @@ export function ChatTranscript({
   const historicalToolsByTurn = groupToolRunsByTurn(toolRuns);
   const historicalStepsByTurn = groupActivityStepsByTurn(activitySteps, toolRuns);
   const liveToolIds = new Set(liveSteps.flatMap((step) => step.tools.map((tool) => tool.toolCallId)));
+  const liveTurnIds = new Set(liveSteps.map((step) => step.turnId).filter(Boolean));
   const assistantTurnIds = new Set(
     messages.filter((message) => message.role === "assistant" && message.turnId).map((message) => message.turnId as string),
   );
@@ -86,7 +88,7 @@ export function ChatTranscript({
           const assistantSettledSteps =
             message.role === "assistant" && message.turnId ? settledLiveTurns[message.turnId] ?? [] : [];
           const shouldRenderIncompleteTurn =
-            message.role === "user" && message.turnId && !assistantTurnIds.has(message.turnId);
+            message.role === "user" && message.turnId && !assistantTurnIds.has(message.turnId) && !liveTurnIds.has(message.turnId);
           const incompleteTurn = shouldRenderIncompleteTurn ? partialTurnsByTurn.get(message.turnId as string) : undefined;
           const incompleteTools = shouldRenderIncompleteTurn ? historicalToolsByTurn.get(message.turnId as string) ?? [] : [];
           const settledSteps = shouldRenderIncompleteTurn ? settledLiveTurns[message.turnId as string] ?? [] : [];

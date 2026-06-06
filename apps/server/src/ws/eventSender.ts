@@ -22,8 +22,18 @@ export const makeEvent = <T extends ServerEvent["type"]>(
   return serverEventSchema.parse(event)
 }
 
-export const sendEvent = (socket: WebSocket, event: ServerEvent): void => {
-  socket.send(JSON.stringify(event))
+export type EventSink = (event: ServerEvent) => void
+
+export const sendEvent = (socket: WebSocket, event: ServerEvent): boolean => {
+  if (socket.readyState !== 1) {
+    return false
+  }
+  try {
+    socket.send(JSON.stringify(event))
+    return true
+  } catch {
+    return false
+  }
 }
 
 export const idsFromCommand = (command: ClientCommand) => ({
@@ -33,7 +43,7 @@ export const idsFromCommand = (command: ClientCommand) => ({
   ...(command.turnId ? { turnId: command.turnId } : {}),
 })
 
-export const appendAndSend = (socket: WebSocket, store: SocratesStore, event: ServerEvent, source: string): void => {
+const appendEvent = (store: SocratesStore, event: ServerEvent, source: string): void => {
   store.appendEvent({
     ...(event.projectId ? { projectId: event.projectId } : {}),
     ...(event.conversationId ? { conversationId: event.conversationId } : {}),
@@ -43,7 +53,16 @@ export const appendAndSend = (socket: WebSocket, store: SocratesStore, event: Se
     source,
     payload: event.payload,
   })
+}
+
+export const appendAndSend = (socket: WebSocket, store: SocratesStore, event: ServerEvent, source: string): void => {
+  appendEvent(store, event, source)
   sendEvent(socket, event)
+}
+
+export const appendAndEmit = (emit: EventSink, store: SocratesStore, event: ServerEvent, source: string): void => {
+  appendEvent(store, event, source)
+  emit(event)
 }
 
 export const emitError = (

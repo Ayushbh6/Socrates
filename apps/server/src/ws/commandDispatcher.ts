@@ -8,6 +8,7 @@ import { apiError } from "../http"
 import type { SocratesStore } from "../services/store"
 import type { ActiveTurns } from "./activeTurns"
 import type { ConversationTerminalManager } from "./conversationTerminals"
+import type { ConversationSubscriptions } from "./conversationSubscriptions"
 import { handleApprovalDecide } from "./commandHandlers/approvalDecide"
 import { handleChatMessageSend } from "./commandHandlers/chatMessageSend"
 import { handleTurnCancel } from "./commandHandlers/chatTurnCancel"
@@ -20,6 +21,7 @@ export const handleInboundMessage = async (
   agent: SocratesAgent,
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
+  subscriptions: ConversationSubscriptions,
   raw: string,
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
@@ -49,14 +51,38 @@ export const handleInboundMessage = async (
 
   try {
     switch (command.type) {
+      case "chat.conversation.subscribe":
+        if (!command.projectId || !command.conversationId) {
+          emitError(socket, store, apiError("missing_command_scope", "projectId and conversationId are required for this command"), {
+            recoverable: true,
+          })
+          return
+        }
+        subscriptions.subscribe(socket, command.conversationId)
+        if (command.payload.replayActiveTurn !== false) {
+          for (const event of store.listActiveTurnServerEvents(command.projectId, command.conversationId)) {
+            subscriptions.send(socket, event)
+          }
+        }
+        return
+      case "chat.conversation.unsubscribe":
+        if (command.conversationId) {
+          subscriptions.unsubscribe(socket, command.conversationId)
+        } else {
+          subscriptions.unsubscribeAll(socket)
+        }
+        return
       case "chat.message.send":
-        void handleChatMessageSend(socket, store, agent, activeTurns, terminals, command, mcpRuntime, titleProvider).catch((error) => {
+        if (command.conversationId) {
+          subscriptions.subscribe(socket, command.conversationId)
+        }
+        void handleChatMessageSend(socket, store, agent, activeTurns, terminals, subscriptions, command, mcpRuntime, titleProvider).catch((error) => {
           const normalized = normalizeError(error)
           emitNormalizedError(socket, store, normalized, idsFromCommand(command))
         })
         return
       case "chat.turn.cancel":
-        handleTurnCancel(socket, store, activeTurns, command)
+        handleTurnCancel(socket, store, activeTurns, subscriptions, command)
         return
       case "approval.decide":
         handleApprovalDecide(store, activeTurns, command)

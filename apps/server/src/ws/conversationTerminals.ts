@@ -31,6 +31,8 @@ type TerminalSnapshot = ReturnType<SocratesStore["listConversationTerminals"]>[n
 
 const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_DETACH_MS ?? "60000", 10)
 const defaultIdleTtlMs = Number.parseInt(process.env.SOCRATES_TERMINAL_IDLE_TTL_MS ?? "7200000", 10)
+const terminalInitialOutputDrainMs = 500
+const terminalInitialOutputPollMs = 50
 
 export class ConversationTerminalManager {
   private readonly terminals = new Map<string, RuntimeTerminal>()
@@ -252,13 +254,8 @@ export class ConversationTerminalManager {
       metadata: { toolCallId: context.toolCallId, systemPid: output.process?.systemPid },
     })
     this.appendOutputSnapshot(terminalId, context, output)
-    await wait(100)
-    const initialOutput = await this.supervisor
-      .output(terminalId, processId, { operation: "output", processId, outputSequence: runtime.supervisorOutputSequence })
-      .catch(() => undefined)
-    if (initialOutput) {
-      this.appendOutputSnapshot(terminalId, context, initialOutput)
-      this.updateFromOutput(runtime, initialOutput)
+    if (!hasShellOutput(output)) {
+      await this.drainInitialTerminalOutput(runtime, context)
     }
     this.emitTerminalStatus(runtime, "terminal.started")
     this.startPolling(runtime)
@@ -408,7 +405,7 @@ export class ConversationTerminalManager {
     await this.drainRuntimeTerminal(terminal, undefined)
   }
 
-  private async drainRuntimeTerminal(terminal: RuntimeTerminal, context: ToolExecutorContext | undefined): Promise<void> {
+  private async drainRuntimeTerminal(terminal: RuntimeTerminal, context: ToolExecutorContext | undefined): Promise<BashToolOutput> {
     const output = await this.supervisor.output(terminal.terminalId, terminal.processId, {
       operation: "output",
       processId: terminal.processId,
@@ -416,6 +413,22 @@ export class ConversationTerminalManager {
     })
     this.appendOutputSnapshot(terminal.terminalId, context, output)
     this.updateFromOutput(terminal, output)
+    return output
+  }
+
+  private async drainInitialTerminalOutput(terminal: RuntimeTerminal, context: ToolExecutorContext): Promise<void> {
+    const deadline = Date.now() + terminalInitialOutputDrainMs
+    for (;;) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0 || !this.terminals.has(terminal.terminalId)) {
+        return
+      }
+      await wait(Math.min(terminalInitialOutputPollMs, remainingMs))
+      const output = await this.drainRuntimeTerminal(terminal, context).catch(() => undefined)
+      if (!output || hasShellOutput(output) || !isActiveTerminalStatus(terminal.status)) {
+        return
+      }
+    }
   }
 
   private updateFromOutput(terminal: RuntimeTerminal, output: BashToolOutput): void {
@@ -684,6 +697,8 @@ const storedTerminalOutput = (
 const isActiveTerminalStatus = (status: TerminalStatus): boolean => status === "running" || status === "awaiting_input"
 
 const isRuntimeTerminal = (terminal: RuntimeTerminal | ReturnType<typeof storedTerminalFromRow>): terminal is RuntimeTerminal => !("output" in terminal)
+
+const hasShellOutput = (output: BashToolOutput): boolean => Boolean(output.stdout || output.stderr)
 
 const runtimeTerminalCandidate = (terminal: RuntimeTerminal) => ({
   name: terminal.name,

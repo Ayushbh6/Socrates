@@ -144,7 +144,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "agent.thinking.delta") {
         setLiveSteps((current) =>
-          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
+          updateLiveStep(current, event.turnId ?? activeTurnIdRef.current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
             ...step,
             reasoning: `${step.reasoning}${event.payload.text}`,
           })),
@@ -154,7 +154,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "agent.answer.delta") {
         setLiveSteps((current) =>
-          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
+          updateLiveStep(current, event.turnId ?? activeTurnIdRef.current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
             ...step,
             answer: `${step.answer}${event.payload.text}`,
           })),
@@ -209,7 +209,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.streaming") {
         setLiveSteps((current) =>
-          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => {
+          updateLiveStep(current, event.turnId ?? activeTurnIdRef.current, event.payload.modelCallId, event.payload.stepIndex, (step) => {
             const existing = step.tools.find((tool) =>
               sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId),
             );
@@ -260,7 +260,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.started") {
         setLiveSteps((current) =>
-          updateLiveStep(current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
+          updateLiveStep(current, event.turnId ?? activeTurnIdRef.current, event.payload.modelCallId, event.payload.stepIndex, (step) => ({
             ...step,
             tools: [
               ...step.tools.filter((tool) => !sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId)),
@@ -425,6 +425,28 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const { isConnected, sendCommand } = useSocratesSocket({
     onEvent: handleSocketEvent,
     onError: setError,
+    onConnected: (send) => {
+      if (activeTurnIdRef.current) {
+        liveStepsRef.current = [];
+        setLiveSteps([]);
+      }
+      const command: ClientCommand = {
+        id: `cmd_${crypto.randomUUID()}`,
+        type: "chat.conversation.subscribe",
+        schemaVersion: 1,
+        timestamp: new Date().toISOString(),
+        projectId,
+        conversationId,
+        actor: { type: "user" },
+        payload: {
+          replayActiveTurn: true,
+        },
+      };
+      send(command);
+      void refreshConversation().catch((err) => {
+        setError(err instanceof Error ? err.message : "Could not refresh conversation.");
+      });
+    },
   });
 
   useEffect(() => {
@@ -451,10 +473,15 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           setConversationData(conversation);
           setTerminals(conversation.terminals ?? []);
           const reloadActiveTurn = conversation.partialTurns?.find((turn) => turn.status === "running")?.turnId ?? null;
+          const hasReplayedLiveSteps =
+            Boolean(reloadActiveTurn) && liveStepsRef.current.some((step) => step.turnId === reloadActiveTurn);
           activeTurnIdRef.current = reloadActiveTurn;
           setActiveTurnId(reloadActiveTurn);
           setIsSending(Boolean(reloadActiveTurn));
-          setLiveSteps([]);
+          if (!hasReplayedLiveSteps) {
+            liveStepsRef.current = [];
+            setLiveSteps([]);
+          }
           setApprovals([]);
           setIsCompacting(false);
           setSidebarProjects(projectConversations);
@@ -977,6 +1004,7 @@ const appendToolOutput = (
 
 const updateLiveStep = (
   steps: LiveActivityStep[],
+  turnId: string | null | undefined,
   modelCallId: string | undefined,
   stepIndex: number | undefined,
   updater: (step: LiveActivityStep) => LiveActivityStep,
@@ -990,6 +1018,7 @@ const updateLiveStep = (
     ...steps,
     updater({
       key,
+      ...(turnId ? { turnId } : {}),
       ...(modelCallId ? { modelCallId } : {}),
       stepIndex: stepIndex ?? steps.length,
       reasoning: "",
