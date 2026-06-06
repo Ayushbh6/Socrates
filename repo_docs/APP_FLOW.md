@@ -83,6 +83,8 @@ The npm CLI path is the primary distribution path until paid desktop signing is 
 
 The CLI fetches the latest GitHub Release by default, so older published launcher packages can still pick up newer runtime zips. Publishing the npm package version is still useful for launcher metadata and `--version`, but runtime rollout is driven by the GitHub Release assets. Windows runtime extraction should prefer `tar.exe`, with PowerShell `Expand-Archive` only as a fallback, because `Expand-Archive` is slower on the large Windows archive and has been unreliable with `./`-prefixed zip entries. Runtime archive creation must write root entries such as `launcher.mjs` and `manifest.json` directly, without a `./` prefix or wrapper directory.
 
+Current npm runtime release target is `v0.1.5`. It includes the v0.1.4 Windows archive-layout recovery plus usage/cost accounting, OpenRouter cache/cost metadata handling, automatic conversation titles, the searchable fixed-height dashboard conversation list, and the chat-page Dashboard navigation button. The dedicated `memory-work-v1` branch remains separate from this release target.
+
 On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
 
 Provider credentials:

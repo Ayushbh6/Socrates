@@ -558,6 +558,18 @@ Prepared the v0.1.4 recovery slice for the npm CLI release path:
 - `apps/desktop/scripts/build-runtime-archive.mjs` now archives explicit runtime root entries instead of `.`, then validates that `launcher.mjs` and `manifest.json` are direct root entries and no zip entry starts with `./`.
 - `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.4`; a `v0.1.4` GitHub Release should allow even older npm launchers to fetch a Windows runtime archive without `./`-prefixed entries.
 
+## v0.1.5 Usage Accounting, Title UX, And Dashboard Polish
+
+Prepared the v0.1.5 runtime slice for the npm CLI release path:
+
+- Added `ai_usage_events` and `turn_usage_reports` as the source of truth for completed-turn token, cache, and cost accounting. Main model calls, context compaction, and conversation-title calls can be recorded; `model_usage` remains compatibility storage.
+- OpenRouter usage handling now preserves final usage/provider metadata, records raw usage and generation metadata, computes fallback OpenRouter cost from endpoint pricing when provider cost is absent, and includes a paid opt-in DeepSeek V4 Flash cache smoke test for same-session provider/cache behavior.
+- The chat header shows cumulative conversation cost beside the context token count, with subtle markers for computed or unknown costs.
+- New conversations now get a first-message placeholder title capped at 15 normalized characters plus `...`, then a model-generated title using Llama 4 Maverick with Qwen3.5 Flash fallback. Generated titles are capped at 48 characters.
+- The project dashboard conversation list is fixed-height and internally scrollable with search; individual chat pages now include a Dashboard button that returns to the project dashboard.
+- The latest dedicated `memory-work-v1` branch remains separate from this release branch. `main` contains older baseline memory/trace tooling, but does not include `memory-work-v1` commit `eedd16c`.
+- `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.5`; pushing tag `v0.1.5` should publish the matching GitHub runtime assets through `Release npm Runtime`.
+
 ## Trace Retrieve Memory Overhaul And Slim Output
 
 Current `trace_retrieve` direction after the May 31 cleanup:

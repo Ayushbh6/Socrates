@@ -268,6 +268,8 @@ There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash pinne
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
 ```
 
+This cache/cost accounting implementation is part of the `v0.1.5` npm runtime release target. It does not merge the later dedicated `memory-work-v1` branch into `main`.
+
 ## Provider-Specific Escape Hatch
 
 The abstraction should be clean, but not naive.
