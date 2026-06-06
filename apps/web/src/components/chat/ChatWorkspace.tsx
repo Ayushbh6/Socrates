@@ -36,6 +36,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isTerminalPanelCollapsed, setIsTerminalPanelCollapsed] = useState(false);
+  const [terminalPanelWidth, setTerminalPanelWidth] = useState(420);
   const [notifications, setNotifications] = useState<SocratesNotification[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
@@ -769,11 +770,16 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const activeTerminalCount = terminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
   const awaitingTerminalInputCount = terminals.filter((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input").length;
   const effectiveTerminalPanelCollapsed = isTerminalPanelCollapsed && awaitingTerminalInputCount === 0;
+  const clampedTerminalPanelWidth = Math.min(Math.max(terminalPanelWidth, 320), 720);
   const workspaceBodyClass = hasTerminals
     ? effectiveTerminalPanelCollapsed
       ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_3rem]"
-      : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid lg:grid-cols-[minmax(0,1fr)_380px]"
+      : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid"
     : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
+  const workspaceBodyStyle =
+    hasTerminals && !effectiveTerminalPanelCollapsed
+      ? ({ gridTemplateColumns: `minmax(0, 1fr) ${clampedTerminalPanelWidth}px` } as const)
+      : undefined;
   const tokenLabel = useMemo(() => {
     if (contextUsage) {
       return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
@@ -863,7 +869,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             </button>
           ) : null}
         </header>
-        <div className={workspaceBodyClass}>
+        <div className={workspaceBodyClass} style={workspaceBodyStyle}>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {isLoading ? (
               <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
@@ -924,6 +930,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             terminals={terminals}
             isCollapsed={effectiveTerminalPanelCollapsed}
             onToggleCollapsed={() => setIsTerminalPanelCollapsed((current) => !current)}
+            onResizePanel={setTerminalPanelWidth}
             onStop={handleTerminalStop}
             onInput={handleTerminalInput}
             onResize={handleTerminalResize}
@@ -1100,7 +1107,10 @@ const upsertTerminal = (terminals: ConversationTerminal[], terminal: Conversatio
       : existing?.output
         ? { ...existing.output, nextOutputSequence: terminal.output.nextOutputSequence }
         : terminal.output;
-  return [{ ...existing, ...terminal, output }, ...terminals.filter((item) => item.terminalId !== terminal.terminalId)];
+  if (!existing) {
+    return [terminal, ...terminals];
+  }
+  return terminals.map((item) => (item.terminalId === terminal.terminalId ? { ...existing, ...terminal, output } : item));
 };
 
 const emptyCostUsage = (): ConversationCostUsage => ({

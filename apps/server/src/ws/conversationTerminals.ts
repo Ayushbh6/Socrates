@@ -449,6 +449,13 @@ export class ConversationTerminalManager {
 
   private updateFromOutput(terminal: RuntimeTerminal, output: BashToolOutput): void {
     const status = terminal.awaitingInput && output.process?.status === "running" ? "awaiting_input" : processStatusToTerminalStatus(output.process?.status)
+    if (status === "missing") {
+      this.markRuntimeTerminalDetached(terminal, {
+        code: "terminal_supervisor_lost_process",
+        message: "The Terminal supervisor no longer owns this PTY process.",
+      })
+      return
+    }
     terminal.status = status
     this.store.updateTerminal(terminal.terminalId, {
       status,
@@ -498,6 +505,21 @@ export class ConversationTerminalManager {
       awaitingInput: false,
       completedAt: nowIso(),
       metadata: { runtimeError: { code: normalized.code, message: normalized.message, details: normalized.details } },
+    })
+    this.clearRuntimeTerminal(terminal)
+    this.emitTerminalStatus(terminal)
+  }
+
+  private markRuntimeTerminalDetached(terminal: RuntimeTerminal, error: { code: string; message: string; details?: unknown }): void {
+    if (!this.terminals.has(terminal.terminalId)) {
+      return
+    }
+    terminal.status = "detached"
+    this.store.updateTerminal(terminal.terminalId, {
+      status: "detached",
+      awaitingInput: false,
+      completedAt: nowIso(),
+      metadata: { runtimeError: error },
     })
     this.clearRuntimeTerminal(terminal)
     this.emitTerminalStatus(terminal)

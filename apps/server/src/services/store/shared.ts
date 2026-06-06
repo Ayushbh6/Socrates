@@ -1,7 +1,7 @@
 import type { RuntimeConfig, User, ProjectResource, ProjectWorkspace } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import type { WorkspaceMode } from "@socrates/workspace"
-import { and, desc, eq, inArray } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import type { DatabaseHandle } from "../../db/client"
 import { artifacts, conversations, messages, projectResources, projectWorkspaces, projects, sessions, turnRuntimeConfigs, turns, users } from "../../db/schema"
 import { mapProjectResource, mapProjectWorkspace, mapUser } from "../../db/mappers"
@@ -200,6 +200,7 @@ export class StoreBase {
       .select()
       .from(projectWorkspaces)
       .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.isPrimary, true)))
+      .orderBy(sql`CASE WHEN ${projectWorkspaces.status} = 'active' THEN 0 ELSE 1 END`, desc(projectWorkspaces.updatedAt))
       .limit(1)
       .get()
   }

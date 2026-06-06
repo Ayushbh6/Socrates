@@ -1411,6 +1411,47 @@ describe("workspace tools", () => {
     }
   })
 
+  it("keeps a started PTY process interactive through user input", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath)
+    try {
+      const started = await session.run({
+        operation: "start",
+        command: nodeCommand(
+          "process.stdout.write('ready\\n'); process.stdin.setEncoding('utf8'); process.stdin.on('data', (chunk) => { process.stdout.write('got:' + String(chunk).trim() + '\\n'); process.exit(0); });",
+        ),
+        charLimit: 20_000,
+      })
+      expect(started.process?.status).toBe("running")
+      expect(started.process?.processId).toBeTruthy()
+      const processId = started.process?.processId
+      if (!processId) {
+        throw new Error("Started PTY process did not return a process id.")
+      }
+
+      let transcript = started.stdout
+      for (let attempt = 0; attempt < 20 && !transcript.includes("ready"); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        const readyOutput = await session.run({ operation: "output", processId, charLimit: 20_000 })
+        transcript = `${started.stdout}${readyOutput.stdout}`
+      }
+      expect(transcript).toContain("ready")
+
+      session.writeProcessInput(processId, "yes\n")
+      let output = await session.run({ operation: "output", processId, charLimit: 20_000 })
+      for (let attempt = 0; attempt < 20 && !output.stdout.includes("got:yes"); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        output = await session.run({ operation: "output", processId, charLimit: 20_000 })
+      }
+
+      expect(output.stdout).toContain("got:yes")
+      expect(output.process?.status).toBe("exited")
+      expect(output.exitCode).toBe(0)
+    } finally {
+      session.dispose()
+    }
+  })
+
   it("rejects leading external absolute cd while allowing workspace-relative cd and external destinations", async () => {
     const workspacePath = tempDir()
     fs.mkdirSync(path.join(workspacePath, "nested"))

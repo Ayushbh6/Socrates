@@ -1663,6 +1663,37 @@ describe("HTTP API", () => {
     }
   })
 
+  it("prefers the active primary workspace over stale detached primary duplicates", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const stalePath = tempDir()
+
+    const sqlite = new Database(dbPath)
+    try {
+      sqlite
+        .prepare(
+          "INSERT INTO project_workspaces (id, project_id, kind, path, is_primary, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run("pws_stale_primary", project.id, "existing_folder", stalePath, 1, "detached", "2099-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z")
+    } finally {
+      sqlite.close()
+    }
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}`,
+    })
+    const body = parseResponse<{ primaryWorkspace: ProjectWorkspace }>(response.payload)
+    expect(body.ok).toBe(true)
+    if (!body.ok) {
+      throw new Error("Expected project dashboard success")
+    }
+    expect(body.data.primaryWorkspace.id).toBe(primaryWorkspace.id)
+    expect(body.data.primaryWorkspace.path).toBe(primaryWorkspace.path)
+  })
+
   it("blocks workspace updates while a project turn is active", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)

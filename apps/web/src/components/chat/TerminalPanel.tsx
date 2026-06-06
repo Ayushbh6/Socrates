@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, Clipboard, Copy, Pencil, Square, SquareTerminal, Trash2, X } from "lucide-react";
+import { ChevronRight, Clipboard, Copy, GripVertical, Pencil, Square, SquareTerminal, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ConversationTerminal } from "@socrates/contracts";
 
@@ -10,15 +10,22 @@ interface TerminalPanelProps {
   terminals: ConversationTerminal[];
   isCollapsed: boolean;
   onToggleCollapsed: () => void;
+  onResizePanel: (width: number) => void;
   onStop: (terminalId: string) => void;
   onInput: (terminalId: string, input: { data?: string; text?: string; key?: TerminalInputKey; submit?: boolean }) => void;
   onResize: (terminalId: string, size: { cols: number; rows: number }) => void;
   onRename: (terminalId: string, name: string) => void;
 }
 
-export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onStop, onInput, onResize, onRename }: TerminalPanelProps) {
+export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onResizePanel, onStop, onInput, onResize, onRename }: TerminalPanelProps) {
   const visibleTerminals = useMemo(
-    () => [...terminals].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 6),
+    () =>
+      [...terminals]
+        .sort((a, b) => {
+          const startedDelta = Date.parse(b.startedAt) - Date.parse(a.startedAt);
+          return startedDelta === 0 ? a.name.localeCompare(b.name) : startedDelta;
+        })
+        .slice(0, 6),
     [terminals],
   );
   const [activeTerminalId, setActiveTerminalId] = useState<string | undefined>(visibleTerminals[0]?.terminalId);
@@ -52,7 +59,8 @@ export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onSto
   }
 
   return (
-    <aside className="flex max-h-[50vh] min-w-0 w-full shrink-0 flex-col overflow-hidden border-t border-gray-200 bg-gray-950 lg:max-h-none lg:border-l lg:border-t-0">
+    <aside className="relative flex max-h-[50vh] min-w-0 w-full shrink-0 flex-col overflow-hidden border-t border-gray-200 bg-gray-950 lg:max-h-none lg:border-l lg:border-t-0">
+      <PanelResizeHandle onResizePanel={onResizePanel} />
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-gray-800 bg-gray-900 px-4">
         <div className="flex size-8 items-center justify-center rounded-md bg-gray-950 text-white ring-1 ring-white/10">
           <SquareTerminal className="size-4" />
@@ -104,6 +112,33 @@ export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onSto
         />
       ) : null}
     </aside>
+  );
+}
+
+function PanelResizeHandle({ onResizePanel }: { onResizePanel: (width: number) => void }) {
+  return (
+    <div
+      className="group absolute left-0 top-0 hidden h-full w-2 -translate-x-1 cursor-col-resize items-center justify-center lg:flex"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize terminal panel"
+      onMouseDown={(event) => {
+        event.preventDefault();
+        const onMove = (moveEvent: MouseEvent) => {
+          onResizePanel(Math.min(Math.max(window.innerWidth - moveEvent.clientX, 320), 720));
+        };
+        const onUp = () => {
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+        };
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      }}
+    >
+      <div className="flex h-12 w-1 items-center justify-center rounded-full bg-transparent text-gray-600 transition group-hover:bg-gray-700 group-hover:text-gray-300">
+        <GripVertical className="size-3" />
+      </div>
+    </div>
   );
 }
 
