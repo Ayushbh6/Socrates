@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Bell, Eye, EyeOff, X } from "lucide-react";
+import { Bell, LayoutDashboard, Eye, EyeOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientCommand, Conversation, ConversationCostUsage, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent, TurnUsageReport } from "@socrates/contracts";
 import { api } from "@/lib/api";
@@ -754,6 +754,16 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             isSidebarCollapsed ? "pl-16 pr-6" : "px-6"
           }`}
         >
+          <button
+            type="button"
+            className="mr-4 inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+            title="Project dashboard"
+            aria-label="Project dashboard"
+            onClick={() => router.push(`/projects/${projectId}`)}
+          >
+            <LayoutDashboard className="size-4" />
+            <span className="hidden sm:inline">Dashboard</span>
+          </button>
           <h1 className="truncate text-sm font-medium text-brand-text-dark">{conversationTitle}</h1>
           {tokenLabel ? <span className="ml-4 shrink-0 font-mono text-xs text-brand-text-light">{tokenLabel}</span> : null}
           {costLabel ? (
