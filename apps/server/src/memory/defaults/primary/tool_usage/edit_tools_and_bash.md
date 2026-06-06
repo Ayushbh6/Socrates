@@ -236,6 +236,8 @@ Use `operation: "run"` for finite commands.
 
 Use `operation: "start"` for dev servers, background workers, watchers, long installs, or commands likely to run for more than 15 seconds.
 
+For app bring-up and monitoring, start each independent long-running process as its own named Terminal, such as `backend`, `frontend`, `worker`, or `celery`. Keep talking to the user while those Terminals run in the background, and inspect health with `operation: "status"` or `operation: "output"` by human Terminal name.
+
 ```json
 {
   "operation": "start",
