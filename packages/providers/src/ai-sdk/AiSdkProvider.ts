@@ -775,10 +775,11 @@ const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => 
 export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => {
   const providerRouting = openRouterProviderRoutingForModel(request.modelId)
   const shouldSendProviderRouting = providerRouting && Object.keys(providerRouting).length > 0
+  const stableSessionId = request.cacheKey ?? request.sessionId
   return {
     openrouter: {
       usage: { include: true },
-      ...(request.cacheKey ?? request.sessionId ? { extraBody: { session_id: request.cacheKey ?? request.sessionId } } : {}),
+      ...(stableSessionId ? { extraBody: { session_id: stableSessionId } } : {}),
       ...(shouldSendProviderRouting ? { provider: providerRouting } : {}),
       reasoning: request.runtimeConfig.thinkingEnabled
         ? { enabled: true, exclude: false }
