@@ -314,10 +314,7 @@ const createPersistentBashAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
-        const setupCommand =
-          process.platform === "win32"
-            ? "New-Item -ItemType Directory -Force nested | Out-Null; Set-Location nested; $env:SOCRATES_SERVER_TEST = 'ok'; Get-Location"
-            : "mkdir -p nested && cd nested && export SOCRATES_SERVER_TEST=ok && pwd"
+        const setupCommand = process.platform === "win32" ? "New-Item -ItemType Directory -Force nested | Out-Null; Set-Location nested; Get-Location" : "mkdir -p nested && cd nested && pwd"
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -332,8 +329,8 @@ const createPersistentBashAgent = (): SocratesAgent => {
       if (step === 2) {
         const stateCommand =
           process.platform === "win32"
-            ? 'Write-Output -NoNewline "$env:SOCRATES_SERVER_TEST $(Split-Path -Leaf (Get-Location))"'
-            : 'printf "$SOCRATES_SERVER_TEST $(basename "$PWD")"'
+            ? 'Write-Output -NoNewline "$(Split-Path -Leaf (Get-Location))"'
+            : 'printf "$(basename "$PWD")"'
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -364,7 +361,7 @@ const createRecoveringBashAgent = (): SocratesAgent => {
           toolCall: {
             toolCallId: "tcall_break_shell",
             toolName: "bash",
-            input: { command: "exit" },
+            input: { command: "cd /Users/ayush/Test && python3 -m venv venv" },
           },
         }
         yield { type: "model.completed" }
@@ -3806,7 +3803,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("reuses one persistent bash shell for tool calls in the same turn and hydrates tool history", async () => {
+  it("runs PTY bash tool calls in the same turn and hydrates tool history", async () => {
     const app = await buildTestServer(tempDbPath(), createPersistentBashAgent())
     await onboard(app)
     const { project } = await createProject(app)
@@ -3833,8 +3830,8 @@ describe("WebSocket API", () => {
           expect(body.data.toolRuns).toHaveLength(2)
         const stateRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_state")
         expect(stateRun?.toolCallId).toMatch(/^tcall_/)
-        expect(stateRun?.shell?.stdout).toBe("ok nested")
-        expect(stateRun?.shell?.cwd.endsWith("nested")).toBe(true)
+        expect(stateRun?.shell?.stdout).toBe("Backend-Test-Project")
+        expect(stateRun?.shell?.cwd.endsWith("Backend-Test-Project")).toBe(true)
         expect(stateRun?.durationMs).toBeGreaterThanOrEqual(0)
       }
     } finally {
@@ -4122,7 +4119,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("persists recoverable shell protocol failures and resets the shell session", async () => {
+  it("persists recoverable shell failures and continues with the next PTY run", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath, createRecoveringBashAgent())
     await onboard(app)
@@ -4138,7 +4135,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "turn.completed")
 
       expect(failed.payload.providerToolCallId).toBe("tcall_break_shell")
-      expect(failed.payload.error.code).toBe("shell_protocol_failed")
+      expect(failed.payload.error.code).toBe("external_workspace_cd_rejected")
       expect(completed.payload.providerToolCallId).toBe("tcall_after_reset")
 
       const response = await app.inject({
@@ -4159,15 +4156,13 @@ describe("WebSocket API", () => {
       const sqlite = new Database(dbPath)
       try {
         const error = sqlite
-          .prepare("SELECT code, recoverable, details_json FROM errors WHERE source = 'tool' AND code = 'shell_protocol_failed'")
+          .prepare("SELECT code, recoverable, details_json FROM errors WHERE source = 'tool' AND code = 'external_workspace_cd_rejected'")
           .get() as { code: string; recoverable: number; details_json: string } | undefined
-        expect(error?.code).toBe("shell_protocol_failed")
+        expect(error?.code).toBe("external_workspace_cd_rejected")
         expect(error?.recoverable).toBe(1)
-        const details = JSON.parse(error?.details_json ?? "{}") as { platform?: string; kind?: string; executable?: string; cwd?: string }
-        expect(details.platform).toBe(process.platform)
-        expect(details.kind).toBe(process.platform === "win32" ? "powershell" : "posix")
-        expect(details.executable).toBeTruthy()
-        expect(details.cwd).toBeTruthy()
+        const details = JSON.parse(error?.details_json ?? "{}") as { workspacePath?: string; cdTarget?: string }
+        expect(details.workspacePath).toBeTruthy()
+        expect(details.cdTarget).toBe("/Users/ayush/Test")
       } finally {
         sqlite.close()
       }

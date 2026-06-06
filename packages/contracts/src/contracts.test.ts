@@ -632,8 +632,10 @@ describe("websocket client command contracts", () => {
       }),
     ),
     clientCommandSchema.safeParse(envelope("terminal.stop", { terminalId: "term_1", reason: "Done" })),
+    clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1", data: "\u0003" })),
     clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1", text: "yes", submit: true })),
     clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1", key: "ArrowDown" })),
+    clientCommandSchema.safeParse(envelope("terminal.resize", { terminalId: "term_1", cols: 120, rows: 32 })),
     clientCommandSchema.safeParse(envelope("terminal.rename", { terminalId: "term_1", name: "frontend" })),
   ]
 
@@ -883,14 +885,14 @@ describe("websocket server event contracts", () => {
       }),
     ),
     serverEventSchema.safeParse(
-      envelope("terminal.output", {
+      envelope("terminal.data", {
         terminalId: "term_1",
         name: "frontend",
         command: "pnpm dev",
         cwd: "/tmp/socrates",
         workspacePath: "/tmp/socrates",
         status: "running",
-        stream: "stdout",
+        stream: "pty",
         text: "ready\n",
         sequence: 0,
         autoDetached: false,

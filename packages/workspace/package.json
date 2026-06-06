@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@homebridge/node-pty-prebuilt-multiarch": "^0.13.1",
     "@socrates/contracts": "workspace:*",
     "@socrates/shared": "workspace:*"
   },

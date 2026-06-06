@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 import { SocratesError, type ErrorDetails } from "@socrates/shared"
 
-type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "has"
+type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has"
 type SupervisorRequest = {
   id: string
   method: SupervisorMethod
@@ -17,6 +17,8 @@ type SupervisorRequest = {
   processId?: string
   input?: BashToolInput
   text?: string
+  cols?: number
+  rows?: number
 }
 type SupervisorResponse = {
   id: string
@@ -58,6 +60,10 @@ export class TerminalSupervisorClient {
 
   async input(terminalId: string, processId: string | undefined, text: string): Promise<void> {
     await this.request({ method: "input", terminalId, text, ...(processId ? { processId } : {}) })
+  }
+
+  async resize(terminalId: string, processId: string | undefined, cols: number, rows: number): Promise<void> {
+    await this.request({ method: "resize", terminalId, cols, rows, ...(processId ? { processId } : {}) })
   }
 
   async has(terminalId: string): Promise<boolean> {

@@ -1,6 +1,6 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import type { IPty } from "@homebridge/node-pty-prebuilt-multiarch"
 import type { BashToolInput, BashToolOutput, TruncationMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { clampCharLimit, resolveWorkspacePath } from "./common"
@@ -28,7 +28,7 @@ type RunningProcess = {
   systemPid?: number
   command: string
   cwd: string
-  child: ChildProcessWithoutNullStreams
+  pty: IPty
   adapter: ShellAdapter
   startedAt: string
   exitedAt?: string
@@ -37,27 +37,32 @@ type RunningProcess = {
   signal?: string | null
   chunks: ProcessChunk[]
   nextSequence: number
+  cols: number
+  rows: number
 }
 
 type ProcessChunk = {
   sequence: number
-  stream: "stdout" | "stderr"
+  stream: "pty"
   text: string
 }
 
-type ShellChild = {
-  child: ChildProcessWithoutNullStreams
-  adapter: ShellAdapter
+type PtyExit = {
+  exitCode: number
+  signal?: number | string
 }
 
 const interactiveCommandPattern =
-  /^\s*(vi|vim|nvim|nano|emacs|less|more|top|htop|ssh|scp|sftp|ftp|passwd)\b|\b(--interactive|-i)\b/
+  /^\s*(vi|vim|nvim|nano|emacs|less|more|top|htop|ssh|scp|sftp|ftp|passwd|python(?:3)?\s+-i|node\s+-i)\b|\b(--interactive|-i)\b/
 
 const markerHoldback = 256
 const processOutputBufferLimit = 200_000
+const defaultCols = 100
+const defaultRows = 30
+
+let ptyModulePromise: Promise<typeof import("@homebridge/node-pty-prebuilt-multiarch")> | undefined
 
 export class WorkspaceShellSession {
-  private shellChild: ShellChild | null = null
   private queue: Promise<unknown> = Promise.resolve()
   private disposed = false
   private readonly processes = new Map<string, RunningProcess>()
@@ -80,7 +85,6 @@ export class WorkspaceShellSession {
 
   dispose(): void {
     this.disposed = true
-    this.resetChild()
     for (const processInfo of this.processes.values()) {
       this.stopProcess(processInfo)
     }
@@ -89,13 +93,28 @@ export class WorkspaceShellSession {
 
   writeProcessInput(processId: string, text: string): void {
     const processInfo = this.findProcess(processId)
-    if (!processInfo || processInfo.status !== "running" || processInfo.child.killed) {
+    if (!processInfo || processInfo.status !== "running") {
       throw new SocratesError("terminal_process_not_running", "Terminal input can only be sent to a running process.", {
         details: { processId },
         recoverable: true,
       })
     }
-    processInfo.child.stdin.write(text)
+    processInfo.pty.write(text)
+  }
+
+  resizeProcess(processId: string, cols: number, rows: number): void {
+    const processInfo = this.findProcess(processId)
+    if (!processInfo || processInfo.status !== "running") {
+      throw new SocratesError("terminal_process_not_running", "Terminal resize can only target a running process.", {
+        details: { processId },
+        recoverable: true,
+      })
+    }
+    const nextCols = clampDimension(cols, defaultCols)
+    const nextRows = clampDimension(rows, defaultRows)
+    processInfo.cols = nextCols
+    processInfo.rows = nextRows
+    processInfo.pty.resize(nextCols, nextRows)
   }
 
   private async runNow(input: BashToolInput, context: ShellRunContext): Promise<BashToolOutput> {
@@ -125,197 +144,147 @@ export class WorkspaceShellSession {
       throw new SocratesError("shell_command_required", "A shell command is required for run operations.")
     }
     rejectLeadingExternalCd(commandText, this.workspacePath)
-    rejectInteractiveCommand(commandText)
 
     const startedAt = Date.now()
-    const requestedCwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : undefined
+    const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
     const timeoutMs = input.timeoutMs ?? 120_000
     const charLimit = clampCharLimit(input.charLimit)
     const id = randomUUID().replaceAll("-", "")
     const cwdMarker = `__SOCRATES_CWD_${id}__`
     const doneMarker = `__SOCRATES_DONE_${id}__`
     let stdout = ""
-    let stderr = ""
-    let stdoutPending = ""
+    let pending = ""
     let returnedLength = 0
     let originalLength = 0
     let truncated = false
     let timedOut = false
-    let finalCwd = requestedCwd ?? this.workspacePath
-    let resolved = false
-    let forceReset = false
+    let finalCwd = cwd
+    let markerExitCode: number | undefined
 
-    const shellChild = await this.ensureChild()
-    const { child, adapter } = shellChild
+    const adapter = await this.resolveAdapter(cwd)
+    const wrappedCommand = adapter.wrapCommand({ command: commandText, cwd, cwdMarker, doneMarker })
+    const pty = await spawnPtyChecked(adapter, adapter.runArgs(wrappedCommand), cwd, this.env, defaultCols, defaultRows)
 
-    const append = (stream: "stdout" | "stderr", text: string) => {
-      if (!text) {
+    const append = (text: string) => {
+      const normalized = normalizePtyTranscript(text)
+      if (!normalized) {
         return
       }
-      originalLength += text.length
+      originalLength += normalized.length
       const remaining = Math.max(charLimit - returnedLength, 0)
       if (remaining <= 0) {
         truncated = true
         return
       }
-      const sliced = text.slice(0, remaining)
+      const sliced = normalized.slice(0, remaining)
       returnedLength += sliced.length
-      if (sliced.length < text.length) {
+      if (sliced.length < normalized.length) {
         truncated = true
       }
-      if (stream === "stdout") {
-        stdout += sliced
-      } else {
-        stderr += sliced
-      }
-      context.onOutput?.({ stream, text: sliced })
+      stdout += sliced
+      context.onOutput?.({ stream: "stdout", text: sliced })
     }
 
-    const drainStdout = () => {
+    const drainPending = (final = false) => {
       for (;;) {
-        const cwdIndex = stdoutPending.indexOf(cwdMarker)
-        const doneIndex = stdoutPending.indexOf(doneMarker)
+        const cwdIndex = pending.indexOf(cwdMarker)
+        const doneIndex = pending.indexOf(doneMarker)
         const indexes = [cwdIndex, doneIndex].filter((index) => index >= 0)
         if (indexes.length === 0) {
-          const flushLength = stdoutPending.length - markerHoldback
+          const flushLength = final ? pending.length : pending.length - markerHoldback
           if (flushLength > 0) {
-            append("stdout", stdoutPending.slice(0, flushLength))
-            stdoutPending = stdoutPending.slice(flushLength)
+            append(pending.slice(0, flushLength))
+            pending = pending.slice(flushLength)
           }
           return
         }
 
         const markerIndex = Math.min(...indexes)
-        append("stdout", stdoutPending.slice(0, markerIndex))
-        stdoutPending = stdoutPending.slice(markerIndex)
+        append(pending.slice(0, markerIndex))
+        pending = pending.slice(markerIndex)
 
-        if (stdoutPending.startsWith(cwdMarker)) {
-          const newlineIndex = stdoutPending.indexOf("\n")
-          if (newlineIndex < 0) {
+        if (pending.startsWith(cwdMarker)) {
+          const line = takeMarkerLine(pending, cwdMarker)
+          if (!line) {
             return
           }
-          finalCwd = stdoutPending.slice(cwdMarker.length, newlineIndex).trim() || finalCwd
-          stdoutPending = stdoutPending.slice(newlineIndex + 1)
+          finalCwd = line.value.trim() || finalCwd
+          pending = line.rest
           continue
         }
 
-        if (stdoutPending.startsWith(doneMarker)) {
-          const newlineIndex = stdoutPending.indexOf("\n")
-          if (newlineIndex < 0) {
+        if (pending.startsWith(doneMarker)) {
+          const line = takeMarkerLine(pending, doneMarker)
+          if (!line) {
             return
           }
-          const rawExitCode = stdoutPending.slice(doneMarker.length, newlineIndex).trim()
-          stdoutPending = stdoutPending.slice(newlineIndex + 1)
-          resolved = true
-          return Number.parseInt(rawExitCode, 10)
+          const parsed = Number.parseInt(line.value.trim(), 10)
+          markerExitCode = Number.isNaN(parsed) ? undefined : parsed
+          pending = line.rest
+          continue
         }
       }
     }
 
-    return await new Promise<BashToolOutput>((resolve, reject) => {
-      const finish = (output: BashToolOutput) => {
-        cleanup()
-        resolve(output)
-      }
-      const fail = (error: unknown) => {
-        cleanup()
-        this.resetChild()
-        reject(normalizeShellError(error, "shell_protocol_failed", adapter, finalCwd))
-      }
+    return await new Promise<BashToolOutput>((resolve) => {
+      let settled = false
+      let forceFinishTimer: NodeJS.Timeout | undefined
       const cleanup = () => {
+        dataDisposable.dispose()
+        exitDisposable.dispose()
         clearTimeout(timeout)
-        clearTimeout(killTimeout)
-        child.stdout.off("data", onStdout)
-        child.stderr.off("data", onStderr)
-        child.off("close", onClose)
-        child.off("error", fail)
+        clearTimeout(forceFinishTimer)
         context.abortSignal?.removeEventListener("abort", onAbort)
       }
-      const makeOutput = (exitCode: number | null, signal?: string | null): BashToolOutput => ({
-        operation: "run",
-        command: commandText,
-        cwd: finalCwd,
-        exitCode,
-        ...(signal ? { signal } : {}),
-        stdout,
-        stderr,
-        durationMs: Date.now() - startedAt,
-        timedOut,
-        truncation: {
-          truncated,
-          charLimit,
-          originalLength,
-          returnedLength,
-        },
-        shell: shellMetadata(adapter),
-      })
-
-      const onStdout = (chunk: Buffer) => {
-        stdoutPending += chunk.toString("utf8")
-        const exitCode = drainStdout()
-        if (typeof exitCode === "number") {
-          append("stdout", stdoutPending)
-          stdoutPending = ""
-          finish(makeOutput(Number.isNaN(exitCode) ? null : exitCode))
-        }
-      }
-      const onStderr = (chunk: Buffer) => append("stderr", chunk.toString("utf8"))
-      const onClose = (exitCode: number | null, signal: NodeJS.Signals | null) => {
-        append("stdout", stdoutPending)
-        stdoutPending = ""
-        this.shellChild = null
-        if (!resolved) {
-          if (timedOut) {
-            finish(makeOutput(exitCode, signal))
-            return
-          }
-          fail(
-            new Error(
-              `Shell closed before command completion marker was emitted.${exitCode === null ? "" : ` Exit code: ${exitCode}.`}${
-                signal ? ` Signal: ${signal}.` : ""
-              }`,
-            ),
-          )
+      const finish = (exit: PtyExit) => {
+        if (settled) {
           return
         }
-        finish(makeOutput(exitCode, signal))
+        settled = true
+        drainPending(true)
+        cleanup()
+        const exitCode = timedOut ? exit.exitCode : (markerExitCode ?? exit.exitCode)
+        resolve({
+          operation: "run",
+          command: commandText,
+          cwd: finalCwd,
+          exitCode,
+          ...(exit.signal === undefined ? {} : { signal: String(exit.signal) }),
+          stdout,
+          stderr: "",
+          durationMs: Date.now() - startedAt,
+          timedOut,
+          truncation: {
+            truncated,
+            charLimit,
+            originalLength,
+            returnedLength,
+          },
+          shell: shellMetadata(adapter),
+        })
+      }
+      const kill = () => {
+        try {
+          pty.kill()
+          forceFinishTimer = setTimeout(() => finish({ exitCode: 1, signal: "SIGTERM" }), 1_000)
+        } catch {
+          finish({ exitCode: 1, signal: "SIGTERM" })
+        }
       }
       const onAbort = () => {
-        forceReset = true
         timedOut = false
-        this.resetChild()
+        kill()
       }
       const timeout = setTimeout(() => {
         timedOut = true
-        forceReset = true
-        this.resetChild()
+        kill()
       }, timeoutMs)
-      const killTimeout = setTimeout(() => {
-        if (forceReset && this.shellChild?.child && !this.shellChild.child.killed) {
-          this.shellChild.child.kill("SIGKILL")
-        }
-      }, timeoutMs + 2_000)
-
-      child.stdout.on("data", onStdout)
-      child.stderr.on("data", onStderr)
-      child.once("close", onClose)
-      child.once("error", fail)
+      const dataDisposable = pty.onData((text) => {
+        pending += text
+        drainPending(false)
+      })
+      const exitDisposable = pty.onExit((event) => finish({ exitCode: event.exitCode, ...(event.signal === undefined ? {} : { signal: event.signal }) }))
       context.abortSignal?.addEventListener("abort", onAbort, { once: true })
-
-      const wrappedCommand = adapter.wrapCommand({
-        command: commandText,
-        ...(requestedCwd ? { cwd: requestedCwd } : {}),
-        cwdMarker,
-        doneMarker,
-      })
-
-      child.stdin.write(`${wrappedCommand}\n`, (error) => {
-        if (error && !resolved) {
-          cleanup()
-          this.resetChild()
-          reject(normalizeShellError(error, "shell_write_failed", adapter, finalCwd))
-        }
-      })
     })
   }
 
@@ -325,39 +294,37 @@ export class WorkspaceShellSession {
       throw new SocratesError("shell_command_required", "A shell command is required for start operations.")
     }
     rejectLeadingExternalCd(commandText, this.workspacePath)
-    rejectInteractiveCommand(commandText)
 
     const startedAt = Date.now()
     const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
-    const { child, adapter } = await this.spawnProcessShell(commandText, cwd)
+    const adapter = await this.resolveAdapter(cwd)
+    const cols = defaultCols
+    const rows = defaultRows
+    const pty = await spawnPtyChecked(adapter, adapter.runArgs(commandText), cwd, this.env, cols, rows)
     const processId = `proc_${randomUUID().replaceAll("-", "")}`
     const processInfo: RunningProcess = {
       processId,
-      ...(child.pid ? { systemPid: child.pid } : {}),
+      systemPid: pty.pid,
       command: commandText,
       cwd,
-      child,
+      pty,
       adapter,
       startedAt: new Date(startedAt).toISOString(),
       status: "running",
       chunks: [],
       nextSequence: 0,
+      cols,
+      rows,
     }
     this.processes.set(processId, processInfo)
 
-    child.stdout.on("data", (chunk: Buffer) => this.appendProcessOutput(processInfo, "stdout", chunk.toString("utf8"), context))
-    child.stderr.on("data", (chunk: Buffer) => this.appendProcessOutput(processInfo, "stderr", chunk.toString("utf8"), context))
-    child.once("error", (error) => {
-      processInfo.status = "exited"
-      processInfo.exitedAt = new Date().toISOString()
-      this.appendProcessOutput(processInfo, "stderr", `${error.message}\n`, context)
-    })
-    child.once("close", (exitCode: number | null, signal: NodeJS.Signals | null) => {
+    pty.onData((text) => this.appendProcessOutput(processInfo, text, context))
+    pty.onExit((event) => {
       if (processInfo.status !== "stopped") {
         processInfo.status = "exited"
       }
-      processInfo.exitCode = exitCode
-      processInfo.signal = signal
+      processInfo.exitCode = event.exitCode
+      processInfo.signal = event.signal === undefined ? null : String(event.signal)
       processInfo.exitedAt = new Date().toISOString()
     })
 
@@ -368,7 +335,7 @@ export class WorkspaceShellSession {
       cwd,
       exitCode: null,
       stdout: snapshot.stdout,
-      stderr: snapshot.stderr,
+      stderr: "",
       durationMs: Date.now() - startedAt,
       timedOut: false,
       truncation: snapshot.truncation,
@@ -414,10 +381,7 @@ export class WorkspaceShellSession {
     }
     const snapshot = processSnapshot(processInfo, input.outputSequence, clampCharLimit(input.charLimit))
     if (snapshot.stdout) {
-      context.onOutput?.({ stream: "stdout", text: snapshot.stdout })
-    }
-    if (snapshot.stderr) {
-      context.onOutput?.({ stream: "stderr", text: snapshot.stderr })
+      context.onOutput?.({ stream: "stdout", text: normalizePtyTranscript(snapshot.stdout) })
     }
     return {
       operation: "output",
@@ -426,7 +390,7 @@ export class WorkspaceShellSession {
       exitCode: processInfo.exitCode ?? null,
       ...(processInfo.signal ? { signal: processInfo.signal } : {}),
       stdout: snapshot.stdout,
-      stderr: snapshot.stderr,
+      stderr: "",
       durationMs: Date.now() - startedAt,
       timedOut: false,
       truncation: snapshot.truncation,
@@ -456,10 +420,7 @@ export class WorkspaceShellSession {
     this.stopProcess(processInfo)
     const snapshot = processSnapshot(processInfo, input.outputSequence, clampCharLimit(input.charLimit))
     if (snapshot.stdout) {
-      context.onOutput?.({ stream: "stdout", text: snapshot.stdout })
-    }
-    if (snapshot.stderr) {
-      context.onOutput?.({ stream: "stderr", text: snapshot.stderr })
+      context.onOutput?.({ stream: "stdout", text: normalizePtyTranscript(snapshot.stdout) })
     }
     return {
       operation: "stop",
@@ -468,7 +429,7 @@ export class WorkspaceShellSession {
       exitCode: processInfo.exitCode ?? null,
       ...(processInfo.signal ? { signal: processInfo.signal } : {}),
       stdout: snapshot.stdout,
-      stderr: snapshot.stderr,
+      stderr: "",
       durationMs: Date.now() - startedAt,
       timedOut: false,
       truncation: snapshot.truncation,
@@ -477,31 +438,12 @@ export class WorkspaceShellSession {
     }
   }
 
-  private async ensureChild(): Promise<ShellChild> {
-    if (this.shellChild?.child && !this.shellChild.child.killed) {
-      return this.shellChild
-    }
-
+  private async resolveAdapter(cwd: string): Promise<ShellAdapter> {
     let lastError: unknown
     for (const adapter of candidateAdapters(this.platform, this.env)) {
       try {
-        const child = await spawnChecked(adapter, adapter.interactiveArgs, this.workspacePath, this.env)
-        this.shellChild = { child, adapter }
-        return this.shellChild
-      } catch (error) {
-        lastError = error
-      }
-    }
-
-    throw normalizeShellError(lastError, "shell_start_failed", this.defaultAdapter(), this.workspacePath)
-  }
-
-  private async spawnProcessShell(command: string, cwd: string): Promise<ShellChild> {
-    let lastError: unknown
-    for (const adapter of candidateAdapters(this.platform, this.env)) {
-      try {
-        const child = await spawnChecked(adapter, adapter.runArgs(command), cwd, this.env)
-        return { child, adapter }
+        await probeAdapter(adapter, cwd, this.env)
+        return adapter
       } catch (error) {
         lastError = error
       }
@@ -509,32 +451,24 @@ export class WorkspaceShellSession {
     throw normalizeShellError(lastError, "shell_start_failed", this.defaultAdapter(), cwd)
   }
 
-  private resetChild(): void {
-    if (this.shellChild?.child && !this.shellChild.child.killed) {
-      this.shellChild.child.kill("SIGTERM")
-    }
-    this.shellChild = null
-  }
-
-  private appendProcessOutput(processInfo: RunningProcess, stream: "stdout" | "stderr", text: string, context?: ShellRunContext): void {
+  private appendProcessOutput(processInfo: RunningProcess, text: string, context?: ShellRunContext): void {
     if (!text) {
       return
     }
-    processInfo.chunks.push({ sequence: processInfo.nextSequence, stream, text })
+    processInfo.chunks.push({ sequence: processInfo.nextSequence, stream: "pty", text })
     processInfo.nextSequence += 1
     trimProcessChunks(processInfo)
-    context?.onOutput?.({ stream, text })
+    context?.onOutput?.({ stream: "stdout", text: normalizePtyTranscript(text) })
   }
 
   private stopProcess(processInfo: RunningProcess): void {
-    if (processInfo.status === "running" && !processInfo.child.killed) {
+    if (processInfo.status === "running") {
       processInfo.status = "stopped"
-      processInfo.child.kill("SIGTERM")
-      setTimeout(() => {
-        if (!processInfo.child.killed && processInfo.status === "stopped") {
-          processInfo.child.kill("SIGKILL")
-        }
-      }, 2_000).unref?.()
+      try {
+        processInfo.pty.kill()
+      } catch {
+        // The PTY may already have exited between status polling and stop.
+      }
     }
     processInfo.exitedAt ??= new Date().toISOString()
   }
@@ -572,65 +506,71 @@ export const runWorkspaceBash = async (
 export const isShellSessionResetError = (error: unknown): boolean =>
   error instanceof SocratesError && ["shell_start_failed", "shell_write_failed", "shell_protocol_failed"].includes(error.code)
 
-const rejectInteractiveCommand = (command: string): void => {
-  if (interactiveCommandPattern.test(command)) {
-    throw new SocratesError(
-      "interactive_shell_command_unsupported",
-      "Interactive shell commands are not supported yet. Run a non-interactive command instead.",
-      { details: { command }, recoverable: true },
-    )
-  }
+export const isInteractiveShellCommand = (command: string): boolean => interactiveCommandPattern.test(command)
+
+const loadPty = (): Promise<typeof import("@homebridge/node-pty-prebuilt-multiarch")> => {
+  ptyModulePromise ??= import("@homebridge/node-pty-prebuilt-multiarch")
+  return ptyModulePromise
 }
 
-const spawnChecked = (
+const probeAdapter = async (adapter: ShellAdapter, cwd: string, env: NodeJS.ProcessEnv): Promise<void> => {
+  const pty = await spawnPtyChecked(adapter, adapter.runArgs("exit 0"), cwd, env, defaultCols, defaultRows)
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const timeout = setTimeout(() => {
+      if (settled) {
+        return
+      }
+      settled = true
+      try {
+        pty.kill()
+      } catch {
+        // Ignore failed cleanup while reporting the probe timeout.
+      }
+      reject(new SocratesError("shell_start_failed", "Shell probe timed out.", { details: shellMetadata(adapter), recoverable: true }))
+    }, 500)
+    const disposable = pty.onExit((event) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timeout)
+      disposable.dispose()
+      if (event.exitCode === 0) {
+        resolve()
+        return
+      }
+      reject(
+        new SocratesError("shell_start_failed", "Shell probe exited before it was ready.", {
+          details: { ...shellMetadata(adapter), exitCode: event.exitCode, signal: event.signal },
+          recoverable: true,
+        }),
+      )
+    })
+  })
+}
+
+const spawnPtyChecked = async (
   adapter: ShellAdapter,
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
-): Promise<ChildProcessWithoutNullStreams> =>
-  new Promise((resolve, reject) => {
-    const child = spawn(adapter.executable, args, {
+  cols: number,
+  rows: number,
+): Promise<IPty> => {
+  try {
+    const pty = await loadPty()
+    return pty.spawn(adapter.executable, args, {
       cwd,
       env: buildWorkspaceCommandEnv(env, adapter.platform),
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
+      name: "xterm-256color",
+      cols,
+      rows,
     })
-    let settled = false
-    const timer = setTimeout(() => {
-      if (settled) {
-        return
-      }
-      settled = true
-      child.off("error", onError)
-      child.off("close", onEarlyClose)
-      resolve(child)
-    }, 25)
-    const onError = (error: Error) => {
-      if (settled) {
-        return
-      }
-      settled = true
-      clearTimeout(timer)
-      child.off("close", onEarlyClose)
-      reject(normalizeShellError(error, "shell_start_failed", adapter, cwd))
-    }
-    const onEarlyClose = (code: number | null, signal: NodeJS.Signals | null) => {
-      if (settled) {
-        return
-      }
-      settled = true
-      clearTimeout(timer)
-      child.off("error", onError)
-      reject(
-        new SocratesError("shell_start_failed", "Shell process exited before it was ready.", {
-          details: { ...shellMetadata(adapter), cwd, code, signal },
-          recoverable: true,
-        }),
-      )
-    }
-    child.once("error", onError)
-    child.once("close", onEarlyClose)
-  })
+  } catch (error) {
+    throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+  }
+}
 
 const safeEnvNames = new Set([
   "PATH",
@@ -679,6 +619,7 @@ const buildWorkspaceCommandEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platf
     GIT_PAGER: "cat",
     PS1: "",
     PROMPT: "",
+    TERM: sanitized.TERM ?? "xterm-256color",
   }
 }
 
@@ -694,6 +635,7 @@ const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): S
 export const __bashToolTest = {
   buildWorkspaceCommandEnv,
   candidateAdapters,
+  normalizePtyTranscript,
 }
 
 const makePosixAdapter = (platform: NodeJS.Platform, executable: string): ShellAdapter => {
@@ -806,7 +748,6 @@ const processSnapshot = (
   charLimit = clampCharLimit(),
 ): { stdout: string; stderr: string; truncation: TruncationMetadata } => {
   let stdout = ""
-  let stderr = ""
   let returnedLength = 0
   let originalLength = 0
   let truncated = false
@@ -822,15 +763,11 @@ const processSnapshot = (
     if (sliced.length < chunk.text.length) {
       truncated = true
     }
-    if (chunk.stream === "stdout") {
-      stdout += sliced
-    } else {
-      stderr += sliced
-    }
+    stdout += sliced
   }
   return {
     stdout,
-    stderr,
+    stderr: "",
     truncation: { truncated, charLimit, originalLength, returnedLength, nextOffset: processInfo.nextSequence },
   }
 }
@@ -849,6 +786,33 @@ const emptyTruncation = (charLimit: number): TruncationMetadata => ({
   originalLength: 0,
   returnedLength: 0,
 })
+
+const takeMarkerLine = (text: string, marker: string): { value: string; rest: string } | undefined => {
+  const afterMarker = text.slice(marker.length)
+  const newlineMatch = afterMarker.match(/\r?\n/)
+  if (!newlineMatch || newlineMatch.index === undefined) {
+    return undefined
+  }
+  const end = newlineMatch.index
+  return {
+    value: afterMarker.slice(0, end).replaceAll("\r", ""),
+    rest: afterMarker.slice(end + newlineMatch[0].length),
+  }
+}
+
+function normalizePtyTranscript(text: string): string {
+  return stripAnsi(text)
+    .replaceAll("\r\n", "\n")
+    .replaceAll(/\r(?!\n)/g, "\n")
+    .replaceAll(/\u0007/g, "")
+}
+
+const clampDimension = (value: number, fallback: number): number => {
+  if (!Number.isFinite(value)) {
+    return fallback
+  }
+  return Math.min(Math.max(Math.floor(value), 2), 500)
+}
 
 const posixQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 const powerShellQuote = (value: string): string => `'${value.replaceAll("'", "''")}'`
@@ -900,3 +864,5 @@ const unquoteShellToken = (token: string): string => {
   }
   return token
 }
+
+const stripAnsi = (text: string): string => text.replaceAll(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "").replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")

@@ -2,6 +2,7 @@ import type { WebSocket } from "ws"
 import type { BashToolInput, BashToolOutput, ClientCommand, TerminalStatus } from "@socrates/contracts"
 import { createId, normalizeError, nowIso, SocratesError } from "@socrates/shared"
 import type { ToolExecutorContext } from "@socrates/core"
+import { isInteractiveShellCommand } from "@socrates/workspace"
 import type { SocratesStore } from "../services/store"
 import type { ActiveTurns } from "./activeTurns"
 import { makeEvent, sendEvent } from "./eventSender"
@@ -26,7 +27,7 @@ type TerminalManagerOptions = {
   idleTtlMs?: number
 }
 
-type ShellOutput = { stream: "stdout" | "stderr" | "log" | "result"; text?: string; data?: unknown }
+type ShellOutput = { stream: "stdout" | "stderr" | "log" | "result" | "pty"; text?: string; data?: unknown }
 type TerminalSnapshot = ReturnType<SocratesStore["listConversationTerminals"]>[number]
 
 const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_DETACH_MS ?? "60000", 10)
@@ -164,6 +165,17 @@ export class ConversationTerminalManager {
     })
     this.store.updateTerminal(terminal.terminalId, { status: "running", awaitingInput: false, lastPrompt: null })
     this.emitTerminalStatus(terminal)
+  }
+
+  async handleResize(command: Extract<ClientCommand, { type: "terminal.resize" }>): Promise<void> {
+    const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
+    if (!terminal) {
+      throw new SocratesError("terminal_not_running", "Terminal resize can only be sent to a running terminal.", {
+        details: { terminalId: command.payload.terminalId },
+        recoverable: true,
+      })
+    }
+    await this.supervisor.resize(terminal.terminalId, terminal.processId, command.payload.cols, command.payload.rows)
   }
 
   handleRename(command: Extract<ClientCommand, { type: "terminal.rename" }>): void {
@@ -363,14 +375,18 @@ export class ConversationTerminalManager {
     })
   }
 
-  private handleRuntimeOutput(terminalId: string, context: ToolExecutorContext | undefined, chunk: { stream: "stdout" | "stderr" | "log"; text: string }): void {
+  private handleRuntimeOutput(terminalId: string, context: ToolExecutorContext | undefined, chunk: { stream: "stdout" | "stderr" | "log" | "pty"; text: string }): void {
     const sequence = this.store.appendTerminalOutput({ terminalId, stream: chunk.stream, text: chunk.text })
-    context?.onOutput?.(chunk)
+    if (chunk.stream === "pty") {
+      context?.onOutput?.({ stream: "stdout", text: normalizePtyForModel(chunk.text) })
+    } else {
+      context?.onOutput?.({ stream: chunk.stream, text: chunk.text })
+    }
     const runtime = this.terminals.get(terminalId)
     const conversationId = context?.conversationId ?? runtime?.conversationId
     const terminal = conversationId ? this.store.listConversationTerminals(conversationId).find((item) => item.terminalId === terminalId) : undefined
     if (terminal) {
-      this.emitTerminalEvent("terminal.output", terminal, { stream: chunk.stream, text: chunk.text, sequence })
+      this.emitTerminalEvent("terminal.data", terminal, { stream: chunk.stream, text: chunk.text, sequence })
     }
     const prompt = detectPrompt(chunk.text)
     if (prompt && runtime && !runtime.awaitingInput) {
@@ -511,7 +527,7 @@ export class ConversationTerminalManager {
 
   private appendOutputSnapshot(terminalId: string, context: ToolExecutorContext | undefined, output: BashToolOutput): void {
     if (output.stdout) {
-      this.handleRuntimeOutput(terminalId, context, { stream: "stdout", text: output.stdout })
+      this.handleRuntimeOutput(terminalId, context, { stream: "pty", text: output.stdout })
     }
     if (output.stderr) {
       this.handleRuntimeOutput(terminalId, context, { stream: "stderr", text: output.stderr })
@@ -568,7 +584,15 @@ export class ConversationTerminalManager {
   }
 
   private emitTerminalEvent(
-    type: "terminal.started" | "terminal.output" | "terminal.status" | "terminal.input.requested" | "terminal.completed" | "terminal.stopped" | "terminal.stale",
+    type:
+      | "terminal.started"
+      | "terminal.data"
+      | "terminal.output"
+      | "terminal.status"
+      | "terminal.input.requested"
+      | "terminal.completed"
+      | "terminal.stopped"
+      | "terminal.stale",
     terminal: TerminalSnapshot,
     extra: Record<string, unknown> = {},
   ): void {
@@ -734,6 +758,7 @@ const processStatusToTerminalStatus = (status: string | undefined): TerminalStat
 }
 
 const shouldAutoDetachRun = (command: string): boolean =>
+  isInteractiveShellCommand(command) ||
   /\b(pnpm|npm|yarn|bun)\s+(dev|start|serve)\b|\b(next|vite|astro|webpack|turbo)\s+dev\b|\b(uvicorn|fastapi|flask|django-admin)\b|\b(npx|pnpm\s+dlx|yarn\s+dlx|bunx)\b/i.test(
     command,
   )
@@ -755,6 +780,9 @@ const inferTerminalName = (command: string): string => {
 }
 
 const terminalInputText = (payload: Extract<ClientCommand, { type: "terminal.input" }>["payload"]): string => {
+  if (payload.data !== undefined) {
+    return payload.data
+  }
   if (payload.key) {
     return terminalKeySequence(payload.key)
   }
@@ -802,5 +830,6 @@ const detectPrompt = (text: string): string | undefined => {
 
 const isSecretPrompt = (prompt: string): boolean => /(password|token|api\s*key|secret|passphrase)/i.test(prompt)
 const stripAnsi = (text: string): string => text.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+const normalizePtyForModel = (text: string): string => stripAnsi(text).replaceAll("\r\n", "\n").replaceAll(/\r(?!\n)/g, "\n")
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

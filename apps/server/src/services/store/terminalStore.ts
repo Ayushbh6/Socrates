@@ -42,7 +42,7 @@ export type UpdateTerminalInput = Partial<{
 
 export type AppendTerminalOutputInput = {
   terminalId: string
-  stream: "stdout" | "stderr" | "log" | "result" | "input"
+  stream: "stdout" | "stderr" | "log" | "result" | "input" | "pty"
   text: string
   redacted?: boolean
 }
@@ -284,10 +284,11 @@ export class TerminalStore extends StoreBase {
 }
 
 const summarizeOutput = (chunks: TerminalOutputRow[]): ConversationTerminal["output"] => {
-  const stdout = chunks.filter((chunk) => chunk.stream === "stdout").map((chunk) => chunk.text).join("").slice(-20_000)
+  const pty = chunks.filter((chunk) => chunk.stream === "pty").map((chunk) => chunk.text).join("").slice(-20_000)
+  const stdout = chunks.filter((chunk) => chunk.stream === "stdout" || chunk.stream === "pty").map((chunk) => chunk.text).join("").slice(-20_000)
   const stderr = chunks.filter((chunk) => chunk.stream === "stderr").map((chunk) => chunk.text).join("").slice(-20_000)
   const nextOutputSequence = chunks.reduce((max, chunk) => Math.max(max, chunk.sequence + 1), 0)
-  return { stdout, stderr, nextOutputSequence }
+  return { stdout, stderr, ...(pty ? { pty } : {}), nextOutputSequence }
 }
 
 const toTerminalStatus = (value: string): TerminalStatus =>

@@ -110,20 +110,29 @@ export const terminalStopPayloadSchema = z
 export const terminalInputPayloadSchema = z
   .object({
     terminalId: idSchema,
+    data: z.string().optional(),
     text: z.string().optional(),
     key: z.enum(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", "Escape", "Ctrl-C"]).optional(),
     submit: z.boolean().optional(),
   })
   .strict()
   .superRefine((input, context) => {
-    if (input.text === undefined && input.key === undefined) {
+    if (input.data === undefined && input.text === undefined && input.key === undefined) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["text"],
-        message: "terminal input requires text or key",
+        path: ["data"],
+        message: "terminal input requires data, text, or key",
       })
     }
   })
+
+export const terminalResizePayloadSchema = z
+  .object({
+    terminalId: idSchema,
+    cols: z.number().int().min(2).max(500),
+    rows: z.number().int().min(2).max(500),
+  })
+  .strict()
 
 export const terminalRenamePayloadSchema = z
   .object({
@@ -156,6 +165,7 @@ export const chatConversationUnsubscribeCommandSchema = socketEnvelopeSchema(
 export const approvalDecideCommandSchema = socketEnvelopeSchema("approval.decide", approvalDecidePayloadSchema)
 export const terminalStopCommandSchema = socketEnvelopeSchema("terminal.stop", terminalStopPayloadSchema)
 export const terminalInputCommandSchema = socketEnvelopeSchema("terminal.input", terminalInputPayloadSchema)
+export const terminalResizeCommandSchema = socketEnvelopeSchema("terminal.resize", terminalResizePayloadSchema)
 export const terminalRenameCommandSchema = socketEnvelopeSchema("terminal.rename", terminalRenamePayloadSchema)
 export const feedbackSubmitCommandSchema = socketEnvelopeSchema("feedback.submit", feedbackSubmitPayloadSchema)
 
@@ -167,6 +177,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   approvalDecideCommandSchema,
   terminalStopCommandSchema,
   terminalInputCommandSchema,
+  terminalResizeCommandSchema,
   terminalRenameCommandSchema,
   feedbackSubmitCommandSchema,
 ])
@@ -482,7 +493,7 @@ export const errorCreatedPayloadSchema = z
   })
   .strict()
 
-export const terminalOutputStreamSchema = z.enum(["stdout", "stderr", "log", "result", "input"])
+export const terminalOutputStreamSchema = z.enum(["stdout", "stderr", "log", "result", "input", "pty"])
 
 export const terminalEventPayloadBaseSchema = z
   .object({
@@ -516,6 +527,8 @@ export const terminalOutputPayloadSchema = terminalEventPayloadBaseSchema
     redacted: z.boolean().optional(),
   })
   .strict()
+
+export const terminalDataPayloadSchema = terminalOutputPayloadSchema
 
 export const terminalInputRequestedPayloadSchema = terminalEventPayloadBaseSchema
   .extend({
@@ -574,6 +587,7 @@ export const turnFailedEventSchema = socketEnvelopeSchema("turn.failed", turnFai
 export const turnCancelledEventSchema = socketEnvelopeSchema("turn.cancelled", turnCancelledPayloadSchema)
 export const errorCreatedEventSchema = socketEnvelopeSchema("error.created", errorCreatedPayloadSchema)
 export const terminalStartedEventSchema = socketEnvelopeSchema("terminal.started", terminalEventPayloadBaseSchema)
+export const terminalDataEventSchema = socketEnvelopeSchema("terminal.data", terminalDataPayloadSchema)
 export const terminalOutputEventSchema = socketEnvelopeSchema("terminal.output", terminalOutputPayloadSchema)
 export const terminalStatusEventSchema = socketEnvelopeSchema("terminal.status", terminalEventPayloadBaseSchema)
 export const terminalInputRequestedEventSchema = socketEnvelopeSchema("terminal.input.requested", terminalInputRequestedPayloadSchema)
@@ -614,6 +628,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   turnCancelledEventSchema,
   errorCreatedEventSchema,
   terminalStartedEventSchema,
+  terminalDataEventSchema,
   terminalOutputEventSchema,
   terminalStatusEventSchema,
   terminalInputRequestedEventSchema,
@@ -635,6 +650,7 @@ export type ChatConversationUnsubscribePayload = z.infer<typeof chatConversation
 export type ApprovalDecidePayload = z.infer<typeof approvalDecidePayloadSchema>
 export type TerminalStopPayload = z.infer<typeof terminalStopPayloadSchema>
 export type TerminalInputPayload = z.infer<typeof terminalInputPayloadSchema>
+export type TerminalResizePayload = z.infer<typeof terminalResizePayloadSchema>
 export type TerminalRenamePayload = z.infer<typeof terminalRenamePayloadSchema>
 export type FeedbackSubmitPayload = z.infer<typeof feedbackSubmitPayloadSchema>
 export type ClientCommand = z.infer<typeof clientCommandSchema>

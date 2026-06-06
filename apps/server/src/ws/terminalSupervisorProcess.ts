@@ -16,6 +16,7 @@ type SupervisorRequest =
   | { id: string; method: "start"; terminalId: string; workspacePath: string; input: BashToolInput }
   | { id: string; method: "status" | "output" | "stop"; terminalId: string; processId?: string; input?: BashToolInput }
   | { id: string; method: "input"; terminalId: string; processId?: string; text: string }
+  | { id: string; method: "resize"; terminalId: string; processId?: string; cols: number; rows: number }
   | { id: string; method: "has"; terminalId: string }
 
 type SupervisorResponse =
@@ -111,15 +112,21 @@ const handleRequest = async (request: SupervisorRequest): Promise<SupervisorResp
 
   const terminal = terminals.get(request.terminalId)
   if (!terminal) {
+    const operation = request.method === "input" || request.method === "resize" ? "status" : request.method
     return {
       id: request.id,
       ok: true,
-      output: missingOutput(request.method === "input" ? "status" : request.method, request.processId),
+      output: missingOutput(operation, request.processId),
     }
   }
 
   if (request.method === "input") {
     terminal.session.writeProcessInput(request.processId ?? terminal.processId, request.text)
+    return { id: request.id, ok: true }
+  }
+
+  if (request.method === "resize") {
+    terminal.session.resizeProcess(request.processId ?? terminal.processId, request.cols, request.rows)
     return { id: request.id, ok: true }
   }
 

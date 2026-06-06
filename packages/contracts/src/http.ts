@@ -492,6 +492,7 @@ export const conversationTerminalOutputSchema = z
   .object({
     stdout: z.string(),
     stderr: z.string(),
+    pty: z.string().optional(),
     nextOutputSequence: z.number().int().nonnegative(),
   })
   .strict()

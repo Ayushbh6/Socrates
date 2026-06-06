@@ -193,6 +193,7 @@ type ConversationTerminal = {
   output: {
     stdout: string
     stderr: string
+    pty?: string
     nextOutputSequence: number
   }
 }
@@ -888,7 +889,7 @@ type GetConversationResponse = {
 
 `toolRuns` contains persisted, bounded tool activity for completed or cancelled turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
 
-`terminals` contains active and recent conversation-scoped Terminal sessions for the Terminal panel. It includes bounded stdout/stderr tails and metadata needed to hydrate running, stopped, exited, stale, and awaiting-input terminals after reload. Full logs remain in terminal output persistence and can be polled or retrieved; the frontend must not treat this bounded response as the complete log archive.
+`terminals` contains active and recent conversation-scoped Terminal sessions for the Terminal panel. It includes bounded stdout/stderr tails, optional raw PTY replay text, and metadata needed to hydrate running, stopped, exited, stale, and awaiting-input terminals after reload. Full logs remain in terminal output persistence and can be polled or retrieved; the frontend must not treat this bounded response as the complete log archive.
 
 Cancelled turns may include a cancelled partial assistant message when user-visible answer text streamed before cancellation. That partial assistant message is displayed in the transcript and included in later semantic prompt history as normal visible conversation text.
 
@@ -1135,6 +1136,7 @@ approval.decide
 feedback.submit
 terminal.stop
 terminal.input
+terminal.resize
 terminal.rename
 ```
 
@@ -1238,13 +1240,27 @@ type TerminalStopPayload = {
 
 ### `terminal.input`
 
-Sends user-only stdin to a Terminal that is awaiting input. The agent cannot send this command in the current design. The backend persists only a redacted marker such as `[user input sent]`; raw stdin must not be exposed to the model or event history.
+Sends user-only stdin to a running Terminal. The xterm frontend should use `data` for raw keyboard and paste bytes. Older text/key fields remain accepted for compatibility. The agent cannot send this command in the current design. The backend persists only a redacted marker such as `[user input sent]`; raw stdin must not be exposed to the model or event history.
 
 ```ts
 type TerminalInputPayload = {
   terminalId: string
-  text: string
+  data?: string
+  text?: string
+  key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"
   submit?: boolean
+}
+```
+
+### `terminal.resize`
+
+Resizes a running conversation Terminal's backend PTY to match the xterm viewport.
+
+```ts
+type TerminalResizePayload = {
+  terminalId: string
+  cols: number
+  rows: number
 }
 ```
 
@@ -1281,6 +1297,7 @@ context.compaction.started
 context.compaction.completed
 context.compaction.failed
 terminal.started
+terminal.data
 terminal.output
 terminal.status
 terminal.input.requested
@@ -1923,19 +1940,19 @@ type BashToolOutput = {
 Rules:
 
 - Default timeout is 120,000 milliseconds.
-- The model-visible compatibility tool id remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
-- `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
-- `start` launches a conversation-scoped Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
+- The model-visible compatibility tool id remains `bash`, but execution is PTY-backed and platform-native: POSIX on macOS/Linux; on Windows, ConPTY uses `powershell.exe` first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
+- `run` executes a fresh PTY command and returns a lightly normalized terminal transcript in `stdout` plus exit/status metadata. Separate `run` calls do not preserve exported environment or cwd; combine dependent shell state into one command or use `start` for durable interactive state.
+- `start` launches a conversation-scoped PTY Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
 - Foreground mutating `run` commands are serialized per workspace across concurrent conversations using the same queue as file mutations. This covers Git branch changes/commits/pushes, package installs, migrations, and file-generating scripts. Read-only commands and background Terminals such as dev servers/watchers must not hold the mutation queue forever.
-- `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
+- `run` remains blocking for normal commands. Commands that are likely long-running or interactive, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
 - Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, persisted running terminals are reconciled with the local supervisor where possible; uncontrollable entries become `detached` or `missing`.
-- Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
-- Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; raw stdin is redacted from persistence and model context.
-- Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
-- If a Terminal command times out or hits a shell start/write/protocol failure, the active shell session is reset before later Terminal calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
+- Long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
+- Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; xterm sends raw data, quick-key compatibility remains accepted, and raw stdin is redacted from persistence and model context.
+- Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific for `run`. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
+- If a Terminal command times out or hits a shell start/protocol failure, the PTY command is stopped before later Terminal calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
 - Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Terminal already starts in the active workspace; use relative paths from there.
 - Command output must stream through `tool.call.output`.
-- Long-running Terminal output must also stream through `terminal.output` so the persistent Terminal panel updates even when the chat turn is idle or another turn is active.
+- Long-running Terminal output streams through `terminal.data` so the xterm-backed persistent Terminal panel updates even when the chat turn is idle or another turn is active. `terminal.output` is legacy-compatible event language.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
 - Read-only commands can be auto-allowed by policy.

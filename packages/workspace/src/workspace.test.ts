@@ -22,6 +22,7 @@ import {
   searchWorkspace,
   shouldSerializeBashInput,
   createWorkspaceShellSession,
+  isInteractiveShellCommand,
   storeResourceFile,
   type CommandRunner,
 } from "./index"
@@ -1261,7 +1262,7 @@ describe("workspace tools", () => {
     }
   })
 
-  it("keeps cwd and environment inside a persistent per-turn shell session", async () => {
+  it("reports cwd for each PTY command without leaking exported environment across runs", async () => {
     const workspacePath = tempDir()
     fs.mkdirSync(path.join(workspacePath, "nested"))
     const session = createWorkspaceShellSession(workspacePath)
@@ -1270,15 +1271,15 @@ describe("workspace tools", () => {
         process.platform === "win32" ? "Set-Location nested; $env:SOCRATES_TEST = 'ok'; Get-Location" : "cd nested && export SOCRATES_TEST=ok && pwd"
       const secondCommand =
         process.platform === "win32"
-          ? 'Write-Output -NoNewline "$env:SOCRATES_TEST $(Split-Path -Leaf (Get-Location))"'
-          : 'printf "$SOCRATES_TEST $(basename "$PWD")"'
+          ? 'Write-Output -NoNewline "$(Split-Path -Leaf (Get-Location))"'
+          : 'printf "$(basename "$PWD")"'
       const first = await session.run({ command: firstCommand })
       const second = await session.run({ command: secondCommand })
 
       expect(first.exitCode).toBe(0)
       expect(first.cwd.endsWith("nested")).toBe(true)
-      expect(second.stdout).toBe("ok nested")
-      expect(second.cwd.endsWith("nested")).toBe(true)
+      expect(second.stdout).toBe(path.basename(workspacePath))
+      expect(second.cwd).toBe(workspacePath)
     } finally {
       session.dispose()
     }
@@ -1395,7 +1396,7 @@ describe("workspace tools", () => {
     expect(hints.packageManagers).toContain("pip/venv")
   })
 
-  it("resets the persistent shell after timeout and rejects obvious interactive commands", async () => {
+  it("recovers after a timed-out PTY run and classifies obvious interactive commands", async () => {
     const workspacePath = tempDir()
     const session = createWorkspaceShellSession(workspacePath)
     try {
@@ -1404,7 +1405,7 @@ describe("workspace tools", () => {
 
       expect(timedOut.timedOut).toBe(true)
       expect(afterTimeout.stdout).toBe("alive")
-      await expect(session.run({ command: "vim README.md" })).rejects.toThrow(SocratesError)
+      expect(isInteractiveShellCommand("vim README.md")).toBe(true)
     } finally {
       session.dispose()
     }
@@ -1421,8 +1422,8 @@ describe("workspace tools", () => {
       const externalDestination = await session.run({
         command:
           process.platform === "win32"
-            ? `Copy-Item ..\\result.txt ${psQuote(path.join(os.tmpdir(), "socrates-result-test.txt"))}`
-            : "cp ../result.txt /tmp/socrates-result-test.txt",
+            ? `Copy-Item result.txt ${psQuote(path.join(os.tmpdir(), "socrates-result-test.txt"))}`
+            : "cp result.txt /tmp/socrates-result-test.txt",
       })
 
       expect(relative.exitCode).toBe(0)

@@ -99,6 +99,9 @@ export const handleInboundMessage = async (
       case "terminal.input":
         await terminals.handleInput(command)
         return
+      case "terminal.resize":
+        await terminals.handleResize(command)
+        return
       case "terminal.rename":
         terminals.handleRename(command)
         return

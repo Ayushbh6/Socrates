@@ -707,15 +707,15 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 
 ## `terminal_output_chunks`
 
-Stores full Terminal output and redacted user-input markers independently from per-tool shell command output.
+Stores full Terminal output, including raw PTY replay chunks, and redacted user-input markers independently from per-tool shell command output.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `tout_...`. |
 | `terminal_session_id` | `TEXT` | yes | FK to `terminal_sessions.id`. |
 | `sequence` | `INTEGER` | yes | Strictly increasing per terminal session. |
-| `stream` | `TEXT` | yes | `stdout`, `stderr`, `log`, `result`, or `input`. |
-| `text` | `TEXT` | yes | Output chunk text. User stdin is persisted only as redacted marker text. |
+| `stream` | `TEXT` | yes | Output stream label. Terminal v3 uses `pty` for raw replay chunks; legacy/summary streams include `stdout`, `stderr`, `log`, `result`, and redacted `input`. |
+| `text` | `TEXT` | yes | Output chunk text. PTY output is persisted for bounded xterm replay. User stdin is persisted only as redacted marker text. |
 | `redacted` | `INTEGER` | yes | Boolean as `0` or `1`; true for user-only stdin markers or other redacted terminal entries. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 

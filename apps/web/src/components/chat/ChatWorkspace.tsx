@@ -200,7 +200,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
-      if (event.type === "terminal.output") {
+      if (event.type === "terminal.data" || event.type === "terminal.output") {
         setTerminals((current) =>
           current.map((terminal) => (terminal.terminalId === event.payload.terminalId ? appendTerminalOutput(terminal, event) : terminal)),
         );
@@ -664,7 +664,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     sendCommand(command);
   };
 
-  const handleTerminalInput = (terminalId: string, input: { text?: string; key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"; submit?: boolean }) => {
+  const handleTerminalInput = (terminalId: string, input: { data?: string; text?: string; key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"; submit?: boolean }) => {
     const command: ClientCommand = {
       id: `cmd_${crypto.randomUUID()}`,
       type: "terminal.input",
@@ -675,9 +675,45 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       actor: { type: "user" },
       payload: {
         terminalId,
+        ...(input.data === undefined ? {} : { data: input.data }),
         ...(input.text === undefined ? {} : { text: input.text }),
         ...(input.key === undefined ? {} : { key: input.key }),
         ...(input.submit === undefined ? {} : { submit: input.submit }),
+      },
+    };
+    sendCommand(command);
+  };
+
+  const handleTerminalResize = (terminalId: string, size: { cols: number; rows: number }) => {
+    const command: ClientCommand = {
+      id: `cmd_${crypto.randomUUID()}`,
+      type: "terminal.resize",
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      projectId,
+      conversationId,
+      actor: { type: "user" },
+      payload: {
+        terminalId,
+        cols: size.cols,
+        rows: size.rows,
+      },
+    };
+    sendCommand(command);
+  };
+
+  const handleTerminalRename = (terminalId: string, name: string) => {
+    const command: ClientCommand = {
+      id: `cmd_${crypto.randomUUID()}`,
+      type: "terminal.rename",
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      projectId,
+      conversationId,
+      actor: { type: "user" },
+      payload: {
+        terminalId,
+        name,
       },
     };
     sendCommand(command);
@@ -890,6 +926,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             onToggleCollapsed={() => setIsTerminalPanelCollapsed((current) => !current)}
             onStop={handleTerminalStop}
             onInput={handleTerminalInput}
+            onResize={handleTerminalResize}
+            onRename={handleTerminalRename}
           />
         </div>
       </section>
@@ -1057,7 +1095,7 @@ const removeSettledLiveTurn = (
 const upsertTerminal = (terminals: ConversationTerminal[], terminal: ConversationTerminal): ConversationTerminal[] => {
   const existing = terminals.find((item) => item.terminalId === terminal.terminalId);
   const output =
-    terminal.output.stdout || terminal.output.stderr
+    terminal.output.stdout || terminal.output.stderr || terminal.output.pty
       ? terminal.output
       : existing?.output
         ? { ...existing.output, nextOutputSequence: terminal.output.nextOutputSequence }
@@ -1152,14 +1190,18 @@ const terminalEventToConversationTerminal = (
   output: {
     stdout: "",
     stderr: "",
+    pty: "",
     nextOutputSequence: event.payload.nextOutputSequence ?? 0,
   },
 });
 
-const appendTerminalOutput = (terminal: ConversationTerminal, event: Extract<ServerEvent, { type: "terminal.output" }>): ConversationTerminal => {
+const appendTerminalOutput = (terminal: ConversationTerminal, event: Extract<ServerEvent, { type: "terminal.data" | "terminal.output" }>): ConversationTerminal => {
   const sequence = event.payload.sequence ?? terminal.output.nextOutputSequence;
   const nextOutput = { ...terminal.output, nextOutputSequence: sequence + 1 };
-  if (event.payload.stream === "stdout") {
+  if (event.payload.stream === "pty") {
+    nextOutput.pty = trimTerminalOutput(`${nextOutput.pty ?? ""}${event.payload.text}`);
+    nextOutput.stdout = trimTerminalOutput(`${nextOutput.stdout}${event.payload.text}`);
+  } else if (event.payload.stream === "stdout") {
     nextOutput.stdout = trimTerminalOutput(`${nextOutput.stdout}${event.payload.text}`);
   } else if (event.payload.stream === "stderr") {
     nextOutput.stderr = trimTerminalOutput(`${nextOutput.stderr}${event.payload.text}`);
