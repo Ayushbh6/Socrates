@@ -8,6 +8,7 @@ export { createWorkspaceShellSession, isShellSessionResetError, runWorkspaceBash
 export { applyPatchWorkspace } from "./tools/patchHelpers"
 export { FileFreshnessTracker } from "./tools/fileFreshness"
 export { editWorkspace, __editToolTest } from "./tools/editTool"
+export { isWorkspaceMutationLocked, shouldSerializeBashInput, withWorkspaceMutationLock } from "./tools/mutationLock"
 export { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue, type WorkspaceEnvKeyCandidate } from "./envFiles"
 export { readWorkspacePath } from "./tools/readTool"
 export { searchWorkspace } from "./tools/searchTool"

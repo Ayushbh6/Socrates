@@ -233,6 +233,49 @@ const createReconnectStreamingAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createSlowStreamingAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield { type: "model.answer.delta", text: "Started." }
+      await delay(500)
+      yield { type: "model.answer.delta", text: " Finished." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 4, totalTokens: 8 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createConcurrentWorkspaceMutationAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream(request) {
+      const serializedMessages = JSON.stringify(request.messages)
+      const hasMutationToolResult = serializedMessages.includes("tcall_slow_workspace_mutation") || serializedMessages.includes("tcall_fast_workspace_mutation")
+      const isSlow = serializedMessages.includes("slow workspace mutation")
+      const isFast = serializedMessages.includes("fast workspace mutation")
+      if (!hasMutationToolResult && (isSlow || isFast)) {
+      const script = isSlow
+        ? "setTimeout(() => { require('fs').appendFileSync('race.txt', 'first\\n') }, 250); setTimeout(() => process.exit(0), 300)"
+        : "require('fs').appendFileSync('race.txt', 'second\\n')"
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: isSlow ? "tcall_slow_workspace_mutation" : "tcall_fast_workspace_mutation",
+          toolName: "bash",
+          input: { command: nodeCommand(script) },
+        },
+      }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: isSlow ? "Slow mutation done." : "Fast mutation done." }
+      yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createApprovalWaitingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
@@ -880,6 +923,9 @@ const waitForEvent = async <T extends ServerEvent["type"]>(
       }
     }, 5)
   })
+
+const waitForToolResult = async (socket: WebSocket): Promise<Extract<ServerEvent, { type: "tool.call.completed" | "tool.call.failed" }>> =>
+  Promise.race([waitForEvent(socket, "tool.call.completed"), waitForEvent(socket, "tool.call.failed")])
 
 const sendCommand = (socket: WebSocket, command: unknown): void => {
   socket.send(JSON.stringify(clientCommandSchema.parse(command)))
@@ -4312,6 +4358,79 @@ describe("WebSocket API", () => {
     } finally {
       firstSocket.close()
       secondSocket?.close()
+    }
+  })
+
+  it("allows different conversations to stream concurrently", async () => {
+    const app = await buildTestServer(tempDbPath(), createSlowStreamingAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const firstConversation = await createConversation(app, project.id)
+    const secondConversation = await createConversation(app, project.id)
+    const firstSocket = await connectWebSocket(app)
+    const secondSocket = await connectWebSocket(app)
+    try {
+      await waitForEvent(firstSocket, "connection.ready")
+      await waitForEvent(secondSocket, "connection.ready")
+
+      sendCommand(firstSocket, chatMessageCommand(project.id, firstConversation.id, "Start first stream"))
+      const firstStarted = await waitForEvent(firstSocket, "turn.started")
+      expect(firstStarted.conversationId).toBe(firstConversation.id)
+      expect((await waitForEvent(firstSocket, "agent.answer.delta")).payload.text).toBe("Started.")
+
+      sendCommand(secondSocket, chatMessageCommand(project.id, secondConversation.id, "Start second stream"))
+      const secondStarted = await waitForEvent(secondSocket, "turn.started")
+      expect(secondStarted.conversationId).toBe(secondConversation.id)
+      expect(secondStarted.payload.turnId).not.toBe(firstStarted.payload.turnId)
+
+      const firstCompleted = await waitForEvent(firstSocket, "turn.completed")
+      const secondCompleted = await waitForEvent(secondSocket, "turn.completed")
+      expect(firstCompleted.conversationId).toBe(firstConversation.id)
+      expect(secondCompleted.conversationId).toBe(secondConversation.id)
+    } finally {
+      firstSocket.close()
+      secondSocket.close()
+    }
+  })
+
+  it("serializes mutating terminal commands across concurrent conversations in the same workspace", async () => {
+    const app = await buildTestServer(tempDbPath(), createConcurrentWorkspaceMutationAgent())
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const firstConversation = await createConversation(app, project.id)
+    const secondConversation = await createConversation(app, project.id)
+    const firstSocket = await connectWebSocket(app)
+    const secondSocket = await connectWebSocket(app)
+    const racePath = path.join(primaryWorkspace.path ?? "", "race.txt")
+    try {
+      await waitForEvent(firstSocket, "connection.ready")
+      await waitForEvent(secondSocket, "connection.ready")
+
+      sendCommand(firstSocket, chatMessageCommandWithRuntime(project.id, firstConversation.id, "slow workspace mutation", { approvalMode: "approve_all" }))
+      await waitForEvent(firstSocket, "tool.call.started")
+
+      sendCommand(secondSocket, chatMessageCommandWithRuntime(project.id, secondConversation.id, "fast workspace mutation", { approvalMode: "approve_all" }))
+
+      const firstToolCompleted = await waitForToolResult(firstSocket)
+      const secondToolCompleted = await waitForToolResult(secondSocket)
+      if (firstToolCompleted.type === "tool.call.failed") {
+        throw new Error(`first workspace mutation failed: ${firstToolCompleted.payload.error.message}`)
+      }
+      if (secondToolCompleted.type === "tool.call.failed") {
+        throw new Error(`second workspace mutation failed: ${secondToolCompleted.payload.error.message}`)
+      }
+      expect(firstToolCompleted.type).toBe("tool.call.completed")
+      expect(secondToolCompleted.type).toBe("tool.call.completed")
+      expect(firstToolCompleted.payload.providerToolCallId).toBe("tcall_slow_workspace_mutation")
+      expect(secondToolCompleted.payload.providerToolCallId).toBe("tcall_fast_workspace_mutation")
+
+      await waitForEvent(firstSocket, "turn.completed")
+      await waitForEvent(secondSocket, "turn.completed")
+
+      expect(fs.readFileSync(racePath, "utf8")).toBe("first\nsecond\n")
+    } finally {
+      firstSocket.close()
+      secondSocket.close()
     }
   })
 

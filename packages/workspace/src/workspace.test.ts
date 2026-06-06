@@ -20,6 +20,7 @@ import {
   readWorkspacePath,
   runWorkspaceBash,
   searchWorkspace,
+  shouldSerializeBashInput,
   createWorkspaceShellSession,
   storeResourceFile,
   type CommandRunner,
@@ -1311,6 +1312,16 @@ describe("workspace tools", () => {
     } finally {
       session.dispose()
     }
+  })
+
+  it("classifies foreground mutating shell commands for workspace serialization", () => {
+    expect(shouldSerializeBashInput({ command: "git status --short" })).toBe(false)
+    expect(shouldSerializeBashInput({ command: "git commit -m test" })).toBe(true)
+    expect(shouldSerializeBashInput({ command: "pnpm install" })).toBe(true)
+    expect(shouldSerializeBashInput({ command: "node scripts/write-file.js" })).toBe(true)
+    expect(shouldSerializeBashInput({ command: "pnpm dev" })).toBe(false)
+    expect(shouldSerializeBashInput({ operation: "start", command: "pnpm install" })).toBe(false)
+    expect(shouldSerializeBashInput({ operation: "output", name: "dev-server" })).toBe(false)
   })
 
   it("writes user stdin to a running shell process", async () => {

@@ -57,7 +57,7 @@ git diff --check
 
 ## Important V1 Runtime Rule
 
-Only one active turn may run per conversation in V1.
+Only one active turn may run per conversation in V1. This is not a global app lock: different conversations can each have their own active turn running concurrently while the backend process is alive.
 
 Composer behavior:
 
@@ -575,6 +575,8 @@ Prepared the v0.1.5 runtime slice for the npm CLI release path:
 Current chat streaming direction after the v0.1.5 launch:
 
 - Active AI turns are conversation-owned, not browser-socket-owned. Refreshing the browser, switching conversations, switching tabs, minimizing the browser, or reconnecting a sleeping tab must not cancel or fail the running model/tool stream while the local backend process is still alive.
+- Different conversations may stream concurrently. `turn_already_active` applies only when sending a second user message into the same conversation while that conversation already has a queued/running/awaiting-approval turn.
+- Workspace-mutating work is serialized per workspace across concurrent conversations. `edit`, `apply_patch`, `project_notes` patches, `repo_docs` patches, and foreground mutating `bash`/Terminal commands such as Git commits/checkouts, package installs, or file-generating scripts queue behind each other. Read-only commands and background Terminals such as dev servers do not hold the mutation queue forever.
 - The chat page sends `chat.conversation.subscribe` on initial WebSocket connect and every reconnect. The backend tracks subscribed sockets per conversation in `apps/server/src/ws/conversationSubscriptions.ts`.
 - Turn events are persisted first and then broadcast to every socket currently subscribed to that conversation. If no socket is subscribed, the turn still continues and later subscribers recover from persisted active-turn events plus HTTP `partialTurns`.
 - `chat.conversation.subscribe` can replay the persisted active-turn event stream to the newly connected socket so returning to an in-progress conversation rebuilds the visible answer/tool state before receiving fresh deltas.

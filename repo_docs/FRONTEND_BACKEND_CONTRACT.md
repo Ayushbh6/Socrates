@@ -34,7 +34,7 @@ The contract must also stay expandable for later:
 5. Tool calls must emit lifecycle events so the frontend can show live progress.
 6. V1 should keep events small, but event envelopes must be future-proof.
 7. Future planner, worker, and sub-agent events should extend this event model, not replace it.
-8. Only one active turn may run per conversation at a time in V1.
+8. Only one active turn may run per conversation at a time in V1. Different conversations may run active turns concurrently.
 
 ## Route Contract
 
@@ -1168,6 +1168,8 @@ If the conversation already has an active turn, the backend must reject the comm
 turn_already_active
 ```
 
+This guard is scoped to the target conversation. It must not reject a user message in conversation B merely because conversation A is already streaming.
+
 ```ts
 type ChatMessageSendPayload = {
   clientMessageId: string
@@ -1924,6 +1926,7 @@ Rules:
 - The model-visible compatibility tool id remains `bash`, but execution is platform-native: POSIX on macOS/Linux; on Windows, `powershell.exe` is tried first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
 - `run` uses one non-interactive shell process per active turn. The shell keeps `cwd` and exported environment between bash `run` calls in that turn and is disposed when the turn completes, fails, or is cancelled.
 - `start` launches a conversation-scoped Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
+- Foreground mutating `run` commands are serialized per workspace across concurrent conversations using the same queue as file mutations. This covers Git branch changes/commits/pushes, package installs, migrations, and file-generating scripts. Read-only commands and background Terminals such as dev servers/watchers must not hold the mutation queue forever.
 - `run` remains blocking for normal commands. Commands that are likely long-running, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 60 seconds), should detach into a conversation Terminal and return a running terminal result.
 - Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, persisted running terminals are reconciled with the local supervisor where possible; uncontrollable entries become `detached` or `missing`.
 - Commands run one at a time inside a shell session, but long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.

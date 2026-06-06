@@ -17,9 +17,12 @@ import {
   FileFreshnessTracker,
   formatPythonEnvironmentHints,
   inspectPythonEnvironment,
+  isWorkspaceMutationLocked,
   isShellSessionResetError,
   readWorkspacePath,
   searchWorkspace,
+  shouldSerializeBashInput,
+  withWorkspaceMutationLock,
 } from "@socrates/workspace"
 import { apiError } from "../../http"
 import { generateConversationTitle } from "../../services/conversationTitleGenerator"
@@ -752,7 +755,16 @@ const createToolExecutors = (
       metadata: { operation: input.operation ?? "run", processId: input.processId, terminalId: input.terminalId },
     })
     try {
-      const output = await terminals.executeBash(input, context, activeTurns)
+      const execute = () => terminals.executeBash(input, context, activeTurns)
+      const isWaitingForWorkspaceMutation = shouldSerializeBashInput(input) && isWorkspaceMutationLocked(context.workspacePath)
+      const output = shouldSerializeBashInput(input)
+        ? await withWorkspaceMutationLock(context.workspacePath, async () => {
+            if (isWaitingForWorkspaceMutation) {
+              context.onOutput?.({ stream: "log", text: "Waiting for another workspace mutation in this project to finish...\n" })
+            }
+            return execute()
+          })
+        : await execute()
       store.updateShellCommandMetadata(toolCallId, {
         operation: output.operation ?? input.operation ?? "run",
         platform: output.shell.platform,
@@ -782,8 +794,14 @@ const createToolExecutors = (
   },
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   socrates_memory: (input) => Promise.resolve(store.runSocratesMemoryTool(projectId, input)),
-  project_notes: (input, context) => Promise.resolve(store.runProjectNotesTool(projectId, context.workspacePath, input)),
-  repo_docs: (input, context) => Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
+  project_notes: (input, context) =>
+    input.operation === "patch"
+      ? withWorkspaceMutationLock(context.workspacePath, async () => store.runProjectNotesTool(projectId, context.workspacePath, input))
+      : Promise.resolve(store.runProjectNotesTool(projectId, context.workspacePath, input)),
+  repo_docs: (input, context) =>
+    input.operation === "patch"
+      ? withWorkspaceMutationLock(context.workspacePath, async () => store.runRepoDocsTool(projectId, context.workspacePath, input))
+      : Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
   mcp_registry: async (input) => {

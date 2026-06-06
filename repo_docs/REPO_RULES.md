@@ -279,6 +279,8 @@ The `bash` tool id is the only V1 model-visible command execution tool, but prod
 
 Long-running shell work must use `bash` process operations: `start` to launch a conversation-scoped Terminal, then `status`, `output`, and `stop` with no target when exactly one active Terminal exists or with the human Terminal name when there are multiple candidates. Blocking `run` commands may auto-detach into a Terminal after the configured threshold. Terminals are scoped to `projectId + conversationId + workspacePath`; they survive across turns, are represented in bounded terminal context without exposing opaque ids to the model, and are cleaned up on explicit stop, conversation delete, workspace switch, app shutdown, or idle TTL. If a Terminal awaits input, only the user may send stdin through the frontend; the agent must ask the user and raw stdin must stay redacted from model context and persistence.
 
+Workspace-mutating work must be serialized per workspace across concurrent conversations. `edit`, `apply_patch`, `project_notes` patches, `repo_docs` patches, and foreground mutating Terminal commands such as Git branch changes/commits/pushes, package installs, migrations, and file-generating scripts use the shared workspace mutation queue. Read-only commands and background Terminals such as dev servers/watchers must not hold that queue forever.
+
 Terminal commands already start in the active workspace. Commands that begin by changing into a guessed absolute path outside the active workspace, such as `cd /Users/ayush/Test && ...`, must be rejected with a recoverable error. Relative `cd` inside the workspace and absolute paths used as explicit arguments or destinations may still be allowed by policy and approval.
 
 The agent should prefer `read` for file/document/image inspection and `search` for file discovery or content search because those tools provide bounded structured output. This is a preference, not a hard restriction. If `read` or `search` fails or gives poor output, an approved Terminal fallback such as a local extractor, `cat`, `find`, `grep`, or `pdftotext` may still run. Do not deny a legitimate approved Terminal command solely because a more specialized Socrates tool exists.
@@ -368,7 +370,7 @@ The system should be able to answer:
 
 No important agent state should exist only in memory if it is needed for recovery, display, or audit.
 
-Only one active turn may run per conversation in V1. The composer must switch from send mode to stop mode while a turn is active, and return to send mode after `turn.completed`, `turn.failed`, or `turn.cancelled`.
+Only one active turn may run per conversation in V1. This is a per-conversation lock, not a global app lock: different conversations may each run an active turn concurrently while the backend process is alive. The composer must switch from send mode to stop mode while its current conversation has an active turn, and return to send mode after `turn.completed`, `turn.failed`, or `turn.cancelled`.
 
 When a turn is cancelled after assistant text has streamed, Socrates must persist that visible text as a cancelled partial assistant message and carry it forward in later semantic chat history. Historical tool calls, tool results, and reasoning from the cancelled turn remain audit/UI data only and are not blindly loaded into later prompts.
 
