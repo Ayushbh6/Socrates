@@ -267,6 +267,16 @@ Stop when done:
 
 If exactly one active Terminal exists, omit `target`.
 
+## Awaiting User Input
+
+If a Terminal result has `terminal.status: "awaiting_input"` or `awaitingInput: true`, treat it as a hard human handoff.
+
+- Tell the user what the prompt is asking for and that they should type into the Terminal panel.
+- Stop your response and wait for the next user turn.
+- Do not call `stop`, `status`, or `output` just to finish an interactivity test.
+- Do not claim interactivity worked until user input has actually been sent and follow-up Terminal output confirms the command reacted to that input.
+- Do not invent stdin. Terminal input is user-only.
+
 ## Terminal Working Directory
 
 Terminal already starts in the active workspace.

@@ -62,6 +62,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [error, setError] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
+  const previousLiveTerminalCountRef = useRef(0);
+  const previousAwaitingTerminalInputRef = useRef(false);
 
   const panelWidthKey = `${TERMINAL_PANEL_WIDTH_KEY_PREFIX}:${projectId}:${conversationId}`;
   const panelCollapsedKey = `${TERMINAL_PANEL_COLLAPSED_KEY_PREFIX}:${projectId}:${conversationId}`;
@@ -903,7 +905,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       ? activeDockTerminalId
       : undefined;
   const resolvedActiveDockTerminalId = activeDockTerminalForDisplay ?? preferredDockTerminalId ?? orderedTerminals[0]?.terminalId;
-  const resolvedIsTerminalDockOpen = isTerminalDockOpen || hasAwaitingTerminalInput;
+  const resolvedIsTerminalDockOpen = isTerminalDockOpen;
   const workspaceBodyClass = showDesktopRail
     ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid"
     : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
@@ -936,6 +938,27 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     return "Provider-reported cost";
   }, [costUsage]);
 
+  useEffect(() => {
+    const hadLiveTerminals = previousLiveTerminalCountRef.current > 0;
+    const hasLiveTerminals = liveTerminalCount > 0;
+    const hadAwaitingInput = previousAwaitingTerminalInputRef.current;
+
+    if (!isMobileView && !hadLiveTerminals && hasLiveTerminals) {
+      setIsTerminalPanelCollapsed(false);
+    }
+
+    if (!isMobileView && hadLiveTerminals && !hasLiveTerminals && !hasAwaitingTerminalInput) {
+      setIsTerminalPanelCollapsed(true);
+    }
+
+    if (!hadAwaitingInput && hasAwaitingTerminalInput) {
+      setIsTerminalDockOpen(true);
+    }
+
+    previousLiveTerminalCountRef.current = liveTerminalCount;
+    previousAwaitingTerminalInputRef.current = hasAwaitingTerminalInput;
+  }, [hasAwaitingTerminalInput, isMobileView, liveTerminalCount]);
+
   return (
     <main className="flex h-screen overflow-hidden bg-brand-bg">
       <ProjectChatSidebar
@@ -947,7 +970,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         onExpand={() => setIsSidebarCollapsed(false)}
         onStartChat={handleStartChat}
       />
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
+      <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
         <header
           className={`flex h-14 min-w-0 shrink-0 items-center border-b border-gray-200 ${
             isSidebarCollapsed ? "pl-16 pr-6" : "px-6"
@@ -1061,6 +1084,21 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 </div>
               </>
             )}
+            <TerminalDockPanel
+              terminals={orderedTerminals}
+              isOpen={showTerminalDock && resolvedIsTerminalDockOpen}
+              isMobile={isMobileView}
+              activeTerminalId={resolvedActiveDockTerminalId}
+              onActiveTerminalIdChange={setActiveDockTerminalId}
+              onClose={() => setIsTerminalDockOpen(false)}
+              onStop={handleTerminalStop}
+              onInput={handleTerminalInput}
+              onResize={handleTerminalResize}
+              dockHeight={clampedTerminalDockHeight}
+              onResizeDock={(nextHeight) =>
+                setTerminalDockHeight(Math.min(Math.max(nextHeight, MIN_TERMINAL_DOCK_HEIGHT), MAX_TERMINAL_DOCK_HEIGHT))
+              }
+            />
           </div>
           {showDesktopRail ? (
             <TerminalPanel
@@ -1076,22 +1114,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             />
           ) : null}
         </div>
-        <TerminalDockPanel
-          terminals={orderedTerminals}
-          isOpen={showTerminalDock && resolvedIsTerminalDockOpen}
-          isMobile={isMobileView}
-          activeTerminalId={resolvedActiveDockTerminalId}
-          onActiveTerminalIdChange={setActiveDockTerminalId}
-          onClose={() => setIsTerminalDockOpen(false)}
-          onStop={handleTerminalStop}
-          onInput={handleTerminalInput}
-          onResize={handleTerminalResize}
-          dockHeight={clampedTerminalDockHeight}
-          onResizeDock={(nextHeight) =>
-            setTerminalDockHeight(Math.min(Math.max(nextHeight, MIN_TERMINAL_DOCK_HEIGHT), MAX_TERMINAL_DOCK_HEIGHT))
-          }
-          rightInset={showDesktopRail ? terminalRailWidth : 0}
-        />
       </section>
     </main>
   );

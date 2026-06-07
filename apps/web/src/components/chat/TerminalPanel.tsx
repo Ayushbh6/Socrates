@@ -1,7 +1,6 @@
 "use client";
 
 import { ChevronRight, Clipboard, Copy, GripVertical, Info, Maximize2, Pencil, Square, SquareTerminal, Trash2, X } from "lucide-react";
-import type { CSSProperties } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ConversationTerminal } from "@socrates/contracts";
 
@@ -34,7 +33,6 @@ interface TerminalDockPanelProps {
   onResize: (terminalId: string, size: { cols: number; rows: number }) => void;
   dockHeight: number;
   onResizeDock: (height: number) => void;
-  rightInset: number;
 }
 
 export function TerminalPanel({ terminals, isCollapsed, onToggleCollapsed, onResizePanel, onStop, onRename, onOpenInDock }: TerminalPanelProps) {
@@ -214,7 +212,6 @@ export function TerminalDockPanel({
   onResize,
   dockHeight,
   onResizeDock,
-  rightInset,
 }: TerminalDockPanelProps) {
   const sortedTerminals = useMemo(
     () =>
@@ -230,6 +227,7 @@ export function TerminalDockPanel({
     sortedTerminals.some((terminal) => terminal.terminalId === activeTerminalId) ? activeTerminalId : sortedTerminals[0]?.terminalId;
   const activeTerminal = sortedTerminals.find((terminal) => terminal.terminalId === selectedTerminalId);
   const runningCount = sortedTerminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
 
   useEffect(() => {
     if (isOpen && selectedTerminalId && selectedTerminalId !== activeTerminalId) {
@@ -241,22 +239,12 @@ export function TerminalDockPanel({
     return null;
   }
 
-  const panelStyle: CSSProperties = isMobile
-    ? { inset: 0 }
-    : {
-        height: `${Math.min(Math.max(dockHeight, MIN_DOCK_HEIGHT), MAX_DOCK_HEIGHT)}px`,
-        right: `${rightInset}px`,
-        left: 0,
-        bottom: 0,
-        width: `calc(100vw - ${rightInset}px)`,
-      };
-
   return (
     <aside
-      className={`fixed z-40 border-t border-gray-200 bg-white shadow-2xl ${isMobile ? "left-0 inset-y-0" : ""}`}
-      style={panelStyle}
+      className={isMobile ? "fixed inset-0 z-40 border-t border-gray-200 bg-white shadow-2xl" : "border-t border-gray-200 bg-white shadow-[0_-10px_30px_rgba(15,23,42,0.08)]"}
+      style={isMobile ? undefined : { height: `${Math.min(Math.max(dockHeight, MIN_DOCK_HEIGHT), MAX_DOCK_HEIGHT)}px` }}
     >
-      <div className="relative flex h-full min-h-0 flex-col overflow-hidden border-l border-gray-200 bg-white">
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-white">
         {isMobile ? null : (
           <DockHeightHandle
             onResizeHeight={(nextHeight) => {
@@ -278,6 +266,18 @@ export function TerminalDockPanel({
           </div>
           <button
             type="button"
+            className={`inline-flex size-8 items-center justify-center rounded-md border transition ${
+              isInspectorOpen
+                ? "border-brand-teal bg-brand-teal-light text-brand-text-dark"
+                : "border-gray-200 text-brand-text-light hover:bg-gray-100 hover:text-brand-text-dark"
+            }`}
+            title="Toggle terminal details"
+            onClick={() => setIsInspectorOpen((current) => !current)}
+          >
+            <Info className="size-4" />
+          </button>
+          <button
+            type="button"
             className="inline-flex size-8 items-center justify-center rounded-md border border-gray-200 text-brand-text-light transition hover:bg-gray-100 hover:text-brand-text-dark"
             title="Close terminal dock"
             onClick={onClose}
@@ -286,39 +286,79 @@ export function TerminalDockPanel({
           </button>
         </header>
 
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          <div className="flex min-h-0 w-52 shrink-0 flex-col border-r border-gray-200">
-            <div className="bg-brand-bg/60 border-b border-gray-200 px-2 py-2 text-xs font-medium text-brand-text-light">Sessions</div>
-            <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2">
-              {sortedTerminals.map((terminal) => {
-                const isSelected = terminal.terminalId === selectedTerminalId;
-                return (
-                  <button
-                    key={terminal.terminalId}
-                    type="button"
-                    className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition ${
-                      isSelected ? "bg-brand-teal-light text-brand-text-dark" : "text-brand-text-light hover:bg-gray-100"
-                    }`}
-                    onClick={() => onActiveTerminalIdChange(terminal.terminalId)}
-                    title={terminal.name}
-                  >
-                    <span className={`size-2 shrink-0 rounded-full ${statusDotClass(terminal.status)}`} />
-                    <span className="truncate">{terminal.name}</span>
-                  </button>
-                );
-              })}
+        <div className="border-b border-gray-200 bg-brand-bg/50 px-3 py-2">
+          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+            {sortedTerminals.map((terminal) => {
+              const isSelected = terminal.terminalId === selectedTerminalId;
+              return (
+                <button
+                  key={terminal.terminalId}
+                  type="button"
+                  className={`inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                    isSelected
+                      ? "border-brand-teal bg-brand-teal-light text-brand-text-dark"
+                      : "border-gray-200 bg-white text-brand-text-light hover:border-gray-300 hover:text-brand-text-dark"
+                  }`}
+                  onClick={() => onActiveTerminalIdChange(terminal.terminalId)}
+                  title={terminal.name}
+                >
+                  <span className={`size-2 shrink-0 rounded-full ${statusDotClass(terminal.status)}`} />
+                  <span className="max-w-40 truncate">{terminal.name}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {isInspectorOpen ? (
+          <div className="border-b border-gray-200 bg-white px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-brand-text-light">
+              <span className="font-medium text-brand-text-dark">{activeTerminal.name}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${terminalStatusBadgeClass(activeTerminal.status)}`}>
+                {activeTerminal.status.replace("_", " ")}
+              </span>
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wide text-brand-text-light">Command</div>
+                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md border border-gray-100 bg-brand-bg p-2 text-[11px] leading-5 text-brand-text-dark">
+                  {activeTerminal.command}
+                </pre>
+              </div>
+              <div>
+                <div className="text-[11px] font-medium uppercase tracking-wide text-brand-text-light">Working Directory</div>
+                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md border border-gray-100 bg-brand-bg p-2 text-[11px] leading-5 text-brand-text-dark">
+                  {activeTerminal.cwd}
+                </pre>
+              </div>
+            </div>
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-brand-text-light transition hover:bg-gray-50 hover:text-brand-text-dark"
+                onClick={() => void navigator.clipboard?.writeText(activeTerminal.command)}
+              >
+                Copy command
+              </button>
+              <button
+                type="button"
+                className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-brand-text-light transition hover:bg-gray-50 hover:text-brand-text-dark"
+                onClick={() => void navigator.clipboard?.writeText(activeTerminal.cwd)}
+              >
+                Copy cwd
+              </button>
             </div>
           </div>
+        ) : null}
 
-          <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-            <TerminalDockControls
-              terminal={activeTerminal}
-              onStop={onStop}
-              onInput={onInput}
-              replay={activeTerminal.output.pty ?? `${activeTerminal.output.stdout}${activeTerminal.output.stderr ? `\n${activeTerminal.output.stderr}` : ""}`}
-            />
-            <XtermSurface terminal={activeTerminal} replay={activeTerminal.output.pty ?? `${activeTerminal.output.stdout}${activeTerminal.output.stderr ? `\n${activeTerminal.output.stderr}` : ""}`} onInput={onInput} onResize={onResize} />
-          </div>
+        <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+          <TerminalDockControls
+            terminal={activeTerminal}
+            onStop={onStop}
+            onInput={onInput}
+            replay={activeTerminal.output.pty ?? `${activeTerminal.output.stdout}${activeTerminal.output.stderr ? `\n${activeTerminal.output.stderr}` : ""}`}
+          />
+          <XtermSurface terminal={activeTerminal} replay={activeTerminal.output.pty ?? `${activeTerminal.output.stdout}${activeTerminal.output.stderr ? `\n${activeTerminal.output.stderr}` : ""}`} onInput={onInput} onResize={onResize} />
         </div>
       </div>
     </aside>
@@ -375,6 +415,10 @@ function TerminalDockControls({
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-2 border-b border-gray-200 bg-brand-bg px-2">
+      <div className="min-w-0 flex-1 px-1">
+        <p className="truncate text-xs font-medium text-brand-text-dark">{terminal.name}</p>
+        <p className="truncate text-[11px] text-brand-text-light">{terminal.status.replace("_", " ")}</p>
+      </div>
       <button
         type="button"
         className="inline-flex size-8 items-center justify-center rounded-md text-brand-text-light transition hover:bg-white hover:text-brand-text-dark"
@@ -701,6 +745,19 @@ function statusDotClass(status: ConversationTerminal["status"]): string {
     return "bg-red-500";
   }
   return "bg-gray-600";
+}
+
+function terminalStatusBadgeClass(status: ConversationTerminal["status"]): string {
+  if (status === "running") {
+    return "bg-teal-50 text-teal-700";
+  }
+  if (status === "awaiting_input") {
+    return "bg-amber-50 text-amber-700";
+  }
+  if (status === "stopped") {
+    return "bg-rose-50 text-rose-700";
+  }
+  return "bg-gray-100 text-gray-600";
 }
 
 function isLiveTerminal(terminal: ConversationTerminal): boolean {

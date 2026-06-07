@@ -28,12 +28,14 @@ type SupervisorResponse = {
   error?: { code: string; message: string; details?: unknown }
 }
 
+const terminalSupervisorProtocolVersion = "pty-v3-20260607-text-input"
+
 export class TerminalSupervisorClient {
   private readonly socketPath: string
   private spawnPromise: Promise<void> | undefined
 
   constructor(scope = process.cwd()) {
-    const hash = crypto.createHash("sha256").update(scope).digest("hex").slice(0, 16)
+    const hash = crypto.createHash("sha256").update(`${scope}:${terminalSupervisorProtocolVersion}`).digest("hex").slice(0, 16)
     this.socketPath =
       process.platform === "win32" ? `\\\\.\\pipe\\socrates-terminal-${hash}` : path.join(os.tmpdir(), `socrates-terminal-${hash}.sock`)
   }

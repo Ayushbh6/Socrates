@@ -889,7 +889,7 @@ type GetConversationResponse = {
 
 `toolRuns` contains persisted, bounded tool activity for completed or cancelled turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
 
-`terminals` contains active and recent conversation-scoped Terminal sessions for the Terminal panel. It includes bounded stdout/stderr tails, optional raw PTY replay text, and metadata needed to hydrate running, stopped, exited, stale, and awaiting-input terminals after reload. Full logs remain in terminal output persistence and can be polled or retrieved; the frontend must not treat this bounded response as the complete log archive.
+`terminals` contains active and recent conversation-scoped Terminal sessions for the Terminal shell. It includes bounded stdout/stderr tails, optional raw PTY replay text, and metadata needed to hydrate the desktop right rail, bottom dock, and mobile full-screen sheet after reload. Full logs remain in terminal output persistence and can be polled or retrieved; the frontend must not treat this bounded response as the complete log archive.
 
 Cancelled turns may include a cancelled partial assistant message when user-visible answer text streamed before cancellation. That partial assistant message is displayed in the transcript and included in later semantic prompt history as normal visible conversation text.
 
@@ -1947,12 +1947,12 @@ Rules:
 - `run` remains blocking for normal commands. Commands that are likely long-running or interactive, or commands still running past `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 15 seconds), should detach into a conversation Terminal and return a running terminal result.
 - Conversation terminals are cleaned up on explicit stop, user stop button, conversation delete, workspace switch, server/app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server startup, persisted running terminals are reconciled with the local supervisor where possible; uncontrollable entries become `detached` or `missing`.
 - Long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
-- Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; xterm sends raw data, quick-key compatibility remains accepted, and raw stdin is redacted from persistence and model context.
+- Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; xterm sends raw data, quick-key compatibility remains accepted, and raw stdin is redacted from persistence and model context. `awaiting_input` is a hard human-handoff state: the model must stop and wait for the user, and model-authored `stop` is rejected until the user has interacted or cancelled from the Terminal shell.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific for `run`. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
 - If a Terminal command times out or hits a shell start/protocol failure, the PTY command is stopped before later Terminal calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.
 - Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Terminal already starts in the active workspace; use relative paths from there.
 - Command output must stream through `tool.call.output`.
-- Long-running Terminal output streams through `terminal.data` so the xterm-backed persistent Terminal panel updates even when the chat turn is idle or another turn is active. `terminal.output` is legacy-compatible event language.
+- Long-running Terminal output streams through `terminal.data` so the xterm-backed Terminal shell updates even when the chat turn is idle or another turn is active. `terminal.output` is legacy-compatible event language.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
 - Read-only commands can be auto-allowed by policy.

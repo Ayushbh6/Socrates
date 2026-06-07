@@ -697,6 +697,79 @@ setInterval(() => {}, 1000)
   return new SocratesAgent(provider)
 }
 
+const createTextInputTerminalAgent = (): SocratesAgent => {
+  const command = nodeCommand(`
+process.stdout.write("What is your name? ")
+process.stdin.once("data", (data) => {
+  const name = data.toString("utf8").trim()
+  process.stdout.write("Hello, " + name + "!\\n")
+  process.exit(0)
+})
+setInterval(() => {}, 1000)
+`)
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: "tcall_text_input_terminal_start",
+          toolName: "bash",
+          input: { operation: "start", command, name: "text-input-test" },
+        },
+      }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createPrematureInteractiveStopAgent = (): SocratesAgent => {
+  let step = 0
+  const command = nodeCommand(`
+process.stdout.write("What is your name? ")
+process.stdin.once("data", (data) => {
+  const name = data.toString("utf8").trim()
+  process.stdout.write("Hello, " + name + "!\\n")
+  process.exit(0)
+})
+setInterval(() => {}, 1000)
+`)
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_premature_stop_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "premature-stop-test" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_premature_stop",
+            toolName: "bash",
+            input: { operation: "stop", target: "premature-stop-test" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Terminal is waiting for user input." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createTerminalOutputAgent = (): SocratesAgent => {
   let step = 0
   const command = `node -e "console.log('tail-ready'); setInterval(() => {}, 1000)"`
@@ -734,6 +807,75 @@ const createTerminalOutputAgent = (): SocratesAgent => {
         return
       }
       yield { type: "model.answer.delta", text: "Tail output checked." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createTerminalStopDedupAgent = (): SocratesAgent => {
+  let step = 0
+  const command = `for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "tick-$i"; sleep 0.1; done`
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      step += 1
+      if (step === 1) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_dedup_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "dedup-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_dedup_output",
+            toolName: "bash",
+            input: { operation: "output", name: "dedup-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 3) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_dedup_stop",
+            toolName: "bash",
+            input: { operation: "stop", name: "dedup-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Dedup checked." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createFiniteTerminalAgent = (): SocratesAgent => {
+  const command = nodeCommand("setTimeout(() => { console.log('finite-done') }, 50)")
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: "tcall_finite_start",
+          toolName: "bash",
+          input: { operation: "start", command, name: "finite-server" },
+        },
+      }
       yield { type: "model.completed" }
     },
   }
@@ -4002,6 +4144,92 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("does not duplicate already-drained PTY output when a terminal is stopped", async () => {
+    const app = await buildTestServer(tempDbPath(), createTerminalStopDedupAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start dedup terminal", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      expect(startedTerminal.payload.name).toBe("dedup-server")
+      await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      await delay(450)
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Read dedup output"))
+      const outputCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(outputCompleted.payload.providerToolCallId).toBe("tcall_dedup_output")
+      await waitForEvent(socket, "turn.completed")
+
+      await delay(250)
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Stop dedup terminal"))
+      const stopped = await waitForEvent(socket, "terminal.stopped")
+      expect(stopped.payload.terminalId).toBe(startedTerminal.payload.terminalId)
+      const stopCompleted = await waitForEvent(socket, "tool.call.completed")
+      expect(stopCompleted.payload.providerToolCallId).toBe("tcall_dedup_stop")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{
+        terminals: Array<{ terminalId: string; output: { stdout: string } }>
+        toolRuns: Array<{ providerToolCallId?: string; shell?: { stdout: string } }>
+      }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const terminal = body.data.terminals.find((item) => item.terminalId === startedTerminal.payload.terminalId)
+        const stopRun = body.data.toolRuns.find((item) => item.providerToolCallId === "tcall_dedup_stop")
+        const terminalLines = terminal?.output.stdout.split(/\r?\n/).filter(Boolean) ?? []
+        const stopLines = stopRun?.shell?.stdout.split(/\r?\n/).filter(Boolean) ?? []
+        expect(terminalLines.length).toBeGreaterThan(0)
+        expect(new Set(terminalLines).size).toBe(terminalLines.length)
+        expect(new Set(stopLines).size).toBe(stopLines.length)
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("keeps finite started terminals completed instead of marking them detached after initial drain", async () => {
+    const app = await buildTestServer(tempDbPath(), createFiniteTerminalAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start finite terminal", { approvalMode: "approve_all" }))
+      const toolResult = await waitForToolResult(socket)
+      expect(toolResult.type).toBe("tool.call.completed")
+      const completedTerminal = await waitForEvent(socket, "terminal.completed")
+      expect(completedTerminal.payload.name).toBe("finite-server")
+      expect(completedTerminal.payload.status).toBe("exited")
+      await delay(500)
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ terminalId: string; status: string; output: { stdout: string }; metadata?: unknown }> }>(
+        response.payload,
+      )
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const terminal = body.data.terminals.find((item) => item.terminalId === completedTerminal.payload.terminalId)
+        expect(terminal?.status).toBe("exited")
+        expect(terminal?.output.stdout).toContain("finite-done")
+        expect(JSON.stringify(terminal?.metadata ?? {})).not.toContain("terminal_supervisor_lost_process")
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
   it("reuses an already-running named terminal instead of starting a duplicate", async () => {
     const app = await buildTestServer(tempDbPath(), createDuplicateTerminalStartAgent())
     await onboard(app)
@@ -4145,6 +4373,101 @@ describe("WebSocket API", () => {
         expect(terminal?.output.stdout).toContain("selected Base")
         expect(terminal?.output.stdout).toContain("submitted")
       }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("accepts user text input and returns the interactive terminal response", async () => {
+    const app = await buildTestServer(tempDbPath(), createTextInputTerminalAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start text input terminal", { approvalMode: "approve_all" }))
+      const inputRequested = await waitForEvent(socket, "terminal.input.requested")
+      expect(inputRequested.payload.name).toBe("text-input-test")
+      expect(inputRequested.payload.status).toBe("awaiting_input")
+      expect(inputRequested.payload.prompt).toContain("What is your name?")
+
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "terminal.input",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { terminalId: inputRequested.payload.terminalId, data: "Ayush\n" },
+      })
+      const completed = await waitForEvent(socket, "terminal.completed")
+      expect(completed.payload.terminalId).toBe(inputRequested.payload.terminalId)
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ terminalId: string; status: string; output: { stdout: string } }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const terminal = body.data.terminals.find((item) => item.terminalId === inputRequested.payload.terminalId)
+        expect(terminal?.status).toBe("exited")
+        expect(terminal?.output.stdout).toContain("What is your name?")
+        expect(terminal?.output.stdout).toContain("Hello, Ayush!")
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("keeps an awaiting-input terminal running when the model tries to stop it before user input", async () => {
+    const app = await buildTestServer(tempDbPath(), createPrematureInteractiveStopAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start interactive and stop too early", { approvalMode: "approve_all" }))
+      const inputRequested = await waitForEvent(socket, "terminal.input.requested")
+      expect(inputRequested.payload.name).toBe("premature-stop-test")
+      expect(inputRequested.payload.status).toBe("awaiting_input")
+
+      await waitForEvent(socket, "tool.call.completed")
+      const failed = await waitForEvent(socket, "tool.call.failed")
+      expect(failed.payload.error.code).toBe("terminal_awaiting_user_input")
+      expect(failed.payload.error.recoverable).toBe(true)
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ terminals: Array<{ terminalId: string; name: string; status: string; awaitingInput: boolean; output: { stdout: string } }> }>(
+        response.payload,
+      )
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const terminal = body.data.terminals.find((item) => item.terminalId === inputRequested.payload.terminalId)
+        expect(terminal?.name).toBe("premature-stop-test")
+        expect(terminal?.status).toBe("awaiting_input")
+        expect(terminal?.awaitingInput).toBe(true)
+        expect(terminal?.output.stdout).toContain("What is your name?")
+      }
+
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "terminal.stop",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { terminalId: inputRequested.payload.terminalId, reason: "Test cleanup" },
+      })
+      await waitForEvent(socket, "terminal.stopped")
     } finally {
       socket.close()
     }

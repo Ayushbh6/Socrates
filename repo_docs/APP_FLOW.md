@@ -506,7 +506,7 @@ Purpose:
 - Stream agent events over WebSocket.
 - Show streamed thinking when the selected provider exposes it.
 - Show streamed final assistant answers.
-- Show a persistent Terminal panel for active and recent conversation terminals.
+- Show the Terminal shell for active and recent conversation terminals: a compact right rail for overview/history plus an on-demand bottom dock for focused interaction on desktop, and a full-screen terminal sheet on mobile.
 - Show the latest estimated model-facing context size next to the conversation title.
 
 Primary layout:
@@ -590,7 +590,7 @@ If assistant answer text has already streamed when the user stops a turn, the ba
 
 If a running, failed, or cancelled turn has streamed text but no completed assistant message row, `GET /api/projects/:projectId/conversations/:conversationId` can return a `partialTurns` entry recovered from `model_stream_chunks`. The frontend renders that incomplete turn with recovered answer text, reasoning, and persisted historical tool runs, and it can restore stop-button state when the turn is still running after reload.
 
-The same conversation response returns active and recent `terminals` so reloads hydrate the Terminal panel. Terminal response entries include bounded stdout/stderr tails, optional raw PTY replay text, and process metadata, not the complete log archive.
+The same conversation response returns active and recent `terminals` so reloads hydrate the Terminal shell. Terminal response entries include bounded stdout/stderr tails, optional raw PTY replay text, and process metadata for the desktop rail, bottom dock, and mobile sheet, not the complete log archive.
 
 Runtime settings are per turn:
 
@@ -673,7 +673,7 @@ Generated-app debugging should be evidence-first. For stack traces, Socrates sho
 
 Conversation terminals are scoped by `projectId + conversationId + workspacePath`. Multiple named terminals can run in one conversation. A turn may complete while terminals continue running; later turns receive a bounded terminal-context summary with names, statuses, commands, cwd, and recent output, but not opaque ids. Model-facing Terminal control uses human names/targets only; supervisor process ids and output cursors stay internal. Starting a Terminal with an already-running name reuses the existing Terminal and returns its recent output instead of spawning a duplicate. Running terminals are stopped on explicit stop, conversation delete, workspace switch, app shutdown, or idle TTL (`SOCRATES_TERMINAL_IDLE_TTL_MS`, default 2 hours). On server restart, previously running terminals are reconciled through the local supervisor when possible; uncontrollable entries become `detached` or `missing` rather than model-facing process plumbing.
 
-The frontend Terminal panel is xterm-backed. It replays bounded persisted PTY output after refresh/reconnect, sends raw keyboard/paste data through `terminal.input`, and sends `terminal.resize` when the viewport changes. If a terminal appears to be waiting for user input, the backend emits `terminal.input.requested`. Only the user can send stdin; the agent must ask the user for the needed input and must not invent stdin. Raw stdin is redacted from persistence and model context.
+The frontend Terminal shell is xterm-backed. It replays bounded persisted PTY output after refresh/reconnect, sends raw keyboard/paste data through `terminal.input`, and sends `terminal.resize` when the active xterm surface changes. Desktop uses a compact right rail for overview/history and a bottom dock for focused terminal use; the dock auto-opens when a Terminal is awaiting user input. Mobile uses a full-screen terminal sheet. If a terminal appears to be waiting for user input, the backend emits `terminal.input.requested`. Only the user can send stdin; the agent must ask the user for the needed input, stop its response, and wait for the next user turn. Prompt detection alone is not interactivity success; success requires user input and follow-up Terminal output. Model-authored `stop` is rejected while a Terminal is awaiting user input, while the user stop control still cancels it. Raw stdin is redacted from persistence and model context.
 
 Terminal already starts in the active workspace. Commands that begin by changing into guessed absolute paths outside that workspace are rejected. Relative workspace navigation and approved external destination paths remain allowed.
 

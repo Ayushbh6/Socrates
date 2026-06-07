@@ -340,7 +340,7 @@ export class WorkspaceShellSession {
       timedOut: false,
       truncation: snapshot.truncation,
       shell: shellMetadata(adapter),
-      process: processMetadata(processInfo),
+      process: processMetadata(processInfo, snapshot.nextOutputSequence),
     }
   }
 
@@ -395,7 +395,7 @@ export class WorkspaceShellSession {
       timedOut: false,
       truncation: snapshot.truncation,
       shell: shellMetadata(processInfo.adapter),
-      process: processMetadata(processInfo),
+      process: processMetadata(processInfo, snapshot.nextOutputSequence),
     }
   }
 
@@ -434,7 +434,7 @@ export class WorkspaceShellSession {
       timedOut: false,
       truncation: snapshot.truncation,
       shell: shellMetadata(processInfo.adapter),
-      process: processMetadata(processInfo),
+      process: processMetadata(processInfo, snapshot.nextOutputSequence),
     }
   }
 
@@ -725,7 +725,7 @@ const shellMetadata = (adapter: ShellAdapter): BashToolOutput["shell"] => ({
   executable: adapter.executable,
 })
 
-const processMetadata = (processInfo: RunningProcess): NonNullable<BashToolOutput["process"]> => ({
+const processMetadata = (processInfo: RunningProcess, nextOutputSequence = processInfo.nextSequence): NonNullable<BashToolOutput["process"]> => ({
   processId: processInfo.processId,
   ...(processInfo.systemPid ? { systemPid: processInfo.systemPid } : {}),
   status: processInfo.status,
@@ -733,7 +733,7 @@ const processMetadata = (processInfo: RunningProcess): NonNullable<BashToolOutpu
   signal: processInfo.signal,
   startedAt: processInfo.startedAt,
   exitedAt: processInfo.exitedAt,
-  nextOutputSequence: processInfo.nextSequence,
+  nextOutputSequence,
 })
 
 const missingProcessMetadata = (processId: string | undefined): NonNullable<BashToolOutput["process"]> => ({
@@ -746,7 +746,7 @@ const processSnapshot = (
   processInfo: RunningProcess,
   outputSequence = 0,
   charLimit = clampCharLimit(),
-): { stdout: string; stderr: string; truncation: TruncationMetadata } => {
+): { stdout: string; stderr: string; truncation: TruncationMetadata; nextOutputSequence: number } => {
   let stdout = ""
   let returnedLength = 0
   let originalLength = 0
@@ -769,6 +769,7 @@ const processSnapshot = (
     stdout,
     stderr: "",
     truncation: { truncated, charLimit, originalLength, returnedLength, nextOffset: processInfo.nextSequence },
+    nextOutputSequence: processInfo.nextSequence,
   }
 }
 

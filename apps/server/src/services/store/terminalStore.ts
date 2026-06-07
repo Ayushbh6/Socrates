@@ -188,7 +188,7 @@ export class TerminalStore extends StoreBase {
     }
     return [
       "Active Terminal Context",
-      "These terminals are current conversation state. Check them before starting duplicate dev servers. Use bash status/output/stop with the terminal name, or omit the target when exactly one Terminal is active.",
+      "These terminals are current conversation state. Check them before starting duplicate dev servers. Use bash status/output/stop with the terminal name, or omit the target when exactly one Terminal is active. If a Terminal is awaiting user input, tell the user what prompt is waiting and stop your response; do not stop it or claim success until user input and follow-up output are observed.",
       ...terminals.map((terminal) => {
         const tail = [terminal.output.stdout, terminal.output.stderr].filter(Boolean).join("\n").slice(-2_000)
         return [

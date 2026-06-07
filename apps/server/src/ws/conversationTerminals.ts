@@ -34,6 +34,7 @@ const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_D
 const defaultIdleTtlMs = Number.parseInt(process.env.SOCRATES_TERMINAL_IDLE_TTL_MS ?? "7200000", 10)
 const terminalInitialOutputDrainMs = 500
 const terminalInitialOutputPollMs = 50
+const terminalAwaitingUserInputStopMessage = "Terminal is waiting for user input. Leave it running and ask the user to type in the Terminal panel."
 
 export class ConversationTerminalManager {
   private readonly terminals = new Map<string, RuntimeTerminal>()
@@ -269,6 +270,10 @@ export class ConversationTerminalManager {
     if (!hasShellOutput(output)) {
       await this.drainInitialTerminalOutput(runtime, context)
     }
+    const initialTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
+    if (!this.terminals.has(terminalId) || !isActiveTerminalStatus(runtime.status)) {
+      return initialTerminal ? storedTerminalOutput("start", initialTerminal, { autoDetached }) : withTerminalMetadata(output, initialTerminal, autoDetached)
+    }
     this.emitTerminalStatus(runtime, "terminal.started")
     this.startPolling(runtime)
     const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
@@ -323,12 +328,20 @@ export class ConversationTerminalManager {
   private async terminalStop(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
     const runtime = this.resolveTerminal(input, context)
     if (isRuntimeTerminal(runtime)) {
-      const output = await this.supervisor.stop(runtime.terminalId, runtime.processId, { ...input, operation: "stop", processId: runtime.processId })
+      const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
+      assertModelCanStopTerminal(terminal ?? runtime)
+      const output = await this.supervisor.stop(runtime.terminalId, runtime.processId, {
+        ...input,
+        operation: "stop",
+        processId: runtime.processId,
+        outputSequence: runtime.supervisorOutputSequence,
+      })
       this.appendOutputSnapshot(runtime.terminalId, context, output)
       this.markRuntimeTerminalStopped(runtime)
-      const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
-      return terminal ? storedTerminalOutput("stop", terminal) : withTerminalMetadata(output, terminal)
+      const stoppedTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
+      return stoppedTerminal ? storedTerminalOutput("stop", stoppedTerminal) : withTerminalMetadata(output, stoppedTerminal)
     }
+    assertModelCanStopTerminal(runtime)
     this.store.updateTerminal(runtime.terminalId, { status: "stopped", awaitingInput: false, signal: "SIGTERM", completedAt: nowIso() })
     return storedTerminalOutput("stop", { ...runtime, status: "stopped" })
   }
@@ -474,7 +487,13 @@ export class ConversationTerminalManager {
   }
 
   private async stopRuntimeTerminal(terminal: RuntimeTerminal, reason?: string): Promise<void> {
-    const output = await this.supervisor.stop(terminal.terminalId, terminal.processId).catch(() => undefined)
+    const output = await this.supervisor
+      .stop(terminal.terminalId, terminal.processId, {
+        operation: "stop",
+        processId: terminal.processId,
+        outputSequence: terminal.supervisorOutputSequence,
+      })
+      .catch(() => undefined)
     if (output) {
       this.appendOutputSnapshot(terminal.terminalId, undefined, output)
     }
@@ -743,6 +762,22 @@ const storedTerminalOutput = (
 const isActiveTerminalStatus = (status: TerminalStatus): boolean => status === "running" || status === "awaiting_input"
 
 const isRuntimeTerminal = (terminal: RuntimeTerminal | ReturnType<typeof storedTerminalFromRow>): terminal is RuntimeTerminal => !("output" in terminal)
+
+const assertModelCanStopTerminal = (
+  terminal: Pick<RuntimeTerminal, "terminalId" | "name" | "status" | "awaitingInput"> & { lastPrompt?: string | undefined },
+): void => {
+  if (terminal.status !== "awaiting_input" && !terminal.awaitingInput) {
+    return
+  }
+  throw new SocratesError("terminal_awaiting_user_input", terminalAwaitingUserInputStopMessage, {
+    recoverable: true,
+    details: {
+      terminalId: terminal.terminalId,
+      name: terminal.name,
+      ...(terminal.lastPrompt ? { prompt: terminal.lastPrompt } : {}),
+    },
+  })
+}
 
 const hasShellOutput = (output: BashToolOutput): boolean => Boolean(output.stdout || output.stderr)
 
