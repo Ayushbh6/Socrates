@@ -1,5 +1,6 @@
 import path from "node:path"
 import { randomUUID } from "node:crypto"
+import { execFileSync } from "node:child_process"
 import type { IPty } from "@homebridge/node-pty-prebuilt-multiarch"
 import type { BashToolInput, BashToolOutput, TruncationMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
@@ -39,12 +40,18 @@ type RunningProcess = {
   nextSequence: number
   cols: number
   rows: number
+  dataDisposable?: PtyDisposable
+  exitDisposable?: PtyDisposable
 }
 
 type ProcessChunk = {
   sequence: number
   stream: "pty"
   text: string
+}
+
+type PtyDisposable = {
+  dispose(): void
 }
 
 type PtyExit = {
@@ -318,14 +325,15 @@ export class WorkspaceShellSession {
     }
     this.processes.set(processId, processInfo)
 
-    pty.onData((text) => this.appendProcessOutput(processInfo, text, context))
-    pty.onExit((event) => {
+    processInfo.dataDisposable = pty.onData((text) => this.appendProcessOutput(processInfo, text, context))
+    processInfo.exitDisposable = pty.onExit((event) => {
       if (processInfo.status !== "stopped") {
         processInfo.status = "exited"
       }
       processInfo.exitCode = event.exitCode
       processInfo.signal = event.signal === undefined ? null : String(event.signal)
       processInfo.exitedAt = new Date().toISOString()
+      this.disposeProcessListeners(processInfo)
     })
 
     const snapshot = processSnapshot(processInfo, input.outputSequence, clampCharLimit(input.charLimit))
@@ -469,8 +477,29 @@ export class WorkspaceShellSession {
       } catch {
         // The PTY may already have exited between status polling and stop.
       }
+      this.forceKillSystemProcess(processInfo.systemPid)
     }
+    this.disposeProcessListeners(processInfo)
     processInfo.exitedAt ??= new Date().toISOString()
+  }
+
+  private disposeProcessListeners(processInfo: RunningProcess): void {
+    processInfo.dataDisposable?.dispose()
+    processInfo.exitDisposable?.dispose()
+    delete processInfo.dataDisposable
+    delete processInfo.exitDisposable
+  }
+
+  private forceKillSystemProcess(pid: number | undefined): void {
+    if (!pid) {
+      return
+    }
+    const processTree = collectProcessTree(pid)
+    signalProcessTree(processTree, "SIGTERM")
+    const forceTimer = setTimeout(() => {
+      signalProcessTree(processTree, "SIGKILL")
+    }, 500)
+    forceTimer.unref?.()
   }
 
   private findProcess(processId: string | undefined): RunningProcess | undefined {
@@ -486,6 +515,46 @@ export const createWorkspaceShellSession = (
   workspacePath: string,
   options?: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv },
 ): WorkspaceShellSession => new WorkspaceShellSession(resolveWorkspacePath(workspacePath), options)
+
+const collectProcessTree = (pid: number): number[] => {
+  if (process.platform === "win32") {
+    return [pid]
+  }
+  const descendants = collectDescendantPids(pid)
+  return [...descendants.reverse(), pid]
+}
+
+const collectDescendantPids = (pid: number): number[] => {
+  let output = ""
+  try {
+    output = execFileSync("pgrep", ["-P", String(pid)], { encoding: "utf8", timeout: 200, stdio: ["ignore", "pipe", "ignore"] })
+  } catch {
+    return []
+  }
+  const children = output
+    .split(/\s+/)
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isInteger(value) && value > 0)
+  return children.flatMap((childPid) => [...collectDescendantPids(childPid), childPid])
+}
+
+const signalProcessTree = (pids: number[], signal: NodeJS.Signals): void => {
+  const rootPid = pids.at(-1)
+  if (rootPid && process.platform !== "win32") {
+    try {
+      process.kill(-rootPid, signal)
+    } catch {
+      // Fall back to direct PID signaling below.
+    }
+  }
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal)
+    } catch {
+      // The process already exited.
+    }
+  }
+}
 
 export const runWorkspaceBash = async (
   input: BashToolInput,

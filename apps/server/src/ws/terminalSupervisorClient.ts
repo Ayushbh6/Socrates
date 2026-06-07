@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import net from "node:net"
@@ -8,11 +8,11 @@ import { fileURLToPath } from "node:url"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 import { SocratesError, type ErrorDetails } from "@socrates/shared"
 
-type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has"
+type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has" | "shutdown-if-idle" | "shutdown"
 type SupervisorRequest = {
   id: string
   method: SupervisorMethod
-  terminalId: string
+  terminalId?: string
   workspacePath?: string
   processId?: string
   input?: BashToolInput
@@ -73,6 +73,21 @@ export class TerminalSupervisorClient {
     return response.has === true
   }
 
+  async shutdownIfIdle(): Promise<void> {
+    if (!(await this.canConnect())) {
+      return
+    }
+    await this.send({ method: "shutdown-if-idle" }).catch(() => undefined)
+  }
+
+  async shutdown(): Promise<void> {
+    if (!(await this.canConnect())) {
+      return
+    }
+    await this.send({ method: "shutdown" }).catch(() => undefined)
+    await this.waitForDisconnect()
+  }
+
   private async request(input: Omit<SupervisorRequest, "id">): Promise<SupervisorResponse> {
     await this.ensureRunning()
     try {
@@ -96,6 +111,7 @@ export class TerminalSupervisorClient {
   }
 
   private async spawnSupervisor(): Promise<void> {
+    reapStaleSupervisorProcesses(this.socketPath)
     if (process.platform !== "win32" && fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
     }
@@ -131,6 +147,16 @@ export class TerminalSupervisorClient {
       socket.once("error", () => done(false))
       socket.setTimeout(250, () => done(false))
     })
+  }
+
+  private async waitForDisconnect(): Promise<void> {
+    const deadline = Date.now() + 1_000
+    while (Date.now() < deadline) {
+      if (!(await this.canConnect())) {
+        return
+      }
+      await wait(20)
+    }
   }
 
   private send(input: Omit<SupervisorRequest, "id">): Promise<SupervisorResponse> {
@@ -182,5 +208,30 @@ const requireOutput = (response: SupervisorResponse): BashToolOutput => {
   }
   return response.output
 }
+
+const reapStaleSupervisorProcesses = (socketPath: string): void => {
+  if (process.platform === "win32") {
+    return
+  }
+  const pattern = `terminalSupervisorProcess\\.(ts|js).*${escapeRegExp(socketPath)}`
+  let output = ""
+  try {
+    output = execFileSync("pgrep", ["-f", pattern], { encoding: "utf8", timeout: 300, stdio: ["ignore", "pipe", "ignore"] })
+  } catch {
+    return
+  }
+  for (const pid of output
+    .split(/\s+/)
+    .map((value) => Number.parseInt(value, 10))
+    .filter((value) => Number.isInteger(value) && value > 0 && value !== process.pid)) {
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {
+      // The process already exited.
+    }
+  }
+}
+
+const escapeRegExp = (value: string): string => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

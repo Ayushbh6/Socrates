@@ -289,7 +289,7 @@ mcp_registry
 Workspace/server implementation:
 
 - `packages/workspace/src/tools/` owns local filesystem, search, edit, and shell execution helpers.
-- `read` supports bounded file/dir/resource reads, pragmatic text/data extraction, image metadata, and truncation metadata.
+- `read` supports bounded file/dir/resource reads, pragmatic text/data extraction, image metadata, and truncation metadata. It has an estimated 4,000-token default output cap and a hard 6,000-token `tokenLimit` cap across readable formats, while `charLimit`/offset remain available for character paging.
 - `search` supports bounded file and text search with ignore handling.
 - `edit` supports new-file content writes, explicit whole-file overwrites with `overwrite: true`, and exact multiline `oldString`/`newString` replacements with diff previews and approval policy.
 - `apply_patch` supports structured `patchText` (`*** Begin Patch`) for multi-hunk, multi-file, create, delete, and rename changes, with intent-aware read-back verification and clear recoverable diagnostics for bad hunks.
@@ -498,6 +498,16 @@ Implemented the Codex-like Terminal layer on top of Bash v2:
 - Regression coverage includes contract tests for terminal commands/events, server tests for cross-turn terminal hydration/context injection/stop, schema migration coverage for terminal tables, and workspace stdin process coverage.
 
 Terminal v3 supersedes the v2 pipe-process frontend/runtime: `bash run` and started Terminals are PTY-backed, the persistent panel uses xterm replay, live terminal chunks stream as `terminal.data` with `pty` stream text, `terminal.resize` updates backend dimensions, and raw user stdin remains user-only and redacted from persistence.
+
+## Cost-Aware Tool Context Controls
+
+Implemented the first cost-control pass after the Socrates vs OpenCode benchmark:
+
+- `read` now has a model-facing `tokenLimit` with a default estimated cap of 4,000 tokens and a hard cap of 6,000 estimated tokens. The effective returned content is bounded by both `charLimit` and the token cap across normal files, PDFs, documents, presentations, spreadsheets, SVG text, and other readable text formats.
+- Started Terminal `status`, `output`, and `stop` model-visible results are delta-based: they return only output chunks not already shown to the model in that Terminal session. The full output remains persisted in `terminal_output_chunks` and remains visible through the UI/API Terminal history.
+- Detached conversation Terminal sessions are indexed as `shell` audit evidence, so `trace_retrieve` with `mode="audit"` and `include=["shell"]` can find Terminal session/chunk output without adding terminal-specific model-facing parameters.
+- After 10 or more tool calls in a turn, earlier failed tool results may be compacted to one-line placeholders in the active model prompt, and earlier oversized tool outputs may be replaced with a short preview plus re-read/trace guidance. This changes only in-memory prompt history, not persisted tool, event, shell, terminal, or trace rows.
+- The agent now nudges itself after three repeated identical tool+input calls and after 50 total tool calls in one turn. These are soft nudges; the hard per-turn tool cap remains separate.
 
 ## Verified Edit Tool And Debugging Discipline
 

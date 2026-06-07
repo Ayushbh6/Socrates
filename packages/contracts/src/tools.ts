@@ -41,9 +41,16 @@ export type TruncationMetadata = z.infer<typeof truncationMetadataSchema>
 
 export const readToolInputSchema = z
   .object({
-    path: z.string().min(1),
-    offset: z.number().int().nonnegative().optional(),
-    charLimit: z.number().int().positive().max(80_000).optional(),
+    path: z.string().min(1).describe("Workspace-relative or Socrates-known resource path to read."),
+    offset: z.number().int().nonnegative().optional().describe("Character offset into extracted output. Use with truncation.nextOffset to continue a large read."),
+    charLimit: z.number().int().positive().max(80_000).optional().describe("Character cap for returned output. Effective output is also bounded by tokenLimit."),
+    tokenLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(6_000)
+      .optional()
+      .describe("Estimated token cap for returned output. Defaults to 4,000 tokens and cannot exceed 6,000 tokens."),
   })
   .strict()
 export type ReadToolInput = z.infer<typeof readToolInputSchema>

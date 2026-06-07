@@ -49,6 +49,11 @@ export type AppendTerminalOutputInput = {
 
 export type TerminalSessionRow = typeof terminalSessions.$inferSelect
 type TerminalOutputRow = typeof terminalOutputChunks.$inferSelect
+type TerminalOutputSnapshot = ConversationTerminal["output"] & {
+  originalLength: number
+  returnedLength: number
+  truncated: boolean
+}
 
 export class TerminalStore extends StoreBase {
   createTerminal(input: CreateTerminalInput): string {
@@ -125,6 +130,31 @@ export class TerminalStore extends StoreBase {
       .run()
     this.updateTerminal(input.terminalId, {})
     return row.next_sequence
+  }
+
+  getModelVisibleOutputSequence(terminalId: string): number {
+    const metadata = asRecord(parseJson(this.getTerminalRow(terminalId)?.metadataJson ?? null))
+    const value = metadata?.modelVisibleOutputSequence
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0
+  }
+
+  setModelVisibleOutputSequence(terminalId: string, sequence: number): void {
+    this.updateTerminal(terminalId, { metadata: { modelVisibleOutputSequence: Math.max(0, Math.floor(sequence)) } })
+  }
+
+  terminalOutputSnapshot(terminalId: string, fromSequence = 0, charLimit = 80_000): TerminalOutputSnapshot {
+    const allChunks = this.outputChunks(terminalId)
+    const nextOutputSequence = allChunks.reduce((max, chunk) => Math.max(max, chunk.sequence + 1), 0)
+    const chunks = allChunks.filter((chunk) => chunk.sequence >= fromSequence)
+    const full = summarizeOutput(chunks)
+    const bounded = boundTerminalOutput(full, charLimit)
+    return {
+      ...bounded,
+      nextOutputSequence,
+      originalLength: full.stdout.length + full.stderr.length,
+      returnedLength: bounded.stdout.length + bounded.stderr.length,
+      truncated: bounded.stdout.length < full.stdout.length || bounded.stderr.length < full.stderr.length,
+    }
   }
 
   getTerminalRow(terminalId: string): TerminalSessionRow | undefined {
@@ -289,6 +319,15 @@ const summarizeOutput = (chunks: TerminalOutputRow[]): ConversationTerminal["out
   const stderr = chunks.filter((chunk) => chunk.stream === "stderr").map((chunk) => chunk.text).join("").slice(-20_000)
   const nextOutputSequence = chunks.reduce((max, chunk) => Math.max(max, chunk.sequence + 1), 0)
   return { stdout, stderr, ...(pty ? { pty } : {}), nextOutputSequence }
+}
+
+const boundTerminalOutput = (output: ConversationTerminal["output"], charLimit: number): ConversationTerminal["output"] => {
+  const limit = Math.max(0, charLimit)
+  const stdout = output.stdout.slice(0, limit)
+  const stderrLimit = Math.max(0, limit - stdout.length)
+  const stderr = output.stderr.slice(0, stderrLimit)
+  const pty = output.pty ? output.pty.slice(0, limit) : undefined
+  return { stdout, stderr, ...(pty ? { pty } : {}), nextOutputSequence: output.nextOutputSequence }
 }
 
 const toTerminalStatus = (value: string): TerminalStatus =>

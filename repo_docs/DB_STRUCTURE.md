@@ -129,6 +129,14 @@ An event is any meaningful step in the agent runtime.
 
 Events are append-only and ordered by `sequence` within a session. They are the audit trail.
 
+### Tool And Terminal Audit Data
+
+Tool calls, foreground shell commands, and started conversation Terminals are persisted separately from model-visible prompt history.
+
+`tool_calls`, `shell_commands`, and `shell_output_chunks` store foreground tool and command provenance. `terminal_sessions` and `terminal_output_chunks` store conversation-scoped started Terminals and their full PTY/stdout/stderr chunk history. Model-facing Terminal `status`, `output`, and `stop` calls may return only new output since the last model-visible check, but this cursor is prompt hygiene only; it must not delete or rewrite terminal chunks.
+
+`trace_documents` indexes runtime audit evidence from messages, tool calls, foreground shell commands, detached Terminal sessions, file operations, patches, errors, and compaction summaries. `trace_retrieve mode="audit" include=["shell"]` should find both foreground shell command output and detached Terminal session output through the same shell evidence category.
+
 ## Tables
 
 ## `users`

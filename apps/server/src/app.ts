@@ -38,7 +38,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   const app = Fastify({ logger: options.logger ?? false })
 
   app.addHook("onClose", async () => {
-    terminals.dispose()
+    await terminals.dispose()
     await store.close()
   })
 

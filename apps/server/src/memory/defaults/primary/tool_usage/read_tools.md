@@ -30,7 +30,10 @@ Use `read` when you know the path or have a likely path from search/resource lis
 | --- | --- | --- | --- |
 | `path` | Workspace-relative or allowed known path | yes | Open a file, directory, resource, or attachment path. |
 | `offset` | Character offset into extracted output | no | Continue reading a truncated large file. |
-| `charLimit` | Output cap up to 80,000 chars | no | Bound or expand file output. |
+| `charLimit` | Character output cap up to 80,000 chars | no | Bound or expand file output; still limited by `tokenLimit`. |
+| `tokenLimit` | Estimated token output cap, default 4,000 and max 6,000 | no | Keep large file, PDF, document, presentation, spreadsheet, or SVG reads cost-safe. |
+
+The effective returned text is bounded by both `charLimit` and `tokenLimit`. If neither is supplied, `read` uses the default estimated 4,000-token cap. If `tokenLimit` is supplied, it cannot exceed 6,000 estimated tokens.
 
 ### Read A File
 
@@ -47,11 +50,12 @@ Use `read` when you know the path or have a likely path from search/resource lis
 {
   "path": "large.log",
   "offset": 20000,
-  "charLimit": 20000
+  "charLimit": 20000,
+  "tokenLimit": 6000
 }
 ```
 
-Use offsets for large files instead of asking for the whole file.
+Use offsets for large files instead of asking for the whole file. Use `tokenLimit` when you need a predictable model-context budget; use `charLimit` when you are paging by character offset.
 
 ### Read A Directory
 
@@ -65,7 +69,7 @@ Directory reads return bounded entries and metadata.
 
 ### Read Documents And Images
 
-`read` can inspect supported PDFs, documents, presentations, spreadsheets, and images with bounded extraction or metadata.
+`read` can inspect supported PDFs, documents, presentations, spreadsheets, and images with bounded extraction or metadata. Extracted text from PDFs, documents, presentations, spreadsheets, SVGs, and normal files is subject to the same default 4,000-token and max 6,000-token estimated cap.
 
 Use it for:
 
@@ -87,7 +91,7 @@ Important fields:
 - `truncation`: whether output was cut.
 - `warnings`: extraction or truncation caveats.
 
-If `truncation.truncated` is true, re-read with offset or larger `charLimit` before relying on missing sections.
+If `truncation.truncated` is true, re-read with offset and a focused `charLimit`/`tokenLimit` before relying on missing sections.
 
 ## `search`
 

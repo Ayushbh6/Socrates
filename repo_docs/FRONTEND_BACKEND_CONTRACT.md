@@ -1733,11 +1733,11 @@ type ReadToolOutput = {
 
 Rules:
 
-- Default `charLimit` is 20,000 characters.
-- Normal backend per-call cap is 80,000 characters.
+- Default model-visible output cap is an estimated 4,000 tokens.
+- `tokenLimit` may request up to 6,000 estimated tokens. `charLimit` may request up to 80,000 characters for compatibility and offset paging, but effective returned text is bounded by both limits.
 - Output must include `truncation.truncated = true` when content is cut.
 - File reads include `contentHash` for the full file bytes, plus `mtimeMs`, `sizeBytes`, and text `lineEnding` when applicable. Hashes are freshness markers for later verified edits and must represent the full file on disk, not only the truncated text returned to the model.
-- PDFs, documents, slide decks, structured data, and images must be extracted into bounded text or visual descriptions with metadata.
+- PDFs, documents, slide decks, structured data, and images must be extracted into bounded text or visual descriptions with metadata. Text extraction through `read` is bounded by an estimated default 4,000-token cap and a hard 6,000-token `tokenLimit` cap, in addition to any `charLimit`/offset paging.
 - The tool must never dump a full large PDF, document, slide deck, generated file, lockfile, or binary blob into context by accident.
 - Reader implementations may use local extractors or lightweight parsing libraries. The first version should prefer practical bounded extraction over deep document-processing infrastructure.
 - For providers with native vision support, image reads may produce an image reference or attachment that the provider layer can include natively. For non-vision models, Socrates should provide OCR text, image metadata, or a generated visual description when available. If no image understanding path is available, return metadata plus a clear warning.

@@ -582,6 +582,18 @@ export class SocratesStore {
     return this.terminals.appendOutput(input)
   }
 
+  getModelVisibleTerminalOutputSequence(terminalId: string): number {
+    return this.terminals.getModelVisibleOutputSequence(terminalId)
+  }
+
+  setModelVisibleTerminalOutputSequence(terminalId: string, sequence: number): void {
+    this.terminals.setModelVisibleOutputSequence(terminalId, sequence)
+  }
+
+  terminalOutputSnapshot(terminalId: string, fromSequence?: number, charLimit?: number): ReturnType<TerminalStore["terminalOutputSnapshot"]> {
+    return this.terminals.terminalOutputSnapshot(terminalId, fromSequence, charLimit)
+  }
+
   findTerminal(conversationId: string, identifier: string) {
     return this.terminals.findTerminalRow(conversationId, identifier)
   }

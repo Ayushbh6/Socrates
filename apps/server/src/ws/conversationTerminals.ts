@@ -77,11 +77,10 @@ export class ConversationTerminalManager {
     }
   }
 
-  dispose(): void {
-    for (const terminal of this.terminals.values()) {
-      this.clearRuntimeTerminal(terminal)
-    }
+  async dispose(): Promise<void> {
+    await Promise.allSettled([...this.terminals.values()].map((terminal) => this.stopRuntimeTerminal(terminal, "Server shutdown.")))
     this.terminals.clear()
+    await this.supervisor.shutdown()
   }
 
   stopConversation(conversationId: string, reason?: string): void {
@@ -203,9 +202,10 @@ export class ConversationTerminalManager {
     const name = input.name ?? inferTerminalName(command)
     const reusable = await this.findReusableTerminal(context.conversationId, name, command, context)
     if (reusable) {
-      return storedTerminalOutput("start", reusable, {
+      return storedTerminalOutput(this.store, "start", reusable, {
         message: `Reused existing Terminal "${reusable.name}" instead of starting a duplicate. Use output/status with this name to inspect it, or stop it before starting a different command.`,
         reusedTerminal: true,
+        charLimit: input.charLimit,
       })
     }
 
@@ -264,7 +264,7 @@ export class ConversationTerminalManager {
       processId,
       status: "running",
       autoDetached,
-      metadata: { toolCallId: context.toolCallId, systemPid: output.process?.systemPid },
+      metadata: { toolCallId: context.toolCallId, startToolCallId: context.toolCallId, lastToolCallId: context.toolCallId, lastTurnId: context.turnId, systemPid: output.process?.systemPid },
     })
     this.appendOutputSnapshot(terminalId, context, output)
     if (!hasShellOutput(output)) {
@@ -272,12 +272,12 @@ export class ConversationTerminalManager {
     }
     const initialTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
     if (!this.terminals.has(terminalId) || !isActiveTerminalStatus(runtime.status)) {
-      return initialTerminal ? storedTerminalOutput("start", initialTerminal, { autoDetached }) : withTerminalMetadata(output, initialTerminal, autoDetached)
+      return initialTerminal ? storedTerminalOutput(this.store, "start", initialTerminal, { autoDetached, charLimit: input.charLimit }) : withTerminalMetadata(output, initialTerminal, autoDetached)
     }
     this.emitTerminalStatus(runtime, "terminal.started")
     this.startPolling(runtime)
     const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
-    return terminal ? storedTerminalOutput("start", terminal, { autoDetached }) : withTerminalMetadata(output, terminal, autoDetached)
+    return terminal ? storedTerminalOutput(this.store, "start", terminal, { autoDetached, charLimit: input.charLimit }) : withTerminalMetadata(output, terminal, autoDetached)
   }
 
   private async runWithAutoDetach(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
@@ -307,9 +307,9 @@ export class ConversationTerminalManager {
       this.updateFromOutput(runtime, output)
       await this.drainRuntimeTerminal(runtime, context)
       const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
-      return terminal ? storedTerminalOutput("status", terminal) : withTerminalMetadata(output, terminal)
+      return terminal ? storedTerminalOutput(this.store, "status", terminal, { charLimit: input.charLimit }) : withTerminalMetadata(output, terminal)
     }
-    return storedTerminalOutput("status", runtime)
+    return storedTerminalOutput(this.store, "status", runtime, { charLimit: input.charLimit })
   }
 
   private async terminalOutput(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
@@ -320,9 +320,9 @@ export class ConversationTerminalManager {
       if (!terminal) {
         throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { name: runtime.name }, recoverable: true })
       }
-      return storedTerminalOutput("output", terminal)
+      return storedTerminalOutput(this.store, "output", terminal, { charLimit: input.charLimit })
     }
-    return storedTerminalOutput("output", runtime)
+    return storedTerminalOutput(this.store, "output", runtime, { charLimit: input.charLimit })
   }
 
   private async terminalStop(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
@@ -339,11 +339,11 @@ export class ConversationTerminalManager {
       this.appendOutputSnapshot(runtime.terminalId, context, output)
       this.markRuntimeTerminalStopped(runtime)
       const stoppedTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
-      return stoppedTerminal ? storedTerminalOutput("stop", stoppedTerminal) : withTerminalMetadata(output, stoppedTerminal)
+      return stoppedTerminal ? storedTerminalOutput(this.store, "stop", stoppedTerminal, { charLimit: input.charLimit }) : withTerminalMetadata(output, stoppedTerminal)
     }
     assertModelCanStopTerminal(runtime)
     this.store.updateTerminal(runtime.terminalId, { status: "stopped", awaitingInput: false, signal: "SIGTERM", completedAt: nowIso() })
-    return storedTerminalOutput("stop", { ...runtime, status: "stopped" })
+    return storedTerminalOutput(this.store, "stop", { ...runtime, status: "stopped" }, { charLimit: input.charLimit })
   }
 
   private resolveTerminal(input: BashToolInput, context: ToolExecutorContext): RuntimeTerminal | ReturnType<typeof storedTerminalFromRow> {
@@ -567,6 +567,9 @@ export class ConversationTerminalManager {
   }
 
   private appendOutputSnapshot(terminalId: string, context: ToolExecutorContext | undefined, output: BashToolOutput): void {
+    if (context) {
+      this.store.updateTerminal(terminalId, { metadata: { lastToolCallId: context.toolCallId, lastTurnId: context.turnId } })
+    }
     if (output.stdout) {
       this.handleRuntimeOutput(terminalId, context, { stream: "pty", text: output.stdout })
     }
@@ -711,53 +714,65 @@ const storedTerminalFromRow = (store: SocratesStore, conversationId: string, ter
 }
 
 const storedTerminalOutput = (
+  store: SocratesStore,
   operation: "start" | "status" | "output" | "stop",
   terminal: ReturnType<typeof storedTerminalFromRow>,
-  options: { message?: string; reusedTerminal?: boolean; autoDetached?: boolean } = {},
-): BashToolOutput => ({
-  operation,
-  command: terminal.command,
-  cwd: terminal.cwd,
-  exitCode: terminal.exitCode ?? null,
-  ...(terminal.signal ? { signal: terminal.signal } : {}),
-  stdout: terminal.output.stdout,
-  stderr: terminal.output.stderr,
-  ...(options.message ? { message: options.message } : {}),
-  ...(options.reusedTerminal !== undefined ? { reusedTerminal: options.reusedTerminal } : {}),
-  durationMs: 0,
-  timedOut: false,
-  truncation: {
-    truncated: false,
-    charLimit: 80_000,
-    originalLength: terminal.output.stdout.length + terminal.output.stderr.length,
-    returnedLength: terminal.output.stdout.length + terminal.output.stderr.length,
-  },
-  shell: {
-    platform: terminal.platform ?? process.platform,
-    kind: terminal.shellKind ?? (process.platform === "win32" ? "powershell" : "posix"),
-    executable: terminal.shellExecutable ?? "unknown",
-  },
-  process: {
-    processId: terminal.processId ?? terminal.terminalId,
-    status: terminal.status === "running" || terminal.status === "awaiting_input" ? "running" : terminal.status === "stopped" ? "stopped" : "exited",
+  options: { message?: string; reusedTerminal?: boolean; autoDetached?: boolean; charLimit?: number | undefined } = {},
+): BashToolOutput => {
+  const fromSequence = store.getModelVisibleTerminalOutputSequence(terminal.terminalId)
+  const charLimit = Math.min(options.charLimit ?? 80_000, 80_000)
+  const output = store.terminalOutputSnapshot(terminal.terminalId, fromSequence, charLimit)
+  store.setModelVisibleTerminalOutputSequence(terminal.terminalId, output.nextOutputSequence)
+  const message =
+    options.message ??
+    (fromSequence > 0 && output.returnedLength === 0
+      ? "No new Terminal output since the last model-visible check. Full Terminal history remains available in the backend and UI."
+      : undefined)
+  return {
+    operation,
+    command: terminal.command,
+    cwd: terminal.cwd,
     exitCode: terminal.exitCode ?? null,
     ...(terminal.signal ? { signal: terminal.signal } : {}),
-    startedAt: terminal.startedAt,
-    ...(terminal.completedAt ? { exitedAt: terminal.completedAt } : {}),
-    nextOutputSequence: terminal.output.nextOutputSequence,
-  },
-  terminal: {
-    terminalId: terminal.terminalId,
-    name: terminal.name,
-    status: terminal.status,
-    autoDetached: options.autoDetached ?? terminal.autoDetached,
-    awaitingInput: terminal.awaitingInput,
-    ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
-    nextOutputSequence: terminal.output.nextOutputSequence,
-    startedAt: terminal.startedAt,
-    updatedAt: terminal.updatedAt,
-  },
-})
+    stdout: output.stdout,
+    stderr: output.stderr,
+    ...(message ? { message } : {}),
+    ...(options.reusedTerminal !== undefined ? { reusedTerminal: options.reusedTerminal } : {}),
+    durationMs: 0,
+    timedOut: false,
+    truncation: {
+      truncated: output.truncated,
+      charLimit,
+      originalLength: output.originalLength,
+      returnedLength: output.returnedLength,
+    },
+    shell: {
+      platform: terminal.platform ?? process.platform,
+      kind: terminal.shellKind ?? (process.platform === "win32" ? "powershell" : "posix"),
+      executable: terminal.shellExecutable ?? "unknown",
+    },
+    process: {
+      processId: terminal.processId ?? terminal.terminalId,
+      status: terminal.status === "running" || terminal.status === "awaiting_input" ? "running" : terminal.status === "stopped" ? "stopped" : "exited",
+      exitCode: terminal.exitCode ?? null,
+      ...(terminal.signal ? { signal: terminal.signal } : {}),
+      startedAt: terminal.startedAt,
+      ...(terminal.completedAt ? { exitedAt: terminal.completedAt } : {}),
+      nextOutputSequence: terminal.output.nextOutputSequence,
+    },
+    terminal: {
+      terminalId: terminal.terminalId,
+      name: terminal.name,
+      status: terminal.status,
+      autoDetached: options.autoDetached ?? terminal.autoDetached,
+      awaitingInput: terminal.awaitingInput,
+      ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
+      nextOutputSequence: terminal.output.nextOutputSequence,
+      startedAt: terminal.startedAt,
+      updatedAt: terminal.updatedAt,
+    },
+  }
+}
 
 const isActiveTerminalStatus = (status: TerminalStatus): boolean => status === "running" || status === "awaiting_input"
 

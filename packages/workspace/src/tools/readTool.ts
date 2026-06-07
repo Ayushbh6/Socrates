@@ -4,7 +4,7 @@ import path from "node:path"
 import { promisify } from "node:util"
 import type { ReadToolInput, ReadToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
-import { clampCharLimit, emptyTruncation, isProbablyBinary, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
+import { charLimitForTokenCap, clampCharLimit, emptyTruncation, isProbablyBinary, resolveWorkspacePath, toWorkspaceRelativePath, truncateText } from "./common"
 import type { FileFreshnessTracker } from "./fileFreshness"
 import { detectLineEnding, hashBuffer } from "./fileMetadata"
 
@@ -18,7 +18,7 @@ export const readWorkspacePath = async (
 ): Promise<ReadToolOutput> => {
   const absolutePath = resolveWorkspacePath(context.workspacePath, input.path)
   const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
-  const charLimit = clampCharLimit(input.charLimit)
+  const charLimit = Math.min(clampCharLimit(input.charLimit), charLimitForTokenCap(input.tokenLimit))
 
   let stat
   try {

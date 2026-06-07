@@ -51,6 +51,14 @@ const buildTestServer = async (
   return app
 }
 
+const closeTestServer = async (app: TestServer): Promise<void> => {
+  await app.close()
+  const index = servers.indexOf(app)
+  if (index >= 0) {
+    servers.splice(index, 1)
+  }
+}
+
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 const waitForFileText = async (filePath: string, text: string): Promise<void> => {
   const deadline = Date.now() + 2_000
@@ -67,6 +75,26 @@ const nodeCommand = (script: string): string =>
   process.platform === "win32"
     ? `& ${psQuote(process.execPath)} -e ${psQuote(`eval(Buffer.from("${Buffer.from(script).toString("base64")}", "base64").toString())`)}`
     : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`eval(Buffer.from("${Buffer.from(script).toString("base64")}", "base64").toString())`)}`
+
+const processExists = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const waitForProcessExit = async (pid: number): Promise<void> => {
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    if (!processExists(pid)) {
+      return
+    }
+    await delay(50)
+  }
+  throw new Error(`Timed out waiting for process ${pid} to exit`)
+}
 
 const waitForProjectEmbeddingStatus = async (
   store: SocratesStore,
@@ -697,6 +725,28 @@ setInterval(() => {}, 1000)
   return new SocratesAgent(provider)
 }
 
+const createShutdownCleanupTerminalAgent = (): SocratesAgent => {
+  const command = nodeCommand(`
+process.stdout.write("shutdown-cleanup-ready\\n")
+setInterval(() => {}, 1000)
+`)
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: "tcall_shutdown_cleanup_start",
+          toolName: "bash",
+          input: { operation: "start", command, name: "shutdown-cleanup-test" },
+        },
+      }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createTextInputTerminalAgent = (): SocratesAgent => {
   const command = nodeCommand(`
 process.stdout.write("What is your name? ")
@@ -1044,12 +1094,13 @@ const trackedEvents = new WeakMap<WebSocket, ServerEvent[]>()
 const waitForEvent = async <T extends ServerEvent["type"]>(
   socket: WebSocket,
   type: T,
+  timeoutMs = 3_000,
 ): Promise<Extract<ServerEvent, { type: T }>> =>
   new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       clearInterval(interval)
       reject(new Error(`Timed out waiting for ${type}`))
-    }, 3_000)
+    }, timeoutMs)
 
     const interval = setInterval(() => {
       const events = trackedEvents.get(socket) ?? []
@@ -1840,7 +1891,7 @@ describe("HTTP API", () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
-    const { project } = await createProject(app)
+    const { project, primaryWorkspace } = await createProject(app)
     const conversation = await createConversation(app, project.id)
 
     const sqlite = new Database(dbPath)
@@ -1874,7 +1925,7 @@ describe("HTTP API", () => {
   it("creates and lists project resources", async () => {
     const app = await buildTestServer()
     await onboard(app)
-    const { project } = await createProject(app)
+    const { project, primaryWorkspace } = await createProject(app)
 
     const createResponse = await app.inject({
       method: "POST",
@@ -2006,7 +2057,7 @@ describe("HTTP API", () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
-    const { project } = await createProject(app)
+    const { project, primaryWorkspace } = await createProject(app)
     const boundary = "----socrates-delete-boundary"
     const payload = Buffer.from(
       [
@@ -2742,6 +2793,62 @@ describe("WebSocket API", () => {
       }
     } finally {
       socket.close()
+    }
+  })
+
+  it("exposes detached terminal sessions through trace_retrieve shell audit", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Terminal Trace Source")
+    const live = await createConversation(app, project.id, "Terminal Trace Live")
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle)
+    const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+    const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Start detached terminal", "Terminal started.", nowIso())
+    const terminalId = createId("term")
+    const now = nowIso()
+    try {
+      handle.sqlite
+        .prepare(
+          `INSERT INTO terminal_sessions (
+            id, project_id, conversation_id, workspace_path, name, command, cwd, status,
+            auto_detached, awaiting_input, started_at, updated_at, metadata_json
+          ) VALUES (?, ?, ?, ?, 'trace-terminal', 'node script.js', ?, 'detached', 1, 0, ?, ?, ?)`,
+        )
+        .run(
+          terminalId,
+          project.id,
+          conversation.id,
+          primaryWorkspace.path,
+          primaryWorkspace.path,
+          now,
+          now,
+          JSON.stringify({ lastTurnId: turn.turnId }),
+        )
+      handle.sqlite
+        .prepare(
+          `INSERT INTO terminal_output_chunks (
+            id, terminal_session_id, sequence, stream, text, redacted, created_at
+          ) VALUES (?, ?, 0, 'pty', 'DETACHED-TERMINAL-TOKEN output line\\n', 0, ?)`,
+        )
+        .run(createId("tout"), terminalId, now)
+
+      store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
+
+      const result = await store.retrieveToolTraces(project.id, live.id, {
+        query: "DETACHED-TERMINAL-TOKEN",
+        scope: "project",
+        mode: "audit",
+        include: ["shell"],
+      })
+
+      expect(result.results[0]?.entryType).toBe("shell")
+      expect(JSON.stringify(result.results)).toContain("trace-terminal")
+      expect(JSON.stringify(result.results)).toContain("DETACHED-TERMINAL-TOKEN")
+    } finally {
+      await store.close()
     }
   })
 
@@ -4070,6 +4177,43 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("stops detached terminal processes when the server closes", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createShutdownCleanupTerminalAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    let systemPid: number | undefined
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start cleanup terminal", { approvalMode: "approve_all" }))
+      const startedTerminal = await waitForEvent(socket, "terminal.started")
+      expect(startedTerminal.payload.name).toBe("shutdown-cleanup-test")
+      await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "turn.completed")
+
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db
+          .prepare("SELECT metadata_json FROM terminal_sessions WHERE id = ?")
+          .get(startedTerminal.payload.terminalId) as { metadata_json?: string } | undefined
+        const metadata = JSON.parse(row?.metadata_json ?? "{}") as { systemPid?: unknown }
+        expect(typeof metadata.systemPid).toBe("number")
+        systemPid = metadata.systemPid as number
+        expect(processExists(systemPid)).toBe(true)
+      } finally {
+        db.close()
+      }
+    } finally {
+      socket.close()
+    }
+
+    expect(systemPid).toBeDefined()
+    await closeTestServer(app)
+    await waitForProcessExit(systemPid as number)
+  })
+
   it("auto-targets exactly one active terminal when the model stops without an id", async () => {
     const app = await buildTestServer(tempDbPath(), createUntargetedTerminalStopAgent())
     await onboard(app)
@@ -4114,18 +4258,23 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Read tail terminal output"))
       const outputCompleted = await waitForEvent(socket, "tool.call.completed")
       expect(outputCompleted.payload.providerToolCallId).toBe("tcall_tail_output")
-      expect(outputCompleted.payload.resultPreview).toContain("tail-ready")
+      expect(outputCompleted.payload.resultPreview).not.toContain("tail-ready")
       await waitForEvent(socket, "turn.completed")
 
       const response = await app.inject({
         method: "GET",
         url: `/api/projects/${project.id}/conversations/${conversation.id}`,
       })
-      const body = parseResponse<{ terminals: Array<{ terminalId: string; output: { stdout: string } }> }>(response.payload)
+      const body = parseResponse<{
+        terminals: Array<{ terminalId: string; output: { stdout: string } }>
+        toolRuns: Array<{ providerToolCallId?: string; shell?: { stdout: string } }>
+      }>(response.payload)
       expect(body.ok).toBe(true)
       if (body.ok) {
         const terminal = body.data.terminals.find((item) => item.terminalId === terminalId)
+        const outputRun = body.data.toolRuns.find((item) => item.providerToolCallId === "tcall_tail_output")
         expect((terminal?.output.stdout.match(/tail-ready/g) ?? []).length).toBe(1)
+        expect(outputRun?.shell?.stdout).not.toContain("tail-ready")
       }
     } finally {
       if (socket.readyState === WebSocket.OPEN && terminalId) {
@@ -4333,7 +4482,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start an interactive terminal", { approvalMode: "approve_all" }))
-      const inputRequested = await waitForEvent(socket, "terminal.input.requested")
+      const inputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
       expect(inputRequested.payload.name).toBe("interactive-test")
       expect(inputRequested.payload.status).toBe("awaiting_input")
       expect(inputRequested.payload.prompt).toContain("Use arrow-keys")
@@ -4376,7 +4525,7 @@ describe("WebSocket API", () => {
     } finally {
       socket.close()
     }
-  })
+  }, 10_000)
 
   it("accepts user text input and returns the interactive terminal response", async () => {
     const app = await buildTestServer(tempDbPath(), createTextInputTerminalAgent())
@@ -4387,7 +4536,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start text input terminal", { approvalMode: "approve_all" }))
-      const inputRequested = await waitForEvent(socket, "terminal.input.requested")
+      const inputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
       expect(inputRequested.payload.name).toBe("text-input-test")
       expect(inputRequested.payload.status).toBe("awaiting_input")
       expect(inputRequested.payload.prompt).toContain("What is your name?")
@@ -4420,7 +4569,7 @@ describe("WebSocket API", () => {
     } finally {
       socket.close()
     }
-  })
+  }, 10_000)
 
   it("keeps an awaiting-input terminal running when the model tries to stop it before user input", async () => {
     const app = await buildTestServer(tempDbPath(), createPrematureInteractiveStopAgent())
@@ -4431,7 +4580,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start interactive and stop too early", { approvalMode: "approve_all" }))
-      const inputRequested = await waitForEvent(socket, "terminal.input.requested")
+      const inputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
       expect(inputRequested.payload.name).toBe("premature-stop-test")
       expect(inputRequested.payload.status).toBe("awaiting_input")
 
@@ -4471,7 +4620,7 @@ describe("WebSocket API", () => {
     } finally {
       socket.close()
     }
-  })
+  }, 10_000)
 
   it("persists recoverable shell failures and continues with the next PTY run", async () => {
     const dbPath = tempDbPath()

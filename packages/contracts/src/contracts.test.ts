@@ -943,7 +943,8 @@ describe("websocket server event contracts", () => {
 
 describe("tool contracts", () => {
   it("parses the V1 model-visible tool inputs", () => {
-    expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000 }).success).toBe(true)
+    expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000, tokenLimit: 6_000 }).success).toBe(true)
+    expect(readToolInputSchema.safeParse({ path: "README.md", tokenLimit: 6_001 }).success).toBe(false)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)

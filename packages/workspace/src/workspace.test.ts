@@ -287,6 +287,20 @@ describe("workspace tools", () => {
     await expect(readWorkspacePath({ path: "../outside.txt" }, { workspacePath })).rejects.toThrow(SocratesError)
   })
 
+  it("applies the read token cap across normal file reads", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "large.txt"), "x".repeat(30_000))
+
+    const defaultCapped = await readWorkspacePath({ path: "large.txt" }, { workspacePath })
+    const maxCapped = await readWorkspacePath({ path: "large.txt", tokenLimit: 6_000 }, { workspacePath })
+    const hardCapped = await readWorkspacePath({ path: "large.txt", charLimit: 80_000, tokenLimit: 6_000 }, { workspacePath })
+
+    expect(defaultCapped.content).toHaveLength(16_000)
+    expect(defaultCapped.truncation.truncated).toBe(true)
+    expect(maxCapped.content).toHaveLength(20_000)
+    expect(hardCapped.content).toHaveLength(24_000)
+  })
+
   it("warns when reading images with a non-vision model", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "screenshot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))

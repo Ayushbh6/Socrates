@@ -18,6 +18,8 @@ type SupervisorRequest =
   | { id: string; method: "input"; terminalId: string; processId?: string; text: string }
   | { id: string; method: "resize"; terminalId: string; processId?: string; cols: number; rows: number }
   | { id: string; method: "has"; terminalId: string }
+  | { id: string; method: "shutdown" }
+  | { id: string; method: "shutdown-if-idle" }
 
 type SupervisorResponse =
   | { id: string; ok: true; output?: BashToolOutput; has?: boolean }
@@ -25,6 +27,8 @@ type SupervisorResponse =
 
 const terminals = new Map<string, SupervisorTerminal>()
 const socketPath = process.argv[2]
+const supervisorIdleShutdownMs = Number.parseInt(process.env.SOCRATES_TERMINAL_SUPERVISOR_IDLE_SHUTDOWN_MS ?? "2000", 10)
+let idleShutdownTimer: NodeJS.Timeout | undefined
 
 if (!socketPath) {
   throw new Error("Supervisor socket path is required.")
@@ -69,6 +73,7 @@ const handleLine = async (socket: net.Socket, line: string): Promise<void> => {
 
   try {
     write(socket, await handleRequest(request))
+    refreshIdleShutdown()
   } catch (error) {
     const normalized = normalizeError(error)
     write(socket, {
@@ -84,6 +89,18 @@ const handleLine = async (socket: net.Socket, line: string): Promise<void> => {
 }
 
 const handleRequest = async (request: SupervisorRequest): Promise<SupervisorResponse> => {
+  if (request.method === "shutdown") {
+    setTimeout(shutdown, 20).unref?.()
+    return { id: request.id, ok: true }
+  }
+
+  if (request.method === "shutdown-if-idle") {
+    if (terminals.size === 0) {
+      setTimeout(shutdown, 20).unref?.()
+    }
+    return { id: request.id, ok: true }
+  }
+
   if (request.method === "has") {
     return { id: request.id, ok: true, has: terminals.has(request.terminalId) }
   }
@@ -157,12 +174,27 @@ const write = (socket: net.Socket, response: SupervisorResponse): void => {
 }
 
 const shutdown = (): void => {
+  clearTimeout(idleShutdownTimer)
   for (const terminal of terminals.values()) {
     terminal.session.dispose()
   }
   terminals.clear()
-  server.close()
+  server.close(() => {
+    if (process.platform !== "win32" && fs.existsSync(socketPath)) {
+      fs.unlinkSync(socketPath)
+    }
+    process.exit(0)
+  })
 }
 
 process.on("SIGTERM", shutdown)
 process.on("SIGINT", shutdown)
+
+const refreshIdleShutdown = (): void => {
+  clearTimeout(idleShutdownTimer)
+  if (terminals.size > 0 || supervisorIdleShutdownMs <= 0) {
+    return
+  }
+  idleShutdownTimer = setTimeout(shutdown, supervisorIdleShutdownMs)
+  idleShutdownTimer.unref?.()
+}

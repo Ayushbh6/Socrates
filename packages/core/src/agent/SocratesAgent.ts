@@ -95,6 +95,8 @@ export class SocratesAgent {
     let confirmedToolErrors = 0
     let forceFinalNoTools = false
     const duplicateTraceRetrieveResults = new Map<string, unknown>()
+    const toolInputCounts = new Map<string, number>()
+    let totalToolCountNudgeSent = false
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
@@ -145,6 +147,7 @@ export class SocratesAgent {
       })
       const assistantParts: ModelMessagePart[] = []
       const toolCalls: NormalizedToolCall[] = []
+      const repeatedToolInputsThisStep = new Set<string>()
       const toolRunIds = new Map<string, string>()
       let stepText = ""
       const toolRunIdFor = (providerToolCallId: string): string => {
@@ -209,6 +212,12 @@ export class SocratesAgent {
         if (modelEvent.type === "model.tool_call.completed") {
           const parsed = normalizedToolCallSchema.safeParse(modelEvent.toolCall)
           if (parsed.success) {
+            const inputKey = stableToolInputKey(parsed.data.toolName, parsed.data.input)
+            const nextCount = (toolInputCounts.get(inputKey) ?? 0) + 1
+            toolInputCounts.set(inputKey, nextCount)
+            if (nextCount >= 3) {
+              repeatedToolInputsThisStep.add(`${parsed.data.toolName} ${JSON.stringify(parsed.data.input)}`)
+            }
             toolCalls.push({
               ...parsed.data,
               toolCallId: toolRunIdFor(parsed.data.toolCallId),
@@ -270,6 +279,10 @@ export class SocratesAgent {
       }
 
       const execution = await batch.done
+      const nextUsedToolCalls = usedToolCalls + execution.countedToolCalls
+      if (nextUsedToolCalls >= 10) {
+        compactPriorToolHistoryForModel(messages)
+      }
       usedToolCalls += execution.countedToolCalls
       const confirmedToolErrorResults = execution.results.filter(isConfirmedToolErrorResult)
       confirmedToolErrors += confirmedToolErrorResults.length
@@ -292,6 +305,20 @@ export class SocratesAgent {
           content:
             'Quiet backend reminder: if this turn changed durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or important pitfalls, inspect/update `.socrates/repo_docs/` with the repo_docs tool before the final answer. Skip this if no durable repo doctrine changed.',
         })
+      }
+      if (repeatedToolInputsThisStep.size > 0) {
+        messages.push({
+          role: "user",
+          content: `You have repeated the same exact tool call input at least 3 times this turn (${[...repeatedToolInputsThisStep].slice(0, 3).join("; ")}). Stop repeating identical calls. Either answer from the evidence already gathered, inspect a different target, or ask the user for more information.`,
+        })
+      }
+      if (!totalToolCountNudgeSent && usedToolCalls >= 50) {
+        messages.push({
+          role: "user",
+          content:
+            "You have made 50 or more tool calls in this turn. Before using more tools, decide whether you already have enough evidence to answer. If not, ask the user to continue or state the specific missing evidence.",
+        })
+        totalToolCountNudgeSent = true
       }
 
       if (maxConfirmedToolErrorsPerTurn > 0 && confirmedToolErrors >= maxConfirmedToolErrorsPerTurn) {
@@ -690,6 +717,64 @@ const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__
 
 const isConfirmedToolErrorResult = (result: ToolExecutionResult): boolean =>
   result.ok === false && typeof result.error?.code === "string" && result.error.code.length > 0 && typeof result.error.message === "string" && result.error.message.length > 0
+
+const compactPriorToolHistoryForModel = (messages: ModelMessage[]): void => {
+  for (const message of messages) {
+    if (message.role !== "tool" || !Array.isArray(message.content)) {
+      continue
+    }
+    for (const part of message.content) {
+      if (!part || typeof part !== "object" || (part as { type?: unknown }).type !== "tool-result") {
+        continue
+      }
+      const record = part as { output?: unknown; toolName?: unknown }
+      record.output = compactModelVisibleToolOutput(record.output, typeof record.toolName === "string" ? record.toolName : undefined)
+    }
+  }
+}
+
+const compactModelVisibleToolOutput = (output: unknown, toolName: string | undefined): unknown => {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return output
+  }
+  const record = output as Record<string, unknown>
+  if (record.contextCompacted === true) {
+    return output
+  }
+  if (record.ok === false) {
+    const error = record.error && typeof record.error === "object" && !Array.isArray(record.error) ? (record.error as Record<string, unknown>) : undefined
+    return {
+      toolName,
+      ok: false,
+      contextCompacted: true,
+      message: `Earlier failed ${toolName ?? "tool"} result omitted for context cleanliness after 10+ tool calls.`,
+      ...(typeof error?.code === "string" ? { code: error.code } : {}),
+      ...(typeof error?.message === "string" ? { errorMessage: error.message } : {}),
+    }
+  }
+  const serialized = safeJsonPreview(output, 4_001)
+  if (serialized.length <= 4_000) {
+    return output
+  }
+  return {
+    toolName,
+    ok: record.ok === true,
+    contextCompacted: true,
+    message:
+      "Earlier large tool result compacted after 10+ tool calls. Re-read the file, rerun a targeted search, or use trace_retrieve audit/inspect if exact older evidence is needed.",
+    preview: safeJsonPreview(output, 2_000),
+  }
+}
+
+const safeJsonPreview = (value: unknown, limit: number): string => {
+  let text: string
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
+  } catch {
+    text = String(value)
+  }
+  return text.length > limit ? `${text.slice(0, limit)}...` : text
+}
 
 const shouldNudgeRepoDocsAlignment = (results: ToolExecutionResult[]): boolean => {
   if (results.some((result) => result.ok && result.toolName === "repo_docs")) {

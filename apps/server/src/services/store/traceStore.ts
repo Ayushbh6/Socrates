@@ -27,6 +27,8 @@ import {
   patches,
   shellCommands,
   shellOutputChunks,
+  terminalOutputChunks,
+  terminalSessions,
   toolCalls,
   traceDocuments,
   traceIndexJobs,
@@ -307,6 +309,7 @@ export class TraceStore extends StoreBase {
     docs.push(...this.buildMessageDocuments(context))
     docs.push(...this.buildToolDocuments(context))
     docs.push(...this.buildShellDocuments(context))
+    docs.push(...this.buildTerminalDocuments(context))
     docs.push(...this.buildFileDocuments(context))
     docs.push(...this.buildPatchDocuments(context))
     docs.push(...this.buildErrorDocuments(context))
@@ -1323,6 +1326,55 @@ export class TraceStore extends StoreBase {
     })
   }
 
+  private buildTerminalDocuments(context: TraceTurnContext): TraceDocumentInsert[] {
+    const toolRows = this.handle.db.select().from(toolCalls).where(eq(toolCalls.turnId, context.turnId)).all()
+    const turnToolIds = new Set(toolRows.map((row) => row.id))
+    const rows = this.handle.db
+      .select()
+      .from(terminalSessions)
+      .where(eq(terminalSessions.conversationId, context.conversationId))
+      .orderBy(terminalSessions.updatedAt)
+      .all()
+      .filter((row) => terminalBelongsToTurn(row.metadataJson, context.turnId, turnToolIds))
+    return rows.map((row) => {
+      const chunks = this.handle.db
+        .select()
+        .from(terminalOutputChunks)
+        .where(eq(terminalOutputChunks.terminalSessionId, row.id))
+        .orderBy(terminalOutputChunks.sequence)
+        .all()
+      const stdout = chunks
+        .filter((chunk) => chunk.stream === "stdout" || chunk.stream === "pty")
+        .map((chunk) => chunk.text)
+        .join("")
+      const stderr = chunks.filter((chunk) => chunk.stream === "stderr").map((chunk) => chunk.text).join("")
+      const inputCount = chunks.filter((chunk) => chunk.stream === "input").length
+      const content = [
+        `Terminal: ${row.name}`,
+        `Command: ${row.command}`,
+        `cwd: ${row.cwd}`,
+        `Status: ${row.status}`,
+        `Exit code: ${row.exitCode ?? "none"}`,
+        inputCount > 0 ? `Redacted input events: ${inputCount}` : "",
+        stdout ? `stdout:\n${truncateText(stdout, 8_000).text}` : "",
+        stderr ? `stderr:\n${truncateText(stderr, 8_000).text}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n")
+      return makeTraceDocument({
+        context,
+        sourceKind: "shell",
+        sourceTable: "terminal_sessions",
+        sourceId: row.id,
+        title: `Terminal: ${row.name}`,
+        summary: `Terminal ${row.name} is ${row.status}${row.exitCode === null || row.exitCode === undefined ? "" : ` with exit code ${row.exitCode}`}.`,
+        content,
+        importance: row.exitCode && row.exitCode !== 0 ? "high" : "normal",
+        metadata: { command: row.command, cwd: row.cwd, status: row.status, exitCode: row.exitCode, terminalName: row.name },
+      })
+    })
+  }
+
   private buildFileDocuments(context: TraceTurnContext): TraceDocumentInsert[] {
     const rows = this.handle.db.select().from(fileOperations).where(eq(fileOperations.turnId, context.turnId)).orderBy(fileOperations.startedAt).all()
     return rows.map((row) => {
@@ -2306,6 +2358,18 @@ const parseJson = (text: string | null): unknown => {
   } catch {
     return text
   }
+}
+
+const terminalBelongsToTurn = (metadataJson: string | null, turnId: string, turnToolIds: Set<string>): boolean => {
+  const metadata = parseJson(metadataJson)
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return false
+  }
+  const record = metadata as Record<string, unknown>
+  if (record.lastTurnId === turnId) {
+    return true
+  }
+  return [record.toolCallId, record.startToolCallId, record.lastToolCallId].some((value) => typeof value === "string" && turnToolIds.has(value))
 }
 
 const previewJson = (value: unknown, limit: number): string => truncateText(typeof value === "string" ? value : JSON.stringify(value, null, 2), limit).text

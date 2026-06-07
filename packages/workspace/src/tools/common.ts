@@ -5,8 +5,15 @@ import type { TruncationMetadata } from "@socrates/contracts"
 
 export const DEFAULT_CHAR_LIMIT = 20_000
 export const MAX_CHAR_LIMIT = 80_000
+export const DEFAULT_TOKEN_LIMIT = 4_000
+export const MAX_TOKEN_LIMIT = 6_000
+const APPROX_CHARS_PER_TOKEN = 4
 
 export const clampCharLimit = (charLimit?: number): number => Math.min(charLimit ?? DEFAULT_CHAR_LIMIT, MAX_CHAR_LIMIT)
+
+export const clampTokenLimit = (tokenLimit?: number): number => Math.min(tokenLimit ?? DEFAULT_TOKEN_LIMIT, MAX_TOKEN_LIMIT)
+
+export const charLimitForTokenCap = (tokenLimit?: number): number => clampTokenLimit(tokenLimit) * APPROX_CHARS_PER_TOKEN
 
 export const resolveWorkspacePath = (workspacePath: string, requestedPath?: string): string => {
   const workspaceRoot = path.resolve(workspacePath)

@@ -626,6 +626,8 @@ Context accounting belongs behind `packages/providers` because tokenizer behavio
 
 The counted payload is the normalized provider-call request: system prompt, visible messages, hidden compaction summaries, current-turn tool calls/results, and full tool definitions/schemas. Completed prior turns are still loaded as visible user query plus final assistant answer only; old tool traces remain persisted audit data unless retrieved or summarized into current context.
 
+Same-turn tool results are not allowed to grow without bound. After a turn crosses 10 tool calls, earlier failed tool results may be compacted to one-line placeholders and earlier oversized tool results may be replaced in the model-visible prompt with a short preview plus retrieval guidance. This compaction affects only the active in-memory prompt history; raw tool calls, shell commands, Terminal output chunks, trace documents, events, and model usage rows remain persisted for audit. Started Terminal `status`, `output`, and `stop` are model-visible deltas based on a backend cursor, while the full terminal stream remains available to the UI and `trace_retrieve mode="audit" include=["shell"]`.
+
 OpenAI/OpenRouter local counts use `js-tiktoken` mappings where possible. Unknown OpenRouter/local model tokenizers use the local fallback tokenizer with a 15 percent safety margin. Google requests may use Gemini provider-exact `countTokens` near thresholds when credentials are configured; otherwise the local/fallback safety count is used.
 
 `contextUsage` and `context_usage_snapshots` store the safety count used for context budgeting. `tokenUsage` and `model_usage` remain provider-reported cost/diagnostic usage and must not drive the chat header.

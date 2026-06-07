@@ -372,7 +372,7 @@ It owns the low-level implementation for:
 - Creating the `.socrates/` workspace scaffold.
 - Storing project resources under `.socrates/resources/`.
 - Reading files.
-- Reading PDFs, documents, slide decks, images, and structured data through bounded extractors.
+- Reading PDFs, documents, slide decks, images, and structured data through bounded extractors. `read` applies an estimated default 4,000-token output cap and a hard 6,000-token `tokenLimit` cap across readable formats, with `charLimit`/offset paging still available.
 - Writing files.
 - Listing directories.
 - Searching with `rg`.
