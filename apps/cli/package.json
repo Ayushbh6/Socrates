@@ -9,8 +9,7 @@
   "files": [
     "bin",
     "src/cli.mjs",
-    "src/runtime.mjs",
-    "README.md"
+    "src/runtime.mjs"
   ],
   "scripts": {
     "test": "vitest run"
