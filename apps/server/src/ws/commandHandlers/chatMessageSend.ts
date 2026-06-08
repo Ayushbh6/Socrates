@@ -1116,6 +1116,7 @@ const toStoredUsage = (usage: ModelUsage) => ({
   ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
   ...(usage.costUsd === undefined ? {} : { costUsd: usage.costUsd }),
   ...(usage.costSource === undefined ? {} : { costSource: usage.costSource }),
+  ...(usage.routedProvider === undefined ? {} : { routedProvider: usage.routedProvider }),
   ...(usage.pricingSnapshot === undefined ? {} : { pricingSnapshot: usage.pricingSnapshot }),
   ...(usage.providerMetadata === undefined ? {} : { providerMetadata: usage.providerMetadata }),
   ...(usage.raw === undefined ? {} : { raw: usage.raw }),

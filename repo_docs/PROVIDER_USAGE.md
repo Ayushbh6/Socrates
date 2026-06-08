@@ -221,36 +221,62 @@ Gemini thought signatures are not user-visible thinking text. They are opaque sa
 
 ## OpenRouter Routing, Caching, And Cost
 
-OpenRouter calls send a stable `session_id` derived from project and conversation identity:
+OpenRouter calls send a stable cache-affinity key derived from project and conversation identity:
 
 ```text
 project:<projectId>:conversation:<conversationId>
 ```
 
-This key must not include turn ids, timestamps, model-call ids, or other volatile data. It is intended to let OpenRouter keep repeated same-conversation calls on the same upstream provider when prompt caching is available.
+This key must not include turn ids, timestamps, model-call ids, or other volatile data. It is sent as both OpenRouter `session_id` and `prompt_cache_key` so repeated same-conversation calls have a stable provider/cache-affinity hint.
 
-For multi-provider cache-capable models, Socrates should not send `provider.order`, `provider.only`, or `provider.ignore` by default. Manual provider ordering disables OpenRouter automatic sticky routing, so these models rely on `session_id` and captured routed-provider metadata for cache affinity and cost audit:
+These fields are sent as top-level OpenRouter provider options. Do not nest them under `extraBody` when using `providerOptions.openrouter`; the OpenRouter AI SDK spreads `providerOptions.openrouter` into the request body directly.
+
+For multi-provider cache-capable models, Socrates sends explicit price-first routing instead of leaving routing empty. Default multi-provider routes use:
+
+```text
+sort: "price"
+allow_fallbacks: true
+```
+
+This keeps OpenRouter from silently drifting onto a much more expensive upstream for the same model id, while the stable `session_id` still helps same-conversation cache locality and routed-provider capture makes the billed endpoint auditable:
 
 ```text
 moonshotai/kimi-k2.6
 z-ai/glm-5.1
 xiaomi/mimo-v2.5-pro
-deepseek/deepseek-v4-pro
 google/gemma-4-31b-it
 ```
 
-Single-provider or deliberately pinned routes still use strict provider routing:
+High-volume DeepSeek routes use a ranked provider order instead of a single hard pin. The order is chosen from live OpenRouter endpoint pricing and advertised tool support, with `allow_fallbacks: true`. For tool-using `deepseek/deepseek-v4-pro`, the first choices are:
 
 ```text
-xiaomi/mimo-v2.5 -> Xiaomi
-x-ai/grok-build-0.1 -> xAI
-stepfun/step-3.7-flash -> StepFun
-deepseek/deepseek-v4-flash -> DeepInfra
-meta-llama/llama-4-maverick title generation -> DeepInfra
-qwen/qwen3.5-flash-02-23 title fallback -> Alibaba
+deepseek
+streamlake
+deepinfra
+gmicloud
+digitalocean
+...
 ```
 
-DeepSeek V4 Flash is pinned because a live smoke run with only `session_id` routed consecutive same-session calls to different upstream providers, so automatic sticky routing was not reliable enough for cache-hit verification on this model. The local OpenRouter account's privacy/data policy currently blocks the official `DeepSeek` endpoint, while `DeepInfra` is available and cache-priced for this model. This route keeps `allow_fallbacks: false` but uses `require_parameters: false`; otherwise OpenRouter can reject cache/session body fields during endpoint filtering.
+Plain-text V4 Pro requests may try `baidu` after `deepseek`, but tool-using requests skip Baidu because that endpoint does not advertise `tools` / `tool_choice`.
+
+Within a single Socrates turn, the agent also keeps a runtime-only routed-provider preference. After the first OpenRouter call reports an actual routed provider such as `DeepInfra`, later continuations in that same turn prefer that provider first:
+
+```text
+provider: { order: ["deepinfra"], allow_fallbacks: true }
+```
+
+This is not persisted to SQLite and is not a hard block. It exists only to keep the continuation calls on the same provider/cache shard when possible.
+
+Single-provider or deliberately pinned routes still use OpenRouter provider slugs, not display labels:
+
+```text
+xiaomi/mimo-v2.5 -> xiaomi
+x-ai/grok-build-0.1 -> xai
+stepfun/step-3.7-flash -> stepfun
+meta-llama/llama-4-maverick title generation -> deepinfra
+qwen/qwen3.5-flash-02-23 title fallback -> alibaba
+```
 
 Cost accounting order is:
 
@@ -260,9 +286,9 @@ Cost accounting order is:
 3. Unknown cost when neither provider cost nor pricing snapshot is available.
 ```
 
-Computed OpenRouter costs price uncached input, cache-read input, cache-write input, and output separately. If an endpoint does not publish cache-write pricing, cache writes are priced as normal input. Raw provider usage and provider metadata should remain stored for audit.
+Computed OpenRouter costs price uncached input, cache-read input, cache-write input, and output separately. If an endpoint does not publish cache-write pricing, cache writes are priced as normal input. Raw provider usage and provider metadata should remain stored for audit. Historical rows created before `routed_provider` was added can legitimately lack routed-provider data; new rows should populate it.
 
-There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash pinned-provider path. It makes two paid OpenRouter calls with the same model, same stable `session_id`, strict `DeepInfra` provider pin, and stable prompt prefix, then expects the same routed provider and cache-read metadata on the second call:
+There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash cache path. It makes two paid OpenRouter calls with the same model, same stable cache-affinity key, provider routing, and stable prompt prefix, then expects routed-provider and cache-read metadata on the second call:
 
 ```bash
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
@@ -307,13 +333,14 @@ export type ModelUsage = {
   totalTokens?: number
   costUsd?: number
   costSource?: "provider_reported" | "computed" | "unknown"
+  routedProvider?: string
   pricingSnapshot?: unknown
   providerMetadata?: unknown
   raw?: unknown
 }
 ```
 
-This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. OpenRouter cost/cache fields should use provider-reported usage metadata first. OpenAI and Google may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
+This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. `routedProvider` is the upstream endpoint that actually served the request: for OpenRouter this is the routed provider such as `DeepInfra` or `GMICloud`, and for direct providers it is the provider id itself. OpenRouter cost/cache fields should use provider-reported usage metadata first. OpenAI and Google may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
 
 ## V1 Provider Plan
 
@@ -425,7 +452,11 @@ OpenRouter on -> providerOptions.openrouter.reasoning enabled
 OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude true
 ```
 
-OpenRouter model requests also include strict provider routing for every OpenRouter catalog model. `packages/providers/src/openRouterRouting.ts` is the authoritative map. Routes use `provider.order`, `allow_fallbacks: false`, and `require_parameters: true` so cache/cost behavior stays auditable and OpenRouter does not silently route outside the curated provider list. Official providers are preferred where available, with model-specific fallbacks for availability.
+OpenAI prompt caching is automatic for supported models when the stable prefix is large enough. Socrates sends `providerOptions.openai.promptCacheKey` from the same project/conversation cache key to improve cache-affinity routing, but does not create explicit OpenAI cache resources.
+
+Google/Gemini implicit caching is automatic for supported models when prompts meet model thresholds. Socrates does not create explicit Gemini cached-content resources by default; explicit Gemini caches are a separate workflow and should be added only if there is a clear product need.
+
+OpenRouter model requests always include cost-aware routing. `packages/providers/src/openRouterRouting.ts` is the authoritative map. Multi-provider models default to price-first routing with `sort: "price"` and `allow_fallbacks: true`; DeepSeek V4 routes use cheap-compatible ranked provider orders; later continuations in the same turn prefer the actual routed provider reported by OpenRouter. Deliberate pins use OpenRouter provider slugs such as `deepinfra`, `alibaba`, and `xai`, not display labels such as `DeepInfra`. Unknown OpenRouter models fall back to the same price-first routing so no model is sent with empty routing.
 
 OpenRouter streams can arrive in provider-side bursts after a long first-token delay. Socrates applies AI SDK `smoothStream` only on OpenRouter calls to re-chunk bursty text into a steadier word-level stream. This improves perceived streaming once chunks arrive; it does not reduce upstream time-to-first-token.
 

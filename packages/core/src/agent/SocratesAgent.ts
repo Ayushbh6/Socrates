@@ -96,6 +96,7 @@ export class SocratesAgent {
     let forceFinalNoTools = false
     const duplicateTraceRetrieveResults = new Map<string, unknown>()
     const toolInputCounts = new Map<string, number>()
+    const openRouterPreferredProvidersByModel = new Map<string, string>()
     let totalToolCountNudgeSent = false
 
     for (let step = 0; ; step += 1) {
@@ -150,6 +151,8 @@ export class SocratesAgent {
       const repeatedToolInputsThisStep = new Set<string>()
       const toolRunIds = new Map<string, string>()
       let stepText = ""
+      const preferredOpenRouterProvider =
+        input.providerId === "openrouter" ? openRouterPreferredProvidersByModel.get(input.modelId) : undefined
       const toolRunIdFor = (providerToolCallId: string): string => {
         const key = `${modelCallId ?? "model"}:${step}:${providerToolCallId}`
         const existing = toolRunIds.get(key)
@@ -166,6 +169,7 @@ export class SocratesAgent {
         modelId: input.modelId,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
+        ...(preferredOpenRouterProvider ? { providerRouting: { preferredOpenRouterProvider } } : {}),
         system,
         messages: preparedContext.messages,
         runtimeConfig: input.runtimeConfig,
@@ -179,6 +183,13 @@ export class SocratesAgent {
 
         if (modelEvent.type === "model.answer.delta") {
           stepText += modelEvent.text
+        }
+
+        if (input.providerId === "openrouter" && (modelEvent.type === "model.usage" || modelEvent.type === "model.completed")) {
+          const routedProvider = modelEvent.usage?.routedProvider?.trim()
+          if (routedProvider && !openRouterPreferredProvidersByModel.has(input.modelId)) {
+            openRouterPreferredProvidersByModel.set(input.modelId, routedProvider)
+          }
         }
 
         if (modelEvent.type === "model.reasoning.completed") {

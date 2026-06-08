@@ -35,6 +35,12 @@ export type ModelUsage = {
   totalTokens?: number
   costUsd?: number
   costSource?: "provider_reported" | "computed" | "unknown"
+  /**
+   * The upstream endpoint that actually served the request. For OpenRouter this
+   * is the routed provider (e.g. "DeepInfra", "GMICloud"); for direct providers
+   * it is the provider id itself. Used to audit routing/cache behavior and cost.
+   */
+  routedProvider?: string
   pricingSnapshot?: PricingSnapshot
   providerMetadata?: unknown
   raw?: unknown
@@ -60,6 +66,15 @@ export type ModelRequest = {
   modelId: string
   sessionId?: string
   cacheKey?: string
+  providerRouting?: {
+    /**
+     * Runtime-only OpenRouter routed-provider affinity for follow-up calls in
+     * the same turn. The agent sets this from the first actual upstream
+     * provider reported by OpenRouter so later continuations prefer the same
+     * provider/cache shard without hard-blocking fallbacks.
+     */
+    preferredOpenRouterProvider?: string
+  }
   system: string
   messages: ModelMessage[]
   runtimeConfig: RuntimeConfig

@@ -261,7 +261,7 @@ export class ProjectStore extends StoreBase {
     const existing = this.handle.db
       .select()
       .from(projectWorkspaces)
-      .where(and(eq(projectWorkspaces.path, workspacePath), inArray(projectWorkspaces.status, ["active", "missing", "detached"])))
+      .where(and(eq(projectWorkspaces.path, workspacePath), inArray(projectWorkspaces.status, ["active", "missing"])))
       .limit(1)
       .get()
 
@@ -270,7 +270,7 @@ export class ProjectStore extends StoreBase {
         details: { workspacePath, projectId: existing.projectId },
       })
     }
-    if (existing && existing.projectId === projectId && existing.status !== "detached") {
+    if (existing && existing.projectId === projectId) {
       throw new SocratesError("workspace_already_attached", "This workspace folder is already attached to this project", {
         details: { workspacePath, projectId },
       })

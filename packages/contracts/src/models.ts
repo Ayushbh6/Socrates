@@ -78,6 +78,7 @@ export const usageBreakdownItemSchema = z
     sourceKind: aiUsageSourceKindSchema.optional(),
     sourceId: idSchema.optional(),
     status: z.string().min(1).optional(),
+    routedProvider: z.string().min(1).optional(),
     inputTokens: z.number().int().nonnegative(),
     outputTokens: z.number().int().nonnegative(),
     reasoningTokens: z.number().int().nonnegative(),

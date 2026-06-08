@@ -1706,6 +1706,55 @@ describe("HTTP API", () => {
     }
   })
 
+  it("allows reusing a workspace path after the old project detached it", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const originalWorkspacePath = tempDir()
+
+    const firstCreateResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Original Workspace Owner",
+        creationMode: "existing_folder",
+        workspacePath: originalWorkspacePath,
+      },
+    })
+    const firstCreateBody = parseResponse<{ project: Project; primaryWorkspace: ProjectWorkspace }>(firstCreateResponse.payload)
+    expect(firstCreateBody.ok).toBe(true)
+    if (!firstCreateBody.ok) {
+      return
+    }
+
+    const newWorkspacePath = tempDir()
+    const updateResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/projects/${firstCreateBody.data.project.id}/workspace`,
+      payload: {
+        workspacePath: newWorkspacePath,
+        creationMode: "existing_folder",
+      },
+    })
+    const updateBody = parseResponse<{ primaryWorkspace: ProjectWorkspace }>(updateResponse.payload)
+    expect(updateBody.ok).toBe(true)
+
+    const secondCreateResponse = await app.inject({
+      method: "POST",
+      url: "/api/projects",
+      payload: {
+        name: "Reused Detached Workspace",
+        creationMode: "existing_folder",
+        workspacePath: originalWorkspacePath,
+        scaffoldAction: "use_existing",
+      },
+    })
+    const secondCreateBody = parseResponse<{ project: Project; primaryWorkspace: ProjectWorkspace }>(secondCreateResponse.payload)
+    expect(secondCreateBody.ok).toBe(true)
+    if (secondCreateBody.ok) {
+      expect(secondCreateBody.data.primaryWorkspace.path).toBe(originalWorkspacePath)
+    }
+  })
+
   it("preserves existing workspace repo docs when attaching an existing .socrates folder", async () => {
     const app = await buildTestServer()
     await onboard(app)

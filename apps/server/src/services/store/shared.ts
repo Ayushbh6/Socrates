@@ -88,7 +88,7 @@ export class StoreBase {
     const existing = this.handle.db
       .select()
       .from(projectWorkspaces)
-      .where(and(eq(projectWorkspaces.path, workspacePath), inArray(projectWorkspaces.status, ["active", "missing", "detached"])))
+      .where(and(eq(projectWorkspaces.path, workspacePath), inArray(projectWorkspaces.status, ["active", "missing"])))
       .limit(1)
       .get()
 

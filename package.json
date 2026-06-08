@@ -14,6 +14,7 @@
     "desktop:release:local": "pnpm --filter @socrates/desktop release:local",
     "desktop:dev": "pnpm --filter @socrates/desktop dev",
     "eval:context-compression": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && node scripts/context-compression-eval.mjs",
+  "eval:cost-efficiency": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/providers build && node scripts/cost-efficiency-eval.mjs",
     "trace:e2e": "pnpm --filter @socrates/server exec tsx ../../scripts/trace-retrieve-e2e.ts",
     "test": "pnpm -r --workspace-concurrency=1 test",
     "typecheck": "pnpm -r typecheck"

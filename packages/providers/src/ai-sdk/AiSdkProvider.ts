@@ -745,8 +745,10 @@ export const mapUsage = (
 
 const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => {
   const effort = request.runtimeConfig.thinkingEffort ?? "none"
+  const stableCacheKey = stablePromptCacheKey(request)
   const openaiOptions: Record<string, JsonValue> = {
     reasoningEffort: effort,
+    ...(stableCacheKey ? { promptCacheKey: stableCacheKey } : {}),
   }
 
   if (effort !== "none") {
@@ -773,13 +775,19 @@ const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => 
 }
 
 export const createOpenRouterProviderOptions = (request: ModelRequest): ProviderOptions => {
-  const providerRouting = openRouterProviderRoutingForModel(request.modelId)
+  const providerRouting = openRouterProviderRoutingForModel(request.modelId, {
+    ...(request.providerRouting?.preferredOpenRouterProvider
+      ? { preferredProvider: request.providerRouting.preferredOpenRouterProvider }
+      : {}),
+    requiresTools: (request.tools?.length ?? 0) > 0,
+  })
   const shouldSendProviderRouting = providerRouting && Object.keys(providerRouting).length > 0
-  const stableSessionId = request.cacheKey ?? request.sessionId
+  const stableSessionId = stablePromptCacheKey(request)
   return {
     openrouter: {
       usage: { include: true },
-      ...(stableSessionId ? { extraBody: { session_id: stableSessionId } } : {}),
+      ...(stableSessionId ? { session_id: stableSessionId } : {}),
+      ...(stableSessionId ? { prompt_cache_key: stableSessionId } : {}),
       ...(shouldSendProviderRouting ? { provider: providerRouting } : {}),
       reasoning: request.runtimeConfig.thinkingEnabled
         ? { enabled: true, exclude: false }
@@ -787,6 +795,8 @@ export const createOpenRouterProviderOptions = (request: ModelRequest): Provider
     },
   }
 }
+
+const stablePromptCacheKey = (request: ModelRequest): string | undefined => request.cacheKey ?? request.sessionId
 
 const responseMetadataForStorage = (part: unknown): unknown => {
   if (!part || typeof part !== "object") {

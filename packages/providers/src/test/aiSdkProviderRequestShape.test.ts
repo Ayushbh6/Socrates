@@ -63,6 +63,51 @@ describe("AI SDK provider request shape", () => {
     expect(options).not.toHaveProperty("activeTools")
   })
 
+  it("passes a stable OpenAI prompt cache key for cache-affinity routing", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openai", "gpt-5.4-mini"),
+      sessionId: "sess_1",
+      cacheKey: "project:proj_1:conversation:conv_1",
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
+    expect(options.providerOptions?.openai?.promptCacheKey).toBe("project:proj_1:conversation:conv_1")
+  })
+
+  it("leaves Gemini on implicit caching and does not create explicit cache resources", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("google", "gemini-3-flash-preview"),
+      sessionId: "sess_1",
+      cacheKey: "project:proj_1:conversation:conv_1",
+      runtimeConfig: {
+        ...runtimeConfig("google", "gemini-3-flash-preview"),
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+      },
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
+    expect(options.providerOptions?.google).toEqual({
+      thinkingConfig: {
+        thinkingLevel: "low",
+        includeThoughts: true,
+      },
+    })
+    expect(JSON.stringify(options.providerOptions)).not.toContain("cachedContent")
+  })
+
   it("emits completed OpenAI reasoning metadata before tool calls", async () => {
     aiMocks.streamText.mockReturnValue({
       fullStream: (async function* () {

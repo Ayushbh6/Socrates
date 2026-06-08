@@ -201,6 +201,11 @@ export const normalizeProviderUsage = (input: {
     getPath(providerMetadata, ["openrouter", "provider"]),
     getPath(input.usage.raw, ["provider"]),
   )
+  // The upstream endpoint that served the request. For OpenRouter this comes
+  // from provider metadata; for direct providers there is only one upstream, so
+  // record the provider id so the usage ledger always has a routed provider.
+  const routedProvider =
+    input.usage.routedProvider ?? routedOpenRouterProvider ?? (input.providerId === "openrouter" ? undefined : input.providerId)
   const cachedInputTokens =
     input.usage.cachedInputTokens ??
     firstFiniteNumber(
@@ -246,6 +251,7 @@ export const normalizeProviderUsage = (input: {
 
   return {
     ...normalizedUsage,
+    ...(routedProvider === undefined ? {} : { routedProvider }),
     ...(costUsd === undefined && computed.costUsd !== undefined ? { costUsd: computed.costUsd } : costUsd === undefined ? {} : { costUsd }),
     ...(costSource === undefined && computed.costUsd !== undefined
       ? { costSource: "computed" as const }

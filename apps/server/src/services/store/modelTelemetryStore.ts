@@ -586,6 +586,7 @@ export class ModelTelemetryStore extends StoreBase {
           (input.usage.inputTokens ?? 0) + (input.usage.outputTokens ?? 0) + (input.usage.reasoningTokens ?? 0),
         costUsd: input.usage.costUsd,
         costSource: input.usage.costSource,
+        routedProvider: input.usage.routedProvider,
         pricingSnapshotJson: input.usage.pricingSnapshot === undefined ? undefined : JSON.stringify(input.usage.pricingSnapshot),
         rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
         metadataJson: input.usage.providerMetadata === undefined ? undefined : JSON.stringify({ providerMetadata: input.usage.providerMetadata }),
@@ -656,6 +657,7 @@ export class ModelTelemetryStore extends StoreBase {
         totalTokens,
         costUsd: input.usage.costUsd,
         costSource: input.usage.costSource ?? "unknown",
+        routedProvider: input.usage.routedProvider,
         pricingSnapshotJson: input.usage.pricingSnapshot === undefined ? undefined : JSON.stringify(input.usage.pricingSnapshot),
         rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
         metadataJson: input.usage.providerMetadata === undefined ? undefined : JSON.stringify({ providerMetadata: input.usage.providerMetadata }),
@@ -675,6 +677,7 @@ export class ModelTelemetryStore extends StoreBase {
           totalTokens,
           costUsd: input.usage.costUsd,
           costSource: input.usage.costSource ?? "unknown",
+          routedProvider: input.usage.routedProvider,
           pricingSnapshotJson: input.usage.pricingSnapshot === undefined ? undefined : JSON.stringify(input.usage.pricingSnapshot),
           rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
           metadataJson: input.usage.providerMetadata === undefined ? undefined : JSON.stringify({ providerMetadata: input.usage.providerMetadata }),
@@ -688,7 +691,7 @@ export class ModelTelemetryStore extends StoreBase {
       .prepare(
         `SELECT project_id, conversation_id, session_id, turn_id, source_kind, source_id, provider_id, model_id,
           status, input_tokens, output_tokens, reasoning_tokens, cached_input_tokens, cache_write_tokens,
-          uncached_input_tokens, total_tokens, cost_usd, cost_source
+          uncached_input_tokens, total_tokens, cost_usd, cost_source, routed_provider
          FROM ai_usage_events
          WHERE turn_id = ?
          ORDER BY created_at`,
@@ -718,6 +721,7 @@ type AiUsageEventRow = {
   total_tokens: number | bigint | null
   cost_usd: number | null
   cost_source: CostSource
+  routed_provider: string | null
 }
 
 type TurnUsageReportRow = {
@@ -835,6 +839,7 @@ const eventBreakdownItem = (row: AiUsageEventRow): UsageBreakdownItem => ({
   totalTokens: toNumber(row.total_tokens),
   ...(row.cost_usd === null || row.cost_usd === undefined ? {} : { costUsd: row.cost_usd }),
   costSource: row.cost_source,
+  ...(row.routed_provider ? { routedProvider: row.routed_provider } : {}),
 })
 
 const mapTurnUsageReportRow = (row: TurnUsageReportRow): TurnUsageReport => ({

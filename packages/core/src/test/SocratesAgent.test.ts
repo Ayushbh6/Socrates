@@ -75,6 +75,55 @@ describe("SocratesAgent", () => {
     ).toBe(false)
   })
 
+  it("keeps OpenRouter routed-provider affinity for later calls in the same turn", async () => {
+    const seen: Parameters<ModelProvider["stream"]>[0][] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        seen.push(request)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "call_1", toolName: "read", input: { path: "README.md" } },
+          }
+          yield { type: "model.usage", usage: { routedProvider: "DeepInfra" } }
+          yield { type: "model.completed", finishReason: "tool-calls", usage: { routedProvider: "DeepInfra" } }
+          return
+        }
+        yield { type: "model.answer.delta", text: "done" }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      providerId: "openrouter",
+      modelId: "deepseek/deepseek-v4-pro",
+      sessionId: "sess_1",
+      cacheKey: "project:proj_1:conversation:conv_1",
+      workspacePath: "/tmp",
+      runtimeConfig: {
+        providerId: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Read the README." }],
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0]?.providerRouting).toBeUndefined()
+    expect(seen[1]?.providerRouting).toEqual({ preferredOpenRouterProvider: "DeepInfra" })
+  })
+
   it("streams blocking compaction start before the compressor finishes and model call begins", async () => {
     let releaseCompressor: (() => void) | undefined
     const compressorReleased = new Promise<void>((resolve) => {

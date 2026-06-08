@@ -38,11 +38,29 @@ The first-run check should use local SQLite state, not browser-only local storag
 
 The local SQLite file defaults to `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME` changes the app-data directory, and `SOCRATES_DB_PATH` points at an explicit SQLite file for tests or recovery. Repo-local `app-data/socrates.sqlite` is only a legacy development import source.
 
+## Browser Development Launch Flow
+
+The current dev-test path is the browser app, not the desktop/Tauri shell.
+
+Development launch:
+
+```text
+terminal 1: pnpm --filter @socrates/server dev
+  -> starts Fastify APIs and WebSockets on 127.0.0.1:4000
+
+terminal 2: pnpm --filter web dev
+  -> starts the Next.js UI on 127.0.0.1:3000
+
+open http://127.0.0.1:3000
+```
+
+The server still owns the SQLite path. By default it stores durable data at `~/.Socrates/socrates.sqlite`; browser dev testing must not invent a separate database path.
+
 ## Desktop Launch Flow
 
 The desktop shell lives in `apps/desktop` and wraps the existing web/server app instead of duplicating runtime logic.
 
-Development launch:
+Desktop/Tauri launch is not the normal dev-test path. Use it only when specifically working on the future desktop shell or release packaging:
 
 ```text
 pnpm desktop:dev
@@ -53,7 +71,7 @@ pnpm desktop:dev
   -> Tauri opens the web UI at http://127.0.0.1:3000
 ```
 
-The server still owns the SQLite path. By default it stores durable data at `~/.Socrates/socrates.sqlite`; the desktop shell must not invent a separate database path.
+The desktop shell must also use the same server-owned SQLite path and must not invent a separate database path.
 
 Production/internal-tester bundle flow:
 
@@ -855,7 +873,7 @@ fallback: OpenRouter stepfun/step-3.7-flash with thinking off
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
 
-OpenRouter cache-friendly routing uses a stable project/conversation `session_id`. For multi-provider cache-capable models, Socrates avoids manual `provider.order` so OpenRouter sticky routing can keep later same-conversation calls on the same upstream provider. Strict provider pins remain only for single-provider routes and title-generation routes. OpenRouter usage metadata is persisted with routed provider, raw usage, cache-read/write tokens, and provider response metadata; when provider cost is absent, Socrates computes a marked estimate from the versioned endpoint-pricing snapshot in `packages/providers`.
+OpenRouter cache-friendly routing uses a stable project/conversation cache-affinity key, sent as top-level `session_id` and `prompt_cache_key` provider options. Socrates no longer leaves multi-provider routing empty: multi-provider OpenRouter models send price-first routing with `sort: "price"` and `allow_fallbacks: true`, while DeepSeek V4 routes use cheap-compatible ranked provider orders. After the first OpenRouter call in a turn reports its actual routed provider, later continuations in that same turn prefer that provider while keeping fallbacks allowed. Deliberate provider pins use OpenRouter provider slugs, not display labels; title-generation routes pin `deepinfra` or `alibaba`. OpenRouter usage metadata is persisted with routed provider, raw usage, cache-read/write tokens, and provider response metadata; when provider cost is absent, Socrates computes a marked estimate from the versioned endpoint-pricing snapshot in `packages/providers`.
 
 The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. Blocking active-turn compaction emits `started` before awaiting the compressor model so the UI can show a small `Compacting conversation context...` state during the wait. Background precompute remains silent in the live UI and does not add transcript messages.
 
@@ -935,7 +953,8 @@ user sends first message
   -> build model history from prior user messages and final assistant answers
   -> inject user display name, project name, full project description, and full project instructions into the Socrates system prompt
   -> count the assembled provider-call request, including active tools/tool evidence and tool schemas
-  -> stream model output through packages/core and packages/providers
+  -> stream model output through packages/core and packages/providers with provider-owned cache-affinity/routing options
+  -> for OpenRouter continuations in the same turn, prefer the first actual routed provider reported by usage metadata while keeping fallbacks allowed
   -> create assistant message on completion
   -> persist model_calls, model_stream_chunks, model_usage, context_usage_snapshots when a context window is known, and events
   -> update conversations.updated_at

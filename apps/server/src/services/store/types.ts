@@ -45,6 +45,7 @@ export type StoredModelUsage = {
   totalTokens?: number
   costUsd?: number
   costSource?: "provider_reported" | "computed" | "unknown"
+  routedProvider?: string
   pricingSnapshot?: unknown
   providerMetadata?: unknown
   raw?: unknown

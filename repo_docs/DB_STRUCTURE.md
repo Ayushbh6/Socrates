@@ -529,6 +529,7 @@ Stores token usage and cost for model calls.
 | `total_tokens` | `INTEGER` | no | Total tokens reported or calculated. |
 | `cost_usd` | `REAL` | no | Estimated or provider-reported cost. |
 | `cost_source` | `TEXT` | no | `provider_reported`, `computed`, or `unknown`. |
+| `routed_provider` | `TEXT` | no | Upstream endpoint that actually served the request. For OpenRouter this is the routed provider; for direct providers it is the provider id. |
 | `pricing_snapshot_json` | `TEXT` | no | Versioned pricing snapshot for computed costs. |
 | `raw_usage_json` | `TEXT` | no | Raw usage object from provider. |
 | `metadata_json` | `TEXT` | no | Provider usage metadata, for example OpenRouter routed provider and provider usage fields. |
@@ -536,7 +537,7 @@ Stores token usage and cost for model calls.
 
 ## `ai_usage_events`
 
-Canonical append/update ledger for billable AI work tied to a visible turn. Rows use `source_kind` (`main_model_call`, `context_compaction`, or `conversation_title`) plus `source_id` to connect model calls, compaction snapshots, and title generation to provider/model/status, token totals, cache read/write tokens, `cost_usd`, `cost_source`, `pricing_snapshot_json`, raw provider usage metadata, and provider metadata.
+Canonical append/update ledger for billable AI work tied to a visible turn. Rows use `source_kind` (`main_model_call`, `context_compaction`, or `conversation_title`) plus `source_id` to connect model calls, compaction snapshots, and title generation to provider/model/status, token totals, cache read/write tokens, `cost_usd`, `cost_source`, `routed_provider`, `pricing_snapshot_json`, raw provider usage metadata, and provider metadata.
 
 ## `turn_usage_reports`
 

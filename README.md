@@ -54,14 +54,25 @@ socrates
 
 ## Local Development
 
+For browser-based dev testing, run the backend and frontend directly. Do not use the desktop/Tauri command for normal app testing.
+
+Terminal 1:
+
 ```bash
 pnpm install
-pnpm desktop:dev
+pnpm --filter @socrates/server dev
+```
+
+Terminal 2:
+
+```bash
+pnpm --filter web dev
 ```
 
 Useful build targets:
 
 ```bash
+pnpm desktop:dev        # desktop/Tauri shell only; not the normal dev-test path
 pnpm desktop:runtime    # build runtime payload
 pnpm runtime:archive    # generate runtime zip
 pnpm desktop:bundle     # local bundling artifacts
