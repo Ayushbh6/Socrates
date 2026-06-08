@@ -30,7 +30,7 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 
 ## Current Project State
 
-- Release-ready milestone: **v0.1.3**.
+- Release-ready milestone: **v0.1.6**.
 - Distribution: `@socrates-ai/cli` ready to launch via `npx`.
 - Runtime availability for macOS (arm64/x64) and Windows x64.
 - Trace retrieval upgraded for broader match windows and exact quote context.
@@ -50,6 +50,12 @@ Or install globally:
 ```bash
 npm install -g @socrates-ai/cli
 socrates
+```
+
+When testing the CLI from this repo, use the local bin directly:
+
+```bash
+node apps/cli/bin/socrates.mjs --version
 ```
 
 ## Local Development
