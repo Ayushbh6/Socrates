@@ -294,7 +294,7 @@ There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash cache
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
 ```
 
-This cache/cost accounting and provider-routing implementation is part of the `v0.1.6` npm runtime release target. It does not merge the later dedicated `memory-work-v1` branch into `main`.
+This cache/cost accounting and provider-routing implementation is part of the `v0.1.7` npm runtime release target. It does not merge the later dedicated `memory-work-v1` branch into `main`.
 
 ## Provider-Specific Escape Hatch
 
@@ -341,6 +341,8 @@ export type ModelUsage = {
 ```
 
 This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. `routedProvider` is the upstream endpoint that actually served the request: for OpenRouter this is the routed provider such as `DeepInfra` or `GMICloud`, and for direct providers it is the provider id itself. OpenRouter cost/cache fields should use provider-reported usage metadata first. OpenAI and Google may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
+
+Direct-provider pricing snapshots must cover every direct model exposed in the picker. The current coverage is OpenAI `gpt-5`, `gpt-5.4`, `gpt-5.4-mini` and Google `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`. Gemini 3.1 Pro pricing must switch to the documented long-context rates when a provider call has more than 200k prompt/input tokens.
 
 ## V1 Provider Plan
 

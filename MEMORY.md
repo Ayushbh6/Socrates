@@ -586,9 +586,18 @@ Prepared the v0.1.6 runtime slice for the npm CLI release path:
 - The latest dedicated `memory-work-v1` branch remains separate from this release branch. `main` contains older baseline memory/trace tooling, but does not include `memory-work-v1` commit `eedd16c`.
 - `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.6`; pushing tag `v0.1.6` should publish the matching GitHub runtime assets through `Release npm Runtime`.
 
+## v0.1.7 Gemini Cost Accounting Runtime Patch
+
+Prepared the v0.1.7 runtime slice for the npm CLI release path:
+
+- Fixed direct Google/Gemini cost accounting for the launched app. The provider pricing catalog now covers `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, and `gemini-3.1-flash-lite-preview`; Gemini 3.1 Pro switches to the documented long-context rates above 200k prompt/input tokens.
+- The cost regression test now checks that every direct OpenAI/Google model exposed in the picker has a local pricing snapshot, preventing future `$0.0000*` unknown-cost regressions for direct-provider models.
+- The chat header no longer renders unknown-only cost as `$0.0000*`; it shows `$--*` when the backend has token usage but no reliable cost value.
+- `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.7`; pushing tag `v0.1.7` should publish the matching GitHub runtime assets through `Release npm Runtime`.
+
 ## Live Chat Persistence And Reconnect Resilience
 
-Current chat streaming direction after the v0.1.6 launch:
+Current chat streaming direction after the v0.1.7 launch:
 
 - Active AI turns are conversation-owned, not browser-socket-owned. Refreshing the browser, switching conversations, switching tabs, minimizing the browser, or reconnecting a sleeping tab must not cancel or fail the running model/tool stream while the local backend process is still alive.
 - Different conversations may stream concurrently. `turn_already_active` applies only when sending a second user message into the same conversation while that conversation already has a queued/running/awaiting-approval turn.

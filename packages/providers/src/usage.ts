@@ -43,6 +43,18 @@ const pricingCatalog: Record<string, PricingSnapshot> = {
     outputUsdPer1M: 15,
     effectiveAt: "2026-06-05",
   },
+  "openai:gpt-5": {
+    providerId: "openai",
+    modelId: "gpt-5",
+    source: "OpenAI API pricing, standard rates",
+    sourceUrl: "https://openai.com/api/pricing/",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 1.25,
+    cachedInputUsdPer1M: 0.125,
+    outputUsdPer1M: 10,
+    effectiveAt: "2026-06-08",
+  },
   "google:gemini-3-flash-preview": {
     providerId: "google",
     modelId: "gemini-3-flash-preview",
@@ -54,6 +66,50 @@ const pricingCatalog: Record<string, PricingSnapshot> = {
     cachedInputUsdPer1M: 0.05,
     outputUsdPer1M: 3,
     effectiveAt: "2026-06-05",
+  },
+  "google:gemini-3.1-flash-lite-preview": {
+    providerId: "google",
+    modelId: "gemini-3.1-flash-lite-preview",
+    source: "Gemini Developer API pricing, Gemini 3.1 Flash-Lite standard paid tier text/image/video rates",
+    sourceUrl: "https://ai.google.dev/gemini-api/docs/pricing",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 0.25,
+    cachedInputUsdPer1M: 0.025,
+    outputUsdPer1M: 1.5,
+    effectiveAt: "2026-06-08",
+  },
+  "google:gemini-3.1-pro-preview": {
+    providerId: "google",
+    modelId: "gemini-3.1-pro-preview",
+    source: "Gemini Developer API pricing, Gemini 3.1 Pro Preview standard paid tier text/image/video rates",
+    sourceUrl: "https://ai.google.dev/gemini-api/docs/pricing",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 2,
+    cachedInputUsdPer1M: 0.2,
+    outputUsdPer1M: 12,
+    longContextThresholdInputTokens: 200_000,
+    longContextInputUsdPer1M: 4,
+    longContextCachedInputUsdPer1M: 0.4,
+    longContextOutputUsdPer1M: 18,
+    effectiveAt: "2026-06-08",
+  },
+  "google:gemini-3.1-pro-preview-customtools": {
+    providerId: "google",
+    modelId: "gemini-3.1-pro-preview-customtools",
+    source: "Gemini Developer API pricing, Gemini 3.1 Pro Preview standard paid tier text/image/video rates",
+    sourceUrl: "https://ai.google.dev/gemini-api/docs/pricing",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 2,
+    cachedInputUsdPer1M: 0.2,
+    outputUsdPer1M: 12,
+    longContextThresholdInputTokens: 200_000,
+    longContextInputUsdPer1M: 4,
+    longContextCachedInputUsdPer1M: 0.4,
+    longContextOutputUsdPer1M: 18,
+    effectiveAt: "2026-06-08",
   },
 }
 
@@ -170,20 +226,7 @@ export const computeUsageCost = (providerId: ProviderId, modelId: string, usage:
   if (!pricing) {
     return {}
   }
-
-  const cachedInputTokens = usage.cachedInputTokens ?? 0
-  const cacheWriteTokens = usage.cacheWriteTokens ?? 0
-  const inputTokens = usage.inputTokens ?? 0
-  const uncachedInputTokens = usage.uncachedInputTokens ?? Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens)
-  const outputTokens = usage.outputTokens ?? 0
-  const cachedInputUsdPer1M = pricing.cachedInputUsdPer1M ?? pricing.inputUsdPer1M
-  const cacheWriteInputUsdPer1M = pricing.cacheWriteInputUsdPer1M ?? pricing.inputUsdPer1M
-  const costUsd =
-    (uncachedInputTokens * pricing.inputUsdPer1M +
-      cachedInputTokens * cachedInputUsdPer1M +
-      cacheWriteTokens * cacheWriteInputUsdPer1M +
-      outputTokens * pricing.outputUsdPer1M) /
-    1_000_000
+  const costUsd = computeCostFromPricing(pricing, usage)
 
   return {
     costUsd,
@@ -281,13 +324,21 @@ const computeCostFromPricing = (pricing: PricingSnapshot, usage: UsageLike): num
   const inputTokens = usage.inputTokens ?? 0
   const uncachedInputTokens = usage.uncachedInputTokens ?? Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens)
   const outputTokens = usage.outputTokens ?? 0
-  const cachedInputUsdPer1M = pricing.cachedInputUsdPer1M ?? pricing.inputUsdPer1M
-  const cacheWriteInputUsdPer1M = pricing.cacheWriteInputUsdPer1M ?? pricing.inputUsdPer1M
+  const useLongContextRates =
+    pricing.longContextThresholdInputTokens !== undefined && inputTokens > pricing.longContextThresholdInputTokens
+  const inputUsdPer1M = useLongContextRates ? (pricing.longContextInputUsdPer1M ?? pricing.inputUsdPer1M) : pricing.inputUsdPer1M
+  const cachedInputUsdPer1M = useLongContextRates
+    ? (pricing.longContextCachedInputUsdPer1M ?? pricing.cachedInputUsdPer1M ?? inputUsdPer1M)
+    : (pricing.cachedInputUsdPer1M ?? inputUsdPer1M)
+  const cacheWriteInputUsdPer1M = useLongContextRates
+    ? (pricing.longContextCacheWriteInputUsdPer1M ?? pricing.cacheWriteInputUsdPer1M ?? inputUsdPer1M)
+    : (pricing.cacheWriteInputUsdPer1M ?? inputUsdPer1M)
+  const outputUsdPer1M = useLongContextRates ? (pricing.longContextOutputUsdPer1M ?? pricing.outputUsdPer1M) : pricing.outputUsdPer1M
   return (
-    (uncachedInputTokens * pricing.inputUsdPer1M +
+    (uncachedInputTokens * inputUsdPer1M +
       cachedInputTokens * cachedInputUsdPer1M +
       cacheWriteTokens * cacheWriteInputUsdPer1M +
-      outputTokens * pricing.outputUsdPer1M) /
+      outputTokens * outputUsdPer1M) /
     1_000_000
   )
 }

@@ -58,6 +58,11 @@ export type PricingSnapshot = {
   cachedInputUsdPer1M?: number
   cacheWriteInputUsdPer1M?: number
   outputUsdPer1M: number
+  longContextThresholdInputTokens?: number
+  longContextInputUsdPer1M?: number
+  longContextCachedInputUsdPer1M?: number
+  longContextCacheWriteInputUsdPer1M?: number
+  longContextOutputUsdPer1M?: number
   effectiveAt: string
 }
 

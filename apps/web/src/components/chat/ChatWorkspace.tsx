@@ -923,6 +923,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     if (!costUsage || costUsage.turnCount === 0) {
       return null;
     }
+    if (costUsage.hasUnknownCost && (costUsage.totalCostUsd === undefined || costUsage.totalCostUsd === 0)) {
+      return "$--";
+    }
     return costUsage.totalCostUsd === undefined ? "$--" : formatDollarCost(costUsage.totalCostUsd);
   }, [costUsage]);
   const costTitle = useMemo(() => {

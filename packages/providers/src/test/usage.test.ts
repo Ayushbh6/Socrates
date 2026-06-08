@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { normalizeProviderUsage } from "../usage"
+import { modelCatalog } from "../modelCatalog/modelCatalog"
+import { normalizeProviderUsage, pricingSnapshotForModel } from "../usage"
 
 describe("provider usage normalization", () => {
   it("keeps OpenRouter provider-reported cost and cache fields", () => {
@@ -94,6 +95,60 @@ describe("provider usage normalization", () => {
     expect(usage.costSource).toBe("computed")
     expect(usage.costUsd).toBeCloseTo((1000 * 0.5 + 1000 * 0.05 + 300 * 3) / 1_000_000)
     expect(usage.pricingSnapshot?.providerId).toBe("google")
+  })
+
+  it("computes Google Gemini 3.1 Pro cost with standard and long-context pricing", () => {
+    const standard = normalizeProviderUsage({
+      providerId: "google",
+      modelId: "gemini-3.1-pro-preview",
+      usage: {
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cachedInputTokens: 4_000,
+      },
+    })
+
+    expect(standard.costSource).toBe("computed")
+    expect(standard.costUsd).toBeCloseTo((6_000 * 2 + 4_000 * 0.2 + 500 * 12) / 1_000_000)
+    expect(standard.pricingSnapshot?.providerId).toBe("google")
+
+    const longContext = normalizeProviderUsage({
+      providerId: "google",
+      modelId: "gemini-3.1-pro-preview",
+      usage: {
+        inputTokens: 250_000,
+        outputTokens: 1_000,
+        cachedInputTokens: 100_000,
+      },
+    })
+
+    expect(longContext.costSource).toBe("computed")
+    expect(longContext.costUsd).toBeCloseTo((150_000 * 4 + 100_000 * 0.4 + 1_000 * 18) / 1_000_000)
+  })
+
+  it("computes Google Gemini 3.1 Flash-Lite cost from the local pricing snapshot", () => {
+    const usage = normalizeProviderUsage({
+      providerId: "google",
+      modelId: "gemini-3.1-flash-lite-preview",
+      usage: {
+        inputTokens: 2000,
+        outputTokens: 300,
+        cachedInputTokens: 1000,
+      },
+    })
+
+    expect(usage.costSource).toBe("computed")
+    expect(usage.costUsd).toBeCloseTo((1000 * 0.25 + 1000 * 0.025 + 300 * 1.5) / 1_000_000)
+    expect(usage.pricingSnapshot?.providerId).toBe("google")
+  })
+
+  it("has local pricing for all direct provider catalog models", () => {
+    const missing = modelCatalog
+      .filter((model) => model.providerId === "openai" || model.providerId === "google")
+      .filter((model) => pricingSnapshotForModel(model.providerId, model.modelId) === undefined)
+      .map((model) => `${model.providerId}:${model.modelId}`)
+
+    expect(missing).toEqual([])
   })
 
   it("marks unknown provider and model costs without dropping token usage", () => {
