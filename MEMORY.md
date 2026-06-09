@@ -595,9 +595,16 @@ Prepared the v0.1.7 runtime slice for the npm CLI release path:
 - The chat header no longer renders unknown-only cost as `$0.0000*`; it shows `$--*` when the backend has token usage but no reliable cost value.
 - `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.7`; pushing tag `v0.1.7` should publish the matching GitHub runtime assets through `Release npm Runtime`.
 
+## v0.1.8 Gemini Developer-Message Compatibility Patch
+
+Prepared the v0.1.8 runtime slice for the npm CLI release path:
+
+- Google/Gemini rejects AI SDK `system` messages that appear after normal conversation/tool history. Socrates still uses internal `developer` messages for compaction summaries and backend reminders, but the Google adapter must render those continuation messages as user-role text prefixed with `[developer]` instead of converting them to late system messages. This prevents second-turn Gemini failures after tool execution.
+- `@socrates-ai/cli` and `@socrates/desktop` package versions are bumped to `0.1.8`; pushing tag `v0.1.8` should publish the matching GitHub runtime assets through `Release npm Runtime`.
+
 ## Live Chat Persistence And Reconnect Resilience
 
-Current chat streaming direction after the v0.1.7 launch:
+Current chat streaming direction after the v0.1.8 launch:
 
 - Active AI turns are conversation-owned, not browser-socket-owned. Refreshing the browser, switching conversations, switching tabs, minimizing the browser, or reconnecting a sleeping tab must not cancel or fail the running model/tool stream while the local backend process is still alive.
 - Different conversations may stream concurrently. `turn_already_active` applies only when sending a second user message into the same conversation while that conversation already has a queued/running/awaiting-approval turn.

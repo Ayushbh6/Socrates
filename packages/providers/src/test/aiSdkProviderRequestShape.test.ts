@@ -108,6 +108,53 @@ describe("AI SDK provider request shape", () => {
     expect(JSON.stringify(options.providerOptions)).not.toContain("cachedContent")
   })
 
+  it("renders late Socrates developer messages as user text for Gemini continuations", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("google", "gemini-3.1-pro-preview"),
+      messages: [
+        { role: "user", content: "Create the PDF." },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call_1",
+              toolName: "search",
+              input: { query: "exercise 10", path: "DBMS" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call_1",
+              toolName: "search",
+              output: { ok: true, output: { matches: [{ path: "DBMS/exercise10_en.pdf" }] } },
+            },
+          ],
+        },
+        {
+          role: "developer",
+          content:
+            "Quiet backend reminder: if this turn changed durable repo behavior, inspect/update `.socrates/repo_docs/` before the final answer.",
+        },
+      ],
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { messages?: Array<{ role?: string; content?: unknown }> }
+    expect(options.messages?.map((message) => message.role)).toEqual(["user", "assistant", "tool", "user"])
+    expect(options.messages?.slice(1).some((message) => message.role === "system")).toBe(false)
+    expect(options.messages?.[3]?.content).toContain("[developer]\nQuiet backend reminder")
+  })
+
   it("emits completed OpenAI reasoning metadata before tool calls", async () => {
     aiMocks.streamText.mockReturnValue({
       fullStream: (async function* () {

@@ -30,7 +30,7 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 
 ## Current Project State
 
-- Release-ready milestone: **v0.1.7**.
+- Release-ready milestone: **v0.1.8**.
 - Distribution: `@socrates-ai/cli` ready to launch via `npx`.
 - Runtime availability for macOS (arm64/x64) and Windows x64.
 - Trace retrieval upgraded for broader match windows and exact quote context.

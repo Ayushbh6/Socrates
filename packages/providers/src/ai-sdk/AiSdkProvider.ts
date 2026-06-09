@@ -93,7 +93,7 @@ export class AiSdkProvider implements ModelProvider {
       const result = streamText({
         model: this.createModel(request),
         system: request.system,
-        messages: request.messages.map(toAiModelMessage),
+        messages: request.messages.map((message) => toAiModelMessage(message, request.providerId)),
         ...(request.tools && request.tools.length > 0 ? { tools: toAiTools(request.tools) as never } : {}),
         providerOptions: this.createProviderOptions(request),
         ...(request.providerId === "openrouter"
@@ -627,12 +627,12 @@ const mergeProviderMetadata = (left: ProviderMetadata | undefined, right: Provid
   return merged
 }
 
-export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiModelMessage => {
-  const role = message.role === "developer" ? "system" : message.role
+export const toAiModelMessage = (message: ModelRequest["messages"][number], providerId?: ModelRequest["providerId"]): AiModelMessage => {
+  const role = aiSdkRoleForMessage(message.role, providerId)
   if (typeof message.content === "string") {
     return {
       role,
-      content: message.content,
+      content: textContentForProvider(message.content, message.role, providerId),
     } as AiModelMessage
   }
 
@@ -688,7 +688,7 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
 
   return {
     role,
-    content: message.content
+    content: contentPartsForProvider(message.content, message.role, providerId)
       .filter((part) => part.type === "text" || part.type === "image")
       .map((part) =>
         part.type === "text"
@@ -697,6 +697,32 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number]): AiM
       ),
   } as AiModelMessage
 }
+
+const aiSdkRoleForMessage = (
+  role: ModelRequest["messages"][number]["role"],
+  providerId?: ModelRequest["providerId"],
+): AiModelMessage["role"] => {
+  if (role !== "developer") {
+    return role as AiModelMessage["role"]
+  }
+  // Google/Gemini accepts system instructions only through the top-level
+  // system field. Rendering late Socrates developer notes as system messages
+  // makes multi-step tool continuations fail provider-side.
+  return providerId === "google" ? "user" : "system"
+}
+
+const textContentForProvider = (
+  text: string,
+  role: ModelRequest["messages"][number]["role"],
+  providerId?: ModelRequest["providerId"],
+): string => (role === "developer" && providerId === "google" ? `[developer]\n${text}` : text)
+
+const contentPartsForProvider = (
+  content: Extract<ModelRequest["messages"][number]["content"], unknown[]>,
+  role: ModelRequest["messages"][number]["role"],
+  providerId?: ModelRequest["providerId"],
+): Extract<ModelRequest["messages"][number]["content"], unknown[]> =>
+  role === "developer" && providerId === "google" ? [{ type: "text", text: "[developer]" }, ...content] : content
 
 const imageDataContent = (data: string): string => {
   const comma = data.indexOf(",")
