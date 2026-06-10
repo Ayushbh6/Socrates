@@ -31,6 +31,9 @@ Words are not actions. If a task requires changing files or running verification
 - Writes to `<workspace>/.socrates/PROJECT_NOTES.md` must use `project_notes`, not `edit` or `apply_patch`.
 - Writes to `<workspace>/.socrates/repo_docs/*.md` must use `repo_docs`, not `edit` or `apply_patch`.
 - Sensitive files require extra care and may be denied or approval-gated.
+- When a deliverable, scratch file, or generated file is derived from files in a subfolder, write it with an explicit path in that same subfolder or nearest relevant existing folder.
+- Use the workspace root only when the user asks for root output, the artifact is truly project-level, or the task is standalone workspace-level work with no relevant subfolder.
+- Before Terminal commands create files or directories, verify the intended parent directory exists and use an explicit relative path or `cwd`.
 
 ## `edit`
 
@@ -40,7 +43,7 @@ Words are not actions. If a task requires changing files or running verification
 
 | Parameter | Meaning | Required | Use When |
 | --- | --- | --- | --- |
-| `path` | Workspace-relative target path | yes | Every edit call. |
+| `path` | Workspace-relative target path | yes | Every edit call. For subfolder-derived deliverables, use that subfolder or nearest relevant existing folder. |
 | `content` | Full content for new file or explicit overwrite | one edit mode | Creating a file or deliberately replacing a whole file. |
 | `oldString` | Exact existing text | targeted mode | Replacing a precise snippet. |
 | `newString` | Replacement text | targeted mode | Replacing a precise snippet. |
@@ -60,6 +63,15 @@ Use exactly one mode: `content` or `oldString`/`newString`, never both.
 ```
 
 Use this when the file does not exist.
+
+If the file is a deliverable derived from a subfolder, include that folder in the path:
+
+```json
+{
+  "path": "DBMS/exercise10_solution.tex",
+  "content": "..."
+}
+```
 
 ### Targeted Replacement
 
@@ -195,7 +207,7 @@ The model-visible tool id is `bash`, but user-facing copy should say Terminal.
 | `command` | Command string | for `run` and `start` | Execute or start a process. |
 | `name` | Human terminal name | no | Name a new long-running terminal. |
 | `target` | Human terminal name/target | when multiple terminals exist | Inspect or stop the intended terminal. |
-| `cwd` | Working directory | rarely | Use only safe workspace-relative/current-workspace paths. |
+| `cwd` | Working directory | for subfolder commands | Use a safe workspace-relative/current-workspace path instead of prefixing the command with `cd`. |
 | `timeoutMs` | Timeout up to 600,000 ms | no | Longer finite commands. |
 | `charLimit` | Output cap up to 80,000 chars | no | Control output size. |
 
@@ -210,6 +222,13 @@ Use Terminal for:
 - dev servers
 - environment checks
 - command output investigation
+
+For commands that create files or directories:
+
+- Verify the parent directory first with a bounded inspection command or prior `read`/`search` evidence.
+- Use `cwd` when the command should run inside a subfolder.
+- Use explicit relative output paths so generated files do not accidentally land in the workspace root.
+- Do not rely on `cd some/folder && ...` when the tool's `cwd` field can express the working directory.
 
 Do not use Terminal for:
 
@@ -228,6 +247,17 @@ Use `operation: "run"` for finite commands.
 {
   "operation": "run",
   "command": "pnpm --filter @socrates/server test",
+  "timeoutMs": 120000
+}
+```
+
+For a finite command inside a subfolder:
+
+```json
+{
+  "operation": "run",
+  "command": "pandoc exercise10_solution.tex -o exercise10_solution.pdf",
+  "cwd": "DBMS",
   "timeoutMs": 120000
 }
 ```
@@ -298,6 +328,17 @@ Incorrect:
 ```
 
 Use relative paths from the active workspace. Do not guess absolute workspace paths.
+
+For subfolder commands, prefer the `cwd` parameter:
+
+```json
+{
+  "command": "pnpm test",
+  "cwd": "packages/core"
+}
+```
+
+Before commands create files or directories, verify the intended parent directory exists and use an explicit relative output path or `cwd`.
 
 ## Platform Rules
 

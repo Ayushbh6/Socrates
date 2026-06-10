@@ -158,9 +158,16 @@ export const soulToolOutputSchema = z
   .strict()
 export type SoulToolOutput = z.infer<typeof soulToolOutputSchema>
 
+const editTargetPathDescription =
+  "Workspace-relative target path. For deliverables or generated files derived from files in a subfolder, use an explicit path in that same subfolder or nearest relevant existing folder; use the workspace root only when requested or truly project-level."
+const terminalCommandDescription =
+  "Command to execute. Before commands create files or directories, verify the intended parent directory and use an explicit relative path or cwd so outputs do not accidentally land in the workspace root."
+const terminalCwdDescription =
+  "Workspace-relative working directory. Use this for subfolder commands instead of prefixing the command with cd."
+
 export const editToolInputSchema = z
   .object({
-    path: z.string().min(1),
+    path: z.string().min(1).describe(editTargetPathDescription),
     content: z.string().optional(),
     oldString: z.string().min(1).optional(),
     newString: z.string().optional(),
@@ -203,7 +210,7 @@ export type EditToolInput = z.infer<typeof editToolInputSchema>
 export const editToolModelInputSchema = z.union([
   z
     .object({
-      path: z.string().min(1),
+      path: z.string().min(1).describe(editTargetPathDescription),
       oldString: z.string().min(1),
       newString: z.string(),
       replaceAll: z.boolean().optional(),
@@ -212,7 +219,7 @@ export const editToolModelInputSchema = z.union([
     .strict(),
   z
     .object({
-      path: z.string().min(1),
+      path: z.string().min(1).describe(editTargetPathDescription),
       content: z.string(),
       overwrite: z.literal(true).optional(),
       dryRun: z.boolean().optional(),
@@ -309,13 +316,13 @@ export type BashTerminalMetadata = z.infer<typeof bashTerminalMetadataSchema>
 export const bashToolInputSchema = z
   .object({
     operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
-    command: z.string().min(1).optional(),
+    command: z.string().min(1).optional().describe(terminalCommandDescription),
     processId: z.string().min(1).optional(),
     terminalId: z.string().min(1).optional(),
     name: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
     outputSequence: z.number().int().nonnegative().optional(),
-    cwd: z.string().min(1).optional(),
+    cwd: z.string().min(1).optional().describe(terminalCwdDescription),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
@@ -335,10 +342,10 @@ export type BashToolInput = z.infer<typeof bashToolInputSchema>
 export const bashToolModelInputSchema = z
   .object({
     operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
-    command: z.string().min(1).optional(),
+    command: z.string().min(1).optional().describe(terminalCommandDescription),
     name: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
-    cwd: z.string().min(1).optional(),
+    cwd: z.string().min(1).optional().describe(terminalCwdDescription),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })

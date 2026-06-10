@@ -57,6 +57,7 @@ export const formatPythonEnvironmentHints = (hints: PythonEnvironmentHints): str
   return `Active Workspace
   - Root: ${hints.workspacePath}
   - Terminal commands already start in this root. Do not guess or hardcode another workspace path.
+  - For commands that operate inside a subfolder, use the Terminal cwd parameter instead of prefixing the command with cd. Before commands create files or directories, verify the intended parent directory exists and use an explicit relative path or cwd.
   - The Terminal tool's compatibility id is bash, but it uses the platform-native shell. On Windows, write PowerShell-compatible commands instead of Unix-only pipelines unless the project provides those tools.
 
 Python Environment Hints
