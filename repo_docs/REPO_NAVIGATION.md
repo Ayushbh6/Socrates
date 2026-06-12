@@ -20,8 +20,10 @@ repo_docs/       Checked-in repo handoff docs
 - `packages/contracts/src/tools.ts`: model-visible tool names and input/output schemas.
 - `packages/core/src/tools/registry.ts`: base tool registry order and descriptors.
 - `packages/core/src/prompts/socratesPrompt.ts`: lean Socrates system prompt.
+- `packages/core/src/prompts/memoryPrompt.ts`: backend memory-agent system prompt and runtime prompt builder.
 - `apps/server/src/services/store/memoryStore.ts`: global docs, project docs, repo docs, soul, wake context, memory worker.
 - `apps/server/src/services/store/memoryAgentRunner.ts`: specialized backend memory-agent turn runner built on `SocratesAgent`.
+- `apps/server/src/services/store/memoryAgentToolExecutors.ts`: read-only memory-agent tool executor mapping.
 - `apps/server/src/services/store/memoryAgentOutput.ts`: memory-agent final JSON parsing and patch validation helpers.
 - `apps/server/src/services/store/memoryAgentSettingsStore.ts`: project-scoped memory-agent provider/model/thinking settings.
 - `apps/server/src/services/store/memorySoulDefaults.ts`: strict global soul markdown templates.

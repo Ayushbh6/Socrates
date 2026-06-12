@@ -3812,7 +3812,7 @@ describe("WebSocket API", () => {
     const sourceConversation = await createConversation(app, project.id, "Trace Evidence Source")
     const memoryConversation = await createConversation(app, project.id, "Memory Worker Source")
     const handle = openDatabase(dbPath)
-    const requests: Array<{ providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; tools?: unknown; messages: unknown[] }> = []
+    const requests: Array<{ providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; system?: string; tools?: unknown; messages: unknown[] }> = []
     let callIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
@@ -3822,6 +3822,7 @@ describe("WebSocket API", () => {
           modelId: request.modelId,
           thinkingEnabled: request.runtimeConfig.thinkingEnabled,
           ...(request.runtimeConfig.thinkingEffort ? { thinkingEffort: request.runtimeConfig.thinkingEffort } : {}),
+          system: request.system,
           tools: request.tools,
           messages: request.messages,
         })
@@ -3895,6 +3896,8 @@ describe("WebSocket API", () => {
         thinkingEffort: "low",
       })
       const toolNames = ((requests[0]?.tools as Array<{ name: string }> | undefined) ?? []).map((tool) => tool.name)
+      expect(requests[0]?.system).toContain("You are the Socrates backend memory agent")
+      expect(requests[0]?.system).toContain("Your final JSON patch proposals are the only write channel")
       expect(toolNames).toContain("trace_retrieve")
       expect(toolNames).toContain("tool_docs")
       expect(toolNames).toContain("skills")
