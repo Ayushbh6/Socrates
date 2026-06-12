@@ -32,18 +32,23 @@ import type {
   InspectWorkspaceResponse,
   PickWorkspaceFolderRequest,
   PickWorkspaceFolderResponse,
-  ProjectNotesToolInput,
-  ProjectNotesToolOutput,
+  ProjectDocsToolInput,
+  ProjectDocsToolOutput,
   RepoDocsToolInput,
   RepoDocsToolOutput,
   Project,
   ProjectInstructions,
+  UpdateProjectMemoryAgentSettingsRequest,
   ProjectResource,
   ProjectWorkspace,
-  SocratesMemoryToolInput,
-  SocratesMemoryToolOutput,
+  BuildProjectSkillRequest,
+  BuildProjectSkillResponse,
+  SkillsToolInput,
+  SkillsToolOutput,
   SoulToolInput,
   SoulToolOutput,
+  ToolDocsToolInput,
+  ToolDocsToolOutput,
   TraceRetrieveToolInput,
   UpdateProjectWorkspaceRequest,
   UpdateProjectWorkspaceResponse,
@@ -65,6 +70,7 @@ import { FeedbackStore } from "./store/feedbackStore"
 import { InstructionStore } from "./store/instructionStore"
 import { ModelTelemetryStore } from "./store/modelTelemetryStore"
 import { MemoryStore } from "./store/memoryStore"
+import { MemoryAgentSettingsStore } from "./store/memoryAgentSettingsStore"
 import { NotificationStore } from "./store/notificationStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
@@ -117,6 +123,7 @@ export class SocratesStore {
   private readonly terminals: TerminalStore
   private readonly traces: TraceStore
   private readonly memory: MemoryStore
+  private readonly memoryAgentSettings: MemoryAgentSettingsStore
   private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
@@ -125,7 +132,7 @@ export class SocratesStore {
     private readonly handle: DatabaseHandle,
     embeddingProvider?: EmbeddingProvider,
     credentials?: ProviderCredentialResolver,
-    options: { socratesHome?: string; diaryProvider?: ModelProvider; memoryAgentIdleMs?: number } = {},
+    options: { socratesHome?: string; memoryProvider?: ModelProvider; memoryAgentIdleMs?: number } = {},
   ) {
     this.events = new EventStore(handle)
     const context: StoreContext = {
@@ -149,11 +156,14 @@ export class SocratesStore {
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     this.traces = new TraceStore(context, this.embeddings)
     this.notifications = new NotificationStore(context)
+    this.memoryAgentSettings = new MemoryAgentSettingsStore(context)
     const memoryOptions = {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
-      ...(options.diaryProvider ? { provider: options.diaryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
+      ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
       ...(options.memoryAgentIdleMs === undefined ? {} : { memoryAgentIdleMs: options.memoryAgentIdleMs }),
       ...(credentials ? { credentials } : {}),
+      traceRetrieve: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => this.traces.retrieve(projectId, conversationId, input),
+      getMemoryAgentSettings: (projectId: string) => this.memoryAgentSettings.ensureProjectSettings(projectId),
       createNotification: (input: Parameters<NotificationStore["createNotification"]>[0]) => this.notifications.createNotification(input),
     }
     this.memory = new MemoryStore(context, memoryOptions)
@@ -201,6 +211,7 @@ export class SocratesStore {
 
   createProject(input: CreateProjectRequest): { project: Project; primaryWorkspace: ProjectWorkspace } {
     const created = this.projects.createProject(input)
+    this.memoryAgentSettings.ensureProjectSettings(created.project.id)
     this.ensureProjectMemory(created.project.id)
     return created
   }
@@ -209,6 +220,8 @@ export class SocratesStore {
     return {
       ...this.projects.getProjectDashboard(projectId),
       resources: this.resources.listResources(projectId),
+      skills: this.memory.listProjectSkills(projectId, this.primaryWorkspacePathOrUndefined(projectId)),
+      memoryAgentSettings: this.memoryAgentSettings.ensureProjectSettings(projectId),
       embeddingStatus: this.embeddings.getStatus(projectId),
     }
   }
@@ -231,12 +244,24 @@ export class SocratesStore {
     return this.memory.buildWakeContext(projectId, this.primaryWorkspacePathOrUndefined(projectId), userQuery)
   }
 
-  runSocratesMemoryTool(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
-    return this.memory.runSocratesMemoryTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
+  runToolDocsTool(projectId: string, input: ToolDocsToolInput): ToolDocsToolOutput {
+    return this.memory.runToolDocsTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
   }
 
-  runProjectNotesTool(projectId: string, workspacePath: string, input: ProjectNotesToolInput): ProjectNotesToolOutput {
-    return this.memory.runProjectNotesTool(projectId, workspacePath, input)
+  runSkillsTool(projectId: string, input: SkillsToolInput): SkillsToolOutput {
+    return this.memory.runSkillsTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
+  }
+
+  async buildProjectSkill(projectId: string, input: BuildProjectSkillRequest): Promise<BuildProjectSkillResponse> {
+    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request) }
+  }
+
+  updateProjectMemoryAgentSettings(projectId: string, input: UpdateProjectMemoryAgentSettingsRequest) {
+    return this.memoryAgentSettings.updateProjectSettings(projectId, input)
+  }
+
+  runProjectDocsTool(projectId: string, workspacePath: string, input: ProjectDocsToolInput): ProjectDocsToolOutput {
+    return this.memory.runProjectDocsTool(projectId, workspacePath, input)
   }
 
   runRepoDocsTool(projectId: string, workspacePath: string, input: RepoDocsToolInput): RepoDocsToolOutput {
@@ -639,9 +664,9 @@ export class SocratesStore {
     return this.traces.retrieve(projectId, conversationId, input)
   }
 
-  appendDiaryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string }): void {
-    const workspacePath = this.primaryWorkspacePathOrUndefined(input.projectId)
-    this.memory.appendDiaryForTurn({
+  enqueueGlobalMemoryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): void {
+    const workspacePath = input.workspacePath ?? this.primaryWorkspacePathOrUndefined(input.projectId)
+    this.memory.enqueueGlobalMemoryForTurn({
       ...input,
       ...(workspacePath ? { workspacePath } : {}),
     })

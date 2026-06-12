@@ -1,28 +1,56 @@
-import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type {
   Notification,
-  ProjectNotesToolInput,
-  ProjectNotesToolOutput,
+  DocsSearchMode,
+  MemoryAgentSettings,
+  ProjectDocsArea,
+  ProjectDocsToolInput,
+  ProjectDocsToolOutput,
   RepoDocsToolInput,
   RepoDocsToolOutput,
+  SkillScope,
+  SkillSummary,
+  SkillsToolInput,
+  SkillsToolOutput,
   SoulToolInput,
   SoulToolOutput,
-  SocratesMemoryCategory,
-  SocratesMemoryScope,
-  SocratesMemorySearchMode,
-  SocratesMemoryToolInput,
-  SocratesMemoryToolOutput,
+  ToolDocsArea,
+  ToolDocsToolInput,
+  ToolDocsToolOutput,
+  TraceRetrieveToolInput,
+  TraceRetrieveToolOutput,
   TruncationMetadata,
 } from "@socrates/contracts"
 import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
-import { eq, inArray } from "drizzle-orm"
-import { events, fileOperations, memoryAgentActions, memoryAgentConfirmations, memoryAgentJobs, messages, patches, shellCommands, shellOutputChunks, toolCalls, turns } from "../../db/schema"
+import { and, desc, eq, inArray } from "drizzle-orm"
+import { events, fileOperations, memoryAgentActions, memoryAgentConfirmations, memoryAgentJobs, messages, patches, projectInstructions, shellCommands, shellOutputChunks, toolCalls, turns } from "../../db/schema"
+import { hashText, parseMemoryAgentOutput, simpleDiff, validateMemoryPatch, type MemoryAgentOutput, type MemoryPatchProposal } from "./memoryAgentOutput"
+import { runMemoryAgentTurn, type MemoryAgentModelSettings } from "./memoryAgentRunner"
+import {
+  DEFAULT_MEMORY_AGENT_MODEL_ID,
+  DEFAULT_MEMORY_AGENT_PROVIDER_ID,
+  DEFAULT_MEMORY_AGENT_THINKING_EFFORT,
+  DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
+} from "./memoryAgentSettingsStore"
+import {
+  discoverSkills,
+  fallbackSkillBody,
+  fallbackSkillDescription,
+  fallbackSkillMarkdown,
+  parseSkillMarkdown,
+  readSkillInfo,
+  skillSummary,
+  slugSkillName,
+  stripFrontmatter,
+  uniqueSkillName,
+  type SkillInfo,
+} from "./memorySkills"
+import { ensureStructuredSoulFile } from "./memorySoulDefaults"
 import { StoreBase } from "./shared"
 
 const DEFAULT_CHAR_LIMIT = 20_000
@@ -32,27 +60,30 @@ const MAX_CONTEXT_CHARS = 28_000
 const MEMORY_AGENT_TOKEN_CAP = 60_000
 const DEFAULT_MEMORY_AGENT_IDLE_MS = 5 * 60 * 1000
 const WAKE_CONTEXT_CHAR_LIMIT = 4_000
+const SKILL_CHAR_LIMIT = 20_000
+const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
 const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
-const MEMORY_AGENT_MODELS = ["deepseek/deepseek-v4-pro", "xiaomi/mimo-v2.5-pro"] as const
-const TOOL_USAGE_DOC_NAMES = ["trace_retrieve.md", "edit_tools_and_bash.md", "read_tools.md", "memory_tools.md"] as const
-const REPO_DOC_NAMES = ["REPO_RULES.md", "APP_FLOW.md", "FRONTEND_BACKEND_CONTRACT.md", "DB_STRUCTURE.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
+const TOOL_USAGE_DOC_NAMES = ["trace_retrieve.md", "edit_apply_patch.md", "terminal.md", "read_search.md", "memory_docs.md"] as const
+const REPO_DOC_NAMES = ["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "CONTRACTS.md"] as const
+const LEGACY_REPO_DOC_NAMES = ["APP_FLOW.md", "DB_STRUCTURE.md", "FRONTEND_BACKEND_CONTRACT.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
 
 type MemoryFile = {
   path: string
   absolutePath: string
-  category: SocratesMemoryCategory
+  area: ToolDocsArea
   sizeBytes: number
   modifiedAt: string
-  diaryDate?: string
 }
 
-type MemoryResult = SocratesMemoryToolOutput["results"][number]
+type DocsResult = ToolDocsToolOutput["results"][number]
 
 type MemoryStoreOptions = {
   socratesHome?: string
   provider?: ModelProvider
   credentials?: ProviderCredentialResolver
   memoryAgentIdleMs?: number
+  traceRetrieve?: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
+  getMemoryAgentSettings?: (projectId: string) => MemoryAgentSettings
   createNotification?: (input: {
     projectId?: string
     conversationId?: string
@@ -70,6 +101,7 @@ type MemoryAgentEvidenceEntry = {
   conversationId: string
   sessionId: string
   turnId: string
+  workspacePath?: string
   text: string
   tokens: number
 }
@@ -77,24 +109,6 @@ type MemoryAgentEvidenceEntry = {
 type MemoryAgentBuffer = {
   entries: MemoryAgentEvidenceEntry[]
   timer?: ReturnType<typeof setTimeout>
-}
-
-type MemoryPatchProposal = {
-  path?: string
-  document?: "identity" | "operating_principles"
-  oldText?: string
-  newText?: string
-  expectedBeforeHash?: string
-  rationale?: string
-  sourceTurnIds?: string[]
-}
-
-type MemoryAgentOutput = {
-  no_op?: boolean
-  diaryAppend?: string | { markdown?: string }
-  learnedPatternPatches?: MemoryPatchProposal[]
-  toolUsageDocPatches?: MemoryPatchProposal[]
-  soulPatchProposals?: MemoryPatchProposal[]
 }
 
 const scopedIds = (input: { conversationId?: string; sessionId?: string; turnId?: string }) => ({
@@ -113,70 +127,153 @@ export class MemoryStore extends StoreBase {
   }
 
   ensureProjectMemory(projectId: string, workspacePath?: string): void {
-    ensureFile(path.join(this.socratesHome, "primary", "identity.md"), "# Identity\n\nSocrates is a local-first project partner. User edits here are context, not higher authority than runtime instructions.\n")
-    ensureFile(path.join(this.socratesHome, "primary", "operating_principles.md"), "# Operating Principles\n\n- Prefer evidence over assumption.\n- Keep project memory concise and inspectable.\n")
-    ensureFile(path.join(this.socratesHome, "primary", "learned_patterns.md"), "# Learned Patterns\n\nAdd durable cross-project lessons here.\n")
-    ensureBundledToolUsageDocs(path.join(this.socratesHome, "primary", "tool_usage"))
-
-    ensureFile(path.join(this.projectRoot(projectId), "project_brief.md"), "# Project Brief\n\nShort project summary and current operating context.\n")
-    ensureFile(path.join(this.projectRoot(projectId), "MEMORY.md"), "# Project Memory\n\nDurable project-specific notes and decisions.\n")
-    ensureFile(this.diaryPath(projectId, new Date()), `# ${formatDiaryDate(new Date())}\n\n`)
+    this.ensureGlobalKnowledge()
     if (workspacePath) {
+      this.migrateLegacyProjectMemory(projectId, workspacePath)
+      ensureFile(path.join(workspacePath, ".socrates", "MEMORY.md"), "# Project Memory\n\nDurable project-specific state, decisions, preferences, and current standing for this workspace.\n")
       ensureFile(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "# PROJECT_NOTES\n\nRepo-local notes for Socrates. Users may edit this file directly.\n")
+      fs.mkdirSync(path.join(workspacePath, ".socrates", "skills"), { recursive: true })
       ensureBundledRepoDocs(path.join(workspacePath, ".socrates", "repo_docs"))
+      removeLegacyRepoDocs(path.join(workspacePath, ".socrates", "repo_docs"))
     }
   }
 
-  runSocratesMemoryTool(projectId: string, workspacePath: string | undefined, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
+  private ensureGlobalKnowledge(): void {
+    migrateGlobalPrimaryFiles(this.socratesHome)
+    ensureStructuredSoulFile(path.join(this.socratesHome, "identity.md"), "identity")
+    ensureStructuredSoulFile(path.join(this.socratesHome, "operating_principles.md"), "operating_principles")
+    ensureBundledToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
+    fs.mkdirSync(path.join(this.socratesHome, "skills"), { recursive: true })
+    migrateUsefulPatternsToSkills(this.socratesHome)
+  }
+
+  private migrateLegacyProjectMemory(projectId: string, workspacePath: string): void {
+    const targetPath = path.join(workspacePath, ".socrates", "MEMORY.md")
+    if (fs.existsSync(targetPath)) {
+      removeLegacyProjectRoot(this.projectRoot(projectId))
+      return
+    }
+    const legacyRoot = this.projectRoot(projectId)
+    const sections: string[] = []
+    const projectBrief = readIfExists(path.join(legacyRoot, "project_brief.md"))
+    const projectMemory = readIfExists(path.join(legacyRoot, "MEMORY.md"))
+    const diaryEntries = listMarkdownFiles(path.join(legacyRoot, "diary"))
+      .sort()
+      .map((filePath) => [`Diary ${path.basename(filePath, ".md")}`, readIfExists(filePath)] as const)
+      .filter(([, content]) => Boolean(content?.trim()))
+    if (projectMemory?.trim()) {
+      sections.push(`## Migrated Project Memory\n\n${projectMemory.trim()}`)
+    }
+    if (projectBrief?.trim()) {
+      sections.push(`## Migrated Project Brief\n\n${projectBrief.trim()}`)
+    }
+    for (const [label, content] of diaryEntries) {
+      sections.push(`## Migrated ${label}\n\n${content?.trim()}`)
+    }
+    if (sections.length > 0) {
+      ensureFile(targetPath, `# Project Memory\n\n${sections.join("\n\n")}\n`)
+    }
+    removeLegacyProjectRoot(legacyRoot)
+  }
+
+  runToolDocsTool(projectId: string, workspacePath: string | undefined, input: ToolDocsToolInput): ToolDocsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
     if (input.operation === "read") {
-      return this.readMemory(projectId, input)
+      return this.readToolDocs(input)
     }
-    return this.searchMemory(projectId, input)
+    return this.searchToolDocs(input)
   }
 
-  runProjectNotesTool(projectId: string, workspacePath: string, input: ProjectNotesToolInput): ProjectNotesToolOutput {
+  runSkillsTool(projectId: string, workspacePath: string | undefined, input: SkillsToolInput): SkillsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
-    const notesPath = projectNotesPath(workspacePath)
+    if (input.operation === "read") {
+      return this.readSkill(input, workspacePath)
+    }
+    if (input.operation === "search") {
+      return this.searchSkills(input, workspacePath)
+    }
+    return this.listSkillsOutput(input, workspacePath)
+  }
+
+  listProjectSkills(projectId: string, workspacePath: string | undefined): SkillSummary[] {
+    this.ensureProjectMemory(projectId, workspacePath)
+    return this.skillInfos(workspacePath, "project").map(skillSummary)
+  }
+
+  async buildProjectSkill(projectId: string, workspacePath: string, request: string): Promise<SkillSummary> {
+    this.ensureProjectMemory(projectId, workspacePath)
+    const skillRoot = path.join(workspacePath, ".socrates", "skills")
+    fs.mkdirSync(skillRoot, { recursive: true })
+    const desiredName = slugSkillName(request)
+    const name = uniqueSkillName(skillRoot, desiredName)
+    const skillDir = path.join(skillRoot, name)
+    const skillFile = path.join(skillDir, "SKILL.md")
+    const content = await this.generateProjectSkill(projectId, workspacePath, request, name)
+    const parsed = parseSkillMarkdown(content, skillFile)
+    const finalContent =
+      parsed?.name === name
+        ? content
+        : `---\nname: ${name}\ndescription: ${parsed?.description ?? fallbackSkillDescription(request)}\n---\n\n${stripFrontmatter(content).trim() || fallbackSkillBody(request)}\n`
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(skillFile, finalContent)
+    const info = readSkillInfo("project", skillRoot, skillFile)
+    if (!info) {
+      throw new SocratesError("project_skill_invalid", "Generated project skill did not pass validation.", { recoverable: true, details: { path: skillFile } })
+    }
+    return skillSummary(info)
+  }
+
+  runProjectDocsTool(projectId: string, workspacePath: string, input: ProjectDocsToolInput): ProjectDocsToolOutput {
+    this.ensureProjectMemory(projectId, workspacePath)
+    const documentPath = projectDocPath(workspacePath, input.area)
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
-    const content = fs.readFileSync(notesPath, "utf8")
+    const content = fs.readFileSync(documentPath, "utf8")
     if (input.operation === "read") {
       const truncated = truncate(content, charLimit)
       return {
         operation: "read",
-        path: notesPath,
+        area: input.area,
+        path: projectDocRelativePath(input.area),
         content: truncated.text,
         truncation: truncationFor(content, charLimit),
-        ...(truncated.truncated ? { warnings: ["PROJECT_NOTES.md was truncated. Re-read with a larger charLimit if needed."] } : {}),
+        ...(truncated.truncated ? { warnings: [`${projectDocRelativePath(input.area)} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
       }
     }
     if (input.operation === "search") {
       const matches = lineMatches(content, input.query as string, DEFAULT_SEARCH_LIMIT)
       return {
         operation: "search",
-        path: notesPath,
+        area: input.area,
+        path: projectDocRelativePath(input.area),
         matches: matches.map((match) => ({ line: match.line, text: match.text })),
         truncation: truncationFor(JSON.stringify(matches), charLimit),
-        ...(matches.length === DEFAULT_SEARCH_LIMIT ? { warnings: ["PROJECT_NOTES.md search hit the match limit; narrow the query."] } : {}),
+        ...(matches.length === DEFAULT_SEARCH_LIMIT ? { warnings: [`${projectDocRelativePath(input.area)} search hit the match limit; narrow the query.`] } : {}),
       }
     }
-    const oldText = input.oldText ?? ""
-    const newText = input.newText ?? ""
-    const occurrences = oldText.length === 0 ? 0 : countOccurrences(content, oldText)
-    if (oldText.length === 0 || occurrences === 0) {
-      throw new SocratesError("project_notes_patch_failed", "oldText was not found in PROJECT_NOTES.md.", { recoverable: true })
+    let next = content
+    if (input.editMode === "append") {
+      const text = input.text ?? ""
+      next = `${content.trimEnd()}\n\n${text.trim()}\n`
+    } else {
+      const oldText = input.oldText ?? ""
+      const newText = input.newText ?? ""
+      const occurrences = oldText.length === 0 ? 0 : countOccurrences(content, oldText)
+      if (oldText.length === 0 || occurrences === 0) {
+        throw new SocratesError("project_docs_edit_failed", `oldText was not found in ${projectDocRelativePath(input.area)}.`, { recoverable: true })
+      }
+      if (occurrences > 1) {
+        throw new SocratesError("project_docs_edit_ambiguous", "oldText matched more than once. Retry with a longer oldText.", {
+          recoverable: true,
+          details: { occurrences, area: input.area },
+        })
+      }
+      next = content.replace(oldText, newText)
     }
-    if (!input.replaceAll && occurrences > 1) {
-      throw new SocratesError("project_notes_patch_ambiguous", "oldText matched more than once. Retry with a longer oldText or replaceAll=true.", {
-        recoverable: true,
-        details: { occurrences },
-      })
-    }
-    const next = input.replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
-    fs.writeFileSync(notesPath, next)
+    fs.writeFileSync(documentPath, next)
     return {
-      operation: "patch",
-      path: notesPath,
+      operation: "edit",
+      area: input.area,
+      path: projectDocRelativePath(input.area),
       changed: next !== content,
       content: truncate(next, charLimit).text,
       truncation: truncationFor(next, charLimit),
@@ -249,7 +346,7 @@ export class MemoryStore extends StoreBase {
     const next = input.replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
     fs.writeFileSync(absolutePath, next)
     return {
-      operation: "patch",
+      operation: "edit",
       path: `.socrates/repo_docs/${name}`,
       changed: next !== content,
       content: truncate(next, charLimit).text,
@@ -267,7 +364,7 @@ export class MemoryStore extends StoreBase {
       const clipped = truncate(content, charLimit)
       return {
         document,
-        path: `primary/${document}.md`,
+        path: `${document}.md`,
         content: clipped.text,
         truncation: truncationFor(content, charLimit),
       }
@@ -284,16 +381,12 @@ export class MemoryStore extends StoreBase {
   buildWakeContext(projectId: string, workspacePath: string | undefined, userQuery: string): string | undefined {
     this.ensureProjectMemory(projectId, workspacePath)
     const sections: string[] = ["First user query in this conversation. Use this as quiet wake context, not as user-visible text."]
-    const projectMemory = readIfExists(path.join(this.projectRoot(projectId), "MEMORY.md"))
-    const projectBrief = readIfExists(path.join(this.projectRoot(projectId), "project_brief.md"))
-    const notes = workspacePath ? readIfExists(projectNotesPath(workspacePath)) : undefined
-    const diary = readIfExists(this.latestDiaryPath(projectId) ?? "")
+    const projectMemory = workspacePath ? readIfExists(projectDocPath(workspacePath, "memory")) : undefined
+    const coreIdea = workspacePath ? readIfExists(repoDocPath(repoDocsRoot(workspacePath), "CORE_IDEA.md")) : undefined
     const query = userQuery.trim()
     for (const [label, content] of [
-      ["Project brief", projectBrief],
       ["Project memory", projectMemory],
-      ["PROJECT_NOTES", notes],
-      ["Recent diary", diary],
+      ["Core idea", coreIdea],
     ] as const) {
       if (!content?.trim()) {
         continue
@@ -310,7 +403,7 @@ export class MemoryStore extends StoreBase {
     return context.length > WAKE_CONTEXT_CHAR_LIMIT ? `${context.slice(0, WAKE_CONTEXT_CHAR_LIMIT)}\n[Wake context truncated]` : context
   }
 
-  appendDiaryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): void {
+  enqueueGlobalMemoryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): void {
     void this.enqueueMemoryAgentForTurn(input).catch((error) => {
       this.appendEvent({
         projectId: input.projectId,
@@ -324,18 +417,16 @@ export class MemoryStore extends StoreBase {
     })
   }
 
-  private readMemory(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
-    const scope = input.scope ?? "project"
+  private readToolDocs(input: ToolDocsToolInput): ToolDocsToolOutput {
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
     const contextLines = clampContextLines(input.contextLines)
-    const files = input.path ? [this.resolveMemoryPath(projectId, input.path, input.category)] : this.memoryFiles(projectId, input)
-    const results = this.memoryResults(files, input, contextLines, charLimit)
+    const files = input.path ? [this.resolveToolDocPath(input.path, input.area)] : this.toolDocFiles(input.area)
+    const results = this.docsResults(files, input, contextLines, charLimit)
     const sliced = results.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? DEFAULT_SEARCH_LIMIT)).map(numberResult)
     const output = capMemoryResults(sliced, charLimit)
     return {
       operation: "read",
-      scope,
-      ...(input.category ? { category: input.category } : {}),
+      ...(input.area ? { area: input.area } : {}),
       results: output.results,
       totalMatches: results.length,
       truncation: output.truncation,
@@ -343,23 +434,21 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private searchMemory(projectId: string, input: SocratesMemoryToolInput): SocratesMemoryToolOutput {
-    const scope = input.scope ?? "project"
+  private searchToolDocs(input: ToolDocsToolInput): ToolDocsToolOutput {
     const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
     const contextLines = clampContextLines(input.contextLines)
-    const files = input.path ? [this.resolveMemoryPath(projectId, input.path, input.category)] : this.memoryFiles(projectId, input)
-    const results = this.memoryResults(files, input, contextLines, charLimit)
+    const files = input.path ? [this.resolveToolDocPath(input.path, input.area)] : this.toolDocFiles(input.area)
+    const results = this.docsResults(files, input, contextLines, charLimit)
     const sliced = results.slice(input.offset ?? 0, (input.offset ?? 0) + limit).map(numberResult)
     const output = capMemoryResults(sliced, charLimit)
     const warnings = [
       ...output.warnings,
-      ...(results.length > limit + (input.offset ?? 0) ? ["Socrates memory search hit the result limit; narrow query, category, scope, or date filters."] : []),
+      ...(results.length > limit + (input.offset ?? 0) ? ["tool_docs search hit the result limit; narrow query, area, or path."] : []),
     ]
     return {
       operation: "search",
-      scope,
-      ...(input.category ? { category: input.category } : {}),
+      ...(input.area ? { area: input.area } : {}),
       results: output.results,
       totalMatches: results.length,
       truncation: output.truncation,
@@ -367,14 +456,14 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private memoryResults(files: MemoryFile[], input: SocratesMemoryToolInput, contextLines: number, charLimit: number): MemoryResult[] {
+  private docsResults(files: MemoryFile[], input: ToolDocsToolInput, contextLines: number, charLimit: number): DocsResult[] {
     const query = input.query?.trim()
     const mode = input.searchMode ?? "keyword_all"
     return files.flatMap((file) => {
       const content = fs.readFileSync(file.absolutePath, "utf8")
-      if (input.includeSections || file.category === "diary") {
+      if (input.includeSections) {
         const sectionResults = sectionMatches(file, content, input, mode, query, contextLines, charLimit)
-        if (sectionResults.length > 0 || query || input.includeSections || file.category === "diary") {
+        if (sectionResults.length > 0 || query || input.includeSections) {
           return sectionResults
         }
       }
@@ -385,70 +474,130 @@ export class MemoryStore extends StoreBase {
     })
   }
 
-  private memoryFiles(projectId: string, input: SocratesMemoryToolInput): MemoryFile[] {
-    const files = this.allMemoryFiles(projectId, input.scope ?? "project", input.category)
-    return files
-      .filter((file) => withinRange(file.modifiedAt, input.modifiedAfter, input.modifiedBefore))
-      .filter((file) => withinDiaryFilters(file, input))
-      .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt) || left.path.localeCompare(right.path))
-      .slice(input.memoryOffset ?? 0, (input.memoryOffset ?? 0) + (input.memoryLimit ?? 50))
-  }
-
-  private allMemoryFiles(projectId: string, scope: SocratesMemoryScope, category?: SocratesMemoryCategory): MemoryFile[] {
-    const primaryRoot = path.join(this.socratesHome, "primary")
-    const projectRoot = this.projectRoot(projectId)
+  private toolDocFiles(area?: ToolDocsArea): MemoryFile[] {
     const candidates: MemoryFile[] = [
-      memoryFile(primaryRoot, "learned_patterns", path.join(primaryRoot, "learned_patterns.md")),
-      ...listMarkdownFiles(path.join(primaryRoot, "tool_usage")).map((absolutePath) => memoryFile(primaryRoot, "tool_usage", absolutePath)),
-      memoryFile(projectRoot, "project_brief", path.join(projectRoot, "project_brief.md")),
-      memoryFile(projectRoot, "project_memory", path.join(projectRoot, "MEMORY.md")),
-      ...listMarkdownFiles(path.join(projectRoot, "diary")).map((absolutePath) => memoryFile(projectRoot, "diary", absolutePath)),
+      ...listMarkdownFiles(path.join(this.socratesHome, "tool_usage")).map((absolutePath) => memoryFile(this.socratesHome, "tool_usage", absolutePath)),
     ].filter((file) => fs.existsSync(file.absolutePath))
-    return candidates.filter((file) => (category ? file.category === category : categoryForScope(scope, file.category)))
+    return candidates.filter((file) => (area ? file.area === area : true)).sort((left, right) => left.path.localeCompare(right.path))
   }
 
-  private resolveMemoryPath(projectId: string, inputPath: string, category?: SocratesMemoryCategory): MemoryFile {
-    const normalized = normalizeMemoryPath(inputPath, category)
-    if (normalized === "primary/identity.md" || normalized === "primary/operating_principles.md") {
-      throw new SocratesError("socrates_memory_core_soul_not_tool_visible", "Identity and operating principles are core agent soul files and are not exposed through socrates_memory.", {
-        recoverable: true,
-      })
-    }
-    const root = normalized.startsWith("primary/") ? path.join(this.socratesHome, "primary") : this.projectRoot(projectId)
-    const relative = normalized.replace(/^(primary|project)\//, "")
-    const absolutePath = safeJoin(root, relative)
+  private resolveToolDocPath(inputPath: string, area?: ToolDocsArea): MemoryFile {
+    const normalized = normalizeToolDocPath(inputPath, area)
+    const absolutePath = safeJoin(this.socratesHome, normalized)
     if (!absolutePath.endsWith(".md") || !fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
-      throw new SocratesError("socrates_memory_file_not_found", "Socrates memory path was not found or is not a markdown file.", {
+      throw new SocratesError("tool_docs_file_not_found", "Tool docs path was not found or is not a markdown file.", {
         recoverable: true,
         details: { path: inputPath },
       })
     }
-    const file = memoryFile(root, inferCategoryFromPath(normalized), absolutePath)
-    if (category && file.category !== category) {
-      throw new SocratesError("socrates_memory_category_mismatch", "Socrates memory path does not match the requested category.", {
+    const file = memoryFile(this.socratesHome, "tool_usage", absolutePath)
+    if (area && file.area !== area) {
+      throw new SocratesError("tool_docs_area_mismatch", "Tool docs path does not match the requested area.", {
         recoverable: true,
-        details: { path: inputPath, category },
+        details: { path: inputPath, area },
       })
     }
     return file
+  }
+
+  private listSkillsOutput(input: SkillsToolInput, workspacePath: string | undefined): SkillsToolOutput {
+    const skills = this.skillInfos(workspacePath, input.scope).map(skillSummary)
+    const offset = input.offset ?? 0
+    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
+    const sliced = skills.slice(offset, offset + limit)
+    return {
+      operation: "list",
+      skills: sliced,
+      totalMatches: skills.length,
+      truncation: {
+        truncated: offset + limit < skills.length,
+        charLimit: input.charLimit ?? SKILL_CHAR_LIMIT,
+        originalLength: JSON.stringify(skills).length,
+        returnedLength: JSON.stringify(sliced).length,
+        ...(offset + limit < skills.length ? { nextOffset: offset + limit } : {}),
+      },
+    }
+  }
+
+  private searchSkills(input: SkillsToolInput, workspacePath: string | undefined): SkillsToolOutput {
+    const query = input.query?.trim() ?? ""
+    const compiled = compileSearch(query, "keyword_any")
+    const matches = this.skillInfos(workspacePath, input.scope).filter((skill) => compiled.score(`${skill.name}\n${skill.description}\n${skill.content}`) > 0)
+    const offset = input.offset ?? 0
+    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
+    const sliced = matches.slice(offset, offset + limit).map(skillSummary)
+    return {
+      operation: "search",
+      skills: sliced,
+      totalMatches: matches.length,
+      truncation: {
+        truncated: offset + limit < matches.length,
+        charLimit: input.charLimit ?? SKILL_CHAR_LIMIT,
+        originalLength: JSON.stringify(matches.map(skillSummary)).length,
+        returnedLength: JSON.stringify(sliced).length,
+        ...(offset + limit < matches.length ? { nextOffset: offset + limit } : {}),
+      },
+    }
+  }
+
+  private readSkill(input: SkillsToolInput, workspacePath: string | undefined): SkillsToolOutput {
+    const skill = this.findSkill(workspacePath, input.name ?? "", input.scope)
+    if (!skill) {
+      throw new SocratesError("skill_not_found", "Skill was not found.", { recoverable: true, details: { name: input.name, scope: input.scope } })
+    }
+    const relativePath = input.path?.replaceAll("\\", "/").replace(/^\/+/, "") || "SKILL.md"
+    const targetPath = relativePath === "SKILL.md" ? skill.skillFile : safeJoin(skill.skillDir, relativePath)
+    if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+      throw new SocratesError("skill_file_not_found", "Skill file was not found.", { recoverable: true, details: { name: skill.name, path: input.path } })
+    }
+    const content = fs.readFileSync(targetPath, "utf8")
+    const charLimit = input.charLimit ?? SKILL_CHAR_LIMIT
+    const truncated = truncate(content, charLimit)
+    return {
+      operation: "read",
+      skills: [skillSummary(skill)],
+      content: truncated.text,
+      path: path.relative(skill.root, targetPath).replaceAll(path.sep, "/"),
+      totalMatches: 1,
+      truncation: truncationFor(content, charLimit),
+    }
+  }
+
+  private skillInfos(workspacePath: string | undefined, scope?: SkillScope): SkillInfo[] {
+    const groups: Array<{ scope: SkillScope; root: string }> = [
+      { scope: "builtin", root: bundledSkillsDir() },
+      { scope: "global", root: path.join(this.socratesHome, "skills") },
+      ...(workspacePath ? [{ scope: "project" as const, root: path.join(workspacePath, ".socrates", "skills") }] : []),
+    ]
+    return groups
+      .filter((group) => (scope ? group.scope === scope : true))
+      .flatMap((group) => discoverSkills(group.scope, group.root))
+      .filter((skill) => !(skill.scope === "builtin" && INTERNAL_BUILTIN_SKILL_NAMES.has(skill.name)))
+      .sort((left, right) => `${left.scope}:${left.name}`.localeCompare(`${right.scope}:${right.name}`))
+  }
+
+  private findSkill(workspacePath: string | undefined, name: string, scope?: SkillScope): SkillInfo | undefined {
+    return this.skillInfos(workspacePath, scope).find((skill) => skill.name === name)
   }
 
   private projectRoot(projectId: string): string {
     return path.join(this.socratesHome, "projects", projectId)
   }
 
-  private diaryPath(projectId: string, date: Date): string {
-    const year = date.getFullYear().toString()
-    const month = String(date.getMonth() + 1).padStart(2, "0")
-    return path.join(this.projectRoot(projectId), "diary", year, month, `${formatDiaryDate(date)}.md`)
-  }
-
-  private latestDiaryPath(projectId: string): string | undefined {
-    return listMarkdownFiles(path.join(this.projectRoot(projectId), "diary")).sort((left, right) => right.localeCompare(left))[0]
-  }
-
   private soulPath(document: "identity" | "operating_principles"): string {
-    return path.join(this.socratesHome, "primary", `${document}.md`)
+    return path.join(this.socratesHome, `${document}.md`)
+  }
+
+  private memoryAgentModelSettingsFor(projectId: string): MemoryAgentModelSettings {
+    const settings = this.options.getMemoryAgentSettings?.(projectId)
+    const thinkingEnabled = settings?.thinkingEnabled ?? DEFAULT_MEMORY_AGENT_THINKING_ENABLED
+    const thinkingEffort = settings?.thinkingEffort ?? (thinkingEnabled ? undefined : DEFAULT_MEMORY_AGENT_THINKING_EFFORT)
+    return {
+      providerId: settings?.providerId ?? DEFAULT_MEMORY_AGENT_PROVIDER_ID,
+      modelId: settings?.modelId ?? DEFAULT_MEMORY_AGENT_MODEL_ID,
+      thinkingEnabled,
+      ...(thinkingEffort ? { thinkingEffort } : {}),
+    }
   }
 
   private async enqueueMemoryAgentForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): Promise<void> {
@@ -456,7 +605,8 @@ export class MemoryStore extends StoreBase {
     if (!this.options.provider) {
       return
     }
-    if (this.options.credentials && !this.options.credentials.getApiKey("openrouter")) {
+    const modelSettings = this.memoryAgentModelSettingsFor(input.projectId)
+    if (this.options.credentials && !this.options.credentials.getApiKey(modelSettings.providerId)) {
       this.appendEvent({
         projectId: input.projectId,
         conversationId: input.conversationId,
@@ -464,7 +614,7 @@ export class MemoryStore extends StoreBase {
         turnId: input.turnId,
         type: "memory.agent.skipped",
         source: "server",
-        payload: { reason: "OpenRouter credential is not configured." },
+        payload: { reason: `${modelSettings.providerId} credential is not configured.` },
       })
       return
     }
@@ -477,6 +627,7 @@ export class MemoryStore extends StoreBase {
       conversationId: input.conversationId,
       sessionId: input.sessionId,
       turnId: input.turnId,
+      ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
       text: turnEvidence,
       tokens: estimateTextTokens(turnEvidence).inputTokens,
     }
@@ -519,6 +670,7 @@ export class MemoryStore extends StoreBase {
       return
     }
     const latest = entries[entries.length - 1]
+    const modelSettings = this.memoryAgentModelSettingsFor(projectId)
     const jobId = createId("memjob")
     const startedAt = nowIso()
     const evidenceTokensEstimate = entries.reduce((sum, entry) => sum + entry.tokens, 0)
@@ -532,12 +684,16 @@ export class MemoryStore extends StoreBase {
         turnId: latest?.turnId,
         status: "running",
         trigger,
-        providerId: "openrouter",
-        modelId: MEMORY_AGENT_MODELS[0],
-        fallbackModelIdsJson: JSON.stringify(MEMORY_AGENT_MODELS.slice(1)),
+        providerId: modelSettings.providerId,
+        modelId: modelSettings.modelId,
+        fallbackModelIdsJson: JSON.stringify([]),
         evidenceTurnIdsJson: JSON.stringify(entries.map((entry) => entry.turnId)),
         evidenceTokensEstimate,
         startedAt,
+        metadataJson: JSON.stringify({
+          thinkingEnabled: modelSettings.thinkingEnabled,
+          thinkingEffort: modelSettings.thinkingEffort,
+        }),
       })
       .run()
     this.appendEvent({
@@ -550,27 +706,23 @@ export class MemoryStore extends StoreBase {
 
     try {
       let parsed: MemoryAgentOutput | undefined
-      let usedModelId: string = MEMORY_AGENT_MODELS[0]
       let lastError: unknown
       const cappedEvidence = capByEstimatedTokens(this.buildMemoryAgentInput(projectId, entries), MEMORY_AGENT_TOKEN_CAP)
-      for (const modelId of MEMORY_AGENT_MODELS) {
-        try {
-          parsed = parseMemoryAgentOutput(await this.runMemoryAgentModel(modelId, cappedEvidence))
-          usedModelId = modelId
-          break
-        } catch (error) {
-          lastError = error
-        }
+      try {
+        parsed = parseMemoryAgentOutput(await this.runMemoryAgentModel(projectId, modelSettings, cappedEvidence, latest))
+      } catch (error) {
+        lastError = error
       }
       if (!parsed) {
         throw lastError ?? new SocratesError("memory_agent_empty", "Memory agent returned no parseable output.", { recoverable: true })
       }
-      const applied = await this.applyMemoryAgentOutput(projectId, jobId, latest, parsed, usedModelId)
+      const applied = await this.applyMemoryAgentOutput(projectId, jobId, latest, parsed, modelSettings)
       this.handle.db
         .update(memoryAgentJobs)
         .set({
           status: applied.noOp ? "no_op" : "completed",
-          modelId: usedModelId,
+          providerId: modelSettings.providerId,
+          modelId: modelSettings.modelId,
           outputJson: JSON.stringify(parsed),
           completedAt: nowIso(),
         })
@@ -584,8 +736,8 @@ export class MemoryStore extends StoreBase {
         payload: {
           jobId,
           status: applied.noOp ? "no_op" : "completed",
-          modelId: usedModelId,
-          diaryAppended: applied.diaryAppended,
+          providerId: modelSettings.providerId,
+          modelId: modelSettings.modelId,
           actionsApplied: applied.actionsApplied,
           actionsRejected: applied.actionsRejected,
         },
@@ -604,15 +756,15 @@ export class MemoryStore extends StoreBase {
   }
 
   private buildMemoryAgentInput(projectId: string, entries: MemoryAgentEvidenceEntry[]): string {
-    const primaryRoot = path.join(this.socratesHome, "primary")
     const targetSnippets = [
-      ["identity.md", readIfExists(path.join(primaryRoot, "identity.md"))],
-      ["operating_principles.md", readIfExists(path.join(primaryRoot, "operating_principles.md"))],
-      ["learned_patterns.md", readIfExists(path.join(primaryRoot, "learned_patterns.md"))],
-      ["tool_usage/trace_retrieve.md", readIfExists(path.join(primaryRoot, "tool_usage", "trace_retrieve.md"))],
-      ["tool_usage/edit_tools_and_bash.md", readIfExists(path.join(primaryRoot, "tool_usage", "edit_tools_and_bash.md"))],
-      ["tool_usage/read_tools.md", readIfExists(path.join(primaryRoot, "tool_usage", "read_tools.md"))],
-      ["tool_usage/memory_tools.md", readIfExists(path.join(primaryRoot, "tool_usage", "memory_tools.md"))],
+      ["identity.md", readIfExists(path.join(this.socratesHome, "identity.md"))],
+      ["operating_principles.md", readIfExists(path.join(this.socratesHome, "operating_principles.md"))],
+      ["builtin/socrates-skill-writer/SKILL.md", readIfExists(path.join(bundledSkillsDir(), "socrates-skill-writer", "SKILL.md"))],
+      ...TOOL_USAGE_DOC_NAMES.map((name) => [`tool_usage/${name}`, readIfExists(path.join(this.socratesHome, "tool_usage", name))] as const),
+      ...listMarkdownFiles(path.join(this.socratesHome, "skills"))
+        .filter((filePath) => filePath.endsWith("SKILL.md"))
+        .slice(0, 20)
+        .map((filePath) => [path.relative(this.socratesHome, filePath), readIfExists(filePath)] as const),
     ] as const
     return [
       `Project: ${projectId}`,
@@ -664,30 +816,98 @@ export class MemoryStore extends StoreBase {
     ].join("\n\n")
   }
 
-  private async runMemoryAgentModel(modelId: string, evidence: string): Promise<string> {
-    let text = ""
-    for await (const event of this.options.provider!.stream({
-      providerId: "openrouter",
-      modelId,
-      system: MEMORY_AGENT_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: evidence }],
-      runtimeConfig: {
-        providerId: "openrouter",
-        modelId,
-        thinkingEnabled: false,
-        thinkingEffort: "none",
-        approvalMode: "read_only_auto",
-        sandboxMode: "read_only",
-      },
-    })) {
-      if (event.type === "model.answer.delta") {
-        text += event.text
-      }
-      if (event.type === "model.failed") {
-        throw event.error
-      }
+  private async runMemoryAgentModel(projectId: string, modelSettings: MemoryAgentModelSettings, evidence: string, latest: MemoryAgentEvidenceEntry | undefined): Promise<string> {
+    if (!this.options.provider) {
+      throw new SocratesError("memory_agent_provider_missing", "Memory agent provider is not configured.", { recoverable: true })
     }
-    return text
+    const workspacePath = latest?.workspacePath
+    const requireWorkspacePath = (): string => {
+      if (!workspacePath) {
+        throw new SocratesError("memory_agent_workspace_missing", "Project docs require an active project workspace.", { recoverable: true })
+      }
+      return workspacePath
+    }
+    return runMemoryAgentTurn({
+      provider: this.options.provider,
+      modelSettings,
+      evidence,
+      projectId,
+      conversationId: latest?.conversationId ?? "",
+      sessionId: latest?.sessionId ?? "",
+      turnId: latest?.turnId ?? "",
+      ...(workspacePath ? { workspacePath } : {}),
+      socratesHome: this.socratesHome,
+      tools: {
+        traceRetrieve: async (input) => {
+          if (!this.options.traceRetrieve || !latest?.conversationId) {
+            throw new SocratesError("memory_agent_trace_unavailable", "trace_retrieve is not available to this memory-agent run.", { recoverable: true })
+          }
+          return this.options.traceRetrieve(projectId, latest.conversationId, input)
+        },
+        toolDocs: async (input) => this.runToolDocsTool(projectId, workspacePath, input),
+        skills: async (input) => this.runSkillsTool(projectId, workspacePath, input),
+        projectDocs: async (input) => this.runProjectDocsTool(projectId, requireWorkspacePath(), input),
+        repoDocs: async (input) => this.runRepoDocsTool(projectId, requireWorkspacePath(), input),
+        soul: async (input) => this.runSoulTool(projectId, workspacePath, input),
+      },
+    })
+  }
+
+  private async generateProjectSkill(projectId: string, workspacePath: string, request: string, name: string): Promise<string> {
+    const fallback = fallbackSkillMarkdown(name, request)
+    if (!this.options.provider) {
+      return fallback
+    }
+    const modelSettings = this.memoryAgentModelSettingsFor(projectId)
+    const instructionRow = this.handle.db
+      .select()
+      .from(projectInstructions)
+      .where(and(eq(projectInstructions.projectId, projectId), eq(projectInstructions.status, "active")))
+      .orderBy(desc(projectInstructions.updatedAt))
+      .get()
+    const context = [
+      `Skill name to use exactly: ${name}`,
+      "Primary user request:",
+      request.trim(),
+      "",
+      "Side guidance only. Use when relevant; ignore when not useful.",
+      "--- project instructions",
+      instructionRow?.content ?? "Not provided.",
+      "--- project MEMORY.md",
+      truncate(readIfExists(path.join(workspacePath, ".socrates", "MEMORY.md")) ?? "", 4_000).text,
+      "--- repo docs",
+      ...REPO_DOC_NAMES.map((docName) => `--- ${docName}\n${truncate(readIfExists(path.join(workspacePath, ".socrates", "repo_docs", docName)) ?? "", 3_000).text}`),
+      "--- skill writer guidance",
+      truncate(readIfExists(path.join(bundledSkillsDir(), "socrates-skill-writer", "SKILL.md")) ?? "", 5_000).text,
+    ].join("\n\n")
+    try {
+      let text = ""
+      for await (const event of this.options.provider.stream({
+        providerId: modelSettings.providerId,
+        modelId: modelSettings.modelId,
+        system: PROJECT_SKILL_BUILDER_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: context }],
+        runtimeConfig: {
+          providerId: modelSettings.providerId,
+          modelId: modelSettings.modelId,
+          thinkingEnabled: modelSettings.thinkingEnabled,
+          ...(modelSettings.thinkingEffort ? { thinkingEffort: modelSettings.thinkingEffort } : {}),
+          approvalMode: "read_only_auto",
+          sandboxMode: "read_only",
+        },
+      })) {
+        if (event.type === "model.answer.delta") {
+          text += event.text
+        }
+        if (event.type === "model.failed") {
+          throw event.error
+        }
+      }
+      const cleaned = stripMarkdownFence(text.trim())
+      return parseSkillMarkdown(cleaned, path.join(workspacePath, ".socrates", "skills", name, "SKILL.md")) ? cleaned : fallback
+    } catch {
+      return fallback
+    }
   }
 
   private async applyMemoryAgentOutput(
@@ -695,27 +915,12 @@ export class MemoryStore extends StoreBase {
     jobId: string,
     latest: MemoryAgentEvidenceEntry | undefined,
     output: MemoryAgentOutput,
-    modelId: string,
-  ): Promise<{ noOp: boolean; diaryAppended: boolean; actionsApplied: number; actionsRejected: number }> {
-    let diaryAppended = false
+    modelSettings: MemoryAgentModelSettings,
+  ): Promise<{ noOp: boolean; actionsApplied: number; actionsRejected: number }> {
     let actionsApplied = 0
     let actionsRejected = 0
-    const diaryMarkdown = typeof output.diaryAppend === "string" ? output.diaryAppend : output.diaryAppend?.markdown
-    if (diaryMarkdown?.trim()) {
-      const diaryPath = this.diaryPath(projectId, new Date())
-      ensureFile(diaryPath, `# ${formatDiaryDate(new Date())}\n\n`)
-      fs.appendFileSync(diaryPath, `\n## ${new Date().toISOString()} Memory Agent Batch ${jobId}\n\n${normalizeDiaryNote(diaryMarkdown)}\n`)
-      diaryAppended = true
-      this.appendEvent({
-        projectId,
-        ...scopedIds(latest ?? {}),
-        type: "memory.diary.appended",
-        source: "server",
-        payload: { jobId, path: diaryPath },
-      })
-    }
-    for (const patch of output.learnedPatternPatches ?? []) {
-      const result = this.applyPrimaryPatch(projectId, jobId, latest?.turnId, "learned_patterns", path.join(this.socratesHome, "primary", "learned_patterns.md"), patch)
+    for (const patch of output.skillPatches ?? []) {
+      const result = this.applyPrimaryPatch(projectId, jobId, latest?.turnId, "skills", this.resolveSkillPatchPath(patch.path), patch)
       actionsApplied += result.applied ? 1 : 0
       actionsRejected += result.applied ? 0 : 1
     }
@@ -725,13 +930,12 @@ export class MemoryStore extends StoreBase {
       actionsRejected += result.applied ? 0 : 1
     }
     for (const patch of output.soulPatchProposals ?? []) {
-      const result = await this.applySoulPatch(projectId, jobId, latest, patch, modelId)
+      const result = await this.applySoulPatch(projectId, jobId, latest, patch, modelSettings)
       actionsApplied += result.applied ? 1 : 0
       actionsRejected += result.applied ? 0 : 1
     }
     return {
-      noOp: output.no_op === true && !diaryAppended && actionsApplied === 0 && actionsRejected === 0,
-      diaryAppended,
+      noOp: output.no_op === true && actionsApplied === 0 && actionsRejected === 0,
       actionsApplied,
       actionsRejected,
     }
@@ -741,7 +945,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "learned_patterns" | "tool_usage",
+    targetKind: "tool_usage" | "skills",
     targetPath: string,
     patch: MemoryPatchProposal,
   ): { applied: boolean; actionId: string; error?: string } {
@@ -752,6 +956,12 @@ export class MemoryStore extends StoreBase {
       this.rejectMemoryAction(action.actionId, validation.error)
       this.appendEvent({ projectId, ...(turnId ? { turnId } : {}), type: "memory.primary.update_rejected", source: "server", payload: { jobId, actionId: action.actionId, path: targetPath, reason: validation.error } })
       return { applied: false, actionId: action.actionId, error: validation.error }
+    }
+    if (targetKind === "skills" && path.basename(targetPath) === "SKILL.md" && !parseSkillMarkdown(validation.next, targetPath)) {
+      const error = "Skill patch must preserve valid Agent Skill frontmatter with matching folder name."
+      this.rejectMemoryAction(action.actionId, error)
+      this.appendEvent({ projectId, ...(turnId ? { turnId } : {}), type: "memory.primary.update_rejected", source: "server", payload: { jobId, actionId: action.actionId, path: targetPath, reason: error } })
+      return { applied: false, actionId: action.actionId, error }
     }
     fs.writeFileSync(targetPath, validation.next)
     const afterHash = hashText(validation.next)
@@ -771,7 +981,7 @@ export class MemoryStore extends StoreBase {
     jobId: string,
     latest: MemoryAgentEvidenceEntry | undefined,
     patch: MemoryPatchProposal,
-    modelId: string,
+    modelSettings: MemoryAgentModelSettings,
   ): Promise<{ applied: boolean; actionId: string; error?: string }> {
     const document = patch.document
     const targetPath = document === "identity" || document === "operating_principles" ? this.soulPath(document) : this.soulPath("identity")
@@ -798,8 +1008,8 @@ export class MemoryStore extends StoreBase {
         projectId,
         document,
         promptText: SOUL_CONFIRMATION_PROMPT,
-        providerId: "openrouter",
-        modelId,
+        providerId: modelSettings.providerId,
+        modelId: modelSettings.modelId,
         requestedAt: nowIso(),
         metadataJson: JSON.stringify({ targetPath, rationale: patch.rationale }),
       })
@@ -813,7 +1023,7 @@ export class MemoryStore extends StoreBase {
       payload: { jobId, actionId: action.actionId, confirmationId, document, prompt: SOUL_CONFIRMATION_PROMPT },
     })
 
-    const confirmationText = await this.runSoulConfirmationModel(modelId, targetPath, patch)
+    const confirmationText = await this.runSoulConfirmationModel(modelSettings, targetPath, patch)
     const normalized = confirmationText.trim().toLowerCase()
     const decision = normalized === "yes" ? "yes" : normalized === "no" ? "no" : "invalid"
     this.handle.db.update(memoryAgentConfirmations).set({ responseText: confirmationText, decision, decidedAt: nowIso() }).where(eq(memoryAgentConfirmations.id, confirmationId)).run()
@@ -871,7 +1081,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "learned_patterns" | "tool_usage" | "soul",
+    targetKind: "tool_usage" | "skills" | "soul",
     targetPath: string,
     patch: MemoryPatchProposal,
     requiresConfirmation: boolean,
@@ -903,11 +1113,11 @@ export class MemoryStore extends StoreBase {
     this.handle.db.update(memoryAgentActions).set({ status: "rejected", error }).where(eq(memoryAgentActions.id, actionId)).run()
   }
 
-  private async runSoulConfirmationModel(modelId: string, targetPath: string, patch: MemoryPatchProposal): Promise<string> {
+  private async runSoulConfirmationModel(modelSettings: MemoryAgentModelSettings, targetPath: string, patch: MemoryPatchProposal): Promise<string> {
     let text = ""
     for await (const event of this.options.provider!.stream({
-      providerId: "openrouter",
-      modelId,
+      providerId: modelSettings.providerId,
+      modelId: modelSettings.modelId,
       system: [
         "You are the Socrates backend memory agent confirming a proposed edit to a core soul document.",
         "Consider the target path, rationale, and exact patch. This is an internal self-confirmation test.",
@@ -920,10 +1130,10 @@ export class MemoryStore extends StoreBase {
       ].join("\n\n"),
       messages: [{ role: "user", content: SOUL_CONFIRMATION_PROMPT }],
       runtimeConfig: {
-        providerId: "openrouter",
-        modelId,
-        thinkingEnabled: false,
-        thinkingEffort: "none",
+        providerId: modelSettings.providerId,
+        modelId: modelSettings.modelId,
+        thinkingEnabled: modelSettings.thinkingEnabled,
+        ...(modelSettings.thinkingEffort ? { thinkingEffort: modelSettings.thinkingEffort } : {}),
         approvalMode: "read_only_auto",
         sandboxMode: "read_only",
       },
@@ -939,7 +1149,7 @@ export class MemoryStore extends StoreBase {
   }
 
   private resolveToolUsagePatchPath(inputPath: string | undefined): string {
-    const root = path.join(this.socratesHome, "primary", "tool_usage")
+    const root = path.join(this.socratesHome, "tool_usage")
     if (!inputPath) {
       return path.join(root, "trace_retrieve.md")
     }
@@ -953,9 +1163,30 @@ export class MemoryStore extends StoreBase {
     }
     return resolved
   }
+
+  private resolveSkillPatchPath(inputPath: string | undefined): string {
+    const root = path.join(this.socratesHome, "skills")
+    const normalized = inputPath ? inputPath.replaceAll("\\", "/").replace(/^skills\//, "").replace(/^useful_patterns\//, "") : "general/SKILL.md"
+    const resolved = safeJoin(root, normalized)
+    if (!resolved.endsWith(".md") || !resolved.startsWith(root)) {
+      throw new SocratesError("memory_agent_skill_path_invalid", "Skill memory patch target must be a markdown file under skills.", {
+        recoverable: true,
+        details: { path: inputPath },
+      })
+    }
+    if (path.basename(resolved) === "SKILL.md") {
+      const name = path.basename(path.dirname(resolved))
+      ensureFile(resolved, fallbackSkillMarkdown(name, "Reusable Socrates skill maintained by the backend memory worker."))
+    } else {
+      ensureFile(resolved, "")
+    }
+    return resolved
+  }
 }
 
-const projectNotesPath = (workspacePath: string): string => path.join(workspacePath, ".socrates", "PROJECT_NOTES.md")
+const projectDocPath = (workspacePath: string, area: ProjectDocsArea): string =>
+  area === "memory" ? path.join(workspacePath, ".socrates", "MEMORY.md") : path.join(workspacePath, ".socrates", "PROJECT_NOTES.md")
+const projectDocRelativePath = (area: ProjectDocsArea): string => (area === "memory" ? ".socrates/MEMORY.md" : ".socrates/PROJECT_NOTES.md")
 const repoDocsRoot = (workspacePath: string): string => path.join(workspacePath, ".socrates", "repo_docs")
 
 const repoDocPath = (docsRoot: string, name: (typeof REPO_DOC_NAMES)[number]): string => path.join(docsRoot, name)
@@ -970,7 +1201,7 @@ const bundledToolUsageDocsDir = (): string => {
   ]
   const found = candidates.find((candidate) => fs.existsSync(candidate))
   if (!found) {
-    throw new SocratesError("socrates_memory_assets_missing", "Bundled Socrates tool-usage memory docs were not found.", {
+    throw new SocratesError("tool_docs_assets_missing", "Bundled Socrates tool-usage docs were not found.", {
       recoverable: false,
       details: { candidates },
     })
@@ -989,6 +1220,24 @@ const bundledRepoDocsDir = (): string => {
   const found = candidates.find((candidate) => fs.existsSync(candidate))
   if (!found) {
     throw new SocratesError("repo_docs_assets_missing", "Bundled Socrates workspace repo-doc templates were not found.", {
+      recoverable: false,
+      details: { candidates },
+    })
+  }
+  return found
+}
+
+const bundledSkillsDir = (): string => {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    path.resolve(moduleDir, "../../memory/defaults/primary/skills"),
+    path.resolve(moduleDir, "memory/defaults/primary/skills"),
+    path.resolve(process.cwd(), "src/memory/defaults/primary/skills"),
+    path.resolve(process.cwd(), "dist/memory/defaults/primary/skills"),
+  ]
+  const found = candidates.find((candidate) => fs.existsSync(candidate))
+  if (!found) {
+    throw new SocratesError("skills_assets_missing", "Bundled Socrates skills were not found.", {
       recoverable: false,
       details: { candidates },
     })
@@ -1017,6 +1266,58 @@ const ensureBundledRepoDocs = (targetDir: string): void => {
   }
 }
 
+const migrateGlobalPrimaryFiles = (socratesHome: string): void => {
+  const primaryRoot = path.join(socratesHome, "primary")
+  if (!fs.existsSync(primaryRoot)) {
+    return
+  }
+  copyIfMissing(path.join(primaryRoot, "identity.md"), path.join(socratesHome, "identity.md"))
+  copyIfMissing(path.join(primaryRoot, "operating_principles.md"), path.join(socratesHome, "operating_principles.md"))
+  const oldLearned = readIfExists(path.join(primaryRoot, "learned_patterns.md"))
+  if (oldLearned?.trim()) {
+    ensureFile(path.join(socratesHome, "skills", "general", "SKILL.md"), fallbackSkillMarkdown("general", oldLearned.trim()))
+  }
+}
+
+const migrateUsefulPatternsToSkills = (socratesHome: string): void => {
+  const oldRoot = path.join(socratesHome, "useful_patterns")
+  const newRoot = path.join(socratesHome, "skills")
+  if (!fs.existsSync(oldRoot)) {
+    return
+  }
+  for (const skillFile of listMarkdownFiles(oldRoot).filter((filePath) => path.basename(filePath) === "SKILL.md")) {
+    const relativeDir = path.relative(oldRoot, path.dirname(skillFile)).replaceAll(path.sep, "/")
+    const safeName = slugSkillName(relativeDir || "general")
+    const targetDir = path.join(newRoot, uniqueSkillName(newRoot, safeName))
+    const content = readIfExists(skillFile) ?? ""
+    const parsed = parseSkillMarkdown(content, skillFile)
+    ensureFile(path.join(targetDir, "SKILL.md"), parsed ? content : fallbackSkillMarkdown(safeName, content.trim() || "Reusable migrated Socrates pattern."))
+  }
+  fs.rmSync(oldRoot, { recursive: true, force: true })
+}
+
+const copyIfMissing = (sourcePath: string, targetPath: string): void => {
+  const content = readIfExists(sourcePath)
+  if (content !== undefined && !fs.existsSync(targetPath)) {
+    ensureFile(targetPath, content)
+  }
+}
+
+const removeLegacyRepoDocs = (docsRoot: string): void => {
+  for (const name of LEGACY_REPO_DOC_NAMES) {
+    const filePath = path.join(docsRoot, name)
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      fs.unlinkSync(filePath)
+    }
+  }
+}
+
+const removeLegacyProjectRoot = (legacyRoot: string): void => {
+  if (fs.existsSync(legacyRoot)) {
+    fs.rmSync(legacyRoot, { recursive: true, force: true })
+  }
+}
+
 const isLegacyToolUsageSeed = (name: string, content: string): boolean => {
   const trimmed = content.trim()
   if (trimmed.length > 500) {
@@ -1024,76 +1325,24 @@ const isLegacyToolUsageSeed = (name: string, content: string): boolean => {
   }
   return (
     (name === "trace_retrieve.md" && trimmed.includes("Use as an investigation tool: browse recent/project conversations without query")) ||
-    (name === "edit_tools_and_bash.md" && trimmed.includes("Use patch/edit for file writes and Terminal for execution")) ||
-    (name === "read_tools.md" && trimmed.includes("Use bounded reads and targeted searches"))
+    (name === "edit_apply_patch.md" && trimmed.includes("Use patch/edit for file writes and Terminal for execution")) ||
+    (name === "read_search.md" && trimmed.includes("Use bounded reads and targeted searches"))
   )
 }
 
-const MEMORY_AGENT_SYSTEM_PROMPT = [
-  "You are the Socrates backend memory agent. You maintain private Socrates memory after user turns; you are not the chat assistant.",
-  "Return exactly one JSON object and no markdown fence, prose, prefix, or suffix.",
-  "Allowed top-level keys: no_op, diaryAppend, learnedPatternPatches, toolUsageDocPatches, soulPatchProposals.",
-  "If there is no durable learning, return {\"no_op\":true}.",
-  "diaryAppend should be concise markdown using exactly these headings: Worked On, Learned, Mistakes, Decisions, Next.",
-  "learnedPatternPatches, toolUsageDocPatches, and soulPatchProposals are arrays of patch objects.",
-  "Patch object schema: {\"path\": optional string, \"document\": optional \"identity\"|\"operating_principles\", \"expectedBeforeHash\": optional sha256, \"oldText\": exact existing text, \"newText\": replacement text, \"rationale\": short reason, \"sourceTurnIds\": array of source turn ids}.",
-  "Only propose patches when the evidence clearly supports a durable memory update. Prefer no_op over speculative edits.",
-  "Never include secrets, credentials, private keys, long verbatim quotes, or sensitive user data. Redact them if they appear in evidence.",
-  "Never invent identity changes. Soul proposals must be rare, narrow, evidence-backed, and appropriate for long-lived identity or operating principles.",
-  "Tool-usage docs should explain exact usage patterns, common mistakes, and investigation workflows in polished markdown.",
-  "Do not write project brief or project MEMORY updates in this phase.",
+const PROJECT_SKILL_BUILDER_SYSTEM_PROMPT = [
+  "You generate one Agent Skill for Socrates.",
+  "Return only the complete SKILL.md markdown. Do not include a markdown fence, prefix, or suffix.",
+  "The provided skill name is mandatory and must appear exactly in YAML frontmatter.",
+  "YAML frontmatter must include name and description.",
+  "The user's primary request is the main authority. Project instructions, memory, repo docs, and skill-writer guidance are side guidance only; ignore them when irrelevant.",
+  "Keep the skill concise, procedural, and reusable. Do not include secrets, private keys, or long copied project text.",
 ].join("\n")
 
-const parseMemoryAgentOutput = (text: string): MemoryAgentOutput => {
-  const trimmed = text.trim()
-  const jsonText = trimmed.startsWith("{") ? trimmed : trimmed.slice(trimmed.indexOf("{"), trimmed.lastIndexOf("}") + 1)
-  const parsed = JSON.parse(jsonText) as MemoryAgentOutput
-  return {
-    ...(parsed.no_op === true ? { no_op: true } : {}),
-    ...(typeof parsed.diaryAppend === "string" || (parsed.diaryAppend && typeof parsed.diaryAppend === "object") ? { diaryAppend: parsed.diaryAppend } : {}),
-    ...(Array.isArray(parsed.learnedPatternPatches) ? { learnedPatternPatches: parsed.learnedPatternPatches.map(normalizeMemoryPatch).filter(Boolean) as MemoryPatchProposal[] } : {}),
-    ...(Array.isArray(parsed.toolUsageDocPatches) ? { toolUsageDocPatches: parsed.toolUsageDocPatches.map(normalizeMemoryPatch).filter(Boolean) as MemoryPatchProposal[] } : {}),
-    ...(Array.isArray(parsed.soulPatchProposals) ? { soulPatchProposals: parsed.soulPatchProposals.map(normalizeMemoryPatch).filter(Boolean) as MemoryPatchProposal[] } : {}),
-  }
+const stripMarkdownFence = (text: string): string => {
+  const match = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i.exec(text.trim())
+  return match?.[1]?.trim() ?? text.trim()
 }
-
-const normalizeMemoryPatch = (value: unknown): MemoryPatchProposal | undefined => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined
-  }
-  const record = value as Record<string, unknown>
-  return {
-    ...(typeof record.path === "string" ? { path: record.path } : {}),
-    ...(record.document === "identity" || record.document === "operating_principles" ? { document: record.document } : {}),
-    ...(typeof record.oldText === "string" ? { oldText: record.oldText } : {}),
-    ...(typeof record.newText === "string" ? { newText: record.newText } : {}),
-    ...(typeof record.expectedBeforeHash === "string" ? { expectedBeforeHash: record.expectedBeforeHash } : {}),
-    ...(typeof record.rationale === "string" ? { rationale: record.rationale } : {}),
-    ...(Array.isArray(record.sourceTurnIds) ? { sourceTurnIds: record.sourceTurnIds.filter((item): item is string => typeof item === "string") } : {}),
-  }
-}
-
-const validateMemoryPatch = (current: string, patch: MemoryPatchProposal): { ok: true; next: string } | { ok: false; error: string } => {
-  if (patch.expectedBeforeHash && patch.expectedBeforeHash !== hashText(current)) {
-    return { ok: false, error: "Expected before hash did not match current file." }
-  }
-  if (!patch.oldText || patch.newText === undefined) {
-    return { ok: false, error: "Memory patch must include oldText and newText." }
-  }
-  const occurrences = countOccurrences(current, patch.oldText)
-  if (occurrences === 0) {
-    return { ok: false, error: "oldText was not found in target memory file." }
-  }
-  if (occurrences > 1) {
-    return { ok: false, error: "oldText matched more than once in target memory file." }
-  }
-  return { ok: true, next: current.replace(patch.oldText, patch.newText) }
-}
-
-const hashText = (text: string): string => createHash("sha256").update(text).digest("hex")
-
-const simpleDiff = (oldText: string, newText: string): string =>
-  [`--- old`, `+++ new`, ...oldText.split(/\r?\n/).map((line) => `-${line}`), ...newText.split(/\r?\n/).map((line) => `+${line}`)].join("\n")
 
 const ensureFile = (filePath: string, content: string): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
@@ -1123,104 +1372,30 @@ const listMarkdownFiles = (root: string): string[] => {
   })
 }
 
-const memoryFile = (root: string, category: SocratesMemoryCategory, absolutePath: string): MemoryFile => {
+const memoryFile = (root: string, area: ToolDocsArea, absolutePath: string): MemoryFile => {
   const stats = fs.statSync(absolutePath)
   const relativePath = path.relative(root, absolutePath).replaceAll(path.sep, "/")
-  const pathPrefix = category === "learned_patterns" || category === "tool_usage" ? "primary" : "project"
-  const diaryDate = category === "diary" ? /(\d{4}-\d{2}-\d{2})\.md$/.exec(relativePath)?.[1] : undefined
   return {
-    path: `${pathPrefix}/${relativePath}`,
+    path: relativePath,
     absolutePath,
-    category,
+    area,
     sizeBytes: stats.size,
     modifiedAt: stats.mtime.toISOString(),
-    ...(diaryDate ? { diaryDate } : {}),
   }
 }
 
-const categoryForScope = (scope: SocratesMemoryScope, category: SocratesMemoryCategory): boolean => {
-  if (scope === "all") {
-    return true
-  }
-  if (scope === "primary") {
-    return category === "learned_patterns" || category === "tool_usage"
-  }
-  return category === "project_brief" || category === "project_memory" || category === "diary"
-}
-
-const inferCategoryFromPath = (normalizedPath: string): SocratesMemoryCategory => {
-  if (normalizedPath === "primary/learned_patterns.md") {
-    return "learned_patterns"
-  }
-  if (normalizedPath.startsWith("primary/tool_usage/")) {
-    return "tool_usage"
-  }
-  if (normalizedPath === "project/project_brief.md") {
-    return "project_brief"
-  }
-  if (normalizedPath === "project/MEMORY.md") {
-    return "project_memory"
-  }
-  if (normalizedPath.startsWith("project/diary/")) {
-    return "diary"
-  }
-  throw new SocratesError("socrates_memory_path_not_exposed", "This Socrates memory path is not exposed through socrates_memory.", {
-    recoverable: true,
-    details: { path: normalizedPath },
-  })
-}
-
-const normalizeMemoryPath = (inputPath: string, category?: SocratesMemoryCategory): string => {
+const normalizeToolDocPath = (inputPath: string, area?: ToolDocsArea): string => {
   const normalized = inputPath.replaceAll("\\", "/").replace(/^\/+/, "")
-  if (normalized.startsWith("primary/") || normalized.startsWith("project/")) {
+  if (normalized.startsWith("tool_usage/")) {
     return normalized
   }
-  if (normalized === "identity.md" || normalized === "operating_principles.md") {
-    return `primary/${normalized}`
+  if (area === "tool_usage") {
+    return `tool_usage/${normalized}`
   }
-  if (normalized === "learned_patterns.md" || category === "learned_patterns") {
-    return normalized.startsWith("learned_patterns") ? `primary/${normalized}` : `primary/learned_patterns.md`
-  }
-  if (normalized.startsWith("tool_usage/") || category === "tool_usage") {
-    return normalized.startsWith("tool_usage/") ? `primary/${normalized}` : `primary/tool_usage/${normalized}`
-  }
-  if (normalized === "project_brief.md" || category === "project_brief") {
-    return normalized === "project_brief.md" ? "project/project_brief.md" : `project/${normalized}`
-  }
-  if (normalized === "MEMORY.md" || normalized === "memory.md" || category === "project_memory") {
-    return normalized.toLowerCase() === "memory.md" ? "project/MEMORY.md" : `project/${normalized}`
-  }
-  if (normalized.startsWith("diary/") || category === "diary") {
-    return normalized.startsWith("diary/") ? `project/${normalized}` : `project/diary/${normalized}`
-  }
-  return `project/${normalized}`
+  return normalized.includes("/") ? normalized : `tool_usage/${normalized}`
 }
 
-const withinRange = (value: string | undefined, after?: string, before?: string): boolean => {
-  if (!value) {
-    return !after && !before
-  }
-  return (after ? value >= after : true) && (before ? value <= before : true)
-}
-
-const withinDiaryFilters = (file: MemoryFile, input: SocratesMemoryToolInput): boolean => {
-  if (file.category !== "diary") {
-    return !input.diaryDateAfter && !input.diaryDateBefore && !input.year && !input.month && !input.day
-  }
-  const date = file.diaryDate
-  if (!date) {
-    return false
-  }
-  const [year, month, day] = date.split("-").map(Number)
-  return (
-    withinRange(date, input.diaryDateAfter, input.diaryDateBefore) &&
-    (input.year ? year === input.year : true) &&
-    (input.month ? month === input.month : true) &&
-    (input.day ? day === input.day : true)
-  )
-}
-
-const lineSearchResults = (file: MemoryFile, content: string, query: string, mode: SocratesMemorySearchMode, contextLines: number): MemoryResult[] => {
+const lineSearchResults = (file: MemoryFile, content: string, query: string, mode: DocsSearchMode, contextLines: number): DocsResult[] => {
   const lines = content.split(/\r?\n/)
   const compiled = compileSearch(query, mode)
   return lines.flatMap((line, index) => {
@@ -1235,22 +1410,18 @@ const lineSearchResults = (file: MemoryFile, content: string, query: string, mod
 const sectionMatches = (
   file: MemoryFile,
   content: string,
-  input: SocratesMemoryToolInput,
-  mode: SocratesMemorySearchMode,
+  _input: ToolDocsToolInput,
+  mode: DocsSearchMode,
   query: string | undefined,
   contextLines: number,
   charLimit: number,
-): MemoryResult[] => {
+): DocsResult[] => {
   const lines = content.split(/\r?\n/)
   const sections = markdownSections(lines)
   const compiled = query ? compileSearch(query, mode) : undefined
   return sections.flatMap((section) => {
     const text = lines.slice(section.start, section.end + 1).join("\n")
     const score = compiled ? compiled.score(text) : 1
-    const entryTimestamp = file.category === "diary" ? timestampFromHeading(section.title) : undefined
-    if (file.category === "diary" && !withinRange(entryTimestamp, input.entryAfter, input.entryBefore)) {
-      return []
-    }
     if (compiled && score <= 0) {
       return []
     }
@@ -1258,18 +1429,14 @@ const sectionMatches = (
     return [
       {
         resultNumber: 0,
-        resultType: file.category === "diary" ? "diary_entry" : "section",
+        resultType: "section",
         path: file.path,
         title: section.title,
         matchedText: query ? bestMatchingLine(text, query, mode) : section.title,
         snippet: clipped,
         modifiedAt: file.modifiedAt,
-        ...(file.diaryDate ? { diaryDate: file.diaryDate } : {}),
-        ...(entryTimestamp ? { entryTimestamp } : {}),
         lineStart: section.start + 1,
         lineEnd: section.end + 1,
-        score,
-        inspectArgs: { operation: "read", path: file.path, category: file.category },
         ...(contextLines > 0
           ? {
               contextBefore: truncateToContextBudget(lines.slice(Math.max(0, section.start - contextLines), section.start).join("\n"), MAX_CONTEXT_CHARS),
@@ -1281,18 +1448,15 @@ const sectionMatches = (
   })
 }
 
-const fileResult = (file: MemoryFile, content: string, charLimit: number): MemoryResult => ({
+const fileResult = (file: MemoryFile, content: string, charLimit: number): DocsResult => ({
   resultNumber: 0,
   resultType: "file",
   path: file.path,
   title: firstHeading(content),
   snippet: truncateToContextBudget(content, charLimit),
   modifiedAt: file.modifiedAt,
-  ...(file.diaryDate ? { diaryDate: file.diaryDate } : {}),
   lineStart: 1,
   lineEnd: content.split(/\r?\n/).length,
-  score: 0,
-  inspectArgs: { operation: "read", path: file.path, category: file.category },
 })
 
 const lineWindowResult = (
@@ -1301,10 +1465,10 @@ const lineWindowResult = (
   startIndex: number,
   endIndex: number,
   matchedText: string,
-  score: number,
-  resultType: MemoryResult["resultType"],
+  _score: number,
+  resultType: DocsResult["resultType"],
   contextLines: number,
-): MemoryResult => {
+): DocsResult => {
   const contextBefore = lines.slice(Math.max(0, startIndex - contextLines), startIndex).join("\n")
   const contextAfter = lines.slice(endIndex + 1, Math.min(lines.length, endIndex + 1 + contextLines)).join("\n")
   return {
@@ -1317,24 +1481,21 @@ const lineWindowResult = (
     contextAfter: truncateToContextBudget(contextAfter, MAX_CONTEXT_CHARS),
     snippet: truncateToContextBudget([contextBefore, matchedText, contextAfter].filter(Boolean).join("\n"), MAX_CONTEXT_CHARS),
     modifiedAt: file.modifiedAt,
-    ...(file.diaryDate ? { diaryDate: file.diaryDate } : {}),
     lineStart: startIndex + 1,
     lineEnd: endIndex + 1,
-    score,
-    inspectArgs: { operation: "read", path: file.path, category: file.category },
   }
 }
 
-const numberResult = (result: MemoryResult, index: number): MemoryResult => ({ ...result, resultNumber: index + 1 })
+const numberResult = (result: DocsResult, index: number): DocsResult => ({ ...result, resultNumber: index + 1 })
 
-const capMemoryResults = (results: MemoryResult[], charLimit: number): { results: MemoryResult[]; truncation: TruncationMetadata; warnings: string[] } => {
+const capMemoryResults = (results: DocsResult[], charLimit: number): { results: DocsResult[]; truncation: TruncationMetadata; warnings: string[] } => {
   const warnings: string[] = []
   let used = 0
-  const capped: MemoryResult[] = []
+  const capped: DocsResult[] = []
   for (const result of results) {
     const serializedLength = JSON.stringify(result).length
     if (used + serializedLength > charLimit && capped.length > 0) {
-      warnings.push("Socrates memory output was truncated by charLimit; narrow filters or increase charLimit.")
+      warnings.push("Tool docs output was truncated by charLimit; narrow filters or increase charLimit.")
       break
     }
     used += serializedLength
@@ -1352,7 +1513,7 @@ const capMemoryResults = (results: MemoryResult[], charLimit: number): { results
   }
 }
 
-const compileSearch = (query: string, mode: SocratesMemorySearchMode): { score: (text: string) => number } => {
+const compileSearch = (query: string, mode: DocsSearchMode): { score: (text: string) => number } => {
   const lowerQuery = query.toLowerCase()
   const terms = searchTerms(query)
   if (mode === "regex") {
@@ -1360,7 +1521,7 @@ const compileSearch = (query: string, mode: SocratesMemorySearchMode): { score: 
     try {
       regex = new RegExp(query, "i")
     } catch (error) {
-      throw new SocratesError("socrates_memory_invalid_regex", "socrates_memory regex query is invalid.", {
+      throw new SocratesError("tool_docs_invalid_regex", "tool_docs regex query is invalid.", {
         recoverable: true,
         details: { message: error instanceof Error ? error.message : String(error) },
       })
@@ -1395,7 +1556,7 @@ const countCaseInsensitive = (text: string, lowerNeedle: string): number => {
   return text.toLowerCase().split(lowerNeedle).length - 1
 }
 
-const bestMatchingLine = (text: string, query: string, mode: SocratesMemorySearchMode): string => {
+const bestMatchingLine = (text: string, query: string, mode: DocsSearchMode): string => {
   const compiled = compileSearch(query, mode)
   return text.split(/\r?\n/).find((line) => compiled.score(line) > 0)?.slice(0, 2_000) ?? query
 }
@@ -1427,8 +1588,6 @@ const nearestHeading = (lines: string[], index: number): string | undefined => {
   return undefined
 }
 
-const timestampFromHeading = (heading: string): string | undefined => /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z/.exec(heading)?.[0]
-
 const clampContextLines = (value?: number): number => Math.min(value ?? DEFAULT_CONTEXT_LINES, 100)
 
 const truncateToContextBudget = (text: string, charLimit: number): string => truncate(text, Math.min(charLimit, MAX_CONTEXT_CHARS)).text
@@ -1439,7 +1598,7 @@ const safeJoin = (root: string, relativePath: string): string => {
   const resolved = path.resolve(root, relativePath)
   const resolvedRoot = path.resolve(root)
   if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
-    throw new SocratesError("socrates_memory_unsafe_path", "Socrates memory path must stay inside the memory root.", { recoverable: true })
+    throw new SocratesError("safe_path_escape", "Path must stay inside the expected root.", { recoverable: true })
   }
   return resolved
 }

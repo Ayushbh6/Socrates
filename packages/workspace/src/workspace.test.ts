@@ -340,15 +340,15 @@ describe("workspace tools", () => {
     await expect(
       editWorkspace({ path: ".socrates/PROJECT_NOTES.md", oldString: "old", newString: "new" }, { workspacePath }),
     ).rejects.toMatchObject({
-      code: "project_notes_dedicated_tool_required",
-      message: expect.stringContaining("project_notes"),
+      code: "project_docs_dedicated_tool_required",
+      message: expect.stringContaining("project_docs"),
       recoverable: true,
     })
     await expect(
       editWorkspace({ path: ".socrates/PROJECT_NOTES.md", content: "new note\n", overwrite: true }, { workspacePath }),
     ).rejects.toMatchObject({
-      code: "project_notes_dedicated_tool_required",
-      message: expect.stringContaining("PROJECT_NOTES.md can only be edited through the project_notes tool"),
+      code: "project_docs_dedicated_tool_required",
+      message: expect.stringContaining("project_docs"),
     })
     expect(fs.readFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "utf8")).toBe("old note\n")
   })
@@ -357,7 +357,7 @@ describe("workspace tools", () => {
     const workspacePath = tempDir()
 
     await expect(editWorkspace({ path: ".socrates/PROJECT_NOTES.md", content: "new note\n" }, { workspacePath })).rejects.toMatchObject({
-      code: "project_notes_dedicated_tool_required",
+      code: "project_docs_dedicated_tool_required",
       recoverable: true,
     })
     expect(fs.existsSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"))).toBe(false)
@@ -381,6 +381,33 @@ describe("workspace tools", () => {
       recoverable: true,
     })
     expect(fs.readFileSync(path.join(workspacePath, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")).toBe("old rule\n")
+  })
+
+  it("allows reading project skills but rejects generic edits to them", async () => {
+    const workspacePath = tempDir()
+    const skillPath = path.join(workspacePath, ".socrates", "skills", "memory-review", "SKILL.md")
+    fs.mkdirSync(path.dirname(skillPath), { recursive: true })
+    fs.writeFileSync(skillPath, "---\nname: memory-review\ndescription: Use for memory reviews.\n---\n\nold skill\n")
+
+    const read = await readWorkspacePath({ path: ".socrates/skills/memory-review/SKILL.md" }, { workspacePath })
+    const search = await searchWorkspace({ mode: "text", query: "old skill", path: ".socrates/skills" }, { workspacePath })
+
+    expect(read.content).toContain("old skill")
+    expect(search.matches[0]?.path).toBe(".socrates/skills/memory-review/SKILL.md")
+    await expect(
+      editWorkspace({ path: ".socrates/skills/memory-review/SKILL.md", oldString: "old", newString: "new" }, { workspacePath }),
+    ).rejects.toMatchObject({
+      code: "project_skills_dedicated_builder_required",
+      message: expect.stringContaining("Skills +"),
+      recoverable: true,
+    })
+    await expect(
+      editWorkspace({ path: ".socrates/skills/new-skill/SKILL.md", content: "# New\n" }, { workspacePath }),
+    ).rejects.toMatchObject({
+      code: "project_skills_dedicated_builder_required",
+      recoverable: true,
+    })
+    expect(fs.readFileSync(skillPath, "utf8")).toContain("old skill")
   })
 
   it("searches files and text inside the workspace", async () => {
@@ -673,8 +700,8 @@ describe("workspace tools", () => {
     fs.writeFileSync(path.join(workspacePath, "notes-copy.md"), "copy note\n")
 
     await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
-      code: "project_notes_dedicated_tool_required",
-      message: expect.stringContaining("project_notes"),
+      code: "project_docs_dedicated_tool_required",
+      message: expect.stringContaining("project_docs"),
       recoverable: true,
     })
     expect(fs.readFileSync(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "utf8")).toBe("old note\n")
@@ -722,6 +749,50 @@ describe("workspace tools", () => {
       recoverable: true,
     })
     expect(fs.readFileSync(path.join(workspacePath, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")).toBe("old rule\n")
+  })
+
+  it.each([
+    [
+      "create",
+      ["*** Begin Patch", "*** Add File: .socrates/skills/memory-review/SKILL.md", "+# Skill", "*** End Patch", ""].join("\n"),
+    ],
+    [
+      "update",
+      ["*** Begin Patch", "*** Update File: .socrates/skills/memory-review/SKILL.md", "@@", "-old skill", "+new skill", "*** End Patch", ""].join("\n"),
+    ],
+    ["delete", ["*** Begin Patch", "*** Delete File: .socrates/skills/memory-review/SKILL.md", "*** End Patch", ""].join("\n")],
+    [
+      "rename from",
+      [
+        "*** Begin Patch",
+        "*** Update File: .socrates/skills/memory-review/SKILL.md",
+        "*** Move to: skill-copy.md",
+        "*** End Patch",
+        "",
+      ].join("\n"),
+    ],
+    [
+      "rename to",
+      [
+        "*** Begin Patch",
+        "*** Update File: skill-copy.md",
+        "*** Move to: .socrates/skills/memory-review/SKILL.md",
+        "*** End Patch",
+        "",
+      ].join("\n"),
+    ],
+  ])("rejects apply_patch %s operations involving project skills", async (_caseName, patch) => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, ".socrates", "skills", "memory-review"), { recursive: true })
+    fs.writeFileSync(path.join(workspacePath, ".socrates", "skills", "memory-review", "SKILL.md"), "old skill\n")
+    fs.writeFileSync(path.join(workspacePath, "skill-copy.md"), "copy skill\n")
+
+    await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
+      code: "project_skills_dedicated_builder_required",
+      message: expect.stringContaining("Skills +"),
+      recoverable: true,
+    })
+    expect(fs.readFileSync(path.join(workspacePath, ".socrates", "skills", "memory-review", "SKILL.md"), "utf8")).toBe("old skill\n")
   })
 
   it("applies and verifies delete patches", async () => {
@@ -1484,6 +1555,73 @@ describe("workspace tools", () => {
       expect(relative.exitCode).toBe(0)
       expect(relative.cwd.endsWith("nested")).toBe(true)
       expect(externalDestination.exitCode).toBe(0)
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it.each([
+    ["project skills", "mkdir -p .socrates/skills/memory-review"],
+    ["project skills singular typo", "mkdir -p .socrates/skill/memory-review"],
+    ["project memory", "printf note > .socrates/MEMORY.md"],
+    ["project repo docs", "printf rule > .socrates/repo_docs/REPO_RULES.md"],
+    ["global skills with home alias", "mkdir -p ~/.Socrates/skills/memory-review"],
+    ["global tool usage with PowerShell home alias", "Set-Content $HOME\\.Socrates\\tool_usage\\terminal.md 'x'"],
+    ["global soul with env user profile alias", "Set-Content %USERPROFILE%\\.Socrates\\identity.md 'x'"],
+  ])("rejects Terminal commands that mention protected Socrates paths: %s", async (_caseName, command) => {
+    const workspacePath = tempDir()
+    const fakeHome = path.join(workspacePath, "home")
+    const session = createWorkspaceShellSession(workspacePath, { env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome } })
+    try {
+      await expect(session.run({ command })).rejects.toMatchObject({
+        code: "terminal_protected_socrates_path_rejected",
+        message: expect.stringContaining("Socrates-owned"),
+        recoverable: true,
+      })
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("rejects long-running Terminal commands that mention protected Socrates paths", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath)
+    try {
+      await expect(session.run({ operation: "start", command: "node watcher.js --output .socrates/skills/memory-review/SKILL.md" })).rejects.toMatchObject({
+        code: "terminal_protected_socrates_path_rejected",
+        recoverable: true,
+      })
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("rejects Terminal commands that mention absolute protected Socrates paths", async () => {
+    const workspacePath = tempDir()
+    const fakeHome = path.join(workspacePath, "home")
+    const session = createWorkspaceShellSession(workspacePath, { env: { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome } })
+    const absoluteProjectSkill = path.join(workspacePath, ".socrates", "skills", "memory-review", "SKILL.md")
+    const absoluteGlobalSkill = path.join(fakeHome, ".Socrates", "skills", "memory-review", "SKILL.md")
+    try {
+      await expect(session.run({ command: `printf x > ${JSON.stringify(absoluteProjectSkill)}` })).rejects.toMatchObject({
+        code: "terminal_protected_socrates_path_rejected",
+      })
+      await expect(session.run({ command: `printf x > ${JSON.stringify(absoluteGlobalSkill)}` })).rejects.toMatchObject({
+        code: "terminal_protected_socrates_path_rejected",
+      })
+    } finally {
+      session.dispose()
+    }
+  })
+
+  it("allows ordinary Terminal commands after protected path preflight", async () => {
+    const workspacePath = tempDir()
+    const session = createWorkspaceShellSession(workspacePath)
+    try {
+      const result = await session.run({ command: nodeCommand("process.stdout.write('ok')") })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toBe("ok")
     } finally {
       session.dispose()
     }

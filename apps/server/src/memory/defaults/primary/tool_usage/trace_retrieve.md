@@ -26,7 +26,7 @@ For conversation-memory questions, browse/search messages first. For runtime/too
 - It must not treat retained attachment files as proof of a deleted conversation.
 - It must not infer `turnNo` from natural language. `turnNo` must be passed as a structured integer.
 - It must not recursively search old `trace_retrieve` outputs as normal evidence.
-- It must not be used for Socrates memory pages; use `socrates_memory` for that.
+- It must not be used for Socrates memory/docs pages; use `tool_docs`, `skills`, `project_docs`, or `repo_docs` for those.
 
 ## Mental Model
 

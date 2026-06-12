@@ -24,5 +24,5 @@ export {
   type StartCompactionSnapshotInput,
 } from "./context/contextCompression"
 export { buildSocratesSystemPrompt, socratesBasePrompt, type SocratesPromptContext } from "./prompts/socratesPrompt"
-export { createDefaultToolRegistry, ToolRegistry } from "./tools/registry"
+export { createDefaultToolRegistry, createMemoryToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"

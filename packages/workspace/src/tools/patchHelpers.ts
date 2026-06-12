@@ -3,6 +3,7 @@ import type { ApplyPatchToolInput, EditToolOutput } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import {
   assertNotProjectNotesMutation,
+  assertNotProjectSkillsMutation,
   assertNotRepoDocsMutation,
   clampCharLimit,
   isSensitivePath,
@@ -416,6 +417,7 @@ const validateStructuredPatchPaths = (operations: StructuredPatchOperation[], wo
       const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
       assertNotProjectNotesMutation(workspacePath, absolutePath, patchPath)
       assertNotRepoDocsMutation(workspacePath, absolutePath, patchPath)
+      assertNotProjectSkillsMutation(workspacePath, absolutePath, patchPath)
       if (isSensitivePath(absolutePath)) {
         throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
           details: { path: patchPath },
@@ -855,6 +857,7 @@ const validatePatch = (changes: PatchFileChange[], workspacePath: string): void 
       const absolutePath = resolveWorkspacePath(workspacePath, patchPath)
       assertNotProjectNotesMutation(workspacePath, absolutePath, patchPath)
       assertNotRepoDocsMutation(workspacePath, absolutePath, patchPath)
+      assertNotProjectSkillsMutation(workspacePath, absolutePath, patchPath)
       if (isSensitivePath(absolutePath)) {
         throw new SocratesError("sensitive_path_denied", "Editing sensitive credential-like paths is denied in V1.", {
           details: { path: patchPath },

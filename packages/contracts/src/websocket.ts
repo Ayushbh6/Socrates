@@ -365,7 +365,6 @@ export const memoryAgentCompletedPayloadSchema = z
     jobId: idSchema,
     status: z.enum(["completed", "no_op"]),
     modelId: z.string().min(1),
-    diaryAppended: z.boolean(),
     actionsApplied: z.number().int().nonnegative(),
     actionsRejected: z.number().int().nonnegative(),
   })
@@ -378,19 +377,12 @@ export const memoryAgentFailedPayloadSchema = z
   })
   .strict()
 
-export const memoryDiaryAppendedPayloadSchema = z
-  .object({
-    jobId: idSchema.optional(),
-    path: z.string().min(1),
-  })
-  .strict()
-
 export const memoryPrimaryUpdatedPayloadSchema = z
   .object({
     jobId: idSchema,
     actionId: idSchema,
     path: z.string().min(1),
-    targetKind: z.enum(["learned_patterns", "tool_usage"]),
+    targetKind: z.enum(["tool_usage", "skills"]),
     rationale: z.string().min(1).optional(),
   })
   .strict()
@@ -568,7 +560,6 @@ export const contextCompactionFailedEventSchema = socketEnvelopeSchema(
 export const memoryAgentStartedEventSchema = socketEnvelopeSchema("memory.agent.started", memoryAgentStartedPayloadSchema)
 export const memoryAgentCompletedEventSchema = socketEnvelopeSchema("memory.agent.completed", memoryAgentCompletedPayloadSchema)
 export const memoryAgentFailedEventSchema = socketEnvelopeSchema("memory.agent.failed", memoryAgentFailedPayloadSchema)
-export const memoryDiaryAppendedEventSchema = socketEnvelopeSchema("memory.diary.appended", memoryDiaryAppendedPayloadSchema)
 export const memoryPrimaryUpdatedEventSchema = socketEnvelopeSchema("memory.primary.updated", memoryPrimaryUpdatedPayloadSchema)
 export const memorySoulConfirmationRequestedEventSchema = socketEnvelopeSchema(
   "memory.soul.confirmation.requested",
@@ -615,7 +606,6 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   memoryAgentStartedEventSchema,
   memoryAgentCompletedEventSchema,
   memoryAgentFailedEventSchema,
-  memoryDiaryAppendedEventSchema,
   memoryPrimaryUpdatedEventSchema,
   memorySoulConfirmationRequestedEventSchema,
   memorySoulConfirmationResolvedEventSchema,

@@ -2,11 +2,13 @@ import type {
   Conversation,
   ConversationCostUsage,
   Message,
+  MemoryAgentSettings,
   TurnUsageReport,
   Project,
   ProjectEmbeddingStatus,
   ProjectInstructions,
   ProjectResource,
+  SkillSummary,
   ProjectWorkspace,
 } from "@socrates/contracts"
 
@@ -23,6 +25,8 @@ export type ProjectDashboard = {
   resources: ProjectResource[]
   conversations: Conversation[]
   instructions?: ProjectInstructions
+  skills: SkillSummary[]
+  memoryAgentSettings?: MemoryAgentSettings
   embeddingStatus?: ProjectEmbeddingStatus
 }
 

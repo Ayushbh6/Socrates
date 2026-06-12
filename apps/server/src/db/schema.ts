@@ -687,6 +687,23 @@ export const memoryAgentJobs = sqliteTable(
   }),
 )
 
+export const projectMemoryAgentSettings = sqliteTable(
+  "project_memory_agent_settings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
+    thinkingEffort: text("thinking_effort"),
+    ...timestamps,
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    projectIdx: uniqueIndex("project_memory_agent_settings_project_idx").on(table.projectId),
+  }),
+)
+
 export const memoryAgentActions = sqliteTable(
   "memory_agent_actions",
   {

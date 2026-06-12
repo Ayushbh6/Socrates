@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process"
 import type { IPty } from "@homebridge/node-pty-prebuilt-multiarch"
 import type { BashToolInput, BashToolOutput, TruncationMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
-import { clampCharLimit, resolveWorkspacePath } from "./common"
+import { assertNoProtectedSocratesPathMentions, clampCharLimit, resolveWorkspacePath } from "./common"
 
 type ShellKind = "posix" | "powershell" | "cmd"
 type BashOperation = NonNullable<BashToolInput["operation"]>
@@ -151,6 +151,7 @@ export class WorkspaceShellSession {
       throw new SocratesError("shell_command_required", "A shell command is required for run operations.")
     }
     rejectLeadingExternalCd(commandText, this.workspacePath)
+    assertNoProtectedSocratesPathMentions(commandText, protectedPathOptions(this.env))
 
     const startedAt = Date.now()
     const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
@@ -301,6 +302,7 @@ export class WorkspaceShellSession {
       throw new SocratesError("shell_command_required", "A shell command is required for start operations.")
     }
     rejectLeadingExternalCd(commandText, this.workspacePath)
+    assertNoProtectedSocratesPathMentions(commandText, protectedPathOptions(this.env))
 
     const startedAt = Date.now()
     const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
@@ -769,6 +771,11 @@ const makeCmdAdapter = (platform: NodeJS.Platform, executable: string): ShellAda
       .filter(Boolean)
       .join("\r\n"),
 })
+
+const protectedPathOptions = (env: NodeJS.ProcessEnv): { homeDir?: string } => {
+  const homeDir = env.HOME ?? env.USERPROFILE
+  return homeDir ? { homeDir } : {}
+}
 
 const normalizeShellError = (error: unknown, code: "shell_start_failed" | "shell_write_failed" | "shell_protocol_failed", adapter: ShellAdapter, cwd: string): SocratesError => {
   if (error instanceof SocratesError) {

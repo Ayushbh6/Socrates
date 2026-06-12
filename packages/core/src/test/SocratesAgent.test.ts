@@ -40,14 +40,16 @@ describe("SocratesAgent", () => {
     const requestJson = JSON.stringify(seen[0])
     expect(requestJson).toContain("You are Socrates")
     expect(requestJson).toContain("Hi")
-    expect(requestJson).toContain("Socrates tracks freshness from read results")
-    expect(requestJson).toContain("product/user-facing copy should call it Terminal")
-    expect(requestJson).toContain("overwrite: true only when intentionally replacing an entire existing file")
-    expect(requestJson).toContain("set regex=true")
-    expect(requestJson).toContain("search .socrates/attachments directly")
-    expect(requestJson).toContain("Use repo_docs for durable repo doctrine")
-    expect(requestJson).toContain("compare the reported file and line with the current file contents")
-    expect(requestJson).toContain("distinguish credential/config mismatches from service availability")
+    expect(requestJson).toContain("Read before existing-file mutations")
+    expect(requestJson).toContain("Product copy says Terminal; tool id is bash")
+    expect(requestJson).toContain("tool_docs")
+    expect(requestJson).toContain("skills")
+    expect(requestJson).toContain("project_docs")
+    expect(requestJson).toContain("Use regex=true for regex syntax")
+    expect(requestJson).toContain(".socrates/MEMORY.md")
+    expect(requestJson).toContain("repo_docs")
+    expect(requestJson).toContain("compare stack trace lines to current files")
+    expect(requestJson).toContain("distinguish config/credential issues from service availability")
   })
 
   it("exposes the base tool set", () => {
@@ -59,8 +61,9 @@ describe("SocratesAgent", () => {
       "apply_patch",
       "bash",
       "trace_retrieve",
-      "socrates_memory",
-      "project_notes",
+      "tool_docs",
+      "skills",
+      "project_docs",
       "repo_docs",
       "soul",
       "list_project_resources",
@@ -256,14 +259,21 @@ describe("SocratesAgent", () => {
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
         appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
       }),
-      socrates_memory: async () => ({
+      tool_docs: async () => ({
         operation: "search",
         results: [],
         totalMatches: 0,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
       }),
-      project_notes: async () => ({
+      skills: async () => ({
+        operation: "list",
+        skills: [],
+        totalMatches: 0,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
+      }),
+      project_docs: async () => ({
         operation: "read",
+        area: "notes",
         path: ".socrates/PROJECT_NOTES.md",
         content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
@@ -316,8 +326,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(12)
-    expect(countRequests[1]?.toolCount).toBe(12)
+    expect(countRequests[0]?.toolCount).toBe(13)
+    expect(countRequests[1]?.toolCount).toBe(13)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -611,7 +621,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(12)
+    expect(countRequests[0]?.toolCount).toBe(13)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -674,7 +684,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(12)
+    expect(countRequests[0]?.toolCount).toBe(13)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -732,14 +742,21 @@ describe("SocratesAgent", () => {
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
         appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
       }),
-      socrates_memory: async () => ({
+      tool_docs: async () => ({
         operation: "search",
         results: [],
         totalMatches: 0,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
       }),
-      project_notes: async () => ({
+      skills: async () => ({
+        operation: "list",
+        skills: [],
+        totalMatches: 0,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
+      }),
+      project_docs: async () => ({
         operation: "read",
+        area: "notes",
         path: ".socrates/PROJECT_NOTES.md",
         content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
@@ -1036,12 +1053,12 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("provider secrets")
     expect(request.system).toContain("Semantic retrieval status:")
     expect(request.system).toContain("Semantic retrieval: ready.")
-    expect(request.system).toContain("mcp_registry is the only base MCP-facing tool")
+    expect(request.system).toContain("MCP available on demand through mcp_registry")
     expect(request.system).not.toContain("mcp__playwright__")
-    expect(request.system).toContain('mode="exact"')
-    expect(request.system).toContain('mode="audit"')
-    expect(request.system).toContain("Do not hardcode or guess absolute workspace paths")
-    expect(request.system).toContain("plt.show()")
+    expect(request.system).toContain("exact is lexical")
+    expect(request.system).toContain("audit is for tools")
+    expect(request.system).toContain("Do not begin with guessed absolute cd paths")
+    expect(request.system).toContain("Terminal commands start in the active workspace")
   })
 })
 
@@ -1107,14 +1124,21 @@ const emptyToolExecutors = (): ToolExecutors => ({
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
     appliedFilters: { operation: "search", scope: "current_conversation", mode: "combined" },
   }),
-  socrates_memory: async () => ({
+  tool_docs: async () => ({
     operation: "search",
     results: [],
     totalMatches: 0,
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
   }),
-  project_notes: async () => ({
+  skills: async () => ({
+    operation: "list",
+    skills: [],
+    totalMatches: 0,
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 2 },
+  }),
+  project_docs: async () => ({
     operation: "read",
+    area: "notes",
     path: ".socrates/PROJECT_NOTES.md",
     content: "",
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },

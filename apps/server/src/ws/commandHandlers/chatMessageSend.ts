@@ -677,7 +677,7 @@ export const handleChatMessageSend = async (
     )
     appendAndEmit(emitEvent, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
-    store.appendDiaryForTurn({ projectId, conversationId, sessionId: created.sessionId, turnId: created.turnId })
+    store.enqueueGlobalMemoryForTurn({ projectId, conversationId, sessionId: created.sessionId, turnId: created.turnId })
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({
@@ -793,13 +793,14 @@ const createToolExecutors = (
     }
   },
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
-  socrates_memory: (input) => Promise.resolve(store.runSocratesMemoryTool(projectId, input)),
-  project_notes: (input, context) =>
-    input.operation === "patch"
-      ? withWorkspaceMutationLock(context.workspacePath, async () => store.runProjectNotesTool(projectId, context.workspacePath, input))
-      : Promise.resolve(store.runProjectNotesTool(projectId, context.workspacePath, input)),
+  tool_docs: (input) => Promise.resolve(store.runToolDocsTool(projectId, input)),
+  skills: (input) => Promise.resolve(store.runSkillsTool(projectId, input)),
+  project_docs: (input, context) =>
+    input.operation === "edit"
+      ? withWorkspaceMutationLock(context.workspacePath, async () => store.runProjectDocsTool(projectId, context.workspacePath, input))
+      : Promise.resolve(store.runProjectDocsTool(projectId, context.workspacePath, input)),
   repo_docs: (input, context) =>
-    input.operation === "patch"
+    input.operation === "edit"
       ? withWorkspaceMutationLock(context.workspacePath, async () => store.runRepoDocsTool(projectId, context.workspacePath, input))
       : Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),

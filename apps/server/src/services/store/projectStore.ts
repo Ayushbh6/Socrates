@@ -134,6 +134,7 @@ export class ProjectStore extends StoreBase {
       primaryWorkspace: mapProjectWorkspace(workspaceRow),
       resources: this.mapResourceRows(resourceRows) as ProjectResource[],
       conversations: conversationRows.map(mapConversation),
+      skills: [],
       ...(instructionRow ? { instructions: mapProjectInstructions(instructionRow) } : {}),
     }
   }

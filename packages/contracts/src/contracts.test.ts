@@ -15,6 +15,8 @@ import {
   clientCommandSchema,
   completeOnboardingRequestSchema,
   completeOnboardingResponseSchema,
+  buildProjectSkillRequestSchema,
+  buildProjectSkillResponseSchema,
   configureProjectEmbeddingsRequestSchema,
   configureProjectEmbeddingsResponseSchema,
   connectionReadyEventSchema,
@@ -50,12 +52,12 @@ import {
   listProjectsResponseSchema,
   markAllNotificationsReadResponseSchema,
   markNotificationReadResponseSchema,
+  memoryAgentSettingsSchema,
   messageCompletedEventSchema,
   messageSchema,
   memoryAgentCompletedEventSchema,
   memoryAgentFailedEventSchema,
   memoryAgentStartedEventSchema,
-  memoryDiaryAppendedEventSchema,
   memoryPrimaryUpdatedEventSchema,
   memorySoulConfirmationRequestedEventSchema,
   memorySoulConfirmationResolvedEventSchema,
@@ -84,6 +86,8 @@ import {
   uploadProjectResourcesResponseSchema,
   updateConversationRequestSchema,
   updateConversationResponseSchema,
+  updateProjectMemoryAgentSettingsRequestSchema,
+  updateProjectMemoryAgentSettingsResponseSchema,
   updateProjectWorkspaceRequestSchema,
   updateProjectWorkspaceResponseSchema,
   upsertProjectInstructionsRequestSchema,
@@ -101,8 +105,12 @@ import {
   listProjectResourcesToolOutputSchema,
   mcpRegistryToolModelInputSchema,
   normalizedToolCallSchema,
-  projectNotesToolInputSchema,
-  projectNotesToolOutputSchema,
+  skillsToolInputSchema,
+  skillsToolOutputSchema,
+  toolDocsToolInputSchema,
+  toolDocsToolOutputSchema,
+  projectDocsToolInputSchema,
+  projectDocsToolOutputSchema,
   repoDocsToolInputSchema,
   repoDocsToolOutputSchema,
   readToolInputSchema,
@@ -110,8 +118,6 @@ import {
   searchToolInputSchema,
   soulToolInputSchema,
   soulToolOutputSchema,
-  socratesMemoryToolInputSchema,
-  socratesMemoryToolOutputSchema,
   toolExecutionResultSchema,
   traceRetrieveToolInputSchema,
   traceRetrieveToolModelInputSchema,
@@ -161,6 +167,23 @@ const instructions = {
   id: "pins_1",
   projectId: "proj_1",
   content: "Be direct.",
+  updatedAt: timestamp,
+}
+
+const skill = {
+  name: "memory-review",
+  description: "Use when reviewing Socrates memory changes.",
+  scope: "project" as const,
+  path: "memory-review/SKILL.md",
+  updatedAt: timestamp,
+}
+
+const memoryAgentSettings = {
+  id: "memcfg_1",
+  projectId: "proj_1",
+  providerId: "openrouter",
+  modelId: "xiaomi/mimo-v2.5-pro",
+  thinkingEnabled: false,
   updatedAt: timestamp,
 }
 
@@ -366,6 +389,8 @@ describe("http contracts", () => {
         resources: [resource],
         conversations: [conversation],
         instructions,
+        skills: [skill],
+        memoryAgentSettings,
       }).success,
     ).toBe(true)
     expect(
@@ -423,9 +448,24 @@ describe("http contracts", () => {
         resources: [resource],
         conversations: [conversation],
         instructions,
+        skills: [skill],
+        memoryAgentSettings,
         embeddingStatus,
       }).success,
     ).toBe(true)
+  })
+
+  it("parses project memory agent settings contracts", () => {
+    expect(memoryAgentSettingsSchema.safeParse(memoryAgentSettings).success).toBe(true)
+    expect(
+      updateProjectMemoryAgentSettingsRequestSchema.safeParse({
+        providerId: "openrouter",
+        modelId: "xiaomi/mimo-v2.5-pro",
+        thinkingEnabled: false,
+      }).success,
+    ).toBe(true)
+    expect(updateProjectMemoryAgentSettingsRequestSchema.safeParse({ providerId: "openrouter", modelId: "", thinkingEnabled: false }).success).toBe(false)
+    expect(updateProjectMemoryAgentSettingsResponseSchema.safeParse({ settings: memoryAgentSettings }).success).toBe(true)
   })
 
   it("parses project embedding HTTP contracts", () => {
@@ -466,6 +506,8 @@ describe("http contracts", () => {
     expect(upsertProjectInstructionsRequestSchema.safeParse({ content: "Use the repo docs first." }).success).toBe(true)
     expect(upsertProjectInstructionsRequestSchema.safeParse({ content: "" }).success).toBe(false)
     expect(upsertProjectInstructionsResponseSchema.safeParse({ instructions }).success).toBe(true)
+    expect(buildProjectSkillRequestSchema.safeParse({ request: "Build a memory review skill." }).success).toBe(true)
+    expect(buildProjectSkillResponseSchema.safeParse({ skill }).success).toBe(true)
   })
 
   it("parses conversation creation contracts", () => {
@@ -768,7 +810,6 @@ describe("websocket server event contracts", () => {
         jobId: "memjob_1",
         status: "completed",
         modelId: "deepseek/deepseek-v4-pro",
-        diaryAppended: true,
         actionsApplied: 1,
         actionsRejected: 0,
       }),
@@ -782,13 +823,12 @@ describe("websocket server event contracts", () => {
         },
       }),
     ),
-    memoryDiaryAppendedEventSchema.safeParse(envelope("memory.diary.appended", { jobId: "memjob_1", path: "/tmp/diary.md" })),
     memoryPrimaryUpdatedEventSchema.safeParse(
       envelope("memory.primary.updated", {
         jobId: "memjob_1",
         actionId: "memact_1",
-        path: "/tmp/learned_patterns.md",
-        targetKind: "learned_patterns",
+        path: "/tmp/skills/general/SKILL.md",
+        targetKind: "skills",
       }),
     ),
     memorySoulConfirmationRequestedEventSchema.safeParse(
@@ -1142,42 +1182,44 @@ describe("tool contracts", () => {
         warnings: ["Semantic trace retrieval is not configured for this project. Use the project dashboard to enable semantic search."],
       }).success,
     ).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search", scope: "project", category: "diary", memoryLimit: 10 }).success).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "read", path: "diary/2026/06/2026-06-01.md", charLimit: 1000 }).success).toBe(true)
+    expect(toolDocsToolInputSchema.safeParse({ operation: "search", area: "tool_usage", query: "trace", searchMode: "keyword_all" }).success).toBe(true)
+    expect(toolDocsToolInputSchema.safeParse({ operation: "read", area: "tool_usage", path: "trace_retrieve.md", charLimit: 1000 }).success).toBe(true)
+    expect(toolDocsToolInputSchema.safeParse({ operation: "search", area: "useful_patterns", query: "terminal", searchMode: "keyword_any", includeSections: true }).success).toBe(false)
+    expect(toolDocsToolInputSchema.safeParse({ operation: "search", searchMode: "regex" }).success).toBe(false)
     expect(
-      socratesMemoryToolInputSchema.safeParse({ operation: "search", scope: "primary", category: "tool_usage", query: "trace", searchMode: "keyword_all", modifiedAfter: timestamp }).success,
-    ).toBe(true)
-    expect(socratesMemoryToolInputSchema.safeParse({ operation: "search", searchMode: "regex" }).success).toBe(false)
-    expect(
-      socratesMemoryToolOutputSchema.safeParse({
+      toolDocsToolOutputSchema.safeParse({
         operation: "search",
-        scope: "project",
-        category: "project_memory",
+        area: "tool_usage",
         results: [
           {
             resultNumber: 1,
             resultType: "line_match",
-            path: "project/MEMORY.md",
+            path: "tool_usage/trace_retrieve.md",
             matchedText: "trace",
             modifiedAt: timestamp,
             lineStart: 1,
             lineEnd: 1,
-            inspectArgs: { operation: "read", path: "project/MEMORY.md", category: "project_memory" },
           },
         ],
         totalMatches: 1,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
       }).success,
     ).toBe(true)
-    expect(projectNotesToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
-    expect(projectNotesToolInputSchema.safeParse({ operation: "search", query: "decision" }).success).toBe(true)
-    expect(projectNotesToolInputSchema.safeParse({ operation: "patch", oldText: "old", newText: "new" }).success).toBe(true)
-    expect(projectNotesToolInputSchema.safeParse({ operation: "patch", oldText: "old" }).success).toBe(false)
+    expect(skillsToolInputSchema.safeParse({ operation: "list", scope: "project" }).success).toBe(true)
+    expect(skillsToolInputSchema.safeParse({ operation: "search", query: "memory" }).success).toBe(true)
+    expect(skillsToolInputSchema.safeParse({ operation: "read", name: "memory-review", path: "SKILL.md" }).success).toBe(true)
+    expect(skillsToolInputSchema.safeParse({ operation: "read" }).success).toBe(false)
+    expect(skillsToolOutputSchema.safeParse({ operation: "list", skills: [skill], totalMatches: 1, truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 } }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "read", area: "memory" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "search", area: "notes", query: "decision" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "append", text: "- note" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "memory", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "replace", oldText: "old" }).success).toBe(false)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "REPO_RULES.md" }).success).toBe(true)
-    expect(repoDocsToolInputSchema.safeParse({ operation: "search", query: "contract", path: "FRONTEND_BACKEND_CONTRACT.md" }).success).toBe(true)
-    expect(repoDocsToolInputSchema.safeParse({ operation: "patch", path: "APP_FLOW.md", oldText: "old", newText: "new" }).success).toBe(true)
-    expect(repoDocsToolInputSchema.safeParse({ operation: "patch", oldText: "old", newText: "new" }).success).toBe(false)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "search", query: "contract", path: "CONTRACTS.md" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "edit", path: "CORE_IDEA.md", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "edit", oldText: "old", newText: "new" }).success).toBe(false)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "../README.md" }).success).toBe(false)
     expect(
       repoDocsToolOutputSchema.safeParse({
@@ -1188,9 +1230,10 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(
-      projectNotesToolOutputSchema.safeParse({
-        operation: "patch",
-        path: "/tmp/workspace/.socrates/PROJECT_NOTES.md",
+      projectDocsToolOutputSchema.safeParse({
+        operation: "edit",
+        area: "notes",
+        path: ".socrates/PROJECT_NOTES.md",
         changed: true,
         content: "# PROJECT_NOTES",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 15 },

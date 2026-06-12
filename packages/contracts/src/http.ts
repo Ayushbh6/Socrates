@@ -14,9 +14,8 @@ import {
   projectWorkspaceSchema,
   userSchema,
 } from "./entities"
-import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, turnUsageReportSchema } from "./models"
-import { providerIdSchema } from "./models"
-import { terminalStatusSchema, toolNameSchema } from "./tools"
+import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
+import { skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
   .object({
@@ -160,6 +159,19 @@ export const projectInstructionsSummarySchema = z
   })
   .strict()
 
+export const memoryAgentSettingsSchema = z
+  .object({
+    id: idSchema,
+    projectId: idSchema,
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    thinkingEnabled: z.boolean(),
+    thinkingEffort: thinkingEffortSchema.optional(),
+    updatedAt: z.string().min(1),
+  })
+  .strict()
+export type MemoryAgentSettings = z.infer<typeof memoryAgentSettingsSchema>
+
 export const getProjectResponseSchema = z
   .object({
     project: projectSchema,
@@ -167,6 +179,8 @@ export const getProjectResponseSchema = z
     resources: z.array(projectResourceSchema),
     conversations: z.array(conversationSchema),
     instructions: projectInstructionsSummarySchema.optional(),
+    skills: z.array(skillSummarySchema),
+    memoryAgentSettings: memoryAgentSettingsSchema,
     embeddingStatus: z.lazy(() => projectEmbeddingStatusSchema).optional(),
   })
   .strict()
@@ -332,6 +346,33 @@ export const upsertProjectInstructionsRequestSchema = z
 export const upsertProjectInstructionsResponseSchema = z
   .object({
     instructions: projectInstructionsSchema,
+  })
+  .strict()
+
+export const buildProjectSkillRequestSchema = z
+  .object({
+    request: z.string().min(1),
+  })
+  .strict()
+
+export const buildProjectSkillResponseSchema = z
+  .object({
+    skill: skillSummarySchema,
+  })
+  .strict()
+
+export const updateProjectMemoryAgentSettingsRequestSchema = z
+  .object({
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    thinkingEnabled: z.boolean(),
+    thinkingEffort: thinkingEffortSchema.optional(),
+  })
+  .strict()
+
+export const updateProjectMemoryAgentSettingsResponseSchema = z
+  .object({
+    settings: memoryAgentSettingsSchema,
   })
   .strict()
 
@@ -628,6 +669,10 @@ export type UploadConversationAttachmentsResponse = z.infer<typeof uploadConvers
 export type DeleteProjectResourceResponse = z.infer<typeof deleteProjectResourceResponseSchema>
 export type UpsertProjectInstructionsRequest = z.infer<typeof upsertProjectInstructionsRequestSchema>
 export type UpsertProjectInstructionsResponse = z.infer<typeof upsertProjectInstructionsResponseSchema>
+export type BuildProjectSkillRequest = z.infer<typeof buildProjectSkillRequestSchema>
+export type BuildProjectSkillResponse = z.infer<typeof buildProjectSkillResponseSchema>
+export type UpdateProjectMemoryAgentSettingsRequest = z.infer<typeof updateProjectMemoryAgentSettingsRequestSchema>
+export type UpdateProjectMemoryAgentSettingsResponse = z.infer<typeof updateProjectMemoryAgentSettingsResponseSchema>
 export type PickWorkspaceFolderRequest = z.infer<typeof pickWorkspaceFolderRequestSchema>
 export type PickWorkspaceFolderResponse = z.infer<typeof pickWorkspaceFolderResponseSchema>
 export type InspectWorkspaceRequest = z.infer<typeof inspectWorkspaceRequestSchema>

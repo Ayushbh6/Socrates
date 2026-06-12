@@ -2,6 +2,7 @@
 
 import {
   apiResponseSchema,
+  buildProjectSkillResponseSchema,
   checkProjectEmbeddingsResponseSchema,
   checkProviderCredentialResponseSchema,
   completeOnboardingResponseSchema,
@@ -27,6 +28,7 @@ import {
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
   setProviderCredentialSessionResponseSchema,
+  updateProjectMemoryAgentSettingsResponseSchema,
   uploadProjectResourcesResponseSchema,
   updateProjectWorkspaceResponseSchema,
   updateConversationResponseSchema,
@@ -34,6 +36,8 @@ import {
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
+  type BuildProjectSkillRequest,
+  type BuildProjectSkillResponse,
   type CheckProjectEmbeddingsRequest,
   type CheckProjectEmbeddingsResponse,
   type CheckProviderCredentialRequest,
@@ -69,6 +73,8 @@ import {
   type ReindexProjectEmbeddingsResponse,
   type SetProviderCredentialSessionRequest,
   type SetProviderCredentialSessionResponse,
+  type UpdateProjectMemoryAgentSettingsRequest,
+  type UpdateProjectMemoryAgentSettingsResponse,
   type UpdateProjectWorkspaceRequest,
   type UpdateProjectWorkspaceResponse,
   type UpdateConversationRequest,
@@ -397,6 +403,26 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<UpsertProjectInstructionsResponse>,
+
+  buildProjectSkill: (projectId: string, input: BuildProjectSkillRequest) =>
+    request<typeof buildProjectSkillResponseSchema>(
+      `/api/projects/${projectId}/skills/build`,
+      buildProjectSkillResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<BuildProjectSkillResponse>,
+
+  updateProjectMemoryAgentSettings: (projectId: string, input: UpdateProjectMemoryAgentSettingsRequest) =>
+    request<typeof updateProjectMemoryAgentSettingsResponseSchema>(
+      `/api/projects/${projectId}/memory-agent/settings`,
+      updateProjectMemoryAgentSettingsResponseSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpdateProjectMemoryAgentSettingsResponse>,
 
   uploadProjectResources: (projectId: string, files: File[]) => {
     const body = new FormData();

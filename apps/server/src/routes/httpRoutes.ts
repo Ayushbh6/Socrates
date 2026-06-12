@@ -3,6 +3,7 @@ import fs from "node:fs"
 import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
+  buildProjectSkillRequestSchema,
   checkProjectEmbeddingsRequestSchema,
   checkProviderCredentialRequestSchema,
   configureProjectEmbeddingsRequestSchema,
@@ -18,6 +19,7 @@ import {
   pickWorkspaceFolderRequestSchema,
   providerIdSchema,
   setProviderCredentialSessionRequestSchema,
+  updateProjectMemoryAgentSettingsRequestSchema,
   updateProjectWorkspaceRequestSchema,
   updateConversationRequestSchema,
   upsertProjectInstructionsRequestSchema,
@@ -84,6 +86,7 @@ const handleRouteError = (error: unknown) => {
         api.code === "resource_upload_limit_exceeded" ||
         api.code === "attachment_upload_limit_exceeded" ||
     api.code === "embedding_check_failed" ||
+    api.code === "memory_agent_model_required" ||
     api.code === "workspace_env_file_not_allowed"
       ? 400
       : api.code.endsWith("_not_found")
@@ -371,6 +374,28 @@ export const registerHttpRoutes = async (
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(upsertProjectInstructionsRequestSchema, request.body)
       return ok({ instructions: store.upsertProjectInstructions(projectId, input) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/skills/build", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(buildProjectSkillRequestSchema, request.body)
+      return ok(await store.buildProjectSkill(projectId, input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/projects/:projectId/memory-agent/settings", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(updateProjectMemoryAgentSettingsRequestSchema, request.body)
+      return ok({ settings: store.updateProjectMemoryAgentSettings(projectId, input) })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

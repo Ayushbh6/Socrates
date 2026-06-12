@@ -8,8 +8,9 @@ export const baseToolNameSchema = z.enum([
   "apply_patch",
   "bash",
   "trace_retrieve",
-  "socrates_memory",
-  "project_notes",
+  "tool_docs",
+  "skills",
+  "project_docs",
   "repo_docs",
   "soul",
   "list_project_resources",
@@ -874,38 +875,23 @@ export const traceRetrieveToolOutputSchema = z
   .strict()
 export type TraceRetrieveToolOutput = z.infer<typeof traceRetrieveToolOutputSchema>
 
-export const socratesMemoryScopeSchema = z.enum(["primary", "project", "all"])
-export type SocratesMemoryScope = z.infer<typeof socratesMemoryScopeSchema>
+export const docsSearchModeSchema = z.enum(["exact_phrase", "keyword_all", "keyword_any", "whole_word", "regex"])
+export type DocsSearchMode = z.infer<typeof docsSearchModeSchema>
 
-export const socratesMemoryCategorySchema = z.enum(["learned_patterns", "tool_usage", "project_brief", "project_memory", "diary"])
-export type SocratesMemoryCategory = z.infer<typeof socratesMemoryCategorySchema>
+export const docsResultTypeSchema = z.enum(["file", "section", "line_match"])
+export type DocsResultType = z.infer<typeof docsResultTypeSchema>
 
-export const socratesMemorySearchModeSchema = z.enum(["exact_phrase", "keyword_all", "keyword_any", "whole_word", "regex"])
-export type SocratesMemorySearchMode = z.infer<typeof socratesMemorySearchModeSchema>
+export const toolDocsAreaSchema = z.literal("tool_usage")
+export type ToolDocsArea = z.infer<typeof toolDocsAreaSchema>
 
-export const socratesMemoryResultTypeSchema = z.enum(["file", "section", "line_match", "diary_entry"])
-export type SocratesMemoryResultType = z.infer<typeof socratesMemoryResultTypeSchema>
-
-export const socratesMemoryToolInputSchema = z
+export const toolDocsToolInputSchema = z
   .object({
     operation: z.enum(["search", "read"]),
-    scope: socratesMemoryScopeSchema.optional(),
-    category: socratesMemoryCategorySchema.optional(),
+    area: toolDocsAreaSchema.optional(),
     path: z.string().min(1).optional(),
     query: z.string().min(1).optional(),
-    searchMode: socratesMemorySearchModeSchema.optional(),
-    modifiedAfter: z.string().min(1).optional(),
-    modifiedBefore: z.string().min(1).optional(),
-    diaryDateAfter: z.string().min(1).optional(),
-    diaryDateBefore: z.string().min(1).optional(),
-    entryAfter: z.string().min(1).optional(),
-    entryBefore: z.string().min(1).optional(),
-    year: z.number().int().min(1970).max(9999).optional(),
-    month: z.number().int().min(1).max(12).optional(),
-    day: z.number().int().min(1).max(31).optional(),
+    searchMode: docsSearchModeSchema.optional(),
     includeSections: z.boolean().optional(),
-    memoryLimit: z.number().int().positive().max(50).optional(),
-    memoryOffset: z.number().int().nonnegative().optional(),
     limit: z.number().int().positive().max(20).optional(),
     offset: z.number().int().nonnegative().optional(),
     contextLines: z.number().int().nonnegative().max(100).optional(),
@@ -917,56 +903,59 @@ export const socratesMemoryToolInputSchema = z
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["searchMode"], message: "searchMode requires query." })
     }
   })
-export type SocratesMemoryToolInput = z.infer<typeof socratesMemoryToolInputSchema>
+export type ToolDocsToolInput = z.infer<typeof toolDocsToolInputSchema>
 
-export const socratesMemoryToolOutputSchema = z
+export const docsResultSchema = z
+  .object({
+    resultNumber: z.number().int().positive(),
+    resultType: docsResultTypeSchema,
+    path: z.string().min(1),
+    title: z.string().optional(),
+    matchedText: z.string().optional(),
+    contextBefore: z.string().optional(),
+    contextAfter: z.string().optional(),
+    snippet: z.string().optional(),
+    modifiedAt: z.string().min(1),
+    lineStart: z.number().int().positive().optional(),
+    lineEnd: z.number().int().positive().optional(),
+  })
+  .strict()
+
+export const toolDocsToolOutputSchema = z
   .object({
     operation: z.enum(["search", "read"]),
-    scope: socratesMemoryScopeSchema.optional(),
-    category: socratesMemoryCategorySchema.optional(),
-    results: z
-      .array(
-        z
-          .object({
-            resultNumber: z.number().int().positive(),
-            resultType: socratesMemoryResultTypeSchema,
-            path: z.string().min(1),
-            title: z.string().optional(),
-            matchedText: z.string().optional(),
-            contextBefore: z.string().optional(),
-            contextAfter: z.string().optional(),
-            snippet: z.string().optional(),
-            modifiedAt: z.string().min(1),
-            diaryDate: z.string().optional(),
-            entryTimestamp: z.string().optional(),
-            lineStart: z.number().int().positive().optional(),
-            lineEnd: z.number().int().positive().optional(),
-            score: z.number().optional(),
-            inspectArgs: z
-              .object({
-                operation: z.literal("read"),
-                path: z.string().min(1),
-                category: socratesMemoryCategorySchema.optional(),
-              })
-              .strict()
-              .optional(),
-          })
-          .strict(),
-      ),
+    area: toolDocsAreaSchema.optional(),
+    results: z.array(docsResultSchema),
     totalMatches: z.number().int().nonnegative(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
   })
   .strict()
-export type SocratesMemoryToolOutput = z.infer<typeof socratesMemoryToolOutputSchema>
+export type ToolDocsToolOutput = z.infer<typeof toolDocsToolOutputSchema>
 
-export const projectNotesToolInputSchema = z
+export const skillScopeSchema = z.enum(["builtin", "global", "project"])
+export type SkillScope = z.infer<typeof skillScopeSchema>
+
+export const skillSummarySchema = z
   .object({
-    operation: z.enum(["read", "search", "patch"]),
+    name: z.string().min(1),
+    description: z.string().min(1),
+    scope: skillScopeSchema,
+    path: z.string().min(1),
+    updatedAt: z.string().min(1).optional(),
+  })
+  .strict()
+export type SkillSummary = z.infer<typeof skillSummarySchema>
+
+export const skillsToolInputSchema = z
+  .object({
+    operation: z.enum(["list", "search", "read"]),
+    scope: skillScopeSchema.optional(),
+    name: z.string().min(1).optional(),
+    path: z.string().min(1).optional(),
     query: z.string().min(1).optional(),
-    oldText: z.string().optional(),
-    newText: z.string().optional(),
-    replaceAll: z.boolean().optional(),
+    limit: z.number().int().positive().max(50).optional(),
+    offset: z.number().int().nonnegative().optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
@@ -974,15 +963,62 @@ export const projectNotesToolInputSchema = z
     if (input.operation === "search" && !input.query) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
     }
-    if (input.operation === "patch" && (input.oldText === undefined || input.newText === undefined)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: "patch requires oldText and newText." })
+    if (input.operation === "read" && !input.name) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "read requires name." })
     }
   })
-export type ProjectNotesToolInput = z.infer<typeof projectNotesToolInputSchema>
+export type SkillsToolInput = z.infer<typeof skillsToolInputSchema>
 
-export const projectNotesToolOutputSchema = z
+export const skillsToolOutputSchema = z
   .object({
-    operation: z.enum(["read", "search", "patch"]),
+    operation: z.enum(["list", "search", "read"]),
+    skills: z.array(skillSummarySchema),
+    content: z.string().optional(),
+    path: z.string().min(1).optional(),
+    totalMatches: z.number().int().nonnegative(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type SkillsToolOutput = z.infer<typeof skillsToolOutputSchema>
+
+export const projectDocsAreaSchema = z.enum(["memory", "notes"])
+export type ProjectDocsArea = z.infer<typeof projectDocsAreaSchema>
+
+export const projectDocsToolInputSchema = z
+  .object({
+    operation: z.enum(["read", "search", "edit"]),
+    area: projectDocsAreaSchema,
+    query: z.string().min(1).optional(),
+    editMode: z.enum(["append", "replace"]).optional(),
+    oldText: z.string().optional(),
+    newText: z.string().optional(),
+    text: z.string().optional(),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.operation === "search" && !input.query) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    }
+    if (input.operation === "edit") {
+      if (!input.editMode) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["editMode"], message: "edit requires editMode." })
+      }
+      if (input.editMode === "append" && input.text === undefined) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["text"], message: "append edit requires text." })
+      }
+      if (input.editMode === "replace" && (input.oldText === undefined || input.newText === undefined)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "replace edit requires oldText and newText." })
+      }
+    }
+  })
+export type ProjectDocsToolInput = z.infer<typeof projectDocsToolInputSchema>
+
+export const projectDocsToolOutputSchema = z
+  .object({
+    operation: z.enum(["read", "search", "edit"]),
+    area: projectDocsAreaSchema,
     path: z.string().min(1),
     content: z.string().optional(),
     matches: z
@@ -1000,21 +1036,19 @@ export const projectNotesToolOutputSchema = z
     warnings: z.array(z.string()).optional(),
   })
   .strict()
-export type ProjectNotesToolOutput = z.infer<typeof projectNotesToolOutputSchema>
+export type ProjectDocsToolOutput = z.infer<typeof projectDocsToolOutputSchema>
 
 export const repoDocFileSchema = z.enum([
+  "CORE_IDEA.md",
+  "REPO_NAVIGATION.md",
   "REPO_RULES.md",
-  "APP_FLOW.md",
-  "FRONTEND_BACKEND_CONTRACT.md",
-  "DB_STRUCTURE.md",
-  "PROVIDER_USAGE.md",
-  "REPO_STRCUTURE.md",
+  "CONTRACTS.md",
 ])
 export type RepoDocFile = z.infer<typeof repoDocFileSchema>
 
 export const repoDocsToolInputSchema = z
   .object({
-    operation: z.enum(["read", "search", "patch"]),
+    operation: z.enum(["read", "search", "edit"]),
     path: repoDocFileSchema.optional(),
     query: z.string().min(1).optional(),
     oldText: z.string().optional(),
@@ -1027,12 +1061,12 @@ export const repoDocsToolInputSchema = z
     if (input.operation === "search" && !input.query) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
     }
-    if (input.operation === "patch") {
+    if (input.operation === "edit") {
       if (!input.path) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "patch requires path." })
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "edit requires path." })
       }
       if (input.oldText === undefined || input.newText === undefined) {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: "patch requires oldText and newText." })
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "edit requires oldText and newText." })
       }
     }
   })
@@ -1040,7 +1074,7 @@ export type RepoDocsToolInput = z.infer<typeof repoDocsToolInputSchema>
 
 export const repoDocsToolOutputSchema = z
   .object({
-    operation: z.enum(["read", "search", "patch"]),
+    operation: z.enum(["read", "search", "edit"]),
     path: z.string().min(1).optional(),
     paths: z.array(z.string().min(1)).optional(),
     content: z.string().optional(),

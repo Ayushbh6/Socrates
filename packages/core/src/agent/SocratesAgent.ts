@@ -33,6 +33,7 @@ export type SocratesAgentTurnInput = {
   runtimeConfig: RuntimeConfig
   messages: ModelMessage[]
   promptContext?: SocratesPromptContext
+  systemPromptOverride?: string
   workspacePath?: string
   toolExecutors?: ToolExecutors
   createModelCall?: (input: {
@@ -86,7 +87,7 @@ export class SocratesAgent {
   }
 
   async *streamTurn(input: SocratesAgentTurnInput): AsyncIterable<SocratesAgentEvent> {
-    const system = buildSocratesSystemPrompt(input.promptContext)
+    const system = input.systemPromptOverride ?? buildSocratesSystemPrompt(input.promptContext)
     const messages: ModelMessage[] = [...input.messages]
     const maxToolCallsPerTurn = input.maxToolCallsPerTurn ?? 80
     const maxConfirmedToolErrorsPerTurn = input.maxConfirmedToolErrorsPerTurn ?? 10

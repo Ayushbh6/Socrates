@@ -10,8 +10,8 @@ import type {
   McpRegistryToolInput,
   McpRegistryToolOutput,
   ModelToolDefinition,
-  ProjectNotesToolInput,
-  ProjectNotesToolOutput,
+  ProjectDocsToolInput,
+  ProjectDocsToolOutput,
   ReadToolInput,
   ReadToolOutput,
   RepoDocsToolInput,
@@ -19,10 +19,12 @@ import type {
   RuntimeConfig,
   SearchToolInput,
   SearchToolOutput,
+  SkillsToolInput,
+  SkillsToolOutput,
   SoulToolInput,
   SoulToolOutput,
-  SocratesMemoryToolInput,
-  SocratesMemoryToolOutput,
+  ToolDocsToolInput,
+  ToolDocsToolOutput,
   ToolName,
   ToolPermission,
   TraceRetrieveToolInput,
@@ -55,8 +57,9 @@ export type ToolExecutors = {
   apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
-  socrates_memory: (input: SocratesMemoryToolInput, context: ToolExecutorContext) => Promise<SocratesMemoryToolOutput>
-  project_notes: (input: ProjectNotesToolInput, context: ToolExecutorContext) => Promise<ProjectNotesToolOutput>
+  tool_docs: (input: ToolDocsToolInput, context: ToolExecutorContext) => Promise<ToolDocsToolOutput>
+  skills: (input: SkillsToolInput, context: ToolExecutorContext) => Promise<SkillsToolOutput>
+  project_docs: (input: ProjectDocsToolInput, context: ToolExecutorContext) => Promise<ProjectDocsToolOutput>
   repo_docs: (input: RepoDocsToolInput, context: ToolExecutorContext) => Promise<RepoDocsToolOutput>
   soul: (input: SoulToolInput, context: ToolExecutorContext) => Promise<SoulToolOutput>
   list_project_resources: (

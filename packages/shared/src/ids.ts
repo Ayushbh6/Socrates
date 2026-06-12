@@ -37,6 +37,7 @@ export type IdPrefix =
   | "embcfg"
   | "temb"
   | "memjob"
+  | "memcfg"
   | "memact"
   | "memconf"
   | "note"

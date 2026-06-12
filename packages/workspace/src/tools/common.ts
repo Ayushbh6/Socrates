@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { SocratesError } from "@socrates/shared"
 import type { TruncationMetadata } from "@socrates/contracts"
@@ -84,15 +85,16 @@ export const isSensitivePath = (targetPath: string): boolean => {
 
 export const assertNotProjectNotesMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
   const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
-  if (relativePath !== ".socrates/project_notes.md") {
+  if (relativePath !== ".socrates/project_notes.md" && relativePath !== ".socrates/memory.md") {
     return
   }
+  const area = relativePath.endsWith("memory.md") ? "memory" : "notes"
   throw new SocratesError(
-    "project_notes_dedicated_tool_required",
-    "PROJECT_NOTES.md can only be edited through the project_notes tool. Retry with project_notes operation=\"patch\"; normal read/search may still inspect it.",
+    "project_docs_dedicated_tool_required",
+    ".socrates/MEMORY.md and PROJECT_NOTES.md can only be edited through the project_docs tool. Retry with project_docs operation=\"edit\" and the correct area; normal read/search may still inspect them.",
     {
       recoverable: true,
-      details: { path: requestedPath ?? ".socrates/PROJECT_NOTES.md", tool: "project_notes", operation: "patch" },
+      details: { path: requestedPath ?? relativePath, tool: "project_docs", operation: "edit", area },
     },
   )
 }
@@ -104,12 +106,122 @@ export const assertNotRepoDocsMutation = (workspacePath: string, targetPath: str
   }
   throw new SocratesError(
     "repo_docs_dedicated_tool_required",
-    ".socrates/repo_docs/*.md can only be edited through the repo_docs tool. Retry with repo_docs operation=\"patch\"; normal read/search may still inspect these files.",
+    ".socrates/repo_docs/*.md can only be edited through the repo_docs tool. Retry with repo_docs operation=\"edit\"; normal read/search may still inspect these files.",
     {
       recoverable: true,
-      details: { path: requestedPath ?? relativePath, tool: "repo_docs", operation: "patch" },
+      details: { path: requestedPath ?? relativePath, tool: "repo_docs", operation: "edit" },
     },
   )
+}
+
+export const assertNotProjectSkillsMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
+  const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
+  if (!relativePath.startsWith(".socrates/skills/")) {
+    return
+  }
+  throw new SocratesError(
+    "project_skills_dedicated_builder_required",
+    ".socrates/skills/* can only be changed through the backend skill builder. Use the project dashboard Skills + flow; normal read/search may still inspect project skills.",
+    {
+      recoverable: true,
+      details: { path: requestedPath ?? relativePath, tool: "skills", operation: "read" },
+    },
+  )
+}
+
+type ProtectedSocratesPathMention = {
+  targetKind: "project_docs" | "repo_docs" | "project_skills" | "global_skills" | "tool_usage" | "soul"
+  pattern: string
+}
+
+type ProtectedSocratesPathOptions = {
+  homeDir?: string
+}
+
+export const findProtectedSocratesPathMentions = (
+  text: string,
+  options: ProtectedSocratesPathOptions = {},
+): ProtectedSocratesPathMention[] => {
+  const normalized = normalizeCommandPathText(text)
+  const homeDir = options.homeDir ?? os.homedir()
+  const patterns = protectedSocratesPathPatterns(homeDir)
+  const seen = new Set<string>()
+  const matches: ProtectedSocratesPathMention[] = []
+  for (const pattern of patterns) {
+    if (!containsPathMention(normalized, pattern.pattern)) {
+      continue
+    }
+    const key = `${pattern.targetKind}:${pattern.pattern}`
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    matches.push(pattern)
+  }
+  return matches
+}
+
+export const assertNoProtectedSocratesPathMentions = (
+  text: string,
+  options: ProtectedSocratesPathOptions = {},
+): void => {
+  const matches = findProtectedSocratesPathMentions(text, options)
+  if (matches.length === 0) {
+    return
+  }
+  throw new SocratesError(
+    "terminal_protected_socrates_path_rejected",
+    "Terminal command rejected because it mentions Socrates-owned memory, docs, tool-usage, soul, or skills paths. Use project_docs, repo_docs, tool_docs, soul, skills, or the dashboard skill builder instead.",
+    {
+      recoverable: true,
+      details: {
+        matches,
+        note: "This is a cross-platform preflight guard for obvious protected path mentions, not an OS process sandbox.",
+      },
+    },
+  )
+}
+
+const protectedSocratesPathPatterns = (homeDir: string): ProtectedSocratesPathMention[] => {
+  const globalRoots = [
+    "~/.socrates",
+    "$home/.socrates",
+    "${home}/.socrates",
+    "$env:home/.socrates",
+    "%userprofile%/.socrates",
+    "$env:userprofile/.socrates",
+    normalizeCommandPathText(homeDir ? path.join(homeDir, ".Socrates") : ""),
+  ].filter((item): item is string => item.length > 0)
+
+  return [
+    { targetKind: "project_docs", pattern: ".socrates/memory.md" },
+    { targetKind: "project_docs", pattern: ".socrates/project_notes.md" },
+    { targetKind: "repo_docs", pattern: ".socrates/repo_docs" },
+    { targetKind: "project_skills", pattern: ".socrates/skills" },
+    { targetKind: "project_skills", pattern: ".socrates/skill" },
+    ...globalRoots.flatMap((root) => [
+      { targetKind: "global_skills" as const, pattern: `${root}/skills` },
+      { targetKind: "global_skills" as const, pattern: `${root}/skill` },
+      { targetKind: "tool_usage" as const, pattern: `${root}/tool_usage` },
+      { targetKind: "soul" as const, pattern: `${root}/identity.md` },
+      { targetKind: "soul" as const, pattern: `${root}/operating_principles.md` },
+    ]),
+  ]
+}
+
+const normalizeCommandPathText = (value: string): string =>
+  value.replaceAll("\\", "/").replaceAll(/\/+/g, "/").toLowerCase()
+
+const containsPathMention = (text: string, pattern: string): boolean => {
+  let index = text.indexOf(pattern)
+  while (index >= 0) {
+    const after = text.at(index + pattern.length)
+    if (after === undefined || !/[a-z0-9._-]/i.test(after)) {
+      return true
+    }
+    index = text.indexOf(pattern, index + pattern.length)
+  }
+  return false
 }
 
 const isEnvTemplatePath = (base: string): boolean =>

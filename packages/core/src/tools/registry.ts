@@ -4,12 +4,13 @@ import { bashTool } from "./bashTool"
 import { editTool } from "./editTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { mcpRegistryTool } from "./mcpRegistryTool"
-import { projectNotesTool } from "./projectNotesTool"
+import { projectDocsTool } from "./projectDocsTool"
 import { readTool } from "./readTool"
 import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
+import { skillsTool } from "./skillsTool"
 import { soulTool } from "./soulTool"
-import { socratesMemoryTool } from "./socratesMemoryTool"
+import { toolDocsTool } from "./toolDocsTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
 
@@ -20,8 +21,9 @@ const tools = [
   applyPatchTool,
   bashTool,
   traceRetrieveTool,
-  socratesMemoryTool,
-  projectNotesTool,
+  toolDocsTool,
+  skillsTool,
+  projectDocsTool,
   repoDocsTool,
   soulTool,
   listProjectResourcesTool,
@@ -31,14 +33,20 @@ const tools = [
 export type RegisteredTool = (typeof tools)[number]
 
 export class ToolRegistry {
-  private readonly toolsByName = new Map<ToolName, RegisteredTool>(tools.map((tool) => [tool.name, tool]))
+  private readonly registeredTools: readonly RegisteredTool[]
+  private readonly toolsByName: Map<ToolName, RegisteredTool>
+
+  constructor(registeredTools: readonly RegisteredTool[] = tools) {
+    this.registeredTools = registeredTools
+    this.toolsByName = new Map<ToolName, RegisteredTool>(registeredTools.map((tool) => [tool.name, tool]))
+  }
 
   list(): RegisteredTool[] {
-    return [...tools]
+    return [...this.registeredTools]
   }
 
   modelDefinitions(additionalTools: ModelToolDefinition[] = []): ModelToolDefinition[] {
-    return tools.map((tool) => ({
+    return this.registeredTools.map((tool) => ({
       name: tool.name,
       description: tool.description,
       inputSchema: tool.modelInputSchema ?? tool.inputSchema,
@@ -51,3 +59,7 @@ export class ToolRegistry {
 }
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
+
+const memoryTools = [traceRetrieveTool, toolDocsTool, skillsTool, projectDocsTool, repoDocsTool, soulTool] as const
+
+export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)
