@@ -7,11 +7,10 @@ import { FilesPanel } from "@/components/dashboard/FilesPanel";
 import { StartChatAction } from "@/components/dashboard/StartChatAction";
 import { SemanticSearchPanel } from "@/components/dashboard/SemanticSearchPanel";
 import { SkillsPanel } from "@/components/dashboard/SkillsPanel";
-import { MemoryAgentPanel } from "@/components/dashboard/MemoryAgentPanel";
 import { WorkspacePanel } from "@/components/dashboard/WorkspacePanel";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
-import type { GetProjectResponse, ModelOption } from "@socrates/contracts";
+import type { GetProjectResponse } from "@socrates/contracts";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 
@@ -19,7 +18,6 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   const { projectId } = use(params);
   const router = useRouter();
   const [data, setData] = useState<GetProjectResponse | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -27,7 +25,6 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
   const [isSavingInstructions, setIsSavingInstructions] = useState(false);
   const [isBuildingSkill, setIsBuildingSkill] = useState(false);
-  const [isSavingMemoryAgent, setIsSavingMemoryAgent] = useState(false);
   const [isStartingChat, setIsStartingChat] = useState(false);
   const [isSavingConversationAction, setIsSavingConversationAction] = useState(false);
   const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
@@ -40,10 +37,9 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
       setError(null);
 
       try {
-        const [project, modelsResponse] = await Promise.all([api.getProject(projectId), api.listModels()]);
+        const project = await api.getProject(projectId);
         if (isMounted) {
           setData(project);
-          setModels(modelsResponse.models);
         }
       } catch (err) {
         if (isMounted) {
@@ -140,23 +136,6 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
       );
     } finally {
       setIsBuildingSkill(false);
-    }
-  };
-
-  const handleSaveMemoryAgentSettings = async (settings: Pick<GetProjectResponse["memoryAgentSettings"], "providerId" | "modelId" | "thinkingEnabled" | "thinkingEffort">) => {
-    setIsSavingMemoryAgent(true);
-    try {
-      const response = await api.updateProjectMemoryAgentSettings(projectId, settings);
-      setData((current) =>
-        current
-          ? {
-              ...current,
-              memoryAgentSettings: response.settings,
-            }
-          : current,
-      );
-    } finally {
-      setIsSavingMemoryAgent(false);
     }
   };
 
@@ -293,14 +272,6 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               isBuilding={isBuildingSkill}
               onBuild={handleBuildSkill}
             />
-            {data && (
-              <MemoryAgentPanel
-                settings={data.memoryAgentSettings}
-                models={models}
-                isSaving={isSavingMemoryAgent}
-                onSave={handleSaveMemoryAgentSettings}
-              />
-            )}
             {data && (
               <SemanticSearchPanel
                 projectId={projectId}

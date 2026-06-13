@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { conversationStatusSchema, messageRoleSchema, projectResourceKindSchema, projectResourceSourceSchema, projectResourceStatusSchema } from "./entities"
+import { conversationStatusSchema, messageRoleSchema, projectResourceKindSchema, projectResourceSourceSchema, projectResourceStatusSchema, projectStatusSchema } from "./entities"
 
 export const baseToolNameSchema = z.enum([
   "read",
@@ -10,6 +10,8 @@ export const baseToolNameSchema = z.enum([
   "trace_retrieve",
   "tool_docs",
   "skills",
+  "projects",
+  "edit_files",
   "project_docs",
   "repo_docs",
   "soul",
@@ -401,8 +403,10 @@ export const bashToolOutputSchema = z
   .strict()
 export type BashToolOutput = z.infer<typeof bashToolOutputSchema>
 
-export const traceRetrieveScopeSchema = z.enum(["current_conversation", "recent_conversations", "project"])
+export const traceRetrieveScopeSchema = z.enum(["current_conversation", "recent_conversations", "current_project", "project", "all_projects"])
 export type TraceRetrieveScope = z.infer<typeof traceRetrieveScopeSchema>
+
+const traceRetrieveSelectorSchema = z.union([z.string().min(1), z.array(z.string().min(1)).min(1).max(20)])
 
 export const traceRetrieveModeSchema = z.enum(["combined", "exact", "semantic", "audit"])
 export type TraceRetrieveMode = z.infer<typeof traceRetrieveModeSchema>
@@ -465,8 +469,10 @@ export const traceRetrieveSearchInputSchema = z
     mode: traceRetrieveModeSchema.optional(),
     query: z.string().min(1).optional(),
     scope: traceRetrieveScopeSchema.optional(),
-    conversationTitle: z.string().min(1).optional(),
-    conversationId: z.string().min(1).optional(),
+    projectId: traceRetrieveSelectorSchema.optional(),
+    projectTitle: traceRetrieveSelectorSchema.optional(),
+    conversationTitle: traceRetrieveSelectorSchema.optional(),
+    conversationId: traceRetrieveSelectorSchema.optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
     conversationOffset: z.number().int().nonnegative().max(10_000).optional(),
     perConversationLimit: z.number().int().positive().max(20).optional(),
@@ -514,6 +520,8 @@ const traceRetrieveEmptyStringOptionalKeys = new Set([
   "updatedBefore",
   "handle",
   "conversationId",
+  "projectId",
+  "projectTitle",
   "conversationTitle",
   "turnId",
   "messageId",
@@ -521,12 +529,14 @@ const traceRetrieveEmptyStringOptionalKeys = new Set([
   "toolCallId",
 ])
 
-const traceRetrieveEmptyArrayOptionalKeys = new Set(["include", "paths", "toolNames"])
+const traceRetrieveEmptyArrayOptionalKeys = new Set(["include", "paths", "toolNames", "projectId", "projectTitle", "conversationId", "conversationTitle"])
 
 const traceRetrieveSearchOnlyKeys = new Set([
   "scope",
   "mode",
   "conversationTitle",
+  "projectId",
+  "projectTitle",
   "conversationLimit",
   "conversationOffset",
   "perConversationLimit",
@@ -545,6 +555,8 @@ const traceRetrieveLooksLikeSearch = (value: Record<string, unknown>): boolean =
   "scope" in value ||
   "mode" in value ||
   "conversationId" in value ||
+  "projectId" in value ||
+  "projectTitle" in value ||
   "conversationTitle" in value ||
   "conversationLimit" in value ||
   "conversationOffset" in value ||
@@ -644,8 +656,10 @@ const traceRetrieveModelExactSearchInputSchema = z
     mode: z.literal("exact").optional(),
     query: z.string().min(1).optional(),
     scope: traceRetrieveScopeSchema.optional(),
-    conversationTitle: z.string().min(1).optional(),
-    conversationId: z.string().min(1).optional(),
+    projectId: traceRetrieveSelectorSchema.optional(),
+    projectTitle: traceRetrieveSelectorSchema.optional(),
+    conversationTitle: traceRetrieveSelectorSchema.optional(),
+    conversationId: traceRetrieveSelectorSchema.optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
     conversationOffset: z.number().int().nonnegative().max(10_000).optional(),
     perConversationLimit: z.number().int().positive().max(20).optional(),
@@ -678,8 +692,10 @@ const traceRetrieveModelSemanticSearchInputSchema = z
     mode: z.enum(["semantic", "combined"]),
     query: z.string().min(1),
     scope: traceRetrieveScopeSchema.optional(),
-    conversationTitle: z.string().min(1).optional(),
-    conversationId: z.string().min(1).optional(),
+    projectId: traceRetrieveSelectorSchema.optional(),
+    projectTitle: traceRetrieveSelectorSchema.optional(),
+    conversationTitle: traceRetrieveSelectorSchema.optional(),
+    conversationId: traceRetrieveSelectorSchema.optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
     conversationOffset: z.number().int().nonnegative().max(10_000).optional(),
     limit: z.number().int().positive().max(20).optional(),
@@ -701,8 +717,10 @@ const traceRetrieveModelAuditSearchInputSchema = z
     mode: z.literal("audit"),
     query: z.string().min(1),
     scope: traceRetrieveScopeSchema.optional(),
-    conversationTitle: z.string().min(1).optional(),
-    conversationId: z.string().min(1).optional(),
+    projectId: traceRetrieveSelectorSchema.optional(),
+    projectTitle: traceRetrieveSelectorSchema.optional(),
+    conversationTitle: traceRetrieveSelectorSchema.optional(),
+    conversationId: traceRetrieveSelectorSchema.optional(),
     conversationLimit: z.number().int().positive().max(50).optional(),
     turnNo: z.number().int().positive().max(10_000).optional(),
     role: traceRetrieveRoleSchema.optional(),
@@ -785,11 +803,13 @@ export const traceRetrieveAppliedFiltersSchema = z
     operation: z.enum(["search", "inspect"]),
     scope: traceRetrieveScopeSchema.optional(),
     mode: traceRetrieveModeSchema.optional(),
+    projectId: traceRetrieveSelectorSchema.optional(),
+    projectTitle: traceRetrieveSelectorSchema.optional(),
     conversationLimit: z.number().int().positive().optional(),
     conversationOffset: z.number().int().nonnegative().optional(),
     perConversationLimit: z.number().int().positive().optional(),
-    conversationTitle: z.string().min(1).optional(),
-    conversationId: z.string().min(1).optional(),
+    conversationTitle: traceRetrieveSelectorSchema.optional(),
+    conversationId: traceRetrieveSelectorSchema.optional(),
     conversationIds: z.array(z.string().min(1)).optional(),
     turnNo: z.number().int().positive().optional(),
     role: traceRetrieveRoleSchema.optional(),
@@ -813,6 +833,8 @@ export const traceRetrieveSearchResultSchema = z
     entryType: traceRetrieveMessageEntryTypeSchema,
     conversationTitle: z.string().min(1),
     conversationId: z.string().min(1),
+    projectId: z.string().min(1).optional(),
+    projectName: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
     toolId: z.string().min(1).optional(),
     turnNo: z.number().int().positive().optional(),
@@ -829,6 +851,8 @@ export const traceRetrieveQaPairResultSchema = z
     entryType: z.literal("qa_pair"),
     conversationTitle: z.string().min(1),
     conversationId: z.string().min(1),
+    projectId: z.string().min(1).optional(),
+    projectName: z.string().min(1).optional(),
     turnNo: z.number().int().positive(),
     turnId: z.string().min(1),
     userMessageId: z.string().min(1).optional(),
@@ -853,6 +877,8 @@ export const traceRetrieveExactResultSchema = z
     entryType: traceRetrieveMessageEntryTypeSchema,
     conversationId: z.string().min(1).optional(),
     conversationTitle: z.string().min(1).optional(),
+    projectId: z.string().min(1).optional(),
+    projectName: z.string().min(1).optional(),
     messageId: z.string().min(1).optional(),
     toolId: z.string().min(1).optional(),
     turnNo: z.number().int().positive().optional(),
@@ -981,6 +1007,101 @@ export const skillsToolOutputSchema = z
   })
   .strict()
 export type SkillsToolOutput = z.infer<typeof skillsToolOutputSchema>
+
+export const projectsToolInputSchema = z
+  .object({
+    operation: z.enum(["list_projects", "list_conversations"]),
+    projectId: z.string().min(1).optional(),
+    limit: z.number().int().positive().max(100).optional(),
+    offset: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.operation === "list_conversations" && !input.projectId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["projectId"], message: "list_conversations requires projectId." })
+    }
+  })
+export type ProjectsToolInput = z.infer<typeof projectsToolInputSchema>
+
+export const projectsToolOutputSchema = z
+  .object({
+    operation: z.enum(["list_projects", "list_conversations"]),
+    projects: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            name: z.string().min(1),
+            description: z.string().optional(),
+            status: projectStatusSchema,
+            updatedAt: z.string().min(1),
+            lastActivityAt: z.string().min(1).optional(),
+            conversationCount: z.number().int().nonnegative().optional(),
+            resourceCount: z.number().int().nonnegative().optional(),
+            workspacePath: z.string().min(1).optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+    conversations: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            projectId: z.string().min(1),
+            title: z.string().optional(),
+            status: conversationStatusSchema,
+            updatedAt: z.string().min(1),
+            turnCount: z.number().int().nonnegative().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+    totalMatches: z.number().int().nonnegative(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type ProjectsToolOutput = z.infer<typeof projectsToolOutputSchema>
+
+export const editFilesTargetSchema = z.enum(["identity", "operating_principles", "tool_doc", "skill"])
+export type EditFilesTarget = z.infer<typeof editFilesTargetSchema>
+
+export const editFilesToolInputSchema = z
+  .object({
+    target: editFilesTargetSchema,
+    name: z.string().min(1).optional(),
+    editMode: z.enum(["replace", "create"]),
+    oldText: z.string().optional(),
+    newText: z.string().min(1),
+    rationale: z.string().min(1).optional(),
+    sourceTurnIds: z.array(z.string().min(1)).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.target === "tool_doc" || input.target === "skill") && !input.name) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required for tool_doc and skill targets." })
+    }
+    if (input.editMode === "replace" && input.oldText === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["oldText"], message: "replace requires oldText." })
+    }
+  })
+export type EditFilesToolInput = z.infer<typeof editFilesToolInputSchema>
+
+export const editFilesToolOutputSchema = z
+  .object({
+    target: editFilesTargetSchema,
+    name: z.string().min(1).optional(),
+    path: z.string().min(1),
+    changed: z.boolean(),
+    actionId: z.string().min(1).optional(),
+    status: z.enum(["applied", "awaiting_confirmation", "rejected", "unchanged"]),
+    diff: z.string().optional(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type EditFilesToolOutput = z.infer<typeof editFilesToolOutputSchema>
 
 export const projectDocsAreaSchema = z.enum(["memory", "notes"])
 export type ProjectDocsArea = z.infer<typeof projectDocsAreaSchema>

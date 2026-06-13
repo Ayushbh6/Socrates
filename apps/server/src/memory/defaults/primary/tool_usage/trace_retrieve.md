@@ -1,8 +1,8 @@
 # trace_retrieve Usage Guide
 
-`trace_retrieve` is Socrates' investigation tool for prior visible conversation history and persisted runtime evidence. Use it when the answer depends on what happened earlier in this project: previous chats, exact wording, message ordinals, older assistant responses, screenshots with provenance, tool calls, shell output, edits, patches, or errors.
+`trace_retrieve` is Socrates' investigation tool for prior visible conversation history and persisted runtime evidence. Use it when the answer depends on what happened earlier: previous chats, exact wording, message ordinals, older assistant responses, screenshots with provenance, tool calls, shell output, edits, patches, or errors.
 
-This tool is not a generic web search, not a file reader, and not a replacement for the current visible conversation. It retrieves from Socrates' SQLite history for the active project.
+This tool is not a generic web search, not a file reader, and not a replacement for the current visible conversation. Main Socrates uses a project-scoped executor. The Global Memory Agent uses a global executor that can search visible trace documents across projects; see `memory_agent/trace_retrieve_global.md` for memory-agent-specific guidance.
 
 ## Core Principle
 
@@ -60,9 +60,11 @@ Use `operation: "inspect"` when you already have a `resultNumber`, `messageId`, 
 | `operation` | Usually `"search"`; optional because search is the default | Starting a retrieval investigation. |
 | `mode` | `exact`, `semantic`, `combined`, or `audit` | Select lexical, vector, hybrid, or runtime-evidence retrieval. |
 | `query` | Text to search | Required for `semantic`, `combined`, and `audit`; optional for exact browsing. |
-| `scope` | `current_conversation`, `recent_conversations`, or `project` | Control conversation set. |
-| `conversationTitle` | Human title filter | Narrow to a named conversation without knowing its id. |
-| `conversationId` | Exact conversation id | Disambiguate same-title conversations after search. |
+| `scope` | `current_conversation`, `recent_conversations`, `current_project`, `project`, or `all_projects` | Control conversation/project set. `all_projects` is meaningful for the global memory-agent executor. |
+| `projectTitle` | Human project-name selector | Global memory-agent narrowing by project name. |
+| `projectId` | Exact project selector | Disambiguate after `projects` or trace results identify the project. |
+| `conversationTitle` | Human title selector | Narrow to named conversation(s) without knowing ids. Accepts one string or a list. |
+| `conversationId` | Exact conversation selector | Disambiguate same-title conversations after search. Accepts one string or a list. |
 | `conversationLimit` | Number of conversations to consider, max 50 | Bound recent/project searches. |
 | `conversationOffset` | Skip N conversations before considering | Select second/third latest or page duplicate titles. |
 | `perConversationLimit` | Q/A pairs or messages per conversation, max 20 | Browse conversation windows. |

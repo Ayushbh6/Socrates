@@ -159,18 +159,107 @@ export const projectInstructionsSummarySchema = z
   })
   .strict()
 
-export const memoryAgentSettingsSchema = z
+export const memoryAgentGlobalSettingsSchema = z
   .object({
     id: idSchema,
-    projectId: idSchema,
     providerId: providerIdSchema,
     modelId: z.string().min(1),
     thinkingEnabled: z.boolean(),
     thinkingEffort: thinkingEffortSchema.optional(),
+    enabled: z.boolean(),
+    cadenceMinutes: z.number().int().positive(),
     updatedAt: z.string().min(1),
   })
   .strict()
-export type MemoryAgentSettings = z.infer<typeof memoryAgentSettingsSchema>
+export type MemoryAgentGlobalSettings = z.infer<typeof memoryAgentGlobalSettingsSchema>
+
+export const updateMemoryAgentGlobalSettingsRequestSchema = z
+  .object({
+    providerId: providerIdSchema.optional(),
+    modelId: z.string().min(1).optional(),
+    thinkingEnabled: z.boolean().optional(),
+    thinkingEffort: thinkingEffortSchema.optional(),
+    enabled: z.boolean().optional(),
+    cadenceMinutes: z.number().int().positive().max(24 * 60).optional(),
+  })
+  .strict()
+export type UpdateMemoryAgentGlobalSettingsRequest = z.infer<typeof updateMemoryAgentGlobalSettingsRequestSchema>
+
+export const memoryAgentGlobalStateSchema = z
+  .object({
+    id: z.literal("global"),
+    lastProcessedEventSequence: z.number().int().nonnegative(),
+    lastRunAt: z.string().min(1).optional(),
+    status: z.enum(["idle", "running", "skipped", "failed"]),
+    activeJobId: idSchema.optional(),
+    lastJobId: idSchema.optional(),
+    error: z.string().optional(),
+    updatedAt: z.string().min(1),
+  })
+  .strict()
+export type MemoryAgentGlobalState = z.infer<typeof memoryAgentGlobalStateSchema>
+
+export const memoryAgentRunActionSchema = z
+  .object({
+    id: idSchema,
+    jobId: idSchema,
+    targetKind: z.string().min(1),
+    targetPath: z.string().min(1),
+    status: z.string().min(1),
+    requiresConfirmation: z.boolean(),
+    rationale: z.string().optional(),
+    error: z.string().optional(),
+    createdAt: z.string().min(1),
+    appliedAt: z.string().min(1).optional(),
+  })
+  .strict()
+export type MemoryAgentRunAction = z.infer<typeof memoryAgentRunActionSchema>
+
+export const memoryAgentRunSummarySchema = z
+  .object({
+    id: idSchema,
+    status: z.string().min(1),
+    trigger: z.string().min(1),
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    evidenceTurnCount: z.number().int().nonnegative(),
+    evidenceTokensEstimate: z.number().int().nonnegative(),
+    startedAt: z.string().min(1),
+    completedAt: z.string().min(1).optional(),
+    output: z.string().optional(),
+    error: z.string().optional(),
+    sequenceFrom: z.number().int().positive().optional(),
+    sequenceTo: z.number().int().positive().optional(),
+    toolEvents: z.array(z.unknown()).optional(),
+    actions: z.array(memoryAgentRunActionSchema),
+  })
+  .strict()
+export type MemoryAgentRunSummary = z.infer<typeof memoryAgentRunSummarySchema>
+
+export const getMemoryAgentResponseSchema = z
+  .object({
+    settings: memoryAgentGlobalSettingsSchema,
+    state: memoryAgentGlobalStateSchema,
+    recentRuns: z.array(memoryAgentRunSummarySchema),
+  })
+  .strict()
+export type GetMemoryAgentResponse = z.infer<typeof getMemoryAgentResponseSchema>
+
+export const updateMemoryAgentGlobalSettingsResponseSchema = z
+  .object({
+    settings: memoryAgentGlobalSettingsSchema,
+  })
+  .strict()
+export type UpdateMemoryAgentGlobalSettingsResponse = z.infer<typeof updateMemoryAgentGlobalSettingsResponseSchema>
+
+export const triggerMemoryAgentRunResponseSchema = z
+  .object({
+    state: memoryAgentGlobalStateSchema,
+    run: memoryAgentRunSummarySchema.optional(),
+    skippedReason: z.string().optional(),
+  })
+  .strict()
+export type TriggerMemoryAgentRunResponse = z.infer<typeof triggerMemoryAgentRunResponseSchema>
 
 export const getProjectResponseSchema = z
   .object({
@@ -180,7 +269,6 @@ export const getProjectResponseSchema = z
     conversations: z.array(conversationSchema),
     instructions: projectInstructionsSummarySchema.optional(),
     skills: z.array(skillSummarySchema),
-    memoryAgentSettings: memoryAgentSettingsSchema,
     embeddingStatus: z.lazy(() => projectEmbeddingStatusSchema).optional(),
   })
   .strict()
@@ -358,21 +446,6 @@ export const buildProjectSkillRequestSchema = z
 export const buildProjectSkillResponseSchema = z
   .object({
     skill: skillSummarySchema,
-  })
-  .strict()
-
-export const updateProjectMemoryAgentSettingsRequestSchema = z
-  .object({
-    providerId: providerIdSchema,
-    modelId: z.string().min(1),
-    thinkingEnabled: z.boolean(),
-    thinkingEffort: thinkingEffortSchema.optional(),
-  })
-  .strict()
-
-export const updateProjectMemoryAgentSettingsResponseSchema = z
-  .object({
-    settings: memoryAgentSettingsSchema,
   })
   .strict()
 
@@ -671,8 +744,6 @@ export type UpsertProjectInstructionsRequest = z.infer<typeof upsertProjectInstr
 export type UpsertProjectInstructionsResponse = z.infer<typeof upsertProjectInstructionsResponseSchema>
 export type BuildProjectSkillRequest = z.infer<typeof buildProjectSkillRequestSchema>
 export type BuildProjectSkillResponse = z.infer<typeof buildProjectSkillResponseSchema>
-export type UpdateProjectMemoryAgentSettingsRequest = z.infer<typeof updateProjectMemoryAgentSettingsRequestSchema>
-export type UpdateProjectMemoryAgentSettingsResponse = z.infer<typeof updateProjectMemoryAgentSettingsResponseSchema>
 export type PickWorkspaceFolderRequest = z.infer<typeof pickWorkspaceFolderRequestSchema>
 export type PickWorkspaceFolderResponse = z.infer<typeof pickWorkspaceFolderResponseSchema>
 export type InspectWorkspaceRequest = z.infer<typeof inspectWorkspaceRequestSchema>

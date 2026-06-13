@@ -704,6 +704,30 @@ export const projectMemoryAgentSettings = sqliteTable(
   }),
 )
 
+export const memoryAgentGlobalSettings = sqliteTable("memory_agent_global_settings", {
+  id: text("id").primaryKey(),
+  providerId: text("provider_id").notNull(),
+  modelId: text("model_id").notNull(),
+  thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
+  thinkingEffort: text("thinking_effort"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull(),
+  cadenceMinutes: integer("cadence_minutes").notNull(),
+  ...timestamps,
+  metadataJson: text("metadata_json"),
+})
+
+export const memoryAgentGlobalState = sqliteTable("memory_agent_global_state", {
+  id: text("id").primaryKey(),
+  lastProcessedEventSequence: integer("last_processed_event_sequence").notNull(),
+  lastRunAt: text("last_run_at"),
+  status: text("status").notNull(),
+  activeJobId: text("active_job_id"),
+  lastJobId: text("last_job_id"),
+  error: text("error"),
+  ...timestamps,
+  metadataJson: text("metadata_json"),
+})
+
 export const memoryAgentActions = sqliteTable(
   "memory_agent_actions",
   {

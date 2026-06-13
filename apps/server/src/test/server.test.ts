@@ -1171,6 +1171,31 @@ const insertCompletedTestTurn = (
   return { turnId, userMessageId, assistantMessageId }
 }
 
+const insertTurnCompletedEvent = (
+  sqlite: Database.Database,
+  input: { projectId: string; conversationId: string; sessionId: string; turnId: string; timestamp?: string },
+): number => {
+  const sequence = ((sqlite.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM events").get() as { sequence: number }).sequence)
+  const timestamp = input.timestamp ?? nowIso()
+  sqlite
+    .prepare(
+      `INSERT INTO events (
+        id, project_id, conversation_id, session_id, turn_id, sequence, type, source, payload_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'turn.completed', 'test', ?, ?)`,
+    )
+    .run(
+      createId("evt"),
+      input.projectId,
+      input.conversationId,
+      input.sessionId,
+      input.turnId,
+      sequence,
+      JSON.stringify({ turnId: input.turnId, summary: "Test turn completed." }),
+      timestamp,
+    )
+  return sequence
+}
+
 const chatMessageCommand = (projectId: string, conversationId: string, content: string) => ({
   id: createId("evt"),
   type: "chat.message.send",
@@ -2885,39 +2910,46 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("creates and updates project memory agent settings", async () => {
+  it("creates and updates global memory agent settings", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
-    const { project } = await createProject(app)
 
-    const dashboardResponse = await app.inject({
+    const getResponse = await app.inject({
       method: "GET",
-      url: `/api/projects/${project.id}`,
+      url: "/api/memory-agent",
     })
-    const dashboard = parseResponse<{ memoryAgentSettings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string } }>(dashboardResponse.payload)
-    expect(dashboard.ok).toBe(true)
-    if (!dashboard.ok) {
-      throw new Error("Expected dashboard success")
+    const current = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; enabled: boolean; cadenceMinutes: number } }>(
+      getResponse.payload,
+    )
+    expect(current.ok).toBe(true)
+    if (!current.ok) {
+      throw new Error("Expected memory agent success")
     }
-    expect(dashboard.data.memoryAgentSettings).toMatchObject({
+    expect(current.data.settings).toMatchObject({
       providerId: "openrouter",
       modelId: "xiaomi/mimo-v2.5-pro",
       thinkingEnabled: false,
+      enabled: true,
+      cadenceMinutes: 10,
     })
-    expect(dashboard.data.memoryAgentSettings.thinkingEffort).toBeUndefined()
+    expect(current.data.settings.thinkingEffort).toBeUndefined()
 
     const updateResponse = await app.inject({
       method: "PATCH",
-      url: `/api/projects/${project.id}/memory-agent/settings`,
+      url: "/api/memory-agent/settings",
       payload: {
         providerId: "openai",
         modelId: "gpt-5.4-mini",
         thinkingEnabled: true,
         thinkingEffort: "low",
+        cadenceMinutes: 30,
+        enabled: false,
       },
     })
-    const updated = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string } }>(updateResponse.payload)
+    const updated = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; enabled: boolean; cadenceMinutes: number } }>(
+      updateResponse.payload,
+    )
     expect(updated.ok).toBe(true)
     if (!updated.ok) {
       throw new Error("Expected settings update success")
@@ -2927,18 +2959,21 @@ describe("WebSocket API", () => {
       modelId: "gpt-5.4-mini",
       thinkingEnabled: true,
       thinkingEffort: "low",
+      cadenceMinutes: 30,
+      enabled: false,
     })
 
     const openRouterUpdateResponse = await app.inject({
       method: "PATCH",
-      url: `/api/projects/${project.id}/memory-agent/settings`,
+      url: "/api/memory-agent/settings",
       payload: {
         providerId: "openrouter",
         modelId: "xiaomi/mimo-v2.5-pro",
         thinkingEnabled: true,
+        enabled: true,
       },
     })
-    const openRouterUpdated = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string } }>(
+    const openRouterUpdated = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; enabled: boolean } }>(
       openRouterUpdateResponse.payload,
     )
     expect(openRouterUpdated.ok).toBe(true)
@@ -3753,6 +3788,7 @@ describe("WebSocket API", () => {
     const conversation = await createConversation(app, project.id, "Memory Source")
     const handle = openDatabase(dbPath)
     const modelRequests: Array<{ providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string }> = []
+    let callIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
       async *stream(request) {
@@ -3762,40 +3798,57 @@ describe("WebSocket API", () => {
           thinkingEnabled: request.runtimeConfig.thinkingEnabled,
           ...(request.runtimeConfig.thinkingEffort ? { thinkingEffort: request.runtimeConfig.thinkingEffort } : {}),
         })
-        yield {
-          type: "model.answer.delta",
-          text: JSON.stringify({
-            skillPatches: [
-              {
-                path: "general/SKILL.md",
-                oldText: "## Original Request\n\nReusable Socrates skill maintained by the backend memory worker.",
-                newText: "## Original Request\n\nReusable Socrates skill maintained by the backend memory worker.\n\nConfigured memory worker updated this global skill.",
-                rationale: "Test skill update.",
+        callIndex += 1
+        if (callIndex === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_edit_skill",
+              toolName: "edit_files",
+              input: {
+                target: "skill",
+                name: "general",
+                editMode: "create",
+                newText:
+                  "---\nname: general\ndescription: Configured memory worker test skill.\n---\n\n# General\n\nConfigured memory worker updated this global skill.\n",
+                rationale: "Test skill creation.",
               },
-            ],
-            toolUsageDocPatches: [
-              {
-                path: "read_search.md",
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_edit_tool_doc",
+              toolName: "edit_files",
+              input: {
+                target: "tool_doc",
+                name: "read_search",
+                editMode: "replace",
                 oldText: "Use `search` to find candidate files or lines, then `read` the exact files needed for evidence.",
-                newText: "Use `search` to find candidate files or lines, then `read` the exact files needed for evidence.\n\nConfigured memory worker can refine global tool guidance.",
+                newText:
+                  "Use `search` to find candidate files or lines, then `read` the exact files needed for evidence.\n\nConfigured memory worker can refine global tool guidance.",
                 rationale: "Test tool usage update.",
               },
-            ],
-          }),
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
         }
+        yield { type: "model.answer.delta", text: "Created a skill and updated tool guidance." }
         yield { type: "model.completed" }
       },
     }
-    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider, memoryAgentIdleMs: 25 })
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Memory user message", "Memory assistant answer", nowIso())
-      store.enqueueGlobalMemoryForTurn({ projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId, workspacePath: primaryWorkspace.path as string })
+      insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      await store.runGlobalMemoryAgent("manual")
       const usefulPatternFile = path.join(socratesHome, "skills", "general", "SKILL.md")
       const toolUsageFile = path.join(socratesHome, "tool_usage", "read_search.md")
       await waitForFileText(usefulPatternFile, "Configured memory worker updated this global skill")
       await waitForFileText(toolUsageFile, "Configured memory worker can refine global tool guidance")
-      expect(modelRequests).toEqual([{ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false }])
+      expect(modelRequests[0]).toEqual({ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false })
       expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "diary"))).toBe(false)
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
     } finally {
@@ -3808,7 +3861,7 @@ describe("WebSocket API", () => {
     const socratesHome = tempDir()
     const app = await buildTestServer(dbPath)
     await onboard(app)
-    const { project, primaryWorkspace } = await createProject(app)
+    const { project } = await createProject(app)
     const sourceConversation = await createConversation(app, project.id, "Trace Evidence Source")
     const memoryConversation = await createConversation(app, project.id, "Memory Worker Source")
     const handle = openDatabase(dbPath)
@@ -3836,7 +3889,7 @@ describe("WebSocket API", () => {
               input: {
                 operation: "search",
                 mode: "exact",
-                scope: "recent_conversations",
+                projectId: project.id,
                 query: "memory-agent trace marker",
                 limit: 5,
               },
@@ -3845,13 +3898,13 @@ describe("WebSocket API", () => {
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
         }
-        yield { type: "model.answer.delta", text: "{\"no_op\":true}" }
+        yield { type: "model.answer.delta", text: "No durable update." }
         yield { type: "model.completed" }
       },
     }
-    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider, memoryAgentIdleMs: 25 })
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
     try {
-      store.updateProjectMemoryAgentSettings(project.id, {
+      store.updateMemoryAgentSettings({
         providerId: "openai",
         modelId: "gpt-5.4-mini",
         thinkingEnabled: true,
@@ -3870,25 +3923,12 @@ describe("WebSocket API", () => {
 
       const memorySessionId = insertTestSession(handle.sqlite, project.id, memoryConversation.id)
       const memoryTurn = insertCompletedTestTurn(handle.sqlite, memoryConversation.id, memorySessionId, "Memory worker should investigate.", "Queued.", nowIso())
-      store.enqueueGlobalMemoryForTurn({
-        projectId: project.id,
-        conversationId: memoryConversation.id,
-        sessionId: memorySessionId,
-        turnId: memoryTurn.turnId,
-        workspacePath: primaryWorkspace.path as string,
-      })
+      insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: memoryConversation.id, sessionId: memorySessionId, turnId: memoryTurn.turnId })
 
-      const deadline = Date.now() + 2_000
-      while (Date.now() < deadline) {
-        const row = handle.sqlite.prepare("SELECT status FROM memory_agent_jobs ORDER BY started_at DESC LIMIT 1").get() as { status: string } | undefined
-        if (row?.status === "no_op") {
-          break
-        }
-        await delay(20)
-      }
-
+      const result = await store.runGlobalMemoryAgent("manual")
+      expect(result.run?.status).toBe("completed")
       const job = handle.sqlite.prepare("SELECT status FROM memory_agent_jobs ORDER BY started_at DESC LIMIT 1").get() as { status: string }
-      expect(job.status).toBe("no_op")
+      expect(job.status).toBe("completed")
       expect(requests[0]).toMatchObject({
         providerId: "openai",
         modelId: "gpt-5.4-mini",
@@ -3896,11 +3936,9 @@ describe("WebSocket API", () => {
         thinkingEffort: "low",
       })
       const toolNames = ((requests[0]?.tools as Array<{ name: string }> | undefined) ?? []).map((tool) => tool.name)
-      expect(requests[0]?.system).toContain("You are the Socrates backend memory agent")
-      expect(requests[0]?.system).toContain("Your final JSON patch proposals are the only write channel")
-      expect(toolNames).toContain("trace_retrieve")
-      expect(toolNames).toContain("tool_docs")
-      expect(toolNames).toContain("skills")
+      expect(requests[0]?.system).toContain("You are the Socrates Global Memory Agent")
+      expect(requests[0]?.system).toContain("edit_files: the only write tool")
+      expect(toolNames).toEqual(expect.arrayContaining(["trace_retrieve", "projects", "tool_docs", "skills", "soul", "edit_files"]))
       expect(toolNames).not.toContain("bash")
       expect(toolNames).not.toContain("edit")
       expect(JSON.stringify(requests[1]?.messages)).toContain("memory-agent trace marker")
@@ -3926,31 +3964,38 @@ describe("WebSocket API", () => {
         callIndex += 1
         if (callIndex === 1) {
           yield {
-            type: "model.answer.delta",
-            text: JSON.stringify({
-              soulPatchProposals: [
-                {
-                  document: "identity",
-                  oldText: "Socrates is a local-first project partner.",
-                  newText: "Socrates is a local-first project partner with evidence-backed memory.",
-                  rationale: "The backend memory-agent flow is now a durable identity capability.",
-                  sourceTurnIds: [],
-                },
-              ],
-            }),
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_edit_soul",
+              toolName: "edit_files",
+              input: {
+                target: "identity",
+                editMode: "replace",
+                oldText: "Socrates is a local-first project partner.",
+                newText: "Socrates is a local-first project partner with evidence-backed memory.",
+                rationale: "The backend memory-agent flow is now a durable identity capability.",
+                sourceTurnIds: [],
+              },
+            },
           }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (callIndex === 2) {
+          yield { type: "model.answer.delta", text: "yes" }
           yield { type: "model.completed" }
           return
         }
-        yield { type: "model.answer.delta", text: "yes" }
+        yield { type: "model.answer.delta", text: "Updated identity." }
         yield { type: "model.completed" }
       },
     }
-    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider, memoryAgentIdleMs: 25 })
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Update soul carefully", "I will use the backend memory agent.", nowIso())
-      store.enqueueGlobalMemoryForTurn({ projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      await store.runGlobalMemoryAgent("manual")
       const identityPath = path.join(socratesHome, "identity.md")
       await waitForFileText(identityPath, "evidence-backed memory")
       const confirmation = handle.sqlite.prepare("SELECT decision, response_text FROM memory_agent_confirmations").get() as {
@@ -3965,7 +4010,7 @@ describe("WebSocket API", () => {
       expect(notifications.unreadCount).toBe(1)
       expect(notifications.notifications[0]?.type).toBe("memory.soul.updated")
       expect(JSON.stringify(notifications.notifications[0]?.payload)).toContain("evidence-backed memory")
-      expect(seenPrompts[0]).toContain("Return exactly one JSON object")
+      expect(seenPrompts[0]).toContain("Do not output JSON patch proposals")
       expect(seenPrompts[1]).toContain("You are about to make changes to the soul. Are you sure?")
     } finally {
       await store.close()

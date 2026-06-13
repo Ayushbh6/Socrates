@@ -677,7 +677,6 @@ export const handleChatMessageSend = async (
     )
     appendAndEmit(emitEvent, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
-    store.enqueueGlobalMemoryForTurn({ projectId, conversationId, sessionId: created.sessionId, turnId: created.turnId })
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({

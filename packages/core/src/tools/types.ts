@@ -10,8 +10,12 @@ import type {
   McpRegistryToolInput,
   McpRegistryToolOutput,
   ModelToolDefinition,
+  EditFilesToolInput,
+  EditFilesToolOutput,
   ProjectDocsToolInput,
   ProjectDocsToolOutput,
+  ProjectsToolInput,
+  ProjectsToolOutput,
   ReadToolInput,
   ReadToolOutput,
   RepoDocsToolInput,
@@ -59,6 +63,8 @@ export type ToolExecutors = {
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
   tool_docs: (input: ToolDocsToolInput, context: ToolExecutorContext) => Promise<ToolDocsToolOutput>
   skills: (input: SkillsToolInput, context: ToolExecutorContext) => Promise<SkillsToolOutput>
+  projects?: (input: ProjectsToolInput, context: ToolExecutorContext) => Promise<ProjectsToolOutput>
+  edit_files?: (input: EditFilesToolInput, context: ToolExecutorContext) => Promise<EditFilesToolOutput>
   project_docs: (input: ProjectDocsToolInput, context: ToolExecutorContext) => Promise<ProjectDocsToolOutput>
   repo_docs: (input: RepoDocsToolInput, context: ToolExecutorContext) => Promise<RepoDocsToolOutput>
   soul: (input: SoulToolInput, context: ToolExecutorContext) => Promise<SoulToolOutput>

@@ -2,9 +2,11 @@ import type { ModelToolDefinition, ToolName } from "@socrates/contracts"
 import { applyPatchTool } from "./applyPatchTool"
 import { bashTool } from "./bashTool"
 import { editTool } from "./editTool"
+import { editFilesTool } from "./editFilesTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { mcpRegistryTool } from "./mcpRegistryTool"
 import { projectDocsTool } from "./projectDocsTool"
+import { projectsTool } from "./projectsTool"
 import { readTool } from "./readTool"
 import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
@@ -30,7 +32,7 @@ const tools = [
   mcpRegistryTool,
 ] as const
 
-export type RegisteredTool = (typeof tools)[number]
+export type RegisteredTool = SocratesTool<any, any>
 
 export class ToolRegistry {
   private readonly registeredTools: readonly RegisteredTool[]
@@ -60,6 +62,6 @@ export class ToolRegistry {
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
 
-const memoryTools = [traceRetrieveTool, toolDocsTool, skillsTool, projectDocsTool, repoDocsTool, soulTool] as const
+const memoryTools = [traceRetrieveTool, projectsTool, toolDocsTool, skillsTool, soulTool, editFilesTool] as const
 
 export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)

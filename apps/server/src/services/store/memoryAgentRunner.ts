@@ -3,7 +3,7 @@ import type {
   RuntimeConfig,
   ThinkingEffort,
 } from "@socrates/contracts"
-import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, SocratesAgent } from "@socrates/core"
+import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, SocratesAgent, type SocratesAgentEvent } from "@socrates/core"
 import type { ModelProvider } from "@socrates/providers"
 import { createMemoryAgentToolExecutors, type MemoryAgentToolCallbacks } from "./memoryAgentToolExecutors"
 
@@ -34,6 +34,7 @@ export type MemoryAgentRunInput = {
   workspacePath?: string
   socratesHome: string
   tools: MemoryAgentToolCallbacks
+  onEvent?: (event: SocratesAgentEvent) => void
 }
 
 export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<string> => {
@@ -41,7 +42,6 @@ export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<st
   const runtimeConfig = MEMORY_AGENT_RUNTIME_CONFIG(input.modelSettings)
   const systemPrompt = buildMemoryAgentSystemPrompt({
     socratesHome: input.socratesHome,
-    ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
   })
   let text = ""
   for await (const event of agent.streamTurn({
@@ -58,12 +58,13 @@ export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<st
     toolExecutors: createMemoryAgentToolExecutors(input.tools),
     requestApproval: async () => ({
       decision: "rejected",
-      reason: "Backend memory agent is read-only while gathering evidence; writes must be returned as validated patch proposals.",
+      reason: "Backend memory agent writes only through scoped edit_files, which does not require external approval.",
     }),
     maxToolCallsPerTurn: 60,
     maxParallelToolCalls: 4,
     maxConfirmedToolErrorsPerTurn: 8,
   })) {
+    input.onEvent?.(event)
     if (event.type === "model.answer.delta") {
       text += event.text
     }

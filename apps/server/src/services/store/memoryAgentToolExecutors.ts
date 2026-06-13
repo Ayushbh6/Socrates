@@ -1,13 +1,13 @@
 import type {
   ApplyPatchToolOutput,
   BashToolOutput,
+  EditFilesToolInput,
+  EditFilesToolOutput,
   EditToolOutput,
   ListProjectResourcesToolOutput,
-  ProjectDocsToolInput,
-  ProjectDocsToolOutput,
+  ProjectsToolInput,
+  ProjectsToolOutput,
   ReadToolOutput,
-  RepoDocsToolInput,
-  RepoDocsToolOutput,
   SearchToolOutput,
   SkillsToolInput,
   SkillsToolOutput,
@@ -23,11 +23,11 @@ import { SocratesError } from "@socrates/shared"
 
 export type MemoryAgentToolCallbacks = {
   traceRetrieve: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
+  projects: (input: ProjectsToolInput) => Promise<ProjectsToolOutput> | ProjectsToolOutput
   toolDocs: (input: ToolDocsToolInput) => Promise<ToolDocsToolOutput> | ToolDocsToolOutput
   skills: (input: SkillsToolInput) => Promise<SkillsToolOutput> | SkillsToolOutput
-  projectDocs: (input: ProjectDocsToolInput) => Promise<ProjectDocsToolOutput> | ProjectDocsToolOutput
-  repoDocs: (input: RepoDocsToolInput) => Promise<RepoDocsToolOutput> | RepoDocsToolOutput
   soul: (input: SoulToolInput) => Promise<SoulToolOutput> | SoulToolOutput
+  editFiles: (input: EditFilesToolInput) => Promise<EditFilesToolOutput> | EditFilesToolOutput
 }
 
 export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks): ToolExecutors => {
@@ -41,21 +41,13 @@ export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks):
     apply_patch: () => unavailable<ApplyPatchToolOutput>(),
     bash: () => unavailable<BashToolOutput>(),
     trace_retrieve: async (input) => tools.traceRetrieve(input),
+    projects: async (input) => tools.projects(input),
     tool_docs: async (input) => tools.toolDocs(input),
     skills: async (input) => tools.skills(input),
-    project_docs: async (input) => {
-      if (input.operation === "edit") {
-        throw new SocratesError("memory_agent_project_docs_read_only", "The backend memory agent may only read/search project docs.", { recoverable: true })
-      }
-      return tools.projectDocs(input)
-    },
-    repo_docs: async (input) => {
-      if (input.operation === "edit") {
-        throw new SocratesError("memory_agent_repo_docs_read_only", "The backend memory agent may only read/search repo docs.", { recoverable: true })
-      }
-      return tools.repoDocs(input)
-    },
+    project_docs: () => unavailable(),
+    repo_docs: () => unavailable(),
     soul: async (input) => tools.soul(input),
+    edit_files: async (input) => tools.editFiles(input),
     list_project_resources: () => unavailable<ListProjectResourcesToolOutput>(),
   }
 }

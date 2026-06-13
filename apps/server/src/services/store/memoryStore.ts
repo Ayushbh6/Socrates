@@ -5,10 +5,16 @@ import { fileURLToPath } from "node:url"
 import type {
   Notification,
   DocsSearchMode,
-  MemoryAgentSettings,
+  EditFilesToolInput,
+  EditFilesToolOutput,
+  MemoryAgentGlobalSettings,
+  MemoryAgentGlobalState,
+  MemoryAgentRunSummary,
   ProjectDocsArea,
   ProjectDocsToolInput,
   ProjectDocsToolOutput,
+  ProjectsToolInput,
+  ProjectsToolOutput,
   RepoDocsToolInput,
   RepoDocsToolOutput,
   SkillScope,
@@ -22,21 +28,33 @@ import type {
   ToolDocsToolOutput,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  TriggerMemoryAgentRunResponse,
   TruncationMetadata,
 } from "@socrates/contracts"
 import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
-import { and, desc, eq, inArray } from "drizzle-orm"
-import { events, fileOperations, memoryAgentActions, memoryAgentConfirmations, memoryAgentJobs, messages, patches, projectInstructions, shellCommands, shellOutputChunks, toolCalls, turns } from "../../db/schema"
-import { hashText, parseMemoryAgentOutput, simpleDiff, validateMemoryPatch, type MemoryAgentOutput, type MemoryPatchProposal } from "./memoryAgentOutput"
+import { and, desc, eq } from "drizzle-orm"
+import {
+  conversations,
+  errors,
+  events,
+  memoryAgentActions,
+  memoryAgentConfirmations,
+  memoryAgentJobs,
+  projectInstructions,
+  projectResources,
+  projects,
+  projectWorkspaces,
+} from "../../db/schema"
+import { hashText, simpleDiff, validateMemoryPatch, type MemoryPatchProposal } from "./memoryAgentOutput"
 import { runMemoryAgentTurn, type MemoryAgentModelSettings } from "./memoryAgentRunner"
 import {
   DEFAULT_MEMORY_AGENT_MODEL_ID,
   DEFAULT_MEMORY_AGENT_PROVIDER_ID,
   DEFAULT_MEMORY_AGENT_THINKING_EFFORT,
   DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
-} from "./memoryAgentSettingsStore"
+} from "./memoryAgentDefaults"
 import {
   discoverSkills,
   fallbackSkillBody,
@@ -58,12 +76,12 @@ const DEFAULT_SEARCH_LIMIT = 20
 const DEFAULT_CONTEXT_LINES = 8
 const MAX_CONTEXT_CHARS = 28_000
 const MEMORY_AGENT_TOKEN_CAP = 60_000
-const DEFAULT_MEMORY_AGENT_IDLE_MS = 5 * 60 * 1000
+const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
+const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
 const WAKE_CONTEXT_CHAR_LIMIT = 4_000
 const SKILL_CHAR_LIMIT = 20_000
 const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
 const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
-const TOOL_USAGE_DOC_NAMES = ["trace_retrieve.md", "edit_apply_patch.md", "terminal.md", "read_search.md", "memory_docs.md"] as const
 const REPO_DOC_NAMES = ["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "CONTRACTS.md"] as const
 const LEGACY_REPO_DOC_NAMES = ["APP_FLOW.md", "DB_STRUCTURE.md", "FRONTEND_BACKEND_CONTRACT.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
 
@@ -81,9 +99,9 @@ type MemoryStoreOptions = {
   socratesHome?: string
   provider?: ModelProvider
   credentials?: ProviderCredentialResolver
-  memoryAgentIdleMs?: number
   traceRetrieve?: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
-  getMemoryAgentSettings?: (projectId: string) => MemoryAgentSettings
+  traceRetrieveGlobal?: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
+  getMemoryAgentGlobalSettings?: () => MemoryAgentGlobalSettings
   createNotification?: (input: {
     projectId?: string
     conversationId?: string
@@ -96,19 +114,42 @@ type MemoryStoreOptions = {
   }) => Notification
 }
 
-type MemoryAgentEvidenceEntry = {
-  projectId: string
-  conversationId: string
-  sessionId: string
-  turnId: string
-  workspacePath?: string
-  text: string
-  tokens: number
+type MemoryAgentStatePatch = Partial<Omit<MemoryAgentGlobalState, "id" | "updatedAt" | "lastRunAt" | "activeJobId" | "lastJobId" | "error">> & {
+  lastRunAt?: string | null
+  activeJobId?: string | null
+  lastJobId?: string | null
+  error?: string | null
 }
 
-type MemoryAgentBuffer = {
-  entries: MemoryAgentEvidenceEntry[]
-  timer?: ReturnType<typeof setTimeout>
+type GlobalMemoryAgentRunInput = {
+  trigger: "scheduled" | "manual"
+  settings: MemoryAgentGlobalSettings
+  state: MemoryAgentGlobalState
+  updateState: (input: MemoryAgentStatePatch) => MemoryAgentGlobalState
+}
+
+type GlobalTurnManifestRow = {
+  sequence: number
+  projectId: string
+  projectName: string
+  conversationId: string
+  conversationTitle: string | null
+  sessionId: string
+  turnId: string
+  createdAt: string
+  workspacePath: string | null
+}
+
+type GlobalTurnManifestEntry = GlobalTurnManifestRow & {
+  counts: {
+    messages: number
+    toolCalls: number
+    failedToolCalls: number
+    fileOperations: number
+    patches: number
+    shellCommands: number
+    errors: number
+  }
 }
 
 const scopedIds = (input: { conversationId?: string; sessionId?: string; turnId?: string }) => ({
@@ -119,7 +160,7 @@ const scopedIds = (input: { conversationId?: string; sessionId?: string; turnId?
 
 export class MemoryStore extends StoreBase {
   private readonly socratesHome: string
-  private readonly memoryBuffers = new Map<string, MemoryAgentBuffer>()
+  private globalMemoryRunActive = false
 
   constructor(context: ConstructorParameters<typeof StoreBase>[0], private readonly options: MemoryStoreOptions = {}) {
     super(context)
@@ -403,18 +444,532 @@ export class MemoryStore extends StoreBase {
     return context.length > WAKE_CONTEXT_CHAR_LIMIT ? `${context.slice(0, WAKE_CONTEXT_CHAR_LIMIT)}\n[Wake context truncated]` : context
   }
 
-  enqueueGlobalMemoryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): void {
-    void this.enqueueMemoryAgentForTurn(input).catch((error) => {
+  async runGlobalMemoryAgent(input: GlobalMemoryAgentRunInput): Promise<TriggerMemoryAgentRunResponse> {
+    this.ensureGlobalKnowledge()
+    if (this.globalMemoryRunActive) {
+      return { state: input.state, skippedReason: "Memory agent is already running." }
+    }
+    this.globalMemoryRunActive = true
+    try {
+      return await this.runGlobalMemoryAgentOnce(input)
+    } finally {
+      this.globalMemoryRunActive = false
+    }
+  }
+
+  listGlobalMemoryAgentRuns(limit = 10): MemoryAgentRunSummary[] {
+    const rows = this.handle.db
+      .select()
+      .from(memoryAgentJobs)
+      .where(eq(memoryAgentJobs.projectId, GLOBAL_MEMORY_AGENT_PROJECT_ID))
+      .orderBy(desc(memoryAgentJobs.startedAt))
+      .limit(limit)
+      .all()
+    return rows.map((row) => this.memoryAgentRunSummary(row))
+  }
+
+  runProjectsTool(input: ProjectsToolInput): ProjectsToolOutput {
+    const limit = input.limit ?? 50
+    const offset = input.offset ?? 0
+    if (input.operation === "list_projects") {
+      const rows = this.handle.sqlite
+        .prepare(
+          `SELECT p.id, p.name, p.description, p.status, p.updated_at AS updatedAt,
+                  pw.path AS workspacePath,
+                  COUNT(DISTINCT c.id) AS conversationCount,
+                  COUNT(DISTINCT pr.id) AS resourceCount,
+                  MAX(c.updated_at) AS lastActivityAt
+             FROM projects p
+             LEFT JOIN project_workspaces pw ON pw.project_id = p.id AND pw.is_primary = 1
+             LEFT JOIN conversations c ON c.project_id = p.id AND c.status IN ('active', 'archived')
+             LEFT JOIN project_resources pr ON pr.project_id = p.id AND pr.status != 'deleted'
+            WHERE p.status != 'deleted'
+            GROUP BY p.id
+            ORDER BY COALESCE(lastActivityAt, p.updated_at) DESC
+            LIMIT ? OFFSET ?`,
+        )
+        .all(limit, offset) as Array<{
+        id: string
+        name: string
+        description: string | null
+        status: "active" | "archived" | "deleted"
+        updatedAt: string
+        workspacePath: string | null
+        conversationCount: number
+        resourceCount: number
+        lastActivityAt: string | null
+      }>
+      const total = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM projects WHERE status != 'deleted'").get() as { count: number }
+      const projectsOutput = rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        ...(row.description ? { description: row.description } : {}),
+        status: row.status,
+        updatedAt: row.updatedAt,
+        ...(row.lastActivityAt ? { lastActivityAt: row.lastActivityAt } : {}),
+        conversationCount: row.conversationCount,
+        resourceCount: row.resourceCount,
+        ...(row.workspacePath ? { workspacePath: row.workspacePath } : {}),
+      }))
+      const serialized = JSON.stringify(projectsOutput)
+      return {
+        operation: "list_projects",
+        projects: projectsOutput,
+        totalMatches: total.count,
+        truncation: truncationFor(serialized, DEFAULT_CHAR_LIMIT),
+      }
+    }
+
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT c.id, c.project_id AS projectId, c.title, c.status, c.updated_at AS updatedAt,
+                COUNT(t.id) AS turnCount
+           FROM conversations c
+           LEFT JOIN turns t ON t.conversation_id = c.id
+          WHERE c.project_id = ? AND c.status IN ('active', 'archived')
+          GROUP BY c.id
+          ORDER BY c.updated_at DESC
+          LIMIT ? OFFSET ?`,
+      )
+      .all(input.projectId, limit, offset) as Array<{
+      id: string
+      projectId: string
+      title: string | null
+      status: "active" | "archived" | "deleted"
+      updatedAt: string
+      turnCount: number
+    }>
+    const total = this.handle.sqlite
+      .prepare("SELECT COUNT(*) AS count FROM conversations WHERE project_id = ? AND status IN ('active', 'archived')")
+      .get(input.projectId) as { count: number }
+    const conversationsOutput = rows.map((row) => ({
+      id: row.id,
+      projectId: row.projectId,
+      ...(row.title ? { title: row.title } : {}),
+      status: row.status,
+      updatedAt: row.updatedAt,
+      turnCount: row.turnCount,
+    }))
+    const serialized = JSON.stringify(conversationsOutput)
+    return {
+      operation: "list_conversations",
+      conversations: conversationsOutput,
+      totalMatches: total.count,
+      truncation: truncationFor(serialized, DEFAULT_CHAR_LIMIT),
+    }
+  }
+
+  private async runGlobalMemoryAgentOnce(input: GlobalMemoryAgentRunInput): Promise<TriggerMemoryAgentRunResponse> {
+    const now = nowIso()
+    if (!input.settings.enabled) {
+      const state = input.updateState({ status: "skipped", lastRunAt: now, activeJobId: null, error: "Memory agent is disabled." })
+      return { state, skippedReason: "Memory agent is disabled." }
+    }
+    if (!this.options.provider) {
+      const state = input.updateState({ status: "skipped", lastRunAt: now, activeJobId: null, error: "Memory agent provider is not configured." })
+      return { state, skippedReason: "Memory agent provider is not configured." }
+    }
+    if (this.options.credentials && !this.options.credentials.getApiKey(input.settings.providerId)) {
+      const reason = `${input.settings.providerId} credential is not configured.`
+      const state = input.updateState({ status: "skipped", lastRunAt: now, activeJobId: null, error: reason })
+      this.appendEvent({ type: "memory.agent.skipped", source: "server", payload: { reason } })
+      return { state, skippedReason: reason }
+    }
+
+    const entries = this.buildGlobalManifest(input.state.lastProcessedEventSequence)
+    if (entries.entries.length === 0) {
+      const state = input.updateState({ status: "idle", lastRunAt: now, activeJobId: null, error: null })
+      return { state, skippedReason: "No completed turns after the current memory watermark." }
+    }
+
+    const modelSettings: MemoryAgentModelSettings = {
+      providerId: input.settings.providerId,
+      modelId: input.settings.modelId,
+      thinkingEnabled: input.settings.thinkingEnabled,
+      ...(input.settings.thinkingEffort ? { thinkingEffort: input.settings.thinkingEffort } : {}),
+    }
+    const latest = entries.entries[entries.entries.length - 1]
+    const jobId = createId("memjob")
+    const evidence = capByEstimatedTokens(entries.manifest, MEMORY_AGENT_TOKEN_CAP)
+    const evidenceTokensEstimate = estimateTextTokens(evidence).inputTokens
+    const startedAt = nowIso()
+    const metadataBase = {
+      sequenceFrom: entries.sequenceFrom,
+      sequenceTo: entries.sequenceTo,
+      thinkingEnabled: modelSettings.thinkingEnabled,
+      thinkingEffort: modelSettings.thinkingEffort,
+      turnCount: entries.entries.length,
+    }
+    this.handle.db
+      .insert(memoryAgentJobs)
+      .values({
+        id: jobId,
+        projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+        conversationId: latest?.conversationId,
+        sessionId: latest?.sessionId,
+        turnId: latest?.turnId,
+        status: "running",
+        trigger: input.trigger,
+        providerId: modelSettings.providerId,
+        modelId: modelSettings.modelId,
+        fallbackModelIdsJson: JSON.stringify([]),
+        evidenceTurnIdsJson: JSON.stringify(entries.entries.map((entry) => entry.turnId)),
+        evidenceTokensEstimate,
+        startedAt,
+        metadataJson: JSON.stringify(metadataBase),
+      })
+      .run()
+    input.updateState({ status: "running", activeJobId: jobId, error: null })
+    this.appendEvent({
+      type: "memory.agent.started",
+      source: "server",
+      payload: { jobId, trigger: input.trigger, sequenceFrom: entries.sequenceFrom, sequenceTo: entries.sequenceTo, evidenceTokensEstimate },
+    })
+
+    const toolEvents: unknown[] = []
+    try {
+      const output = await runMemoryAgentTurn({
+        provider: this.options.provider,
+        modelSettings,
+        evidence,
+        projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+        conversationId: latest?.conversationId ?? "",
+        sessionId: latest?.sessionId ?? "",
+        turnId: latest?.turnId ?? "",
+        socratesHome: this.socratesHome,
+        tools: {
+          traceRetrieve: async (toolInput) => {
+            if (!this.options.traceRetrieveGlobal) {
+              throw new SocratesError("memory_agent_trace_unavailable", "Global trace_retrieve is not available to this memory-agent run.", { recoverable: true })
+            }
+            return this.options.traceRetrieveGlobal(toolInput)
+          },
+          projects: async (toolInput) => this.runProjectsTool(toolInput),
+          toolDocs: async (toolInput) => this.runToolDocsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
+          skills: async (toolInput) => this.runSkillsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
+          soul: async (toolInput) => this.runSoulTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
+          editFiles: async (toolInput) =>
+            this.runEditFilesTool(toolInput, {
+              jobId,
+              turnId: latest?.turnId,
+              modelSettings,
+            }),
+        },
+        onEvent: (event) => {
+          if (event.type.startsWith("tool.call") || event.type.startsWith("approval.")) {
+            toolEvents.push(slimMemoryToolEvent(event))
+          }
+        },
+      })
+      const completedAt = nowIso()
+      this.handle.db
+        .update(memoryAgentJobs)
+        .set({
+          status: "completed",
+          outputJson: JSON.stringify({ summary: output.trim() }),
+          completedAt,
+          metadataJson: JSON.stringify({ ...metadataBase, toolEvents }),
+        })
+        .where(eq(memoryAgentJobs.id, jobId))
+        .run()
+      const state = input.updateState({
+        lastProcessedEventSequence: entries.sequenceTo,
+        lastRunAt: completedAt,
+        status: "idle",
+        activeJobId: null,
+        lastJobId: jobId,
+        error: null,
+      })
       this.appendEvent({
-        projectId: input.projectId,
-        conversationId: input.conversationId,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
+        type: "memory.agent.completed",
+        source: "server",
+        payload: {
+          jobId,
+          status: "completed",
+          providerId: modelSettings.providerId,
+          modelId: modelSettings.modelId,
+          sequenceFrom: entries.sequenceFrom,
+          sequenceTo: entries.sequenceTo,
+        },
+      })
+      return { state, run: this.memoryAgentRunSummary(this.mustGetMemoryAgentJob(jobId)) }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const completedAt = nowIso()
+      this.handle.db
+        .update(memoryAgentJobs)
+        .set({
+          status: "failed",
+          completedAt,
+          metadataJson: JSON.stringify({ ...metadataBase, toolEvents, error: message }),
+        })
+        .where(eq(memoryAgentJobs.id, jobId))
+        .run()
+      const state = input.updateState({
+        lastRunAt: completedAt,
+        status: "failed",
+        activeJobId: null,
+        lastJobId: jobId,
+        error: message,
+      })
+      this.appendEvent({
         type: "memory.agent.failed",
         source: "server",
-        payload: { message: error instanceof Error ? error.message : String(error) },
+        payload: { jobId, error: { code: "memory_agent_failed", message } },
       })
-    })
+      return { state, run: this.memoryAgentRunSummary(this.mustGetMemoryAgentJob(jobId)), skippedReason: message }
+    }
+  }
+
+  private buildGlobalManifest(lastProcessedEventSequence: number): { entries: GlobalTurnManifestEntry[]; manifest: string; sequenceFrom: number; sequenceTo: number } {
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT e.sequence, e.project_id AS projectId, p.name AS projectName,
+                e.conversation_id AS conversationId, c.title AS conversationTitle,
+                e.session_id AS sessionId, e.turn_id AS turnId, e.created_at AS createdAt,
+                s.workspace_path AS workspacePath
+           FROM events e
+           JOIN projects p ON p.id = e.project_id
+           JOIN conversations c ON c.id = e.conversation_id
+           LEFT JOIN sessions s ON s.id = e.session_id
+          WHERE e.type = 'turn.completed'
+            AND e.sequence > ?
+            AND e.project_id IS NOT NULL
+            AND e.conversation_id IS NOT NULL
+            AND e.session_id IS NOT NULL
+            AND e.turn_id IS NOT NULL
+          ORDER BY e.sequence ASC
+          LIMIT ?`,
+      )
+      .all(lastProcessedEventSequence, GLOBAL_MEMORY_AGENT_MAX_TURNS) as GlobalTurnManifestRow[]
+    const entries = rows.map((row) => ({
+      ...row,
+      counts: this.countTurnArtifacts(row.turnId),
+    }))
+    const sequenceFrom = entries[0]?.sequence ?? lastProcessedEventSequence + 1
+    const sequenceTo = entries[entries.length - 1]?.sequence ?? lastProcessedEventSequence
+    const manifest = [
+      "# Global Memory Agent Manifest",
+      `Previous watermark: ${lastProcessedEventSequence}`,
+      `Candidate turn count: ${entries.length}`,
+      `Sequence range: ${sequenceFrom}-${sequenceTo}`,
+      "",
+      "Use trace_retrieve for message/tool evidence. This manifest intentionally omits message bodies.",
+      "",
+      ...entries.map((entry, index) =>
+        [
+          `## ${index + 1}. event sequence ${entry.sequence}`,
+          `project: ${entry.projectName} (${entry.projectId})`,
+          `conversation: ${entry.conversationTitle ?? "Untitled"} (${entry.conversationId})`,
+          `turnId: ${entry.turnId}`,
+          `sessionId: ${entry.sessionId}`,
+          `completedEventAt: ${entry.createdAt}`,
+          entry.workspacePath ? `workspace: ${entry.workspacePath}` : undefined,
+          `counts: messages=${entry.counts.messages}, toolCalls=${entry.counts.toolCalls}, failedToolCalls=${entry.counts.failedToolCalls}, fileOps=${entry.counts.fileOperations}, patches=${entry.counts.patches}, shell=${entry.counts.shellCommands}, errors=${entry.counts.errors}`,
+          `trace_retrieve: inspect with turnId="${entry.turnId}" or search with projectId="${entry.projectId}" and conversationId="${entry.conversationId}"`,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      ),
+    ].join("\n")
+    return { entries, manifest, sequenceFrom, sequenceTo }
+  }
+
+  private countTurnArtifacts(turnId: string): GlobalTurnManifestEntry["counts"] {
+    const count = (tableName: string, extraWhere = ""): number => {
+      const row = this.handle.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE turn_id = ? ${extraWhere}`).get(turnId) as { count: number }
+      return row.count
+    }
+    return {
+      messages: count("messages"),
+      toolCalls: count("tool_calls"),
+      failedToolCalls: count("tool_calls", "AND status = 'failed'"),
+      fileOperations: count("file_operations"),
+      patches: count("patches"),
+      shellCommands: count("shell_commands"),
+      errors: count("errors"),
+    }
+  }
+
+  private async runEditFilesTool(input: EditFilesToolInput, context: { jobId: string; turnId?: string; modelSettings: MemoryAgentModelSettings }): Promise<EditFilesToolOutput> {
+    this.ensureGlobalKnowledge()
+    const resolved = this.resolveEditFilesTarget(input)
+    if (input.editMode === "create") {
+      return this.createMemoryTarget(input, resolved, context)
+    }
+    const patch: MemoryPatchProposal = {
+      oldText: input.oldText ?? "",
+      newText: input.newText,
+      ...(input.rationale ? { rationale: input.rationale } : {}),
+      ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+      ...(resolved.document ? { document: resolved.document } : {}),
+    }
+    if (resolved.targetKind === "soul") {
+      const result = await this.applySoulPatch(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId ? {
+        projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+        conversationId: "",
+        sessionId: "",
+        turnId: context.turnId,
+        text: "",
+        tokens: 0,
+      } : undefined, patch, context.modelSettings)
+      return {
+        target: input.target,
+        ...(input.name ? { name: input.name } : {}),
+        path: path.relative(this.socratesHome, resolved.path).replaceAll(path.sep, "/"),
+        changed: result.applied,
+        actionId: result.actionId,
+        status: result.applied ? "applied" : "rejected",
+        ...(result.error ? { warnings: [result.error] } : {}),
+        truncation: truncationFor(result.error ?? "", DEFAULT_CHAR_LIMIT),
+      }
+    }
+    const result = this.applyPrimaryPatch(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, resolved.targetKind, resolved.path, patch)
+    return {
+      target: input.target,
+      ...(input.name ? { name: input.name } : {}),
+      path: path.relative(this.socratesHome, resolved.path).replaceAll(path.sep, "/"),
+      changed: result.applied,
+      actionId: result.actionId,
+      status: result.applied ? "applied" : "rejected",
+      diff: simpleDiff(input.oldText ?? "", input.newText),
+      ...(result.error ? { warnings: [result.error] } : {}),
+      truncation: truncationFor(result.error ?? "", DEFAULT_CHAR_LIMIT),
+    }
+  }
+
+  private createMemoryTarget(
+    input: EditFilesToolInput,
+    resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul"; document?: "identity" | "operating_principles" },
+    context: { jobId: string; turnId?: string },
+  ): EditFilesToolOutput {
+    const patch: MemoryPatchProposal = {
+      oldText: "",
+      newText: input.newText,
+      ...(input.rationale ? { rationale: input.rationale } : {}),
+      ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+      ...(resolved.document ? { document: resolved.document } : {}),
+    }
+    const action = this.createMemoryAction(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, resolved.targetKind, resolved.path, patch, false)
+    const current = readIfExists(resolved.path) ?? ""
+    if (resolved.targetKind === "soul") {
+      const error = "Soul documents already exist and must be edited with editMode=\"replace\"."
+      this.rejectMemoryAction(action.actionId, error)
+      return this.rejectedEditFilesOutput(input, resolved.path, action.actionId, error)
+    }
+    if (current.trim()) {
+      const error = "Target already exists. Read it and use editMode=\"replace\"."
+      this.rejectMemoryAction(action.actionId, error)
+      return this.rejectedEditFilesOutput(input, resolved.path, action.actionId, error)
+    }
+    if (resolved.targetKind === "skills") {
+      const parsed = parseSkillMarkdown(input.newText, resolved.path)
+      const expectedName = path.basename(path.dirname(resolved.path))
+      if (!parsed || parsed.name !== expectedName) {
+        const error = "Skill creation must produce valid SKILL.md frontmatter whose name matches the skill folder."
+        this.rejectMemoryAction(action.actionId, error)
+        return this.rejectedEditFilesOutput(input, resolved.path, action.actionId, error)
+      }
+    }
+    fs.mkdirSync(path.dirname(resolved.path), { recursive: true })
+    fs.writeFileSync(resolved.path, input.newText)
+    this.handle.db
+      .update(memoryAgentActions)
+      .set({ status: "applied", afterHash: hashText(input.newText), appliedAt: nowIso() })
+      .where(eq(memoryAgentActions.id, action.actionId))
+      .run()
+    return {
+      target: input.target,
+      ...(input.name ? { name: input.name } : {}),
+      path: path.relative(this.socratesHome, resolved.path).replaceAll(path.sep, "/"),
+      changed: true,
+      actionId: action.actionId,
+      status: "applied",
+      diff: simpleDiff("", input.newText),
+      truncation: truncationFor(input.newText, DEFAULT_CHAR_LIMIT),
+    }
+  }
+
+  private rejectedEditFilesOutput(input: EditFilesToolInput, targetPath: string, actionId: string, error: string): EditFilesToolOutput {
+    return {
+      target: input.target,
+      ...(input.name ? { name: input.name } : {}),
+      path: path.relative(this.socratesHome, targetPath).replaceAll(path.sep, "/"),
+      changed: false,
+      actionId,
+      status: "rejected",
+      warnings: [error],
+      truncation: truncationFor(error, DEFAULT_CHAR_LIMIT),
+    }
+  }
+
+  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "tool_usage" | "skills" | "soul"; document?: "identity" | "operating_principles" } {
+    if (input.target === "identity" || input.target === "operating_principles") {
+      return { path: this.soulPath(input.target), targetKind: "soul", document: input.target }
+    }
+    if (input.target === "tool_doc") {
+      const rawName = input.name ?? "trace_retrieve"
+      const normalized = rawName.replaceAll("\\", "/").replace(/^tool_usage\//, "").replace(/\.md$/i, "")
+      const safeName =
+        path
+          .basename(normalized)
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 80) || "trace_retrieve"
+      const fileName = `${safeName}.md`
+      return { path: safeJoin(path.join(this.socratesHome, "tool_usage"), fileName), targetKind: "tool_usage" }
+    }
+    const skillName = slugSkillName(input.name ?? "general")
+    return { path: safeJoin(path.join(this.socratesHome, "skills"), `${skillName}/SKILL.md`), targetKind: "skills" }
+  }
+
+  private mustGetMemoryAgentJob(jobId: string): typeof memoryAgentJobs.$inferSelect {
+    const row = this.handle.db.select().from(memoryAgentJobs).where(eq(memoryAgentJobs.id, jobId)).limit(1).get()
+    if (!row) {
+      throw new SocratesError("memory_agent_job_not_found", "Memory agent job was not found.", { details: { jobId } })
+    }
+    return row
+  }
+
+  private memoryAgentRunSummary(row: typeof memoryAgentJobs.$inferSelect): MemoryAgentRunSummary {
+    const metadata = parseJsonObject(row.metadataJson)
+    const output = parseJsonObject(row.outputJson)
+    const evidenceTurnIds = parseJsonArray(row.evidenceTurnIdsJson)
+    const actionRows = this.handle.db
+      .select()
+      .from(memoryAgentActions)
+      .where(eq(memoryAgentActions.jobId, row.id))
+      .orderBy(memoryAgentActions.createdAt)
+      .all()
+    return {
+      id: row.id,
+      status: row.status,
+      trigger: row.trigger,
+      providerId: row.providerId as MemoryAgentRunSummary["providerId"],
+      modelId: row.modelId,
+      evidenceTurnCount: evidenceTurnIds.length,
+      evidenceTokensEstimate: row.evidenceTokensEstimate,
+      startedAt: row.startedAt,
+      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+      ...(typeof output.summary === "string" && output.summary.trim() ? { output: output.summary } : {}),
+      ...(typeof metadata.error === "string" ? { error: metadata.error } : {}),
+      ...(typeof metadata.sequenceFrom === "number" ? { sequenceFrom: metadata.sequenceFrom } : {}),
+      ...(typeof metadata.sequenceTo === "number" ? { sequenceTo: metadata.sequenceTo } : {}),
+      ...(Array.isArray(metadata.toolEvents) ? { toolEvents: metadata.toolEvents } : {}),
+      actions: actionRows.map((action) => ({
+        id: action.id,
+        jobId: action.jobId,
+        targetKind: action.targetKind,
+        targetPath: action.targetPath,
+        status: action.status,
+        requiresConfirmation: action.requiresConfirmation,
+        ...(action.rationale ? { rationale: action.rationale } : {}),
+        ...(action.error ? { error: action.error } : {}),
+        createdAt: action.createdAt,
+        ...(action.appliedAt ? { appliedAt: action.appliedAt } : {}),
+      })),
+    }
   }
 
   private readToolDocs(input: ToolDocsToolInput): ToolDocsToolOutput {
@@ -588,8 +1143,8 @@ export class MemoryStore extends StoreBase {
     return path.join(this.socratesHome, `${document}.md`)
   }
 
-  private memoryAgentModelSettingsFor(projectId: string): MemoryAgentModelSettings {
-    const settings = this.options.getMemoryAgentSettings?.(projectId)
+  private memoryAgentModelSettingsFor(): MemoryAgentModelSettings {
+    const settings = this.options.getMemoryAgentGlobalSettings?.()
     const thinkingEnabled = settings?.thinkingEnabled ?? DEFAULT_MEMORY_AGENT_THINKING_ENABLED
     const thinkingEffort = settings?.thinkingEffort ?? (thinkingEnabled ? undefined : DEFAULT_MEMORY_AGENT_THINKING_EFFORT)
     return {
@@ -600,265 +1155,12 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private async enqueueMemoryAgentForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): Promise<void> {
-    this.ensureProjectMemory(input.projectId, input.workspacePath)
-    if (!this.options.provider) {
-      return
-    }
-    const modelSettings = this.memoryAgentModelSettingsFor(input.projectId)
-    if (this.options.credentials && !this.options.credentials.getApiKey(modelSettings.providerId)) {
-      this.appendEvent({
-        projectId: input.projectId,
-        conversationId: input.conversationId,
-        sessionId: input.sessionId,
-        turnId: input.turnId,
-        type: "memory.agent.skipped",
-        source: "server",
-        payload: { reason: `${modelSettings.providerId} credential is not configured.` },
-      })
-      return
-    }
-    const turnEvidence = this.turnEvidence(input.projectId, input.turnId)
-    if (!turnEvidence.trim()) {
-      return
-    }
-    const entry: MemoryAgentEvidenceEntry = {
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
-      text: turnEvidence,
-      tokens: estimateTextTokens(turnEvidence).inputTokens,
-    }
-    const buffer = this.memoryBuffers.get(input.projectId) ?? { entries: [] }
-    buffer.entries.push(entry)
-    if (buffer.timer) {
-      clearTimeout(buffer.timer)
-    }
-    const totalTokens = buffer.entries.reduce((sum, item) => sum + item.tokens, 0)
-    if (totalTokens >= MEMORY_AGENT_TOKEN_CAP) {
-      this.memoryBuffers.delete(input.projectId)
-      await this.runMemoryAgentBatch(input.projectId, buffer.entries, "buffer_limit")
-      return
-    }
-    const idleMs = this.options.memoryAgentIdleMs ?? DEFAULT_MEMORY_AGENT_IDLE_MS
-    buffer.timer = setTimeout(() => {
-      const current = this.memoryBuffers.get(input.projectId)
-      if (!current) {
-        return
-      }
-      this.memoryBuffers.delete(input.projectId)
-      void this.runMemoryAgentBatch(input.projectId, current.entries, "idle").catch((error) => {
-        this.appendEvent({
-          projectId: input.projectId,
-          conversationId: input.conversationId,
-          sessionId: input.sessionId,
-          turnId: input.turnId,
-          type: "memory.agent.failed",
-          source: "server",
-          payload: { message: error instanceof Error ? error.message : String(error) },
-        })
-      })
-    }, idleMs)
-    buffer.timer.unref?.()
-    this.memoryBuffers.set(input.projectId, buffer)
-  }
-
-  private async runMemoryAgentBatch(projectId: string, entries: MemoryAgentEvidenceEntry[], trigger: "buffer_limit" | "idle" | "manual" | "turn_completed"): Promise<void> {
-    if (entries.length === 0 || !this.options.provider) {
-      return
-    }
-    const latest = entries[entries.length - 1]
-    const modelSettings = this.memoryAgentModelSettingsFor(projectId)
-    const jobId = createId("memjob")
-    const startedAt = nowIso()
-    const evidenceTokensEstimate = entries.reduce((sum, entry) => sum + entry.tokens, 0)
-    this.handle.db
-      .insert(memoryAgentJobs)
-      .values({
-        id: jobId,
-        projectId,
-        conversationId: latest?.conversationId,
-        sessionId: latest?.sessionId,
-        turnId: latest?.turnId,
-        status: "running",
-        trigger,
-        providerId: modelSettings.providerId,
-        modelId: modelSettings.modelId,
-        fallbackModelIdsJson: JSON.stringify([]),
-        evidenceTurnIdsJson: JSON.stringify(entries.map((entry) => entry.turnId)),
-        evidenceTokensEstimate,
-        startedAt,
-        metadataJson: JSON.stringify({
-          thinkingEnabled: modelSettings.thinkingEnabled,
-          thinkingEffort: modelSettings.thinkingEffort,
-        }),
-      })
-      .run()
-    this.appendEvent({
-      projectId,
-      ...scopedIds(latest ?? {}),
-      type: "memory.agent.started",
-      source: "server",
-      payload: { jobId, projectId, trigger, evidenceTokensEstimate },
-    })
-
-    try {
-      let parsed: MemoryAgentOutput | undefined
-      let lastError: unknown
-      const cappedEvidence = capByEstimatedTokens(this.buildMemoryAgentInput(projectId, entries), MEMORY_AGENT_TOKEN_CAP)
-      try {
-        parsed = parseMemoryAgentOutput(await this.runMemoryAgentModel(projectId, modelSettings, cappedEvidence, latest))
-      } catch (error) {
-        lastError = error
-      }
-      if (!parsed) {
-        throw lastError ?? new SocratesError("memory_agent_empty", "Memory agent returned no parseable output.", { recoverable: true })
-      }
-      const applied = await this.applyMemoryAgentOutput(projectId, jobId, latest, parsed, modelSettings)
-      this.handle.db
-        .update(memoryAgentJobs)
-        .set({
-          status: applied.noOp ? "no_op" : "completed",
-          providerId: modelSettings.providerId,
-          modelId: modelSettings.modelId,
-          outputJson: JSON.stringify(parsed),
-          completedAt: nowIso(),
-        })
-        .where(eq(memoryAgentJobs.id, jobId))
-        .run()
-      this.appendEvent({
-        projectId,
-        ...scopedIds(latest ?? {}),
-        type: "memory.agent.completed",
-        source: "server",
-        payload: {
-          jobId,
-          status: applied.noOp ? "no_op" : "completed",
-          providerId: modelSettings.providerId,
-          modelId: modelSettings.modelId,
-          actionsApplied: applied.actionsApplied,
-          actionsRejected: applied.actionsRejected,
-        },
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.handle.db.update(memoryAgentJobs).set({ status: "failed", completedAt: nowIso(), metadataJson: JSON.stringify({ error: message }) }).where(eq(memoryAgentJobs.id, jobId)).run()
-      this.appendEvent({
-        projectId,
-        ...scopedIds(latest ?? {}),
-        type: "memory.agent.failed",
-        source: "server",
-        payload: { jobId, error: { code: "memory_agent_failed", message } },
-      })
-    }
-  }
-
-  private buildMemoryAgentInput(projectId: string, entries: MemoryAgentEvidenceEntry[]): string {
-    const targetSnippets = [
-      ["identity.md", readIfExists(path.join(this.socratesHome, "identity.md"))],
-      ["operating_principles.md", readIfExists(path.join(this.socratesHome, "operating_principles.md"))],
-      ["builtin/socrates-skill-writer/SKILL.md", readIfExists(path.join(bundledSkillsDir(), "socrates-skill-writer", "SKILL.md"))],
-      ...TOOL_USAGE_DOC_NAMES.map((name) => [`tool_usage/${name}`, readIfExists(path.join(this.socratesHome, "tool_usage", name))] as const),
-      ...listMarkdownFiles(path.join(this.socratesHome, "skills"))
-        .filter((filePath) => filePath.endsWith("SKILL.md"))
-        .slice(0, 20)
-        .map((filePath) => [path.relative(this.socratesHome, filePath), readIfExists(filePath)] as const),
-    ] as const
-    return [
-      `Project: ${projectId}`,
-      `Evidence turn ids: ${entries.map((entry) => entry.turnId).join(", ")}`,
-      "Current target memory files with hashes:",
-      ...targetSnippets.map(([label, content]) => {
-        const text = content ?? ""
-        return `--- ${label}\nsha256: ${hashText(text)}\n${truncate(text, 8_000).text}`
-      }),
-      "Turn evidence:",
-      ...entries.map((entry) => entry.text),
-    ].join("\n\n")
-  }
-
-  private turnEvidence(projectId: string, turnId: string): string {
-    const turn = this.handle.db.select().from(turns).where(eq(turns.id, turnId)).limit(1).get()
-    if (!turn) {
-      return ""
-    }
-    const messageRows = this.handle.db.select().from(messages).where(eq(messages.turnId, turnId)).orderBy(messages.createdAt).all()
-    const toolRows = this.handle.db.select().from(toolCalls).where(eq(toolCalls.turnId, turnId)).orderBy(toolCalls.startedAt).all()
-    const toolIds = toolRows.map((tool) => tool.id)
-    const fileRows = this.handle.db.select().from(fileOperations).where(eq(fileOperations.turnId, turnId)).orderBy(fileOperations.startedAt).all()
-    const patchRows = this.handle.db.select().from(patches).where(eq(patches.turnId, turnId)).orderBy(patches.createdAt).all()
-    const shellRows = this.handle.db.select().from(shellCommands).where(eq(shellCommands.turnId, turnId)).orderBy(shellCommands.startedAt).all()
-    const shellChunks =
-      shellRows.length > 0
-        ? this.handle.db.select().from(shellOutputChunks).where(inArray(shellOutputChunks.shellCommandId, shellRows.map((row) => row.id))).orderBy(shellOutputChunks.sequence).all()
-        : []
-    const eventRows = this.handle.db.select().from(events).where(eq(events.turnId, turnId)).orderBy(events.sequence).all()
-    return [
-      `Project: ${projectId}`,
-      `Turn: ${turnId}`,
-      ...messageRows.map((message) => `[${message.role}]\n${sanitizeForDiary(message.content)}`),
-      ...toolRows.map((tool) => `[tool ${tool.toolName} ${tool.status}]\nArguments: ${sanitizeForDiary(tool.argumentsJson)}\nResult: ${sanitizeForDiary(tool.resultJson ?? "")}`),
-      ...fileRows.map((file) => `[file ${file.operation} ${file.status}]\n${file.path}\nBefore: ${file.contentHashBefore ?? ""}\nAfter: ${file.contentHashAfter ?? ""}\nMetadata: ${sanitizeForDiary(file.metadataJson ?? "")}`),
-      ...patchRows.map((patch) => `[patch ${patch.status}]\n${sanitizeForDiary(patch.diffText).slice(0, 8_000)}`),
-      ...shellRows.map((shell) => {
-        const output = shellChunks
-          .filter((chunk) => chunk.shellCommandId === shell.id)
-          .map((chunk) => `[${chunk.stream}] ${chunk.text}`)
-          .join("\n")
-        return `[shell ${shell.status}]\n${sanitizeForDiary(shell.command)}\n${sanitizeForDiary(output).slice(0, 8_000)}`
-      }),
-      ...eventRows
-        .filter((event) => !["agent.answer.delta", "agent.thinking.delta"].includes(event.type))
-        .map((event) => `[event ${event.type}]\n${sanitizeForDiary(event.payloadJson).slice(0, 4_000)}`),
-      toolIds.length > 0 ? `Tool ids: ${toolIds.join(", ")}` : "",
-    ].join("\n\n")
-  }
-
-  private async runMemoryAgentModel(projectId: string, modelSettings: MemoryAgentModelSettings, evidence: string, latest: MemoryAgentEvidenceEntry | undefined): Promise<string> {
-    if (!this.options.provider) {
-      throw new SocratesError("memory_agent_provider_missing", "Memory agent provider is not configured.", { recoverable: true })
-    }
-    const workspacePath = latest?.workspacePath
-    const requireWorkspacePath = (): string => {
-      if (!workspacePath) {
-        throw new SocratesError("memory_agent_workspace_missing", "Project docs require an active project workspace.", { recoverable: true })
-      }
-      return workspacePath
-    }
-    return runMemoryAgentTurn({
-      provider: this.options.provider,
-      modelSettings,
-      evidence,
-      projectId,
-      conversationId: latest?.conversationId ?? "",
-      sessionId: latest?.sessionId ?? "",
-      turnId: latest?.turnId ?? "",
-      ...(workspacePath ? { workspacePath } : {}),
-      socratesHome: this.socratesHome,
-      tools: {
-        traceRetrieve: async (input) => {
-          if (!this.options.traceRetrieve || !latest?.conversationId) {
-            throw new SocratesError("memory_agent_trace_unavailable", "trace_retrieve is not available to this memory-agent run.", { recoverable: true })
-          }
-          return this.options.traceRetrieve(projectId, latest.conversationId, input)
-        },
-        toolDocs: async (input) => this.runToolDocsTool(projectId, workspacePath, input),
-        skills: async (input) => this.runSkillsTool(projectId, workspacePath, input),
-        projectDocs: async (input) => this.runProjectDocsTool(projectId, requireWorkspacePath(), input),
-        repoDocs: async (input) => this.runRepoDocsTool(projectId, requireWorkspacePath(), input),
-        soul: async (input) => this.runSoulTool(projectId, workspacePath, input),
-      },
-    })
-  }
-
   private async generateProjectSkill(projectId: string, workspacePath: string, request: string, name: string): Promise<string> {
     const fallback = fallbackSkillMarkdown(name, request)
     if (!this.options.provider) {
       return fallback
     }
-    const modelSettings = this.memoryAgentModelSettingsFor(projectId)
+    const modelSettings = this.memoryAgentModelSettingsFor()
     const instructionRow = this.handle.db
       .select()
       .from(projectInstructions)
@@ -910,37 +1212,6 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private async applyMemoryAgentOutput(
-    projectId: string,
-    jobId: string,
-    latest: MemoryAgentEvidenceEntry | undefined,
-    output: MemoryAgentOutput,
-    modelSettings: MemoryAgentModelSettings,
-  ): Promise<{ noOp: boolean; actionsApplied: number; actionsRejected: number }> {
-    let actionsApplied = 0
-    let actionsRejected = 0
-    for (const patch of output.skillPatches ?? []) {
-      const result = this.applyPrimaryPatch(projectId, jobId, latest?.turnId, "skills", this.resolveSkillPatchPath(patch.path), patch)
-      actionsApplied += result.applied ? 1 : 0
-      actionsRejected += result.applied ? 0 : 1
-    }
-    for (const patch of output.toolUsageDocPatches ?? []) {
-      const result = this.applyPrimaryPatch(projectId, jobId, latest?.turnId, "tool_usage", this.resolveToolUsagePatchPath(patch.path), patch)
-      actionsApplied += result.applied ? 1 : 0
-      actionsRejected += result.applied ? 0 : 1
-    }
-    for (const patch of output.soulPatchProposals ?? []) {
-      const result = await this.applySoulPatch(projectId, jobId, latest, patch, modelSettings)
-      actionsApplied += result.applied ? 1 : 0
-      actionsRejected += result.applied ? 0 : 1
-    }
-    return {
-      noOp: output.no_op === true && actionsApplied === 0 && actionsRejected === 0,
-      actionsApplied,
-      actionsRejected,
-    }
-  }
-
   private applyPrimaryPatch(
     projectId: string,
     jobId: string,
@@ -979,7 +1250,7 @@ export class MemoryStore extends StoreBase {
   private async applySoulPatch(
     projectId: string,
     jobId: string,
-    latest: MemoryAgentEvidenceEntry | undefined,
+    latest: { conversationId?: string; sessionId?: string; turnId?: string } | undefined,
     patch: MemoryPatchProposal,
     modelSettings: MemoryAgentModelSettings,
   ): Promise<{ applied: boolean; actionId: string; error?: string }> {
@@ -1148,40 +1419,6 @@ export class MemoryStore extends StoreBase {
     return text
   }
 
-  private resolveToolUsagePatchPath(inputPath: string | undefined): string {
-    const root = path.join(this.socratesHome, "tool_usage")
-    if (!inputPath) {
-      return path.join(root, "trace_retrieve.md")
-    }
-    const normalized = inputPath.replaceAll("\\", "/").replace(/^primary\/tool_usage\//, "").replace(/^tool_usage\//, "")
-    const resolved = safeJoin(root, normalized)
-    if (!resolved.endsWith(".md")) {
-      throw new SocratesError("memory_agent_tool_usage_path_invalid", "Tool-usage memory patch target must be a markdown file.", {
-        recoverable: true,
-        details: { path: inputPath },
-      })
-    }
-    return resolved
-  }
-
-  private resolveSkillPatchPath(inputPath: string | undefined): string {
-    const root = path.join(this.socratesHome, "skills")
-    const normalized = inputPath ? inputPath.replaceAll("\\", "/").replace(/^skills\//, "").replace(/^useful_patterns\//, "") : "general/SKILL.md"
-    const resolved = safeJoin(root, normalized)
-    if (!resolved.endsWith(".md") || !resolved.startsWith(root)) {
-      throw new SocratesError("memory_agent_skill_path_invalid", "Skill memory patch target must be a markdown file under skills.", {
-        recoverable: true,
-        details: { path: inputPath },
-      })
-    }
-    if (path.basename(resolved) === "SKILL.md") {
-      const name = path.basename(path.dirname(resolved))
-      ensureFile(resolved, fallbackSkillMarkdown(name, "Reusable Socrates skill maintained by the backend memory worker."))
-    } else {
-      ensureFile(resolved, "")
-    }
-    return resolved
-  }
 }
 
 const projectDocPath = (workspacePath: string, area: ProjectDocsArea): string =>
@@ -1248,10 +1485,11 @@ const bundledSkillsDir = (): string => {
 const ensureBundledToolUsageDocs = (targetDir: string): void => {
   const sourceDir = bundledToolUsageDocsDir()
   fs.mkdirSync(targetDir, { recursive: true })
-  for (const name of TOOL_USAGE_DOC_NAMES) {
-    const sourcePath = path.join(sourceDir, name)
+  for (const sourcePath of listMarkdownFiles(sourceDir)) {
+    const name = path.relative(sourceDir, sourcePath)
     const targetPath = path.join(targetDir, name)
     const content = fs.readFileSync(sourcePath, "utf8")
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true })
     if (!fs.existsSync(targetPath) || isLegacyToolUsageSeed(name, fs.readFileSync(targetPath, "utf8"))) {
       fs.writeFileSync(targetPath, content)
     }
@@ -1594,6 +1832,39 @@ const truncateToContextBudget = (text: string, charLimit: number): string => tru
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
+const parseJsonObject = (text: string | null | undefined): Record<string, unknown> => {
+  if (!text) {
+    return {}
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+const parseJsonArray = (text: string | null | undefined): unknown[] => {
+  if (!text) {
+    return []
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const slimMemoryToolEvent = (event: { type: string; toolName?: unknown; summary?: unknown; error?: unknown; argsPreview?: unknown; resultPreview?: unknown }): Record<string, unknown> => ({
+  type: event.type,
+  ...(typeof event.toolName === "string" ? { toolName: event.toolName } : {}),
+  ...(typeof event.argsPreview === "string" ? { argsPreview: event.argsPreview.slice(0, 500) } : {}),
+  ...(typeof event.summary === "string" ? { summary: event.summary.slice(0, 500) } : {}),
+  ...(typeof event.resultPreview === "string" ? { resultPreview: event.resultPreview.slice(0, 500) } : {}),
+  ...(event.error && typeof event.error === "object" && "message" in event.error ? { error: String((event.error as { message?: unknown }).message ?? "") } : {}),
+})
+
 const safeJoin = (root: string, relativePath: string): string => {
   const resolved = path.resolve(root, relativePath)
   const resolvedRoot = path.resolve(root)
@@ -1638,16 +1909,9 @@ const truncationFor = (text: string, charLimit: number): TruncationMetadata => (
 
 const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1
 
-const formatDiaryDate = (date: Date): string =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-
 const capByEstimatedTokens = (text: string, tokenLimit: number): string => {
   if (estimateTextTokens(text).inputTokens <= tokenLimit) {
     return text
   }
   return text.slice(0, tokenLimit * 4)
 }
-
-const sanitizeForDiary = (text: string): string => text.replace(/\b(sk-[A-Za-z0-9_-]{12,}|[A-Za-z0-9_-]{32,})\b/g, "[redacted]")
-
-const normalizeDiaryNote = (text: string): string => text.trim()

@@ -19,7 +19,7 @@ import {
   pickWorkspaceFolderRequestSchema,
   providerIdSchema,
   setProviderCredentialSessionRequestSchema,
-  updateProjectMemoryAgentSettingsRequestSchema,
+  updateMemoryAgentGlobalSettingsRequestSchema,
   updateProjectWorkspaceRequestSchema,
   updateConversationRequestSchema,
   upsertProjectInstructionsRequestSchema,
@@ -87,6 +87,7 @@ const handleRouteError = (error: unknown) => {
         api.code === "attachment_upload_limit_exceeded" ||
     api.code === "embedding_check_failed" ||
     api.code === "memory_agent_model_required" ||
+    api.code === "memory_agent_cadence_invalid" ||
     api.code === "workspace_env_file_not_allowed"
       ? 400
       : api.code.endsWith("_not_found")
@@ -208,6 +209,34 @@ export const registerHttpRoutes = async (
     try {
       const input = parseBody(inspectWorkspaceRequestSchema, request.body)
       return ok(store.inspectWorkspace(input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/memory-agent", async (_request, reply) => {
+    try {
+      return ok(store.getMemoryAgent())
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/memory-agent/settings", async (request, reply) => {
+    try {
+      const input = parseBody(updateMemoryAgentGlobalSettingsRequestSchema, request.body)
+      return ok(store.updateMemoryAgentSettings(input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/memory-agent/run", async (_request, reply) => {
+    try {
+      return ok(await store.runGlobalMemoryAgent("manual"))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
@@ -385,17 +414,6 @@ export const registerHttpRoutes = async (
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(buildProjectSkillRequestSchema, request.body)
       return ok(await store.buildProjectSkill(projectId, input))
-    } catch (error) {
-      const { statusCode, response } = handleRouteError(error)
-      return reply.code(statusCode).send(response)
-    }
-  })
-
-  app.patch("/api/projects/:projectId/memory-agent/settings", async (request, reply) => {
-    try {
-      const { projectId } = parseParams(projectParamsSchema, request.params)
-      const input = parseBody(updateProjectMemoryAgentSettingsRequestSchema, request.body)
-      return ok({ settings: store.updateProjectMemoryAgentSettings(projectId, input) })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

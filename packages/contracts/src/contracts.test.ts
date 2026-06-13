@@ -52,7 +52,9 @@ import {
   listProjectsResponseSchema,
   markAllNotificationsReadResponseSchema,
   markNotificationReadResponseSchema,
-  memoryAgentSettingsSchema,
+  memoryAgentGlobalSettingsSchema,
+  memoryAgentGlobalStateSchema,
+  getMemoryAgentResponseSchema,
   messageCompletedEventSchema,
   messageSchema,
   memoryAgentCompletedEventSchema,
@@ -86,8 +88,8 @@ import {
   uploadProjectResourcesResponseSchema,
   updateConversationRequestSchema,
   updateConversationResponseSchema,
-  updateProjectMemoryAgentSettingsRequestSchema,
-  updateProjectMemoryAgentSettingsResponseSchema,
+  updateMemoryAgentGlobalSettingsRequestSchema,
+  updateMemoryAgentGlobalSettingsResponseSchema,
   updateProjectWorkspaceRequestSchema,
   updateProjectWorkspaceResponseSchema,
   upsertProjectInstructionsRequestSchema,
@@ -101,6 +103,8 @@ import {
   applyPatchToolModelInputSchema,
   editToolInputSchema,
   editToolModelInputSchema,
+  editFilesToolInputSchema,
+  editFilesToolOutputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
   mcpRegistryToolModelInputSchema,
@@ -111,6 +115,8 @@ import {
   toolDocsToolOutputSchema,
   projectDocsToolInputSchema,
   projectDocsToolOutputSchema,
+  projectsToolInputSchema,
+  projectsToolOutputSchema,
   repoDocsToolInputSchema,
   repoDocsToolOutputSchema,
   readToolInputSchema,
@@ -122,6 +128,7 @@ import {
   traceRetrieveToolInputSchema,
   traceRetrieveToolModelInputSchema,
   traceRetrieveToolOutputSchema,
+  triggerMemoryAgentRunResponseSchema,
   conversationToolRunSchema,
   editToolOutputSchema,
 } from "./index"
@@ -175,15 +182,6 @@ const skill = {
   description: "Use when reviewing Socrates memory changes.",
   scope: "project" as const,
   path: "memory-review/SKILL.md",
-  updatedAt: timestamp,
-}
-
-const memoryAgentSettings = {
-  id: "memcfg_1",
-  projectId: "proj_1",
-  providerId: "openrouter",
-  modelId: "xiaomi/mimo-v2.5-pro",
-  thinkingEnabled: false,
   updatedAt: timestamp,
 }
 
@@ -390,7 +388,6 @@ describe("http contracts", () => {
         conversations: [conversation],
         instructions,
         skills: [skill],
-        memoryAgentSettings,
       }).success,
     ).toBe(true)
     expect(
@@ -449,23 +446,62 @@ describe("http contracts", () => {
         conversations: [conversation],
         instructions,
         skills: [skill],
-        memoryAgentSettings,
         embeddingStatus,
       }).success,
     ).toBe(true)
   })
 
-  it("parses project memory agent settings contracts", () => {
-    expect(memoryAgentSettingsSchema.safeParse(memoryAgentSettings).success).toBe(true)
-    expect(
-      updateProjectMemoryAgentSettingsRequestSchema.safeParse({
-        providerId: "openrouter",
-        modelId: "xiaomi/mimo-v2.5-pro",
-        thinkingEnabled: false,
-      }).success,
-    ).toBe(true)
-    expect(updateProjectMemoryAgentSettingsRequestSchema.safeParse({ providerId: "openrouter", modelId: "", thinkingEnabled: false }).success).toBe(false)
-    expect(updateProjectMemoryAgentSettingsResponseSchema.safeParse({ settings: memoryAgentSettings }).success).toBe(true)
+  it("parses global memory agent HTTP contracts", () => {
+    const settings = {
+      id: "memcfg_global",
+      providerId: "openrouter",
+      modelId: "xiaomi/mimo-v2.5-pro",
+      thinkingEnabled: false,
+      enabled: true,
+      cadenceMinutes: 10,
+      updatedAt: timestamp,
+    }
+    const state = {
+      id: "global",
+      lastProcessedEventSequence: 42,
+      lastRunAt: timestamp,
+      status: "idle",
+      lastJobId: "memjob_1",
+      updatedAt: timestamp,
+    }
+    const run = {
+      id: "memjob_1",
+      status: "completed",
+      trigger: "manual",
+      providerId: "openrouter",
+      modelId: "xiaomi/mimo-v2.5-pro",
+      evidenceTurnCount: 2,
+      evidenceTokensEstimate: 320,
+      startedAt: timestamp,
+      completedAt: timestamp,
+      sequenceFrom: 41,
+      sequenceTo: 42,
+      output: "Updated one skill.",
+      actions: [
+        {
+          id: "memact_1",
+          jobId: "memjob_1",
+          targetKind: "skills",
+          targetPath: "/tmp/.Socrates/skills/general/SKILL.md",
+          status: "applied",
+          requiresConfirmation: false,
+          createdAt: timestamp,
+          appliedAt: timestamp,
+        },
+      ],
+    }
+    expect(memoryAgentGlobalSettingsSchema.safeParse(settings).success).toBe(true)
+    expect(updateMemoryAgentGlobalSettingsRequestSchema.safeParse({ enabled: false, cadenceMinutes: 30 }).success).toBe(true)
+    expect(updateMemoryAgentGlobalSettingsRequestSchema.safeParse({ cadenceMinutes: 0 }).success).toBe(false)
+    expect(updateMemoryAgentGlobalSettingsResponseSchema.safeParse({ settings }).success).toBe(true)
+    expect(memoryAgentGlobalStateSchema.safeParse(state).success).toBe(true)
+    expect(getMemoryAgentResponseSchema.safeParse({ settings, state, recentRuns: [run] }).success).toBe(true)
+    expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, run }).success).toBe(true)
   })
 
   it("parses project embedding HTTP contracts", () => {
@@ -1077,6 +1113,7 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ turnNo: 2, role: "user", scope: "project" }).success).toBe(true)
+    expect(traceRetrieveToolInputSchema.safeParse({ scope: "all_projects", projectTitle: ["Socrates", "AI DPA"], conversationTitle: ["Memory agent", "Trace retrieval"], query: "selector precedence" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ scope: "recent_conversations", conversationLimit: 3, perConversationLimit: 5 }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ mode: "semantic", scope: "project" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ mode: "combined", conversationLimit: 3 }).success).toBe(false)
@@ -1100,6 +1137,7 @@ describe("tool contracts", () => {
     expect(traceRetrieveToolModelInputSchema.safeParse({ mode: "audit", toolId: "tcall_1" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ toolId: "tcall_1" }).success).toBe(false)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationTitle: "apply patch fix", conversationLimit: 10 }).success).toBe(true)
+    expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", scope: "all_projects", projectTitle: ["Socrates"], conversationId: ["conv_1", "conv_2"] }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", conversationId: "conv_1" }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ mode: "exact", conversationLimit: 3, conversationOffset: 1, perConversationLimit: 5, updatedAfter: timestamp, updatedBefore: timestamp }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ query: "README", mode: "exact", turnNo: 2 }).success).toBe(true)
@@ -1237,6 +1275,71 @@ describe("tool contracts", () => {
         changed: true,
         content: "# PROJECT_NOTES",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 15 },
+      }).success,
+    ).toBe(true)
+    expect(projectsToolInputSchema.safeParse({ operation: "list_projects", limit: 10 }).success).toBe(true)
+    expect(projectsToolInputSchema.safeParse({ operation: "list_conversations", projectId: project.id }).success).toBe(true)
+    expect(projectsToolInputSchema.safeParse({ operation: "list_conversations" }).success).toBe(false)
+    expect(
+      projectsToolOutputSchema.safeParse({
+        operation: "list_projects",
+        projects: [
+          {
+            id: project.id,
+            name: project.name,
+            status: project.status,
+            updatedAt: timestamp,
+            conversationCount: 2,
+            resourceCount: 1,
+          },
+        ],
+        totalMatches: 1,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
+      }).success,
+    ).toBe(true)
+    expect(
+      projectsToolOutputSchema.safeParse({
+        operation: "list_conversations",
+        conversations: [
+          {
+            id: conversation.id,
+            projectId: project.id,
+            title: conversation.title,
+            status: conversation.status,
+            updatedAt: timestamp,
+            turnCount: 3,
+          },
+        ],
+        totalMatches: 1,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
+      }).success,
+    ).toBe(true)
+    expect(
+      editFilesToolInputSchema.safeParse({
+        target: "tool_doc",
+        name: "read_search",
+        editMode: "replace",
+        oldText: "old",
+        newText: "new",
+      }).success,
+    ).toBe(true)
+    expect(
+      editFilesToolInputSchema.safeParse({
+        target: "skill",
+        name: "general",
+        editMode: "create",
+        newText: "---\nname: general\ndescription: Useful global Socrates patterns.\n---\n# General\n",
+      }).success,
+    ).toBe(true)
+    expect(editFilesToolInputSchema.safeParse({ target: "skill", editMode: "create", newText: "# Missing name\n" }).success).toBe(false)
+    expect(
+      editFilesToolOutputSchema.safeParse({
+        target: "skill",
+        name: "general",
+        path: "skills/general/SKILL.md",
+        changed: true,
+        status: "applied",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 20 },
       }).success,
     ).toBe(true)
     expect(listProjectResourcesToolInputSchema.safeParse({ kind: "pdf", limit: 10 }).success).toBe(true)

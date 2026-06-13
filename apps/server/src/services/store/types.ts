@@ -2,7 +2,6 @@ import type {
   Conversation,
   ConversationCostUsage,
   Message,
-  MemoryAgentSettings,
   TurnUsageReport,
   Project,
   ProjectEmbeddingStatus,
@@ -26,7 +25,6 @@ export type ProjectDashboard = {
   conversations: Conversation[]
   instructions?: ProjectInstructions
   skills: SkillSummary[]
-  memoryAgentSettings?: MemoryAgentSettings
   embeddingStatus?: ProjectEmbeddingStatus
 }
 

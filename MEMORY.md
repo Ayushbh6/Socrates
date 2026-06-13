@@ -45,6 +45,10 @@ Global `~/.Socrates`:
     terminal.md
     read_search.md
     memory_docs.md
+    memory_agent/
+      trace_retrieve_global.md
+      projects.md
+      edit_files.md
   skills/
     <skill-name>/SKILL.md
 ```
@@ -90,10 +94,15 @@ Tool routing:
 - First-turn wake context includes compact excerpts from workspace `.socrates/MEMORY.md` and `.socrates/repo_docs/CORE_IDEA.md`.
 - Generic `edit` and `apply_patch` writes to `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/*.md`, and `.socrates/skills/**` are rejected; use dedicated docs tools or the backend project skill builder.
 - Terminal commands are preflight-rejected when they mention Socrates-owned protected paths: workspace `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/**`, `.socrates/skills/**`, and global `~/.Socrates/skills/**`, `~/.Socrates/tool_usage/**`, `identity.md`, or `operating_principles.md`. This is an obvious-path guard, not a process sandbox.
-- The background memory worker is an async specialized `SocratesAgent` run with a memory-agent system prompt, restricted read-only memory tools, `trace_retrieve`, and final JSON patch proposals. It targets only global `tool_usage`, global `skills`, and rare gated `soul` proposals.
-- Each project has persisted memory-agent settings. New projects default to OpenRouter `xiaomi/mimo-v2.5-pro` with thinking off, surfaced in the dashboard `Memory Agent` panel.
-- Memory jobs are triggered after completed chat turns. App startup does not automatically dump all historical project chats into the memory agent; older evidence is pulled through `trace_retrieve` only when the memory agent asks for it.
-- Memory-agent implementation is split out of `memoryStore.ts` into focused runner/output/soul/skill helper modules. `memoryStore.ts` is still above the ideal size threshold and should next shed docs/search helper code rather than gain new responsibilities.
+- The Global Memory Agent is a scheduled app-level specialized `SocratesAgent` run, not a per-turn project worker.
+- The agent reads completed-turn event manifests after the durable `events.sequence` watermark and advances the watermark only after a successful run.
+- The agent tools are `trace_retrieve` with global search, `projects`, `tool_docs`, `skills`, `soul`, and scoped `edit_files`.
+- Memory-agent `trace_retrieve` supports `all_projects`, `current_project`, `projectTitle`, `projectId`, `conversationTitle`, and `conversationId`; project/conversation selectors may be strings or lists.
+- Memory-agent tool guidance is seeded under `~/.Socrates/tool_usage/memory_agent/` and is readable through the existing `tool_docs` tool.
+- `edit_files` is the only write tool for the memory agent. It writes global `tool_usage`, global `skills`, and gated `identity.md` / `operating_principles.md` edits without exposing raw paths.
+- Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes.
+- Completed chat turns are indexed for trace retrieval, but they no longer enqueue a per-turn memory job. The scheduler or manual settings-page action wakes the global agent.
+- Legacy per-project memory-agent settings remain only as inactive DB/store compatibility baggage; the per-turn worker runtime path has been removed.
 - Project skill creation is user-triggered from the dashboard `Skills +` flow and writes `.socrates/skills/<skill-name>/SKILL.md`.
 - `socrates-skill-writer` is an internal backend builder asset, not exposed as a normal model-visible skill.
 - Soul proposals still require internal confirmation and user-visible notification.

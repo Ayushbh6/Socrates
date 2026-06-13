@@ -157,12 +157,49 @@ type InternalTraceQaPairResult = {
 type InternalTraceSearchResult = InternalTraceMessageResult | InternalTraceQaPairResult
 
 type ResolveConversationOptions = {
-  conversationTitle?: string
-  conversationId?: string
+  conversationTitle?: TraceSelector
+  conversationId?: TraceSelector
   conversationOffset?: number
   conversationLimitProvided?: boolean
   updatedAfter?: string
   updatedBefore?: string
+}
+
+type TraceSelector = string | string[]
+
+const selectorValues = (selector: TraceSelector | undefined): string[] => {
+  if (!selector) {
+    return []
+  }
+  const values = Array.isArray(selector) ? selector : [selector]
+  return uniqueOrdered(values.map((value) => value.trim()).filter(Boolean))
+}
+
+const firstSelectorValue = (selector: TraceSelector | undefined): string | undefined => selectorValues(selector)[0]
+
+const singleSelectorValue = (selector: TraceSelector | undefined): string | undefined => {
+  const values = selectorValues(selector)
+  return values.length === 1 ? values[0] : undefined
+}
+
+const selectorLabel = (selector: TraceSelector | undefined): string | undefined => {
+  const values = selectorValues(selector)
+  if (values.length === 0) {
+    return undefined
+  }
+  return values.length === 1 ? values[0] : values.join(", ")
+}
+
+const uniqueOrdered = <T>(values: T[]): T[] => {
+  const seen = new Set<T>()
+  const output: T[] = []
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value)
+      output.push(value)
+    }
+  }
+  return output
 }
 
 const traceDocumentSelect = `td.id AS id,
@@ -184,6 +221,9 @@ const traceDocumentSelect = `td.id AS id,
   td.metadata_json AS metadataJson,
   td.created_at AS createdAt,
   td.updated_at AS updatedAt`
+
+const GLOBAL_TRACE_SEARCH_PROJECT_ID = "__global__"
+const GLOBAL_TRACE_SEARCH_CONVERSATION_ID = "__global__"
 
 export class TraceStore extends StoreBase {
   private readonly recentSearchRefs = new Map<string, TraceRetrieveInspectArgs[]>()
@@ -297,6 +337,371 @@ export class TraceStore extends StoreBase {
     return this.search(projectId, currentConversationId, normalizedInput)
   }
 
+  async retrieveGlobal(input: TraceRetrieveToolInput): Promise<TraceRetrieveToolOutput> {
+    const parsed = traceRetrieveToolInputSchema.safeParse(normalizeTraceRetrieveInput(input))
+    if (!parsed.success) {
+      throw new SocratesError("trace_retrieve_invalid_input", parsed.error.message, { recoverable: true })
+    }
+    const normalizedInput = parsed.data
+    const directScope = this.resolveGlobalDirectScope(normalizedInput)
+    if (directScope) {
+      const output = await this.retrieve(directScope.projectId, directScope.conversationId, normalizedInput)
+      return withGlobalProjectFields(output, directScope.projectId, directScope.projectName)
+    }
+    if (normalizedInput.operation === "inspect" && normalizedInput.resultNumber) {
+      const refs = this.recentSearchRefs.get(traceSearchRefKey(GLOBAL_TRACE_SEARCH_PROJECT_ID, GLOBAL_TRACE_SEARCH_CONVERSATION_ID)) ?? []
+      const ref = refs[normalizedInput.resultNumber - 1]
+      if (ref) {
+        const charLimit = normalizedInput.charLimit ?? ref.charLimit
+        return this.retrieveGlobal({ ...ref, ...(charLimit ? { charLimit } : {}) })
+      }
+    }
+    if (normalizedInput.operation === "inspect") {
+      return {
+        results: [],
+        totalMatches: 0,
+        truncation: truncationFor("[]", normalizedInput.charLimit ?? DEFAULT_CHAR_LIMIT),
+        appliedFilters: { operation: "inspect" },
+        warnings: ["No global trace source matched that inspect handle or id."],
+      }
+    }
+    return this.searchGlobalTraceDocuments(normalizedInput)
+  }
+
+  private resolveGlobalDirectScope(input: TraceRetrieveToolInput): { projectId: string; conversationId: string; projectName?: string } | undefined {
+    if ("projectId" in input && singleSelectorValue(input.projectId)) {
+      const projectId = singleSelectorValue(input.projectId)!
+      const conversationId =
+        firstSelectorValue("conversationId" in input ? input.conversationId : undefined) ??
+        ((this.handle.sqlite
+          .prepare("SELECT id FROM conversations WHERE project_id = ? AND status IN ('active', 'archived') ORDER BY updated_at DESC LIMIT 1")
+          .get(projectId) as { id: string } | undefined)?.id ?? "")
+      return { projectId, conversationId, projectName: this.projectName(projectId) }
+    }
+    if ("projectTitle" in input && singleSelectorValue(input.projectTitle)) {
+      const projectIds = this.resolveGlobalProjectIds(undefined, input.projectTitle)
+      if (projectIds.length === 1) {
+        const projectId = projectIds[0]!
+        const conversationId =
+          firstSelectorValue("conversationId" in input ? input.conversationId : undefined) ??
+          ((this.handle.sqlite
+            .prepare("SELECT id FROM conversations WHERE project_id = ? AND status IN ('active', 'archived') ORDER BY updated_at DESC LIMIT 1")
+            .get(projectId) as { id: string } | undefined)?.id ?? "")
+        return { projectId, conversationId, projectName: this.projectName(projectId) }
+      }
+    }
+    if ("conversationId" in input && singleSelectorValue(input.conversationId)) {
+      return this.scopeForConversation(singleSelectorValue(input.conversationId)!)
+    }
+    if (input.operation === "inspect") {
+      if (input.turnId) {
+        return this.scopeForTraceWhere("td.turn_id = ?", [input.turnId])
+      }
+      if (input.messageId) {
+        return this.scopeForTraceWhere("td.source_table = 'messages' AND td.source_id = ?", [input.messageId])
+      }
+      if (input.toolCallId) {
+        return this.scopeForTraceWhere("td.source_table = 'tool_calls' AND td.source_id = ?", [input.toolCallId])
+      }
+      if (input.handle) {
+        return this.scopeForTraceWhere("td.handle = ?", [input.handle])
+      }
+    }
+    return undefined
+  }
+
+  private searchGlobalTraceDocuments(input: TraceRetrieveSearchInput): TraceRetrieveToolOutput {
+    const mode = input.mode ?? "exact"
+    const limit = input.limit ?? DEFAULT_LIMIT
+    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
+    const warnings: string[] = []
+    if (mode === "semantic" || mode === "combined") {
+      warnings.push("Global semantic trace search is not available yet; this run used exact lexical search across trace documents.")
+    }
+    const params: unknown[] = []
+    const where = ["p.status != 'deleted'"]
+    const projectIds = this.resolveGlobalProjectIds(input.projectId, input.projectTitle)
+    const explicitProjectSelector = selectorValues(input.projectId).length > 0 || selectorValues(input.projectTitle).length > 0
+    if (explicitProjectSelector && projectIds.length === 0) {
+      return this.emptyGlobalSearch(input, mode, charLimit, [`No visible project matched the requested project selector.`])
+    }
+    const conversationIds = this.resolveGlobalConversationIds(input.conversationId, input.conversationTitle, projectIds, input.updatedAfter, input.updatedBefore)
+    const explicitConversationSelector = selectorValues(input.conversationId).length > 0 || selectorValues(input.conversationTitle).length > 0
+    if (explicitConversationSelector && conversationIds.length === 0) {
+      return this.emptyGlobalSearch(input, mode, charLimit, [`No visible conversation matched the requested conversation selector.`])
+    }
+    if (projectIds.length > 0) {
+      where.push(`td.project_id IN (${projectIds.map(() => "?").join(", ")})`)
+      params.push(...projectIds)
+    }
+    if (conversationIds.length > 0) {
+      where.push(`td.conversation_id IN (${conversationIds.map(() => "?").join(", ")})`)
+      params.push(...conversationIds)
+    }
+    if (input.query) {
+      where.push("(td.content LIKE ? OR td.title LIKE ? OR COALESCE(td.summary, '') LIKE ?)")
+      const like = `%${input.query}%`
+      params.push(like, like, like)
+    } else {
+      where.push("td.source_kind IN ('turn_summary', 'conversation_summary')")
+    }
+    const include = mode === "audit" ? input.include ?? ["tool_calls", "shell", "files", "errors"] : input.include
+    const sourceKinds = mode === "audit" ? sourceKindsForInclude(include) : normalSourceKindsForInclude(include)
+    if (sourceKinds.length > 0) {
+      where.push(`td.source_kind IN (${sourceKinds.map(() => "?").join(", ")})`)
+      params.push(...sourceKinds)
+    }
+    appendMessageFacetFilters(where, params, input)
+    if (input.createdAfter) {
+      where.push("td.created_at >= ?")
+      params.push(input.createdAfter)
+    }
+    if (input.createdBefore) {
+      where.push("td.created_at <= ?")
+      params.push(input.createdBefore)
+    }
+    if (input.toolNames && input.toolNames.length > 0) {
+      where.push(`(${input.toolNames.map(() => "td.metadata_json LIKE ?").join(" OR ")})`)
+      params.push(...input.toolNames.map((toolName) => `%"${toolName}"%`))
+    }
+    if (input.paths && input.paths.length > 0) {
+      where.push(`(${input.paths.map(() => "td.metadata_json LIKE ? OR td.content LIKE ? OR td.title LIKE ?").join(" OR ")})`)
+      for (const path of input.paths) {
+        params.push(`%${path}%`, `%${path}%`, `%${path}%`)
+      }
+    }
+    if (input.command) {
+      where.push("(td.metadata_json LIKE ? OR td.content LIKE ? OR td.title LIKE ?)")
+      params.push(`%${input.command}%`, `%${input.command}%`, `%${input.command}%`)
+    }
+    const orderBy: string[] = []
+    const orderParams: unknown[] = []
+    if (conversationIds.length > 0) {
+      orderBy.push(`CASE td.conversation_id ${conversationIds.map(() => "WHEN ? THEN ?").join(" ")} ELSE ${conversationIds.length} END`)
+      conversationIds.forEach((conversationId, index) => orderParams.push(conversationId, index))
+    } else if (projectIds.length > 0) {
+      orderBy.push(`CASE td.project_id ${projectIds.map(() => "WHEN ? THEN ?").join(" ")} ELSE ${projectIds.length} END`)
+      projectIds.forEach((projectId, index) => orderParams.push(projectId, index))
+    }
+    params.push(...orderParams, limit)
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT ${traceDocumentSelect}, p.name AS projectName, 0 AS score
+           FROM trace_documents td
+           ${visibleTraceConversationJoin}
+           INNER JOIN projects p ON p.id = td.project_id
+          WHERE ${where.join(" AND ")}
+          ORDER BY ${orderBy.length > 0 ? `${orderBy.join(", ")}, ` : ""}td.updated_at DESC, td.id DESC
+          LIMIT ?`,
+      )
+      .all(...params) as Array<SearchRow & { projectName: string }>
+    const numberedResults = rows.map((row, index) => ({
+      ...this.searchResultFromTraceRow(row, input, row.conversationId ?? ""),
+      resultNumber: index + 1,
+      projectId: row.projectId,
+      projectName: row.projectName,
+    }))
+    this.rememberSearchRefs(GLOBAL_TRACE_SEARCH_PROJECT_ID, GLOBAL_TRACE_SEARCH_CONVERSATION_ID, numberedResults.map((result) => result.inspectArgs))
+    const publicResults = publicTraceSearchResults(numberedResults)
+    const text = JSON.stringify(publicResults)
+    return {
+      results: publicResults,
+      totalMatches: publicResults.length,
+      truncation: truncationFor(text, charLimit),
+      appliedFilters: {
+        operation: "search",
+        ...(input.scope ? { scope: input.scope } : {}),
+        mode,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
+        ...(input.conversationLimit ? { conversationLimit: input.conversationLimit } : {}),
+        ...(input.conversationOffset ? { conversationOffset: input.conversationOffset } : {}),
+        ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(conversationIds.length > 0 ? { conversationIds } : {}),
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.entryType ? { entryType: input.entryType } : {}),
+        ...(input.hasAttachment !== undefined ? { hasAttachment: input.hasAttachment } : {}),
+        ...(input.createdAfter ? { createdAfter: input.createdAfter } : {}),
+        ...(input.createdBefore ? { createdBefore: input.createdBefore } : {}),
+        ...(include ? { include } : {}),
+      },
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }
+  }
+
+  private emptyGlobalSearch(input: TraceRetrieveSearchInput, mode: TraceRetrieveMode, charLimit: number, warnings: string[]): TraceRetrieveToolOutput {
+    return {
+      results: [],
+      totalMatches: 0,
+      truncation: truncationFor("[]", charLimit),
+      appliedFilters: {
+        operation: "search",
+        ...(input.scope ? { scope: input.scope } : {}),
+        mode,
+        ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
+        ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      },
+      warnings,
+    }
+  }
+
+  private scopeForConversation(conversationId: string): { projectId: string; conversationId: string; projectName?: string } | undefined {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT c.project_id AS projectId, c.id AS conversationId, p.name AS projectName
+           FROM conversations c
+           INNER JOIN projects p ON p.id = c.project_id
+          WHERE c.id = ? AND c.status IN ('active', 'archived') AND p.status != 'deleted'
+          LIMIT 1`,
+      )
+      .get(conversationId) as { projectId: string; conversationId: string; projectName: string } | undefined
+    return row
+  }
+
+  private scopeForTraceWhere(whereSql: string, params: unknown[]): { projectId: string; conversationId: string; projectName?: string } | undefined {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT td.project_id AS projectId, COALESCE(td.conversation_id, '') AS conversationId, p.name AS projectName
+           FROM trace_documents td
+           LEFT JOIN conversations vc ON vc.id = td.conversation_id AND vc.project_id = td.project_id
+           INNER JOIN projects p ON p.id = td.project_id
+          WHERE ${whereSql}
+            AND (td.conversation_id IS NULL OR vc.status IN ('active', 'archived'))
+            AND p.status != 'deleted'
+          ORDER BY td.updated_at DESC
+          LIMIT 1`,
+      )
+      .get(...params) as { projectId: string; conversationId: string; projectName: string } | undefined
+    return row
+  }
+
+  private projectName(projectId: string): string | undefined {
+    return (this.handle.sqlite.prepare("SELECT name FROM projects WHERE id = ? LIMIT 1").get(projectId) as { name: string } | undefined)?.name
+  }
+
+  private resolveGlobalProjectIds(projectSelector?: TraceSelector, projectTitleSelector?: TraceSelector): string[] {
+    const explicitProjectIds = selectorValues(projectSelector)
+    if (explicitProjectIds.length > 0) {
+      const rows = this.handle.sqlite
+        .prepare(`SELECT id FROM projects WHERE status != 'deleted' AND id IN (${explicitProjectIds.map(() => "?").join(", ")})`)
+        .all(...explicitProjectIds) as Array<{ id: string }>
+      const visible = new Set(rows.map((row) => row.id))
+      return explicitProjectIds.filter((projectId) => visible.has(projectId))
+    }
+
+    const titleSelectors = selectorValues(projectTitleSelector)
+    if (titleSelectors.length === 0) {
+      return []
+    }
+    const rows = this.handle.sqlite
+      .prepare("SELECT id, name FROM projects WHERE status != 'deleted' ORDER BY updated_at DESC, id DESC")
+      .all() as Array<{ id: string; name: string }>
+    const results: string[] = []
+    for (const title of titleSelectors) {
+      const needle = normalizeConversationTitle(title)
+      const matches = rows
+        .map((row) => ({ row, normalizedTitle: normalizeConversationTitle(row.name) }))
+        .flatMap(({ row, normalizedTitle }) => {
+          if (normalizedTitle === needle) {
+            return [{ row, rank: 0 }]
+          }
+          if (normalizedTitle.includes(needle)) {
+            return [{ row, rank: 1 }]
+          }
+          if (needle.includes(normalizedTitle)) {
+            return [{ row, rank: 2 }]
+          }
+          return []
+        })
+        .sort((left, right) => left.rank - right.rank)
+      results.push(...matches.map((match) => match.row.id))
+    }
+    return uniqueOrdered(results)
+  }
+
+  private resolveGlobalConversationIds(
+    conversationSelector?: TraceSelector,
+    conversationTitleSelector?: TraceSelector,
+    projectIds: string[] = [],
+    updatedAfter?: string,
+    updatedBefore?: string,
+  ): string[] {
+    const explicitConversationIds = selectorValues(conversationSelector)
+    const dateWhere: string[] = []
+    const dateParams: unknown[] = []
+    if (updatedAfter) {
+      dateWhere.push("c.updated_at >= ?")
+      dateParams.push(updatedAfter)
+    }
+    if (updatedBefore) {
+      dateWhere.push("c.updated_at <= ?")
+      dateParams.push(updatedBefore)
+    }
+    if (explicitConversationIds.length > 0) {
+      const params: unknown[] = [...explicitConversationIds]
+      const projectSql = projectIds.length > 0 ? `AND c.project_id IN (${projectIds.map(() => "?").join(", ")})` : ""
+      params.push(...projectIds, ...dateParams)
+      const rows = this.handle.sqlite
+        .prepare(
+          `SELECT c.id
+             FROM conversations c
+             INNER JOIN projects p ON p.id = c.project_id
+            WHERE c.id IN (${explicitConversationIds.map(() => "?").join(", ")})
+              AND c.status IN ('active', 'archived')
+              AND p.status != 'deleted'
+              ${projectSql}
+              ${dateWhere.length > 0 ? `AND ${dateWhere.join(" AND ")}` : ""}`,
+        )
+        .all(...params) as Array<{ id: string }>
+      const visible = new Set(rows.map((row) => row.id))
+      return explicitConversationIds.filter((conversationId) => visible.has(conversationId))
+    }
+
+    const titleSelectors = selectorValues(conversationTitleSelector)
+    if (titleSelectors.length === 0) {
+      return []
+    }
+    const projectSql = projectIds.length > 0 ? `AND c.project_id IN (${projectIds.map(() => "?").join(", ")})` : ""
+    const rows = this.handle.sqlite
+      .prepare(
+        `SELECT c.id, c.title
+           FROM conversations c
+           INNER JOIN projects p ON p.id = c.project_id
+          WHERE c.status IN ('active', 'archived')
+            AND p.status != 'deleted'
+            ${projectSql}
+            ${dateWhere.length > 0 ? `AND ${dateWhere.join(" AND ")}` : ""}
+          ORDER BY c.updated_at DESC, c.id DESC
+          LIMIT 1000`,
+      )
+      .all(...projectIds, ...dateParams) as Array<{ id: string; title: string | null }>
+    const results: string[] = []
+    for (const title of titleSelectors) {
+      const needle = normalizeConversationTitle(title)
+      const matches = rows
+        .map((row) => ({ row, normalizedTitle: normalizeConversationTitle(row.title ?? "") }))
+        .filter(({ normalizedTitle }) => normalizedTitle)
+        .flatMap(({ row, normalizedTitle }) => {
+          if (normalizedTitle === needle) {
+            return [{ row, rank: 0 }]
+          }
+          if (normalizedTitle.includes(needle)) {
+            return [{ row, rank: 1 }]
+          }
+          if (needle.includes(normalizedTitle)) {
+            return [{ row, rank: 2 }]
+          }
+          return []
+        })
+        .sort((left, right) => left.rank - right.rank)
+      results.push(...matches.map((match) => match.row.id))
+    }
+    return uniqueOrdered(results)
+  }
+
   private buildTurnDocuments(projectId: string, conversationId: string, turnId: string): number {
     const context = this.getTurnContext(projectId, conversationId, turnId)
     if (!context) {
@@ -372,10 +777,10 @@ export class TraceStore extends StoreBase {
       ...(updatedBefore ? { updatedBefore } : {}),
     })
     if (input.conversationTitle && conversationIds.length === 0) {
-      warnings.push(`No visible conversation matched conversationTitle="${input.conversationTitle}".`)
+      warnings.push(`No visible conversation matched conversationTitle="${selectorLabel(input.conversationTitle)}".`)
     }
     if (input.conversationId && conversationIds.length === 0) {
-      warnings.push(`No visible conversation matched conversationId="${input.conversationId}".`)
+      warnings.push(`No visible conversation matched conversationId="${selectorLabel(input.conversationId)}".`)
     }
     if (useOrdinalLookup) {
       return this.searchOrdinalTurn(projectId, currentConversationId, input, {
@@ -541,8 +946,8 @@ export class TraceStore extends StoreBase {
       conversationLimit: number
       conversationOffset: number
       conversationLimitProvided: boolean
-      conversationTitle: string | undefined
-      conversationId: string | undefined
+      conversationTitle: TraceSelector | undefined
+      conversationId: TraceSelector | undefined
       charLimit: number
       conversationIds: string[]
       createdAfter: string | undefined
@@ -617,8 +1022,8 @@ export class TraceStore extends StoreBase {
       conversationOffset: number
       conversationLimitProvided: boolean
       perConversationLimit: number
-      conversationTitle: string | undefined
-      conversationId: string | undefined
+      conversationTitle: TraceSelector | undefined
+      conversationId: TraceSelector | undefined
       charLimit: number
       conversationIds: string[]
       createdAfter: string | undefined
@@ -1072,8 +1477,8 @@ export class TraceStore extends StoreBase {
       conversationLimit: number
       conversationOffset: number
       conversationLimitProvided: boolean
-      conversationTitle: string | undefined
-      conversationId: string | undefined
+      conversationTitle: TraceSelector | undefined
+      conversationId: TraceSelector | undefined
       charLimit: number
       include: TraceRetrieveInclude[] | undefined
       updatedAfter: string | undefined
@@ -1501,28 +1906,35 @@ export class TraceStore extends StoreBase {
       dateWhere.push("updated_at <= ?")
       dateParams.push(options.updatedBefore)
     }
-    if (options.conversationId) {
-      const row = this.handle.sqlite
+    const conversationIds = selectorValues(options.conversationId)
+    if (conversationIds.length > 0) {
+      const rows = this.handle.sqlite
         .prepare(
           `SELECT id
            FROM conversations
            WHERE project_id = ?
-             AND id = ?
+             AND id IN (${conversationIds.map(() => "?").join(", ")})
              AND status IN ('active', 'archived')
              ${dateWhere.length > 0 ? `AND ${dateWhere.join(" AND ")}` : ""}
-           LIMIT 1`,
+           ORDER BY updated_at DESC, id DESC`,
         )
-        .get(projectId, options.conversationId, ...dateParams) as { id: string } | undefined
-      return row ? [row.id] : []
+        .all(projectId, ...conversationIds, ...dateParams) as Array<{ id: string }>
+      const visible = new Set(rows.map((row) => row.id))
+      return conversationIds.filter((conversationId) => visible.has(conversationId))
     }
-    if (options.conversationTitle) {
-      return this.resolveConversationIdsByTitle(projectId, currentConversationId, options.conversationTitle, {
-        conversationLimit,
-        conversationOffset,
-        ...(options.conversationLimitProvided !== undefined ? { conversationLimitProvided: options.conversationLimitProvided } : {}),
-        ...(options.updatedAfter ? { updatedAfter: options.updatedAfter } : {}),
-        ...(options.updatedBefore ? { updatedBefore: options.updatedBefore } : {}),
-      })
+    const conversationTitles = selectorValues(options.conversationTitle)
+    if (conversationTitles.length > 0) {
+      return uniqueOrdered(
+        conversationTitles.flatMap((conversationTitle) =>
+          this.resolveConversationIdsByTitle(projectId, currentConversationId, conversationTitle, {
+            conversationLimit,
+            conversationOffset,
+            ...(options.conversationLimitProvided !== undefined ? { conversationLimitProvided: options.conversationLimitProvided } : {}),
+            ...(options.updatedAfter ? { updatedAfter: options.updatedAfter } : {}),
+            ...(options.updatedBefore ? { updatedBefore: options.updatedBefore } : {}),
+          }),
+        ),
+      )
     }
     if (scope === "current_conversation") {
       return this.isVisibleConversation(projectId, currentConversationId) ? [currentConversationId] : []
@@ -1609,8 +2021,8 @@ export class TraceStore extends StoreBase {
     currentConversationId: string,
     scope: TraceRetrieveScope,
     conversationLimit: number,
-    conversationTitle?: string,
-    conversationId?: string,
+    conversationTitle?: TraceSelector,
+    conversationId?: TraceSelector,
     conversationOffset?: number,
     updatedAfter?: string,
     updatedBefore?: string,
@@ -2773,6 +3185,19 @@ const messageNoForMatchedMessage = (
 
 const publicTraceSearchResults = (results: Array<InternalTraceSearchResult & { resultNumber: number }>): TraceRetrieveToolOutput["results"] =>
   results.map(({ inspectArgs: _inspectArgs, rank: _rank, createdAt: _createdAt, ...result }) => result)
+
+const withGlobalProjectFields = (output: TraceRetrieveToolOutput, projectId: string, projectName?: string): TraceRetrieveToolOutput => ({
+  ...output,
+  results: output.results.map((result) => ({
+    ...result,
+    projectId,
+    ...(projectName ? { projectName } : {}),
+  })),
+  appliedFilters: {
+    ...output.appliedFilters,
+    projectId,
+  },
+})
 
 const messageRole = (value: string): "user" | "assistant" | "system" | "tool" | "developer" | undefined =>
   value === "user" || value === "assistant" || value === "system" || value === "tool" || value === "developer" ? value : undefined

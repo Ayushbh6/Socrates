@@ -38,7 +38,10 @@ import type {
   RepoDocsToolOutput,
   Project,
   ProjectInstructions,
-  UpdateProjectMemoryAgentSettingsRequest,
+  GetMemoryAgentResponse,
+  TriggerMemoryAgentRunResponse,
+  UpdateMemoryAgentGlobalSettingsRequest,
+  UpdateMemoryAgentGlobalSettingsResponse,
   ProjectResource,
   ProjectWorkspace,
   BuildProjectSkillRequest,
@@ -70,7 +73,7 @@ import { FeedbackStore } from "./store/feedbackStore"
 import { InstructionStore } from "./store/instructionStore"
 import { ModelTelemetryStore } from "./store/modelTelemetryStore"
 import { MemoryStore } from "./store/memoryStore"
-import { MemoryAgentSettingsStore } from "./store/memoryAgentSettingsStore"
+import { MemoryAgentGlobalSettingsStore } from "./store/memoryAgentGlobalSettingsStore"
 import { NotificationStore } from "./store/notificationStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
@@ -123,16 +126,17 @@ export class SocratesStore {
   private readonly terminals: TerminalStore
   private readonly traces: TraceStore
   private readonly memory: MemoryStore
-  private readonly memoryAgentSettings: MemoryAgentSettingsStore
+  private readonly memoryAgentSettings: MemoryAgentGlobalSettingsStore
   private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
+  private memoryAgentScheduler?: ReturnType<typeof setInterval>
 
   constructor(
     private readonly handle: DatabaseHandle,
     embeddingProvider?: EmbeddingProvider,
     credentials?: ProviderCredentialResolver,
-    options: { socratesHome?: string; memoryProvider?: ModelProvider; memoryAgentIdleMs?: number } = {},
+    options: { socratesHome?: string; memoryProvider?: ModelProvider } = {},
   ) {
     this.events = new EventStore(handle)
     const context: StoreContext = {
@@ -156,14 +160,14 @@ export class SocratesStore {
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     this.traces = new TraceStore(context, this.embeddings)
     this.notifications = new NotificationStore(context)
-    this.memoryAgentSettings = new MemoryAgentSettingsStore(context)
+    this.memoryAgentSettings = new MemoryAgentGlobalSettingsStore(context)
     const memoryOptions = {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
       ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
-      ...(options.memoryAgentIdleMs === undefined ? {} : { memoryAgentIdleMs: options.memoryAgentIdleMs }),
       ...(credentials ? { credentials } : {}),
       traceRetrieve: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => this.traces.retrieve(projectId, conversationId, input),
-      getMemoryAgentSettings: (projectId: string) => this.memoryAgentSettings.ensureProjectSettings(projectId),
+      traceRetrieveGlobal: (input: TraceRetrieveToolInput) => this.traces.retrieveGlobal(input),
+      getMemoryAgentGlobalSettings: () => this.memoryAgentSettings.ensureSettings(),
       createNotification: (input: Parameters<NotificationStore["createNotification"]>[0]) => this.notifications.createNotification(input),
     }
     this.memory = new MemoryStore(context, memoryOptions)
@@ -171,6 +175,10 @@ export class SocratesStore {
   }
 
   async close(): Promise<void> {
+    if (this.memoryAgentScheduler) {
+      clearInterval(this.memoryAgentScheduler)
+      this.memoryAgentScheduler = undefined
+    }
     await this.embeddings.dispose()
     this.handle.close()
   }
@@ -211,7 +219,6 @@ export class SocratesStore {
 
   createProject(input: CreateProjectRequest): { project: Project; primaryWorkspace: ProjectWorkspace } {
     const created = this.projects.createProject(input)
-    this.memoryAgentSettings.ensureProjectSettings(created.project.id)
     this.ensureProjectMemory(created.project.id)
     return created
   }
@@ -221,7 +228,6 @@ export class SocratesStore {
       ...this.projects.getProjectDashboard(projectId),
       resources: this.resources.listResources(projectId),
       skills: this.memory.listProjectSkills(projectId, this.primaryWorkspacePathOrUndefined(projectId)),
-      memoryAgentSettings: this.memoryAgentSettings.ensureProjectSettings(projectId),
       embeddingStatus: this.embeddings.getStatus(projectId),
     }
   }
@@ -256,8 +262,49 @@ export class SocratesStore {
     return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request) }
   }
 
-  updateProjectMemoryAgentSettings(projectId: string, input: UpdateProjectMemoryAgentSettingsRequest) {
-    return this.memoryAgentSettings.updateProjectSettings(projectId, input)
+  getMemoryAgent(): GetMemoryAgentResponse {
+    return {
+      settings: this.memoryAgentSettings.ensureSettings(),
+      state: this.memoryAgentSettings.ensureState(),
+      recentRuns: this.memory.listGlobalMemoryAgentRuns(),
+    }
+  }
+
+  updateMemoryAgentSettings(input: UpdateMemoryAgentGlobalSettingsRequest): UpdateMemoryAgentGlobalSettingsResponse {
+    return { settings: this.memoryAgentSettings.updateSettings(input) }
+  }
+
+  async runGlobalMemoryAgent(trigger: "scheduled" | "manual" = "manual"): Promise<TriggerMemoryAgentRunResponse> {
+    return this.memory.runGlobalMemoryAgent({
+      trigger,
+      settings: this.memoryAgentSettings.ensureSettings(),
+      state: this.memoryAgentSettings.ensureState(),
+      updateState: (patch) => this.memoryAgentSettings.updateState(patch),
+    })
+  }
+
+  startGlobalMemoryScheduler(): void {
+    if (this.memoryAgentScheduler) {
+      return
+    }
+    this.memoryAgentScheduler = setInterval(() => {
+      void this.runScheduledGlobalMemoryAgentIfDue()
+    }, 60_000)
+    this.memoryAgentScheduler.unref?.()
+    void this.runScheduledGlobalMemoryAgentIfDue()
+  }
+
+  private async runScheduledGlobalMemoryAgentIfDue(): Promise<void> {
+    const settings = this.memoryAgentSettings.ensureSettings()
+    if (!settings.enabled) {
+      return
+    }
+    const state = this.memoryAgentSettings.ensureState()
+    const lastRunMs = state.lastRunAt ? Date.parse(state.lastRunAt) : 0
+    if (state.status === "running" || (lastRunMs > 0 && Date.now() - lastRunMs < settings.cadenceMinutes * 60_000)) {
+      return
+    }
+    await this.runGlobalMemoryAgent("scheduled")
   }
 
   runProjectDocsTool(projectId: string, workspacePath: string, input: ProjectDocsToolInput): ProjectDocsToolOutput {
@@ -662,14 +709,6 @@ export class SocratesStore {
 
   retrieveToolTraces(projectId: string, conversationId: string, input: TraceRetrieveToolInput) {
     return this.traces.retrieve(projectId, conversationId, input)
-  }
-
-  enqueueGlobalMemoryForTurn(input: { projectId: string; conversationId: string; sessionId: string; turnId: string; workspacePath?: string }): void {
-    const workspacePath = input.workspacePath ?? this.primaryWorkspacePathOrUndefined(input.projectId)
-    this.memory.enqueueGlobalMemoryForTurn({
-      ...input,
-      ...(workspacePath ? { workspacePath } : {}),
-    })
   }
 
   getProjectEmbeddingStatus(projectId: string) {

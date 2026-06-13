@@ -1,8 +1,8 @@
 # memory docs tools
 
-Socrates has separate tools for conversation evidence, tool guidance, reusable skills, project state, repo doctrine, and soul context.
+Socrates has separate tools for conversation evidence, tool guidance, reusable skills, project state, repo doctrine, and soul context. Main Socrates and the Global Memory Agent use different tool sets; check the right section before acting.
 
-## Tool map
+## Main Socrates Tools
 
 | Need | Tool |
 | --- | --- |
@@ -12,6 +12,27 @@ Socrates has separate tools for conversation evidence, tool guidance, reusable s
 | Workspace project memory and working notes | `project_docs` |
 | Durable repo doctrine | `repo_docs` |
 | Identity and operating principles | `soul` |
+
+Main Socrates also has normal workspace tools such as `read`, `search`, `edit`, `apply_patch`, `bash`, `list_project_resources`, and `mcp_registry`.
+
+## Global Memory Agent Tools
+
+| Need | Tool |
+| --- | --- |
+| Cross-project conversation and audit evidence | `trace_retrieve` |
+| Metadata-only project/conversation orientation | `projects` |
+| Tool usage guidance, including this folder | `tool_docs` |
+| Existing reusable skills | `skills` |
+| Identity and operating principles | `soul` |
+| Global tool docs, global skills, and gated soul edits | `edit_files` |
+
+Memory-agent specific guidance lives under `tool_usage/memory_agent/`:
+
+- `memory_agent/trace_retrieve_global.md`
+- `memory_agent/projects.md`
+- `memory_agent/edit_files.md`
+
+The Global Memory Agent does not receive generic `edit`, `apply_patch`, `bash`, `project_docs`, or `repo_docs`. Project-level writing stays with main Socrates.
 
 ## project_docs
 
@@ -24,7 +45,7 @@ Use `editMode: "append"` for active notes. Use `editMode: "replace"` for curated
 
 ## tool_docs
 
-`tool_docs` is read-only for the main agent. Use it for exact tool guidance under `~/.Socrates/tool_usage`.
+`tool_docs` is read-only for main Socrates and the Global Memory Agent. Use it for exact tool guidance under `~/.Socrates/tool_usage`.
 
 ## skills
 

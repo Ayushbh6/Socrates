@@ -22,13 +22,14 @@ repo_docs/       Checked-in repo handoff docs
 - `packages/core/src/prompts/socratesPrompt.ts`: lean Socrates system prompt.
 - `packages/core/src/prompts/memoryPrompt.ts`: backend memory-agent system prompt and runtime prompt builder.
 - `apps/server/src/services/store/memoryStore.ts`: global docs, project docs, repo docs, soul, wake context, memory worker.
+- `apps/server/src/services/store/memoryAgentGlobalSettingsStore.ts`: global memory-agent settings and watermark state.
 - `apps/server/src/services/store/memoryAgentRunner.ts`: specialized backend memory-agent turn runner built on `SocratesAgent`.
-- `apps/server/src/services/store/memoryAgentToolExecutors.ts`: read-only memory-agent tool executor mapping.
-- `apps/server/src/services/store/memoryAgentOutput.ts`: memory-agent final JSON parsing and patch validation helpers.
-- `apps/server/src/services/store/memoryAgentSettingsStore.ts`: project-scoped memory-agent provider/model/thinking settings.
+- `apps/server/src/services/store/memoryAgentToolExecutors.ts`: memory-only tool executor mapping.
+- `apps/server/src/services/store/traceStore.ts`: project-scoped and global trace retrieval over indexed conversation/tool evidence.
+- `apps/server/src/routes/httpRoutes.ts`: HTTP APIs including `/api/memory-agent`.
 - `apps/server/src/services/store/memorySoulDefaults.ts`: strict global soul markdown templates.
 - `apps/server/src/services/store/memorySkills.ts`: skill discovery, validation, slugging, and fallback markdown helpers.
-- `apps/web/src/components/dashboard/MemoryAgentPanel.tsx`: dashboard UI for project memory-agent settings.
+- `apps/web/src/components/settings/MemoryAgentPanel.tsx`: settings UI for global memory-agent cadence, model, manual run, and run logs.
 - `apps/server/src/ws/commandHandlers/chatMessageSend.ts`: tool executor wiring and mutation queue integration.
 - `packages/workspace/src/tools/common.ts`: generic mutation guardrails for Socrates-owned docs.
 - `apps/server/src/memory/defaults/`: bundled global tool-usage and workspace repo-doc templates.

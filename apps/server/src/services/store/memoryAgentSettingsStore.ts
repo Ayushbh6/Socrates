@@ -1,16 +1,34 @@
-import type { MemoryAgentSettings, ProviderId, ThinkingEffort, UpdateProjectMemoryAgentSettingsRequest } from "@socrates/contracts"
+import type { ProviderId, ThinkingEffort } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { eq } from "drizzle-orm"
 import { projectMemoryAgentSettings, projects } from "../../db/schema"
+import {
+  DEFAULT_MEMORY_AGENT_MODEL_ID,
+  DEFAULT_MEMORY_AGENT_PROVIDER_ID,
+  DEFAULT_MEMORY_AGENT_THINKING_EFFORT,
+  DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
+} from "./memoryAgentDefaults"
 import { StoreBase } from "./shared"
 
-export const DEFAULT_MEMORY_AGENT_PROVIDER_ID: ProviderId = "openrouter"
-export const DEFAULT_MEMORY_AGENT_MODEL_ID = "xiaomi/mimo-v2.5-pro"
-export const DEFAULT_MEMORY_AGENT_THINKING_ENABLED = false
-export const DEFAULT_MEMORY_AGENT_THINKING_EFFORT: ThinkingEffort | undefined = undefined
+type LegacyMemoryAgentSettings = {
+  id: string
+  projectId: string
+  providerId: ProviderId
+  modelId: string
+  thinkingEnabled: boolean
+  thinkingEffort?: ThinkingEffort
+  updatedAt: string
+}
+
+type LegacyUpdateMemoryAgentSettingsRequest = {
+  providerId: ProviderId
+  modelId: string
+  thinkingEnabled: boolean
+  thinkingEffort?: ThinkingEffort
+}
 
 export class MemoryAgentSettingsStore extends StoreBase {
-  ensureProjectSettings(projectId: string): MemoryAgentSettings {
+  ensureProjectSettings(projectId: string): LegacyMemoryAgentSettings {
     const existing = this.getProjectSettingsRow(projectId)
     if (existing) {
       return mapMemoryAgentSettings(existing)
@@ -34,7 +52,7 @@ export class MemoryAgentSettingsStore extends StoreBase {
     return mapMemoryAgentSettings(this.mustGetProjectSettingsRow(projectId))
   }
 
-  updateProjectSettings(projectId: string, input: UpdateProjectMemoryAgentSettingsRequest): MemoryAgentSettings {
+  updateProjectSettings(projectId: string, input: LegacyUpdateMemoryAgentSettingsRequest): LegacyMemoryAgentSettings {
     this.ensureProjectSettings(projectId)
     const now = nowIso()
     const modelId = input.modelId.trim()
@@ -82,7 +100,7 @@ export class MemoryAgentSettingsStore extends StoreBase {
 const normalizeThinkingEffort = (thinkingEnabled: boolean, thinkingEffort: ThinkingEffort | undefined): ThinkingEffort | undefined =>
   thinkingEnabled ? thinkingEffort && thinkingEffort !== "none" ? thinkingEffort : undefined : thinkingEffort
 
-const mapMemoryAgentSettings = (row: typeof projectMemoryAgentSettings.$inferSelect): MemoryAgentSettings => ({
+const mapMemoryAgentSettings = (row: typeof projectMemoryAgentSettings.$inferSelect): LegacyMemoryAgentSettings => ({
   id: row.id,
   projectId: row.projectId,
   providerId: row.providerId as ProviderId,

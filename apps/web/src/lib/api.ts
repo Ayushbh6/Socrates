@@ -15,6 +15,7 @@ import {
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
   getConversationResponseSchema,
+  getMemoryAgentResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
   getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
@@ -28,7 +29,8 @@ import {
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
   setProviderCredentialSessionResponseSchema,
-  updateProjectMemoryAgentSettingsResponseSchema,
+  updateMemoryAgentGlobalSettingsResponseSchema,
+  triggerMemoryAgentRunResponseSchema,
   uploadProjectResourcesResponseSchema,
   updateProjectWorkspaceResponseSchema,
   updateConversationResponseSchema,
@@ -56,6 +58,7 @@ import {
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
+  type GetMemoryAgentResponse,
   type GetMeResponse,
   type GetProjectEmbeddingsStatusResponse,
   type GetProjectResponse,
@@ -73,8 +76,9 @@ import {
   type ReindexProjectEmbeddingsResponse,
   type SetProviderCredentialSessionRequest,
   type SetProviderCredentialSessionResponse,
-  type UpdateProjectMemoryAgentSettingsRequest,
-  type UpdateProjectMemoryAgentSettingsResponse,
+  type UpdateMemoryAgentGlobalSettingsRequest,
+  type UpdateMemoryAgentGlobalSettingsResponse,
+  type TriggerMemoryAgentRunResponse,
   type UpdateProjectWorkspaceRequest,
   type UpdateProjectWorkspaceResponse,
   type UpdateConversationRequest,
@@ -248,6 +252,24 @@ export const api = {
       },
     ) as Promise<DeleteProviderCredentialResponse>,
 
+  getMemoryAgent: () =>
+    request<typeof getMemoryAgentResponseSchema>("/api/memory-agent", getMemoryAgentResponseSchema) as Promise<GetMemoryAgentResponse>,
+
+  updateMemoryAgentSettings: (input: UpdateMemoryAgentGlobalSettingsRequest) =>
+    request<typeof updateMemoryAgentGlobalSettingsResponseSchema>(
+      "/api/memory-agent/settings",
+      updateMemoryAgentGlobalSettingsResponseSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpdateMemoryAgentGlobalSettingsResponse>,
+
+  runMemoryAgent: () =>
+    request<typeof triggerMemoryAgentRunResponseSchema>("/api/memory-agent/run", triggerMemoryAgentRunResponseSchema, {
+      method: "POST",
+    }) as Promise<TriggerMemoryAgentRunResponse>,
+
   completeOnboarding: (input: CompleteOnboardingRequest) =>
     request<typeof completeOnboardingResponseSchema>("/api/onboarding", completeOnboardingResponseSchema, {
       method: "POST",
@@ -413,16 +435,6 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<BuildProjectSkillResponse>,
-
-  updateProjectMemoryAgentSettings: (projectId: string, input: UpdateProjectMemoryAgentSettingsRequest) =>
-    request<typeof updateProjectMemoryAgentSettingsResponseSchema>(
-      `/api/projects/${projectId}/memory-agent/settings`,
-      updateProjectMemoryAgentSettingsResponseSchema,
-      {
-        method: "PATCH",
-        body: JSON.stringify(input),
-      },
-    ) as Promise<UpdateProjectMemoryAgentSettingsResponse>,
 
   uploadProjectResources: (projectId: string, files: File[]) => {
     const body = new FormData();

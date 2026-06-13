@@ -78,11 +78,54 @@ REPO_RULES.md
 CONTRACTS.md
 ```
 
+## Global Memory Agent Tools
+
+The backend Global Memory Agent uses a separate memory-only registry:
+
+```text
+trace_retrieve
+projects
+tool_docs
+skills
+soul
+edit_files
+```
+
+Memory-agent `trace_retrieve` is global. Search accepts `scope: "current_conversation" | "recent_conversations" | "current_project" | "project" | "all_projects"`, plus `projectId`, `projectTitle`, `conversationId`, and `conversationTitle` selectors. Each selector may be one string or a list. Exact ids take precedence over titles; titles take precedence over broad scope; list order is preserved where possible. Broad global searches remember result refs so `operation: "inspect", resultNumber: n` works after search.
+
+`projects`:
+
+```ts
+{
+  operation: "list_projects" | "list_conversations"
+  projectId?: string
+  limit?: number
+  offset?: number
+}
+```
+
+`edit_files`:
+
+```ts
+{
+  target: "identity" | "operating_principles" | "tool_doc" | "skill"
+  name?: string
+  editMode: "replace" | "create"
+  oldText?: string
+  newText: string
+  rationale?: string
+  sourceTurnIds?: string[]
+}
+```
+
+The memory agent does not receive generic `edit`, `apply_patch`, `bash`, `project_docs`, or `repo_docs`. Project and repo state are reached through `projects` metadata plus global `trace_retrieve`; durable writes are only through scoped `edit_files`.
+
 ## Persistence Contracts
 
 - Runtime conversation/tool evidence remains in SQLite and is retrieved through `trace_retrieve`.
 - Workspace project memory and notes live in workspace files, not `~/.Socrates/projects/<projectId>/`.
 - Global tool usage lives under root `~/.Socrates/tool_usage`.
+- Global Memory Agent tool guidance lives under root `~/.Socrates/tool_usage/memory_agent/`.
 - Global learned skills live under root `~/.Socrates/skills`.
 - Project skills live under workspace `.socrates/skills`.
 - `identity.md` and `operating_principles.md` live directly under root `~/.Socrates`.
@@ -95,7 +138,11 @@ CONTRACTS.md
 - `memory.diary.appended` is no longer part of the server event union.
 - `memory.primary.updated.targetKind` is `tool_usage` or `skills`.
 - Soul update confirmation events remain.
-- The background memory worker is a specialized core `SocratesAgent` run, not a one-shot provider completion. It can call `trace_retrieve`, `tool_docs`, `skills`, `project_docs` read/search, `repo_docs` read/search, and `soul`; writes are applied only through validated final patch proposals.
-- Each project has `project_memory_agent_settings`: `providerId`, `modelId`, `thinkingEnabled`, `thinkingEffort`, timestamps. New projects default to OpenRouter `xiaomi/mimo-v2.5-pro` with thinking off.
-- `PATCH /api/projects/:projectId/memory-agent/settings` updates the project setting. Background memory jobs use that setting exactly for provider/model/thinking.
-- Memory jobs are enqueued from completed chat turns and process buffered new turn evidence; startup does not automatically process all historical chats.
+- The Global Memory Agent is a specialized core `SocratesAgent` run, not a one-shot provider completion and not a per-turn project worker.
+- It receives a manifest of completed-turn events since the durable `events.sequence` watermark, capped for token budget. It can use `trace_retrieve` and `projects` to pull deeper evidence only when useful.
+- Writes happen during the agent run through `edit_files`; there is no final JSON patch proposal contract.
+- Global settings live in `memory_agent_global_settings`; global run state and the event watermark live in `memory_agent_global_state`.
+- `GET /api/memory-agent` returns settings, state, and recent runs.
+- `PATCH /api/memory-agent/settings` updates enabled/cadence/provider/model/thinking.
+- `POST /api/memory-agent/run` triggers a manual global run.
+- Completed chat turns are indexed for retrieval but do not enqueue memory jobs directly. Scheduled runs wake from the global settings cadence.

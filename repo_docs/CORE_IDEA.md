@@ -22,12 +22,14 @@ The implementation has:
 - Four repo docs: `CORE_IDEA.md`, `REPO_NAVIGATION.md`, `REPO_RULES.md`, `CONTRACTS.md`.
 - Workspace project memory at `.socrates/MEMORY.md`.
 - Wake context built from workspace project memory and `CORE_IDEA.md`.
-- Background memory worker retargeted to global tool usage, learned skills, and gated soul proposals.
-- Backend memory worker now reuses the core `SocratesAgent` tool-call loop with a specialized prompt and restricted read-only tools, including `trace_retrieve`.
-- Project dashboard includes a `Memory Agent` panel for the project's memory-agent provider/model/thinking setting.
+- Global Memory Agent retargeted to global tool usage, learned skills, and gated soul edits.
+- Backend memory work reuses the core `SocratesAgent` tool-call loop with a specialized prompt and scoped tools: global `trace_retrieve`, `projects`, `tool_docs`, `skills`, `soul`, and `edit_files`.
+- Memory runs are scheduled from global settings, process completed-turn event manifests after the durable `events.sequence` watermark, and can be triggered manually from Settings.
+- Settings page includes the `Memory Agent` panel for cadence, enabled state, provider/model/thinking, manual run, and recent run logs.
 
 ## Important Non-Goals
 
 - Project skill creation is dashboard-triggered through `Skills +`.
 - No active diary read/write/search/wake path.
 - No main-agent writes to global docs or soul docs.
+- No per-turn memory job enqueueing from chat completion; trace indexing remains separate from memory-agent scheduling.
