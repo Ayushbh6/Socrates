@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { apiErrorSchema } from "./api"
 import { conversationSchema, idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
+import { memoryAgentSignalSnapshotSchema } from "./http"
 import { providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
 import { terminalStatusSchema, toolNameSchema } from "./tools"
 
@@ -354,8 +355,9 @@ export const contextCompactionFailedPayloadSchema = z
 export const memoryAgentStartedPayloadSchema = z
   .object({
     jobId: idSchema,
-    projectId: idSchema,
-    trigger: z.enum(["buffer_limit", "idle", "manual", "turn_completed"]),
+    trigger: z.enum(["scheduled", "manual"]),
+    sequenceFrom: z.number().int().positive().optional(),
+    sequenceTo: z.number().int().nonnegative().optional(),
     evidenceTokensEstimate: z.number().int().nonnegative(),
   })
   .strict()
@@ -363,10 +365,11 @@ export const memoryAgentStartedPayloadSchema = z
 export const memoryAgentCompletedPayloadSchema = z
   .object({
     jobId: idSchema,
-    status: z.enum(["completed", "no_op"]),
+    status: z.enum(["completed"]),
+    providerId: providerIdSchema,
     modelId: z.string().min(1),
-    actionsApplied: z.number().int().nonnegative(),
-    actionsRejected: z.number().int().nonnegative(),
+    sequenceFrom: z.number().int().positive().optional(),
+    sequenceTo: z.number().int().nonnegative().optional(),
   })
   .strict()
 
@@ -374,6 +377,17 @@ export const memoryAgentFailedPayloadSchema = z
   .object({
     jobId: idSchema.optional(),
     error: apiErrorSchema,
+  })
+  .strict()
+
+export const memoryAgentCheckedPayloadSchema = z
+  .object({
+    checkId: idSchema,
+    trigger: z.enum(["scheduled", "manual"]),
+    status: z.enum(["skipped"]),
+    reason: z.string().min(1),
+    pending: memoryAgentSignalSnapshotSchema,
+    checkedAt: z.string().min(1),
   })
   .strict()
 
@@ -560,6 +574,7 @@ export const contextCompactionFailedEventSchema = socketEnvelopeSchema(
 export const memoryAgentStartedEventSchema = socketEnvelopeSchema("memory.agent.started", memoryAgentStartedPayloadSchema)
 export const memoryAgentCompletedEventSchema = socketEnvelopeSchema("memory.agent.completed", memoryAgentCompletedPayloadSchema)
 export const memoryAgentFailedEventSchema = socketEnvelopeSchema("memory.agent.failed", memoryAgentFailedPayloadSchema)
+export const memoryAgentCheckedEventSchema = socketEnvelopeSchema("memory.agent.checked", memoryAgentCheckedPayloadSchema)
 export const memoryPrimaryUpdatedEventSchema = socketEnvelopeSchema("memory.primary.updated", memoryPrimaryUpdatedPayloadSchema)
 export const memorySoulConfirmationRequestedEventSchema = socketEnvelopeSchema(
   "memory.soul.confirmation.requested",
@@ -606,6 +621,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   memoryAgentStartedEventSchema,
   memoryAgentCompletedEventSchema,
   memoryAgentFailedEventSchema,
+  memoryAgentCheckedEventSchema,
   memoryPrimaryUpdatedEventSchema,
   memorySoulConfirmationRequestedEventSchema,
   memorySoulConfirmationResolvedEventSchema,

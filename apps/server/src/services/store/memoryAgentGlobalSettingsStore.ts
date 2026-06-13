@@ -19,8 +19,9 @@ import { StoreBase } from "./shared"
 const GLOBAL_ROW_ID = "global"
 export const DEFAULT_MEMORY_AGENT_ENABLED = true
 export const DEFAULT_MEMORY_AGENT_CADENCE_MINUTES = 10
-export type MemoryAgentGlobalStatePatch = Partial<Omit<MemoryAgentGlobalState, "id" | "updatedAt" | "lastRunAt" | "activeJobId" | "lastJobId" | "error">> & {
-  lastRunAt?: string | null
+export type MemoryAgentGlobalStatePatch = Partial<Omit<MemoryAgentGlobalState, "id" | "updatedAt" | "lastCheckedAt" | "lastRealRunAt" | "activeJobId" | "lastJobId" | "error">> & {
+  lastCheckedAt?: string | null
+  lastRealRunAt?: string | null
   activeJobId?: string | null
   lastJobId?: string | null
   error?: string | null
@@ -104,7 +105,8 @@ export class MemoryAgentGlobalSettingsStore extends StoreBase {
       .update(memoryAgentGlobalState)
       .set({
         ...(input.lastProcessedEventSequence === undefined ? {} : { lastProcessedEventSequence: input.lastProcessedEventSequence }),
-        ...(input.lastRunAt === undefined ? {} : { lastRunAt: input.lastRunAt ?? null }),
+        ...(input.lastCheckedAt === undefined ? {} : { lastCheckedAt: input.lastCheckedAt ?? null }),
+        ...(input.lastRealRunAt === undefined ? {} : { lastRealRunAt: input.lastRealRunAt ?? null }),
         ...(input.status === undefined ? {} : { status: input.status }),
         ...(input.activeJobId === undefined ? {} : { activeJobId: input.activeJobId ?? null }),
         ...(input.lastJobId === undefined ? {} : { lastJobId: input.lastJobId ?? null }),
@@ -158,7 +160,8 @@ const mapSettings = (row: typeof memoryAgentGlobalSettings.$inferSelect): Memory
 const mapState = (row: typeof memoryAgentGlobalState.$inferSelect): MemoryAgentGlobalState => ({
   id: "global",
   lastProcessedEventSequence: row.lastProcessedEventSequence,
-  ...(row.lastRunAt ? { lastRunAt: row.lastRunAt } : {}),
+  ...(row.lastCheckedAt || row.lastRunAt ? { lastCheckedAt: row.lastCheckedAt ?? row.lastRunAt ?? undefined } : {}),
+  ...(row.lastRealRunAt || row.lastRunAt ? { lastRealRunAt: row.lastRealRunAt ?? row.lastRunAt ?? undefined } : {}),
   status: row.status as MemoryAgentGlobalState["status"],
   ...(row.activeJobId ? { activeJobId: row.activeJobId } : {}),
   ...(row.lastJobId ? { lastJobId: row.lastJobId } : {}),

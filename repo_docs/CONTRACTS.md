@@ -140,9 +140,17 @@ The memory agent does not receive generic `edit`, `apply_patch`, `bash`, `projec
 - Soul update confirmation events remain.
 - The Global Memory Agent is a specialized core `SocratesAgent` run, not a one-shot provider completion and not a per-turn project worker.
 - It receives a manifest of completed-turn events since the durable `events.sequence` watermark, capped for token budget. It can use `trace_retrieve` and `projects` to pull deeper evidence only when useful.
+- Planned manifest contract correction: pack manifest entries incrementally and stop when adding the next completed-turn entry would exceed 60k estimated tokens or when 80 completed-turn entries have been included. Watermark advancement must stop at the last included sequence.
 - Writes happen during the agent run through `edit_files`; there is no final JSON patch proposal contract.
 - Global settings live in `memory_agent_global_settings`; global run state and the event watermark live in `memory_agent_global_state`.
 - `GET /api/memory-agent` returns settings, state, and recent runs.
 - `PATCH /api/memory-agent/settings` updates enabled/cadence/provider/model/thinking.
 - `POST /api/memory-agent/run` triggers a manual global run.
 - Completed chat turns are indexed for retrieval but do not enqueue memory jobs directly. Scheduled runs wake from the global settings cadence.
+
+## Context Compression Contracts
+
+- Current compression is not yet a true structured-output contract. It asks for JSON, parses text, and stores snapshots if parsing succeeds.
+- This must be replaced with shared schema-backed outputs for Socrates chat compression and Memory Agent compression.
+- A snapshot must not become active unless the output validates against the schema and the packed context is recounted under the hard cap.
+- Compressor prompts belong in `packages/core/src/prompts/`, not embedded inside runtime compression code.

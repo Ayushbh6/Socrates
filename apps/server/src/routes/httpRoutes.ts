@@ -3,6 +3,7 @@ import fs from "node:fs"
 import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
+  buildGlobalSkillRequestSchema,
   buildProjectSkillRequestSchema,
   checkProjectEmbeddingsRequestSchema,
   checkProviderCredentialRequestSchema,
@@ -12,6 +13,11 @@ import {
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
   inspectWorkspaceRequestSchema,
+  getMemoryAgentFileContentResponseSchema,
+  getMemoryAgentRunResponseSchema,
+  listMemoryAgentFilesResponseSchema,
+  listMemoryAgentRunsResponseSchema,
+  memoryAgentFileContentQuerySchema,
   listNotificationsResponseSchema,
   markAllNotificationsReadResponseSchema,
   markNotificationReadResponseSchema,
@@ -36,6 +42,13 @@ const conversationParamsSchema = z.object({ projectId: z.string().min(1), conver
 const attachmentParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1), attachmentId: z.string().min(1) }).strict()
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 const notificationParamsSchema = z.object({ notificationId: z.string().min(1) }).strict()
+const memoryAgentRunParamsSchema = z.object({ runId: z.string().min(1) }).strict()
+const memoryAgentRunsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().positive().max(100).optional(),
+    offset: z.coerce.number().int().nonnegative().optional(),
+  })
+  .strict()
 const notificationsQuerySchema = z
   .object({
     unreadOnly: z.enum(["true", "false"]).optional(),
@@ -224,6 +237,45 @@ export const registerHttpRoutes = async (
     }
   })
 
+  app.get("/api/memory-agent/runs", async (request, reply) => {
+    try {
+      const query = parseBody(memoryAgentRunsQuerySchema, request.query)
+      return ok(listMemoryAgentRunsResponseSchema.parse(store.listMemoryAgentRuns(query)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/memory-agent/runs/:runId", async (request, reply) => {
+    try {
+      const { runId } = parseParams(memoryAgentRunParamsSchema, request.params)
+      return ok(getMemoryAgentRunResponseSchema.parse(store.getMemoryAgentRun(runId)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/memory-agent/files", async (_request, reply) => {
+    try {
+      return ok(listMemoryAgentFilesResponseSchema.parse(store.listMemoryAgentFiles()))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/memory-agent/files/content", async (request, reply) => {
+    try {
+      const query = parseBody(memoryAgentFileContentQuerySchema, request.query)
+      return ok(getMemoryAgentFileContentResponseSchema.parse(store.getMemoryAgentFileContent(query)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
   app.patch("/api/memory-agent/settings", async (request, reply) => {
     try {
       const input = parseBody(updateMemoryAgentGlobalSettingsRequestSchema, request.body)
@@ -237,6 +289,16 @@ export const registerHttpRoutes = async (
   app.post("/api/memory-agent/run", async (_request, reply) => {
     try {
       return ok(await store.runGlobalMemoryAgent("manual"))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/memory-agent/skills/build", async (request, reply) => {
+    try {
+      const input = parseBody(buildGlobalSkillRequestSchema, request.body)
+      return ok(await store.buildGlobalSkill(input))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

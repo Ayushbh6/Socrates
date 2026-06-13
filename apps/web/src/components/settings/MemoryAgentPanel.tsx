@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Bot, Loader2, Play, RefreshCw } from "lucide-react";
+import { ArrowRight, Bot, Loader2, Play } from "lucide-react";
 import type {
   GetMemoryAgentResponse,
   MemoryAgentGlobalSettings,
@@ -11,6 +12,7 @@ import type {
   UpdateMemoryAgentGlobalSettingsRequest,
 } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
+import { Switch } from "@/components/ui/Switch";
 import { api } from "@/lib/api";
 
 const cadenceOptions = [
@@ -101,7 +103,7 @@ export function MemoryAgentPanel() {
   const selectedThinkingOption = settings && selectedModel ? findThinkingOptionForSettings(selectedModel, settings) : undefined;
   const modelKeyValue = selectedModel ? modelKey(selectedModel) : settings ? `${settings.providerId}:${settings.modelId}` : "";
   const thinkingValue = selectedThinkingOption?.id ?? "";
-  const statusText = data ? `${data.state.status}${data.state.lastRunAt ? `, last run ${formatDate(data.state.lastRunAt)}` : ""}` : "Loading";
+  const nextCheckAt = data?.state.lastCheckedAt && settings?.enabled ? addMinutes(data.state.lastCheckedAt, settings.cadenceMinutes) : undefined;
 
   return (
     <section className="space-y-4 rounded-lg border border-gray-200 bg-white p-4">
@@ -111,26 +113,35 @@ export function MemoryAgentPanel() {
             <Bot className="size-4 text-brand-teal-dark" />
             <h2 className="text-sm font-semibold text-brand-text-dark">Memory Agent</h2>
           </div>
-          <p className="mt-1 text-xs text-brand-text-light">{statusText}</p>
+          <p className="mt-1 text-xs text-brand-text-light">
+            {data ? `${data.state.status}${data.pending.turnCount ? `, ${data.pending.turnCount} pending turns` : ""}` : "Loading"}
+          </p>
         </div>
-        <Button type="button" variant="outline" onClick={() => void runNow()} disabled={isLoading || isRunning}>
-          {isRunning ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Play className="mr-2 size-4" />}
-          Run now
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link href="/memory">
+              Open Memory Center
+              <ArrowRight className="ml-2 size-4" />
+            </Link>
+          </Button>
+          <Button type="button" variant="outline" onClick={() => void runNow()} disabled={isLoading || isRunning}>
+            {isRunning ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Play className="mr-2 size-4" />}
+            Run now
+          </Button>
+        </div>
       </div>
 
       {settings && (
         <div className="grid gap-3 sm:grid-cols-2">
-          <label className="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm text-brand-text-dark">
-            <input
-              type="checkbox"
+          <div className="flex min-h-10 items-center justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm text-brand-text-dark">
+            <span>Enabled</span>
+            <Switch
               checked={settings.enabled}
-              onChange={(event) => void save({ enabled: event.target.checked })}
               disabled={isSaving}
-              className="size-4 accent-brand-teal-dark"
+              ariaLabel="Enable memory agent"
+              onCheckedChange={(checked) => void save({ enabled: checked })}
             />
-            Enabled
-          </label>
+          </div>
 
           <label className="block text-sm font-medium text-brand-text-dark">
             Cadence
@@ -206,39 +217,14 @@ export function MemoryAgentPanel() {
         </div>
       )}
 
-      <div className="border-t border-gray-100 pt-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-brand-text-light">Recent runs</h3>
-          <Button type="button" variant="ghost" size="icon" onClick={() => void load()} disabled={isLoading} aria-label="Refresh memory runs">
-            <RefreshCw className="size-4" />
-          </Button>
+      {data && (
+        <div className="grid gap-3 border-t border-gray-100 pt-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <StatusFact label="Last checked" value={data.state.lastCheckedAt ? formatDate(data.state.lastCheckedAt) : "Never"} />
+          <StatusFact label="Last real run" value={data.state.lastRealRunAt ? formatDate(data.state.lastRealRunAt) : "None yet"} />
+          <StatusFact label="Next check" value={nextCheckAt ? formatDate(nextCheckAt) : settings?.enabled ? "Pending" : "Disabled"} />
+          <StatusFact label="Pending" value={data.pending.displayReason} />
         </div>
-        <div className="space-y-3">
-          {data?.recentRuns.length === 0 && <p className="text-sm text-brand-text-light">No memory agent runs yet.</p>}
-          {data?.recentRuns.map((run) => (
-            <div key={run.id} className="rounded-lg border border-gray-100 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-                <span className="font-medium text-brand-text-dark">{run.status}</span>
-                <span className="text-xs text-brand-text-light">{formatDate(run.startedAt)}</span>
-              </div>
-              <p className="mt-1 text-xs text-brand-text-light">
-                {run.trigger} / {run.evidenceTurnCount} turns / seq {run.sequenceFrom ?? "?"}-{run.sequenceTo ?? "?"}
-              </p>
-              {run.output && <p className="mt-2 line-clamp-3 text-sm text-brand-text-light">{run.output}</p>}
-              {run.error && <p className="mt-2 text-sm text-red-600">{run.error}</p>}
-              {run.actions.length > 0 && (
-                <ul className="mt-2 space-y-1 text-xs text-brand-text-light">
-                  {run.actions.map((action) => (
-                    <li key={action.id}>
-                      {action.status} {action.targetKind}: {shortPath(action.targetPath)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
 
       {message && <p className="text-sm text-green-700">{message}</p>}
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -266,4 +252,13 @@ const modelLabel = (settings: MemoryAgentGlobalSettings, model?: ModelOption): s
 
 const formatDate = (value: string): string => new Date(value).toLocaleString();
 
-const shortPath = (value: string): string => value.replace(/^.*\/\.Socrates\//, "~/.Socrates/");
+const addMinutes = (value: string, minutes: number): string => new Date(Date.parse(value) + minutes * 60_000).toISOString();
+
+function StatusFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-gray-100 bg-gray-50/60 px-3 py-2">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-brand-text-light">{label}</div>
+      <div className="mt-1 line-clamp-2 text-sm text-brand-text-dark">{value}</div>
+    </div>
+  );
+}

@@ -4,12 +4,15 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type {
   Notification,
-  DocsSearchMode,
   EditFilesToolInput,
   EditFilesToolOutput,
   MemoryAgentGlobalSettings,
   MemoryAgentGlobalState,
-  MemoryAgentRunSummary,
+  MemoryAgentFileContentQuery,
+  MemoryAgentFileSummary,
+  MemoryAgentRunDetail,
+  MemoryAgentSignalSnapshot,
+  MemoryAgentTimelineItem,
   ProjectDocsArea,
   ProjectDocsToolInput,
   ProjectDocsToolOutput,
@@ -23,7 +26,6 @@ import type {
   SkillsToolOutput,
   SoulToolInput,
   SoulToolOutput,
-  ToolDocsArea,
   ToolDocsToolInput,
   ToolDocsToolOutput,
   TraceRetrieveToolInput,
@@ -38,6 +40,7 @@ import { and, desc, eq } from "drizzle-orm"
 import {
   conversations,
   errors,
+  memoryAgentChecks,
   events,
   memoryAgentActions,
   memoryAgentConfirmations,
@@ -55,6 +58,8 @@ import {
   DEFAULT_MEMORY_AGENT_THINKING_EFFORT,
   DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
 } from "./memoryAgentDefaults"
+import { emptyMemoryAgentSignal, scoreMemoryAgentSignal } from "./memoryAgentSignals"
+import { emptyMemoryAgentSummary, parseMemoryAgentSummarySections } from "./memoryAgentSummary"
 import {
   discoverSkills,
   fallbackSkillBody,
@@ -70,11 +75,10 @@ import {
 } from "./memorySkills"
 import { ensureStructuredSoulFile } from "./memorySoulDefaults"
 import { StoreBase } from "./shared"
+import { firstMarkdownLine, ToolDocsStore } from "./toolDocsStore"
 
 const DEFAULT_CHAR_LIMIT = 20_000
 const DEFAULT_SEARCH_LIMIT = 20
-const DEFAULT_CONTEXT_LINES = 8
-const MAX_CONTEXT_CHARS = 28_000
 const MEMORY_AGENT_TOKEN_CAP = 60_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
@@ -84,16 +88,6 @@ const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
 const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
 const REPO_DOC_NAMES = ["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "CONTRACTS.md"] as const
 const LEGACY_REPO_DOC_NAMES = ["APP_FLOW.md", "DB_STRUCTURE.md", "FRONTEND_BACKEND_CONTRACT.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
-
-type MemoryFile = {
-  path: string
-  absolutePath: string
-  area: ToolDocsArea
-  sizeBytes: number
-  modifiedAt: string
-}
-
-type DocsResult = ToolDocsToolOutput["results"][number]
 
 type MemoryStoreOptions = {
   socratesHome?: string
@@ -114,8 +108,9 @@ type MemoryStoreOptions = {
   }) => Notification
 }
 
-type MemoryAgentStatePatch = Partial<Omit<MemoryAgentGlobalState, "id" | "updatedAt" | "lastRunAt" | "activeJobId" | "lastJobId" | "error">> & {
-  lastRunAt?: string | null
+type MemoryAgentStatePatch = Partial<Omit<MemoryAgentGlobalState, "id" | "updatedAt" | "lastCheckedAt" | "lastRealRunAt" | "activeJobId" | "lastJobId" | "error">> & {
+  lastCheckedAt?: string | null
+  lastRealRunAt?: string | null
   activeJobId?: string | null
   lastJobId?: string | null
   error?: string | null
@@ -184,6 +179,7 @@ export class MemoryStore extends StoreBase {
     ensureStructuredSoulFile(path.join(this.socratesHome, "identity.md"), "identity")
     ensureStructuredSoulFile(path.join(this.socratesHome, "operating_principles.md"), "operating_principles")
     ensureBundledToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
+    removeLegacyToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
     fs.mkdirSync(path.join(this.socratesHome, "skills"), { recursive: true })
     migrateUsefulPatternsToSkills(this.socratesHome)
   }
@@ -217,12 +213,9 @@ export class MemoryStore extends StoreBase {
     removeLegacyProjectRoot(legacyRoot)
   }
 
-  runToolDocsTool(projectId: string, workspacePath: string | undefined, input: ToolDocsToolInput): ToolDocsToolOutput {
+  runToolDocsTool(projectId: string, workspacePath: string | undefined, input: ToolDocsToolInput, audience: "main" | "memory_agent" = "main"): ToolDocsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
-    if (input.operation === "read") {
-      return this.readToolDocs(input)
-    }
-    return this.searchToolDocs(input)
+    return new ToolDocsStore(this.socratesHome, audience).run(input)
   }
 
   runSkillsTool(projectId: string, workspacePath: string | undefined, input: SkillsToolInput): SkillsToolOutput {
@@ -457,15 +450,119 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  listGlobalMemoryAgentRuns(limit = 10): MemoryAgentRunSummary[] {
-    const rows = this.handle.db
+  getMemoryAgentPending(state: MemoryAgentGlobalState): MemoryAgentSignalSnapshot {
+    this.ensureGlobalKnowledge()
+    const manifest = this.buildGlobalManifest(state.lastProcessedEventSequence)
+    return this.signalForManifest(manifest)
+  }
+
+  listMemoryAgentTimeline(limit = 25, offset = 0): { items: MemoryAgentTimelineItem[]; totalMatches: number; nextOffset?: number } {
+    const jobRows = this.handle.db
       .select()
       .from(memoryAgentJobs)
       .where(eq(memoryAgentJobs.projectId, GLOBAL_MEMORY_AGENT_PROJECT_ID))
       .orderBy(desc(memoryAgentJobs.startedAt))
-      .limit(limit)
+      .limit(limit + offset + 25)
       .all()
-    return rows.map((row) => this.memoryAgentRunSummary(row))
+    const checkRows = this.handle.db
+      .select()
+      .from(memoryAgentChecks)
+      .orderBy(desc(memoryAgentChecks.checkedAt))
+      .limit(limit + offset + 25)
+      .all()
+    const items = [
+      ...jobRows.map((row) => this.memoryAgentTimelineItem(row)),
+      ...checkRows.map((row) => this.memoryAgentCheckTimelineItem(row)),
+    ].sort((left, right) => Date.parse(right.startedAt ?? right.checkedAt ?? right.completedAt ?? "") - Date.parse(left.startedAt ?? left.checkedAt ?? left.completedAt ?? ""))
+    const totalMatches = this.countMemoryAgentTimelineItems()
+    const sliced = items.slice(offset, offset + limit)
+    return {
+      items: sliced,
+      totalMatches,
+      ...(offset + limit < totalMatches ? { nextOffset: offset + limit } : {}),
+    }
+  }
+
+  getMemoryAgentRunDetail(runId: string): MemoryAgentRunDetail {
+    return this.memoryAgentRunDetail(this.mustGetMemoryAgentJob(runId))
+  }
+
+  listMemoryAgentFiles(): MemoryAgentFileSummary[] {
+    this.ensureGlobalKnowledge()
+    const soulFiles: MemoryAgentFileSummary[] = (["identity", "operating_principles"] as const).flatMap((kind) => {
+      const absolutePath = this.soulPath(kind)
+      if (!fs.existsSync(absolutePath)) {
+        return []
+      }
+      const stats = fs.statSync(absolutePath)
+      return [
+        {
+          id: `${kind}:${kind}.md`,
+          kind,
+          name: kind === "identity" ? "Identity" : "Operating Principles",
+          path: path.basename(absolutePath),
+          absolutePath,
+          updatedAt: stats.mtime.toISOString(),
+        },
+      ]
+    })
+    const toolDocs = new ToolDocsStore(this.socratesHome, "all").listFiles().map((file) => ({
+      id: `tool_doc:${file.path}`,
+      kind: "tool_doc" as const,
+      name: path.basename(file.path),
+      description: firstMarkdownLine(readIfExists(file.absolutePath) ?? ""),
+      path: file.path,
+      absolutePath: file.absolutePath,
+      updatedAt: file.modifiedAt,
+    }))
+    const skills = this.skillInfos(undefined, undefined)
+      .filter((skill) => skill.scope === "builtin" || skill.scope === "global")
+      .map((skill) => ({
+        id: `skill:${skill.scope}:${skill.name}`,
+        kind: "skill" as const,
+        scope: skill.scope,
+        name: skill.name,
+        description: skill.description,
+        path: skill.path,
+        absolutePath: skill.skillFile,
+        updatedAt: skill.updatedAt,
+      }))
+    return [...soulFiles, ...toolDocs, ...skills].sort((left, right) => `${left.kind}:${left.scope ?? ""}:${left.name}`.localeCompare(`${right.kind}:${right.scope ?? ""}:${right.name}`))
+  }
+
+  readMemoryAgentFileContent(input: MemoryAgentFileContentQuery): { file: MemoryAgentFileSummary; content: string } {
+    const file = this.listMemoryAgentFiles().find((candidate) => candidate.kind === input.kind && candidate.path === input.path && (input.scope === undefined || candidate.scope === input.scope))
+    if (!file) {
+      throw new SocratesError("memory_agent_file_not_found", "Memory agent file was not found.", { recoverable: true, details: input })
+    }
+    const content = readIfExists(file.absolutePath)
+    if (content === undefined) {
+      throw new SocratesError("memory_agent_file_not_found", "Memory agent file was not found.", { recoverable: true, details: input })
+    }
+    return { file, content }
+  }
+
+  async buildGlobalSkill(request: string): Promise<SkillSummary> {
+    this.ensureGlobalKnowledge()
+    const root = path.join(this.socratesHome, "skills")
+    fs.mkdirSync(root, { recursive: true })
+    const name = uniqueSkillName(root, slugSkillName(request))
+    const skillDir = path.join(root, name)
+    const skillFile = path.join(skillDir, "SKILL.md")
+    const content = await this.generateGlobalSkill(request, name)
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(skillFile, content)
+    const info = readSkillInfo("global", root, skillFile)
+    if (!info) {
+      const fallback = fallbackSkillMarkdown(name, request)
+      fs.writeFileSync(skillFile, fallback)
+      const fallbackInfo = readSkillInfo("global", root, skillFile)
+      if (!fallbackInfo) {
+        throw new SocratesError("global_skill_invalid", "Generated global skill did not match the Agent Skill format.", { recoverable: true })
+      }
+      return skillSummary(fallbackInfo)
+    }
+    return skillSummary(info)
   }
 
   runProjectsTool(input: ProjectsToolInput): ProjectsToolOutput {
@@ -561,25 +658,36 @@ export class MemoryStore extends StoreBase {
 
   private async runGlobalMemoryAgentOnce(input: GlobalMemoryAgentRunInput): Promise<TriggerMemoryAgentRunResponse> {
     const now = nowIso()
+    const entries = this.buildGlobalManifest(input.state.lastProcessedEventSequence)
+    const signal = this.signalForManifest(entries)
     if (!input.settings.enabled) {
-      const state = input.updateState({ status: "skipped", lastRunAt: now, activeJobId: null, error: "Memory agent is disabled." })
-      return { state, skippedReason: "Memory agent is disabled." }
+      const reason = "Memory agent is disabled."
+      const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
+      const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
+      return { state, pending: signal, item, skippedReason: reason }
+    }
+    if (entries.entries.length === 0) {
+      const reason = "No new completed turns since the memory watermark."
+      const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
+      const state = input.updateState({ status: "idle", lastCheckedAt: now, activeJobId: null, error: null })
+      return { state, pending: signal, item, skippedReason: reason }
+    }
+    if (!signal.shouldRun) {
+      const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, signal.displayReason, now)
+      const state = input.updateState({ status: "idle", lastCheckedAt: now, activeJobId: null, error: null })
+      return { state, pending: signal, item, skippedReason: signal.displayReason }
     }
     if (!this.options.provider) {
-      const state = input.updateState({ status: "skipped", lastRunAt: now, activeJobId: null, error: "Memory agent provider is not configured." })
-      return { state, skippedReason: "Memory agent provider is not configured." }
+      const reason = "Memory agent provider is not configured."
+      const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
+      const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
+      return { state, pending: signal, item, skippedReason: reason }
     }
     if (this.options.credentials && !this.options.credentials.getApiKey(input.settings.providerId)) {
       const reason = `${input.settings.providerId} credential is not configured.`
-      const state = input.updateState({ status: "skipped", lastRunAt: now, activeJobId: null, error: reason })
-      this.appendEvent({ type: "memory.agent.skipped", source: "server", payload: { reason } })
-      return { state, skippedReason: reason }
-    }
-
-    const entries = this.buildGlobalManifest(input.state.lastProcessedEventSequence)
-    if (entries.entries.length === 0) {
-      const state = input.updateState({ status: "idle", lastRunAt: now, activeJobId: null, error: null })
-      return { state, skippedReason: "No completed turns after the current memory watermark." }
+      const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
+      const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
+      return { state, pending: signal, item, skippedReason: reason }
     }
 
     const modelSettings: MemoryAgentModelSettings = {
@@ -613,13 +721,13 @@ export class MemoryStore extends StoreBase {
         providerId: modelSettings.providerId,
         modelId: modelSettings.modelId,
         fallbackModelIdsJson: JSON.stringify([]),
-        evidenceTurnIdsJson: JSON.stringify(entries.entries.map((entry) => entry.turnId)),
-        evidenceTokensEstimate,
-        startedAt,
-        metadataJson: JSON.stringify(metadataBase),
-      })
+      evidenceTurnIdsJson: JSON.stringify(entries.entries.map((entry) => entry.turnId)),
+      evidenceTokensEstimate,
+      startedAt,
+      metadataJson: JSON.stringify({ ...metadataBase, signal }),
+    })
       .run()
-    input.updateState({ status: "running", activeJobId: jobId, error: null })
+    input.updateState({ status: "running", lastCheckedAt: startedAt, activeJobId: jobId, error: null })
     this.appendEvent({
       type: "memory.agent.started",
       source: "server",
@@ -627,6 +735,7 @@ export class MemoryStore extends StoreBase {
     })
 
     const toolEvents: unknown[] = []
+    let latestUsage: unknown
     try {
       const output = await runMemoryAgentTurn({
         provider: this.options.provider,
@@ -645,7 +754,7 @@ export class MemoryStore extends StoreBase {
             return this.options.traceRetrieveGlobal(toolInput)
           },
           projects: async (toolInput) => this.runProjectsTool(toolInput),
-          toolDocs: async (toolInput) => this.runToolDocsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
+          toolDocs: async (toolInput) => this.runToolDocsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput, "memory_agent"),
           skills: async (toolInput) => this.runSkillsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           soul: async (toolInput) => this.runSoulTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           editFiles: async (toolInput) =>
@@ -653,9 +762,13 @@ export class MemoryStore extends StoreBase {
               jobId,
               turnId: latest?.turnId,
               modelSettings,
+              allowSkillWrites: false,
             }),
         },
         onEvent: (event) => {
+          if ((event.type === "model.usage" || event.type === "model.completed") && "usage" in event && event.usage) {
+            latestUsage = event.usage
+          }
           if (event.type.startsWith("tool.call") || event.type.startsWith("approval.")) {
             toolEvents.push(slimMemoryToolEvent(event))
           }
@@ -666,15 +779,16 @@ export class MemoryStore extends StoreBase {
         .update(memoryAgentJobs)
         .set({
           status: "completed",
-          outputJson: JSON.stringify({ summary: output.trim() }),
+          outputJson: JSON.stringify({ summary: parseMemoryAgentSummarySections(output.trim()) }),
           completedAt,
-          metadataJson: JSON.stringify({ ...metadataBase, toolEvents }),
+          metadataJson: JSON.stringify({ ...metadataBase, signal, toolEvents, usage: latestUsage }),
         })
         .where(eq(memoryAgentJobs.id, jobId))
         .run()
       const state = input.updateState({
         lastProcessedEventSequence: entries.sequenceTo,
-        lastRunAt: completedAt,
+        lastCheckedAt: completedAt,
+        lastRealRunAt: completedAt,
         status: "idle",
         activeJobId: null,
         lastJobId: jobId,
@@ -692,7 +806,7 @@ export class MemoryStore extends StoreBase {
           sequenceTo: entries.sequenceTo,
         },
       })
-      return { state, run: this.memoryAgentRunSummary(this.mustGetMemoryAgentJob(jobId)) }
+      return { state, pending: this.getMemoryAgentPending(state), item: this.memoryAgentTimelineItem(this.mustGetMemoryAgentJob(jobId)) }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const completedAt = nowIso()
@@ -701,12 +815,12 @@ export class MemoryStore extends StoreBase {
         .set({
           status: "failed",
           completedAt,
-          metadataJson: JSON.stringify({ ...metadataBase, toolEvents, error: message }),
+          metadataJson: JSON.stringify({ ...metadataBase, signal, toolEvents, usage: latestUsage, error: message }),
         })
         .where(eq(memoryAgentJobs.id, jobId))
         .run()
       const state = input.updateState({
-        lastRunAt: completedAt,
+        lastCheckedAt: completedAt,
         status: "failed",
         activeJobId: null,
         lastJobId: jobId,
@@ -717,7 +831,7 @@ export class MemoryStore extends StoreBase {
         source: "server",
         payload: { jobId, error: { code: "memory_agent_failed", message } },
       })
-      return { state, run: this.memoryAgentRunSummary(this.mustGetMemoryAgentJob(jobId)), skippedReason: message }
+      return { state, pending: signal, item: this.memoryAgentTimelineItem(this.mustGetMemoryAgentJob(jobId)), skippedReason: message }
     }
   }
 
@@ -791,9 +905,132 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private async runEditFilesTool(input: EditFilesToolInput, context: { jobId: string; turnId?: string; modelSettings: MemoryAgentModelSettings }): Promise<EditFilesToolOutput> {
+  private signalForManifest(manifest: { entries: GlobalTurnManifestEntry[]; sequenceFrom: number; sequenceTo: number }): MemoryAgentSignalSnapshot {
+    if (manifest.entries.length === 0) {
+      return emptyMemoryAgentSignal(manifest.sequenceTo)
+    }
+    const turnIds = manifest.entries.map((entry) => entry.turnId)
+    const fileStats = this.changedFileStats(turnIds)
+    return scoreMemoryAgentSignal({
+      sequenceFrom: manifest.sequenceFrom,
+      sequenceTo: manifest.sequenceTo,
+      turnCount: manifest.entries.length,
+      toolCalls: manifest.entries.reduce((total, entry) => total + entry.counts.toolCalls, 0),
+      fileChangeEvents: fileStats.fileChangeEvents,
+      distinctChangedFiles: fileStats.distinctChangedFiles,
+      totalTokens: this.totalTokensForTurns(turnIds),
+    })
+  }
+
+  private changedFileStats(turnIds: string[]): { fileChangeEvents: number; distinctChangedFiles: number } {
+    if (turnIds.length === 0) {
+      return { fileChangeEvents: 0, distinctChangedFiles: 0 }
+    }
+    const placeholders = turnIds.map(() => "?").join(",")
+    const changedFiles = new Set<string>()
+    const fileRows = this.handle.sqlite
+      .prepare(
+        `SELECT path, operation, status
+           FROM file_operations
+          WHERE turn_id IN (${placeholders})
+            AND status != 'failed'
+            AND lower(operation) NOT IN ('read', 'search', 'list', 'glob')`,
+      )
+      .all(...turnIds) as Array<{ path: string; operation: string; status: string }>
+    for (const row of fileRows) {
+      if (row.path.trim()) {
+        changedFiles.add(row.path)
+      }
+    }
+
+    let patchFileEvents = 0
+    const patchRows = this.handle.sqlite
+      .prepare(`SELECT files_json AS filesJson FROM patches WHERE turn_id IN (${placeholders}) AND status = 'applied'`)
+      .all(...turnIds) as Array<{ filesJson: string | null }>
+    for (const row of patchRows) {
+      const files = parseJsonArray(row.filesJson).filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      patchFileEvents += files.length
+      for (const file of files) {
+        changedFiles.add(file)
+      }
+    }
+
+    return {
+      fileChangeEvents: fileRows.length + patchFileEvents,
+      distinctChangedFiles: changedFiles.size,
+    }
+  }
+
+  private totalTokensForTurns(turnIds: string[]): number {
+    if (turnIds.length === 0) {
+      return 0
+    }
+    const placeholders = turnIds.map(() => "?").join(",")
+    const row = this.handle.sqlite
+      .prepare(`SELECT COALESCE(SUM(total_tokens), 0) AS totalTokens FROM turn_usage_reports WHERE turn_id IN (${placeholders})`)
+      .get(...turnIds) as { totalTokens: number | null }
+    return Math.max(0, Math.floor(row.totalTokens ?? 0))
+  }
+
+  private recordMemoryAgentCheck(
+    trigger: "scheduled" | "manual",
+    status: "completed" | "skipped" | "failed",
+    signal: MemoryAgentSignalSnapshot,
+    reason: string,
+    checkedAt: string,
+  ): MemoryAgentTimelineItem {
+    const id = createId("memchk")
+    this.handle.db
+      .insert(memoryAgentChecks)
+      .values({
+        id,
+        trigger,
+        status,
+        reason,
+        sequenceFrom: signal.sequenceFrom ?? null,
+        sequenceTo: signal.sequenceTo,
+        turnCount: signal.turnCount,
+        toolCalls: signal.toolCalls,
+        fileChangeEvents: signal.fileChangeEvents,
+        distinctChangedFiles: signal.distinctChangedFiles,
+        totalTokens: signal.totalTokens,
+        checkedAt,
+        metadataJson: JSON.stringify({ reasons: signal.reasons }),
+      })
+      .run()
+    this.appendEvent({
+      type: "memory.agent.checked",
+      source: "server",
+      payload: {
+        checkId: id,
+        trigger,
+        status,
+        reason,
+        pending: signal,
+        checkedAt,
+      },
+    })
+    return this.memoryAgentCheckTimelineItem(this.mustGetMemoryAgentCheck(id))
+  }
+
+  private async runEditFilesTool(
+    input: EditFilesToolInput,
+    context: { jobId: string; turnId?: string; modelSettings: MemoryAgentModelSettings; allowSkillWrites?: boolean },
+  ): Promise<EditFilesToolOutput> {
     this.ensureGlobalKnowledge()
     const resolved = this.resolveEditFilesTarget(input)
+    if (resolved.targetKind === "skills" && !context.allowSkillWrites) {
+      const patch: MemoryPatchProposal = {
+        oldText: input.editMode === "create" ? "" : input.oldText ?? "",
+        newText: input.newText,
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+        ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+      }
+      const action = this.createMemoryAction(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, "skills", resolved.path, patch, false)
+      const error = "Scheduled memory runs may read skills but cannot create or update skills. Use the Memory Center Skills + flow for global skill creation."
+      this.rejectMemoryAction(action.actionId, error)
+      return this.rejectedEditFilesOutput(input, resolved.path, action.actionId, error)
+    }
     if (input.editMode === "create") {
       return this.createMemoryTarget(input, resolved, context)
     }
@@ -932,31 +1169,96 @@ export class MemoryStore extends StoreBase {
     return row
   }
 
-  private memoryAgentRunSummary(row: typeof memoryAgentJobs.$inferSelect): MemoryAgentRunSummary {
+  private mustGetMemoryAgentCheck(checkId: string): typeof memoryAgentChecks.$inferSelect {
+    const row = this.handle.db.select().from(memoryAgentChecks).where(eq(memoryAgentChecks.id, checkId)).limit(1).get()
+    if (!row) {
+      throw new SocratesError("memory_agent_check_not_found", "Memory agent check was not found.", { details: { checkId } })
+    }
+    return row
+  }
+
+  private countMemoryAgentTimelineItems(): number {
+    const jobs = this.handle.sqlite
+      .prepare("SELECT COUNT(*) AS count FROM memory_agent_jobs WHERE project_id = ?")
+      .get(GLOBAL_MEMORY_AGENT_PROJECT_ID) as { count: number }
+    const checks = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_checks").get() as { count: number }
+    return jobs.count + checks.count
+  }
+
+  private memoryAgentTimelineItem(row: typeof memoryAgentJobs.$inferSelect): MemoryAgentTimelineItem {
     const metadata = parseJsonObject(row.metadataJson)
-    const output = parseJsonObject(row.outputJson)
     const evidenceTurnIds = parseJsonArray(row.evidenceTurnIdsJson)
+    const usage = usageFromMetadata(metadata)
     const actionRows = this.handle.db
       .select()
       .from(memoryAgentActions)
       .where(eq(memoryAgentActions.jobId, row.id))
       .orderBy(memoryAgentActions.createdAt)
       .all()
+    const actionText = actionRows.length === 0 ? "" : `${actionRows.length} memory ${actionRows.length === 1 ? "action" : "actions"}`
+    const title = row.status === "running" ? "Memory run in progress" : actionText || "Memory run"
+    const displayReason =
+      typeof metadata.signal === "object" && metadata.signal && "displayReason" in metadata.signal
+        ? String((metadata.signal as { displayReason?: unknown }).displayReason ?? "")
+        : ""
     return {
       id: row.id,
-      status: row.status,
-      trigger: row.trigger,
-      providerId: row.providerId as MemoryAgentRunSummary["providerId"],
+      itemType: "run",
+      runId: row.id,
+      status: row.status as MemoryAgentTimelineItem["status"],
+      trigger: row.trigger as MemoryAgentTimelineItem["trigger"],
+      title,
+      ...(displayReason ? { displayReason } : {}),
+      providerId: row.providerId as MemoryAgentTimelineItem["providerId"],
       modelId: row.modelId,
       evidenceTurnCount: evidenceTurnIds.length,
       evidenceTokensEstimate: row.evidenceTokensEstimate,
       startedAt: row.startedAt,
       ...(row.completedAt ? { completedAt: row.completedAt } : {}),
-      ...(typeof output.summary === "string" && output.summary.trim() ? { output: output.summary } : {}),
-      ...(typeof metadata.error === "string" ? { error: metadata.error } : {}),
       ...(typeof metadata.sequenceFrom === "number" ? { sequenceFrom: metadata.sequenceFrom } : {}),
       ...(typeof metadata.sequenceTo === "number" ? { sequenceTo: metadata.sequenceTo } : {}),
-      ...(Array.isArray(metadata.toolEvents) ? { toolEvents: metadata.toolEvents } : {}),
+      ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
+      ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
+    }
+  }
+
+  private memoryAgentCheckTimelineItem(row: typeof memoryAgentChecks.$inferSelect): MemoryAgentTimelineItem {
+    return {
+      id: row.id,
+      itemType: "check",
+      checkId: row.id,
+      status: row.status as MemoryAgentTimelineItem["status"],
+      trigger: row.trigger as MemoryAgentTimelineItem["trigger"],
+      title: row.turnCount > 0 ? "Memory check" : "Heartbeat check",
+      displayReason: row.reason,
+      checkedAt: row.checkedAt,
+      ...(row.sequenceFrom ? { sequenceFrom: row.sequenceFrom } : {}),
+      sequenceTo: row.sequenceTo,
+      evidenceTurnCount: row.turnCount,
+      evidenceTokensEstimate: row.totalTokens,
+      totalTokens: row.totalTokens,
+    }
+  }
+
+  private memoryAgentRunDetail(row: typeof memoryAgentJobs.$inferSelect): MemoryAgentRunDetail {
+    const metadata = parseJsonObject(row.metadataJson)
+    const output = parseJsonObject(row.outputJson)
+    const timelineItem = this.memoryAgentTimelineItem(row)
+    const actionRows = this.handle.db
+      .select()
+      .from(memoryAgentActions)
+      .where(eq(memoryAgentActions.jobId, row.id))
+      .orderBy(memoryAgentActions.createdAt)
+      .all()
+    const summary = isMemoryAgentSummary(output.summary) ? output.summary : emptyMemoryAgentSummary()
+    return {
+      ...timelineItem,
+      itemType: "run",
+      providerId: row.providerId as MemoryAgentRunDetail["providerId"],
+      modelId: row.modelId,
+      summary,
+      toolEvents: Array.isArray(metadata.toolEvents) ? metadata.toolEvents : [],
+      ...(typeof metadata.error === "string" ? { error: metadata.error } : {}),
       actions: actionRows.map((action) => ({
         id: action.id,
         jobId: action.jobId,
@@ -970,89 +1272,6 @@ export class MemoryStore extends StoreBase {
         ...(action.appliedAt ? { appliedAt: action.appliedAt } : {}),
       })),
     }
-  }
-
-  private readToolDocs(input: ToolDocsToolInput): ToolDocsToolOutput {
-    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
-    const contextLines = clampContextLines(input.contextLines)
-    const files = input.path ? [this.resolveToolDocPath(input.path, input.area)] : this.toolDocFiles(input.area)
-    const results = this.docsResults(files, input, contextLines, charLimit)
-    const sliced = results.slice(input.offset ?? 0, (input.offset ?? 0) + (input.limit ?? DEFAULT_SEARCH_LIMIT)).map(numberResult)
-    const output = capMemoryResults(sliced, charLimit)
-    return {
-      operation: "read",
-      ...(input.area ? { area: input.area } : {}),
-      results: output.results,
-      totalMatches: results.length,
-      truncation: output.truncation,
-      ...(output.warnings.length > 0 ? { warnings: output.warnings } : {}),
-    }
-  }
-
-  private searchToolDocs(input: ToolDocsToolInput): ToolDocsToolOutput {
-    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
-    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
-    const contextLines = clampContextLines(input.contextLines)
-    const files = input.path ? [this.resolveToolDocPath(input.path, input.area)] : this.toolDocFiles(input.area)
-    const results = this.docsResults(files, input, contextLines, charLimit)
-    const sliced = results.slice(input.offset ?? 0, (input.offset ?? 0) + limit).map(numberResult)
-    const output = capMemoryResults(sliced, charLimit)
-    const warnings = [
-      ...output.warnings,
-      ...(results.length > limit + (input.offset ?? 0) ? ["tool_docs search hit the result limit; narrow query, area, or path."] : []),
-    ]
-    return {
-      operation: "search",
-      ...(input.area ? { area: input.area } : {}),
-      results: output.results,
-      totalMatches: results.length,
-      truncation: output.truncation,
-      ...(warnings.length > 0 ? { warnings } : {}),
-    }
-  }
-
-  private docsResults(files: MemoryFile[], input: ToolDocsToolInput, contextLines: number, charLimit: number): DocsResult[] {
-    const query = input.query?.trim()
-    const mode = input.searchMode ?? "keyword_all"
-    return files.flatMap((file) => {
-      const content = fs.readFileSync(file.absolutePath, "utf8")
-      if (input.includeSections) {
-        const sectionResults = sectionMatches(file, content, input, mode, query, contextLines, charLimit)
-        if (sectionResults.length > 0 || query || input.includeSections) {
-          return sectionResults
-        }
-      }
-      if (query) {
-        return lineSearchResults(file, content, query, mode, contextLines)
-      }
-      return [fileResult(file, content, charLimit)]
-    })
-  }
-
-  private toolDocFiles(area?: ToolDocsArea): MemoryFile[] {
-    const candidates: MemoryFile[] = [
-      ...listMarkdownFiles(path.join(this.socratesHome, "tool_usage")).map((absolutePath) => memoryFile(this.socratesHome, "tool_usage", absolutePath)),
-    ].filter((file) => fs.existsSync(file.absolutePath))
-    return candidates.filter((file) => (area ? file.area === area : true)).sort((left, right) => left.path.localeCompare(right.path))
-  }
-
-  private resolveToolDocPath(inputPath: string, area?: ToolDocsArea): MemoryFile {
-    const normalized = normalizeToolDocPath(inputPath, area)
-    const absolutePath = safeJoin(this.socratesHome, normalized)
-    if (!absolutePath.endsWith(".md") || !fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
-      throw new SocratesError("tool_docs_file_not_found", "Tool docs path was not found or is not a markdown file.", {
-        recoverable: true,
-        details: { path: inputPath },
-      })
-    }
-    const file = memoryFile(this.socratesHome, "tool_usage", absolutePath)
-    if (area && file.area !== area) {
-      throw new SocratesError("tool_docs_area_mismatch", "Tool docs path does not match the requested area.", {
-        recoverable: true,
-        details: { path: inputPath, area },
-      })
-    }
-    return file
   }
 
   private listSkillsOutput(input: SkillsToolInput, workspacePath: string | undefined): SkillsToolOutput {
@@ -1207,6 +1426,60 @@ export class MemoryStore extends StoreBase {
       }
       const cleaned = stripMarkdownFence(text.trim())
       return parseSkillMarkdown(cleaned, path.join(workspacePath, ".socrates", "skills", name, "SKILL.md")) ? cleaned : fallback
+    } catch {
+      return fallback
+    }
+  }
+
+  private async generateGlobalSkill(request: string, name: string): Promise<string> {
+    const fallback = fallbackSkillMarkdown(name, request)
+    if (!this.options.provider) {
+      return fallback
+    }
+    const modelSettings = this.memoryAgentModelSettingsFor()
+    const globalSkills = this.skillInfos(undefined, "global")
+      .map((skill) => `- ${skill.name}: ${skill.description}`)
+      .join("\n")
+    const context = [
+      `Skill name to use exactly: ${name}`,
+      "Primary user request:",
+      request.trim(),
+      "",
+      "Side guidance only. Use when relevant; ignore when not useful.",
+      "--- identity.md",
+      truncate(readIfExists(this.soulPath("identity")) ?? "", 4_000).text,
+      "--- operating_principles.md",
+      truncate(readIfExists(this.soulPath("operating_principles")) ?? "", 4_000).text,
+      "--- existing global skills",
+      globalSkills || "No global skills are registered yet.",
+      "--- skill writer guidance",
+      truncate(readIfExists(path.join(bundledSkillsDir(), "socrates-skill-writer", "SKILL.md")) ?? "", 5_000).text,
+    ].join("\n\n")
+    try {
+      let text = ""
+      for await (const event of this.options.provider.stream({
+        providerId: modelSettings.providerId,
+        modelId: modelSettings.modelId,
+        system: PROJECT_SKILL_BUILDER_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: context }],
+        runtimeConfig: {
+          providerId: modelSettings.providerId,
+          modelId: modelSettings.modelId,
+          thinkingEnabled: modelSettings.thinkingEnabled,
+          ...(modelSettings.thinkingEffort ? { thinkingEffort: modelSettings.thinkingEffort } : {}),
+          approvalMode: "read_only_auto",
+          sandboxMode: "read_only",
+        },
+      })) {
+        if (event.type === "model.answer.delta") {
+          text += event.text
+        }
+        if (event.type === "model.failed") {
+          throw event.error
+        }
+      }
+      const cleaned = stripMarkdownFence(text.trim())
+      return parseSkillMarkdown(cleaned, path.join(this.socratesHome, "skills", name, "SKILL.md")) ? cleaned : fallback
     } catch {
       return fallback
     }
@@ -1496,6 +1769,15 @@ const ensureBundledToolUsageDocs = (targetDir: string): void => {
   }
 }
 
+const removeLegacyToolUsageDocs = (targetDir: string): void => {
+  for (const relativePath of ["memory_docs.md", path.join("memory_agent", "trace_retrieve_global.md")]) {
+    const filePath = path.join(targetDir, relativePath)
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      fs.unlinkSync(filePath)
+    }
+  }
+}
+
 const ensureBundledRepoDocs = (targetDir: string): void => {
   const sourceDir = bundledRepoDocsDir()
   fs.mkdirSync(targetDir, { recursive: true })
@@ -1610,227 +1892,12 @@ const listMarkdownFiles = (root: string): string[] => {
   })
 }
 
-const memoryFile = (root: string, area: ToolDocsArea, absolutePath: string): MemoryFile => {
-  const stats = fs.statSync(absolutePath)
-  const relativePath = path.relative(root, absolutePath).replaceAll(path.sep, "/")
-  return {
-    path: relativePath,
-    absolutePath,
-    area,
-    sizeBytes: stats.size,
-    modifiedAt: stats.mtime.toISOString(),
-  }
-}
-
-const normalizeToolDocPath = (inputPath: string, area?: ToolDocsArea): string => {
-  const normalized = inputPath.replaceAll("\\", "/").replace(/^\/+/, "")
-  if (normalized.startsWith("tool_usage/")) {
-    return normalized
-  }
-  if (area === "tool_usage") {
-    return `tool_usage/${normalized}`
-  }
-  return normalized.includes("/") ? normalized : `tool_usage/${normalized}`
-}
-
-const lineSearchResults = (file: MemoryFile, content: string, query: string, mode: DocsSearchMode, contextLines: number): DocsResult[] => {
-  const lines = content.split(/\r?\n/)
-  const compiled = compileSearch(query, mode)
-  return lines.flatMap((line, index) => {
-    const score = compiled.score(line)
-    if (score <= 0) {
-      return []
-    }
-    return [lineWindowResult(file, lines, index, index, line, score, "line_match", contextLines)]
-  })
-}
-
-const sectionMatches = (
-  file: MemoryFile,
-  content: string,
-  _input: ToolDocsToolInput,
-  mode: DocsSearchMode,
-  query: string | undefined,
-  contextLines: number,
-  charLimit: number,
-): DocsResult[] => {
-  const lines = content.split(/\r?\n/)
-  const sections = markdownSections(lines)
-  const compiled = query ? compileSearch(query, mode) : undefined
-  return sections.flatMap((section) => {
-    const text = lines.slice(section.start, section.end + 1).join("\n")
-    const score = compiled ? compiled.score(text) : 1
-    if (compiled && score <= 0) {
-      return []
-    }
-    const clipped = truncateToContextBudget(text, charLimit)
-    return [
-      {
-        resultNumber: 0,
-        resultType: "section",
-        path: file.path,
-        title: section.title,
-        matchedText: query ? bestMatchingLine(text, query, mode) : section.title,
-        snippet: clipped,
-        modifiedAt: file.modifiedAt,
-        lineStart: section.start + 1,
-        lineEnd: section.end + 1,
-        ...(contextLines > 0
-          ? {
-              contextBefore: truncateToContextBudget(lines.slice(Math.max(0, section.start - contextLines), section.start).join("\n"), MAX_CONTEXT_CHARS),
-              contextAfter: truncateToContextBudget(lines.slice(section.end + 1, Math.min(lines.length, section.end + 1 + contextLines)).join("\n"), MAX_CONTEXT_CHARS),
-            }
-          : {}),
-      },
-    ]
-  })
-}
-
-const fileResult = (file: MemoryFile, content: string, charLimit: number): DocsResult => ({
-  resultNumber: 0,
-  resultType: "file",
-  path: file.path,
-  title: firstHeading(content),
-  snippet: truncateToContextBudget(content, charLimit),
-  modifiedAt: file.modifiedAt,
-  lineStart: 1,
-  lineEnd: content.split(/\r?\n/).length,
-})
-
-const lineWindowResult = (
-  file: MemoryFile,
-  lines: string[],
-  startIndex: number,
-  endIndex: number,
-  matchedText: string,
-  _score: number,
-  resultType: DocsResult["resultType"],
-  contextLines: number,
-): DocsResult => {
-  const contextBefore = lines.slice(Math.max(0, startIndex - contextLines), startIndex).join("\n")
-  const contextAfter = lines.slice(endIndex + 1, Math.min(lines.length, endIndex + 1 + contextLines)).join("\n")
-  return {
-    resultNumber: 0,
-    resultType,
-    path: file.path,
-    title: nearestHeading(lines, startIndex),
-    matchedText: matchedText.slice(0, 2_000),
-    contextBefore: truncateToContextBudget(contextBefore, MAX_CONTEXT_CHARS),
-    contextAfter: truncateToContextBudget(contextAfter, MAX_CONTEXT_CHARS),
-    snippet: truncateToContextBudget([contextBefore, matchedText, contextAfter].filter(Boolean).join("\n"), MAX_CONTEXT_CHARS),
-    modifiedAt: file.modifiedAt,
-    lineStart: startIndex + 1,
-    lineEnd: endIndex + 1,
-  }
-}
-
-const numberResult = (result: DocsResult, index: number): DocsResult => ({ ...result, resultNumber: index + 1 })
-
-const capMemoryResults = (results: DocsResult[], charLimit: number): { results: DocsResult[]; truncation: TruncationMetadata; warnings: string[] } => {
-  const warnings: string[] = []
-  let used = 0
-  const capped: DocsResult[] = []
-  for (const result of results) {
-    const serializedLength = JSON.stringify(result).length
-    if (used + serializedLength > charLimit && capped.length > 0) {
-      warnings.push("Tool docs output was truncated by charLimit; narrow filters or increase charLimit.")
-      break
-    }
-    used += serializedLength
-    capped.push(result)
-  }
-  return {
-    results: capped,
-    truncation: {
-      truncated: capped.length < results.length,
-      charLimit,
-      originalLength: JSON.stringify(results).length,
-      returnedLength: JSON.stringify(capped).length,
-    },
-    warnings,
-  }
-}
-
-const compileSearch = (query: string, mode: DocsSearchMode): { score: (text: string) => number } => {
-  const lowerQuery = query.toLowerCase()
+const compileSearch = (query: string, _mode: "keyword_any"): { score: (text: string) => number } => {
   const terms = searchTerms(query)
-  if (mode === "regex") {
-    let regex: RegExp
-    try {
-      regex = new RegExp(query, "i")
-    } catch (error) {
-      throw new SocratesError("tool_docs_invalid_regex", "tool_docs regex query is invalid.", {
-        recoverable: true,
-        details: { message: error instanceof Error ? error.message : String(error) },
-      })
-    }
-    return { score: (text) => (regex.test(text) ? 70 : 0) }
-  }
-  if (mode === "exact_phrase") {
-    return { score: (text) => countCaseInsensitive(text, lowerQuery) * 100 }
-  }
-  if (mode === "whole_word") {
-    const regexes = terms.map((term) => new RegExp(`\\b${escapeRegExp(term)}\\b`, "i"))
-    return { score: (text) => (regexes.length > 0 && regexes.every((regex) => regex.test(text)) ? 90 + regexes.length : 0) }
-  }
-  if (mode === "keyword_any") {
-    return { score: (text) => terms.filter((term) => text.toLowerCase().includes(term)).length * 50 }
-  }
-  return {
-    score: (text) => {
-      const lower = text.toLowerCase()
-      const matched = terms.filter((term) => lower.includes(term)).length
-      return terms.length > 0 && matched === terms.length ? 80 + matched : 0
-    },
-  }
+  return { score: (text) => terms.filter((term) => text.toLowerCase().includes(term)).length * 50 }
 }
 
 const searchTerms = (query: string): string[] => query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 0) ?? []
-
-const countCaseInsensitive = (text: string, lowerNeedle: string): number => {
-  if (!lowerNeedle.trim()) {
-    return 0
-  }
-  return text.toLowerCase().split(lowerNeedle).length - 1
-}
-
-const bestMatchingLine = (text: string, query: string, mode: DocsSearchMode): string => {
-  const compiled = compileSearch(query, mode)
-  return text.split(/\r?\n/).find((line) => compiled.score(line) > 0)?.slice(0, 2_000) ?? query
-}
-
-const markdownSections = (lines: string[]): Array<{ title: string; start: number; end: number }> => {
-  const headings = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) => /^#{1,6}\s+/.test(line))
-    .map(({ line, index }) => ({ title: line.replace(/^#{1,6}\s+/, "").trim(), start: index }))
-  if (headings.length === 0) {
-    return lines.length === 0 ? [] : [{ title: "Full file", start: 0, end: lines.length - 1 }]
-  }
-  return headings.map((heading, index) => ({
-    title: heading.title,
-    start: heading.start,
-    end: (headings[index + 1]?.start ?? lines.length) - 1,
-  }))
-}
-
-const firstHeading = (content: string): string | undefined => /^#{1,6}\s+(.+)$/m.exec(content)?.[1]?.trim()
-
-const nearestHeading = (lines: string[], index: number): string | undefined => {
-  for (let cursor = index; cursor >= 0; cursor -= 1) {
-    const heading = /^#{1,6}\s+(.+)$/.exec(lines[cursor] ?? "")
-    if (heading?.[1]) {
-      return heading[1].trim()
-    }
-  }
-  return undefined
-}
-
-const clampContextLines = (value?: number): number => Math.min(value ?? DEFAULT_CONTEXT_LINES, 100)
-
-const truncateToContextBudget = (text: string, charLimit: number): string => truncate(text, Math.min(charLimit, MAX_CONTEXT_CHARS)).text
-
-const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 const parseJsonObject = (text: string | null | undefined): Record<string, unknown> => {
   if (!text) {
@@ -1854,6 +1921,35 @@ const parseJsonArray = (text: string | null | undefined): unknown[] => {
   } catch {
     return []
   }
+}
+
+const isMemoryAgentSummary = (value: unknown): value is MemoryAgentRunDetail["summary"] => {
+  if (!value || typeof value !== "object") {
+    return false
+  }
+  const record = value as Record<string, unknown>
+  return ["investigated", "changed", "skipped", "blocked"].every((key) => typeof record[key] === "string")
+}
+
+const usageFromMetadata = (metadata: Record<string, unknown>): { totalTokens?: number; costUsd?: number } => {
+  const usage = metadata.usage
+  if (!usage || typeof usage !== "object") {
+    return {}
+  }
+  const record = usage as Record<string, unknown>
+  return {
+    ...(typeof record.totalTokens === "number" ? { totalTokens: Math.max(0, Math.floor(record.totalTokens)) } : {}),
+    ...(typeof record.costUsd === "number" ? { costUsd: Math.max(0, record.costUsd) } : {}),
+  }
+}
+
+const firstMarkdownLine = (content: string): string => {
+  const line = content
+    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")
+    .split(/\r?\n/)
+    .map((candidate) => candidate.trim().replace(/^#{1,6}\s*/, "").replace(/^[-*]\s+/, ""))
+    .find((candidate) => candidate.length > 0)
+  return line?.slice(0, 220) ?? ""
 }
 
 const slimMemoryToolEvent = (event: { type: string; toolName?: unknown; summary?: unknown; error?: unknown; argsPreview?: unknown; resultPreview?: unknown }): Record<string, unknown> => ({

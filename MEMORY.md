@@ -102,12 +102,22 @@ Tool routing:
 - `edit_files` is the only write tool for the memory agent. It writes global `tool_usage`, global `skills`, and gated `identity.md` / `operating_principles.md` edits without exposing raw paths.
 - Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes.
 - Completed chat turns are indexed for trace retrieval, but they no longer enqueue a per-turn memory job. The scheduler or manual settings-page action wakes the global agent.
+- Next memory-agent input fix: build the completed-turn manifest entry by entry and stop before either 80 completed turns or 60k estimated input tokens, whichever comes first. Do not build 80 first and slice the manifest text mid-entry.
 - Legacy per-project memory-agent settings remain only as inactive DB/store compatibility baggage; the per-turn worker runtime path has been removed.
 - Project skill creation is user-triggered from the dashboard `Skills +` flow and writes `.socrates/skills/<skill-name>/SKILL.md`.
 - `socrates-skill-writer` is an internal backend builder asset, not exposed as a normal model-visible skill.
 - Soul proposals still require internal confirmation and user-visible notification.
 - Legacy project memory from `~/.Socrates/projects/<projectId>/` is migrated into workspace `.socrates/MEMORY.md` and the old project root is removed.
 - Legacy six repo docs are migrated by scaffold behavior into the four-doc system; old workspace repo-doc files are removed by initialization.
+
+## Next Major Work
+
+- Fully overhaul context compression. Current compressor is prompted JSON, not true structured output, and SQLite snapshots showed schema drift where nested entries used `handles` instead of the required `traceRefs`.
+- Move all compressor prompts into `packages/core/src/prompts/` so the prompt architecture is coherent: Socrates prompt, Memory Agent prompt, Socrates compressor prompt, and Memory Agent compressor prompt.
+- Add real shared schemas/contracts for Socrates chat compression and Memory Agent compression, then validate outputs before activating a snapshot.
+- Extend the provider abstraction with structured generation. Use provider/native or AI SDK structured output where supported; fallback must be JSON plus schema validation and retry, not silent parse acceptance.
+- Keep the good core pattern: compact older head, preserve recent tail, carry previous summary forward, clear bulky re-fetchable tool results separately, and keep trace handles for exact evidence.
+- Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, and exact quotes.
 
 ## Verification
 

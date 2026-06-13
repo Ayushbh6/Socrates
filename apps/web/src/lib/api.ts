@@ -2,6 +2,7 @@
 
 import {
   apiResponseSchema,
+  buildGlobalSkillResponseSchema,
   buildProjectSkillResponseSchema,
   checkProjectEmbeddingsResponseSchema,
   checkProviderCredentialResponseSchema,
@@ -15,12 +16,16 @@ import {
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
   getConversationResponseSchema,
+  getMemoryAgentFileContentResponseSchema,
   getMemoryAgentResponseSchema,
+  getMemoryAgentRunResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
   getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
   inspectWorkspaceResponseSchema,
   listNotificationsResponseSchema,
+  listMemoryAgentFilesResponseSchema,
+  listMemoryAgentRunsResponseSchema,
   listProjectsResponseSchema,
   listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
@@ -38,6 +43,8 @@ import {
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
+  type BuildGlobalSkillRequest,
+  type BuildGlobalSkillResponse,
   type BuildProjectSkillRequest,
   type BuildProjectSkillResponse,
   type CheckProjectEmbeddingsRequest,
@@ -58,7 +65,9 @@ import {
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
+  type GetMemoryAgentFileContentResponse,
   type GetMemoryAgentResponse,
+  type GetMemoryAgentRunResponse,
   type GetMeResponse,
   type GetProjectEmbeddingsStatusResponse,
   type GetProjectResponse,
@@ -66,6 +75,8 @@ import {
   type InspectWorkspaceRequest,
   type InspectWorkspaceResponse,
   type ListNotificationsResponse,
+  type ListMemoryAgentFilesResponse,
+  type ListMemoryAgentRunsResponse,
   type ListProjectsResponse,
   type MarkAllNotificationsReadResponse,
   type MarkNotificationReadResponse,
@@ -255,6 +266,46 @@ export const api = {
   getMemoryAgent: () =>
     request<typeof getMemoryAgentResponseSchema>("/api/memory-agent", getMemoryAgentResponseSchema) as Promise<GetMemoryAgentResponse>,
 
+  listMemoryAgentRuns: (input: { limit?: number; offset?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (input.limit !== undefined) {
+      params.set("limit", String(input.limit));
+    }
+    if (input.offset !== undefined) {
+      params.set("offset", String(input.offset));
+    }
+    const query = params.toString();
+    return request<typeof listMemoryAgentRunsResponseSchema>(
+      `/api/memory-agent/runs${query ? `?${query}` : ""}`,
+      listMemoryAgentRunsResponseSchema,
+    ) as Promise<ListMemoryAgentRunsResponse>;
+  },
+
+  getMemoryAgentRun: (runId: string) =>
+    request<typeof getMemoryAgentRunResponseSchema>(
+      `/api/memory-agent/runs/${encodeURIComponent(runId)}`,
+      getMemoryAgentRunResponseSchema,
+    ) as Promise<GetMemoryAgentRunResponse>,
+
+  listMemoryAgentFiles: () =>
+    request<typeof listMemoryAgentFilesResponseSchema>(
+      "/api/memory-agent/files",
+      listMemoryAgentFilesResponseSchema,
+    ) as Promise<ListMemoryAgentFilesResponse>,
+
+  getMemoryAgentFileContent: (input: { kind: string; path: string; scope?: string }) => {
+    const params = new URLSearchParams();
+    params.set("kind", input.kind);
+    params.set("path", input.path);
+    if (input.scope) {
+      params.set("scope", input.scope);
+    }
+    return request<typeof getMemoryAgentFileContentResponseSchema>(
+      `/api/memory-agent/files/content?${params.toString()}`,
+      getMemoryAgentFileContentResponseSchema,
+    ) as Promise<GetMemoryAgentFileContentResponse>;
+  },
+
   updateMemoryAgentSettings: (input: UpdateMemoryAgentGlobalSettingsRequest) =>
     request<typeof updateMemoryAgentGlobalSettingsResponseSchema>(
       "/api/memory-agent/settings",
@@ -269,6 +320,16 @@ export const api = {
     request<typeof triggerMemoryAgentRunResponseSchema>("/api/memory-agent/run", triggerMemoryAgentRunResponseSchema, {
       method: "POST",
     }) as Promise<TriggerMemoryAgentRunResponse>,
+
+  buildGlobalSkill: (input: BuildGlobalSkillRequest) =>
+    request<typeof buildGlobalSkillResponseSchema>(
+      "/api/memory-agent/skills/build",
+      buildGlobalSkillResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<BuildGlobalSkillResponse>,
 
   completeOnboarding: (input: CompleteOnboardingRequest) =>
     request<typeof completeOnboardingResponseSchema>("/api/onboarding", completeOnboardingResponseSchema, {

@@ -28,10 +28,12 @@
 - Use `skills` for reusable workflows and learned patterns; the main agent reads/applies skills but does not write them.
 - The Global Memory Agent may write only through its scoped `edit_files` tool, targeting `identity`, `operating_principles`, `tool_doc`, or global `skill` by name.
 - Memory-agent scheduling is global, not project-local: respect the `events.sequence` watermark and do not reintroduce per-turn memory job enqueueing.
+- Memory-agent manifest packing must be token-aware per entry: include at most 80 completed turns and stop before 60k estimated input tokens instead of truncating built text.
 - Generic `edit` and `apply_patch` must reject `.socrates/skills/**`; project skills are created through the backend/dashboard skill builder.
 - Terminal must preflight-reject commands that mention Socrates-owned protected paths, including workspace memory/repo docs/skills and global skills/tool usage/soul docs. This is a cross-platform obvious-path guard, not an OS process sandbox.
 - Use `trace_retrieve` for raw prior conversation/tool evidence.
 - Diary must not re-enter production read/write/search/wake behavior without a deliberate architecture decision.
+- Compression prompts must live under `packages/core/src/prompts/`. Compression outputs must be schema-validated before activation; prompted JSON plus best-effort parsing is not sufficient.
 
 ## Engineering Rules
 

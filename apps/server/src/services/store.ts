@@ -39,13 +39,20 @@ import type {
   Project,
   ProjectInstructions,
   GetMemoryAgentResponse,
+  GetMemoryAgentRunResponse,
+  GetMemoryAgentFileContentResponse,
   TriggerMemoryAgentRunResponse,
+  ListMemoryAgentFilesResponse,
+  ListMemoryAgentRunsResponse,
   UpdateMemoryAgentGlobalSettingsRequest,
   UpdateMemoryAgentGlobalSettingsResponse,
+  MemoryAgentFileContentQuery,
   ProjectResource,
   ProjectWorkspace,
   BuildProjectSkillRequest,
   BuildProjectSkillResponse,
+  BuildGlobalSkillRequest,
+  BuildGlobalSkillResponse,
   SkillsToolInput,
   SkillsToolOutput,
   SoulToolInput,
@@ -262,12 +269,35 @@ export class SocratesStore {
     return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request) }
   }
 
+  async buildGlobalSkill(input: BuildGlobalSkillRequest): Promise<BuildGlobalSkillResponse> {
+    return { skill: await this.memory.buildGlobalSkill(input.request) }
+  }
+
   getMemoryAgent(): GetMemoryAgentResponse {
+    const settings = this.memoryAgentSettings.ensureSettings()
+    const state = this.memoryAgentSettings.ensureState()
     return {
-      settings: this.memoryAgentSettings.ensureSettings(),
-      state: this.memoryAgentSettings.ensureState(),
-      recentRuns: this.memory.listGlobalMemoryAgentRuns(),
+      settings,
+      state,
+      pending: this.memory.getMemoryAgentPending(state),
+      recentItems: this.memory.listMemoryAgentTimeline(25, 0).items,
     }
+  }
+
+  listMemoryAgentRuns(input: { limit?: number; offset?: number } = {}): ListMemoryAgentRunsResponse {
+    return this.memory.listMemoryAgentTimeline(input.limit ?? 25, input.offset ?? 0)
+  }
+
+  getMemoryAgentRun(runId: string): GetMemoryAgentRunResponse {
+    return { run: this.memory.getMemoryAgentRunDetail(runId) }
+  }
+
+  listMemoryAgentFiles(): ListMemoryAgentFilesResponse {
+    return { files: this.memory.listMemoryAgentFiles() }
+  }
+
+  getMemoryAgentFileContent(input: MemoryAgentFileContentQuery): GetMemoryAgentFileContentResponse {
+    return this.memory.readMemoryAgentFileContent(input)
   }
 
   updateMemoryAgentSettings(input: UpdateMemoryAgentGlobalSettingsRequest): UpdateMemoryAgentGlobalSettingsResponse {
@@ -300,8 +330,8 @@ export class SocratesStore {
       return
     }
     const state = this.memoryAgentSettings.ensureState()
-    const lastRunMs = state.lastRunAt ? Date.parse(state.lastRunAt) : 0
-    if (state.status === "running" || (lastRunMs > 0 && Date.now() - lastRunMs < settings.cadenceMinutes * 60_000)) {
+    const lastCheckedMs = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : 0
+    if (state.status === "running" || (lastCheckedMs > 0 && Date.now() - lastCheckedMs < settings.cadenceMinutes * 60_000)) {
       return
     }
     await this.runGlobalMemoryAgent("scheduled")

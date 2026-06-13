@@ -48,6 +48,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("Use regex=true for regex syntax")
     expect(requestJson).toContain(".socrates/MEMORY.md")
     expect(requestJson).toContain("repo_docs")
+    expect(requestJson).toContain("A separate Global Memory Agent runs in the background")
     expect(requestJson).toContain("compare stack trace lines to current files")
     expect(requestJson).toContain("distinguish config/credential issues from service availability")
   })

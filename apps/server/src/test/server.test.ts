@@ -3687,7 +3687,17 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(socratesHome, "identity.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "operating_principles.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "trace_retrieve.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_docs.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_docs.md"))).toBe(false)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "project_docs.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "repo_docs.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "skills.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "soul.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "tool_docs.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve_global.md"))).toBe(false)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "tool_docs.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "skills.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "soul.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "skills"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "useful_patterns"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "projects", project.id))).toBe(false)
@@ -3724,15 +3734,20 @@ describe("WebSocket API", () => {
         searchMode: "keyword_all",
       })
       expect(searched.results.some((result) => result.path.includes("trace_retrieve.md"))).toBe(true)
-      const memoryTools = store.runToolDocsTool(project.id, {
+      const projectDocsGuide = store.runToolDocsTool(project.id, {
         operation: "read",
-        path: "tool_usage/memory_docs.md",
+        path: "project_docs.md",
         charLimit: 12_000,
       })
-      expect(memoryTools.results[0]?.snippet).toContain("tool_docs")
-      expect(memoryTools.results[0]?.snippet).toContain("skills")
-      expect(memoryTools.results[0]?.snippet).toContain("project_docs")
-      expect(memoryTools.results[0]?.snippet).toContain("soul")
+      expect(projectDocsGuide.results[0]?.snippet).toContain("PROJECT_NOTES.md")
+      expect(projectDocsGuide.results[0]?.snippet).toContain("MEMORY.md")
+      expect(() =>
+        store.runToolDocsTool(project.id, {
+          operation: "read",
+          path: "tool_usage/memory_agent/edit_files.md",
+          charLimit: 12_000,
+        }),
+      ).toThrow(/not visible to this agent/)
       const notesRead = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read", area: "notes" })
       expect(notesRead.content).toContain("PROJECT_NOTES")
       const notesPatch = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
@@ -3834,20 +3849,28 @@ describe("WebSocket API", () => {
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
         }
-        yield { type: "model.answer.delta", text: "Created a skill and updated tool guidance." }
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nInspected configured memory worker test evidence.\n\n## Changed\nUpdated tool guidance.\n\n## Skipped\nSkill creation is reserved for Memory Center Skills +.\n\n## Blocked\nNone.",
+        }
         yield { type: "model.completed" }
       },
     }
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
-      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Memory user message", "Memory assistant answer", nowIso())
-      insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      for (let index = 0; index < 4; index += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Memory user message ${index + 1}`, "Memory assistant answer", nowIso())
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      }
       await store.runGlobalMemoryAgent("manual")
       const usefulPatternFile = path.join(socratesHome, "skills", "general", "SKILL.md")
       const toolUsageFile = path.join(socratesHome, "tool_usage", "read_search.md")
-      await waitForFileText(usefulPatternFile, "Configured memory worker updated this global skill")
       await waitForFileText(toolUsageFile, "Configured memory worker can refine global tool guidance")
+      expect(fs.existsSync(usefulPatternFile)).toBe(false)
+      const rejectedSkill = handle.sqlite.prepare("SELECT status, error FROM memory_agent_actions WHERE target_kind = 'skills'").get() as { status: string; error: string }
+      expect(rejectedSkill.status).toBe("rejected")
+      expect(rejectedSkill.error).toContain("cannot create or update skills")
       expect(modelRequests[0]).toEqual({ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false })
       expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "diary"))).toBe(false)
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
@@ -3898,7 +3921,10 @@ describe("WebSocket API", () => {
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
         }
-        yield { type: "model.answer.delta", text: "No durable update." }
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nUsed trace retrieval for the memory-agent trace marker.\n\n## Changed\nNone.\n\n## Skipped\nNo durable update.\n\n## Blocked\nNone.",
+        }
         yield { type: "model.completed" }
       },
     }
@@ -3922,11 +3948,13 @@ describe("WebSocket API", () => {
       store.indexTurnTraceDocuments(project.id, sourceConversation.id, sourceTurn.turnId)
 
       const memorySessionId = insertTestSession(handle.sqlite, project.id, memoryConversation.id)
-      const memoryTurn = insertCompletedTestTurn(handle.sqlite, memoryConversation.id, memorySessionId, "Memory worker should investigate.", "Queued.", nowIso())
-      insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: memoryConversation.id, sessionId: memorySessionId, turnId: memoryTurn.turnId })
+      for (let index = 0; index < 4; index += 1) {
+        const memoryTurn = insertCompletedTestTurn(handle.sqlite, memoryConversation.id, memorySessionId, `Memory worker should investigate ${index + 1}.`, "Queued.", nowIso())
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: memoryConversation.id, sessionId: memorySessionId, turnId: memoryTurn.turnId })
+      }
 
       const result = await store.runGlobalMemoryAgent("manual")
-      expect(result.run?.status).toBe("completed")
+      expect(result.item?.status).toBe("completed")
       const job = handle.sqlite.prepare("SELECT status FROM memory_agent_jobs ORDER BY started_at DESC LIMIT 1").get() as { status: string }
       expect(job.status).toBe("completed")
       expect(requests[0]).toMatchObject({
@@ -3986,15 +4014,20 @@ describe("WebSocket API", () => {
           yield { type: "model.completed" }
           return
         }
-        yield { type: "model.answer.delta", text: "Updated identity." }
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nInspected soul update evidence.\n\n## Changed\nUpdated identity.\n\n## Skipped\nNone.\n\n## Blocked\nNone.",
+        }
         yield { type: "model.completed" }
       },
     }
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
-      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Update soul carefully", "I will use the backend memory agent.", nowIso())
-      insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      for (let index = 0; index < 4; index += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Update soul carefully ${index + 1}`, "I will use the backend memory agent.", nowIso())
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      }
       await store.runGlobalMemoryAgent("manual")
       const identityPath = path.join(socratesHome, "identity.md")
       await waitForFileText(identityPath, "evidence-backed memory")
@@ -4010,7 +4043,7 @@ describe("WebSocket API", () => {
       expect(notifications.unreadCount).toBe(1)
       expect(notifications.notifications[0]?.type).toBe("memory.soul.updated")
       expect(JSON.stringify(notifications.notifications[0]?.payload)).toContain("evidence-backed memory")
-      expect(seenPrompts[0]).toContain("Do not output JSON patch proposals")
+      expect(seenPrompts[0]).toContain("No chatty narration, nested subheaders, JSON, or patch proposals")
       expect(seenPrompts[1]).toContain("You are about to make changes to the soul. Are you sure?")
     } finally {
       await store.close()

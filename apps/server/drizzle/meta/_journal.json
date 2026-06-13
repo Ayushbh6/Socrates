@@ -99,6 +99,13 @@
       "when": 1780771200000,
       "tag": "0013_global_memory_agent",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1781347200000,
+      "tag": "0014_memory_center",
+      "breakpoints": true
     }
   ]
 }

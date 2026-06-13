@@ -1,6 +1,6 @@
 # edit_files Usage Guide
 
-`edit_files` is the Global Memory Agent's only write tool. It writes target-scoped global memory documents and does not accept raw filesystem paths.
+`edit_files` is the Global Memory Agent's only scheduled-run write tool. It writes target-scoped global memory documents and does not accept raw filesystem paths.
 
 Use it only after exact evidence has been found and inspected. Keep changes narrow, durable, and tied to the evidence that justified them.
 
@@ -17,11 +17,11 @@ Do not rewrite broad memory just because a turn was interesting. Do not edit fro
 | `identity` | Soul identity document | No | No |
 | `operating_principles` | Soul operating principles | No | No |
 | `tool_doc` | Global tool usage document | Yes | Yes |
-| `skill` | Global skill `SKILL.md` | Yes | Yes |
+| `skill` | Global skill `SKILL.md` | Yes | No in scheduled runs |
 
 For `tool_doc`, `name` becomes a sanitized markdown file under global `tool_usage`.
 
-For `skill`, `name` becomes the skill folder name and the content must be a valid `SKILL.md` whose frontmatter name matches the folder.
+Scheduled memory runs may read skills but cannot create or update them. Global skill creation happens through the explicit Memory Center `Skills +` flow, which uses backend skill-generation logic outside scheduled runs.
 
 Do not pass raw paths, relative paths, absolute paths, or path-like names.
 
@@ -39,18 +39,18 @@ Do not pass raw paths, relative paths, absolute paths, or path-like names.
 | Mode | Use When |
 | --- | --- |
 | `replace` | Editing an existing target. Requires exact `oldText`. |
-| `create` | Creating a new `tool_doc` or `skill`. |
+| `create` | Creating a new `tool_doc`. |
 
 `replace` requires `oldText` and `newText`. The `oldText` must match exactly once in the current target. If it matches zero times or more than once, the tool rejects the patch.
 
-`create` writes a new tool doc or skill only when the target does not already exist. If the target exists, read it and use `replace`.
+`create` writes a new tool doc only when the target does not already exist. If the target exists, read it and use `replace`.
 
 ## Input Reference
 
 | Parameter | Meaning | Use When |
 | --- | --- | --- |
-| `target` | `identity`, `operating_principles`, `tool_doc`, or `skill` | Select memory surface. |
-| `name` | Tool doc or skill name | Required for `tool_doc` and `skill`. |
+| `target` | `identity`, `operating_principles`, or `tool_doc` | Select memory surface. |
+| `name` | Tool doc name | Required for `tool_doc`. |
 | `editMode` | `replace` or `create` | Select patch behavior. |
 | `oldText` | Exact current text to replace | Required for `replace`. |
 | `newText` | Replacement or new file content | Required for all writes. |
@@ -103,20 +103,6 @@ Bad:
 
 - General user identity.
 - Project-specific repo facts.
-
-### skill
-
-Use for reusable workflows that combine multiple tools or decision steps.
-
-Good:
-
-- A repeatable evidence-review workflow.
-- A multi-step maintenance pattern.
-
-Bad:
-
-- A single parameter note that belongs in a tool doc.
-- A project-only note.
 
 ## Replace Examples
 
@@ -177,18 +163,7 @@ Create a tool doc:
 }
 ```
 
-Create a skill:
-
-```json
-{
-  "target": "skill",
-  "name": "memory-evidence-review",
-  "editMode": "create",
-  "newText": "---\nname: memory-evidence-review\ndescription: Review inspected trace evidence before proposing durable memory updates.\n---\n\n# memory-evidence-review\n\nUse this skill when a candidate memory update depends on prior conversation or runtime evidence.\n\n## Steps\n\n1. Search with trace_retrieve.\n2. Inspect the strongest result.\n3. Write the smallest durable update.\n",
-  "rationale": "Repeated evidence-review steps should be reusable.",
-  "sourceTurnIds": ["turn_..."]
-}
-```
+Do not create skills from scheduled memory runs. If a reusable workflow should become a skill, mention it in the final `Skipped` section so the user can create it explicitly with Memory Center `Skills +`.
 
 Bad create:
 
@@ -243,22 +218,12 @@ For soul edits:
 }
 ```
 
-### Add a new skill for a repeated workflow
+### Defer a repeated workflow to Skills +
 
 1. Confirm the workflow appears in more than one context or is clearly durable.
 2. Inspect evidence for the complete workflow.
-3. Create a focused skill with valid frontmatter.
-
-```json
-{
-  "target": "skill",
-  "name": "global-memory-maintenance",
-  "editMode": "create",
-  "newText": "---\nname: global-memory-maintenance\ndescription: Maintain global Socrates memory from inspected cross-project trace evidence.\n---\n\n# global-memory-maintenance\n\nUse this skill when consolidating durable lessons from Global Memory Agent evidence.\n",
-  "rationale": "The inspected workflow is reusable across memory-agent runs.",
-  "sourceTurnIds": ["turn_..."]
-}
-```
+3. Do not call `edit_files` with `target: "skill"`.
+4. Mention the skill candidate briefly in the final `Skipped` section.
 
 ### Tighten an operating principle
 

@@ -15,6 +15,8 @@ import {
   clientCommandSchema,
   completeOnboardingRequestSchema,
   completeOnboardingResponseSchema,
+  buildGlobalSkillRequestSchema,
+  buildGlobalSkillResponseSchema,
   buildProjectSkillRequestSchema,
   buildProjectSkillResponseSchema,
   configureProjectEmbeddingsRequestSchema,
@@ -40,13 +42,17 @@ import {
   errorCreatedEventSchema,
   feedbackSubmitCommandSchema,
   getConversationResponseSchema,
+  getMemoryAgentFileContentResponseSchema,
   getMeResponseSchema,
+  getMemoryAgentRunResponseSchema,
   getProjectEmbeddingsStatusResponseSchema,
   getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
   inspectWorkspaceRequestSchema,
   inspectWorkspaceResponseSchema,
   listNotificationsResponseSchema,
+  listMemoryAgentFilesResponseSchema,
+  listMemoryAgentRunsResponseSchema,
   listProjectConversationsResponseSchema,
   listProjectResourcesResponseSchema,
   listProjectsResponseSchema,
@@ -58,6 +64,7 @@ import {
   messageCompletedEventSchema,
   messageSchema,
   memoryAgentCompletedEventSchema,
+  memoryAgentCheckedEventSchema,
   memoryAgentFailedEventSchema,
   memoryAgentStartedEventSchema,
   memoryPrimaryUpdatedEventSchema,
@@ -464,15 +471,32 @@ describe("http contracts", () => {
     const state = {
       id: "global",
       lastProcessedEventSequence: 42,
-      lastRunAt: timestamp,
+      lastCheckedAt: timestamp,
+      lastRealRunAt: timestamp,
       status: "idle",
       lastJobId: "memjob_1",
       updatedAt: timestamp,
     }
-    const run = {
+    const pending = {
+      sequenceFrom: 43,
+      sequenceTo: 46,
+      turnCount: 4,
+      toolCalls: 1,
+      fileChangeEvents: 0,
+      distinctChangedFiles: 0,
+      totalTokens: 1200,
+      shouldRun: true,
+      reasons: ["4 completed turns"],
+      displayReason: "Memory threshold reached: 4 completed turns.",
+    }
+    const item = {
       id: "memjob_1",
+      itemType: "run",
+      runId: "memjob_1",
       status: "completed",
       trigger: "manual",
+      title: "Memory run",
+      displayReason: "Memory threshold reached: 4 completed turns.",
       providerId: "openrouter",
       modelId: "xiaomi/mimo-v2.5-pro",
       evidenceTurnCount: 2,
@@ -481,13 +505,27 @@ describe("http contracts", () => {
       completedAt: timestamp,
       sequenceFrom: 41,
       sequenceTo: 42,
-      output: "Updated one skill.",
+      totalTokens: 400,
+      costUsd: 0.002,
+    }
+    const runDetail = {
+      ...item,
+      itemType: "run",
+      providerId: "openrouter",
+      modelId: "xiaomi/mimo-v2.5-pro",
+      summary: {
+        investigated: "Checked trace evidence.",
+        changed: "Updated one tool doc.",
+        skipped: "No skills.",
+        blocked: "None.",
+      },
+      toolEvents: [],
       actions: [
         {
           id: "memact_1",
           jobId: "memjob_1",
-          targetKind: "skills",
-          targetPath: "/tmp/.Socrates/skills/general/SKILL.md",
+          targetKind: "tool_usage",
+          targetPath: "/tmp/.Socrates/tool_usage/read_search.md",
           status: "applied",
           requiresConfirmation: false,
           createdAt: timestamp,
@@ -500,8 +538,38 @@ describe("http contracts", () => {
     expect(updateMemoryAgentGlobalSettingsRequestSchema.safeParse({ cadenceMinutes: 0 }).success).toBe(false)
     expect(updateMemoryAgentGlobalSettingsResponseSchema.safeParse({ settings }).success).toBe(true)
     expect(memoryAgentGlobalStateSchema.safeParse(state).success).toBe(true)
-    expect(getMemoryAgentResponseSchema.safeParse({ settings, state, recentRuns: [run] }).success).toBe(true)
-    expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, run }).success).toBe(true)
+    expect(getMemoryAgentResponseSchema.safeParse({ settings, state, pending, recentItems: [item] }).success).toBe(true)
+    expect(listMemoryAgentRunsResponseSchema.safeParse({ items: [item], totalMatches: 1 }).success).toBe(true)
+    expect(getMemoryAgentRunResponseSchema.safeParse({ run: runDetail }).success).toBe(true)
+    expect(
+      listMemoryAgentFilesResponseSchema.safeParse({
+        files: [
+          {
+            id: "identity:identity.md",
+            kind: "identity",
+            name: "Identity",
+            path: "identity.md",
+            absolutePath: "/tmp/.Socrates/identity.md",
+            updatedAt: timestamp,
+          },
+        ],
+      }).success,
+    ).toBe(true)
+    expect(
+      getMemoryAgentFileContentResponseSchema.safeParse({
+        file: {
+          id: "identity:identity.md",
+          kind: "identity",
+          name: "Identity",
+          path: "identity.md",
+          absolutePath: "/tmp/.Socrates/identity.md",
+        },
+        content: "# Identity",
+      }).success,
+    ).toBe(true)
+    expect(buildGlobalSkillRequestSchema.safeParse({ request: "Build a global review skill" }).success).toBe(true)
+    expect(buildGlobalSkillResponseSchema.safeParse({ skill }).success).toBe(true)
+    expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, pending, item }).success).toBe(true)
   })
 
   it("parses project embedding HTTP contracts", () => {
@@ -836,8 +904,9 @@ describe("websocket server event contracts", () => {
     memoryAgentStartedEventSchema.safeParse(
       envelope("memory.agent.started", {
         jobId: "memjob_1",
-        projectId: project.id,
-        trigger: "idle",
+        trigger: "scheduled",
+        sequenceFrom: 41,
+        sequenceTo: 42,
         evidenceTokensEstimate: 1200,
       }),
     ),
@@ -845,9 +914,10 @@ describe("websocket server event contracts", () => {
       envelope("memory.agent.completed", {
         jobId: "memjob_1",
         status: "completed",
+        providerId: "openrouter",
         modelId: "deepseek/deepseek-v4-pro",
-        actionsApplied: 1,
-        actionsRejected: 0,
+        sequenceFrom: 41,
+        sequenceTo: 42,
       }),
     ),
     memoryAgentFailedEventSchema.safeParse(
@@ -857,6 +927,27 @@ describe("websocket server event contracts", () => {
           code: "memory_agent_failed",
           message: "failed",
         },
+      }),
+    ),
+    memoryAgentCheckedEventSchema.safeParse(
+      envelope("memory.agent.checked", {
+        checkId: "memchk_1",
+        trigger: "scheduled",
+        status: "skipped",
+        reason: "Checked 2 new turns; below memory threshold.",
+        pending: {
+          sequenceFrom: 41,
+          sequenceTo: 42,
+          turnCount: 2,
+          toolCalls: 1,
+          fileChangeEvents: 0,
+          distinctChangedFiles: 0,
+          totalTokens: 1200,
+          shouldRun: false,
+          reasons: [],
+          displayReason: "Checked 2 new turns; below memory threshold.",
+        },
+        checkedAt: timestamp,
       }),
     ),
     memoryPrimaryUpdatedEventSchema.safeParse(

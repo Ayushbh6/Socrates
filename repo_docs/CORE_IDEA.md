@@ -27,6 +27,11 @@ The implementation has:
 - Memory runs are scheduled from global settings, process completed-turn event manifests after the durable `events.sequence` watermark, and can be triggered manually from Settings.
 - Settings page includes the `Memory Agent` panel for cadence, enabled state, provider/model/thinking, manual run, and recent run logs.
 
+## Next Planned Correction
+
+- Memory Agent manifests must be packed entry by entry and stop before either 80 completed Socrates turns or 60k estimated input tokens, whichever comes first. The next implementation should avoid mid-entry truncation and advance the watermark only to the last included event sequence.
+- Context compression needs a full overhaul. The existing compressor uses prompted JSON and parsing, not true structured output; live SQLite snapshots showed schema drift. The next architecture should use shared schemas, structured generation/provider support, dedicated Socrates and Memory Agent compressor prompts, validation before activation, recent-tail preservation, and repeated-compaction evals.
+
 ## Important Non-Goals
 
 - Project skill creation is dashboard-triggered through `Skills +`.

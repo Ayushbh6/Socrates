@@ -15,7 +15,7 @@ import {
   userSchema,
 } from "./entities"
 import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
-import { skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
+import { skillScopeSchema, skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
   .object({
@@ -189,7 +189,8 @@ export const memoryAgentGlobalStateSchema = z
   .object({
     id: z.literal("global"),
     lastProcessedEventSequence: z.number().int().nonnegative(),
-    lastRunAt: z.string().min(1).optional(),
+    lastCheckedAt: z.string().min(1).optional(),
+    lastRealRunAt: z.string().min(1).optional(),
     status: z.enum(["idle", "running", "skipped", "failed"]),
     activeJobId: idSchema.optional(),
     lastJobId: idSchema.optional(),
@@ -198,6 +199,32 @@ export const memoryAgentGlobalStateSchema = z
   })
   .strict()
 export type MemoryAgentGlobalState = z.infer<typeof memoryAgentGlobalStateSchema>
+
+export const memoryAgentSignalSnapshotSchema = z
+  .object({
+    sequenceFrom: z.number().int().positive().optional(),
+    sequenceTo: z.number().int().nonnegative(),
+    turnCount: z.number().int().nonnegative(),
+    toolCalls: z.number().int().nonnegative(),
+    fileChangeEvents: z.number().int().nonnegative(),
+    distinctChangedFiles: z.number().int().nonnegative(),
+    totalTokens: z.number().int().nonnegative(),
+    shouldRun: z.boolean(),
+    reasons: z.array(z.string()),
+    displayReason: z.string().min(1),
+  })
+  .strict()
+export type MemoryAgentSignalSnapshot = z.infer<typeof memoryAgentSignalSnapshotSchema>
+
+export const memoryAgentSummarySectionsSchema = z
+  .object({
+    investigated: z.string(),
+    changed: z.string(),
+    skipped: z.string(),
+    blocked: z.string(),
+  })
+  .strict()
+export type MemoryAgentSummarySections = z.infer<typeof memoryAgentSummarySectionsSchema>
 
 export const memoryAgentRunActionSchema = z
   .object({
@@ -215,35 +242,124 @@ export const memoryAgentRunActionSchema = z
   .strict()
 export type MemoryAgentRunAction = z.infer<typeof memoryAgentRunActionSchema>
 
-export const memoryAgentRunSummarySchema = z
+export const memoryAgentTimelineItemSchema = z
   .object({
     id: idSchema,
-    status: z.string().min(1),
-    trigger: z.string().min(1),
-    providerId: providerIdSchema,
-    modelId: z.string().min(1),
+    itemType: z.enum(["run", "check"]),
+    status: z.enum(["running", "completed", "failed", "skipped"]),
+    trigger: z.enum(["scheduled", "manual"]),
+    title: z.string().min(1),
+    displayReason: z.string().min(1).optional(),
+    startedAt: z.string().min(1).optional(),
+    checkedAt: z.string().min(1).optional(),
+    completedAt: z.string().min(1).optional(),
+    sequenceFrom: z.number().int().positive().optional(),
+    sequenceTo: z.number().int().nonnegative().optional(),
     evidenceTurnCount: z.number().int().nonnegative(),
     evidenceTokensEstimate: z.number().int().nonnegative(),
-    startedAt: z.string().min(1),
-    completedAt: z.string().min(1).optional(),
-    output: z.string().optional(),
-    error: z.string().optional(),
-    sequenceFrom: z.number().int().positive().optional(),
-    sequenceTo: z.number().int().positive().optional(),
-    toolEvents: z.array(z.unknown()).optional(),
-    actions: z.array(memoryAgentRunActionSchema),
+    totalTokens: z.number().int().nonnegative().optional(),
+    costUsd: z.number().nonnegative().optional(),
+    providerId: providerIdSchema.optional(),
+    modelId: z.string().min(1).optional(),
+    runId: idSchema.optional(),
+    checkId: idSchema.optional(),
   })
   .strict()
-export type MemoryAgentRunSummary = z.infer<typeof memoryAgentRunSummarySchema>
+export type MemoryAgentTimelineItem = z.infer<typeof memoryAgentTimelineItemSchema>
+
+export const memoryAgentRunDetailSchema = memoryAgentTimelineItemSchema
+  .extend({
+    itemType: z.literal("run"),
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    summary: memoryAgentSummarySectionsSchema,
+    toolEvents: z.array(z.unknown()),
+    actions: z.array(memoryAgentRunActionSchema),
+    error: z.string().optional(),
+  })
+  .strict()
+export type MemoryAgentRunDetail = z.infer<typeof memoryAgentRunDetailSchema>
+
+export const memoryAgentFileKindSchema = z.enum(["identity", "operating_principles", "tool_doc", "skill"])
+export type MemoryAgentFileKind = z.infer<typeof memoryAgentFileKindSchema>
+
+export const memoryAgentFileSummarySchema = z
+  .object({
+    id: z.string().min(1),
+    kind: memoryAgentFileKindSchema,
+    scope: skillScopeSchema.optional(),
+    name: z.string().min(1),
+    description: z.string().optional(),
+    path: z.string().min(1),
+    absolutePath: z.string().min(1),
+    updatedAt: z.string().min(1).optional(),
+  })
+  .strict()
+export type MemoryAgentFileSummary = z.infer<typeof memoryAgentFileSummarySchema>
 
 export const getMemoryAgentResponseSchema = z
   .object({
     settings: memoryAgentGlobalSettingsSchema,
     state: memoryAgentGlobalStateSchema,
-    recentRuns: z.array(memoryAgentRunSummarySchema),
+    pending: memoryAgentSignalSnapshotSchema,
+    recentItems: z.array(memoryAgentTimelineItemSchema),
   })
   .strict()
 export type GetMemoryAgentResponse = z.infer<typeof getMemoryAgentResponseSchema>
+
+export const listMemoryAgentRunsResponseSchema = z
+  .object({
+    items: z.array(memoryAgentTimelineItemSchema),
+    totalMatches: z.number().int().nonnegative(),
+    nextOffset: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+export type ListMemoryAgentRunsResponse = z.infer<typeof listMemoryAgentRunsResponseSchema>
+
+export const getMemoryAgentRunResponseSchema = z
+  .object({
+    run: memoryAgentRunDetailSchema,
+  })
+  .strict()
+export type GetMemoryAgentRunResponse = z.infer<typeof getMemoryAgentRunResponseSchema>
+
+export const listMemoryAgentFilesResponseSchema = z
+  .object({
+    files: z.array(memoryAgentFileSummarySchema),
+  })
+  .strict()
+export type ListMemoryAgentFilesResponse = z.infer<typeof listMemoryAgentFilesResponseSchema>
+
+export const memoryAgentFileContentQuerySchema = z
+  .object({
+    kind: memoryAgentFileKindSchema,
+    path: z.string().min(1),
+    scope: skillScopeSchema.optional(),
+  })
+  .strict()
+export type MemoryAgentFileContentQuery = z.infer<typeof memoryAgentFileContentQuerySchema>
+
+export const getMemoryAgentFileContentResponseSchema = z
+  .object({
+    file: memoryAgentFileSummarySchema,
+    content: z.string(),
+  })
+  .strict()
+export type GetMemoryAgentFileContentResponse = z.infer<typeof getMemoryAgentFileContentResponseSchema>
+
+export const buildGlobalSkillRequestSchema = z
+  .object({
+    request: z.string().min(1),
+  })
+  .strict()
+export type BuildGlobalSkillRequest = z.infer<typeof buildGlobalSkillRequestSchema>
+
+export const buildGlobalSkillResponseSchema = z
+  .object({
+    skill: skillSummarySchema,
+  })
+  .strict()
+export type BuildGlobalSkillResponse = z.infer<typeof buildGlobalSkillResponseSchema>
 
 export const updateMemoryAgentGlobalSettingsResponseSchema = z
   .object({
@@ -255,7 +371,8 @@ export type UpdateMemoryAgentGlobalSettingsResponse = z.infer<typeof updateMemor
 export const triggerMemoryAgentRunResponseSchema = z
   .object({
     state: memoryAgentGlobalStateSchema,
-    run: memoryAgentRunSummarySchema.optional(),
+    pending: memoryAgentSignalSnapshotSchema,
+    item: memoryAgentTimelineItemSchema.optional(),
     skippedReason: z.string().optional(),
   })
   .strict()

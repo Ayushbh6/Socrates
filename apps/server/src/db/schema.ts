@@ -720,6 +720,8 @@ export const memoryAgentGlobalState = sqliteTable("memory_agent_global_state", {
   id: text("id").primaryKey(),
   lastProcessedEventSequence: integer("last_processed_event_sequence").notNull(),
   lastRunAt: text("last_run_at"),
+  lastCheckedAt: text("last_checked_at"),
+  lastRealRunAt: text("last_real_run_at"),
   status: text("status").notNull(),
   activeJobId: text("active_job_id"),
   lastJobId: text("last_job_id"),
@@ -727,6 +729,29 @@ export const memoryAgentGlobalState = sqliteTable("memory_agent_global_state", {
   ...timestamps,
   metadataJson: text("metadata_json"),
 })
+
+export const memoryAgentChecks = sqliteTable(
+  "memory_agent_checks",
+  {
+    id: text("id").primaryKey(),
+    trigger: text("trigger").notNull(),
+    status: text("status").notNull(),
+    reason: text("reason").notNull(),
+    sequenceFrom: integer("sequence_from"),
+    sequenceTo: integer("sequence_to").notNull(),
+    turnCount: integer("turn_count").notNull(),
+    toolCalls: integer("tool_calls").notNull(),
+    fileChangeEvents: integer("file_change_events").notNull(),
+    distinctChangedFiles: integer("distinct_changed_files").notNull(),
+    totalTokens: integer("total_tokens").notNull(),
+    checkedAt: text("checked_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    checkedAtIdx: index("memory_agent_checks_checked_at_idx").on(table.checkedAt),
+    statusIdx: index("memory_agent_checks_status_idx").on(table.status),
+  }),
+)
 
 export const memoryAgentActions = sqliteTable(
   "memory_agent_actions",

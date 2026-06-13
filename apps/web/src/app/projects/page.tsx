@@ -9,7 +9,7 @@ import { formatUpdatedAt } from "@/lib/dates";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import type { ListProjectsResponse } from "@socrates/contracts";
 import Link from "next/link";
-import { Settings } from "lucide-react";
+import { Brain, Settings } from "lucide-react";
 import { useEffect, useState } from "react";
 
 export default function ProjectsPage() {
@@ -57,6 +57,11 @@ export default function ProjectsPage() {
           title={title}
           action={
             <div className="flex items-center gap-2">
+              <Button asChild variant="outline" size="icon" className="rounded-full bg-white">
+                <Link href="/memory" aria-label="Memory Center">
+                  <Brain className="size-4" />
+                </Link>
+              </Button>
               <Button asChild variant="outline" size="icon" className="rounded-full bg-white">
                 <Link href="/settings" aria-label="Settings">
                   <Settings className="size-4" />

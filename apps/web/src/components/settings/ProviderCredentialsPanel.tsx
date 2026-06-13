@@ -89,6 +89,10 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
   };
 
   const deleteCredential = async (providerId: ProviderId) => {
+    const confirmed = window.confirm(`Remove the saved ${labelFor(providerId)} API key from Socrates?`);
+    if (!confirmed) {
+      return;
+    }
     setIsBusy(true);
     setError(null);
     setMessage(null);
@@ -165,7 +169,15 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
                     {status?.configured ? `Configured from ${status.source}.` : "Not configured."}
                   </p>
                 </div>
-                <Button type="button" size="icon" variant="ghost" onClick={() => void deleteCredential(providerId)} disabled={isBusy}>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => void deleteCredential(providerId)}
+                  disabled={isBusy || !status?.configured}
+                  aria-label={`Remove saved ${labelFor(providerId)} API key`}
+                  title={`Remove saved ${labelFor(providerId)} API key`}
+                >
                   <Trash2 className="size-4" />
                 </Button>
               </div>
