@@ -171,7 +171,7 @@ export interface EmbeddingProvider {
 }
 
 export type ProviderThinkingConfig =
-  | { providerId: "openai"; effort: Exclude<ThinkingEffort, "minimal"> }
+  | { providerId: "openai"; effort: ThinkingEffort }
   | { providerId: "google"; effort: Extract<ThinkingEffort, "minimal" | "low" | "medium" | "high"> }
   | { providerId: "openrouter"; enabled: boolean }
 

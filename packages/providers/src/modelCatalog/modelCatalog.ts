@@ -13,6 +13,13 @@ const openAiNoneOption: ModelThinkingOption = {
   effort: "none",
 }
 
+const openAiLegacyGpt5MinimalOption: ModelThinkingOption = {
+  id: "minimal",
+  label: "Minimal",
+  enabled: true,
+  effort: "minimal",
+}
+
 const effortOption = (effort: Exclude<ModelThinkingOption["effort"], undefined>): ModelThinkingOption => ({
   id: effort,
   label: effort === "xhigh" ? "Extra High" : effort.charAt(0).toUpperCase() + effort.slice(1),
@@ -60,8 +67,8 @@ export const modelCatalog = [
     modelId: "gpt-5",
     label: "GPT-5",
     contextWindowTokens: 258000,
-    thinkingOptions: [openAiNoneOption, effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")],
-    defaultThinkingOptionId: "none",
+    thinkingOptions: [openAiLegacyGpt5MinimalOption, effortOption("low"), effortOption("medium"), effortOption("high")],
+    defaultThinkingOptionId: "minimal",
   }),
   makeModel({
     providerId: "google",

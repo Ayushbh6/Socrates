@@ -102,6 +102,54 @@ describe("AI SDK provider request shape", () => {
     expect(options.providerOptions?.openai?.promptCacheRetention).toBe("24h")
   })
 
+  it("shortens long OpenAI prompt cache keys to provider-safe stable values", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+    const longCacheKey = "project:proj_638aa7f40bd644e3b7db957a2fb923db:conversation:conv_61dd66756d684f18bc939ab9c56a8a5e"
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openai", "gpt-5.4-mini"),
+      sessionId: "sess_1",
+      cacheKey: longCacheKey,
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
+    const promptCacheKey = options.providerOptions?.openai?.promptCacheKey
+    expect(typeof promptCacheKey).toBe("string")
+    expect(promptCacheKey).not.toBe(longCacheKey)
+    expect((promptCacheKey as string).length).toBeLessThanOrEqual(64)
+    expect(promptCacheKey).toMatch(/^socrates_[a-f0-9]{48}$/)
+  })
+
+  it.each([
+    ["gpt-5", "none", "minimal"],
+    ["gpt-5", "xhigh", "high"],
+    ["gpt-5.4", "minimal", "low"],
+    ["gpt-5.4-mini", "none", "none"],
+    ["gpt-5.4-mini", "xhigh", "xhigh"],
+  ] as const)("normalizes OpenAI reasoning effort %s %s -> %s", async (modelId, requestedEffort, expectedEffort) => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openai", modelId),
+      runtimeConfig: {
+        ...runtimeConfig("openai", modelId),
+        thinkingEnabled: requestedEffort !== "none",
+        thinkingEffort: requestedEffort,
+      },
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
+    expect(options.providerOptions?.openai?.reasoningEffort).toBe(expectedEffort)
+  })
+
   it("leaves Gemini on implicit caching and does not create explicit cache resources", async () => {
     const provider = new AiSdkProvider({
       getApiKey: () => "test-key",

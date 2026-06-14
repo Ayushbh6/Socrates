@@ -36,6 +36,19 @@ describe("model catalog", () => {
     expect(pro?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high"])
   })
 
+  it("matches OpenAI GPT reasoning effort support by model", () => {
+    const gpt54Mini = modelCatalog.find((model) => model.modelId === "gpt-5.4-mini")
+    const gpt54 = modelCatalog.find((model) => model.modelId === "gpt-5.4")
+    const gpt5 = modelCatalog.find((model) => model.modelId === "gpt-5")
+
+    expect(gpt54Mini?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
+    expect(gpt54Mini?.defaultThinkingOptionId).toBe("none")
+    expect(gpt54?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
+    expect(gpt54?.defaultThinkingOptionId).toBe("none")
+    expect(gpt5?.thinkingOptions.map((option) => option.id)).toEqual(["minimal", "low", "medium", "high"])
+    expect(gpt5?.defaultThinkingOptionId).toBe("minimal")
+  })
+
   it("uses Google's Gemini 3.5 Flash default thinking level", () => {
     const flash = modelCatalog.find((model) => model.modelId === "gemini-3.5-flash")
     expect(flash?.defaultThinkingOptionId).toBe("medium")

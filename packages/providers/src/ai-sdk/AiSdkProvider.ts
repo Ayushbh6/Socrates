@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
@@ -821,8 +822,8 @@ export const mapUsage = (
 }
 
 const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => {
-  const effort = request.runtimeConfig.thinkingEffort ?? "none"
-  const stableCacheKey = stablePromptCacheKey(request)
+  const effort = normalizeOpenAiReasoningEffort(request.modelId, request.runtimeConfig.thinkingEffort ?? "none")
+  const stableCacheKey = providerSafePromptCacheKey(request)
   const openaiOptions: Record<string, JsonValue> = {
     reasoningEffort: effort,
     ...(stableCacheKey ? { promptCacheKey: stableCacheKey } : {}),
@@ -834,6 +835,22 @@ const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => 
   }
 
   return { openai: openaiOptions }
+}
+
+const normalizeOpenAiReasoningEffort = (modelId: string, effort: string): string => {
+  const normalizedModelId = modelId.trim().toLowerCase()
+  if (/^gpt-5(?:-|$)/.test(normalizedModelId)) {
+    if (effort === "none") {
+      return "minimal"
+    }
+    if (effort === "xhigh") {
+      return "high"
+    }
+  }
+  if (normalizedModelId.startsWith("gpt-5.4") && effort === "minimal") {
+    return "low"
+  }
+  return effort
 }
 
 const supportsOpenAiExtendedPromptCacheRetention = (modelId: string): boolean => {
@@ -865,7 +882,7 @@ export const createOpenRouterProviderOptions = (request: ModelRequest): Provider
     requiresTools: (request.tools?.length ?? 0) > 0,
   })
   const shouldSendProviderRouting = providerRouting && Object.keys(providerRouting).length > 0
-  const stableSessionId = stablePromptCacheKey(request)
+  const stableSessionId = providerSafePromptCacheKey(request)
   return {
     openrouter: {
       usage: { include: true },
@@ -880,6 +897,15 @@ export const createOpenRouterProviderOptions = (request: ModelRequest): Provider
 }
 
 const stablePromptCacheKey = (request: ModelRequest): string | undefined => request.cacheKey ?? request.sessionId
+
+const providerSafePromptCacheKey = (request: ModelRequest): string | undefined => {
+  const key = stablePromptCacheKey(request)
+  if (!key || key.length <= 64) {
+    return key
+  }
+  const digest = createHash("sha256").update(key).digest("hex").slice(0, 48)
+  return `socrates_${digest}`
+}
 
 const responseMetadataForStorage = (part: unknown): unknown => {
   if (!part || typeof part !== "object") {
