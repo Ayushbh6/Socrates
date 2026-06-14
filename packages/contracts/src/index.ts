@@ -1,4 +1,5 @@
 export * from "./api"
+export * from "./contextCompression"
 export * from "./entities"
 export * from "./http"
 export * from "./models"

@@ -6,6 +6,7 @@ import {
   approvalResolvedEventSchema,
   chatConversationSubscribeCommandSchema,
   chatConversationUnsubscribeCommandSchema,
+  chatCompactionSchema,
   chatMessageSendCommandSchema,
   chatTurnCancelCommandSchema,
   checkProjectEmbeddingsRequestSchema,
@@ -64,6 +65,7 @@ import {
   messageCompletedEventSchema,
   messageSchema,
   memoryAgentCompletedEventSchema,
+  memoryCompactionSchema,
   memoryAgentCheckedEventSchema,
   memoryAgentFailedEventSchema,
   memoryAgentStartedEventSchema,
@@ -71,6 +73,7 @@ import {
   memorySoulConfirmationRequestedEventSchema,
   memorySoulConfirmationResolvedEventSchema,
   memorySoulUpdatedEventSchema,
+  anchorRepairSchema,
   notificationCreatedEventSchema,
   notificationReadEventSchema,
   patchProjectRequestSchema,
@@ -881,7 +884,7 @@ describe("websocket server event contracts", () => {
         snapshotId: "ctxcmp_1",
         reason: "threshold",
         contextUsedTokensEstimate: 161000,
-        targetTokens: 120000,
+        targetTokens: 170000,
       }),
     ),
     contextCompactionCompletedEventSchema.safeParse(
@@ -1105,6 +1108,51 @@ describe("websocket server event contracts", () => {
   it("rejects unknown event types and malformed payloads", () => {
     expect(serverEventSchema.safeParse(envelope("planner.future", {})).success).toBe(false)
     expect(serverEventSchema.safeParse(envelope("tool.call.started", { toolCallId: "tcall_1" })).success).toBe(false)
+  })
+})
+
+describe("context compaction contracts", () => {
+  it("validates strict section schemas and turn-numbered anchors", () => {
+    const chat = {
+      schemaVersion: 1,
+      goal: "Continue implementation.",
+      constraints: ["Follow repo rules."],
+      done: ["Added schemas."],
+      inProgress: [],
+      blocked: [],
+      decisions: ["Use structured output."],
+      nextSteps: ["Run tests."],
+      criticalContext: [],
+      relevantFiles: ["packages/core/src/context/contextCompression.ts"],
+      toolState: [],
+      anchors: ["Turn 12: inspect the compressor decision."],
+    }
+    const memory = {
+      schemaVersion: 1,
+      goal: "Update global memory.",
+      manifestScope: ["Included turns 10-12."],
+      investigated: ["Checked manifest entries."],
+      changed: [],
+      skipped: [],
+      blocked: [],
+      decisions: [],
+      nextSteps: [],
+      criticalContext: [],
+      toolState: [],
+      anchors: ["Turn 10: inspect memory evidence."],
+    }
+
+    expect(chatCompactionSchema.safeParse(chat).success).toBe(true)
+    expect(memoryCompactionSchema.safeParse(memory).success).toBe(true)
+    expect(anchorRepairSchema.safeParse({ anchors: ["Turn 3: inspect exact source."] }).success).toBe(true)
+    expect(chatCompactionSchema.safeParse({ ...chat, anchors: ["inspect without turn number"] }).success).toBe(false)
+    expect(anchorRepairSchema.safeParse({ anchors: ["turn 3: wrong prefix"] }).success).toBe(false)
+    expect(
+      chatCompactionSchema.safeParse({
+        ...chat,
+        decisions: [{ decision: "old shape", handles: [] }],
+      }).success,
+    ).toBe(false)
   })
 })
 

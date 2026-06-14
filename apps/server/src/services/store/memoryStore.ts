@@ -440,7 +440,7 @@ export class MemoryStore extends StoreBase {
   async runGlobalMemoryAgent(input: GlobalMemoryAgentRunInput): Promise<TriggerMemoryAgentRunResponse> {
     this.ensureGlobalKnowledge()
     if (this.globalMemoryRunActive) {
-      return { state: input.state, skippedReason: "Memory agent is already running." }
+      return { state: input.state, pending: this.getMemoryAgentPending(input.state), skippedReason: "Memory agent is already running." }
     }
     this.globalMemoryRunActive = true
     try {
@@ -527,11 +527,11 @@ export class MemoryStore extends StoreBase {
         absolutePath: skill.skillFile,
         updatedAt: skill.updatedAt,
       }))
-    return [...soulFiles, ...toolDocs, ...skills].sort((left, right) => `${left.kind}:${left.scope ?? ""}:${left.name}`.localeCompare(`${right.kind}:${right.scope ?? ""}:${right.name}`))
+    return [...soulFiles, ...toolDocs, ...skills].sort((left, right) => `${left.kind}:${memoryFileScope(left)}:${left.name}`.localeCompare(`${right.kind}:${memoryFileScope(right)}:${right.name}`))
   }
 
   readMemoryAgentFileContent(input: MemoryAgentFileContentQuery): { file: MemoryAgentFileSummary; content: string } {
-    const file = this.listMemoryAgentFiles().find((candidate) => candidate.kind === input.kind && candidate.path === input.path && (input.scope === undefined || candidate.scope === input.scope))
+    const file = this.listMemoryAgentFiles().find((candidate) => candidate.kind === input.kind && candidate.path === input.path && (input.scope === undefined || memoryFileScope(candidate) === input.scope))
     if (!file) {
       throw new SocratesError("memory_agent_file_not_found", "Memory agent file was not found.", { recoverable: true, details: input })
     }
@@ -698,7 +698,7 @@ export class MemoryStore extends StoreBase {
     }
     const latest = entries.entries[entries.entries.length - 1]
     const jobId = createId("memjob")
-    const evidence = capByEstimatedTokens(entries.manifest, MEMORY_AGENT_TOKEN_CAP)
+    const evidence = entries.manifest
     const evidenceTokensEstimate = estimateTextTokens(evidence).inputTokens
     const startedAt = nowIso()
     const metadataBase = {
@@ -760,9 +760,9 @@ export class MemoryStore extends StoreBase {
           editFiles: async (toolInput) =>
             this.runEditFilesTool(toolInput, {
               jobId,
-              turnId: latest?.turnId,
               modelSettings,
               allowSkillWrites: false,
+              ...(latest?.turnId ? { turnId: latest.turnId } : {}),
             }),
         },
         onEvent: (event) => {
@@ -856,37 +856,62 @@ export class MemoryStore extends StoreBase {
           LIMIT ?`,
       )
       .all(lastProcessedEventSequence, GLOBAL_MEMORY_AGENT_MAX_TURNS) as GlobalTurnManifestRow[]
-    const entries = rows.map((row) => ({
-      ...row,
-      counts: this.countTurnArtifacts(row.turnId),
-    }))
+    const entries: GlobalTurnManifestEntry[] = []
+    const renderedEntries: string[] = []
+    let packedTokensEstimate = estimateTextTokens(this.renderGlobalManifest(lastProcessedEventSequence, [], [])).inputTokens
+    for (const row of rows) {
+      if (entries.length >= GLOBAL_MEMORY_AGENT_MAX_TURNS) {
+        break
+      }
+      const entry: GlobalTurnManifestEntry = {
+        ...row,
+        counts: this.countTurnArtifacts(row.turnId),
+      }
+      const renderedEntry = this.renderGlobalManifestEntry(entry, entries.length + 1)
+      const entryTokensEstimate = estimateTextTokens(`\n${renderedEntry}`).inputTokens
+      if (packedTokensEstimate + entryTokensEstimate > MEMORY_AGENT_TOKEN_CAP) {
+        break
+      }
+      entries.push(entry)
+      renderedEntries.push(renderedEntry)
+      packedTokensEstimate += entryTokensEstimate
+    }
     const sequenceFrom = entries[0]?.sequence ?? lastProcessedEventSequence + 1
     const sequenceTo = entries[entries.length - 1]?.sequence ?? lastProcessedEventSequence
-    const manifest = [
+    const manifest = this.renderGlobalManifest(lastProcessedEventSequence, entries, renderedEntries)
+    return { entries, manifest, sequenceFrom, sequenceTo }
+  }
+
+  private renderGlobalManifest(lastProcessedEventSequence: number, entries: GlobalTurnManifestEntry[], renderedEntries: string[]): string {
+    const sequenceFrom = entries[0]?.sequence ?? lastProcessedEventSequence + 1
+    const sequenceTo = entries[entries.length - 1]?.sequence ?? lastProcessedEventSequence
+    return [
       "# Global Memory Agent Manifest",
       `Previous watermark: ${lastProcessedEventSequence}`,
-      `Candidate turn count: ${entries.length}`,
+      `Included turn count: ${entries.length}`,
+      `Packing limits: maxTurns=${GLOBAL_MEMORY_AGENT_MAX_TURNS}, maxEstimatedTokens=${MEMORY_AGENT_TOKEN_CAP}`,
       `Sequence range: ${sequenceFrom}-${sequenceTo}`,
       "",
       "Use trace_retrieve for message/tool evidence. This manifest intentionally omits message bodies.",
       "",
-      ...entries.map((entry, index) =>
-        [
-          `## ${index + 1}. event sequence ${entry.sequence}`,
-          `project: ${entry.projectName} (${entry.projectId})`,
-          `conversation: ${entry.conversationTitle ?? "Untitled"} (${entry.conversationId})`,
-          `turnId: ${entry.turnId}`,
-          `sessionId: ${entry.sessionId}`,
-          `completedEventAt: ${entry.createdAt}`,
-          entry.workspacePath ? `workspace: ${entry.workspacePath}` : undefined,
-          `counts: messages=${entry.counts.messages}, toolCalls=${entry.counts.toolCalls}, failedToolCalls=${entry.counts.failedToolCalls}, fileOps=${entry.counts.fileOperations}, patches=${entry.counts.patches}, shell=${entry.counts.shellCommands}, errors=${entry.counts.errors}`,
-          `trace_retrieve: inspect with turnId="${entry.turnId}" or search with projectId="${entry.projectId}" and conversationId="${entry.conversationId}"`,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      ),
+      ...renderedEntries,
     ].join("\n")
-    return { entries, manifest, sequenceFrom, sequenceTo }
+  }
+
+  private renderGlobalManifestEntry(entry: GlobalTurnManifestEntry, index: number): string {
+    return [
+      `## ${index}. event sequence ${entry.sequence}`,
+      `project: ${entry.projectName} (${entry.projectId})`,
+      `conversation: ${entry.conversationTitle ?? "Untitled"} (${entry.conversationId})`,
+      `turnId: ${entry.turnId}`,
+      `sessionId: ${entry.sessionId}`,
+      `completedEventAt: ${entry.createdAt}`,
+      entry.workspacePath ? `workspace: ${entry.workspacePath}` : undefined,
+      `counts: messages=${entry.counts.messages}, toolCalls=${entry.counts.toolCalls}, failedToolCalls=${entry.counts.failedToolCalls}, fileOps=${entry.counts.fileOperations}, patches=${entry.counts.patches}, shell=${entry.counts.shellCommands}, errors=${entry.counts.errors}`,
+      `trace_retrieve: inspect with turnId="${entry.turnId}" or search with projectId="${entry.projectId}" and conversationId="${entry.conversationId}"`,
+    ]
+      .filter(Boolean)
+      .join("\n")
   }
 
   private countTurnArtifacts(turnId: string): GlobalTurnManifestEntry["counts"] {
@@ -1043,12 +1068,7 @@ export class MemoryStore extends StoreBase {
     }
     if (resolved.targetKind === "soul") {
       const result = await this.applySoulPatch(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId ? {
-        projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
-        conversationId: "",
-        sessionId: "",
         turnId: context.turnId,
-        text: "",
-        tokens: 0,
       } : undefined, patch, context.modelSettings)
       return {
         target: input.target,
@@ -1943,15 +1963,6 @@ const usageFromMetadata = (metadata: Record<string, unknown>): { totalTokens?: n
   }
 }
 
-const firstMarkdownLine = (content: string): string => {
-  const line = content
-    .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")
-    .split(/\r?\n/)
-    .map((candidate) => candidate.trim().replace(/^#{1,6}\s*/, "").replace(/^[-*]\s+/, ""))
-    .find((candidate) => candidate.length > 0)
-  return line?.slice(0, 220) ?? ""
-}
-
 const slimMemoryToolEvent = (event: { type: string; toolName?: unknown; summary?: unknown; error?: unknown; argsPreview?: unknown; resultPreview?: unknown }): Record<string, unknown> => ({
   type: event.type,
   ...(typeof event.toolName === "string" ? { toolName: event.toolName } : {}),
@@ -1960,6 +1971,8 @@ const slimMemoryToolEvent = (event: { type: string; toolName?: unknown; summary?
   ...(typeof event.resultPreview === "string" ? { resultPreview: event.resultPreview.slice(0, 500) } : {}),
   ...(event.error && typeof event.error === "object" && "message" in event.error ? { error: String((event.error as { message?: unknown }).message ?? "") } : {}),
 })
+
+const memoryFileScope = (file: MemoryAgentFileSummary): SkillScope | "" => ("scope" in file && file.scope ? file.scope : "")
 
 const safeJoin = (root: string, relativePath: string): string => {
   const resolved = path.resolve(root, relativePath)
@@ -2004,10 +2017,3 @@ const truncationFor = (text: string, charLimit: number): TruncationMetadata => (
 })
 
 const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1
-
-const capByEstimatedTokens = (text: string, tokenLimit: number): string => {
-  if (estimateTextTokens(text).inputTokens <= tokenLimit) {
-    return text
-  }
-  return text.slice(0, tokenLimit * 4)
-}

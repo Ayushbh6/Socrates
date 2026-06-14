@@ -239,7 +239,11 @@ export const registerHttpRoutes = async (
 
   app.get("/api/memory-agent/runs", async (request, reply) => {
     try {
-      const query = parseBody(memoryAgentRunsQuerySchema, request.query)
+      const parsedQuery = parseBody(memoryAgentRunsQuerySchema, request.query)
+      const query = {
+        ...(parsedQuery.limit !== undefined ? { limit: parsedQuery.limit } : {}),
+        ...(parsedQuery.offset !== undefined ? { offset: parsedQuery.offset } : {}),
+      }
       return ok(listMemoryAgentRunsResponseSchema.parse(store.listMemoryAgentRuns(query)))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)

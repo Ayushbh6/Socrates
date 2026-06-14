@@ -137,7 +137,7 @@ export class SocratesStore {
   private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
-  private memoryAgentScheduler?: ReturnType<typeof setInterval>
+  private memoryAgentScheduler: ReturnType<typeof setInterval> | undefined
 
   constructor(
     private readonly handle: DatabaseHandle,

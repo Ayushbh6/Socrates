@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { readToolInputSchema, type ModelToolDefinition, type ProviderId, type RuntimeConfig } from "@socrates/contracts"
+import { chatCompactionSchema, readToolInputSchema, type ModelToolDefinition, type ProviderId, type RuntimeConfig } from "@socrates/contracts"
 import { AiSdkProvider } from "../ai-sdk/AiSdkProvider"
 import type { ModelEvent, ModelRequest } from "../types"
 
 const aiMocks = vi.hoisted(() => ({
+  generateText: vi.fn(),
+  outputObject: vi.fn((input: unknown) => ({ type: "mock-output-object", input })),
   streamText: vi.fn(),
   smoothStream: vi.fn(() => ({ transform: "smooth" })),
 }))
@@ -12,6 +14,11 @@ vi.mock("ai", async (importOriginal) => {
   const actual = await importOriginal<typeof import("ai")>()
   return {
     ...actual,
+    generateText: aiMocks.generateText,
+    Output: {
+      ...actual.Output,
+      object: aiMocks.outputObject,
+    },
     streamText: aiMocks.streamText,
     smoothStream: aiMocks.smoothStream,
   }
@@ -19,8 +26,22 @@ vi.mock("ai", async (importOriginal) => {
 
 describe("AI SDK provider request shape", () => {
   beforeEach(() => {
+    aiMocks.generateText.mockReset()
+    aiMocks.outputObject.mockClear()
     aiMocks.streamText.mockReset()
     aiMocks.smoothStream.mockClear()
+    aiMocks.generateText.mockResolvedValue({
+      output: validStructuredOutput(),
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        inputTokenDetails: {},
+        outputTokenDetails: {},
+      },
+      response: { id: "gen_structured_1" },
+      warnings: [],
+    })
     aiMocks.streamText.mockReturnValue({
       fullStream: (async function* () {
         yield { type: "finish", finishReason: "stop", totalUsage: undefined }
@@ -253,6 +274,36 @@ describe("AI SDK provider request shape", () => {
       },
     })
   })
+
+  it("uses generateText with Output.object for structured generation", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    const result = await provider.generateStructured?.({
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      system: "Compress context.",
+      messages: [{ role: "user", content: "Old turns" }],
+      runtimeConfig: runtimeConfig("openai", "gpt-5.4-mini"),
+      schema: chatCompactionSchema,
+    })
+
+    expect(aiMocks.outputObject).toHaveBeenCalledWith({ schema: chatCompactionSchema })
+    expect(aiMocks.generateText).toHaveBeenCalledTimes(1)
+    const options = aiMocks.generateText.mock.calls[0]?.[0] as {
+      system?: string
+      messages?: unknown[]
+      output?: unknown
+      tools?: unknown
+    }
+    expect(options.system).toBe("Compress context.")
+    expect(options.messages).toEqual([{ role: "user", content: "Old turns" }])
+    expect(options.output).toEqual({ type: "mock-output-object", input: { schema: chatCompactionSchema } })
+    expect(options).not.toHaveProperty("tools")
+    expect(result?.output).toEqual(validStructuredOutput())
+    expect(result?.usage).toMatchObject({ inputTokens: 100, outputTokens: 20, totalTokens: 120 })
+  })
 })
 
 const readTool: ModelToolDefinition = {
@@ -285,4 +336,19 @@ const runtimeConfig = (providerId: ProviderId, modelId: string): RuntimeConfig =
   thinkingEffort: "none",
   approvalMode: "manual",
   sandboxMode: "workspace_write",
+})
+
+const validStructuredOutput = () => ({
+  schemaVersion: 1 as const,
+  goal: "Compress context.",
+  constraints: [],
+  done: ["Structured output used."],
+  inProgress: [],
+  blocked: [],
+  decisions: [],
+  nextSteps: [],
+  criticalContext: [],
+  relevantFiles: [],
+  toolState: [],
+  anchors: ["Turn 1: inspect structured output source."],
 })

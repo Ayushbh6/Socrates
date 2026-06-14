@@ -6,7 +6,8 @@ import {
   prepareContextForModelCall,
   type ContextCompactionSummary,
 } from "../index"
-import type { ModelEvent, ModelProvider, ModelRequest } from "@socrates/providers"
+import type { ChatCompaction } from "@socrates/contracts"
+import type { ModelProvider, ModelRequest, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
 
 const runtimeConfig = {
   providerId: "openai" as const,
@@ -18,17 +19,17 @@ const runtimeConfig = {
 }
 
 describe("context compression", () => {
-  it("uses the raised default threshold constants", () => {
-    expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toMatchObject({
-      precomputeTokens: 145_000,
-      synchronousTokens: 160_000,
-      targetTokens: 120_000,
-      hardCapTokens: 180_000,
+  it("uses one v1 trigger and tail/tool pressure defaults", () => {
+    expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toEqual({
+      triggerTokens: 170_000,
+      recentTailTargetTokens: 50_000,
+      currentTurnToolTailTargetTokens: 50_000,
+      currentTurnToolResultFloor: 5,
     })
   })
 
-  it("does not compact below the default synchronous threshold", async () => {
-    const provider = providerWithCounts([159_999])
+  it("does not compact below the trigger", async () => {
+    const provider = structuredProvider({ counts: [169_999] })
     const messages = [{ role: "user" as const, content: "small", id: "msg_1", turnId: "turn_1" }]
 
     const prepared = await prepareContextForModelCall({
@@ -42,14 +43,15 @@ describe("context compression", () => {
     })
 
     expect(prepared.messages).toEqual(messages)
-    expect(prepared.estimatedTokens).toBe(159_999)
     expect(prepared.compactionEvents).toEqual([])
+    expect(provider.structuredRequests).toHaveLength(0)
   })
 
-  it("compacts at the default synchronous threshold and passes the raised packed target", async () => {
-    const requests: ModelRequest[] = []
+  it("compacts at 170k through structured generation instead of streamed JSON parsing", async () => {
+    const provider = structuredProvider({ counts: [170_000, 60_000], outputs: [validChat({ anchors: ["Turn 1: inspect old implementation decision."] })] })
     const startedTargets: number[] = []
-    const provider = providerWithCounts([160_000, 119_000], requests)
+    const streamEvents: string[] = []
+    provider.onStream = () => streamEvents.push("stream")
 
     const prepared = await prepareContextForModelCall({
       provider,
@@ -57,53 +59,39 @@ describe("context compression", () => {
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages: [{ role: "user", content: "large", id: "msg_1", turnId: "turn_1" }],
+      messages: threeTurnMessages(),
       compression: {
         enabled: true,
+        thresholds: { triggerTokens: 170_000, recentTailTargetTokens: 1 },
         startSnapshot: (input) => {
           startedTargets.push(input.targetTokens)
         },
       },
     })
 
+    expect(streamEvents).toEqual([])
+    expect(provider.structuredRequests).toHaveLength(1)
+    expect(provider.structuredRequests[0]).toMatchObject({ providerId: "openrouter", modelId: "deepseek/deepseek-v4-flash" })
     expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
       "context.compaction.started",
       "context.compaction.completed",
     ])
-    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 120_000 })
-    expect(prepared.estimatedTokens).toBe(119_000)
-    expect(startedTargets).toEqual([120_000])
-    const compressorContent = requests[0]?.messages[0]?.content
-    expect(JSON.parse(typeof compressorContent === "string" ? compressorContent : "")).toMatchObject({ targetTokens: 120_000 })
+    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 170_000 })
+    expect(startedTargets).toEqual([170_000])
+    expect(String(prepared.messages[0]?.content)).toContain("<socrates_internal_context_compaction>")
+    expect(String(prepared.messages[0]?.content)).toContain("# Anchors")
+    expect(prepared.estimatedTokens).toBe(60_000)
   })
 
-  it("precomputes at the default background threshold", async () => {
-    const provider = providerWithCounts([145_000, 120_000])
-    const startedTargets: number[] = []
-
-    const events = await precomputeContextSnapshot({
-      provider,
-      providerId: "openai",
-      modelId: "gpt-5.4-mini",
-      runtimeConfig,
-      system: "system",
-      messages: [{ role: "user", content: "large", id: "msg_1", turnId: "turn_1" }],
-      compression: {
-        enabled: true,
-        startSnapshot: (input) => {
-          startedTargets.push(input.targetTokens)
-        },
-      },
-    })
-
-    expect(events.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
-    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 120_000 })
-    expect(startedTargets).toEqual([120_000])
-  })
-
-  it("does not compact below the synchronous threshold", async () => {
-    const provider = providerFrom([{ type: "model.completed" }])
-    const messages = [{ role: "user" as const, content: "small", id: "msg_1", turnId: "turn_1" }]
+  it("summarizes only the old head and keeps raw recent tail by whole Q&A turn", async () => {
+    const provider = structuredProvider({ counts: [10, 5], outputs: [validChat()] })
+    const messages = [
+      { role: "user", content: "head user " + "x".repeat(5000), id: "msg_hu", turnId: "turn_1" },
+      { role: "assistant", content: "head assistant", id: "msg_ha", turnId: "turn_1" },
+      { role: "user", content: "tail user", id: "msg_tu", turnId: "turn_2" },
+      { role: "assistant", content: "tail assistant", id: "msg_ta", turnId: "turn_2" },
+      { role: "user", content: "active user", id: "msg_active", turnId: "turn_3" },
+    ] as const
 
     const prepared = await prepareContextForModelCall({
       provider,
@@ -111,55 +99,70 @@ describe("context compression", () => {
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages,
+      messages: [...messages],
       compression: {
         enabled: true,
-        thresholds: { synchronousTokens: 10_000 },
+        thresholds: { triggerTokens: 10, recentTailTargetTokens: 500 },
       },
     })
 
-    expect(prepared.messages).toEqual(messages)
-    expect(prepared.compactionEvents).toEqual([])
+    const compressorInput = String(provider.structuredRequests[0]?.messages[0]?.content)
+    expect(compressorInput).toContain("head user")
+    expect(compressorInput).not.toContain("tail user")
+    expect(prepared.messages).toEqual([
+      expect.objectContaining({ role: "developer" }),
+      { role: "user", content: "tail user", id: "msg_tu", turnId: "turn_2" },
+      { role: "assistant", content: "tail assistant", id: "msg_ta", turnId: "turn_2" },
+      { role: "user", content: "active user", id: "msg_active", turnId: "turn_3" },
+    ])
   })
 
-  it("compacts over-threshold history into a hidden developer block while preserving recent typed messages", async () => {
-    const requests: ModelRequest[] = []
-    const provider: ModelProvider = {
-      countTokens: fakeCountTokens,
-      async *stream(request) {
-        requests.push(request)
-        yield {
-          type: "model.answer.delta",
-          text: JSON.stringify({
-            goals: ["finish contextual compression"],
-            currentTaskState: { status: "testing" },
-            decisions: ["Keep recent messages as real messages."],
-            protectedAnchors: [{ messageId: "msg_old" }],
-            filesAndArtifacts: [],
-            failuresAndBlockers: [],
-            openTasks: ["Run typecheck."],
-            sourceHandles: [{ messageId: "msg_old" }, { turnId: "turn_old" }],
-          }),
-        }
-        yield { type: "model.completed", usage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 } }
+  it("carries the previous validated summary forward exactly once", async () => {
+    const previous = "# Goal\nPrevious compacted context"
+    const provider = structuredProvider({ counts: [10, 5], outputs: [validChat()] })
+
+    await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: {
+        enabled: true,
+        thresholds: { triggerTokens: 10, recentTailTargetTokens: 1 },
+        getLatestSnapshot: () => ({
+          snapshotId: "ctxcmp_prev",
+          summary: validChat({ goal: "Previous compacted context" }),
+          renderedSummary: previous,
+          sourceHandles: [],
+          outputTokensEstimate: 10,
+        }),
       },
-    }
+    })
+
+    const compressorInput = String(provider.structuredRequests[0]?.messages[0]?.content)
+    expect(countOccurrences(compressorInput, previous)).toBe(1)
+  })
+
+  it("repairs only invalid anchors when the rest of the object validates", async () => {
+    const badAnchors = validChat({ anchors: ["inspect turn one without prefix"] })
+    const provider = structuredProvider({
+      counts: [10, 5],
+      outputs: [badAnchors, { anchors: ["Turn 1: inspect the repaired anchor."] }],
+    })
     const completed: ContextCompactionSummary[] = []
 
-    const prepared = await prepareContextForModelCall({
+    await prepareContextForModelCall({
       provider,
       providerId: "openai",
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages: [
-        { role: "user", content: "old ".repeat(400), id: "msg_old", turnId: "turn_old" },
-        { role: "assistant", content: "recent assistant", id: "msg_recent_a", turnId: "turn_recent" },
-        { role: "user", content: "recent user", id: "msg_recent_u", turnId: "turn_recent" },
-      ],
+      messages: threeTurnMessages(),
       compression: {
         enabled: true,
-        thresholds: { synchronousTokens: 10, hardCapTokens: 10_000, recentMessageCount: 2 },
+        thresholds: { triggerTokens: 10, recentTailTargetTokens: 1 },
         completeSnapshot: (input) => {
           completed.push({
             snapshotId: input.snapshotId,
@@ -172,56 +175,24 @@ describe("context compression", () => {
       },
     })
 
-    expect(requests[0]?.providerId).toBe("openrouter")
-    expect(requests[0]?.modelId).toBe("deepseek/deepseek-v4-flash")
-    expect(requests[0]?.runtimeConfig).toMatchObject({ thinkingEnabled: false, thinkingEffort: "none" })
-    expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
-      "context.compaction.started",
-      "context.compaction.completed",
-    ])
-    expect(prepared.messages[0]).toMatchObject({ role: "developer" })
-    expect(String(prepared.messages[0]?.content)).toContain("context_compaction_summary")
-    expect(prepared.messages.slice(1)).toEqual([
-      { role: "assistant", content: "recent assistant", id: "msg_recent_a", turnId: "turn_recent" },
-      { role: "user", content: "recent user", id: "msg_recent_u", turnId: "turn_recent" },
-    ])
-    expect(completed[0]?.sourceHandles).toEqual([{ messageId: "msg_old" }, { turnId: "turn_old" }])
+    expect(provider.structuredRequests).toHaveLength(2)
+    expect(String(provider.structuredRequests[1]?.system)).toContain("repair only")
+    expect(completed[0]?.summary.goal).toBe(badAnchors.goal)
+    expect(completed[0]?.summary.anchors).toEqual(["Turn 1: inspect the repaired anchor."])
   })
 
-  it("omits image bytes from compressor input while keeping image metadata", () => {
-    const content = buildCompressorUserMessageContent({
-      messages: [
-        {
-          role: "user",
-          id: "msg_image",
-          turnId: "turn_image",
-          content: [
-            { type: "text", text: "What do you see?" },
-            { type: "image", mediaType: "image/png", fileName: "screenshot.png", data: "a".repeat(1_000_000) },
-          ],
-        },
+  it("never activates malformed structured output", async () => {
+    const provider = structuredProvider({
+      counts: [10],
+      outputs: [
+        { decisions: [{ decision: "bad", handles: [] }] },
+        { decisions: [{ decision: "still bad", handles: [] }] },
+        { decisions: [{ decision: "fallback bad", handles: [] }] },
+        { decisions: [{ decision: "second fallback bad", handles: [] }] },
       ],
-      thresholds: { targetTokens: 120_000, hardCapTokens: 180_000 },
     })
-
-    expect(content).toContain("screenshot.png")
-    expect(content).toContain("image bytes omitted from compression input")
-    expect(content).toContain("encodedLength=1000000")
-    expect(content).not.toContain("a".repeat(500))
-  })
-
-  it("reports compressor failures as lifecycle events", async () => {
-    const failedSnapshots: string[] = []
-    const provider = providerFrom([
-      {
-        type: "model.failed",
-        error: new Error("compressor unavailable"),
-      },
-      {
-        type: "model.failed",
-        error: new Error("fallback unavailable"),
-      },
-    ])
+    const completed: string[] = []
+    const failed: string[] = []
 
     const prepared = await prepareContextForModelCall({
       provider,
@@ -229,148 +200,81 @@ describe("context compression", () => {
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages: [{ role: "user", content: "large ".repeat(400), id: "msg_1", turnId: "turn_1" }],
+      messages: threeTurnMessages(),
       compression: {
         enabled: true,
-        thresholds: { synchronousTokens: 10 },
+        thresholds: { triggerTokens: 10, recentTailTargetTokens: 1 },
+        completeSnapshot: (input) => {
+          completed.push(input.snapshotId)
+        },
         failSnapshot: (input) => {
-          failedSnapshots.push(input.snapshotId)
+          failed.push(input.snapshotId)
         },
       },
     })
 
+    expect(provider.structuredRequests.map((request) => `${request.providerId}:${request.modelId}`)).toEqual([
+      "openrouter:deepseek/deepseek-v4-flash",
+      "openrouter:deepseek/deepseek-v4-flash",
+      "openrouter:xiaomi/mimo-v2.5-pro",
+      "openrouter:z-ai/glm-5.1",
+    ])
+    expect(completed).toEqual([])
+    expect(failed).toEqual([expect.stringMatching(/^ctxcmp_/)])
     expect(prepared.compactionEvents.map((event) => event.type)).toEqual(["context.compaction.failed"])
-    expect(failedSnapshots).toEqual([expect.stringMatching(/^ctxcmp_/)])
-    expect(prepared.messages[0]).toMatchObject({ role: "user", id: "msg_1" })
   })
 
-  it("uses injected provider token counts for thresholds instead of character length", async () => {
-    const provider: ModelProvider = {
-      countTokens: async (request) => ({
-        providerId: request.providerId,
-        modelId: request.modelId,
-        inputTokens: 20,
-        baseTokens: 20,
-        method: "local_tiktoken",
-        safetyMarginPercent: 0,
-      }),
-      async *stream() {
-        yield {
-          type: "model.answer.delta",
-          text: JSON.stringify({
-            goals: ["count tokens"],
-            currentTaskState: {},
-            decisions: [],
-            protectedAnchors: [],
-            filesAndArtifacts: [],
-            failuresAndBlockers: [],
-            openTasks: [],
-            sourceHandles: [{ messageId: "msg_1" }],
-          }),
-        }
-        yield { type: "model.completed" }
-      },
-    }
-
-    const prepared = await prepareContextForModelCall({
-      provider,
-      providerId: "openai",
-      modelId: "gpt-5.4-mini",
-      runtimeConfig,
-      system: "system",
-      messages: [{ role: "user", content: "tiny", id: "msg_1", turnId: "turn_1" }],
-      compression: {
-        enabled: true,
-        thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
-      },
+  it("recounts packed context before returning and activating it", async () => {
+    const countedMessages: unknown[] = []
+    const provider = structuredProvider({
+      counts: [10, 4],
+      outputs: [validChat()],
+      onCount: (request) => countedMessages.push(request.messages),
     })
 
-    expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
-      "context.compaction.started",
-      "context.compaction.completed",
-    ])
-  })
-
-  it("recounts packed context after compaction before returning it", async () => {
-    const countedMessages: unknown[] = []
-    let countCall = 0
-    const provider: ModelProvider = {
-      countTokens: async (request) => {
-        countCall += 1
-        countedMessages.push(request.messages)
-        return {
-          providerId: request.providerId,
-          modelId: request.modelId,
-          inputTokens: countCall === 1 ? 20 : 7,
-          baseTokens: countCall === 1 ? 20 : 7,
-          method: "local_tiktoken",
-          safetyMarginPercent: 0,
-        }
-      },
-      async *stream() {
-        yield {
-          type: "model.answer.delta",
-          text: JSON.stringify({
-            goals: ["recount"],
-            currentTaskState: {},
-            decisions: [],
-            protectedAnchors: [],
-            filesAndArtifacts: [],
-            failuresAndBlockers: [],
-            openTasks: [],
-            sourceHandles: [{ messageId: "msg_1" }],
-          }),
-        }
-        yield { type: "model.completed" }
-      },
-    }
-
     const prepared = await prepareContextForModelCall({
       provider,
       providerId: "openai",
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages: [{ role: "user", content: "tiny", id: "msg_1", turnId: "turn_1" }],
+      messages: threeTurnMessages(),
       compression: {
         enabled: true,
-        thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
+        thresholds: { triggerTokens: 10, recentTailTargetTokens: 1 },
       },
     })
 
     expect(countedMessages).toHaveLength(2)
-    expect(JSON.stringify(countedMessages[1])).toContain("context_compaction_summary")
-    expect(prepared.estimatedTokens).toBe(7)
-    expect(prepared.tokenCount.inputTokens).toBe(7)
+    expect(JSON.stringify(countedMessages[1])).toContain("socrates_internal_context_compaction")
+    expect(prepared.estimatedTokens).toBe(4)
+    expect(prepared.tokenCount.inputTokens).toBe(4)
   })
 
-  it("uses Step fallback when the DeepSeek primary compressor fails", async () => {
-    const requests: ModelRequest[] = []
-    const completedModels: string[] = []
-    const provider: ModelProvider = {
-      countTokens: fakeCountTokens,
-      async *stream(request) {
-        requests.push(request)
-        if (request.modelId === "deepseek/deepseek-v4-flash") {
-          yield { type: "model.failed", error: new Error("primary unavailable") }
-          return
-        }
-        yield {
-          type: "model.answer.delta",
-          text: JSON.stringify({
-            goals: ["fallback"],
-            currentTaskState: {},
-            decisions: [],
-            protectedAnchors: [],
-            filesAndArtifacts: [],
-            failuresAndBlockers: [],
-            openTasks: [],
-            sourceHandles: [{ messageId: "msg_1" }],
-          }),
-        }
-        yield { type: "model.completed" }
+  it("keeps the latest five tool results and compacts older current-turn tool results", async () => {
+    const provider = structuredProvider({ counts: [170_000, 80_000], outputs: [validChat({ toolState: ["Older tool digest captured."] })] })
+    const messages = [
+      {
+        role: "user" as const,
+        content: "First active turn needs lots of tools.",
+        id: "msg_user",
+        turnId: "turn_1",
       },
-    }
+      {
+        role: "assistant" as const,
+        id: "msg_assistant",
+        turnId: "turn_1",
+        content: Array.from({ length: 7 }, (_, index) => [
+          { type: "tool-call" as const, toolCallId: `tool_${index + 1}`, toolName: "read", input: { path: `src/file${index + 1}.ts` } },
+          {
+            type: "tool-result" as const,
+            toolCallId: `tool_${index + 1}`,
+            toolName: "read",
+            output: { path: `src/file${index + 1}.ts`, content: `result ${index + 1} ${"x".repeat(1200)}` },
+          },
+        ]).flat(),
+      },
+    ]
 
     const prepared = await prepareContextForModelCall({
       provider,
@@ -378,45 +282,31 @@ describe("context compression", () => {
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages: [{ role: "user", content: "large ".repeat(400), id: "msg_1", turnId: "turn_1" }],
+      messages,
       compression: {
         enabled: true,
-        thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
-        completeSnapshot: (input) => {
-          completedModels.push(`${input.compressorProviderId}:${input.compressorModelId}`)
+        thresholds: {
+          triggerTokens: 170_000,
+          currentTurnToolTailTargetTokens: 1,
+          currentTurnToolResultFloor: 5,
         },
       },
     })
 
-    expect(requests.map((request) => `${request.providerId}:${request.modelId}`)).toEqual([
-      "openrouter:deepseek/deepseek-v4-flash",
-      "openrouter:stepfun/step-3.7-flash",
-    ])
-    expect(prepared.compactionEvents.map((event) => event.type)).toEqual([
-      "context.compaction.started",
-      "context.compaction.completed",
-    ])
-    expect(completedModels).toEqual(["openrouter:stepfun/step-3.7-flash"])
+    const packed = JSON.stringify(prepared.messages)
+    expect(packed).toContain("tool_7")
+    expect(packed).toContain("result 7")
+    expect(packed).toContain("tool_3")
+    expect(packed).toContain("result 3")
+    expect(packed).toContain("tool_1")
+    expect(packed).toContain("contextCompacted")
+    expect(packed).not.toContain("result 1 " + "x".repeat(900))
+    expect(String(provider.structuredRequests[0]?.messages[0]?.content)).toContain("older tool result read")
   })
 
-  it("precomputes a snapshot at the lower threshold without returning packed messages", async () => {
+  it("precomputes at the same 170k trigger", async () => {
+    const provider = structuredProvider({ counts: [170_000, 70_000], outputs: [validChat()] })
     const completed: string[] = []
-    const provider = providerFrom([
-      {
-        type: "model.answer.delta",
-        text: JSON.stringify({
-          goals: ["precompute"],
-          currentTaskState: {},
-          decisions: [],
-          protectedAnchors: [],
-          filesAndArtifacts: [],
-          failuresAndBlockers: [],
-          openTasks: [],
-          sourceHandles: [{ messageId: "msg_1" }],
-        }),
-      },
-      { type: "model.completed" },
-    ])
 
     const events = await precomputeContextSnapshot({
       provider,
@@ -424,10 +314,10 @@ describe("context compression", () => {
       modelId: "gpt-5.4-mini",
       runtimeConfig,
       system: "system",
-      messages: [{ role: "user", content: "large ".repeat(400), id: "msg_1", turnId: "turn_1" }],
+      messages: threeTurnMessages(),
       compression: {
         enabled: true,
-        thresholds: { precomputeTokens: 10, synchronousTokens: 10_000, hardCapTokens: 20_000 },
+        thresholds: { recentTailTargetTokens: 1 },
         completeSnapshot: (input) => {
           completed.push(input.snapshotId)
         },
@@ -435,16 +325,51 @@ describe("context compression", () => {
     })
 
     expect(events.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
-    expect(events[0]).toMatchObject({ type: "context.compaction.started", reason: "precompute" })
+    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 170_000 })
     expect(completed).toEqual([expect.stringMatching(/^ctxcmp_/)])
+  })
+
+  it("omits image bytes from compressor input while keeping image metadata", () => {
+    const content = buildCompressorUserMessageContent({
+      messages: [
+        { role: "user", id: "msg_old", turnId: "turn_1", content: "old head" },
+        {
+          role: "user",
+          id: "msg_image",
+          turnId: "turn_2",
+          content: [
+            { type: "text", text: "What do you see?" },
+            { type: "image", mediaType: "image/png", fileName: "screenshot.png", data: "a".repeat(1_000_000) },
+          ],
+        },
+        { role: "user", id: "msg_active", turnId: "turn_3", content: "active" },
+      ],
+      thresholds: { recentTailTargetTokens: 1 },
+    })
+
+    expect(content).toContain("screenshot.png")
+    expect(content).toContain("image:")
+    expect(content).not.toContain("a".repeat(500))
   })
 })
 
-const providerWithCounts = (counts: number[], requests: ModelRequest[] = []): ModelProvider => {
+type StructuredTestProvider = ModelProvider & {
+  structuredRequests: StructuredModelRequest<unknown>[]
+  onStream?: () => void
+}
+
+const structuredProvider = (options: {
+  counts: number[]
+  outputs?: unknown[]
+  onCount?: (request: ModelRequest) => void
+}): StructuredTestProvider => {
   let countIndex = 0
-  return {
+  let outputIndex = 0
+  const provider: StructuredTestProvider = {
+    structuredRequests: [],
     countTokens: async (request) => {
-      const inputTokens = counts[Math.min(countIndex, counts.length - 1)] ?? 0
+      options.onCount?.(request)
+      const inputTokens = options.counts[Math.min(countIndex, options.counts.length - 1)] ?? 0
       countIndex += 1
       return {
         providerId: request.providerId,
@@ -455,41 +380,42 @@ const providerWithCounts = (counts: number[], requests: ModelRequest[] = []): Mo
         safetyMarginPercent: 0,
       }
     },
-    async *stream(request) {
-      requests.push(request)
-      yield {
-        type: "model.answer.delta",
-        text: JSON.stringify({
-          goals: ["compress"],
-          currentTaskState: {},
-          decisions: [],
-          protectedAnchors: [],
-          filesAndArtifacts: [],
-          failuresAndBlockers: [],
-          openTasks: [],
-          sourceHandles: [{ messageId: "msg_1" }],
-        }),
-      }
-      yield { type: "model.completed" }
+    async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>): Promise<StructuredModelResult<TOutput>> {
+      provider.structuredRequests.push(request as StructuredModelRequest<unknown>)
+      const output = options.outputs?.[outputIndex] ?? validChat()
+      outputIndex += 1
+      return { output: output as TOutput, usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } }
+    },
+    async *stream() {
+      provider.onStream?.()
+      yield { type: "model.failed" as const, error: new Error("stream should not be used by compressor") }
     },
   }
+  return provider
 }
 
-const providerFrom = (events: ModelEvent[]): ModelProvider => ({
-  countTokens: fakeCountTokens,
-  async *stream() {
-    yield* events
-  },
+const validChat = (overrides: Partial<ChatCompaction> = {}): ChatCompaction => ({
+  schemaVersion: 1,
+  goal: "Continue Socrates compression refactor.",
+  constraints: [],
+  done: ["Old work compressed."],
+  inProgress: [],
+  blocked: [],
+  decisions: [],
+  nextSteps: ["Continue implementation."],
+  criticalContext: [],
+  relevantFiles: [],
+  toolState: [],
+  anchors: ["Turn 1: inspect the original user request."],
+  ...overrides,
 })
 
-const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
-  const baseTokens = Math.ceil(`${request.system}${JSON.stringify(request.messages)}${JSON.stringify(request.tools ?? [])}`.length / 4)
-  return {
-    providerId: request.providerId,
-    modelId: request.modelId,
-    inputTokens: baseTokens,
-    baseTokens,
-    method: "local_tiktoken",
-    safetyMarginPercent: 0,
-  }
-}
+const threeTurnMessages = () => [
+  { role: "user" as const, content: "old user", id: "msg_1u", turnId: "turn_1" },
+  { role: "assistant" as const, content: "old assistant", id: "msg_1a", turnId: "turn_1" },
+  { role: "user" as const, content: "middle user", id: "msg_2u", turnId: "turn_2" },
+  { role: "assistant" as const, content: "middle assistant", id: "msg_2a", turnId: "turn_2" },
+  { role: "user" as const, content: "current user", id: "msg_3u", turnId: "turn_3" },
+]
+
+const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1

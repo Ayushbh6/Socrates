@@ -6,6 +6,13 @@ export {
   type SocratesAgentTurnInput,
 } from "./agent/SocratesAgent"
 export {
+  CompressorAgent,
+  type CompressorAgentMode,
+  type CompressorAgentModel,
+  type CompressorAgentResult,
+  type CompressorAgentRunInput,
+} from "./agent/CompressorAgent"
+export {
   DEFAULT_COMPRESSOR_MODEL,
   DEFAULT_COMPRESSOR_FALLBACK_MODEL,
   DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
@@ -25,5 +32,18 @@ export {
 } from "./context/contextCompression"
 export { buildSocratesSystemPrompt, socratesBasePrompt, type SocratesPromptContext } from "./prompts/socratesPrompt"
 export { buildMemoryAgentSystemPrompt, memoryAgentBasePrompt, type MemoryAgentPromptContext } from "./prompts/memoryPrompt"
+export {
+  SOCRATES_COMPRESSOR_SYSTEM_PROMPT,
+  buildSocratesCompressorUserContent,
+  renderChatCompactionMarkdown,
+  type CompressorTurnInput,
+  type SocratesCompressorUserPromptInput,
+} from "./prompts/socratesCompressorPrompt"
+export {
+  MEMORY_AGENT_COMPRESSOR_SYSTEM_PROMPT,
+  buildMemoryAgentCompressorUserContent,
+  renderMemoryCompactionMarkdown,
+  type MemoryAgentCompressorUserPromptInput,
+} from "./prompts/memoryAgentCompressorPrompt"
 export { createDefaultToolRegistry, createMemoryToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"

@@ -40,4 +40,6 @@ export type {
   ModelUsage,
   PricingSnapshot,
   ProviderCredentialResolver,
+  StructuredModelRequest,
+  StructuredModelResult,
 } from "./types"

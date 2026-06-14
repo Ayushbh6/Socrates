@@ -39,7 +39,7 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
   return { projectId: command.projectId, conversationId: command.conversationId }
 }
 
-const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.hardCapTokens
+const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.triggerTokens
 
 const withWakeContext = (
   history: ReturnType<SocratesStore["getConversationModelMessages"]>,

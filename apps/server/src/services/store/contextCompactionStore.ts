@@ -4,7 +4,8 @@ import type {
   FailCompactionSnapshotInput,
   StartCompactionSnapshotInput,
 } from "@socrates/core"
-import { nowIso } from "@socrates/shared"
+import { chatCompactionSchema } from "@socrates/contracts"
+import { nowIso, SocratesError } from "@socrates/shared"
 import { and, desc, eq } from "drizzle-orm"
 import { contextCompactionSnapshots } from "../../db/schema"
 import { StoreBase } from "./shared"
@@ -48,10 +49,15 @@ export class ContextCompactionStore extends StoreBase {
       return undefined
     }
 
+    const parsedSummary = chatCompactionSchema.safeParse(parseJson(row.summaryJson))
+    if (!parsedSummary.success) {
+      return undefined
+    }
+
     return {
       snapshotId: row.id,
       ...(row.previousSnapshotId ? { previousSnapshotId: row.previousSnapshotId } : {}),
-      summary: parseJson(row.summaryJson),
+      summary: parsedSummary.data,
       renderedSummary: row.renderedSummary,
       sourceHandles: parseArray(row.sourceHandlesJson),
       outputTokensEstimate: row.outputTokensEstimate ?? 0,
@@ -87,6 +93,20 @@ export class ContextCompactionStore extends StoreBase {
     if (!row) {
       return
     }
+    const parsedSummary = chatCompactionSchema.safeParse(input.summary)
+    if (!parsedSummary.success) {
+      const error = new SocratesError("context_compaction_schema_invalid", "Refusing to activate malformed context compaction snapshot.", {
+        details: parsedSummary.error.flatten(),
+        recoverable: true,
+      })
+      this.fail({
+        snapshotId: input.snapshotId,
+        code: error.code,
+        message: error.message,
+        details: error.details,
+      })
+      throw error
+    }
 
     const now = nowIso()
     this.handle.db
@@ -99,7 +119,7 @@ export class ContextCompactionStore extends StoreBase {
       .set({
         status: "completed",
         active: true,
-        summaryJson: JSON.stringify(input.summary),
+        summaryJson: JSON.stringify(parsedSummary.data),
         renderedSummary: input.renderedSummary,
         sourceHandlesJson: JSON.stringify(input.sourceHandles),
         inputTokensEstimate: input.inputTokensEstimate,

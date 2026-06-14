@@ -376,7 +376,8 @@ export class TraceStore extends StoreBase {
         ((this.handle.sqlite
           .prepare("SELECT id FROM conversations WHERE project_id = ? AND status IN ('active', 'archived') ORDER BY updated_at DESC LIMIT 1")
           .get(projectId) as { id: string } | undefined)?.id ?? "")
-      return { projectId, conversationId, projectName: this.projectName(projectId) }
+      const projectName = this.projectName(projectId)
+      return { projectId, conversationId, ...(projectName ? { projectName } : {}) }
     }
     if ("projectTitle" in input && singleSelectorValue(input.projectTitle)) {
       const projectIds = this.resolveGlobalProjectIds(undefined, input.projectTitle)
@@ -387,7 +388,8 @@ export class TraceStore extends StoreBase {
           ((this.handle.sqlite
             .prepare("SELECT id FROM conversations WHERE project_id = ? AND status IN ('active', 'archived') ORDER BY updated_at DESC LIMIT 1")
             .get(projectId) as { id: string } | undefined)?.id ?? "")
-        return { projectId, conversationId, projectName: this.projectName(projectId) }
+        const projectName = this.projectName(projectId)
+        return { projectId, conversationId, ...(projectName ? { projectName } : {}) }
       }
     }
     if ("conversationId" in input && singleSelectorValue(input.conversationId)) {
@@ -451,7 +453,7 @@ export class TraceStore extends StoreBase {
       where.push(`td.source_kind IN (${sourceKinds.map(() => "?").join(", ")})`)
       params.push(...sourceKinds)
     }
-    appendMessageFacetFilters(where, params, input)
+    appendMessageFacetFilters(where, params, traceFacetInput(input))
     if (input.createdAfter) {
       where.push("td.created_at >= ?")
       params.push(input.createdAfter)
@@ -3031,6 +3033,16 @@ const requiresAuditMode = (input: TraceRetrieveSearchInput): boolean =>
   )
 
 const runtimeEntryTypes = new Set<TraceRetrieveEntryType>(["tool_call", "shell", "file", "patch", "error"])
+
+const traceFacetInput = (input: TraceRetrieveToolInput): {
+  role: TraceRetrieveRole | undefined
+  entryType: TraceRetrieveEntryType | undefined
+  hasAttachment: boolean | undefined
+} => ({
+  role: input.role,
+  entryType: "entryType" in input ? input.entryType : undefined,
+  hasAttachment: "hasAttachment" in input ? input.hasAttachment : undefined,
+})
 
 const appendMessageFacetFilters = (
   where: string[],

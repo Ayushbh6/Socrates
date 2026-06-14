@@ -91,6 +91,16 @@ export type ModelRequest = {
   }
 }
 
+export type StructuredModelRequest<TOutput> = Omit<ModelRequest, "tools" | "countTokens"> & {
+  schema: unknown
+}
+
+export type StructuredModelResult<TOutput> = {
+  output: TOutput
+  usage?: ModelUsage
+  raw?: unknown
+}
+
 export type ModelEvent =
   | { type: "model.started"; modelCallId?: string | undefined; stepIndex?: number | undefined }
   | { type: "model.reasoning.delta"; text: string; modelCallId?: string | undefined; stepIndex?: number | undefined }
@@ -119,6 +129,7 @@ export type ModelEvent =
 export interface ModelProvider {
   stream(request: ModelRequest): AsyncIterable<ModelEvent>
   countTokens(request: ModelRequest): Promise<TokenCountResult>
+  generateStructured?<TOutput>(request: StructuredModelRequest<TOutput>): Promise<StructuredModelResult<TOutput>>
 }
 
 export type EmbeddingUsage = {

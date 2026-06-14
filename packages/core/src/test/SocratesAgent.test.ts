@@ -148,25 +148,15 @@ describe("SocratesAgent", () => {
           safetyMarginPercent: 0,
         }
       },
-      async *stream(request) {
-        if (request.modelId === "deepseek/deepseek-v4-flash") {
-          await compressorReleased
-          yield {
-            type: "model.answer.delta",
-            text: JSON.stringify({
-              goals: ["stream lifecycle"],
-              currentTaskState: {},
-              decisions: [],
-              protectedAnchors: [],
-              filesAndArtifacts: [],
-              failuresAndBlockers: [],
-              openTasks: [],
-              sourceHandles: [{ messageId: "msg_1" }],
-            }),
-          }
-          yield { type: "model.completed" }
-          return
+      async generateStructured(request) {
+        expect(request.modelId).toBe("deepseek/deepseek-v4-flash")
+        await compressorReleased
+        return {
+          output: validCompressorSummary() as never,
+          usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
         }
+      },
+      async *stream(request) {
         appModelStarted = true
         yield { type: "model.completed" }
       },
@@ -185,10 +175,14 @@ describe("SocratesAgent", () => {
           approvalMode: "manual",
           sandboxMode: "read_only",
         },
-        messages: [{ role: "user", content: "Large history", id: "msg_1", turnId: "turn_1" }],
+        messages: [
+          { role: "user", content: "Old history", id: "msg_1", turnId: "turn_1" },
+          { role: "assistant", content: "Old answer", id: "msg_2", turnId: "turn_1" },
+          { role: "user", content: "Current request", id: "msg_3", turnId: "turn_2" },
+        ],
         contextCompression: {
           enabled: true,
-          thresholds: { synchronousTokens: 10, hardCapTokens: 20_000 },
+          thresholds: { triggerTokens: 10, recentTailTargetTokens: 1 },
         },
       })
       [Symbol.asyncIterator]()
@@ -1174,6 +1168,21 @@ const bashOk = () => ({
   timedOut: false,
   truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
   shell: { platform: "darwin", kind: "posix" as const, executable: "/bin/zsh" },
+})
+
+const validCompressorSummary = () => ({
+  schemaVersion: 1 as const,
+  goal: "Continue after compaction.",
+  constraints: [],
+  done: ["Compressed old context."],
+  inProgress: [],
+  blocked: [],
+  decisions: [],
+  nextSteps: ["Run the app model call."],
+  criticalContext: [],
+  relevantFiles: [],
+  toolState: [],
+  anchors: ["Turn 1: inspect old history."],
 })
 
 const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {

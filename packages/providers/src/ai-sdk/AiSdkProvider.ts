@@ -2,7 +2,9 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenRouter } from "@openrouter/ai-sdk-provider"
 import {
+  generateText,
   jsonSchema,
+  Output,
   smoothStream,
   streamText,
   tool,
@@ -20,7 +22,15 @@ import {
 } from "../tokenCounting"
 import { envProviderCredentialResolver } from "../credentials"
 import { openRouterProviderRoutingForModel } from "../openRouterRouting"
-import type { ModelEvent, ModelProvider, ModelRequest, ModelUsage, ProviderCredentialResolver } from "../types"
+import type {
+  ModelEvent,
+  ModelProvider,
+  ModelRequest,
+  ModelUsage,
+  ProviderCredentialResolver,
+  StructuredModelRequest,
+  StructuredModelResult,
+} from "../types"
 import { normalizeProviderUsage } from "../usage"
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
@@ -200,6 +210,35 @@ export class AiSdkProvider implements ModelProvider {
       }
     } catch (error) {
       yield { type: "model.failed", error: streamTimeout.timeoutError ?? normalizeProviderError(error) }
+    } finally {
+      streamTimeout.dispose()
+    }
+  }
+
+  async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>): Promise<StructuredModelResult<TOutput>> {
+    const streamTimeout = createStreamTimeout(request)
+    try {
+      const result = await generateText({
+        model: this.createModel(request),
+        system: request.system,
+        messages: request.messages.map((message) => toAiModelMessage(message, request.providerId)),
+        output: Output.object({ schema: request.schema as never }),
+        providerOptions: this.createProviderOptions(request),
+        abortSignal: streamTimeout.signal,
+      })
+      const usage = mapUsage(
+        request.providerId,
+        request.modelId,
+        generationUsage(result),
+        generationProviderMetadata(result),
+      )
+      return {
+        output: result.output as TOutput,
+        ...(Object.keys(usage).length > 0 ? { usage } : {}),
+        raw: { response: result.response, warnings: result.warnings },
+      }
+    } catch (error) {
+      throw streamTimeout.timeoutError ?? normalizeProviderError(error)
     } finally {
       streamTimeout.dispose()
     }
@@ -734,6 +773,16 @@ const toToolResultOutput = (output: unknown) =>
     ? { type: "text" as const, value: output }
     : { type: "json" as const, value: output === undefined ? null : (output as never) }
 
+const generationUsage = (result: unknown): LanguageModelUsage | undefined => {
+  const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {}
+  return (record.totalUsage ?? record.usage) as LanguageModelUsage | undefined
+}
+
+const generationProviderMetadata = (result: unknown): ProviderMetadata | undefined => {
+  const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {}
+  return (record.providerMetadata ?? record.providerOptions) as ProviderMetadata | undefined
+}
+
 export const mapUsage = (
   providerId: ModelRequest["providerId"],
   modelId: string,
@@ -743,6 +792,8 @@ export const mapUsage = (
   if (!usage) {
     return providerMetadata ? { providerMetadata } : {}
   }
+  const inputTokenDetails = usage.inputTokenDetails ?? {}
+  const outputTokenDetails = usage.outputTokenDetails ?? {}
 
   return normalizeProviderUsage({
     providerId,
@@ -750,18 +801,18 @@ export const mapUsage = (
     usage: {
       ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
       ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
-      ...(usage.outputTokenDetails.reasoningTokens === undefined
+      ...(outputTokenDetails.reasoningTokens === undefined
         ? {}
-        : { reasoningTokens: usage.outputTokenDetails.reasoningTokens }),
-      ...(usage.inputTokenDetails.cacheReadTokens === undefined
+        : { reasoningTokens: outputTokenDetails.reasoningTokens }),
+      ...(inputTokenDetails.cacheReadTokens === undefined
         ? {}
-        : { cachedInputTokens: usage.inputTokenDetails.cacheReadTokens }),
-      ...(usage.inputTokenDetails.cacheWriteTokens === undefined
+        : { cachedInputTokens: inputTokenDetails.cacheReadTokens }),
+      ...(inputTokenDetails.cacheWriteTokens === undefined
         ? {}
-        : { cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens }),
-      ...(usage.inputTokenDetails.noCacheTokens === undefined
+        : { cacheWriteTokens: inputTokenDetails.cacheWriteTokens }),
+      ...(inputTokenDetails.noCacheTokens === undefined
         ? {}
-        : { uncachedInputTokens: usage.inputTokenDetails.noCacheTokens }),
+        : { uncachedInputTokens: inputTokenDetails.noCacheTokens }),
       ...(usage.totalTokens === undefined ? {} : { totalTokens: usage.totalTokens }),
       ...(usage.raw === undefined ? {} : { raw: usage.raw }),
       ...(providerMetadata ? { providerMetadata } : {}),

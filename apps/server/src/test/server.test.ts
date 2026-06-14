@@ -16,6 +16,7 @@ import type {
   ProjectResource,
   ProjectWorkspace,
   ServerEvent,
+  ChatCompaction,
   SkillSummary,
   User,
 } from "@socrates/contracts"
@@ -41,6 +42,22 @@ const tempDbPath = (): string => {
 }
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
+
+const validServerChatCompaction = (overrides: Partial<ChatCompaction> = {}): ChatCompaction => ({
+  schemaVersion: 1,
+  goal: "Persist compacted context.",
+  constraints: [],
+  done: [],
+  inProgress: [],
+  blocked: [],
+  decisions: [],
+  nextSteps: [],
+  criticalContext: [],
+  relevantFiles: [],
+  toolState: [],
+  anchors: ["Turn 1: inspect compacted source."],
+  ...overrides,
+})
 
 const buildTestServer = async (
   dbPath = tempDbPath(),
@@ -1411,7 +1428,7 @@ describe("database migrations", () => {
         turnId,
         reason: "threshold",
         contextTokensEstimate: 1000,
-        targetTokens: 400,
+        targetTokens: 170000,
         compressorProviderId: "openrouter",
         compressorModelId: "deepseek/deepseek-v4-flash",
         sourceMessageIds: [],
@@ -1419,7 +1436,7 @@ describe("database migrations", () => {
       })
       store.completeContextCompactionSnapshot({
         snapshotId,
-        summary: { retained: [] },
+        summary: validServerChatCompaction({ done: ["Compacted."] }),
         renderedSummary: "Compacted.",
         sourceHandles: [],
         inputTokensEstimate: 200,
@@ -1512,7 +1529,7 @@ describe("context compaction persistence", () => {
         turnId,
         reason: "threshold",
         contextTokensEstimate: 161000,
-        targetTokens: 120000,
+        targetTokens: 170000,
         compressorProviderId: "openrouter",
         compressorModelId: "deepseek/deepseek-v4-flash",
         sourceMessageIds: ["msg_old_1"],
@@ -1520,7 +1537,7 @@ describe("context compaction persistence", () => {
       })
       store.completeContextCompactionSnapshot({
         snapshotId: firstSnapshotId,
-        summary: { decisions: ["alpha decision"] },
+        summary: validServerChatCompaction({ decisions: ["alpha decision"], anchors: ["Turn 1: alpha decision source."] }),
         renderedSummary: "alpha decision from first compacted summary",
         sourceHandles: [{ messageId: "msg_old_1" }],
         inputTokensEstimate: 161000,
@@ -1537,7 +1554,7 @@ describe("context compaction persistence", () => {
         turnId,
         reason: "threshold",
         contextTokensEstimate: 165000,
-        targetTokens: 120000,
+        targetTokens: 170000,
         compressorProviderId: "openrouter",
         compressorModelId: "stepfun/step-3.7-flash",
         sourceMessageIds: ["msg_old_2"],
@@ -1545,7 +1562,7 @@ describe("context compaction persistence", () => {
       })
       store.completeContextCompactionSnapshot({
         snapshotId: secondSnapshotId,
-        summary: { decisions: ["beta decision"] },
+        summary: validServerChatCompaction({ decisions: ["beta decision"], anchors: ["Turn 2: beta decision source."] }),
         renderedSummary: "beta decision from second compacted summary",
         sourceHandles: [{ messageId: "msg_old_2" }],
         inputTokensEstimate: 165000,
@@ -3970,6 +3987,93 @@ describe("WebSocket API", () => {
       expect(toolNames).not.toContain("bash")
       expect(toolNames).not.toContain("edit")
       expect(JSON.stringify(requests[1]?.messages)).toContain("memory-agent trace marker")
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("packs global memory-agent evidence one turn at a time and stops at 80 turns", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Memory Packing Source")
+    const handle = openDatabase(dbPath)
+    const evidencePrompts: string[] = []
+    const memoryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        evidencePrompts.push(String(request.messages[0]?.content ?? ""))
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nPacked memory evidence.\n\n## Changed\nNone.\n\n## Skipped\nNone.\n\n## Blocked\nNone.",
+        }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const sequences: number[] = []
+      for (let index = 0; index < 85; index += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Pack memory turn ${index + 1}`, "Done.", nowIso())
+        sequences.push(insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId }))
+      }
+
+      const result = await store.runGlobalMemoryAgent("manual")
+      const evidence = evidencePrompts[0] ?? ""
+      expect(result.state.lastProcessedEventSequence).toBe(sequences[79])
+      expect(evidence).toContain("Included turn count: 80")
+      expect(evidence).toContain(`event sequence ${sequences[79]}`)
+      expect(evidence).not.toContain(`event sequence ${sequences[80]}`)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("stops global memory-agent evidence before the 60k token cap and advances only to the included sequence", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Memory Token Packing Source")
+    const handle = openDatabase(dbPath)
+    const evidencePrompts: string[] = []
+    const memoryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        evidencePrompts.push(String(request.messages[0]?.content ?? ""))
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nPacked memory evidence under token cap.\n\n## Changed\nNone.\n\n## Skipped\nNone.\n\n## Blocked\nNone.",
+        }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
+    try {
+      const largeProjectName = Array.from({ length: 1_600 }, (_, index) => `manifest_token_${index}`).join(" ")
+      handle.sqlite.prepare("UPDATE projects SET name = ? WHERE id = ?").run(`Huge Project ${largeProjectName}`, project.id)
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const sequences: number[] = []
+      for (let index = 0; index < 40; index += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Token-capped memory turn ${index + 1}`, "Done.", nowIso())
+        sequences.push(insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId }))
+      }
+
+      const result = await store.runGlobalMemoryAgent("manual")
+      const evidence = evidencePrompts[0] ?? ""
+      const included = Number(evidence.match(/Included turn count: (\d+)/)?.[1] ?? "0")
+      const job = handle.sqlite
+        .prepare("SELECT evidence_tokens_estimate AS evidenceTokensEstimate FROM memory_agent_jobs ORDER BY started_at DESC LIMIT 1")
+        .get() as { evidenceTokensEstimate: number }
+      expect(included).toBeGreaterThan(0)
+      expect(included).toBeLessThan(40)
+      expect(job.evidenceTokensEstimate).toBeLessThanOrEqual(60_000)
+      expect(result.state.lastProcessedEventSequence).toBe(sequences[included - 1])
+      expect(evidence).not.toContain(`event sequence ${sequences[included]}`)
     } finally {
       await store.close()
     }
