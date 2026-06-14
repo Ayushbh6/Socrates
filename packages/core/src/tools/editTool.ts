@@ -37,7 +37,7 @@ const decideEditPolicy: SocratesTool<typeof editToolInputSchema._type, typeof ed
 export const editTool: SocratesTool<typeof editToolInputSchema._type, typeof editToolOutputSchema._type> = {
   name: "edit",
   description:
-    "Create or modify one file in the active project workspace. Path is workspace-relative. When creating a deliverable, scratch file, or generated file derived from files in a subfolder, use an explicit path in that same subfolder or nearest relevant existing folder; do not default to the workspace root unless the user asks or the artifact is truly project-level. For existing files, use oldString and newString for targeted multiline replacement; set replaceAll only when every occurrence should change. Use content for new files. Use content with overwrite: true only for a deliberate full-file rewrite of an existing file. Read existing files first so Socrates can verify freshness.",
+    "Create or modify one file in the active project workspace. Path is workspace-relative. Call this only after reading existing target files in the current turn. When creating a deliverable, scratch file, or generated file derived from files in a subfolder, use an explicit path in that same subfolder or nearest relevant existing folder; do not default to the workspace root unless the user asks or the artifact is truly project-level. For existing files, use oldString and newString for targeted multiline replacement; set replaceAll only when every occurrence should change. Use content for new files. Use content with overwrite: true only for a deliberate full-file rewrite of an existing file.",
   inputSchema: editToolInputSchema,
   modelInputSchema: editToolModelInputSchema,
   resultSchema: editToolOutputSchema,

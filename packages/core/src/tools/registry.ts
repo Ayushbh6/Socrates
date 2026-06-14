@@ -15,6 +15,7 @@ import { soulTool } from "./soulTool"
 import { toolDocsTool } from "./toolDocsTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
+import { userProfileTool } from "./userProfileTool"
 
 const tools = [
   readTool,
@@ -28,6 +29,7 @@ const tools = [
   projectDocsTool,
   repoDocsTool,
   soulTool,
+  userProfileTool,
   listProjectResourcesTool,
   mcpRegistryTool,
 ] as const
@@ -62,6 +64,6 @@ export class ToolRegistry {
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
 
-const memoryTools = [traceRetrieveTool, projectsTool, toolDocsTool, skillsTool, soulTool, editFilesTool] as const
+const memoryTools = [traceRetrieveTool, projectsTool, toolDocsTool, skillsTool, soulTool, userProfileTool, editFilesTool] as const
 
 export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)

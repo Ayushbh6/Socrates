@@ -171,10 +171,7 @@ export const handleChatMessageSend = async (
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
   store.ensureProjectMemory(projectId)
-  const wakeContext =
-    history.filter((message) => message.role === "user").length === 1
-      ? store.buildWakeMemoryContext(projectId, command.payload.content)
-      : undefined
+  const wakeContext = store.buildWakeMemoryContext(projectId, command.payload.content)
   const modelHistory = withWakeContext(history, wakeContext)
   const terminalContext = store.terminalContextBrief(conversationId)
   const promptContext = {
@@ -677,6 +674,7 @@ export const handleChatMessageSend = async (
     )
     appendAndEmit(emitEvent, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
+    store.recordProjectStateLedgerTurn(projectId, conversationId, created.turnId, "completed", answerText)
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({
@@ -719,6 +717,7 @@ export const handleChatMessageSend = async (
     )
     appendAndEmit(emitEvent, store, failed, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
+    store.recordProjectStateLedgerTurn(projectId, conversationId, created.turnId, "failed", answerText)
   } finally {
     activeTurns.delete(created.turnId)
   }
@@ -803,6 +802,7 @@ const createToolExecutors = (
       ? withWorkspaceMutationLock(context.workspacePath, async () => store.runRepoDocsTool(projectId, context.workspacePath, input))
       : Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
+  user_profile: (input) => Promise.resolve(store.runUserProfileTool(projectId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
   mcp_registry: async (input) => {
     if (!mcpRuntime) {

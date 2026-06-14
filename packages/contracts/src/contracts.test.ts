@@ -134,6 +134,8 @@ import {
   searchToolInputSchema,
   soulToolInputSchema,
   soulToolOutputSchema,
+  userProfileToolInputSchema,
+  userProfileToolOutputSchema,
   toolExecutionResultSchema,
   traceRetrieveToolInputSchema,
   traceRetrieveToolModelInputSchema,
@@ -1173,6 +1175,16 @@ describe("tool contracts", () => {
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)
     expect(soulToolInputSchema.safeParse({ operation: "read", document: "both", charLimit: 20_000 }).success).toBe(true)
     expect(soulToolInputSchema.safeParse({ operation: "patch", document: "identity" }).success).toBe(false)
+    expect(userProfileToolInputSchema.safeParse({ operation: "read", charLimit: 20_000 }).success).toBe(true)
+    expect(userProfileToolInputSchema.safeParse({ operation: "edit" }).success).toBe(false)
+    expect(
+      userProfileToolOutputSchema.safeParse({
+        operation: "read",
+        path: "user_profile.md",
+        content: "# User Profile",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 14 },
+      }).success,
+    ).toBe(true)
     expect(
       soulToolOutputSchema.safeParse({
         operation: "read",
@@ -1400,6 +1412,7 @@ describe("tool contracts", () => {
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "append", text: "- note" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "memory", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "replace", oldText: "old" }).success).toBe(false)
+    expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "REPO_RULES.md" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "search", query: "contract", path: "CONTRACTS.md" }).success).toBe(true)

@@ -67,6 +67,7 @@ describe("SocratesAgent", () => {
       "project_docs",
       "repo_docs",
       "soul",
+      "user_profile",
       "list_project_resources",
       "mcp_registry",
     ])
@@ -284,6 +285,12 @@ describe("SocratesAgent", () => {
         documents: [],
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
+      user_profile: async () => ({
+        operation: "read",
+        path: "user_profile.md",
+        content: "",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+      }),
       list_project_resources: async () => ({
         resources: [],
         summary: "Listed 0 project resources.",
@@ -321,8 +328,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(13)
-    expect(countRequests[1]?.toolCount).toBe(13)
+    expect(countRequests[0]?.toolCount).toBe(14)
+    expect(countRequests[1]?.toolCount).toBe(14)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -616,10 +623,354 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(13)
+    expect(countRequests[0]?.toolCount).toBe(14)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
+  })
+
+  it("adds failed-tool guidance and a runtime action ledger to follow-up model context", async () => {
+    const countRequests: CountedRequest[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream() {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_bad_read_1",
+              toolName: "read",
+              input: { path: 123 },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "The read call was invalid." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Read the file" }],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    const followUpMessages = JSON.stringify(countRequests[1]?.messages)
+    expect(followUpMessages).toContain("Refer to tool_docs for tool usage before retrying this tool or choosing another tool.")
+    expect(followUpMessages).toContain("Runtime action ledger for this turn")
+    expect(followUpMessages).toContain("failed read")
+  })
+
+  it("gives invalid mutation tool schemas a concrete recovery hint before forcing a final answer", async () => {
+    const countRequests: CountedRequest[] = []
+    const streamRequests: ModelRequestLike[] = []
+    const editInputs: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_bad_edit_1",
+              toolName: "edit",
+              input: { path: "socrates_natural_e2e.md", content: "# Note\n", overwrite: false },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_bad_edit_2",
+              toolName: "edit",
+              input: { path: "socrates_natural_e2e.md", content: "# Note\n", oldString: "old", newString: "new" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 3) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_good_edit_3",
+              toolName: "edit",
+              input: { path: "socrates_natural_e2e.md", content: "# Natural E2E\n" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Created the note." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const executors = emptyToolExecutors()
+    executors.edit = async (input) => {
+      editInputs.push(input)
+      return {
+        changedFiles: [{ path: "socrates_natural_e2e.md", operation: "created" }],
+        diff: "created",
+        dryRun: false,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 7 },
+      }
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "approve_all",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Make a small markdown note with what we checked." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(JSON.stringify(countRequests[1]?.messages)).toContain("Runtime tool-schema recovery")
+    expect(JSON.stringify(countRequests[2]?.messages)).toContain("For a new file")
+    expect(streamRequests[1]?.tools?.map((tool) => tool.name)).toContain("edit")
+    expect(streamRequests[2]?.tools?.map((tool) => tool.name)).toContain("edit")
+    expect(editInputs).toHaveLength(1)
+    expect(editInputs[0]).toMatchObject({ path: "socrates_natural_e2e.md", content: "# Natural E2E\n" })
+  })
+
+  it("still forces a final no-tools call after four invalid mutation schemas", async () => {
+    const countRequests: CountedRequest[] = []
+    const streamRequests: ModelRequestLike[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls <= 4) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: `tcall_bad_edit_${calls}`,
+              toolName: "edit",
+              input: { path: "socrates_natural_e2e.md", content: `# Note ${calls}\n`, overwrite: false },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "I could not safely edit the file." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "approve_all",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Make a small markdown note with what we checked." }],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(countRequests.at(-1)?.toolCount).toBe(0)
+    expect(streamRequests.at(-1)?.tools).toHaveLength(0)
+    const finalMessages = JSON.stringify(countRequests.at(-1)?.messages)
+    expect(finalMessages).toContain("same normalized tool target was repeated 4 times")
+    expect(finalMessages).toContain("Runtime anti-spiral guard")
+  })
+
+  it("forces a final no-tools call after repeated normalized tool targets", async () => {
+    const countRequests: CountedRequest[] = []
+    const streamRequests: ModelRequestLike[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        return fakeCountTokens(request)
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls <= 4) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: `tcall_read_${calls}`,
+              toolName: "read",
+              input: { path: calls % 2 === 0 ? "./README.md" : "README.md" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "I have enough evidence from the repeated reads." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Inspect README" }],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(countRequests.at(-1)?.toolCount).toBe(0)
+    expect(streamRequests.at(-1)?.tools).toHaveLength(0)
+    const finalMessages = JSON.stringify(countRequests.at(-1)?.messages)
+    expect(finalMessages).toContain("same normalized tool target was repeated 4 times")
+    expect(finalMessages).toContain("Runtime anti-spiral guard")
+  })
+
+  it("forces a final no-tools call after current-turn token growth crosses the hard guard", async () => {
+    const countRequests: CountedRequest[] = []
+    const streamRequests: ModelRequestLike[] = []
+    let countCalls = 0
+    let streamCalls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => {
+        countRequests.push(snapshotCountRequest(request))
+        countCalls += 1
+        const inputTokens = countCalls === 1 ? 1_000 : countCalls === 2 ? 51_000 : countCalls === 3 ? 82_000 : 82_100
+        return {
+          providerId: request.providerId,
+          modelId: request.modelId,
+          inputTokens,
+          baseTokens: inputTokens,
+          method: "local_tiktoken",
+          safetyMarginPercent: 0,
+        }
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        streamCalls += 1
+        if (streamCalls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_read_1",
+              toolName: "read",
+              input: { path: "README.md" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Stopping before more tool work." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Investigate deeply" }],
+      workspacePath: "/tmp",
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(countRequests.at(-1)?.toolCount).toBe(0)
+    expect(streamRequests.at(-1)?.tools).toHaveLength(0)
+    const finalMessages = JSON.stringify(countRequests.at(-1)?.messages)
+    expect(finalMessages).toContain("current-turn context growth is above 50k")
+    expect(finalMessages).toContain("current-turn context growth is above 80k")
   })
 
   it("omits tools after ten confirmed tool execution errors", async () => {
@@ -637,11 +988,11 @@ describe("SocratesAgent", () => {
         if (calls <= 10) {
           yield {
             type: "model.tool_call.completed",
-            toolCall: {
-              toolCallId: `tcall_bad_trace_${calls}`,
-              toolName: "trace_retrieve",
-              input: { query: "README", role: "system" },
-            },
+              toolCall: {
+                toolCallId: `tcall_bad_trace_${calls}`,
+                toolName: "trace_retrieve",
+                input: { query: `README ${calls}`, role: "system" },
+              },
           }
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
@@ -679,7 +1030,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(13)
+    expect(countRequests[0]?.toolCount).toBe(14)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -765,6 +1116,12 @@ describe("SocratesAgent", () => {
       soul: async () => ({
         operation: "read",
         documents: [],
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+      }),
+      user_profile: async () => ({
+        operation: "read",
+        path: "user_profile.md",
+        content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
       list_project_resources: async () => ({
@@ -1147,6 +1504,12 @@ const emptyToolExecutors = (): ToolExecutors => ({
   soul: async () => ({
     operation: "read",
     documents: [],
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+  }),
+  user_profile: async () => ({
+    operation: "read",
+    path: "user_profile.md",
+    content: "",
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
   }),
   list_project_resources: async () => ({

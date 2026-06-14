@@ -1114,7 +1114,7 @@ describe("workspace tools", () => {
 
     await expect(applyPatchWorkspace({ patch }, { workspacePath })).rejects.toMatchObject({
       code: "edit_stale_content",
-      message: expect.stringContaining("Read the file before applying a patch"),
+      message: expect.stringContaining('Call read("app.txt") first'),
     })
     expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha\n")
   })
@@ -1129,7 +1129,7 @@ describe("workspace tools", () => {
     await applyPatchWorkspace({ patch: firstPatch }, { workspacePath, fileFreshness: tracker })
     await expect(applyPatchWorkspace({ patch: secondPatch }, { workspacePath, fileFreshness: tracker })).rejects.toMatchObject({
       code: "edit_stale_content",
-      message: expect.stringContaining("Read the file again"),
+      message: expect.stringContaining('Call read("app.txt") again'),
     })
 
     await readWorkspacePath({ path: "app.txt" }, { workspacePath, fileFreshness: tracker })
@@ -1156,7 +1156,7 @@ describe("workspace tools", () => {
     }
     expect(second.reason).toMatchObject({
       code: "edit_stale_content",
-      message: expect.stringContaining("Read the file again"),
+      message: expect.stringContaining('Call read("app.txt") again'),
     })
     expect(fs.readFileSync(path.join(workspacePath, "app.txt"), "utf8")).toBe("alpha = 1\nbeta\n")
   })
@@ -1237,7 +1237,7 @@ describe("workspace tools", () => {
       ),
     ).rejects.toMatchObject({
       code: "edit_stale_content",
-      message: expect.stringContaining("Read the file again"),
+      message: expect.stringContaining('Call read("strategy.py") again'),
     })
   })
 

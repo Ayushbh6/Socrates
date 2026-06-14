@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const readTool: SocratesTool<typeof readToolInputSchema._type, typeof readToolOutputSchema._type> = {
   name: "read",
   description:
-    "Read a bounded file, directory, document, structured data file, or image from the active project workspace. Output is capped to an estimated 4k tokens by default and 6k tokens max; use charLimit, tokenLimit, and offset for large files.",
+    "Read a bounded file, directory, document, structured data file, or image from the active project workspace. Call this for exact file evidence and before editing existing files so freshness can be verified. Output is capped to an estimated 4k tokens by default and 6k tokens max; use charLimit, tokenLimit, and offset for large files.",
   inputSchema: readToolInputSchema,
   resultSchema: readToolOutputSchema,
   permission: "read",

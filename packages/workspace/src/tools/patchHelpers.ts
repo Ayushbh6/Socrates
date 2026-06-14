@@ -989,8 +989,9 @@ const validateFreshness = (
   actualHash: string | undefined,
 ): void => {
   if (!context.fileFreshness) {
-    throw new SocratesError("edit_stale_content", "Read the file before applying a patch so Socrates can verify freshness.", {
-      details: { path: toWorkspaceRelativePath(context.workspacePath, absolutePath), actualHash },
+    const relativePath = toWorkspaceRelativePath(context.workspacePath, absolutePath)
+    throw new SocratesError("edit_stale_content", `read() has not been called on ${relativePath} in this turn. Call read("${relativePath}") first, then retry the patch.`, {
+      details: { path: relativePath, actualHash },
       recoverable: true,
     })
   }

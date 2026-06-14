@@ -4,6 +4,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type {
   Notification,
+  ConversationToolRun,
   EditFilesToolInput,
   EditFilesToolOutput,
   MemoryAgentGlobalSettings,
@@ -32,6 +33,8 @@ import type {
   TraceRetrieveToolOutput,
   TriggerMemoryAgentRunResponse,
   TruncationMetadata,
+  UserProfileToolInput,
+  UserProfileToolOutput,
 } from "@socrates/contracts"
 import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
@@ -84,6 +87,8 @@ const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
 const WAKE_CONTEXT_CHAR_LIMIT = 4_000
 const SKILL_CHAR_LIMIT = 20_000
+const STATE_LEDGER_START = "<!-- socrates-state-ledger:start -->"
+const STATE_LEDGER_END = "<!-- socrates-state-ledger:end -->"
 const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
 const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
 const REPO_DOC_NAMES = ["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "CONTRACTS.md"] as const
@@ -178,6 +183,8 @@ export class MemoryStore extends StoreBase {
     migrateGlobalPrimaryFiles(this.socratesHome)
     ensureStructuredSoulFile(path.join(this.socratesHome, "identity.md"), "identity")
     ensureStructuredSoulFile(path.join(this.socratesHome, "operating_principles.md"), "operating_principles")
+    ensureStructuredSoulFile(path.join(this.socratesHome, "user_profile.md"), "user_profile")
+    migrateIdentityUserSectionsToProfile(this.socratesHome)
     ensureBundledToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
     removeLegacyToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
     fs.mkdirSync(path.join(this.socratesHome, "skills"), { recursive: true })
@@ -314,6 +321,27 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  recordProjectStateLedger(
+    projectId: string,
+    workspacePath: string | undefined,
+    input: {
+      conversationTitle?: string
+      turnId: string
+      status: "completed" | "cancelled" | "failed"
+      assistantPreview?: string
+      toolRuns: ConversationToolRun[]
+    },
+  ): void {
+    if (!workspacePath) {
+      return
+    }
+    this.ensureProjectMemory(projectId, workspacePath)
+    const notesPath = projectDocPath(workspacePath, "notes")
+    const content = fs.readFileSync(notesPath, "utf8")
+    const section = formatProjectStateLedgerSection(input)
+    fs.writeFileSync(notesPath, replaceStateLedgerSection(content, section))
+  }
+
   runRepoDocsTool(projectId: string, workspacePath: string, input: RepoDocsToolInput): RepoDocsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
     const docsRoot = repoDocsRoot(workspacePath)
@@ -412,9 +440,32 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  runUserProfileTool(projectId: string, workspacePath: string | undefined, input: UserProfileToolInput): UserProfileToolOutput {
+    this.ensureProjectMemory(projectId, workspacePath)
+    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
+    const absolutePath = this.userProfilePath()
+    const content = fs.readFileSync(absolutePath, "utf8")
+    const clipped = truncate(content, charLimit)
+    return {
+      operation: "read",
+      path: "user_profile.md",
+      content: clipped.text,
+      truncation: truncationFor(content, charLimit),
+      ...(clipped.truncated ? { warnings: ["user_profile.md was truncated. Re-read with a larger charLimit if needed."] } : {}),
+    }
+  }
+
   buildWakeContext(projectId: string, workspacePath: string | undefined, userQuery: string): string | undefined {
     this.ensureProjectMemory(projectId, workspacePath)
-    const sections: string[] = ["First user query in this conversation. Use this as quiet wake context, not as user-visible text."]
+    const sections: string[] = ["Quiet startup map. Use this as model-visible internal context, not as user-visible text."]
+    const projectNotes = workspacePath ? readIfExists(projectDocPath(workspacePath, "notes")) : undefined
+    const stateLedger = projectNotes ? extractStateLedgerSection(projectNotes) : undefined
+    if (workspacePath) {
+      sections.push('For full project notes, call project_docs({ operation: "read", area: "notes" }).')
+    }
+    if (stateLedger?.trim()) {
+      sections.push(`Project notes state ledger:\n${truncate(stateLedger.trim(), 1_600).text}`)
+    }
     const projectMemory = workspacePath ? readIfExists(projectDocPath(workspacePath, "memory")) : undefined
     const coreIdea = workspacePath ? readIfExists(repoDocPath(repoDocsRoot(workspacePath), "CORE_IDEA.md")) : undefined
     const query = userQuery.trim()
@@ -757,6 +808,7 @@ export class MemoryStore extends StoreBase {
           toolDocs: async (toolInput) => this.runToolDocsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput, "memory_agent"),
           skills: async (toolInput) => this.runSkillsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           soul: async (toolInput) => this.runSoulTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
+          userProfile: async (toolInput) => this.runUserProfileTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           editFiles: async (toolInput) =>
             this.runEditFilesTool(toolInput, {
               jobId,
@@ -1097,7 +1149,7 @@ export class MemoryStore extends StoreBase {
 
   private createMemoryTarget(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul"; document?: "identity" | "operating_principles" },
+    resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
     context: { jobId: string; turnId?: string },
   ): EditFilesToolOutput {
     const patch: MemoryPatchProposal = {
@@ -1109,8 +1161,8 @@ export class MemoryStore extends StoreBase {
     }
     const action = this.createMemoryAction(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, resolved.targetKind, resolved.path, patch, false)
     const current = readIfExists(resolved.path) ?? ""
-    if (resolved.targetKind === "soul") {
-      const error = "Soul documents already exist and must be edited with editMode=\"replace\"."
+    if (resolved.targetKind === "soul" || resolved.targetKind === "user_profile") {
+      const error = `${resolved.targetKind === "soul" ? "Soul documents" : "user_profile.md"} already exists and must be edited with editMode="replace".`
       this.rejectMemoryAction(action.actionId, error)
       return this.rejectedEditFilesOutput(input, resolved.path, action.actionId, error)
     }
@@ -1160,9 +1212,12 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "tool_usage" | "skills" | "soul"; document?: "identity" | "operating_principles" } {
+  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" } {
     if (input.target === "identity" || input.target === "operating_principles") {
       return { path: this.soulPath(input.target), targetKind: "soul", document: input.target }
+    }
+    if (input.target === "user_profile") {
+      return { path: this.userProfilePath(), targetKind: "user_profile" }
     }
     if (input.target === "tool_doc") {
       const rawName = input.name ?? "trace_retrieve"
@@ -1382,6 +1437,10 @@ export class MemoryStore extends StoreBase {
     return path.join(this.socratesHome, `${document}.md`)
   }
 
+  private userProfilePath(): string {
+    return path.join(this.socratesHome, "user_profile.md")
+  }
+
   private memoryAgentModelSettingsFor(): MemoryAgentModelSettings {
     const settings = this.options.getMemoryAgentGlobalSettings?.()
     const thinkingEnabled = settings?.thinkingEnabled ?? DEFAULT_MEMORY_AGENT_THINKING_ENABLED
@@ -1509,7 +1568,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "tool_usage" | "skills",
+    targetKind: "tool_usage" | "skills" | "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
   ): { applied: boolean; actionId: string; error?: string } {
@@ -1645,7 +1704,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "tool_usage" | "skills" | "soul",
+    targetKind: "tool_usage" | "skills" | "soul" | "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
     requiresConfirmation: boolean,
@@ -1817,6 +1876,147 @@ const migrateGlobalPrimaryFiles = (socratesHome: string): void => {
   if (oldLearned?.trim()) {
     ensureFile(path.join(socratesHome, "skills", "general", "SKILL.md"), fallbackSkillMarkdown("general", oldLearned.trim()))
   }
+}
+
+const migrateIdentityUserSectionsToProfile = (socratesHome: string): void => {
+  const identityPath = path.join(socratesHome, "identity.md")
+  const profilePath = path.join(socratesHome, "user_profile.md")
+  const identity = readIfExists(identityPath)
+  const profile = readIfExists(profilePath)
+  if (!identity || !profile) {
+    return
+  }
+  const sections = extractMarkdownSections(identity, ["User Profile", "Stable Preferences", "Collaboration Style"])
+  if (sections.length === 0) {
+    return
+  }
+  if (!profile.includes("## Migrated From identity.md")) {
+    fs.writeFileSync(profilePath, `${profile.trimEnd()}\n\n## Migrated From identity.md\n\n${sections.join("\n\n")}\n`)
+  }
+  let nextIdentity = removeMarkdownSections(identity, ["User Profile", "Stable Preferences", "Collaboration Style"]).trimEnd()
+  if (!nextIdentity.includes("## User Context")) {
+    nextIdentity = `${nextIdentity}\n\n## User Context\n\n- Durable user profile and stable cross-project preferences live in \`user_profile.md\` and are accessed through the \`user_profile\` tool.`
+  }
+  if (nextIdentity.trim() !== identity.trim()) {
+    fs.writeFileSync(identityPath, `${nextIdentity}\n`)
+  }
+}
+
+const extractMarkdownSections = (content: string, headings: string[]): string[] => {
+  const wanted = new Set(headings.map((heading) => heading.toLowerCase()))
+  const lines = content.split(/\r?\n/)
+  const sections: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^##\s+(.+?)\s*$/.exec(lines[index] ?? "")
+    const heading = match?.[1]
+    if (!heading || !wanted.has(heading.toLowerCase())) {
+      continue
+    }
+    const start = index
+    index += 1
+    while (index < lines.length && !/^##\s+/.test(lines[index] ?? "")) {
+      index += 1
+    }
+    sections.push(lines.slice(start, index).join("\n").trim())
+    index -= 1
+  }
+  return sections.filter(Boolean)
+}
+
+const removeMarkdownSections = (content: string, headings: string[]): string => {
+  const wanted = new Set(headings.map((heading) => heading.toLowerCase()))
+  const lines = content.split(/\r?\n/)
+  const kept: string[] = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^##\s+(.+?)\s*$/.exec(lines[index] ?? "")
+    const heading = match?.[1]
+    if (!heading || !wanted.has(heading.toLowerCase())) {
+      kept.push(lines[index] ?? "")
+      continue
+    }
+    index += 1
+    while (index < lines.length && !/^##\s+/.test(lines[index] ?? "")) {
+      index += 1
+    }
+    index -= 1
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n")
+}
+
+const formatProjectStateLedgerSection = (input: {
+  conversationTitle?: string
+  turnId: string
+  status: "completed" | "cancelled" | "failed"
+  assistantPreview?: string
+  toolRuns: ConversationToolRun[]
+}): string => {
+  const tools = input.toolRuns.slice(-12).map(formatToolRunLedgerLine)
+  const files = Array.from(new Set(input.toolRuns.flatMap((run) => run.fileOperations?.map((file) => `${file.operation} ${file.path}`) ?? []))).slice(0, 12)
+  const commands = input.toolRuns.flatMap((run) => run.shell?.command ? [truncateInline(run.shell.command, 180)] : []).slice(-6)
+  const assistantPreview = input.assistantPreview?.trim()
+  return [
+    STATE_LEDGER_START,
+    "## Socrates State Ledger",
+    "",
+    "Machine-managed compact state for startup context. Preserve this bounded section; human notes can live outside it.",
+    "",
+    `- Updated: ${nowIso()}`,
+    `- Last turn: ${input.status}${input.conversationTitle ? ` in "${input.conversationTitle}"` : ""} (${input.turnId})`,
+    tools.length > 0 ? `- Recent tools: ${tools.join("; ")}` : "- Recent tools: none",
+    files.length > 0 ? `- Files touched: ${files.join("; ")}` : "- Files touched: none",
+    commands.length > 0 ? `- Commands: ${commands.join("; ")}` : "- Commands: none",
+    assistantPreview ? `- Assistant/status preview: ${truncateInline(assistantPreview, 300)}` : undefined,
+    "- Startup hint: read full project notes with project_docs({operation:\"read\", area:\"notes\"}) when more detail is needed.",
+    STATE_LEDGER_END,
+  ]
+    .filter((line): line is string => typeof line === "string")
+    .join("\n")
+}
+
+const replaceStateLedgerSection = (content: string, section: string): string => {
+  const start = content.indexOf(STATE_LEDGER_START)
+  const end = content.indexOf(STATE_LEDGER_END)
+  if (start >= 0 && end > start) {
+    const afterEnd = end + STATE_LEDGER_END.length
+    return `${content.slice(0, start).trimEnd()}\n\n${section}\n\n${content.slice(afterEnd).trimStart()}`.trimEnd() + "\n"
+  }
+  return `${content.trimEnd()}\n\n${section}\n`
+}
+
+const extractStateLedgerSection = (content: string): string | undefined => {
+  const start = content.indexOf(STATE_LEDGER_START)
+  const end = content.indexOf(STATE_LEDGER_END)
+  if (start < 0 || end <= start) {
+    return undefined
+  }
+  return content.slice(start, end + STATE_LEDGER_END.length)
+}
+
+const formatToolRunLedgerLine = (run: ConversationToolRun): string => {
+  const target = toolRunTarget(run)
+  return `${run.toolName} ${run.status}${target ? ` ${target}` : ""}`
+}
+
+const toolRunTarget = (run: ConversationToolRun): string => {
+  const args = run.arguments && typeof run.arguments === "object" && !Array.isArray(run.arguments) ? run.arguments as Record<string, unknown> : {}
+  if (typeof args.path === "string") {
+    return args.path
+  }
+  if (typeof args.query === "string") {
+    return `"${truncateInline(args.query, 80)}"`
+  }
+  if (typeof args.command === "string") {
+    return truncateInline(args.command, 100)
+  }
+  if (run.shell?.command) {
+    return truncateInline(run.shell.command, 100)
+  }
+  return ""
+}
+
+const truncateInline = (text: string, limit: number): string => {
+  const compact = text.replace(/\s+/g, " ").trim()
+  return compact.length > limit ? `${compact.slice(0, Math.max(0, limit - 3))}...` : compact
 }
 
 const migrateUsefulPatternsToSkills = (socratesHome: string): void => {

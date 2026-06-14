@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const soulTool: SocratesTool<typeof soulToolInputSchema._type, typeof soulToolOutputSchema._type> = {
   name: "soul",
   description:
-    "Read-only access to Socrates core soul documents: identity and operating principles. Use when exact core identity/principle wording matters. This tool cannot edit soul files; soul updates are backend-memory-agent controlled.",
+    "Read-only access to Socrates core soul documents: identity and operating principles. Call this when the user asks about Socrates' soul, identity, principles, or exact stored self-description. This is not the user profile. This tool cannot edit soul files; soul updates are backend-memory-agent controlled.",
   inputSchema: soulToolInputSchema,
   resultSchema: soulToolOutputSchema,
   permission: "read",

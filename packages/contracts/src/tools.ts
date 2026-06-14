@@ -15,6 +15,7 @@ export const baseToolNameSchema = z.enum([
   "project_docs",
   "repo_docs",
   "soul",
+  "user_profile",
   "list_project_resources",
   "mcp_registry",
 ])
@@ -160,6 +161,25 @@ export const soulToolOutputSchema = z
   })
   .strict()
 export type SoulToolOutput = z.infer<typeof soulToolOutputSchema>
+
+export const userProfileToolInputSchema = z
+  .object({
+    operation: z.literal("read"),
+    charLimit: z.number().int().positive().max(80_000).optional(),
+  })
+  .strict()
+export type UserProfileToolInput = z.infer<typeof userProfileToolInputSchema>
+
+export const userProfileToolOutputSchema = z
+  .object({
+    operation: z.literal("read"),
+    path: z.string().min(1),
+    content: z.string(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type UserProfileToolOutput = z.infer<typeof userProfileToolOutputSchema>
 
 const editTargetPathDescription =
   "Workspace-relative target path. For deliverables or generated files derived from files in a subfolder, use an explicit path in that same subfolder or nearest relevant existing folder; use the workspace root only when requested or truly project-level."
@@ -1064,7 +1084,7 @@ export const projectsToolOutputSchema = z
   .strict()
 export type ProjectsToolOutput = z.infer<typeof projectsToolOutputSchema>
 
-export const editFilesTargetSchema = z.enum(["identity", "operating_principles", "tool_doc", "skill"])
+export const editFilesTargetSchema = z.enum(["identity", "operating_principles", "user_profile", "tool_doc", "skill"])
 export type EditFilesTarget = z.infer<typeof editFilesTargetSchema>
 
 export const editFilesToolInputSchema = z

@@ -98,7 +98,11 @@ export class SocratesAgent {
     const duplicateTraceRetrieveResults = new Map<string, unknown>()
     const toolInputCounts = new Map<string, number>()
     const openRouterPreferredProvidersByModel = new Map<string, string>()
+    const actionLedger = new TurnActionLedger()
     let totalToolCountNudgeSent = false
+    let baselineInputTokens: number | undefined
+    let currentTurnTokenSoftNudgeSent = false
+    let currentTurnTokenHardStopSent = false
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
@@ -136,6 +140,27 @@ export class SocratesAgent {
       }
       if (input.abortSignal?.aborted) {
         return
+      }
+      baselineInputTokens ??= preparedContext.estimatedTokens
+      const currentTurnTokenGrowth = Math.max(0, preparedContext.estimatedTokens - baselineInputTokens)
+      if (!forceFinalNoTools && tools.length > 0 && currentTurnTokenGrowth >= 80_000 && !currentTurnTokenHardStopSent) {
+        messages.push({
+          role: "developer",
+          content:
+            "Runtime anti-spiral guard: current-turn context growth is above 80k estimated tokens. Do not call more tools. Give a concise status/final answer from the evidence already gathered, mention uncertainty, and ask the user to refine or continue if more investigation is needed.",
+        })
+        forceFinalNoTools = true
+        currentTurnTokenHardStopSent = true
+        continue
+      }
+      if (!forceFinalNoTools && tools.length > 0 && currentTurnTokenGrowth >= 50_000 && !currentTurnTokenSoftNudgeSent) {
+        messages.push({
+          role: "developer",
+          content:
+            "Runtime efficiency warning: current-turn context growth is above 50k estimated tokens. Stop repeating investigation. Use the action ledger and answer unless one specific missing fact is essential.",
+        })
+        currentTurnTokenSoftNudgeSent = true
+        continue
       }
       const modelCallId = input.createModelCall?.({
         providerId: input.providerId,
@@ -311,6 +336,16 @@ export class SocratesAgent {
       })
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
+      const ledgerUpdate = actionLedger.recordBatch({
+        toolCalls,
+        results: execution.results,
+        estimatedTokens: preparedContext.estimatedTokens,
+        currentTurnTokenGrowth,
+      })
+      messages.push({ role: "developer", content: ledgerUpdate.summary })
+      for (const warning of ledgerUpdate.warnings) {
+        messages.push({ role: "developer", content: warning })
+      }
       if (shouldNudgeRepoDocsAlignment(execution.results)) {
         messages.push({
           role: "developer",
@@ -338,6 +373,12 @@ export class SocratesAgent {
         messages.push({
           role: "user",
           content: `There have been ${confirmedToolErrors} confirmed tool-call execution errors this turn${recentCodes.length > 0 ? ` (latest codes: ${recentCodes.join(", ")})` : ""}. Do not call more tools. Give the best final answer from the evidence already available, and mention any remaining uncertainty or the exact tool-error blocker.`,
+        })
+        forceFinalNoTools = true
+      } else if (ledgerUpdate.forceFinalReason) {
+        messages.push({
+          role: "developer",
+          content: `Runtime anti-spiral guard: ${ledgerUpdate.forceFinalReason} Do not call more tools. Give a concise status/final answer from the evidence already available, mention uncertainty, and ask the user to refine or continue if more investigation is needed.`,
         })
         forceFinalNoTools = true
       } else if (execution.budgetExhausted || usedToolCalls >= maxToolCallsPerTurn) {
@@ -811,6 +852,11 @@ const shouldNudgeRepoDocsAlignment = (results: ToolExecutionResult[]): boolean =
   })
 }
 
+const TOOL_DOCS_FAILURE_NUDGE = "Refer to tool_docs for tool usage before retrying this tool or choosing another tool."
+const MUTATION_SCHEMA_RECOVERY_HINT =
+  'Runtime tool-schema recovery: the previous edit/apply_patch input was invalid. For a new file, call edit with exactly { "path": "relative/path.md", "content": "..." }. For a full rewrite of an existing file, use exactly { "path": "relative/path.md", "content": "...", "overwrite": true }. For a targeted replacement, use exactly { "path": "relative/path.md", "oldString": "...", "newString": "..." }. Do not mix content with oldString/newString, and do not set overwrite unless it is true.'
+const FAILED_MUTATION_FORCE_FINAL_THRESHOLD = 4
+
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({
     toolCallId: toolCall.toolCallId,
@@ -819,10 +865,94 @@ const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): To
     ok: false,
     error: {
       code: error.code,
-      message: error.message,
+      message: `${error.message}\n\n${TOOL_DOCS_FAILURE_NUDGE}`,
       details: error.details,
     },
   })
+
+type LedgerRecordBatchInput = {
+  toolCalls: NormalizedToolCall[]
+  results: ToolExecutionResult[]
+  estimatedTokens: number
+  currentTurnTokenGrowth: number
+}
+
+class TurnActionLedger {
+  private readonly exactInputCounts = new Map<string, number>()
+  private readonly targetCounts = new Map<string, number>()
+  private readonly failedMutationCounts = new Map<string, number>()
+  private readonly warnedTargets = new Set<string>()
+  private readonly entries: string[] = []
+  private forceFinalReason: string | undefined
+
+  recordBatch(input: LedgerRecordBatchInput): { summary: string; warnings: string[]; forceFinalReason?: string } {
+    const callsById = new Map<string, NormalizedToolCall>()
+    for (const toolCall of input.toolCalls) {
+      callsById.set(toolCall.toolCallId, toolCall)
+      if (toolCall.providerToolCallId) {
+        callsById.set(toolCall.providerToolCallId, toolCall)
+      }
+      const exactKey = stableToolInputKey(toolCall.toolName, toolCall.input)
+      const exactCount = (this.exactInputCounts.get(exactKey) ?? 0) + 1
+      this.exactInputCounts.set(exactKey, exactCount)
+      if (exactCount >= 4) {
+        this.forceFinalReason ??= `same exact ${toolCall.toolName} input was requested ${exactCount} times in this turn.`
+      }
+      const targetKey = normalizedToolTargetKey(toolCall)
+      if (targetKey) {
+        const targetCount = (this.targetCounts.get(targetKey) ?? 0) + 1
+        this.targetCounts.set(targetKey, targetCount)
+        if (targetCount >= 4) {
+          this.forceFinalReason ??= `same normalized tool target was repeated ${targetCount} times (${targetKey}).`
+        }
+      }
+    }
+
+    const warnings: string[] = []
+    for (const result of input.results) {
+      const toolCall = callsById.get(result.toolCallId) ?? (result.providerToolCallId ? callsById.get(result.providerToolCallId) : undefined)
+      this.pushEntry(`${result.ok ? "ok" : "failed"} ${result.toolName}${toolCall ? ` ${toolCallTargetPreview(toolCall)}` : ""}`)
+      const targetKey = toolCall ? normalizedToolTargetKey(toolCall) : undefined
+      const targetCount = targetKey ? (this.targetCounts.get(targetKey) ?? 0) : 0
+      if (targetKey && targetCount >= 2 && !this.warnedTargets.has(targetKey)) {
+        this.warnedTargets.add(targetKey)
+        warnings.push(`Runtime action ledger: ${targetKey} has already been inspected or attempted ${targetCount} times this turn. Use the evidence already gathered, inspect a different target, or answer with the remaining uncertainty.`)
+      }
+      if (!result.ok && toolCall && (toolCall.toolName === "edit" || toolCall.toolName === "apply_patch")) {
+        const failedKey = `${toolCall.toolName}:${mutationTargetFor(toolCall)}:${result.error?.code ?? "error"}`
+        const failedCount = (this.failedMutationCounts.get(failedKey) ?? 0) + 1
+        this.failedMutationCounts.set(failedKey, failedCount)
+        if (result.error?.code === "invalid_tool_input" && failedCount < FAILED_MUTATION_FORCE_FINAL_THRESHOLD) {
+          warnings.push(MUTATION_SCHEMA_RECOVERY_HINT)
+        } else if (failedCount >= FAILED_MUTATION_FORCE_FINAL_THRESHOLD) {
+          this.forceFinalReason ??= `${toolCall.toolName} failed ${failedCount} times for ${mutationTargetFor(toolCall)} with ${result.error?.code ?? "an error"}.`
+        }
+      }
+    }
+
+    return {
+      summary: this.summary(input),
+      warnings,
+      ...(this.forceFinalReason ? { forceFinalReason: this.forceFinalReason } : {}),
+    }
+  }
+
+  private pushEntry(entry: string): void {
+    this.entries.push(entry)
+    if (this.entries.length > 12) {
+      this.entries.splice(0, this.entries.length - 12)
+    }
+  }
+
+  private summary(input: LedgerRecordBatchInput): string {
+    return [
+      "Runtime action ledger for this turn:",
+      `- Current request estimate: ${input.estimatedTokens} tokens; current-turn growth: ${input.currentTurnTokenGrowth} tokens.`,
+      `- Recent actions: ${this.entries.length > 0 ? this.entries.join("; ") : "none"}.`,
+      "- Do not repeat the same target unless the previous result was insufficient for a specific reason. Prefer answering from gathered evidence once enough is known.",
+    ].join("\n")
+  }
+}
 
 const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelToolCallId: string): ToolExecutionResult => {
   if (result.ok) {
@@ -912,6 +1042,57 @@ const addDuplicateTraceRetrieveWarning = (output: unknown): unknown => {
   ]
   return cloned
 }
+
+const normalizedToolTargetKey = (toolCall: NormalizedToolCall): string | undefined => {
+  const input = toolCall.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : {}
+  if (toolCall.toolName === "read") {
+    return typeof input.path === "string" ? `read:${normalizePathKey(input.path)}` : undefined
+  }
+  if (toolCall.toolName === "search") {
+    const mode = typeof input.mode === "string" ? input.mode : "unknown"
+    const query = typeof input.query === "string" ? normalizeTextKey(input.query) : ""
+    const searchPath = typeof input.path === "string" ? normalizePathKey(input.path) : ""
+    return `search:${mode}:${searchPath}:${query}`
+  }
+  if (toolCall.toolName === "bash") {
+    const operation = typeof input.operation === "string" ? input.operation : "run"
+    const command = typeof input.command === "string" ? normalizeTextKey(input.command).slice(0, 200) : ""
+    const cwd = typeof input.cwd === "string" ? normalizePathKey(input.cwd) : ""
+    return command ? `bash:${operation}:${cwd}:${command}` : undefined
+  }
+  if (toolCall.toolName === "edit") {
+    return typeof input.path === "string" ? `edit:${normalizePathKey(input.path)}` : undefined
+  }
+  if (toolCall.toolName === "apply_patch") {
+    const patchText = typeof input.patchText === "string" ? input.patchText : typeof input.patch === "string" ? input.patch : ""
+    const patchPath = firstPatchPath(patchText)
+    return patchPath ? `apply_patch:${normalizePathKey(patchPath)}` : `apply_patch:${normalizeTextKey(patchText).slice(0, 200)}`
+  }
+  return undefined
+}
+
+const toolCallTargetPreview = (toolCall: NormalizedToolCall): string => {
+  const key = normalizedToolTargetKey(toolCall)
+  return key ? `[${key}]` : previewJson(toolCall.input)
+}
+
+const mutationTargetFor = (toolCall: NormalizedToolCall): string => {
+  const input = toolCall.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : {}
+  if (typeof input.path === "string") {
+    return normalizePathKey(input.path)
+  }
+  const patchText = typeof input.patchText === "string" ? input.patchText : typeof input.patch === "string" ? input.patch : ""
+  return firstPatchPath(patchText) ?? "unknown target"
+}
+
+const firstPatchPath = (patchText: string): string | undefined => {
+  const match = /^(?:\*\*\* (?:Update|Delete) File:|\*\*\* Add File:|\*\*\* Move to:)\s+(.+)$/m.exec(patchText)
+  return match?.[1]?.trim()
+}
+
+const normalizePathKey = (value: string): string => value.trim().replaceAll("\\", "/").replace(/\/+/g, "/").replace(/^\.\//, "")
+
+const normalizeTextKey = (value: string): string => value.trim().replace(/\s+/g, " ").toLowerCase()
 
 const stableToolInputKey = (toolName: string, input: unknown): string => `${toolName}:${stableJsonStringify(input)}`
 

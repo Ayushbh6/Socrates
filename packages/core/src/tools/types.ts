@@ -33,6 +33,8 @@ import type {
   ToolPermission,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  UserProfileToolInput,
+  UserProfileToolOutput,
 } from "@socrates/contracts"
 import type { SocratesError } from "@socrates/shared"
 
@@ -68,6 +70,7 @@ export type ToolExecutors = {
   project_docs: (input: ProjectDocsToolInput, context: ToolExecutorContext) => Promise<ProjectDocsToolOutput>
   repo_docs: (input: RepoDocsToolInput, context: ToolExecutorContext) => Promise<RepoDocsToolOutput>
   soul: (input: SoulToolInput, context: ToolExecutorContext) => Promise<SoulToolOutput>
+  user_profile: (input: UserProfileToolInput, context: ToolExecutorContext) => Promise<UserProfileToolOutput>
   list_project_resources: (
     input: ListProjectResourcesToolInput,
     context: ToolExecutorContext,

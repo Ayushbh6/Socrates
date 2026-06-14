@@ -22,6 +22,7 @@ export const handleTurnCancel = (
   }
   const cancelled = store.cancelTurn(command.payload.turnId, command.payload.reason)
   store.indexTurnTraceDocuments(cancelled.projectId, cancelled.conversationId, cancelled.turnId)
+  store.recordProjectStateLedgerTurn(cancelled.projectId, cancelled.conversationId, cancelled.turnId, "cancelled", cancelled.partialAssistantMessage?.content)
 
   subscriptions.emit(
     makeEvent(

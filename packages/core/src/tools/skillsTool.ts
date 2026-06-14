@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const skillsTool: SocratesTool<typeof skillsToolInputSchema._type, typeof skillsToolOutputSchema._type> = {
   name: "skills",
   description:
-    'List, search, or read Socrates skills from builtin, global, and project skill roots. Skills are read-only for the main agent; use them for reusable workflows, learned patterns, and specialized procedures.',
+    'List, search, or read Socrates skills from builtin, global, and project skill roots. Call this when a reusable workflow, learned pattern, plugin skill, or specialized procedure may apply. Skills are read-only for the main agent.',
   inputSchema: skillsToolInputSchema,
   resultSchema: skillsToolOutputSchema,
   permission: "read",

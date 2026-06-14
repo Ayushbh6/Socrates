@@ -17,6 +17,8 @@ import type {
   ToolDocsToolOutput,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  UserProfileToolInput,
+  UserProfileToolOutput,
 } from "@socrates/contracts"
 import type { ToolExecutors } from "@socrates/core"
 import { SocratesError } from "@socrates/shared"
@@ -27,6 +29,7 @@ export type MemoryAgentToolCallbacks = {
   toolDocs: (input: ToolDocsToolInput) => Promise<ToolDocsToolOutput> | ToolDocsToolOutput
   skills: (input: SkillsToolInput) => Promise<SkillsToolOutput> | SkillsToolOutput
   soul: (input: SoulToolInput) => Promise<SoulToolOutput> | SoulToolOutput
+  userProfile: (input: UserProfileToolInput) => Promise<UserProfileToolOutput> | UserProfileToolOutput
   editFiles: (input: EditFilesToolInput) => Promise<EditFilesToolOutput> | EditFilesToolOutput
 }
 
@@ -47,6 +50,7 @@ export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks):
     project_docs: () => unavailable(),
     repo_docs: () => unavailable(),
     soul: async (input) => tools.soul(input),
+    user_profile: async (input) => tools.userProfile(input),
     edit_files: async (input) => tools.editFiles(input),
     list_project_resources: () => unavailable<ListProjectResourcesToolOutput>(),
   }

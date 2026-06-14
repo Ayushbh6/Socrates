@@ -61,6 +61,8 @@ import type {
   ToolDocsToolInput,
   ToolDocsToolOutput,
   TraceRetrieveToolInput,
+  UserProfileToolInput,
+  UserProfileToolOutput,
   UpdateProjectWorkspaceRequest,
   UpdateProjectWorkspaceResponse,
   UpdateConversationRequest,
@@ -258,6 +260,29 @@ export class SocratesStore {
     return this.memory.buildWakeContext(projectId, this.primaryWorkspacePathOrUndefined(projectId), userQuery)
   }
 
+  recordProjectStateLedgerTurn(
+    projectId: string,
+    conversationId: string,
+    turnId: string,
+    status: "completed" | "cancelled" | "failed",
+    assistantPreview?: string,
+  ): void {
+    try {
+      const workspacePath = this.primaryWorkspacePathOrUndefined(projectId)
+      const conversation = this.conversations.getConversation(projectId, conversationId).conversation
+      const toolRuns = this.tools.getConversationToolRuns(conversationId).filter((run) => run.turnId === turnId)
+      this.memory.recordProjectStateLedger(projectId, workspacePath, {
+        ...(conversation.title ? { conversationTitle: conversation.title } : {}),
+        turnId,
+        status,
+        ...(assistantPreview ? { assistantPreview } : {}),
+        toolRuns,
+      })
+    } catch {
+      // State-ledger updates are startup-map hints; they must not break chat turns.
+    }
+  }
+
   runToolDocsTool(projectId: string, input: ToolDocsToolInput): ToolDocsToolOutput {
     return this.memory.runToolDocsTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
   }
@@ -348,6 +373,10 @@ export class SocratesStore {
 
   runSoulTool(projectId: string, input: SoulToolInput): SoulToolOutput {
     return this.memory.runSoulTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
+  }
+
+  runUserProfileTool(projectId: string, input: UserProfileToolInput): UserProfileToolOutput {
+    return this.memory.runUserProfileTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
   }
 
   listNotifications(input: { unreadOnly?: boolean; limit?: number } = {}): ListNotificationsResponse {

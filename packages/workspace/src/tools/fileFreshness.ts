@@ -15,13 +15,13 @@ export class FileFreshnessTracker {
     const relativePath = toWorkspaceRelativePath(workspacePath, path)
     const expected = this.hashes.get(relativePath)
     if (!expected) {
-      throw new SocratesError("edit_stale_content", "Read the file before editing it so Socrates can verify freshness.", {
+      throw new SocratesError("edit_stale_content", `read() has not been called on ${relativePath} in this turn. Call read("${relativePath}") first, then retry the edit.`, {
         details: { path: relativePath, actualHash },
         recoverable: true,
       })
     }
     if (actualHash !== expected) {
-      throw new SocratesError("edit_stale_content", "File content changed since Socrates last read it. Read the file again before editing.", {
+      throw new SocratesError("edit_stale_content", `File content changed since Socrates last read ${relativePath}. Call read("${relativePath}") again, then retry the edit.`, {
         details: { path: relativePath, expectedBaseContentHash: expected, actualHash },
         recoverable: true,
       })

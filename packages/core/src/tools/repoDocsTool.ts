@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const repoDocsTool: SocratesTool<typeof repoDocsToolInputSchema._type, typeof repoDocsToolOutputSchema._type> = {
   name: "repo_docs",
   description:
-    "Read, search, or edit the active workspace's four .socrates/repo_docs/*.md doctrine files. Edit is a constrained oldText/newText replacement against one allowlisted repo-doc file only; use it for durable repo behavior, contracts, workflows, and pitfalls.",
+    "Read, search, or edit the active workspace's four .socrates/repo_docs/*.md doctrine files. Call this before nontrivial repo work when repo rules, architecture, contracts, workflows, or durable pitfalls may matter. Edit is a constrained oldText/newText replacement against one allowlisted repo-doc file only; use it for durable repo behavior, contracts, workflows, and pitfalls.",
   inputSchema: repoDocsToolInputSchema,
   resultSchema: repoDocsToolOutputSchema,
   permission: "mutate",

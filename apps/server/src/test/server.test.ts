@@ -3713,12 +3713,17 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "start with memory"))
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "continue with the startup map"))
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
     } finally {
       socket.close()
     }
 
     expect(fs.existsSync(path.join(socratesHome, "identity.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "operating_principles.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "user_profile.md"))).toBe(true)
+    expect(fs.readFileSync(path.join(socratesHome, "identity.md"), "utf8")).toContain("user_profile.md")
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "trace_retrieve.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_docs.md"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "project_docs.md"))).toBe(true)
@@ -3743,8 +3748,14 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "CONTRACTS.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "APP_FLOW.md"))).toBe(false)
     expect(JSON.stringify(requests[0])).toContain("<socrates_wake_context>")
+    expect(JSON.stringify(requests[0])).toContain("Quiet startup map")
+    expect(JSON.stringify(requests[0])).toContain("For full project notes")
+    expect(JSON.stringify(requests[0])).toContain("project_docs")
     expect(JSON.stringify(requests[0])).toContain("WAKE-LEAN-42")
     expect(JSON.stringify(requests[0])).toContain("lean memory architecture")
+    expect(JSON.stringify(requests[1])).toContain("Socrates State Ledger")
+    expect(JSON.stringify(requests[1])).toContain("Last turn: completed")
+    expect(JSON.stringify(requests[1])).toContain("Captured")
 
     const handle = openDatabase(dbPath)
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome })
@@ -3752,6 +3763,8 @@ describe("WebSocket API", () => {
       const listedSkills = store.runSkillsTool(project.id, { operation: "list" })
       expect(listedSkills.skills.some((skill) => skill.name === "socrates-skill-writer")).toBe(false)
       expect(() => store.runSkillsTool(project.id, { operation: "read", name: "socrates-skill-writer", scope: "builtin" })).toThrow(/Skill was not found/)
+      const userProfileRead = store.runUserProfileTool(project.id, { operation: "read" })
+      expect(userProfileRead.content).toContain("Root global user profile")
       const projectSkillPath = path.join(primaryWorkspace.path as string, ".socrates", "skills", "memory-review", "SKILL.md")
       fs.mkdirSync(path.dirname(projectSkillPath), { recursive: true })
       fs.writeFileSync(projectSkillPath, "---\nname: memory-review\ndescription: Use when reviewing memory changes.\n---\n\n# Memory Review\n")
@@ -3791,6 +3804,11 @@ describe("WebSocket API", () => {
       })
       expect(notesPatch.changed).toBe(true)
       expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")).toContain("Memory tool smoke note")
+      store.recordProjectStateLedgerTurn(project.id, conversation.id, "synthetic_cancelled_turn", "cancelled", "Cancelled after reading evidence.")
+      const notesAfterCancelledLedger = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")
+      expect(notesAfterCancelledLedger.match(/<!-- socrates-state-ledger:start -->/g)).toHaveLength(1)
+      expect(notesAfterCancelledLedger).toContain("Last turn: cancelled")
+      expect(notesAfterCancelledLedger).toContain("Cancelled after reading evidence.")
       const memoryRead = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read", area: "memory" })
       expect(memoryRead.content).toContain("WAKE-LEAN-42")
       const memoryReplace = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
@@ -3879,6 +3897,21 @@ describe("WebSocket API", () => {
               },
             },
           }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_edit_user_profile",
+              toolName: "edit_files",
+              input: {
+                target: "user_profile",
+                editMode: "replace",
+                oldText: "- Unknown until repeated or explicit evidence justifies a durable note.",
+                newText:
+                  "- Unknown until repeated or explicit evidence justifies a durable note.\n- Configured memory worker can update narrow user profile notes.",
+                rationale: "Test scoped user profile update.",
+              },
+            },
+          }
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
         }
@@ -3899,11 +3932,15 @@ describe("WebSocket API", () => {
       await store.runGlobalMemoryAgent("manual")
       const usefulPatternFile = path.join(socratesHome, "skills", "general", "SKILL.md")
       const toolUsageFile = path.join(socratesHome, "tool_usage", "read_search.md")
+      const userProfileFile = path.join(socratesHome, "user_profile.md")
       await waitForFileText(toolUsageFile, "Configured memory worker can refine global tool guidance")
+      await waitForFileText(userProfileFile, "Configured memory worker can update narrow user profile notes")
       expect(fs.existsSync(usefulPatternFile)).toBe(false)
       const rejectedSkill = handle.sqlite.prepare("SELECT status, error FROM memory_agent_actions WHERE target_kind = 'skills'").get() as { status: string; error: string }
       expect(rejectedSkill.status).toBe("rejected")
       expect(rejectedSkill.error).toContain("cannot create or update skills")
+      const profileAction = handle.sqlite.prepare("SELECT status FROM memory_agent_actions WHERE target_kind = 'user_profile'").get() as { status: string }
+      expect(profileAction.status).toBe("applied")
       expect(modelRequests[0]).toEqual({ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false })
       expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "diary"))).toBe(false)
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
@@ -3999,7 +4036,7 @@ describe("WebSocket API", () => {
       const toolNames = ((requests[0]?.tools as Array<{ name: string }> | undefined) ?? []).map((tool) => tool.name)
       expect(requests[0]?.system).toContain("You are the Socrates Global Memory Agent")
       expect(requests[0]?.system).toContain("edit_files: the only write tool")
-      expect(toolNames).toEqual(expect.arrayContaining(["trace_retrieve", "projects", "tool_docs", "skills", "soul", "edit_files"]))
+      expect(toolNames).toEqual(expect.arrayContaining(["trace_retrieve", "projects", "tool_docs", "skills", "soul", "user_profile", "edit_files"]))
       expect(toolNames).not.toContain("bash")
       expect(toolNames).not.toContain("edit")
       expect(JSON.stringify(requests[1]?.messages)).toContain("memory-agent trace marker")
