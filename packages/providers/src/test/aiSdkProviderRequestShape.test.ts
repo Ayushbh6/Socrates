@@ -84,7 +84,7 @@ describe("AI SDK provider request shape", () => {
     expect(options).not.toHaveProperty("activeTools")
   })
 
-  it("passes a stable OpenAI prompt cache key for cache-affinity routing", async () => {
+  it("passes stable OpenAI prompt cache options for cache-affinity routing", async () => {
     const provider = new AiSdkProvider({
       getApiKey: () => "test-key",
     })
@@ -99,6 +99,7 @@ describe("AI SDK provider request shape", () => {
 
     const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
     expect(options.providerOptions?.openai?.promptCacheKey).toBe("project:proj_1:conversation:conv_1")
+    expect(options.providerOptions?.openai?.promptCacheRetention).toBe("24h")
   })
 
   it("leaves Gemini on implicit caching and does not create explicit cache resources", async () => {

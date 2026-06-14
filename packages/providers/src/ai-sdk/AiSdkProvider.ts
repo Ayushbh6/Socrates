@@ -826,6 +826,7 @@ const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => 
   const openaiOptions: Record<string, JsonValue> = {
     reasoningEffort: effort,
     ...(stableCacheKey ? { promptCacheKey: stableCacheKey } : {}),
+    ...(supportsOpenAiExtendedPromptCacheRetention(request.modelId) ? { promptCacheRetention: "24h" } : {}),
   }
 
   if (effort !== "none") {
@@ -833,6 +834,11 @@ const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => 
   }
 
   return { openai: openaiOptions }
+}
+
+const supportsOpenAiExtendedPromptCacheRetention = (modelId: string): boolean => {
+  const normalized = modelId.trim().toLowerCase()
+  return normalized.startsWith("gpt-5") || normalized.startsWith("gpt-4.1")
 }
 
 const createGoogleProviderOptions = (request: ModelRequest): ProviderOptions => {
