@@ -97,6 +97,22 @@ describe("provider usage normalization", () => {
     expect(usage.pricingSnapshot?.providerId).toBe("google")
   })
 
+  it("computes Google Gemini 3.5 Flash cost from the local pricing snapshot", () => {
+    const usage = normalizeProviderUsage({
+      providerId: "google",
+      modelId: "gemini-3.5-flash",
+      usage: {
+        inputTokens: 2000,
+        outputTokens: 300,
+        cachedInputTokens: 1000,
+      },
+    })
+
+    expect(usage.costSource).toBe("computed")
+    expect(usage.costUsd).toBeCloseTo((1000 * 1.5 + 1000 * 0.15 + 300 * 9) / 1_000_000)
+    expect(usage.pricingSnapshot?.providerId).toBe("google")
+  })
+
   it("computes Google Gemini 3.1 Pro cost with standard and long-context pricing", () => {
     const standard = normalizeProviderUsage({
       providerId: "google",

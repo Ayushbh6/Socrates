@@ -36,6 +36,7 @@ import type {
   ProjectDocsToolOutput,
   RepoDocsToolInput,
   RepoDocsToolOutput,
+  RuntimeConfig,
   Project,
   ProjectInstructions,
   GetMemoryAgentResponse,
@@ -431,6 +432,7 @@ export class SocratesStore {
     costUsage: ConversationCostUsage
     turnUsageReports?: ConversationUsageReportBundle["turnUsageReports"]
     contextUsage?: ConversationContextUsage
+    lastRuntimeConfig?: RuntimeConfig
   } {
     const conversation = this.conversations.getConversation(projectId, conversationId)
     const toolRuns = this.tools.getConversationToolRuns(conversationId)

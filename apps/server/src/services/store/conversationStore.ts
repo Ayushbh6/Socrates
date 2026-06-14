@@ -7,6 +7,7 @@ import type {
   CreateConversationRequest,
   Message,
   MessageAttachment,
+  RuntimeConfig,
   UpdateConversationRequest,
 } from "@socrates/contracts"
 import path from "node:path"
@@ -170,6 +171,7 @@ export class ConversationStore extends StoreBase {
     partialTurns?: ConversationPartialTurn[]
     tokenUsage: ConversationTokenUsage
     contextUsage?: ConversationContextUsage
+    lastRuntimeConfig?: RuntimeConfig
   } {
     const conversation = mapConversation(this.mustGetConversationRow(projectId, conversationId))
     const rows = this.handle.db
@@ -186,6 +188,7 @@ export class ConversationStore extends StoreBase {
 
     const contextUsage = this.modelTelemetry.getLatestConversationContextUsage(conversationId)
     const partialTurns = this.getIncompleteTurnStreams(conversationId)
+    const lastRuntimeConfig = this.getLatestRuntimeConfig(conversationId)
     return {
       conversation,
       messages: mappedMessages.map((message) => {
@@ -198,6 +201,48 @@ export class ConversationStore extends StoreBase {
       ...(partialTurns.length > 0 ? { partialTurns } : {}),
       tokenUsage: this.modelTelemetry.getConversationTokenUsage(conversationId),
       ...(contextUsage ? { contextUsage } : {}),
+      ...(lastRuntimeConfig ? { lastRuntimeConfig } : {}),
+    }
+  }
+
+  private getLatestRuntimeConfig(conversationId: string): RuntimeConfig | undefined {
+    const row = this.handle.sqlite
+      .prepare(
+        `SELECT
+           turn_runtime_configs.provider_id as providerId,
+           turn_runtime_configs.model_id as modelId,
+           turn_runtime_configs.thinking_enabled as thinkingEnabled,
+           turn_runtime_configs.thinking_effort as thinkingEffort,
+           turn_runtime_configs.approval_mode as approvalMode,
+           turn_runtime_configs.sandbox_mode as sandboxMode
+         FROM turn_runtime_configs
+         INNER JOIN turns ON turns.id = turn_runtime_configs.turn_id
+         WHERE turns.conversation_id = ?
+         ORDER BY turn_runtime_configs.created_at DESC, turns.started_at DESC
+         LIMIT 1`,
+      )
+      .get(conversationId) as
+      | {
+          providerId: RuntimeConfig["providerId"]
+          modelId: string
+          thinkingEnabled: boolean | 0 | 1
+          thinkingEffort: RuntimeConfig["thinkingEffort"] | null
+          approvalMode: RuntimeConfig["approvalMode"]
+          sandboxMode: RuntimeConfig["sandboxMode"]
+        }
+      | undefined
+
+    if (!row) {
+      return undefined
+    }
+
+    return {
+      providerId: row.providerId,
+      modelId: row.modelId,
+      thinkingEnabled: Boolean(row.thinkingEnabled),
+      ...(row.thinkingEffort ? { thinkingEffort: row.thinkingEffort } : {}),
+      approvalMode: row.approvalMode,
+      sandboxMode: row.sandboxMode,
     }
   }
 

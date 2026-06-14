@@ -67,6 +67,18 @@ const pricingCatalog: Record<string, PricingSnapshot> = {
     outputUsdPer1M: 3,
     effectiveAt: "2026-06-05",
   },
+  "google:gemini-3.5-flash": {
+    providerId: "google",
+    modelId: "gemini-3.5-flash",
+    source: "Gemini Developer API pricing, Gemini 3.5 Flash standard paid tier text/image/video rates",
+    sourceUrl: "https://ai.google.dev/gemini-api/docs/pricing",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 1.5,
+    cachedInputUsdPer1M: 0.15,
+    outputUsdPer1M: 9,
+    effectiveAt: "2026-06-14",
+  },
   "google:gemini-3.1-flash-lite-preview": {
     providerId: "google",
     modelId: "gemini-3.1-flash-lite-preview",

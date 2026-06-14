@@ -16,6 +16,7 @@ describe("model catalog", () => {
       "openai/gpt-5.4",
       "openai/gpt-5",
       "google/gemini-3.1-pro-preview",
+      "google/gemini-3.5-flash",
       "google/gemini-3-flash-preview",
       "google/gemini-3.1-flash-lite-preview",
       "openrouter/moonshotai/kimi-k2.6",
@@ -33,6 +34,12 @@ describe("model catalog", () => {
   it("does not expose non-thinking mode for Gemini 3.1 Pro", () => {
     const pro = modelCatalog.find((model) => model.modelId === "gemini-3.1-pro-preview")
     expect(pro?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high"])
+  })
+
+  it("uses Google's Gemini 3.5 Flash default thinking level", () => {
+    const flash = modelCatalog.find((model) => model.modelId === "gemini-3.5-flash")
+    expect(flash?.defaultThinkingOptionId).toBe("medium")
+    expect(flash?.thinkingOptions.map((option) => option.id)).toEqual(["minimal", "low", "medium", "high"])
   })
 
   it("marks only OpenRouter text-only models as non-vision models", () => {

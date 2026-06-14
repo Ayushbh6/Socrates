@@ -678,6 +678,14 @@ describe("http contracts", () => {
           contextLeftTokens: 138000,
           contextUsedPercent: 23.3,
         },
+        lastRuntimeConfig: {
+          providerId: "google",
+          modelId: "gemini-3.5-flash",
+          thinkingEnabled: true,
+          thinkingEffort: "medium",
+          approvalMode: "manual",
+          sandboxMode: "workspace_write",
+        },
       }).success,
     ).toBe(true)
     expect(

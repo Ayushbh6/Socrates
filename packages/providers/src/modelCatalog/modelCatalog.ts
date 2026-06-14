@@ -73,6 +73,14 @@ export const modelCatalog = [
   }),
   makeModel({
     providerId: "google",
+    modelId: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
+    contextWindowTokens: 1048576,
+    thinkingOptions: [effortOption("minimal"), effortOption("low"), effortOption("medium"), effortOption("high")],
+    defaultThinkingOptionId: "medium",
+  }),
+  makeModel({
+    providerId: "google",
     modelId: "gemini-3-flash-preview",
     label: "Gemini 3 Flash",
     contextWindowTokens: 1048576,

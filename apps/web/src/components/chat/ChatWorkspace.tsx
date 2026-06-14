@@ -32,6 +32,114 @@ const TERMINAL_PANEL_COLLAPSED_KEY_PREFIX = "socrates-terminal-panel-collapsed-v
 const TERMINAL_DOCK_HEIGHT_KEY_PREFIX = "socrates-terminal-dock-height-v1";
 const TERMINAL_DOCK_OPEN_KEY_PREFIX = "socrates-terminal-dock-open-v1";
 const TERMINAL_DOCK_ACTIVE_KEY_PREFIX = "socrates-terminal-dock-active-v1";
+const COMPOSER_MODEL_KEY_PREFIX = "socrates-composer-model-v1";
+
+type LastRuntimeConfig = NonNullable<GetConversationResponse["lastRuntimeConfig"]>;
+
+type StoredComposerModelPreference = {
+  providerId: string;
+  modelId: string;
+  thinkingOptionId?: string;
+  thinkingEnabled?: boolean;
+  thinkingEffort?: ModelThinkingOption["effort"];
+};
+
+const findModelSelection = (models: ModelOption[], providerId: string, modelId: string): ModelOption | null =>
+  models.find((model) => model.providerId === providerId && model.modelId === modelId) ?? null;
+
+const selectDefaultThinkingOption = (model: ModelOption, preferredThinkingOptionId?: string): ModelThinkingOption | null =>
+  model.thinkingOptions.find((option) => option.id === preferredThinkingOptionId) ??
+  model.thinkingOptions.find((option) => option.id === model.defaultThinkingOptionId) ??
+  model.thinkingOptions[0] ??
+  null;
+
+const selectThinkingOptionFromRuntimeConfig = (
+  model: ModelOption,
+  runtimeConfig: Pick<LastRuntimeConfig, "thinkingEnabled" | "thinkingEffort">,
+): ModelThinkingOption | null => {
+  if (runtimeConfig.thinkingEffort) {
+    const effortOption = model.thinkingOptions.find(
+      (option) => option.effort === runtimeConfig.thinkingEffort || option.id === runtimeConfig.thinkingEffort,
+    );
+    if (effortOption) {
+      return effortOption;
+    }
+  }
+
+  return model.thinkingOptions.find((option) => option.enabled === runtimeConfig.thinkingEnabled) ?? null;
+};
+
+const selectThinkingOptionFromStoredPreference = (
+  model: ModelOption,
+  preference: StoredComposerModelPreference,
+): ModelThinkingOption | null => {
+  if (preference.thinkingOptionId) {
+    const option = model.thinkingOptions.find((item) => item.id === preference.thinkingOptionId);
+    if (option) {
+      return option;
+    }
+  }
+
+  if (preference.thinkingEffort || preference.thinkingEnabled !== undefined) {
+    return selectThinkingOptionFromRuntimeConfig(model, {
+      thinkingEnabled: preference.thinkingEnabled ?? true,
+      thinkingEffort: preference.thinkingEffort,
+    });
+  }
+
+  return null;
+};
+
+const readComposerModelPreference = (storageKey: string): StoredComposerModelPreference | null => {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const raw = window.localStorage.getItem(storageKey);
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredComposerModelPreference>;
+    if (typeof parsed.providerId !== "string" || typeof parsed.modelId !== "string") {
+      return null;
+    }
+    return {
+      providerId: parsed.providerId,
+      modelId: parsed.modelId,
+      ...(typeof parsed.thinkingOptionId === "string" ? { thinkingOptionId: parsed.thinkingOptionId } : {}),
+      ...(typeof parsed.thinkingEnabled === "boolean" ? { thinkingEnabled: parsed.thinkingEnabled } : {}),
+      ...(typeof parsed.thinkingEffort === "string" ? { thinkingEffort: parsed.thinkingEffort } : {}),
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeComposerModelPreference = (
+  storageKey: string,
+  model: ModelOption | null,
+  thinkingOption: ModelThinkingOption | null,
+) => {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (!model) {
+    window.localStorage.removeItem(storageKey);
+    return;
+  }
+
+  window.localStorage.setItem(
+    storageKey,
+    JSON.stringify({
+      providerId: model.providerId,
+      modelId: model.modelId,
+      ...(thinkingOption ? { thinkingOptionId: thinkingOption.id, thinkingEnabled: thinkingOption.enabled } : {}),
+      ...(thinkingOption?.effort ? { thinkingEffort: thinkingOption.effort } : {}),
+    } satisfies StoredComposerModelPreference),
+  );
+};
 
 export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps) {
   const router = useRouter();
@@ -70,6 +178,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const dockHeightKey = `${TERMINAL_DOCK_HEIGHT_KEY_PREFIX}:${projectId}:${conversationId}`;
   const dockOpenKey = `${TERMINAL_DOCK_OPEN_KEY_PREFIX}:${projectId}:${conversationId}`;
   const dockActiveKey = `${TERMINAL_DOCK_ACTIVE_KEY_PREFIX}:${projectId}:${conversationId}`;
+  const composerModelKey = `${COMPOSER_MODEL_KEY_PREFIX}:${projectId}:${conversationId}`;
 
   useEffect(() => {
     activeTurnIdRef.current = activeTurnId;
@@ -599,13 +708,26 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 model.providerId === modelsResponse.defaultModel.providerId &&
                 model.modelId === modelsResponse.defaultModel.modelId,
             ) ?? modelsResponse.models[0] ?? null;
-          setSelectedModel(defaultModel);
-          setSelectedThinkingOption(
-            defaultModel?.thinkingOptions.find((option) => option.id === modelsResponse.defaultModel.thinkingOptionId) ??
-              defaultModel?.thinkingOptions.find((option) => option.id === defaultModel.defaultThinkingOptionId) ??
-              defaultModel?.thinkingOptions[0] ??
-              null,
-          );
+          const storedPreference = readComposerModelPreference(composerModelKey);
+          const storedModel = storedPreference
+            ? findModelSelection(modelsResponse.models, storedPreference.providerId, storedPreference.modelId)
+            : null;
+          const lastRuntimeConfig = conversation.lastRuntimeConfig;
+          const runtimeModel = lastRuntimeConfig
+            ? findModelSelection(modelsResponse.models, lastRuntimeConfig.providerId, lastRuntimeConfig.modelId)
+            : null;
+          const initialModel = storedModel ?? runtimeModel ?? defaultModel;
+          const initialThinkingOption = storedModel
+            ? storedPreference
+              ? selectThinkingOptionFromStoredPreference(storedModel, storedPreference) ?? selectDefaultThinkingOption(storedModel)
+              : selectDefaultThinkingOption(storedModel)
+            : runtimeModel && lastRuntimeConfig
+              ? selectThinkingOptionFromRuntimeConfig(runtimeModel, lastRuntimeConfig) ?? selectDefaultThinkingOption(runtimeModel)
+              : defaultModel
+                ? selectDefaultThinkingOption(defaultModel, modelsResponse.defaultModel.thinkingOptionId)
+                : null;
+          setSelectedModel(initialModel);
+          setSelectedThinkingOption(initialModel ? (initialThinkingOption ?? selectDefaultThinkingOption(initialModel)) : null);
         }
       } catch (err) {
         if (isMounted) {
@@ -623,17 +745,18 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     return () => {
       isMounted = false;
     };
-  }, [projectId, conversationId]);
+  }, [projectId, conversationId, composerModelKey]);
 
   const handleModelChange = (model: ModelOption) => {
+    const nextThinkingOption = selectDefaultThinkingOption(model);
     setSelectedModel(model);
-    setSelectedThinkingOption(
-      model.thinkingOptions.find((option) => option.id === model.defaultThinkingOptionId) ?? model.thinkingOptions[0] ?? null,
-    );
+    setSelectedThinkingOption(nextThinkingOption);
+    writeComposerModelPreference(composerModelKey, model, nextThinkingOption);
   };
 
   const handleThinkingChange = (option: ModelThinkingOption) => {
     setSelectedThinkingOption(option);
+    writeComposerModelPreference(composerModelKey, selectedModel, option);
   };
 
   const handleStartChat = async (targetProjectId: string) => {
@@ -670,6 +793,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setError(null);
     setLiveSteps([]);
     setIsCompacting(false);
+    writeComposerModelPreference(composerModelKey, selectedModel, selectedThinkingOption);
     const clientMessageId = `msg_${crypto.randomUUID()}`;
     setAnchorMessageId(clientMessageId);
     try {

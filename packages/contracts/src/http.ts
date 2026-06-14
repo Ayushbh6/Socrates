@@ -786,6 +786,17 @@ export const getConversationResponseSchema = z
     costUsage: conversationCostUsageSchema,
     turnUsageReports: z.array(turnUsageReportSchema).optional(),
     contextUsage: conversationContextUsageSchema.optional(),
+    lastRuntimeConfig: z
+      .object({
+        providerId: providerIdSchema,
+        modelId: z.string().min(1),
+        thinkingEnabled: z.boolean(),
+        thinkingEffort: thinkingEffortSchema.optional(),
+        approvalMode: z.enum(["manual", "approve_all", "read_only_auto"]),
+        sandboxMode: z.enum(["read_only", "workspace_write", "danger_full_access"]),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
 

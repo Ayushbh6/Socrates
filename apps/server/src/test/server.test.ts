@@ -2914,6 +2914,14 @@ describe("WebSocket API", () => {
       const body = parseResponse<{
         tokenUsage: { totalTokens: number }
         contextUsage?: { contextUsedTokens: number; contextWindowTokens: number }
+        lastRuntimeConfig?: {
+          providerId: string
+          modelId: string
+          thinkingEnabled: boolean
+          thinkingEffort?: string
+          approvalMode: string
+          sandboxMode: string
+        }
       }>(response.payload)
 
       expect(body.ok).toBe(true)
@@ -2921,6 +2929,14 @@ describe("WebSocket API", () => {
         expect(body.data.tokenUsage.totalTokens).toBe(6)
         expect(body.data.contextUsage?.contextUsedTokens).toBe(12_345)
         expect(body.data.contextUsage?.contextUsedTokens).not.toBe(body.data.tokenUsage.totalTokens)
+        expect(body.data.lastRuntimeConfig).toEqual({
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          thinkingEnabled: false,
+          thinkingEffort: "none",
+          approvalMode: "manual",
+          sandboxMode: "workspace_write",
+        })
       }
     } finally {
       socket.close()
