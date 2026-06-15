@@ -1397,10 +1397,14 @@ type ToolCallStartedPayload = {
     | "apply_patch"
     | "bash"
     | "trace_retrieve"
-    | "socrates_memory"
-    | "project_notes"
+    | "tool_docs"
+    | "skills"
+    | "projects"
+    | "edit_files"
+    | "project_docs"
     | "repo_docs"
     | "soul"
+    | "user_profile"
     | "list_project_resources"
     | "mcp_registry"
   category: "file" | "search" | "shell" | "git" | "patch" | "resource" | "trace" | "other"
@@ -1686,15 +1690,17 @@ edit
 apply_patch
 bash
 trace_retrieve
-socrates_memory
-project_notes
+tool_docs
+skills
+project_docs
 repo_docs
 soul
+user_profile
 list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `skill`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the base model-visible surface should remain the tools above plus `mcp_registry`. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus dynamic MCP tools returned by `mcp_registry`. `projects` and `edit_files` are base contract tools for backend memory workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -1841,8 +1847,10 @@ Rules:
 - File mutations are serialized: only one mutation tool call may execute at a time per project workspace.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
-- Generic `edit` writes to `<workspace>/.socrates/PROJECT_NOTES.md` are rejected with recoverable `project_notes_dedicated_tool_required`; that file remains readable through normal read/search, but mutations must use the dedicated `project_notes` tool.
-- Generic `edit` writes to `<workspace>/.socrates/repo_docs/*.md` are rejected with recoverable `repo_docs_dedicated_tool_required`; those files remain readable through normal read/search, but mutations must use the dedicated `repo_docs` tool.
+- Generic `edit` writes to `<workspace>/.socrates/MEMORY.md` or `<workspace>/.socrates/PROJECT_NOTES.md` are rejected with recoverable dedicated-tool errors; those files remain readable through normal read/search, but mutations must use `project_docs`.
+- Generic `edit` writes to `<workspace>/.socrates/repo_docs/*.md` are rejected with recoverable dedicated-tool errors; those files remain readable through normal read/search, but mutations must use `repo_docs`.
+- Before `edit`, `apply_patch`, or approval-required mutation tools can run, Socrates must have read, searched, or edited `repo_docs` in the same turn. Missing preflight returns recoverable `repo_docs_preflight_required` and should not request approval first.
+- After meaningful work, if `project_docs memory` has not been updated, the runtime may inject one bounded `runtime_docs_sync_checkpoint` before final. A `project_docs notes` edit alone does not satisfy the durable memory checkpoint.
 
 ### `apply_patch`
 
@@ -1867,8 +1875,8 @@ Rules:
 - Existing-file update, delete, and rename operations require a prior active-turn `read` of the source path. New-file creation does not require a prior read. After a successful patch, another mutation to the same existing path must re-read first.
 - Common structured patch prefix mistakes may be normalized with warnings, but malformed unified diff hunk counts and unsafe structured patch grammar errors must fail before applying with recoverable, corrective messages that steer the model back to structured `patchText`.
 - Non-dry-run patches must verify disk after applying and return the same verified metadata shape as `edit`. Deleted files verify by being absent; renamed files verify that the old path is absent and the new path exists.
-- Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/PROJECT_NOTES.md` is rejected with recoverable `project_notes_dedicated_tool_required`; the model should retry with `project_notes.patch`.
-- Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/repo_docs/*.md` is rejected with recoverable `repo_docs_dedicated_tool_required`; the model should retry with `repo_docs.patch`.
+- Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/MEMORY.md` or `<workspace>/.socrates/PROJECT_NOTES.md` is rejected with a recoverable dedicated-tool error; the model should retry with `project_docs`.
+- Any `apply_patch` create, update, delete, or rename whose source or destination is `<workspace>/.socrates/repo_docs/*.md` is rejected with a recoverable dedicated-tool error; the model should retry with `repo_docs`.
 - File mutations are serialized with `edit`.
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
@@ -2133,47 +2141,57 @@ Rules:
 - Conversation summaries and verbatim anchors must not be inserted as fake user messages.
 - Verbatim anchors preserve exact high-value source chunks such as rubrics, user-provided rules, "use this throughout" instructions, canonical examples, or source-of-truth pasted text.
 
-### `socrates_memory`
+### `tool_docs`
 
-Read-only investigation over Socrates-owned memory pages under `~/.Socrates`. This is not conversation retrieval; use `trace_retrieve` for raw chat/tool provenance.
+Read-only access to Socrates tool-usage guidance under `~/.Socrates/tool_usage`. Socrates should call this before retrying failed tools, when tool behavior is unfamiliar, or before complex/edge-case use of trace retrieval, Terminal, edit/apply_patch, docs, skills, MCP, or resources.
 
 Input:
 
 ```ts
-type SocratesMemoryToolInput = {
+type ToolDocsToolInput = {
   operation: "search" | "read"
-  scope?: "primary" | "project" | "all"
-  category?: "learned_patterns" | "tool_usage" | "project_brief" | "project_memory" | "diary"
+  area?: "tool_usage"
   path?: string
   query?: string
   searchMode?: "exact_phrase" | "keyword_all" | "keyword_any" | "whole_word" | "regex"
-  memoryLimit?: number
-  memoryOffset?: number
   limit?: number
   offset?: number
   charLimit?: number
-  contextLines?: number
-  modifiedAfter?: string
-  modifiedBefore?: string
-  diaryDateAfter?: string
-  diaryDateBefore?: string
-  entryAfter?: string
-  entryBefore?: string
-  year?: number
-  month?: number
-  day?: number
-  includeSections?: boolean
 }
 ```
 
 Rules:
 
-- `scope` is a memory-page scope: `primary` covers learned patterns and tool-usage docs, `project` covers the current project's brief, project memory, and diary pages, and `all` covers both readable sets.
-- `memoryLimit` and `memoryOffset` control how many memory pages/files are considered. `limit` and `offset` control final returned result units.
-- `path` may be full (`project/diary/2026/06/2026-06-01.md`) or category-relative (`diary/2026/06/2026-06-01.md`).
-- Search is case-insensitive by default and may be queryless for browsing pages/sections.
-- Identity and operating principles are core agent soul context and are not exposed through this tool.
-- The server runtime bundles primary tool-usage docs and installs them under `~/.Socrates/primary/tool_usage/`: `trace_retrieve.md`, `edit_tools_and_bash.md`, `read_tools.md`, and `memory_tools.md`.
+- Search results are bounded snippets. Exact guidance should be read with `operation: "read"` and a returned path.
+- The main agent cannot edit tool docs. Backend memory workflows may update tool docs through scoped `edit_files`.
+
+### `skills`
+
+Read-only list/search/read access to reusable workflows from builtin, global, and project skill roots. The main agent can inspect skills but cannot create or edit skills through this tool.
+
+### `project_docs`
+
+Constrained read/search/edit access to the active workspace's `.socrates/MEMORY.md` and `.socrates/PROJECT_NOTES.md`.
+
+Input:
+
+```ts
+type ProjectDocsToolInput = {
+  operation: "read" | "search" | "edit"
+  area: "memory" | "notes"
+  editMode?: "append" | "replace"
+  oldText?: string
+  newText?: string
+  text?: string
+}
+```
+
+Rules:
+
+- `area: "memory"` is durable cross-conversation project state: goals, decisions, constraints, blockers, durable preferences, changed workflow facts, and handoff facts.
+- `area: "notes"` is the active assistant notebook: current todos, checked files, partial progress, next commands, and short-term restart points.
+- Generic `edit` and `apply_patch` writes to these files are rejected; use `project_docs`.
+- After meaningful workspace work, the runtime may inject a docs checkpoint requiring a `project_docs` memory update before final when no durable memory update happened.
 
 ### `soul`
 
@@ -2212,23 +2230,24 @@ Rules:
 - A proposed soul update must create a confirmation record and run the exact prompt `You are about to make changes to the soul. Are you sure?` followed by `Reply exactly yes or no.` Only an exact normalized `yes` applies the patch.
 - Applied soul updates create durable notifications with rationale and compact diff payloads.
 
-### `project_notes`
+### `user_profile`
 
-Constrained read/search/patch access to the active workspace's `.socrates/PROJECT_NOTES.md`. Generic `edit` and `apply_patch` writes to this file are rejected; normal read/search may still inspect it.
+Read-only access to `~/.Socrates/user_profile.md`, which stores durable cross-project user profile facts and stable user preferences. The main Socrates agent should call this before answering user-profile/preference questions. Only the backend memory agent can update this file through scoped `edit_files`.
 
 ### `repo_docs`
 
-Constrained read/search/patch access to durable workspace doctrine under `.socrates/repo_docs/`. Generic `edit` and `apply_patch` writes to these files are rejected; normal read/search may still inspect them.
+Constrained read/search/edit access to durable workspace doctrine under `.socrates/repo_docs/`. Generic `edit` and `apply_patch` writes to these files are rejected; normal read/search may still inspect them.
 
 Input:
 
 ```ts
 type RepoDocsToolInput = {
-  operation: "read" | "search" | "patch"
-  path?: "REPO_RULES.md" | "APP_FLOW.md" | "FRONTEND_BACKEND_CONTRACT.md" | "DB_STRUCTURE.md" | "PROVIDER_USAGE.md" | "REPO_STRCUTURE.md"
+  operation: "read" | "search" | "edit"
+  path?: "CORE_IDEA.md" | "REPO_NAVIGATION.md" | "REPO_RULES.md" | "CONTRACTS.md"
   query?: string
   oldText?: string
   newText?: string
+  text?: string
   replaceAll?: boolean
   charLimit?: number
 }
@@ -2237,7 +2256,7 @@ type RepoDocsToolInput = {
 Rules:
 
 - Project access creates missing template files only; existing user-edited repo docs are preserved.
-- `read` with no path returns a bounded index of the six docs.
+- `read` with no path returns a bounded index of the four docs.
 - `search` requires `query` and searches all docs unless `path` narrows it.
 - `patch` requires one allowlisted `path` plus exact `oldText`/`newText`.
 - After meaningful code, contract, data, workflow, or architecture changes, the backend quietly reminds Socrates to consider whether these docs need alignment.
@@ -2299,7 +2318,7 @@ new user query
 current-turn tool calls only
 ```
 
-When the context grows too large, compression happens before a provider request is sent. This includes both long conversations and long single-turn tasks. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles.
+When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes both long conversations and long single-turn tasks. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles.
 
 If older conversation memory is needed, the agent should call normal `trace_retrieve` explicitly. If older runtime evidence is needed, it should retry with `mode = "audit"`. Full raw history remains persisted in SQLite for audit and replay.
 
@@ -2309,7 +2328,7 @@ Provider-exposed thinking or reasoning text is stored for UI/replay when exposed
 
 Provider-specific opaque tool-call metadata needed to continue the current tool loop, such as Gemini thought signatures, may be carried only inside the active turn's in-memory model messages. It must not be loaded into later user turns as semantic history.
 
-Compression outputs must not be written as visible `messages`. If the frontend loads conversation history through HTTP, it should continue to receive real user and assistant messages plus persisted tool runs, not hidden compaction summaries as fake chat turns.
+Compression outputs must not be written as visible `messages`. If the frontend loads conversation history through HTTP, it should continue to receive real user and assistant messages plus persisted tool runs, not hidden compaction summaries as fake chat turns. New compaction snapshots must validate against the shared structured schemas before activation; malformed parseable JSON or old legacy snapshot shapes must not become active context.
 
 ## Future Event Expansion
 

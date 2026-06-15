@@ -101,7 +101,7 @@ The npm CLI path is the primary distribution path until paid desktop signing is 
 
 The CLI fetches the latest GitHub Release by default, so older published launcher packages can still pick up newer runtime zips. Publishing the npm package version is still useful for launcher metadata and `--version`, but runtime rollout is driven by the GitHub Release assets. Windows runtime extraction should prefer `tar.exe`, with PowerShell `Expand-Archive` only as a fallback, because `Expand-Archive` is slower on the large Windows archive and has been unreliable with `./`-prefixed zip entries. Runtime archive creation must write root entries such as `launcher.mjs` and `manifest.json` directly, without a `./` prefix or wrapper directory.
 
-Current npm runtime release target is `v0.1.8`. It includes the v0.1.7 direct-provider Gemini pricing fix plus the Google adapter compatibility fix for Socrates developer continuation messages after tool calls. The dedicated `memory-work-v1` branch remains separate from this release target.
+Current npm runtime release target is `v0.1.9`. It includes the v0.1.8 provider/cache/runtime fixes plus the compressor refactor, memory-agent packing fix, proactive investigation harness, repo-docs preflight gate, and durable project-memory checkpoint.
 
 On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
 
@@ -671,10 +671,12 @@ edit
 apply_patch
 bash
 trace_retrieve
-socrates_memory
-project_notes
+tool_docs
+skills
+project_docs
 repo_docs
 soul
+user_profile
 list_project_resources
 mcp_registry
 ```
@@ -683,7 +685,7 @@ mcp_registry
 
 `search` handles both file discovery and grep-style text search. It respects ignore files by default, skips nuisance/generated/binary paths by default, defaults to at most 20 results, hard-caps requested results at 50, and returns warnings when output is capped or vendor/generated paths are skipped. Text queries that look like regex syntax (`|`, `.*`, `\b`, character classes, anchors, etc.) are interpreted as regex unless `regex: false` is explicit, and zero-match literal regex-looking searches return a warning. File search matches case-insensitively against both full relative paths and basenames, including glob-style queries.
 
-`edit` is the primary V1 model-visible single-file mutation tool. Existing files should use targeted `oldString`/`newString` replacements; `content` is for new files unless `overwrite: true` explicitly requests a deliberate full-file rewrite. New deliverables, scratch files, or generated files derived from files in a subfolder should be written with an explicit path in that same subfolder or nearest relevant existing folder; the workspace root is appropriate only when the user asks for it, the artifact is truly project-level, or the task is standalone workspace-level work with no relevant subfolder. `apply_patch` is the separate multi-hunk or multi-file patch tool. Its model-facing input is `patchText`; models should prefer the structured `*** Begin Patch` envelope with `*** Add File`, `*** Update File`, `*** Delete File`, and `*** Move to` sections because it avoids fragile unified-diff hunk counts. `@@` labels are optional hints, and the old lines inside the hunk are the real match target. Standard unified diffs are still accepted for compatibility when already valid and are applied via `git apply`. Both mutation tools require approval unless the user explicitly runs a full-access mode. Non-dry-run mutations read/stat/hash before writing and immediately verify disk after writing; returned `changedFiles` include verified hashes and size/line metadata. Existing-file edits, patches, deletes, and renames require a prior `read` in the active turn; after a successful mutation, another mutation to the same file must re-read first. The harness tracks freshness from read results instead of model-carried hashes. Stale, unread, non-explicit overwrite, and failed read-back verification cases surface as recoverable tool errors, so Socrates must re-read or switch to targeted replacement rather than claim a write succeeded. Generic `edit` and `apply_patch` writes to `<workspace>/.socrates/PROJECT_NOTES.md` are rejected with `project_notes_dedicated_tool_required`; the file remains normally readable/searchable but writes must use `project_notes.patch`. Generic `edit` and `apply_patch` writes to `<workspace>/.socrates/repo_docs/*.md` are rejected with `repo_docs_dedicated_tool_required`; those files remain normally readable/searchable but writes must use `repo_docs.patch`.
+`edit` is the primary V1 model-visible single-file mutation tool. Existing files should use targeted `oldString`/`newString` replacements; `content` is for new files unless `overwrite: true` explicitly requests a deliberate full-file rewrite. New deliverables, scratch files, or generated files derived from files in a subfolder should be written with an explicit path in that same subfolder or nearest relevant existing folder; the workspace root is appropriate only when the user asks for it, the artifact is truly project-level, or the task is standalone workspace-level work with no relevant subfolder. `apply_patch` is the separate multi-hunk or multi-file patch tool. Its model-facing input is `patchText`; models should prefer the structured `*** Begin Patch` envelope with `*** Add File`, `*** Update File`, `*** Delete File`, and `*** Move to` sections because it avoids fragile unified-diff hunk counts. `@@` labels are optional hints, and the old lines inside the hunk are the real match target. Standard unified diffs are still accepted for compatibility when already valid and are applied via `git apply`. Both mutation tools require approval unless the user explicitly runs a full-access mode. Non-dry-run mutations read/stat/hash before writing and immediately verify disk after writing; returned `changedFiles` include verified hashes and size/line metadata. Existing-file edits, patches, deletes, and renames require a prior `read` in the active turn; after a successful mutation, another mutation to the same file must re-read first. Before `edit`, `apply_patch`, or any approval-required mutation runs, Socrates must have read, searched, or edited `repo_docs` in the same turn; missing preflight surfaces recoverable `repo_docs_preflight_required`. The harness tracks freshness from read results instead of model-carried hashes. Stale, unread, non-explicit overwrite, and failed read-back verification cases surface as recoverable tool errors, so Socrates must re-read or switch to targeted replacement rather than claim a write succeeded. Generic `edit` and `apply_patch` writes to `<workspace>/.socrates/MEMORY.md`, `<workspace>/.socrates/PROJECT_NOTES.md`, and `<workspace>/.socrates/repo_docs/*.md` are rejected; those docs remain normally readable/searchable but must be changed through `project_docs` or `repo_docs`.
 
 Generated-app debugging should be evidence-first. For stack traces, Socrates should compare the reported file and line with current file contents before guessing. For import errors, it should verify the file tree, package roots, working directory, and target module file before blaming stale caches. For database failures, it should distinguish credentials/config from service availability by inspecting safe config/templates and Terminal logs, then run the smallest meaningful verification after a fix.
 
@@ -699,13 +701,13 @@ The backend also injects compact Python and shell environment hints from the act
 
 `trace_retrieve` retrieves previous conversation memory only when useful. Normal search prevents historical tool dumps from being carried forward or recursively re-retrieved, while explicit `mode = "audit"` keeps full runtime evidence available through SQLite. `mode = "audit"` with `include: ["shell"]` covers foreground shell commands and detached conversation Terminal sessions/chunks through the same investigative shell evidence path; no extra terminal-specific model input parameters are required. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
 
-`socrates_memory` is a read-only investigation tool over Socrates-owned memory pages, not conversation history. It supports only `search` and `read`. Its scopes are memory-page scopes: `primary` for readable global memory such as learned patterns and tool-usage docs, `project` for the current project's brief, project memory, and diary pages, and `all` for both. It supports queryless page/section browsing, exact phrase search, keyword-all/keyword-any search, whole-word search, regex search, `memoryLimit`/`memoryOffset` page controls, date filters, diary date filters, context windows, and safe output caps. Identity and operating principles are core agent soul context and are not exposed through this tool.
+`tool_docs` is a read/search interface over global Socrates tool-usage guidance. It is the right place to inspect tool behavior before retrying failed tools or using unfamiliar/edge-case tools.
 
-Primary tool-usage docs are bundled with the server runtime and copied into `~/.Socrates/primary/tool_usage/` on memory initialization. The bundled docs are `trace_retrieve.md`, `edit_tools_and_bash.md`, `read_tools.md`, and `memory_tools.md`; Socrates can inspect them through `socrates_memory` when it needs deeper operating guidance.
+`project_docs` is the constrained read/search/edit interface for `<workspace>/.socrates/MEMORY.md` and `<workspace>/.socrates/PROJECT_NOTES.md`. Memory is durable cross-conversation project state; notes are active working state such as todos, checked files, next commands, and restart points. After meaningful work, the runtime injects one bounded checkpoint if `project_docs memory` has not been updated. A notes edit alone does not satisfy durable memory closure.
 
-`project_notes` is the constrained read/search/patch interface for `<workspace>/.socrates/PROJECT_NOTES.md`. Generic `edit` and `apply_patch` mutations to that path are rejected; normal `read`/`search` may still inspect it.
+`repo_docs` is the constrained read/search/edit interface for durable workspace doctrine under `<workspace>/.socrates/repo_docs/`. Project access creates the four template files `CORE_IDEA.md`, `REPO_NAVIGATION.md`, `REPO_RULES.md`, and `CONTRACTS.md` when missing, without overwriting user-edited files. Socrates should read repo docs before meaningful implementation and update these docs after durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or pitfalls change.
 
-`repo_docs` is the constrained read/search/patch interface for durable workspace doctrine under `<workspace>/.socrates/repo_docs/`. Project access creates the six template files `REPO_RULES.md`, `APP_FLOW.md`, `FRONTEND_BACKEND_CONTRACT.md`, `DB_STRUCTURE.md`, `PROVIDER_USAGE.md`, and `REPO_STRCUTURE.md` when missing, without overwriting user-edited files. Socrates should update these docs after durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or pitfalls change. The backend injects a quiet reminder after meaningful tool work; Socrates decides whether a `repo_docs` patch is needed.
+`user_profile` is a read-only model-visible access path for `~/.Socrates/user_profile.md`, which stores durable user profile and stable cross-project preferences. The main agent cannot write it; the backend memory agent updates it through scoped `edit_files`.
 
 `soul` is the read-only model-visible access path for core identity and operating principles. It can read `identity`, `operating_principles`, or `both`, with bounded output and truncation metadata. It cannot write. Soul edits are backend memory-agent owned: the memory agent proposes exact oldText/newText patches, the backend verifies target text and hashes, then a second internal model call must answer the literal confirmation prompt `You are about to make changes to the soul. Are you sure?` with exact `yes` before the patch is applied. Applied soul updates are audited and create persistent top-right notifications with compact diffs.
 
@@ -803,13 +805,13 @@ It should not rewrite the visible transcript. It should not create fake assistan
 Current implementation thresholds:
 
 ```text
-precompute around 145k estimated tokens
-synchronous compaction around 160k estimated tokens
-target packed context around 120k estimated tokens
-hard cap 180k estimated tokens
+trigger at 170k estimated input tokens
+recent completed-turn raw tail target around 50k tokens
+current-turn tool-result raw tail target around 50k tokens
+keep at least the latest 5 current-turn tool results when possible
 ```
 
-`120k` is the packed-context target after compression, not a trigger. `145k` starts background post-turn precompute for the next turn. `160k` is the blocking active-turn threshold before a provider call is allowed to continue. `180k` remains the hard do-not-send cap after counting the assembled provider request.
+There is one V1 trigger: before each provider call, Socrates counts the assembled model-visible input. If it is below 170k, the request proceeds. If it is at or above 170k, compaction runs before sending the next provider call. Recent completed Q/A turns stay raw by whole-turn boundary, never cut mid-turn. Older head context is summarized into hidden markdown. For long active turns, older bulky tool results are converted into lightweight progress statements while preserving the newest whole tool results.
 
 The estimate is provider-aware. Before each model call, Socrates counts the assembled next provider request through `packages/providers`, including the system prompt, visible messages, hidden compaction summaries, active tool calls/results, and tool definitions/schemas. Completed earlier turns still contribute only visible user query plus final assistant answer.
 
@@ -868,7 +870,8 @@ Compressor-model selection:
 
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash with thinking off
-fallback: OpenRouter stepfun/step-3.7-flash with thinking off
+fallback 1: OpenRouter xiaomi/mimo-v2.5-pro with thinking off
+fallback 2: OpenRouter z-ai/glm-5.1 with thinking off
 ```
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.

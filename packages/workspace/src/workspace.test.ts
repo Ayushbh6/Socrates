@@ -1543,7 +1543,7 @@ describe("workspace tools", () => {
     fs.writeFileSync(path.join(workspacePath, "result.txt"), "ok")
     const session = createWorkspaceShellSession(workspacePath)
     try {
-      await expect(session.run({ command: "cd /Users/ayush/Test && python3 -m venv venv" })).rejects.toThrow(SocratesError)
+      await expect(session.run({ command: "cd /Users/example/Test && python3 -m venv venv" })).rejects.toThrow(SocratesError)
       const relative = await session.run({ command: process.platform === "win32" ? "Set-Location nested; Get-Location" : "cd nested && pwd" })
       const externalDestination = await session.run({
         command:

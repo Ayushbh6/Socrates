@@ -294,7 +294,7 @@ There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash cache
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
 ```
 
-This cache/cost accounting and provider-routing implementation is part of the `v0.1.8` npm runtime release target. It does not merge the later dedicated `memory-work-v1` branch into `main`.
+This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.9` release target.
 
 ## Provider-Specific Escape Hatch
 
@@ -478,11 +478,15 @@ modelId = deepseek/deepseek-v4-flash
 thinking = off
 ```
 
-The locked fallback compressor is:
+The locked fallback compressor order is:
 
 ```text
 providerId = openrouter
-modelId = stepfun/step-3.7-flash
+modelId = xiaomi/mimo-v2.5-pro
+thinking = off
+
+providerId = openrouter
+modelId = z-ai/glm-5.1
 thinking = off
 ```
 
@@ -492,7 +496,7 @@ Both compressor routes must use OpenRouter thinking off explicitly:
 providerOptions.openrouter.reasoning = { effort: "none", exclude: true }
 ```
 
-The local/release evaluation gate should continue to run both models on the same compression fixtures and score:
+The local/release evaluation gate should continue to run compressor candidates on the same compression fixtures and score:
 
 - Faithfulness to source messages and tool evidence.
 - Preservation of decisions, rules, blockers, and unresolved tasks.
@@ -501,7 +505,7 @@ The local/release evaluation gate should continue to run both models on the same
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
 
-The current evaluation selected `deepseek/deepseek-v4-flash` because both candidates preserved all required facts and DeepSeek used fewer output/total tokens. `stepfun/step-3.7-flash` remains the runtime fallback if the primary compressor call fails.
+The current runtime order is `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.1`. All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active.
 
 The compressor model is an internal runtime choice. The frontend should not hardcode or expose compressor provider mappings unless a later settings surface is explicitly designed.
 

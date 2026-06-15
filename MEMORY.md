@@ -12,6 +12,8 @@ The current architecture now uses:
 - Workspace-local project state under `<workspace>/.socrates/`.
 - Global Socrates tool guidance and skills under `~/.Socrates/`.
 - Exact old conversation/tool evidence through `trace_retrieve`.
+- A read-only `user_profile` tool for durable cross-project user preferences.
+- A first-class no-tool `CompressorAgent` with structured output schemas for chat and memory compaction.
 - No production diary read/write/search/wake-context path.
 
 ## Memory And Docs Layout
@@ -39,6 +41,7 @@ Global `~/.Socrates`:
 ~/.Socrates/
   identity.md
   operating_principles.md
+  user_profile.md
   tool_usage/
     trace_retrieve.md
     edit_apply_patch.md
@@ -69,6 +72,7 @@ skills
 project_docs
 repo_docs
 soul
+user_profile
 list_project_resources
 mcp_registry
 ```
@@ -88,21 +92,23 @@ Tool routing:
 - `project_docs` reads/searches/edits workspace `.socrates/MEMORY.md` and `.socrates/PROJECT_NOTES.md`.
 - `repo_docs` reads/searches/edits only the four repo doctrine docs.
 - `soul` reads root `~/.Socrates/identity.md` and `~/.Socrates/operating_principles.md`; the main agent cannot write them.
+- `user_profile` reads root `~/.Socrates/user_profile.md`; the main agent cannot write it.
 
 ## Runtime Notes
 
 - First-turn wake context includes compact excerpts from workspace `.socrates/MEMORY.md` and `.socrates/repo_docs/CORE_IDEA.md`.
 - Generic `edit` and `apply_patch` writes to `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/*.md`, and `.socrates/skills/**` are rejected; use dedicated docs tools or the backend project skill builder.
+- Before `edit`, `apply_patch`, or approval-required mutation tools can run, Socrates must have read/searched/edited `repo_docs` in the same turn. Missing preflight returns recoverable `repo_docs_preflight_required`.
+- After meaningful work, the runtime injects one docs checkpoint if `project_docs memory` was not updated. `project_docs notes` is live scratch state and does not satisfy durable memory closure.
 - Terminal commands are preflight-rejected when they mention Socrates-owned protected paths: workspace `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/**`, `.socrates/skills/**`, and global `~/.Socrates/skills/**`, `~/.Socrates/tool_usage/**`, `identity.md`, or `operating_principles.md`. This is an obvious-path guard, not a process sandbox.
 - The Global Memory Agent is a scheduled app-level specialized `SocratesAgent` run, not a per-turn project worker.
-- The agent reads completed-turn event manifests after the durable `events.sequence` watermark and advances the watermark only after a successful run.
+- The agent reads completed-turn event manifests after the durable `events.sequence` watermark and advances the watermark only after a successful run. Manifest packing now adds completed turns one by one and stops before either 80 turns or 60k estimated tokens.
 - The agent tools are `trace_retrieve` with global search, `projects`, `tool_docs`, `skills`, `soul`, and scoped `edit_files`.
 - Memory-agent `trace_retrieve` supports `all_projects`, `current_project`, `projectTitle`, `projectId`, `conversationTitle`, and `conversationId`; project/conversation selectors may be strings or lists.
 - Memory-agent tool guidance is seeded under `~/.Socrates/tool_usage/memory_agent/` and is readable through the existing `tool_docs` tool.
 - `edit_files` is the only write tool for the memory agent. It writes global `tool_usage`, global `skills`, and gated `identity.md` / `operating_principles.md` edits without exposing raw paths.
 - Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes.
 - Completed chat turns are indexed for trace retrieval, but they no longer enqueue a per-turn memory job. The scheduler or manual settings-page action wakes the global agent.
-- Next memory-agent input fix: build the completed-turn manifest entry by entry and stop before either 80 completed turns or 60k estimated input tokens, whichever comes first. Do not build 80 first and slice the manifest text mid-entry.
 - Legacy per-project memory-agent settings remain only as inactive DB/store compatibility baggage; the per-turn worker runtime path has been removed.
 - Project skill creation is user-triggered from the dashboard `Skills +` flow and writes `.socrates/skills/<skill-name>/SKILL.md`.
 - `socrates-skill-writer` is an internal backend builder asset, not exposed as a normal model-visible skill.
@@ -110,24 +116,32 @@ Tool routing:
 - Legacy project memory from `~/.Socrates/projects/<projectId>/` is migrated into workspace `.socrates/MEMORY.md` and the old project root is removed.
 - Legacy six repo docs are migrated by scaffold behavior into the four-doc system; old workspace repo-doc files are removed by initialization.
 
+## Context Compression
+
+- Compression is triggered at 170k estimated model-visible input tokens.
+- Recent completed Q/A tail is kept raw up to about 50k tokens without cutting mid-turn.
+- Current active-turn tool pressure keeps the latest tool results by whole tool-call boundary, targeting about 50k tokens and keeping at least the latest five results when possible.
+- Older head context is compacted through `CompressorAgent`, not streamed prompted JSON.
+- Chat and memory compaction schemas live in `packages/contracts/src/contextCompression.ts`.
+- Compressor prompts live in `packages/core/src/prompts/socratesCompressorPrompt.ts` and `memoryAgentCompressorPrompt.ts`.
+- Strict Zod validation happens before snapshot activation. Invalid new-schema output never becomes active memory; legacy invalid snapshots are ignored rather than migrated.
+- Anchors must start with `Turn <number>:`. If only anchors fail, the compressor repairs anchors through the structured anchor repair schema.
+- Default compressor model order is OpenRouter `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.1`.
+
 ## Next Major Work
 
-- Fully overhaul context compression. Current compressor is prompted JSON, not true structured output, and SQLite snapshots showed schema drift where nested entries used `handles` instead of the required `traceRefs`.
-- Move all compressor prompts into `packages/core/src/prompts/` so the prompt architecture is coherent: Socrates prompt, Memory Agent prompt, Socrates compressor prompt, and Memory Agent compressor prompt.
-- Add real shared schemas/contracts for Socrates chat compression and Memory Agent compression, then validate outputs before activating a snapshot.
-- Extend the provider abstraction with structured generation. Use provider/native or AI SDK structured output where supported; fallback must be JSON plus schema validation and retry, not silent parse acceptance.
-- Keep the good core pattern: compact older head, preserve recent tail, carry previous summary forward, clear bulky re-fetchable tool results separately, and keep trace handles for exact evidence.
-- Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, and exact quotes.
+- Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
+- Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
+- Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
+- Continue release hardening for v0.1.9 runtime artifacts and npm launcher metadata.
 
 ## Verification
 
-Latest verified after the lean memory/prompt migration:
+Latest verified after the compressor refactor, proactive investigation hardening, repo-docs preflight, and project-memory checkpoint work:
 
 ```text
-pnpm --filter @socrates/contracts test -- --run
-pnpm --filter @socrates/workspace test -- --run
-pnpm --filter @socrates/core test -- --run
-pnpm --filter @socrates/server test -- --run
+pnpm typecheck
+pnpm test
 ```
 
-Still run `pnpm --filter web typecheck` and `git diff --check` before final closeout on code changes.
+Run `git diff --check` and a tracked-file sensitive scan before publishing a release tag.

@@ -428,7 +428,7 @@ const createRecoveringBashAgent = (): SocratesAgent => {
           toolCall: {
             toolCallId: "tcall_break_shell",
             toolName: "bash",
-            input: { command: "cd /Users/ayush/Test && python3 -m venv venv" },
+            input: { command: "cd /Users/example/Test && python3 -m venv venv" },
           },
         }
         yield { type: "model.completed" }
@@ -5202,7 +5202,7 @@ describe("WebSocket API", () => {
         expect(error?.recoverable).toBe(1)
         const details = JSON.parse(error?.details_json ?? "{}") as { workspacePath?: string; cdTarget?: string }
         expect(details.workspacePath).toBeTruthy()
-        expect(details.cdTarget).toBe("/Users/ayush/Test")
+        expect(details.cdTarget).toBe("/Users/example/Test")
       } finally {
         sqlite.close()
       }
