@@ -20,7 +20,7 @@ jobs:
           - platformArch: darwin-x64
             os: macos-15-intel
           - platformArch: win32-x64
-            os: windows-latest
+            os: windows-2022
     runs-on: ${{ matrix.os }}
     env:
       SOCRATES_RUNTIME_PLATFORM_ARCH: ${{ matrix.platformArch }}
