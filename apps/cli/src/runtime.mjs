@@ -66,6 +66,30 @@ export const runtimeCacheDir = (home) => path.join(home, "cache");
 
 export const runtimeDirFor = (home, version, platformArch) => path.join(runtimeRoot(home), version, platformArch);
 
+export const releaseDownloadUrl = (repo, tag, assetName) => {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) {
+    throw new Error(`Invalid Socrates release repository: ${repo}. Expected owner/name.`);
+  }
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(assetName)}`;
+};
+
+export const releaseTagFromDownloadLocation = (location) => {
+  const match = String(location).match(/\/releases\/download\/([^/]+)\//);
+  return match ? decodeURIComponent(match[1]) : undefined;
+};
+
+export const directDownloadRelease = (repo, tag) => ({
+  tagName: tag,
+  assets: ["darwin-arm64", "darwin-x64", "win32-x64"]
+    .map((platformArch) => runtimeAssetName(platformArch))
+    .concat("SHA256SUMS")
+    .map((name) => ({
+      name,
+      url: releaseDownloadUrl(repo, tag, name),
+    })),
+});
+
 export const availablePort = () =>
   new Promise((resolve, reject) => {
     const server = http.createServer();
@@ -226,6 +250,39 @@ export const selectAsset = (assets, name) => {
 
 const fetchRelease = async (version) => {
   const repo = process.env.SOCRATES_RELEASE_REPO ?? defaultRepo;
+  if (version) {
+    return directDownloadRelease(repo, version);
+  }
+
+  try {
+    const tagName = await fetchLatestReleaseTag(repo);
+    return directDownloadRelease(repo, tagName);
+  } catch (directError) {
+    return fetchReleaseFromApi(repo, undefined, directError);
+  }
+};
+
+const fetchLatestReleaseTag = async (repo) => {
+  const [owner, name] = repo.split("/");
+  if (!owner || !name) {
+    throw new Error(`Invalid Socrates release repository: ${repo}. Expected owner/name.`);
+  }
+  const response = await fetch(`https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/releases/latest/download/SHA256SUMS`, {
+    method: "HEAD",
+    redirect: "manual",
+    headers: {
+      "user-agent": "@socrates-ai/cli",
+    },
+  });
+  const location = response.headers.get("location");
+  const tagName = location ? releaseTagFromDownloadLocation(location) : undefined;
+  if (tagName) {
+    return tagName;
+  }
+  throw new Error(`Could not resolve latest Socrates release tag: HTTP ${response.status}.`);
+};
+
+const fetchReleaseFromApi = async (repo, version, cause) => {
   const pathPart = version ? `releases/tags/${encodeURIComponent(version)}` : "releases/latest";
   const response = await fetch(`https://api.github.com/repos/${repo}/${pathPart}`, {
     headers: {
@@ -234,7 +291,9 @@ const fetchRelease = async (version) => {
     },
   });
   if (!response.ok) {
-    throw new Error(`Could not fetch Socrates release metadata: HTTP ${response.status}.`);
+    throw new Error(
+      `Could not fetch Socrates release metadata: HTTP ${response.status}.${cause ? ` Direct release lookup also failed: ${cause.message}` : ""}`,
+    );
   }
   const json = await response.json();
   return {

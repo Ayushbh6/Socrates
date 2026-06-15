@@ -4,10 +4,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   availablePort,
+  directDownloadRelease,
   parseArgs,
   parseSha256Sums,
   platformArchFor,
   powerShellSingleQuoted,
+  releaseDownloadUrl,
+  releaseTagFromDownloadLocation,
   runtimeAssetName,
   runtimeDirFor,
   selectAsset,
@@ -53,6 +56,25 @@ describe("Socrates CLI runtime helpers", () => {
     const assets = [{ name: "socrates-runtime-darwin-arm64.zip", url: "https://example.test/runtime.zip" }];
     expect(selectAsset(assets, "socrates-runtime-darwin-arm64.zip")).toEqual(assets[0]);
     expect(() => selectAsset(assets, "SHA256SUMS")).toThrow(/missing SHA256SUMS/);
+  });
+
+  it("constructs direct GitHub release downloads for every supported runtime", () => {
+    expect(releaseDownloadUrl("Ayushbh6/Socrates", "v0.1.9", "SHA256SUMS")).toBe(
+      "https://github.com/Ayushbh6/Socrates/releases/download/v0.1.9/SHA256SUMS",
+    );
+    expect(releaseTagFromDownloadLocation("https://github.com/Ayushbh6/Socrates/releases/download/v0.1.9/SHA256SUMS")).toBe("v0.1.9");
+
+    const release = directDownloadRelease("Ayushbh6/Socrates", "v0.1.9");
+    expect(release.tagName).toBe("v0.1.9");
+    expect(release.assets.map((asset) => asset.name)).toEqual([
+      "socrates-runtime-darwin-arm64.zip",
+      "socrates-runtime-darwin-x64.zip",
+      "socrates-runtime-win32-x64.zip",
+      "SHA256SUMS",
+    ]);
+    expect(selectAsset(release.assets, "socrates-runtime-win32-x64.zip").url).toBe(
+      "https://github.com/Ayushbh6/Socrates/releases/download/v0.1.9/socrates-runtime-win32-x64.zip",
+    );
   });
 
   it("prefers Windows tar extraction before falling back to PowerShell Expand-Archive", () => {
