@@ -1426,7 +1426,7 @@ When context pressure grows, the context builder should keep:
 - Verbatim anchor references for exact source material that must not be summarized away.
 - Retrieved trace evidence only when explicitly relevant.
 
-The target hard cap for a chat prompt is 180,000 estimated tokens. Before the next model call would exceed that cap, Socrates should compress or prune model-facing context while preserving raw history in the database.
+The V1 compression trigger is 170,000 estimated model-visible input tokens. Before each provider call, Socrates recounts the assembled request; if it is at or above that trigger, it compacts older model-facing context while preserving raw history in the database.
 
 Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to exact source handles so `trace_retrieve` can inspect the raw message, turn, tool result, or verbatim anchor when precision matters.
 
@@ -1436,10 +1436,11 @@ Compressor model selection:
 
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash, thinking off
-fallback: OpenRouter stepfun/step-3.7-flash, thinking off
+fallback 1: OpenRouter xiaomi/mimo-v2.5-pro, thinking off
+fallback 2: OpenRouter z-ai/glm-5.1, thinking off
 ```
 
-The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, trace-handle quality, output length, latency, and cost. The latest gate selected DeepSeek v4 Flash by faithfulness tie plus lower token usage; Step 3.7 Flash remains the runtime fallback. Compression outputs remain summaries and handles over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
+The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, anchor quality, output length, latency, and cost. Compression outputs remain structured summaries and turn-numbered anchors over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
 
 ## Context Window Tracking
 

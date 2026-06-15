@@ -128,12 +128,15 @@ Tool routing:
 - Anchors must start with `Turn <number>:`. If only anchors fail, the compressor repairs anchors through the structured anchor repair schema.
 - Default compressor model order is OpenRouter `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.1`.
 
+## Release State
+
+- Current published distribution split: GitHub runtime release `v0.1.9` carries the macOS/Windows runtime bundles; npm launcher `@socrates-ai/cli@0.1.10` adds direct GitHub Release asset lookup so public `npx` installs avoid unauthenticated GitHub API rate limits.
+
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
-- Continue release hardening for v0.1.9 runtime artifacts and npm launcher metadata.
 
 ## Verification
 
