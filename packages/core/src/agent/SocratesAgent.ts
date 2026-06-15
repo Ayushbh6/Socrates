@@ -99,14 +99,21 @@ export class SocratesAgent {
     const toolInputCounts = new Map<string, number>()
     const openRouterPreferredProvidersByModel = new Map<string, string>()
     const actionLedger = new TurnActionLedger()
+    const docsLedger = new TurnDocsLedger()
     let totalToolCountNudgeSent = false
     let baselineInputTokens: number | undefined
     let currentTurnTokenSoftNudgeSent = false
     let currentTurnTokenHardStopSent = false
+    let docsPreflightSent = false
+    let docsSyncCheckpointSent = false
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
       const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
+      if (!docsPreflightSent && input.toolExecutors && input.workspacePath && tools.length > 0) {
+        messages.push({ role: "developer", content: DOCS_PREFLIGHT_CHECKPOINT })
+        docsPreflightSent = true
+      }
       const compactionStartedEvents = new AsyncEventQueue<ContextCompactionLifecycleEvent>()
       const preparedContextPromise = (async () => {
         try {
@@ -336,6 +343,7 @@ export class SocratesAgent {
       })
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
+      docsLedger.recordBatch({ toolCalls, results: execution.results })
       const ledgerUpdate = actionLedger.recordBatch({
         toolCalls,
         results: execution.results,
@@ -346,12 +354,12 @@ export class SocratesAgent {
       for (const warning of ledgerUpdate.warnings) {
         messages.push({ role: "developer", content: warning })
       }
-      if (shouldNudgeRepoDocsAlignment(execution.results)) {
-        messages.push({
-          role: "developer",
-          content:
-            'Quiet backend reminder: if this turn changed durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or important pitfalls, inspect/update `.socrates/repo_docs/` with the repo_docs tool before the final answer. Skip this if no durable repo doctrine changed.',
-        })
+      if (!docsSyncCheckpointSent) {
+        const checkpoint = docsLedger.buildSyncCheckpoint()
+        if (checkpoint) {
+          messages.push({ role: "developer", content: checkpoint })
+          docsSyncCheckpointSent = true
+        }
       }
       if (repeatedToolInputsThisStep.size > 0) {
         messages.push({
@@ -829,28 +837,9 @@ const safeJsonPreview = (value: unknown, limit: number): string => {
   return text.length > limit ? `${text.slice(0, limit)}...` : text
 }
 
-const shouldNudgeRepoDocsAlignment = (results: ToolExecutionResult[]): boolean => {
-  if (results.some((result) => result.ok && result.toolName === "repo_docs")) {
-    return false
-  }
-  return results.some((result) => {
-    if (!result.ok) {
-      return false
-    }
-    if (result.toolName === "bash") {
-      return true
-    }
-    if (result.toolName !== "edit" && result.toolName !== "apply_patch") {
-      return false
-    }
-    const output = result.output as { changedFiles?: unknown; dryRun?: unknown } | undefined
-    if (output?.dryRun === true) {
-      return false
-    }
-    const changedFiles = output?.changedFiles
-    return Array.isArray(changedFiles) && changedFiles.length > 0
-  })
-}
+const DOCS_PREFLIGHT_CHECKPOINT = `<runtime_socrates_docs_preflight>
+This turn has workspace tools. For nontrivial work, use the Socrates docs loop: 1) before meaningful implementation or repo investigation, read relevant repo_docs and fix stale/missing doctrine before implementing; 2) use project_docs memory after meaningful work for durable outcomes, decisions, constraints, blockers, and handoff facts; 3) use project_docs notes actively for todos, checked files, next commands, partial progress, and restart points. Use tool_docs before unfamiliar, failed, or edge-case tool use. Skip only genuinely tiny one-shot answers.
+</runtime_socrates_docs_preflight>`
 
 const TOOL_DOCS_FAILURE_NUDGE = "Refer to tool_docs for tool usage before retrying this tool or choosing another tool."
 const MUTATION_SCHEMA_RECOVERY_HINT =
@@ -875,6 +864,162 @@ type LedgerRecordBatchInput = {
   results: ToolExecutionResult[]
   estimatedTokens: number
   currentTurnTokenGrowth: number
+}
+
+type DocsLedgerBatchInput = {
+  toolCalls: NormalizedToolCall[]
+  results: ToolExecutionResult[]
+}
+
+class TurnDocsLedger {
+  private totalToolCalls = 0
+  private evidenceToolCalls = 0
+  private failedToolCalls = 0
+  private projectDocsRead = false
+  private projectDocsEdited = false
+  private repoDocsRead = false
+  private repoDocsEdited = false
+  private toolDocsRead = false
+  private emptyProjectDocsRead = false
+  private mutationSucceeded = false
+  private bashSucceeded = false
+  private readonly changedFiles = new Set<string>()
+  private readonly commands: string[] = []
+
+  recordBatch(input: DocsLedgerBatchInput): void {
+    const callsById = new Map<string, NormalizedToolCall>()
+    for (const toolCall of input.toolCalls) {
+      callsById.set(toolCall.toolCallId, toolCall)
+      if (toolCall.providerToolCallId) {
+        callsById.set(toolCall.providerToolCallId, toolCall)
+      }
+      this.totalToolCalls += 1
+      if (toolCall.toolName === "read" || toolCall.toolName === "search" || toolCall.toolName === "trace_retrieve") {
+        this.evidenceToolCalls += 1
+      }
+    }
+
+    for (const result of input.results) {
+      const toolCall = callsById.get(result.toolCallId) ?? (result.providerToolCallId ? callsById.get(result.providerToolCallId) : undefined)
+      this.recordResult(result, toolCall)
+    }
+  }
+
+  buildSyncCheckpoint(): string | undefined {
+    if (this.projectDocsEdited || this.repoDocsEdited) {
+      return undefined
+    }
+    const meaningfulWork =
+      this.mutationSucceeded ||
+      this.bashSucceeded ||
+      this.evidenceToolCalls >= 5 ||
+      this.totalToolCalls >= 8 ||
+      this.failedToolCalls >= 2
+    if (!meaningfulWork) {
+      return undefined
+    }
+
+    const facts = [
+      this.changedFiles.size > 0 ? `files changed: ${clipList([...this.changedFiles], 4, 160)}` : undefined,
+      this.commands.length > 0 ? `commands: ${clipList(this.commands, 3, 180)}` : undefined,
+      this.evidenceToolCalls > 0 ? `evidence tools: ${this.evidenceToolCalls}` : undefined,
+      this.failedToolCalls > 0 ? `failed tools: ${this.failedToolCalls}` : undefined,
+      this.emptyProjectDocsRead ? "project docs looked empty" : undefined,
+      `docs read: project=${this.projectDocsRead ? "yes" : "no"}, repo=${this.repoDocsRead ? "yes" : "no"}, tool=${this.toolDocsRead ? "yes" : "no"}`,
+    ].filter((item): item is string => typeof item === "string")
+
+    return `<runtime_docs_sync_checkpoint>
+Before final answer, close the Socrates docs loop. This turn did meaningful workspace work (${facts.join("; ")}). If durable outcomes, decisions, constraints, blockers, next steps, or handoff facts changed, call project_docs memory now. If there is active work state, todos, checked files, next commands, partial progress, or restart context, call project_docs notes now. If repo behavior, contracts, rules, navigation, provider/tool behavior, or durable pitfalls changed, call repo_docs now. If tools failed or behaved unexpectedly and tool_docs was not checked, call tool_docs before retrying or explaining. If no durable update is warranted, final answer may proceed; do not skip from haste.
+</runtime_docs_sync_checkpoint>`
+  }
+
+  private recordResult(result: ToolExecutionResult, toolCall: NormalizedToolCall | undefined): void {
+    if (!result.ok) {
+      this.failedToolCalls += 1
+      return
+    }
+    if (result.toolName === "project_docs") {
+      if (toolOperation(toolCall) === "edit") {
+        this.projectDocsEdited = true
+      } else {
+        this.projectDocsRead = true
+        this.emptyProjectDocsRead ||= outputContentIsEmpty(result.output)
+      }
+      return
+    }
+    if (result.toolName === "repo_docs") {
+      if (toolOperation(toolCall) === "edit") {
+        this.repoDocsEdited = true
+      } else {
+        this.repoDocsRead = true
+      }
+      return
+    }
+    if (result.toolName === "tool_docs") {
+      this.toolDocsRead = true
+      return
+    }
+    if (result.toolName === "bash") {
+      this.bashSucceeded = true
+      const command = commandFor(toolCall, result.output)
+      if (command) {
+        this.commands.push(command)
+        if (this.commands.length > 6) {
+          this.commands.splice(0, this.commands.length - 6)
+        }
+      }
+      return
+    }
+    if (result.toolName === "edit" || result.toolName === "apply_patch") {
+      const output = result.output && typeof result.output === "object" && !Array.isArray(result.output) ? result.output as Record<string, unknown> : {}
+      if (output.dryRun === true) {
+        return
+      }
+      const changedFiles = Array.isArray(output.changedFiles) ? output.changedFiles : []
+      if (changedFiles.length > 0) {
+        this.mutationSucceeded = true
+      }
+      for (const file of changedFiles) {
+        const filePath = file && typeof file === "object" && "path" in file ? (file as { path?: unknown }).path : undefined
+        if (typeof filePath === "string" && filePath.trim()) {
+          this.changedFiles.add(normalizePathKey(filePath))
+        }
+      }
+    }
+  }
+}
+
+const toolOperation = (toolCall: NormalizedToolCall | undefined): string | undefined => {
+  const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
+  return typeof input?.operation === "string" ? input.operation : undefined
+}
+
+const outputContentIsEmpty = (output: unknown): boolean => {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return false
+  }
+  const content = (output as Record<string, unknown>).content
+  return typeof content === "string" && content.trim().length === 0
+}
+
+const commandFor = (toolCall: NormalizedToolCall | undefined, output: unknown): string | undefined => {
+  const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
+  if (typeof input?.command === "string" && input.command.trim()) {
+    return clipInline(input.command, 120)
+  }
+  const record = output && typeof output === "object" && !Array.isArray(output) ? output as Record<string, unknown> : undefined
+  return typeof record?.command === "string" && record.command.trim() ? clipInline(record.command, 120) : undefined
+}
+
+const clipList = (values: string[], limit: number, charLimit: number): string => {
+  const clipped = values.slice(0, limit).map((value) => clipInline(value, Math.max(12, Math.floor(charLimit / Math.max(1, limit)))))
+  const suffix = values.length > limit ? `, +${values.length - limit} more` : ""
+  return `${clipped.join(", ")}${suffix}`
+}
+
+const clipInline = (value: string, limit: number): string => {
+  const compact = value.replace(/\s+/g, " ").trim()
+  return compact.length > limit ? `${compact.slice(0, Math.max(0, limit - 3))}...` : compact
 }
 
 class TurnActionLedger {

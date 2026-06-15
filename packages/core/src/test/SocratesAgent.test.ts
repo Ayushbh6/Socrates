@@ -47,6 +47,9 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("project_docs")
     expect(requestJson).toContain("Use regex=true for regex syntax")
     expect(requestJson).toContain(".socrates/MEMORY.md")
+    expect(requestJson).toContain("live cross-conversation project memory")
+    expect(requestJson).toContain("active assistant notebook")
+    expect(requestJson).toContain("Explicit docs operating loop")
     expect(requestJson).toContain("repo_docs")
     expect(requestJson).toContain("A separate Global Memory Agent runs in the background")
     expect(requestJson).toContain("compare stack trace lines to current files")
@@ -1162,8 +1165,96 @@ describe("SocratesAgent", () => {
     expect(editDryRuns).toEqual([true, false])
     expect(approvals[0]).toContain("-old")
     expect(approvals[0]).toContain("+new")
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Quiet backend reminder")
+    expect(JSON.stringify(streamRequests[0]?.messages)).toContain("runtime_socrates_docs_preflight")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("runtime_docs_sync_checkpoint")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Before final answer, close the Socrates docs loop")
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs")
+  })
+
+  it("injects one bounded docs preflight and one bounded docs-sync checkpoint per turn", async () => {
+    let calls = 0
+    const streamRequests: ModelRequestLike[] = []
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_edit_once",
+              toolName: "edit",
+              input: { path: "README.md", oldString: "old", newString: "new" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_bash_after_checkpoint",
+              toolName: "bash",
+              input: { operation: "run", command: "pnpm test", cwd: "." },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Done." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.edit = async (input) => ({
+      changedFiles: [{ path: "README.md", operation: "edited" }],
+      diff: input.dryRun ? "dry diff" : "real diff",
+      dryRun: input.dryRun ?? false,
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: 8 },
+    })
+    executors.bash = async () => bashOk()
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Make the small README fix and check it." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain stream.
+    }
+
+    expect(streamRequests).toHaveLength(3)
+    const firstRequest = JSON.stringify(streamRequests[0]?.messages)
+    const finalRequest = JSON.stringify(streamRequests[2]?.messages)
+    expect(countSubstring(firstRequest, "<runtime_socrates_docs_preflight>")).toBe(1)
+    expect(countSubstring(finalRequest, "<runtime_socrates_docs_preflight>")).toBe(1)
+    expect(countSubstring(finalRequest, "<runtime_docs_sync_checkpoint>")).toBe(1)
+    const preflight = stringMessageContents(streamRequests[0]?.messages).find((content) => content.includes("runtime_socrates_docs_preflight"))
+    expect(preflight).toBeDefined()
+    expect(preflight?.length).toBeLessThanOrEqual(1_000)
+    const checkpoint = stringMessageContents(streamRequests[1]?.messages).find((content) => content.includes("runtime_docs_sync_checkpoint"))
+    expect(checkpoint).toBeDefined()
+    expect(checkpoint?.length).toBeLessThanOrEqual(1_000)
+    expect(checkpoint).toContain("project_docs")
+    expect(checkpoint).toContain("repo_docs")
+    expect(checkpoint).toContain("files changed: README.md")
   })
 
   it("feeds read image results back to vision-capable models as native image parts", async () => {
@@ -1453,6 +1544,19 @@ type CountedRequest = {
   messages: unknown
   toolCount: number
 }
+
+const countSubstring = (value: string, needle: string): number => value.split(needle).length - 1
+
+const stringMessageContents = (messages: unknown): string[] =>
+  Array.isArray(messages)
+    ? messages.flatMap((message) => {
+        if (!message || typeof message !== "object" || !("content" in message)) {
+          return []
+        }
+        const content = (message as { content?: unknown }).content
+        return typeof content === "string" ? [content] : []
+      })
+    : []
 
 const snapshotCountRequest = (request: ModelRequestLike): CountedRequest => ({
   messages: JSON.parse(JSON.stringify(request.messages)) as unknown,

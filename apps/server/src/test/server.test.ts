@@ -142,12 +142,22 @@ const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
   }
 }
 
+const latestUserContent = (messages: Array<{ role?: string; content?: unknown }>): unknown => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role === "user") {
+      return message.content
+    }
+  }
+  return undefined
+}
+
 const createTestAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
     async *stream(request) {
       yield { type: "model.reasoning.delta", text: "Testing." }
-      yield { type: "model.answer.delta", text: `Echo: ${request.messages.at(-1)?.content ?? ""}` }
+      yield { type: "model.answer.delta", text: `Echo: ${latestUserContent(request.messages) ?? ""}` }
       await delay(100)
       yield {
         type: "model.completed",
@@ -4436,7 +4446,7 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Use the context"))
       await waitForEvent(socket, "message.completed")
 
-      const request = requests[0] as { system: string; messages: Array<{ content: string }> }
+      const request = requests[0] as { system: string; messages: Array<{ role?: string; content?: string }> }
       expect(request.system).toContain("Name: Context User")
       expect(request.system).toContain("Name: Context Project")
       expect(request.system).toContain("A test project")
@@ -4446,7 +4456,8 @@ describe("WebSocket API", () => {
       expect(request.system).toContain("CI are not inherited")
       expect(request.system).toContain("Semantic retrieval: not configured.")
       expect(request.system).toContain("Do not claim semantic retrieval was used.")
-      expect(request.messages.at(-1)?.content).toBe("Use the context")
+      expect(latestUserContent(request.messages)).toBe("Use the context")
+      expect(request.messages.some((message) => message.role === "developer" && message.content?.includes("runtime_socrates_docs_preflight"))).toBe(true)
     } finally {
       socket.close()
     }
@@ -4501,12 +4512,13 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Use semantic context"))
       await waitForEvent(socket, "message.completed")
 
-      const request = requests[0] as { system: string; messages: Array<{ content: string }> }
+      const request = requests[0] as { system: string; messages: Array<{ role?: string; content?: string }> }
       expect(request.system).toContain("Semantic retrieval: ready")
       expect(request.system).toContain("Provider/model: ollama/embeddinggemma")
       expect(request.system).toContain("indexed=")
       expect(request.system).toContain('mode="combined"')
-      expect(request.messages.at(-1)?.content).toBe("Use semantic context")
+      expect(latestUserContent(request.messages)).toBe("Use semantic context")
+      expect(request.messages.some((message) => message.role === "developer" && message.content?.includes("runtime_socrates_docs_preflight"))).toBe(true)
     } finally {
       socket.close()
     }
@@ -5566,7 +5578,8 @@ describe("WebSocket API", () => {
       expect(secondRequest.messages.map((message) => `${message.role}:${message.content}`)).toContain(
         "assistant:Partial answer before stop.",
       )
-      expect(secondRequest.messages.at(-1)).toMatchObject({ role: "user", content: "Continue from that" })
+      expect(latestUserContent(secondRequest.messages)).toBe("Continue from that")
+      expect(secondRequest.messages.some((message) => message.role === "developer" && message.content.includes("runtime_socrates_docs_preflight"))).toBe(true)
     } finally {
       socket.close()
     }

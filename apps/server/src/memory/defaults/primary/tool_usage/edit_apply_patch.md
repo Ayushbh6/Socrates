@@ -28,4 +28,8 @@ Use `*** Add File`, `*** Delete File`, and `*** Move to` for create/delete/renam
 
 Do not edit `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, or `.socrates/repo_docs/*.md` with generic file tools. Use `project_docs` for memory/notes and `repo_docs` for repo doctrine.
 
+These files are important and should be used actively. This restriction is about using the correct dedicated tools, not about avoiding memory/docs updates.
+
+Before meaningful implementation or repo investigation, use `repo_docs` for relevant repo doctrine. After meaningful work, use `project_docs` memory for durable outcomes and `project_docs` notes for active todos, checked files, next commands, and restart points.
+
 Do not edit `.socrates/skills/**` with generic file tools. Project skills are created through the dashboard `Skills +` builder, and global skills are maintained by the backend memory worker.

@@ -212,7 +212,7 @@ describe("AI SDK provider request shape", () => {
         {
           role: "developer",
           content:
-            "Quiet backend reminder: if this turn changed durable repo behavior, inspect/update `.socrates/repo_docs/` before the final answer.",
+            "<runtime_docs_sync_checkpoint>\nBefore final answer, close the Socrates docs loop. If durable state changed, update project_docs or repo_docs now.\n</runtime_docs_sync_checkpoint>",
         },
       ],
     })) {
@@ -222,7 +222,7 @@ describe("AI SDK provider request shape", () => {
     const options = aiMocks.streamText.mock.calls[0]?.[0] as { messages?: Array<{ role?: string; content?: unknown }> }
     expect(options.messages?.map((message) => message.role)).toEqual(["user", "assistant", "tool", "user"])
     expect(options.messages?.slice(1).some((message) => message.role === "system")).toBe(false)
-    expect(options.messages?.[3]?.content).toContain("[developer]\nQuiet backend reminder")
+    expect(options.messages?.[3]?.content).toContain("[developer]\n<runtime_docs_sync_checkpoint>")
   })
 
   it("emits completed OpenAI reasoning metadata before tool calls", async () => {
