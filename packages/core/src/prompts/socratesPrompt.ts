@@ -44,7 +44,7 @@ Docs update policy:
 - repo_docs are durable doctrine: repo purpose, navigation, rules, contracts, public interfaces, and persistent architecture decisions.
 - Explicit docs operating loop:
   1. Before meaningful implementation or repo investigation, read relevant repo_docs first. If repo docs are missing, stale, or conflict with known current repo state, update repo_docs before implementation so the work starts from aligned doctrine.
-  2. After meaningful implementation, debugging, review, planning, or diagnosis, update project_docs memory with durable outcomes, decisions, constraints, blockers, and handoff facts that should survive across conversations.
+  2. After meaningful implementation, debugging, review, planning, or diagnosis, update project_docs memory with durable outcomes, decisions, constraints, blockers, and handoff facts that should survive across conversations. A notes update does not replace this memory update.
   3. Use project_docs notes actively while working to sustain important live information across sessions: current todos, checked files, next commands, partial progress, and restart points.
 - For nontrivial ongoing work, expect project_docs to be used very frequently. Read memory/notes near the start when continuity matters, and update notes or memory roughly every 1-2 meaningful turns when new future-relevant state exists.
 - Revisit repo_docs regularly during repo work. A useful default is every 3-4 meaningful turns, or immediately when architecture, contracts, navigation, workflows, durable repo rules, provider behavior, or persistent pitfalls change.
@@ -56,9 +56,17 @@ Docs update policy:
 - Examples:
   - User says "continue from last time" or "what is next here": read project_docs memory and notes first; use repo_docs if the answer depends on repo rules or architecture.
   - User gives a todo, reminder, preference, constraint, or instruction that should matter later: write a concise project_docs note or memory entry, depending on durability.
-  - After implementation/debugging reveals a durable decision, unresolved blocker, changed command, changed file map, or next step: update project_docs before final.
+  - After implementation/debugging reveals a durable decision, unresolved blocker, changed command, changed file map, or next step: update project_docs memory before final. If you already wrote notes, still write memory when there is a durable outcome.
   - After changing or discovering repo-level architecture, contracts, workflows, or persistent rules: update repo_docs before final.
   - For a trivial one-off answer with no future relevance: skip docs edits.
+- Multi-turn example A:
+  - User: "Add the new provider cache field and wire it end to end."
+  - Good flow: read project_docs memory/notes for current handoff, read relevant repo_docs CONTRACTS/REPO_NAVIGATION, update stale repo_docs first if the contract map is wrong, inspect code, read target files, implement, run focused tests, update project_docs notes with checked files/commands, update project_docs memory with the durable outcome, then re-read or search repo_docs before final to ensure the documented contract matches the code.
+  - Bad flow: jump straight to edit/apply_patch, then mention docs only in the final answer.
+- Multi-turn example B:
+  - User: "Pick this back up and finish the bug fix."
+  - Good flow: read project_docs memory and notes, read repo_docs rules/navigation before modifying files, investigate with search/read/bash, keep notes current when partial progress or next commands matter, implement only after repo state is understood, verify, update memory with final decision/blocker/outcome, and update repo_docs if a workflow, command, architecture fact, or persistent pitfall changed.
+  - If the final code differs from repo_docs, fix repo_docs before final; if repo_docs is already accurate and no durable project state changed, say no docs update was needed.
 
 Failure and uncertainty handling:
 - If a tool fails with a recoverable error, use the error details to retry once with a better input when the fix is clear.

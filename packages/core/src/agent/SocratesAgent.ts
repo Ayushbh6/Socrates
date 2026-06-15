@@ -20,7 +20,7 @@ import {
 } from "../context/contextCompression"
 import { buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
-import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolRuntimeContext } from "../tools/types"
+import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
 
 export type SocratesAgentTurnInput = {
   projectId?: string
@@ -316,6 +316,7 @@ export class SocratesAgent {
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,
         maxParallelToolCalls,
         duplicateTraceRetrieveResults,
+        docsLedger,
       })
 
       for await (const event of batch.events) {
@@ -406,6 +407,7 @@ export class SocratesAgent {
     remainingBudget: number
     maxParallelToolCalls: number
     duplicateTraceRetrieveResults: Map<string, unknown>
+    docsLedger: TurnDocsLedger
   }): { events: AsyncIterable<ToolLifecycleEvent>; done: Promise<{ results: ToolExecutionResult[]; countedToolCalls: number; budgetExhausted: boolean }> } {
     const queue = new AsyncEventQueue<ToolLifecycleEvent>()
     const done = (async () => {
@@ -438,7 +440,7 @@ export class SocratesAgent {
       for (let index = 0; index < parallel.length; index += input.maxParallelToolCalls) {
         const chunk = parallel.slice(index, index + input.maxParallelToolCalls)
         const chunkResults = await Promise.all(
-          chunk.map((toolCall) => this.executeOneToolCall(toolCall, input.context, queue, input.duplicateTraceRetrieveResults)),
+          chunk.map((toolCall) => this.executeOneToolCall(toolCall, input.context, queue, input.duplicateTraceRetrieveResults, input.docsLedger)),
         )
         for (const result of chunkResults) {
           results.set(result.toolCallId, result)
@@ -446,7 +448,7 @@ export class SocratesAgent {
       }
 
       for (const toolCall of mutation) {
-        const result = await this.executeOneToolCall(toolCall, input.context, queue, input.duplicateTraceRetrieveResults)
+        const result = await this.executeOneToolCall(toolCall, input.context, queue, input.duplicateTraceRetrieveResults, input.docsLedger)
         results.set(result.toolCallId, result)
       }
 
@@ -469,6 +471,7 @@ export class SocratesAgent {
     context: ToolRuntimeContext,
     queue: AsyncEventQueue<ToolLifecycleEvent>,
     duplicateTraceRetrieveResults: Map<string, unknown>,
+    docsLedger: TurnDocsLedger,
   ): Promise<ToolExecutionResult> {
     const startedAt = Date.now()
     const tool = this.toolRegistry.get(toolCall.toolName)
@@ -499,6 +502,20 @@ export class SocratesAgent {
         toolCallId: toolCall.toolCallId,
         providerToolCallId: toolCall.providerToolCallId,
         toolName: toolCall.toolName,
+        error,
+        modelCallId: context.modelCallId,
+        stepIndex: context.stepIndex,
+      })
+      return toolErrorResult(toolCall, error)
+    }
+
+    if (requiresRepoDocsPreflightBeforePolicy(tool.name) && !docsLedger.hasRepoDocsPreflight()) {
+      const error = repoDocsPreflightError(tool.name)
+      queue.push({
+        type: "tool.call.failed",
+        toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
+        toolName: tool.name,
         error,
         modelCallId: context.modelCallId,
         stepIndex: context.stepIndex,
@@ -571,6 +588,10 @@ export class SocratesAgent {
         })
       }
 
+      if (requiresRepoDocsPreflightAfterPolicy(tool, policy) && !docsLedger.hasRepoDocsPreflight()) {
+        throw repoDocsPreflightError(tool.name)
+      }
+
       if (policy.type === "approval_required") {
         const approvalId = createId("appr")
         const request: ApprovalRequest = {
@@ -616,6 +637,13 @@ export class SocratesAgent {
       if (duplicateTraceRetrieveKey) {
         duplicateTraceRetrieveResults.set(duplicateTraceRetrieveKey, parsedOutput.data)
       }
+      docsLedger.recordImmediatePreflight({
+        toolCallId: toolCall.toolCallId,
+        providerToolCallId: toolCall.providerToolCallId,
+        toolName: tool.name,
+        ok: true,
+        output: parsedOutput.data,
+      }, toolCall)
       queue.push({
         type: "tool.call.completed",
         toolCallId: toolCall.toolCallId,
@@ -845,6 +873,8 @@ const TOOL_DOCS_FAILURE_NUDGE = "Refer to tool_docs for tool usage before retryi
 const MUTATION_SCHEMA_RECOVERY_HINT =
   'Runtime tool-schema recovery: the previous edit/apply_patch input was invalid. For a new file, call edit with exactly { "path": "relative/path.md", "content": "..." }. For a full rewrite of an existing file, use exactly { "path": "relative/path.md", "content": "...", "overwrite": true }. For a targeted replacement, use exactly { "path": "relative/path.md", "oldString": "...", "newString": "..." }. Do not mix content with oldString/newString, and do not set overwrite unless it is true.'
 const FAILED_MUTATION_FORCE_FINAL_THRESHOLD = 4
+const REPO_DOCS_PREFLIGHT_MESSAGE =
+  "Before approval-required mutation or edit/apply_patch, call repo_docs with operation read or search in this turn. Read the relevant repo rules, navigation, contracts, or core idea; update stale repo docs if needed; then retry the mutation."
 
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({
@@ -858,6 +888,23 @@ const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): To
       details: error.details,
     },
   })
+
+const repoDocsPreflightError = (toolName: ToolName): SocratesError =>
+  new SocratesError("repo_docs_preflight_required", REPO_DOCS_PREFLIGHT_MESSAGE, {
+    recoverable: true,
+    details: { toolName },
+  })
+
+const requiresRepoDocsPreflightBeforePolicy = (toolName: ToolName): boolean => toolName === "edit" || toolName === "apply_patch"
+
+const requiresRepoDocsPreflightAfterPolicy = (
+  tool: { name: ToolName; executeLane: "parallel" | "mutation" },
+  policy: ToolPolicyDecision,
+): boolean =>
+  policy.type === "approval_required" &&
+  tool.executeLane === "mutation" &&
+  tool.name !== "repo_docs" &&
+  tool.name !== "project_docs"
 
 type LedgerRecordBatchInput = {
   toolCalls: NormalizedToolCall[]
@@ -877,14 +924,31 @@ class TurnDocsLedger {
   private failedToolCalls = 0
   private projectDocsRead = false
   private projectDocsEdited = false
+  private projectMemoryEdited = false
+  private projectNotesEdited = false
   private repoDocsRead = false
   private repoDocsEdited = false
+  private repoDocsPreflightComplete = false
   private toolDocsRead = false
   private emptyProjectDocsRead = false
   private mutationSucceeded = false
   private bashSucceeded = false
   private readonly changedFiles = new Set<string>()
   private readonly commands: string[] = []
+
+  hasRepoDocsPreflight(): boolean {
+    return this.repoDocsPreflightComplete || this.repoDocsRead || this.repoDocsEdited
+  }
+
+  recordImmediatePreflight(result: ToolExecutionResult, toolCall: NormalizedToolCall | undefined): void {
+    if (!result.ok || result.toolName !== "repo_docs") {
+      return
+    }
+    const operation = toolOperation(toolCall)
+    if (operation === undefined || operation === "read" || operation === "search" || operation === "edit") {
+      this.repoDocsPreflightComplete = true
+    }
+  }
 
   recordBatch(input: DocsLedgerBatchInput): void {
     const callsById = new Map<string, NormalizedToolCall>()
@@ -906,7 +970,7 @@ class TurnDocsLedger {
   }
 
   buildSyncCheckpoint(): string | undefined {
-    if (this.projectDocsEdited || this.repoDocsEdited) {
+    if (this.projectMemoryEdited) {
       return undefined
     }
     const meaningfulWork =
@@ -926,10 +990,11 @@ class TurnDocsLedger {
       this.failedToolCalls > 0 ? `failed tools: ${this.failedToolCalls}` : undefined,
       this.emptyProjectDocsRead ? "project docs looked empty" : undefined,
       `docs read: project=${this.projectDocsRead ? "yes" : "no"}, repo=${this.repoDocsRead ? "yes" : "no"}, tool=${this.toolDocsRead ? "yes" : "no"}`,
+      `project_docs edits: memory=${this.projectMemoryEdited ? "yes" : "no"}, notes=${this.projectNotesEdited ? "yes" : "no"}`,
     ].filter((item): item is string => typeof item === "string")
 
     return `<runtime_docs_sync_checkpoint>
-Before final answer, close the Socrates docs loop. This turn did meaningful workspace work (${facts.join("; ")}). If durable outcomes, decisions, constraints, blockers, next steps, or handoff facts changed, call project_docs memory now. If there is active work state, todos, checked files, next commands, partial progress, or restart context, call project_docs notes now. If repo behavior, contracts, rules, navigation, provider/tool behavior, or durable pitfalls changed, call repo_docs now. If tools failed or behaved unexpectedly and tool_docs was not checked, call tool_docs before retrying or explaining. If no durable update is warranted, final answer may proceed; do not skip from haste.
+Before final answer, close the Socrates docs loop. This turn did meaningful workspace work (${facts.join("; ")}). You have not updated project_docs memory. Call project_docs memory now with the durable outcome, decision, blocker, changed files/docs, or handoff fact. Notes do not satisfy memory; notes are live scratch state, memory is the cross-conversation record. If active todos, checked files, next commands, partial progress, or restart context matter, also call project_docs notes. If repo behavior, contracts, navigation, provider/tool behavior, or durable pitfalls changed, call repo_docs too. If tools failed and tool_docs was not checked, call tool_docs before retrying or explaining. Skip project_docs memory only when no durable fact exists after meaningful work.
 </runtime_docs_sync_checkpoint>`
   }
 
@@ -941,6 +1006,13 @@ Before final answer, close the Socrates docs loop. This turn did meaningful work
     if (result.toolName === "project_docs") {
       if (toolOperation(toolCall) === "edit") {
         this.projectDocsEdited = true
+        const area = toolArea(toolCall)
+        if (area === "memory") {
+          this.projectMemoryEdited = true
+        }
+        if (area === "notes") {
+          this.projectNotesEdited = true
+        }
       } else {
         this.projectDocsRead = true
         this.emptyProjectDocsRead ||= outputContentIsEmpty(result.output)
@@ -992,6 +1064,11 @@ Before final answer, close the Socrates docs loop. This turn did meaningful work
 const toolOperation = (toolCall: NormalizedToolCall | undefined): string | undefined => {
   const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
   return typeof input?.operation === "string" ? input.operation : undefined
+}
+
+const toolArea = (toolCall: NormalizedToolCall | undefined): string | undefined => {
+  const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
+  return typeof input?.area === "string" ? input.area : undefined
 }
 
 const outputContentIsEmpty = (output: unknown): boolean => {

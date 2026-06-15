@@ -94,6 +94,16 @@ const nodeCommand = (script: string): string =>
     ? `& ${psQuote(process.execPath)} -e ${psQuote(`eval(Buffer.from("${Buffer.from(script).toString("base64")}", "base64").toString())`)}`
     : `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`eval(Buffer.from("${Buffer.from(script).toString("base64")}", "base64").toString())`)}`
 
+const repoDocsPreflightCall = (toolCallId = "tcall_repo_docs_preflight") =>
+  ({
+    type: "model.tool_call.completed" as const,
+    toolCall: {
+      toolCallId,
+      toolName: "repo_docs",
+      input: { operation: "read", path: "REPO_RULES.md" },
+    },
+  })
+
 const processExists = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
@@ -336,6 +346,7 @@ const createApprovalWaitingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
     async *stream() {
+      yield repoDocsPreflightCall("tcall_repo_docs_before_waiting_bash")
       yield {
         type: "model.tool_call.completed",
         toolCall: {
@@ -454,6 +465,7 @@ const createApprovalToolAgent = (): SocratesAgent => {
           process.platform === "win32"
             ? `[System.IO.File]::WriteAllText((Join-Path (Get-Location) ${psQuote("approved.txt")}), ${psQuote("approved")})`
             : "printf approved > approved.txt"
+        yield repoDocsPreflightCall("tcall_repo_docs_before_approval")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -479,6 +491,7 @@ const createVerifiedEditAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        yield repoDocsPreflightCall("tcall_repo_docs_before_verified_edit")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -516,6 +529,7 @@ const createVerifiedPatchAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        yield repoDocsPreflightCall("tcall_repo_docs_before_verified_patch")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -559,6 +573,7 @@ const createStaleEditAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
     async *stream() {
+      yield repoDocsPreflightCall("tcall_repo_docs_before_stale_edit")
       yield {
         type: "model.tool_call.completed",
         toolCall: {
@@ -5258,6 +5273,7 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Edit README", { approvalMode: "approve_all" }))
       await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "tool.call.completed")
+      await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
@@ -5309,6 +5325,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Patch README", { approvalMode: "approve_all" }))
+      await waitForEvent(socket, "tool.call.completed")
       await waitForEvent(socket, "tool.call.completed")
       const patchCompleted = await waitForEvent(socket, "tool.call.completed")
       expect(patchCompleted.payload.providerToolCallId).toBe("tcall_verified_patch")
@@ -5620,7 +5637,7 @@ describe("WebSocket API", () => {
           status: string
           decision: string
         }
-        const tool = sqlite.prepare("SELECT status FROM tool_calls WHERE turn_id = ?").get(started.payload.turnId) as {
+        const tool = sqlite.prepare("SELECT status FROM tool_calls WHERE turn_id = ? AND provider_tool_call_id = ?").get(started.payload.turnId, "tcall_waiting_bash") as {
           status: string
         }
         const modelCall = sqlite.prepare("SELECT status FROM model_calls WHERE turn_id = ?").get(started.payload.turnId) as {

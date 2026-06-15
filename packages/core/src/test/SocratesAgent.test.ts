@@ -730,6 +730,14 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_repo_docs_preflight",
+              toolName: "repo_docs",
+              input: { operation: "read", path: "REPO_RULES.md" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_good_edit_3",
               toolName: "edit",
               input: { path: "socrates_natural_e2e.md", content: "# Natural E2E\n" },
@@ -1052,6 +1060,14 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_repo_docs_1",
+              toolName: "repo_docs",
+              input: { operation: "read", path: "REPO_RULES.md" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_edit_1",
               toolName: "edit",
               input: { path: "README.md", oldString: "old", newString: "new" },
@@ -1171,6 +1187,79 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs")
   })
 
+  it("requires repo_docs preflight before approval-required file mutations", async () => {
+    let calls = 0
+    const streamRequests: ModelRequestLike[] = []
+    const approvals: string[] = []
+    const editInputs: unknown[] = []
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        streamRequests.push(request)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_edit_without_repo_docs",
+              toolName: "edit",
+              input: { path: "README.md", oldString: "old", newString: "new" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "I need to read repo docs first." }
+        yield { type: "model.completed" }
+      },
+    }
+    const streamed: SocratesAgentEvent[] = []
+    const executors = emptyToolExecutors()
+    executors.edit = async (input) => {
+      editInputs.push(input)
+      return {
+        changedFiles: [{ path: "README.md", operation: "edited" }],
+        diff: "real diff",
+        dryRun: input.dryRun ?? false,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 9 },
+      }
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Edit README" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async (request) => {
+        approvals.push(request.actionPreview)
+        return { decision: "approved" }
+      },
+    })) {
+      streamed.push(event)
+    }
+
+    const failed = streamed.find((event): event is Extract<SocratesAgentEvent, { type: "tool.call.failed" }> => event.type === "tool.call.failed")
+    expect(failed?.error.code).toBe("repo_docs_preflight_required")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs_preflight_required")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("call repo_docs with operation read or search")
+    expect(approvals).toEqual([])
+    expect(editInputs).toEqual([])
+  })
+
   it("injects one bounded docs preflight and one bounded docs-sync checkpoint per turn", async () => {
     let calls = 0
     const streamRequests: ModelRequestLike[] = []
@@ -1180,6 +1269,14 @@ describe("SocratesAgent", () => {
         streamRequests.push(request)
         calls += 1
         if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_repo_docs_once",
+              toolName: "repo_docs",
+              input: { operation: "read", path: "REPO_RULES.md" },
+            },
+          }
           yield {
             type: "model.tool_call.completed",
             toolCall: {
