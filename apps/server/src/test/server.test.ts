@@ -17,12 +17,13 @@ import type {
   ProjectWorkspace,
   ServerEvent,
   ChatCompaction,
+  MemoryCompaction,
   SkillSummary,
   User,
 } from "@socrates/contracts"
 import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
-import type { EmbeddingProvider, ModelProvider } from "@socrates/providers"
+import type { EmbeddingProvider, ModelProvider, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
@@ -58,6 +59,40 @@ const validServerChatCompaction = (overrides: Partial<ChatCompaction> = {}): Cha
   anchors: ["Turn 1: inspect compacted source."],
   ...overrides,
 })
+
+const validServerMemoryCompaction = (overrides: Partial<MemoryCompaction> = {}): MemoryCompaction => ({
+  schemaVersion: 1,
+  goal: "Continue the global memory-agent run.",
+  manifestScope: ["Covered compacted memory-agent evidence."],
+  investigated: ["Compressed memory-agent evidence."],
+  changed: [],
+  skipped: [],
+  blocked: [],
+  decisions: [],
+  nextSteps: ["Continue the memory-agent run."],
+  criticalContext: [],
+  toolState: [],
+  anchors: ["Turn 1: inspect compacted memory-agent evidence."],
+  ...overrides,
+})
+
+const hasMemoryCompactionMessage = (messages: unknown[]): boolean =>
+  messages.some((message) => {
+    if (!message || typeof message !== "object") {
+      return false
+    }
+    const content = (message as { content?: unknown }).content
+    return typeof content === "string" && content.includes("socrates_internal_memory_context_compaction")
+  })
+
+const hasToolResultPart = (messages: unknown[]): boolean =>
+  messages.some((message) => {
+    if (!message || typeof message !== "object") {
+      return false
+    }
+    const content = (message as { content?: unknown }).content
+    return Array.isArray(content) && content.some((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "tool-result")
+  })
 
 const buildTestServer = async (
   dbPath = tempDbPath(),
@@ -4065,6 +4100,103 @@ describe("WebSocket API", () => {
       expect(toolNames).not.toContain("bash")
       expect(toolNames).not.toContain("edit")
       expect(JSON.stringify(requests[1]?.messages)).toContain("memory-agent trace marker")
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("compacts backend memory-agent context with the memory compressor at 170k", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const sourceConversation = await createConversation(app, project.id, "Memory Compression Trace Source")
+    const memoryConversation = await createConversation(app, project.id, "Memory Compression Worker Source")
+    const handle = openDatabase(dbPath)
+    const streamRequests: Array<{ messages: unknown[] }> = []
+    const structuredSystems: string[] = []
+    let callIndex = 0
+    const memoryProvider: ModelProvider = {
+      countTokens: async (request) => {
+        const hasMemoryCompaction = hasMemoryCompactionMessage(request.messages)
+        const hasToolResult = hasToolResultPart(request.messages)
+        const inputTokens = hasMemoryCompaction
+          ? 60_000
+          : hasToolResult
+            ? 170_000
+            : 100
+        return {
+          providerId: request.providerId,
+          modelId: request.modelId,
+          inputTokens,
+          baseTokens: inputTokens,
+          method: "local_tiktoken",
+          safetyMarginPercent: 0,
+        }
+      },
+      async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>): Promise<StructuredModelResult<TOutput>> {
+        structuredSystems.push(request.system)
+        return {
+          output: validServerMemoryCompaction({
+            manifestScope: ["Covered memory-agent context after trace retrieval."],
+            toolState: ["Compacted after the memory-agent context crossed 170k estimated tokens."],
+          }) as TOutput,
+        }
+      },
+      async *stream(request) {
+        streamRequests.push({ messages: request.messages })
+        callIndex += 1
+        if (callIndex === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "trace_memory_compression_1",
+              toolName: "trace_retrieve",
+              input: {
+                operation: "search",
+                mode: "exact",
+                projectId: project.id,
+                query: "memory compression trace marker",
+                limit: 5,
+              },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nUsed compacted memory-agent context.\n\n## Changed\nNone.\n\n## Skipped\nNo durable update.\n\n## Blocked\nNone.",
+        }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
+    try {
+      const sourceSessionId = insertTestSession(handle.sqlite, project.id, sourceConversation.id)
+      const sourceTurn = insertCompletedTestTurn(
+        handle.sqlite,
+        sourceConversation.id,
+        sourceSessionId,
+        "Please remember this compression marker.",
+        "Durable memory compression trace marker from a prior conversation.",
+        new Date(Date.now() - 5_000).toISOString(),
+      )
+      store.indexTurnTraceDocuments(project.id, sourceConversation.id, sourceTurn.turnId)
+
+      const memorySessionId = insertTestSession(handle.sqlite, project.id, memoryConversation.id)
+      for (let index = 0; index < 4; index += 1) {
+        const memoryTurn = insertCompletedTestTurn(handle.sqlite, memoryConversation.id, memorySessionId, `Memory compression should investigate ${index + 1}.`, "Queued.", nowIso())
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: memoryConversation.id, sessionId: memorySessionId, turnId: memoryTurn.turnId })
+      }
+
+      const result = await store.runGlobalMemoryAgent("manual")
+      expect(result.item?.status).toBe("completed")
+      expect(structuredSystems.some((system) => system.includes("Socrates Memory Agent Compressor"))).toBe(true)
+      expect(streamRequests).toHaveLength(2)
+      expect(JSON.stringify(streamRequests[1]?.messages)).toContain("socrates_internal_memory_context_compaction")
+      expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Covered memory-agent context after trace retrieval.")
     } finally {
       await store.close()
     }

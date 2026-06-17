@@ -774,7 +774,7 @@ Stores proposed and applied patches.
 
 ## `memory_agent_jobs`
 
-Stores each backend memory-agent batch. The job is triggered after completed turns when the project evidence buffer reaches the token cap or the 5-minute idle threshold.
+Stores each backend Global Memory Agent batch. Scheduled and manual runs inspect completed-turn evidence after the durable watermark, run only when cumulative signal thresholds are met, and pack manifest entries up to 80 turns or the 60k estimated-token cap.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |

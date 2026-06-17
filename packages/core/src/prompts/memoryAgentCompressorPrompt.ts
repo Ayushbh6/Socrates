@@ -112,7 +112,7 @@ Good manifestScope:
 - Covered old manifest head only; recent raw manifest entries remain outside this summary.
 
 Good investigated:
-- Turn 51 showed the user wants Global Memory Agent packing to stop entry-by-entry before 80 turns or 60k estimated tokens.
+- Turn 51 showed the user wants Global Memory Agent packing to stop entry-by-entry before the configured turn/token caps.
 - Turn 56 confirmed .socrates/MEMORY.md is agent-owned and should be restored to placeholder only on explicit request.
 
 Good changed:
@@ -133,7 +133,7 @@ Good section discipline:
 - nextSteps: ["Re-run anchor repair for Turn 70 and validate every anchor begins with Turn <number>:"]
 
 Good anchors:
-- Turn 51: inspect the user's exact 80-turn/60k Global Memory Agent packing requirement.
+- Turn 51: inspect the user's exact Global Memory Agent packing requirement.
 - Turn 63: inspect the repo_docs separation rule and the old six-file root docs requirement.
 - Turn 70: inspect the exact schema-validation error before retrying the memory update.
 - Turn 74: inspect the skipped watermark reason and included sequenceTo value.

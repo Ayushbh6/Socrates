@@ -1,4 +1,4 @@
-import { chatCompactionSchema, type ChatCompaction } from "@socrates/contracts"
+import { chatCompactionSchema, memoryCompactionSchema, type ChatCompaction, type MemoryCompaction } from "@socrates/contracts"
 import { estimateTextTokens, type ModelMessage, type ModelMessagePart, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
 import type { ModelToolDefinition, ProviderId, RuntimeConfig } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
@@ -9,6 +9,13 @@ import {
   renderChatCompactionMarkdown,
   type CompressorTurnInput,
 } from "../prompts/socratesCompressorPrompt"
+import {
+  MEMORY_AGENT_COMPRESSOR_SYSTEM_PROMPT,
+  buildMemoryAgentCompressorUserContent,
+  renderMemoryCompactionMarkdown,
+} from "../prompts/memoryAgentCompressorPrompt"
+
+export type ContextCompressionMode = "chat" | "memory"
 
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
   triggerTokens: 170_000,
@@ -44,7 +51,7 @@ export type ContextCompressionReason = "precompute" | "threshold" | "emergency" 
 export type ContextCompactionSummary = {
   snapshotId: string
   previousSnapshotId?: string
-  summary: ChatCompaction
+  summary: ChatCompaction | MemoryCompaction
   renderedSummary: string
   sourceHandles: Array<Record<string, unknown>>
   outputTokensEstimate: number
@@ -91,7 +98,7 @@ export type StartCompactionSnapshotInput = {
 
 export type CompleteCompactionSnapshotInput = {
   snapshotId: string
-  summary: ChatCompaction
+  summary: ChatCompaction | MemoryCompaction
   renderedSummary: string
   sourceHandles: Array<Record<string, unknown>>
   inputTokensEstimate: number
@@ -111,6 +118,7 @@ export type FailCompactionSnapshotInput = {
 
 export type ContextCompressionRuntime = {
   enabled: boolean
+  mode?: ContextCompressionMode
   thresholds?: Partial<ContextCompressionThresholds>
   compressorProviderId?: ProviderId
   compressorModelId?: string
@@ -287,7 +295,7 @@ type ContextCompactionResult =
       snapshotId: string
       started: ContextCompactionStartedEvent
       messages: ModelMessage[]
-      summary: ChatCompaction
+      summary: ChatCompaction | MemoryCompaction
       renderedSummary: string
       sourceHandles: Array<Record<string, unknown>>
       outputTokensEstimate: number
@@ -319,8 +327,9 @@ const runContextCompaction = async (
   const compressorModelId = compression.compressorModelId ?? DEFAULT_COMPRESSOR_MODEL.modelId
   const compressorFallbackProviderId = compression.compressorFallbackProviderId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.providerId
   const compressorFallbackModelId = compression.compressorFallbackModelId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.modelId
-  const latestSnapshot = validLatestSnapshot(await compression.getLatestSnapshot?.())
-  const selection = selectCompactionWindow(input.messages, thresholds)
+  const mode = compression.mode ?? "chat"
+  const latestSnapshot = validLatestSnapshot(await compression.getLatestSnapshot?.(), mode)
+  const selection = selectCompactionWindow(input.messages, thresholds, mode)
   const keptRawMessages = [...selection.tailTurns, ...selection.activeTurns].flatMap((turn) => turn.messages)
   const toolPlan = buildToolCompactionPlan(keptRawMessages, thresholds)
   const sourceMessageIds = unique(selection.headTurns.flatMap((turn) => turn.messages.map((message) => message.id).filter(isString)))
@@ -356,24 +365,20 @@ const runContextCompaction = async (
     const compressor = new CompressorAgent()
     const compressorResult = await compressor.run({
       provider: input.provider,
-      mode: "chat",
+      mode,
       primary: { providerId: compressorProviderId, modelId: compressorModelId },
       fallbacks: [
         { providerId: compressorFallbackProviderId, modelId: compressorFallbackModelId },
         DEFAULT_COMPRESSOR_SECOND_FALLBACK_MODEL,
       ],
-      system: SOCRATES_COMPRESSOR_SYSTEM_PROMPT,
-      userContent: buildSocratesCompressorUserContent({
-        headTurns: selection.headTurns,
-        ...(latestSnapshot?.renderedSummary ? { previousSummary: latestSnapshot.renderedSummary } : {}),
-        ...(toolPlan.digests.length > 0 ? { currentTurnDigest: toolPlan.digests } : {}),
-      }),
+      system: compressorSystemPrompt(mode),
+      userContent: compressorUserContent(mode, selection, latestSnapshot, toolPlan),
     })
-    if (compressorResult.mode !== "chat") {
+    if (compressorResult.mode !== mode) {
       throw new SocratesError("context_compaction_wrong_mode", "Compressor returned the wrong output mode.", { recoverable: true })
     }
 
-    const renderedSummary = renderChatCompactionMarkdown(compressorResult.output)
+    const renderedSummary = renderCompactionMarkdown(compressorResult.output)
     return {
       ok: true,
       snapshotId,
@@ -384,7 +389,7 @@ const runContextCompaction = async (
         providerId: compressorResult.providerId,
         modelId: compressorResult.modelId,
       }).inputTokens,
-      messages: packMessagesWithCompaction(selection, renderedSummary, toolPlan),
+      messages: packMessagesWithCompaction(selection, renderedSummary, toolPlan, mode),
       started,
       compressorProviderId: compressorResult.providerId,
       compressorModelId: compressorResult.modelId,
@@ -444,7 +449,32 @@ const countPreparedContext = (
     thresholds,
   )
 
-const selectCompactionWindow = (messages: ModelMessage[], thresholds: ContextCompressionThresholds): CompactionSelection => {
+const compressorSystemPrompt = (mode: ContextCompressionMode): string =>
+  mode === "memory" ? MEMORY_AGENT_COMPRESSOR_SYSTEM_PROMPT : SOCRATES_COMPRESSOR_SYSTEM_PROMPT
+
+const compressorUserContent = (
+  mode: ContextCompressionMode,
+  selection: CompactionSelection,
+  latestSnapshot: ContextCompactionSummary | undefined,
+  toolPlan: ToolCompactionPlan,
+): string => {
+  if (mode === "memory") {
+    return buildMemoryAgentCompressorUserContent({
+      ...(latestSnapshot?.renderedSummary ? { previousSummary: latestSnapshot.renderedSummary } : {}),
+      manifestHead: buildMemoryAgentManifestHead(selection.headTurns, toolPlan.digests),
+    })
+  }
+  return buildSocratesCompressorUserContent({
+    headTurns: selection.headTurns,
+    ...(latestSnapshot?.renderedSummary ? { previousSummary: latestSnapshot.renderedSummary } : {}),
+    ...(toolPlan.digests.length > 0 ? { currentTurnDigest: toolPlan.digests } : {}),
+  })
+}
+
+const renderCompactionMarkdown = (summary: ChatCompaction | MemoryCompaction): string =>
+  "manifestScope" in summary ? renderMemoryCompactionMarkdown(summary) : renderChatCompactionMarkdown(summary)
+
+const selectCompactionWindow = (messages: ModelMessage[], thresholds: ContextCompressionThresholds, mode: ContextCompressionMode = "chat"): CompactionSelection => {
   const turns = groupMessagesByTurn(messages)
   const activeTurns = turns.length > 0 ? [turns[turns.length - 1]!] : []
   const completedTurns = turns.slice(0, -1)
@@ -461,11 +491,19 @@ const selectCompactionWindow = (messages: ModelMessage[], thresholds: ContextCom
     tailTokens += turnTokens
   }
 
-  return {
+  const selection = {
     headTurns: completedTurns.slice(0, completedTurns.length - tailTurns.length),
     tailTurns,
     activeTurns,
   }
+  if (mode === "memory" && selection.headTurns.length === 0 && (selection.tailTurns.length > 0 || selection.activeTurns.length > 0)) {
+    return {
+      headTurns: [...selection.tailTurns, ...selection.activeTurns],
+      tailTurns: [],
+      activeTurns: [],
+    }
+  }
+  return selection
 }
 
 const groupMessagesByTurn = (messages: ModelMessage[]): CompressorTurnInput[] => {
@@ -578,17 +616,29 @@ const packMessagesWithCompaction = (
   selection: CompactionSelection,
   renderedSummary: string,
   toolPlan: ToolCompactionPlan,
+  mode: ContextCompressionMode,
 ): ModelMessage[] => [
   {
     role: "developer",
     content: [
-      "<socrates_internal_context_compaction>",
-      "This is model-visible internal context, not transcript-visible user content.",
+      mode === "memory" ? "<socrates_internal_memory_context_compaction>" : "<socrates_internal_context_compaction>",
+      mode === "memory"
+        ? "This is model-visible internal context for the Global Memory Agent, not transcript-visible user content."
+        : "This is model-visible internal context, not transcript-visible user content.",
       renderedSummary,
-      "</socrates_internal_context_compaction>",
+      mode === "memory" ? "</socrates_internal_memory_context_compaction>" : "</socrates_internal_context_compaction>",
     ].join("\n"),
   },
   ...compactToolResults([...selection.tailTurns, ...selection.activeTurns].flatMap((turn) => turn.messages), toolPlan),
+  ...(mode === "memory" && selection.tailTurns.length === 0 && selection.activeTurns.length === 0
+    ? [
+        {
+          role: "user" as const,
+          content:
+            "Continue the Global Memory Agent run from the compacted memory-agent context above. Use tools only if exact evidence is still needed; otherwise produce the memory-agent run report.",
+        },
+      ]
+    : []),
 ]
 
 const compactToolResults = (messages: ModelMessage[], plan: ToolCompactionPlan): ModelMessage[] => {
@@ -641,7 +691,45 @@ const lightweightToolDigest = (result: { toolName: string; toolCallId: string; o
     .join("")
 }
 
-const buildSourceHandles = (headTurns: CompressorTurnInput[], summary: ChatCompaction): Array<Record<string, unknown>> => {
+const buildMemoryAgentManifestHead = (headTurns: CompressorTurnInput[], toolDigests: string[]): string => {
+  const sections = [
+    headTurns.length > 0 ? headTurns.map(renderMemoryAgentManifestTurn).join("\n\n") : "None.",
+  ]
+  if (toolDigests.length > 0) {
+    sections.push("", "# Older Memory-Agent Tool Result Digest", toolDigests.map((line) => `- ${line}`).join("\n"))
+  }
+  return sections.join("\n")
+}
+
+const renderMemoryAgentManifestTurn = (turn: CompressorTurnInput): string =>
+  [
+    `## Turn ${turn.turnNo}`,
+    turn.turnId ? `turnId: ${turn.turnId}` : undefined,
+    ...turn.messages.map((message) => renderMemoryAgentManifestMessage(message)),
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n")
+
+const renderMemoryAgentManifestMessage = (message: ModelMessage): string =>
+  [
+    `### ${message.role}${message.id ? ` messageId=${message.id}` : ""}`,
+    typeof message.content === "string" ? message.content : message.content.map(renderMemoryAgentManifestPart).join("\n"),
+  ].join("\n")
+
+const renderMemoryAgentManifestPart = (part: ModelMessagePart): string => {
+  if (part.type === "text" || part.type === "reasoning") {
+    return part.text
+  }
+  if (part.type === "image") {
+    return `[image: ${part.fileName ?? "unnamed"} ${part.mediaType}; bytes omitted]`
+  }
+  if (part.type === "tool-call") {
+    return `[tool-call ${part.toolName} ${part.toolCallId}] input=${truncateWithNotice(safeStringify(part.input), 4_000, "tool input")}`
+  }
+  return `[tool-result ${part.toolName} ${part.toolCallId}] output=${truncateWithNotice(safeStringify(part.output), 12_000, "tool output")}`
+}
+
+const buildSourceHandles = (headTurns: CompressorTurnInput[], summary: ChatCompaction | MemoryCompaction): Array<Record<string, unknown>> => {
   const handles = headTurns.map((turn) => ({
     turnNo: turn.turnNo,
     ...(turn.turnId ? { turnId: turn.turnId } : {}),
@@ -650,11 +738,11 @@ const buildSourceHandles = (headTurns: CompressorTurnInput[], summary: ChatCompa
   return [...handles, ...summary.anchors.map((anchor) => ({ anchor }))]
 }
 
-const validLatestSnapshot = (snapshot: ContextCompactionSummary | undefined): ContextCompactionSummary | undefined => {
+const validLatestSnapshot = (snapshot: ContextCompactionSummary | undefined, mode: ContextCompressionMode): ContextCompactionSummary | undefined => {
   if (!snapshot) {
     return undefined
   }
-  const parsed = chatCompactionSchema.safeParse(snapshot.summary)
+  const parsed = (mode === "memory" ? memoryCompactionSchema : chatCompactionSchema).safeParse(snapshot.summary)
   if (!parsed.success) {
     return undefined
   }

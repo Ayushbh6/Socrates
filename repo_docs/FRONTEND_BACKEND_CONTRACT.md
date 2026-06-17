@@ -1562,7 +1562,7 @@ type ContextCompactionFailedPayload = {
 
 ### Memory And Notification Events
 
-The backend memory agent buffers completed-turn evidence until the project batch reaches about 60k estimated tokens or the 5-minute idle flush runs. It must never block or fail the user's chat turn. Its lifecycle and user-visible notice events are contract-validated:
+The backend Global Memory Agent runs on schedule or manual request when cumulative completed-turn evidence after the durable watermark reaches its signal thresholds. It packs completed-turn manifest entries one by one up to 80 turns or the 60k estimated-token cap, then runs through `SocratesAgent` with the same V1 170k context-compression trigger used by normal chat calls. Memory-agent context compression must use the memory compressor prompt and `memoryCompactionSchema`, not the chat compressor prompt/schema. It must never block or fail the user's chat turn. Its lifecycle and user-visible notice events are contract-validated:
 
 ```text
 memory.agent.started
@@ -2318,7 +2318,7 @@ new user query
 current-turn tool calls only
 ```
 
-When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes both long conversations and long single-turn tasks. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles.
+When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles. Global Memory Agent runs use the memory-specific structured compaction schema and prompt.
 
 If older conversation memory is needed, the agent should call normal `trace_retrieve` explicitly. If older runtime evidence is needed, it should retry with `mode = "audit"`. Full raw history remains persisted in SQLite for audit and replay.
 

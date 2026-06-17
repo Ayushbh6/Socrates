@@ -6,7 +6,7 @@ import {
   prepareContextForModelCall,
   type ContextCompactionSummary,
 } from "../index"
-import type { ChatCompaction } from "@socrates/contracts"
+import type { ChatCompaction, MemoryCompaction } from "@socrates/contracts"
 import type { ModelProvider, ModelRequest, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
 
 const runtimeConfig = {
@@ -81,6 +81,60 @@ describe("context compression", () => {
     expect(String(prepared.messages[0]?.content)).toContain("<socrates_internal_context_compaction>")
     expect(String(prepared.messages[0]?.content)).toContain("# Anchors")
     expect(prepared.estimatedTokens).toBe(60_000)
+  })
+
+  it("uses the memory compressor schema and prompt in memory mode at the same 170k trigger", async () => {
+    const provider = structuredProvider({
+      counts: [170_000, 60_000],
+      outputs: [validMemory({ anchors: ["Turn 1: inspect old memory-agent evidence."] })],
+    })
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: {
+        enabled: true,
+        mode: "memory",
+        thresholds: { triggerTokens: 170_000, recentTailTargetTokens: 1 },
+      },
+    })
+
+    expect(provider.structuredRequests).toHaveLength(1)
+    expect(provider.structuredRequests[0]?.system).toContain("Socrates Memory Agent Compressor")
+    expect(String(provider.structuredRequests[0]?.messages[0]?.content)).toContain("# Old Memory-Agent Manifest Head")
+    expect(String(provider.structuredRequests[0]?.messages[0]?.content)).not.toContain("# Old Head Turns To Compress")
+    expect(String(prepared.messages[0]?.content)).toContain("<socrates_internal_memory_context_compaction>")
+    expect(String(prepared.messages[0]?.content)).toContain("# Manifest Scope")
+    expect(prepared.estimatedTokens).toBe(60_000)
+  })
+
+  it("can compact an initial oversized memory-agent manifest instead of requiring a completed chat head", async () => {
+    const provider = structuredProvider({
+      counts: [170_000, 60_000],
+      outputs: [validMemory({ manifestScope: ["Covered the initial oversized memory-agent manifest."] })],
+    })
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: [{ role: "user", content: "initial memory manifest " + "x".repeat(1000) }],
+      compression: {
+        enabled: true,
+        mode: "memory",
+        thresholds: { triggerTokens: 170_000 },
+      },
+    })
+
+    expect(provider.structuredRequests).toHaveLength(1)
+    expect(String(provider.structuredRequests[0]?.messages[0]?.content)).toContain("initial memory manifest")
+    expect(JSON.stringify(prepared.messages)).toContain("Continue the Global Memory Agent run")
   })
 
   it("summarizes only the old head and keeps raw recent tail by whole Q&A turn", async () => {
@@ -407,6 +461,22 @@ const validChat = (overrides: Partial<ChatCompaction> = {}): ChatCompaction => (
   relevantFiles: [],
   toolState: [],
   anchors: ["Turn 1: inspect the original user request."],
+  ...overrides,
+})
+
+const validMemory = (overrides: Partial<MemoryCompaction> = {}): MemoryCompaction => ({
+  schemaVersion: 1,
+  goal: "Continue memory-agent compaction.",
+  manifestScope: ["Covered old memory-agent evidence."],
+  investigated: ["Old memory-agent evidence compressed."],
+  changed: [],
+  skipped: [],
+  blocked: [],
+  decisions: [],
+  nextSteps: ["Continue the memory-agent run."],
+  criticalContext: [],
+  toolState: [],
+  anchors: ["Turn 1: inspect the original memory-agent evidence."],
   ...overrides,
 })
 

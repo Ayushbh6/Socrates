@@ -63,6 +63,10 @@ export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<st
     maxToolCallsPerTurn: 60,
     maxParallelToolCalls: 4,
     maxConfirmedToolErrorsPerTurn: 8,
+    contextCompression: {
+      enabled: true,
+      mode: "memory",
+    },
   })) {
     input.onEvent?.(event)
     if (event.type === "model.answer.delta") {
