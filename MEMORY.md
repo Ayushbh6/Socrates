@@ -96,10 +96,10 @@ Tool routing:
 
 ## Runtime Notes
 
-- First-turn wake context includes compact excerpts from workspace `.socrates/MEMORY.md` and `.socrates/repo_docs/CORE_IDEA.md`.
+- First-turn wake context is stable pointer-only text. It does not paste the state ledger, project memory excerpts, repo-doc excerpts, timestamps, last-turn summaries, turn ids, or assistant previews. It points the agent to `project_docs(area: "notes")` for the active state ledger, `project_docs(area: "memory")` for durable memory, and `repo_docs` for repo doctrine.
 - Generic `edit` and `apply_patch` writes to `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/*.md`, and `.socrates/skills/**` are rejected; use dedicated docs tools or the backend project skill builder.
-- Before `edit`, `apply_patch`, or approval-required mutation tools can run, Socrates must have read/searched/edited `repo_docs` in the same turn. Missing preflight returns recoverable `repo_docs_preflight_required`.
-- After meaningful work, the runtime injects one docs checkpoint if `project_docs memory` was not updated. `project_docs notes` is live scratch state and does not satisfy durable memory closure.
+- Before any `bash`, `edit`, or `apply_patch` can run, Socrates must have read/searched `project_docs` with `area: "notes"` and read/searched `repo_docs` in the same turn. Missing preflight returns recoverable `docs_preflight_required`.
+- After any successful `bash`, `edit`, or `apply_patch`, Socrates must read/search `project_docs` with `area: "memory"` before final answer. Memory edits remain optional; the runtime requires review, then Socrates decides whether a durable update is useful.
 - Terminal commands are preflight-rejected when they mention Socrates-owned protected paths: workspace `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/**`, `.socrates/skills/**`, and global `~/.Socrates/skills/**`, `~/.Socrates/tool_usage/**`, `identity.md`, or `operating_principles.md`. This is an obvious-path guard, not a process sandbox.
 - The Global Memory Agent is a scheduled app-level specialized `SocratesAgent` run, not a per-turn project worker.
 - The agent reads completed-turn event manifests after the durable `events.sequence` watermark and advances the watermark only after a successful run. Manifest packing now adds completed turns one by one and stops before either 80 turns or 60k estimated tokens.
@@ -140,11 +140,14 @@ Tool routing:
 
 ## Verification
 
-Latest verified after the compressor refactor, proactive investigation hardening, repo-docs preflight, and project-memory checkpoint work:
+Latest verified after the stable wake-context, hard notes+repo-doc action preflight, post-action memory review gate, and terminal drain serialization work:
 
 ```text
-pnpm typecheck
-pnpm test
+pnpm --filter @socrates/server test -- server.test.ts
+pnpm --filter @socrates/core test -- SocratesAgent.test.ts
+git diff --check
 ```
+
+Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.
 
 Run `git diff --check` and a tracked-file sensitive scan before publishing a release tag.

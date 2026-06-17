@@ -20,6 +20,7 @@ type RuntimeTerminal = {
   pollTimer?: NodeJS.Timeout
   awaitingInput: boolean
   supervisorOutputSequence: number
+  drainPromise?: Promise<BashToolOutput>
 }
 
 type TerminalManagerOptions = {
@@ -303,6 +304,7 @@ export class ConversationTerminalManager {
   private async terminalStatus(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
     const runtime = this.resolveTerminal(input, context)
     if (isRuntimeTerminal(runtime)) {
+      await this.waitForPendingDrain(runtime)
       const output = await this.supervisor.status(runtime.terminalId, runtime.processId, { ...input, operation: "status", processId: runtime.processId })
       this.updateFromOutput(runtime, output)
       await this.drainRuntimeTerminal(runtime, context)
@@ -330,6 +332,7 @@ export class ConversationTerminalManager {
     if (isRuntimeTerminal(runtime)) {
       const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
       assertModelCanStopTerminal(terminal ?? runtime)
+      await this.waitForPendingDrain(runtime)
       const output = await this.supervisor.stop(runtime.terminalId, runtime.processId, {
         ...input,
         operation: "stop",
@@ -431,18 +434,36 @@ export class ConversationTerminalManager {
   }
 
   private async pollTerminal(terminal: RuntimeTerminal): Promise<void> {
+    if (terminal.drainPromise) {
+      return
+    }
     await this.drainRuntimeTerminal(terminal, undefined)
   }
 
   private async drainRuntimeTerminal(terminal: RuntimeTerminal, context: ToolExecutorContext | undefined): Promise<BashToolOutput> {
-    const output = await this.supervisor.output(terminal.terminalId, terminal.processId, {
-      operation: "output",
-      processId: terminal.processId,
-      outputSequence: terminal.supervisorOutputSequence,
+    const previousDrain = terminal.drainPromise?.catch(() => undefined)
+    const drain = (async () => {
+      await previousDrain
+      const output = await this.supervisor.output(terminal.terminalId, terminal.processId, {
+        operation: "output",
+        processId: terminal.processId,
+        outputSequence: terminal.supervisorOutputSequence,
+      })
+      this.appendOutputSnapshot(terminal.terminalId, context, output)
+      this.updateFromOutput(terminal, output)
+      return output
+    })()
+    const trackedDrain = drain.finally(() => {
+      if (terminal.drainPromise === trackedDrain) {
+        terminal.drainPromise = undefined
+      }
     })
-    this.appendOutputSnapshot(terminal.terminalId, context, output)
-    this.updateFromOutput(terminal, output)
-    return output
+    terminal.drainPromise = trackedDrain
+    return trackedDrain
+  }
+
+  private async waitForPendingDrain(terminal: RuntimeTerminal): Promise<void> {
+    await terminal.drainPromise?.catch(() => undefined)
   }
 
   private async drainInitialTerminalOutput(terminal: RuntimeTerminal, context: ToolExecutorContext): Promise<void> {
@@ -487,6 +508,7 @@ export class ConversationTerminalManager {
   }
 
   private async stopRuntimeTerminal(terminal: RuntimeTerminal, reason?: string): Promise<void> {
+    await this.waitForPendingDrain(terminal)
     const output = await this.supervisor
       .stop(terminal.terminalId, terminal.processId, {
         operation: "stop",

@@ -85,7 +85,6 @@ const DEFAULT_SEARCH_LIMIT = 20
 const MEMORY_AGENT_TOKEN_CAP = 60_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
-const WAKE_CONTEXT_CHAR_LIMIT = 4_000
 const SKILL_CHAR_LIMIT = 20_000
 const STATE_LEDGER_START = "<!-- socrates-state-ledger:start -->"
 const STATE_LEDGER_END = "<!-- socrates-state-ledger:end -->"
@@ -455,37 +454,18 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  buildWakeContext(projectId: string, workspacePath: string | undefined, userQuery: string): string | undefined {
+  buildWakeContext(projectId: string, workspacePath: string | undefined, _userQuery: string): string | undefined {
     this.ensureProjectMemory(projectId, workspacePath)
-    const sections: string[] = ["Quiet startup map. Use this as model-visible internal context, not as user-visible text."]
-    const projectNotes = workspacePath ? readIfExists(projectDocPath(workspacePath, "notes")) : undefined
-    const stateLedger = projectNotes ? extractStateLedgerSection(projectNotes) : undefined
-    if (workspacePath) {
-      sections.push('For full project notes, call project_docs({ operation: "read", area: "notes" }).')
+    if (!workspacePath) {
+      return "Project recall tools are unavailable because this project has no active workspace path."
     }
-    if (stateLedger?.trim()) {
-      sections.push(`Project notes state ledger:\n${truncate(stateLedger.trim(), 1_600).text}`)
-    }
-    const projectMemory = workspacePath ? readIfExists(projectDocPath(workspacePath, "memory")) : undefined
-    const coreIdea = workspacePath ? readIfExists(repoDocPath(repoDocsRoot(workspacePath), "CORE_IDEA.md")) : undefined
-    const query = userQuery.trim()
-    for (const [label, content] of [
-      ["Project memory", projectMemory],
-      ["Core idea", coreIdea],
-    ] as const) {
-      if (!content?.trim()) {
-        continue
-      }
-      const excerpt = query ? bestExcerpt(content, query, 900) : content.slice(0, 900)
-      if (excerpt.trim()) {
-        sections.push(`${label}:\n${excerpt.trim()}`)
-      }
-      if (sections.join("\n\n").length >= WAKE_CONTEXT_CHAR_LIMIT) {
-        break
-      }
-    }
-    const context = sections.join("\n\n")
-    return context.length > WAKE_CONTEXT_CHAR_LIMIT ? `${context.slice(0, WAKE_CONTEXT_CHAR_LIMIT)}\n[Wake context truncated]` : context
+    return [
+      "Stable project recall map. Use this as model-visible internal context, not as user-visible text.",
+      'Project notes, including the active state ledger, are available through project_docs({ operation: "read", area: "notes" }).',
+      'Project memory is available through project_docs({ operation: "read", area: "memory" }).',
+      'Repo doctrine is available through repo_docs({ operation: "read" }) or repo_docs({ operation: "search", query: "..." }).',
+      "Do not assume project notes, memory, or repo docs were loaded until you call the relevant tool in this turn.",
+    ].join("\n")
   }
 
   async runGlobalMemoryAgent(input: GlobalMemoryAgentRunInput): Promise<TriggerMemoryAgentRunResponse> {
@@ -2195,15 +2175,6 @@ const lineMatches = (content: string, query: string, limit: number): Array<{ lin
     }
   })
   return matches
-}
-
-const bestExcerpt = (content: string, query: string, limit: number): string => {
-  const terms = query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 2) ?? []
-  const lower = content.toLowerCase()
-  const anchors = terms.map((term) => lower.indexOf(term)).filter((index) => index >= 0)
-  const anchor = anchors[0] ?? 0
-  const start = Math.max(0, anchor - Math.floor(limit / 2))
-  return content.slice(start, start + limit)
 }
 
 const truncate = (text: string, charLimit: number): { text: string; truncated: boolean } =>

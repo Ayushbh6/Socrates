@@ -139,6 +139,31 @@ const repoDocsPreflightCall = (toolCallId = "tcall_repo_docs_preflight") =>
     },
   })
 
+const projectNotesPreflightCall = (toolCallId = "tcall_project_notes_preflight") =>
+  ({
+    type: "model.tool_call.completed" as const,
+    toolCall: {
+      toolCallId,
+      toolName: "project_docs",
+      input: { operation: "read", area: "notes" },
+    },
+  })
+
+const projectMemoryReviewCall = (toolCallId = "tcall_project_memory_review") =>
+  ({
+    type: "model.tool_call.completed" as const,
+    toolCall: {
+      toolCallId,
+      toolName: "project_docs",
+      input: { operation: "read", area: "memory" },
+    },
+  })
+
+const serializedRequestMessages = (request: { messages: unknown }): string => JSON.stringify(request.messages)
+
+const requestHasToolResult = (request: { messages: unknown }, providerToolCallId: string): boolean =>
+  serializedRequestMessages(request).includes(providerToolCallId)
+
 const processExists = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
@@ -353,12 +378,15 @@ const createConcurrentWorkspaceMutationAgent = (): SocratesAgent => {
     async *stream(request) {
       const serializedMessages = JSON.stringify(request.messages)
       const hasMutationToolResult = serializedMessages.includes("tcall_slow_workspace_mutation") || serializedMessages.includes("tcall_fast_workspace_mutation")
+      const hasMemoryReview = serializedMessages.includes("tcall_project_memory_after_workspace_mutation")
       const isSlow = serializedMessages.includes("slow workspace mutation")
       const isFast = serializedMessages.includes("fast workspace mutation")
       if (!hasMutationToolResult && (isSlow || isFast)) {
       const script = isSlow
         ? "setTimeout(() => { require('fs').appendFileSync('race.txt', 'first\\n') }, 250); setTimeout(() => process.exit(0), 300)"
         : "require('fs').appendFileSync('race.txt', 'second\\n')"
+      yield projectNotesPreflightCall(isSlow ? "tcall_project_notes_before_slow_workspace_mutation" : "tcall_project_notes_before_fast_workspace_mutation")
+      yield repoDocsPreflightCall(isSlow ? "tcall_repo_docs_before_slow_workspace_mutation" : "tcall_repo_docs_before_fast_workspace_mutation")
       yield {
         type: "model.tool_call.completed",
         toolCall: {
@@ -367,6 +395,11 @@ const createConcurrentWorkspaceMutationAgent = (): SocratesAgent => {
           input: { command: nodeCommand(script) },
         },
       }
+        yield { type: "model.completed" }
+        return
+      }
+      if (hasMutationToolResult && !hasMemoryReview) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_workspace_mutation")
         yield { type: "model.completed" }
         return
       }
@@ -381,6 +414,7 @@ const createApprovalWaitingAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
     async *stream() {
+      yield projectNotesPreflightCall("tcall_project_notes_before_waiting_bash")
       yield repoDocsPreflightCall("tcall_repo_docs_before_waiting_bash")
       yield {
         type: "model.tool_call.completed",
@@ -417,6 +451,8 @@ const createPersistentBashAgent = (): SocratesAgent => {
       step += 1
       if (step === 1) {
         const setupCommand = process.platform === "win32" ? "New-Item -ItemType Directory -Force nested | Out-Null; Set-Location nested; Get-Location" : "mkdir -p nested && cd nested && pwd"
+        yield projectNotesPreflightCall("tcall_project_notes_before_cd")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_cd")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -444,6 +480,11 @@ const createPersistentBashAgent = (): SocratesAgent => {
         yield { type: "model.completed" }
         return
       }
+      if (step === 3) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_persistent_bash")
+        yield { type: "model.completed" }
+        return
+      }
       yield { type: "model.answer.delta", text: "Shell state preserved." }
       yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
     },
@@ -458,6 +499,8 @@ const createRecoveringBashAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_break_shell")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_break_shell")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -482,6 +525,11 @@ const createRecoveringBashAgent = (): SocratesAgent => {
         yield { type: "model.completed" }
         return
       }
+      if (step === 3) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_recovering_bash")
+        yield { type: "model.completed" }
+        return
+      }
       yield { type: "model.answer.delta", text: "Recovered after shell reset." }
       yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
     },
@@ -500,6 +548,7 @@ const createApprovalToolAgent = (): SocratesAgent => {
           process.platform === "win32"
             ? `[System.IO.File]::WriteAllText((Join-Path (Get-Location) ${psQuote("approved.txt")}), ${psQuote("approved")})`
             : "printf approved > approved.txt"
+        yield projectNotesPreflightCall("tcall_project_notes_before_approval")
         yield repoDocsPreflightCall("tcall_repo_docs_before_approval")
         yield {
           type: "model.tool_call.completed",
@@ -509,6 +558,11 @@ const createApprovalToolAgent = (): SocratesAgent => {
             input: { command },
           },
         }
+        yield { type: "model.completed" }
+        return
+      }
+      if (step === 2) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_approval")
         yield { type: "model.completed" }
         return
       }
@@ -526,6 +580,7 @@ const createVerifiedEditAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_verified_edit")
         yield repoDocsPreflightCall("tcall_repo_docs_before_verified_edit")
         yield {
           type: "model.tool_call.completed",
@@ -550,6 +605,11 @@ const createVerifiedEditAgent = (): SocratesAgent => {
         yield { type: "model.completed" }
         return
       }
+      if (step === 3) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_verified_edit")
+        yield { type: "model.completed" }
+        return
+      }
       yield { type: "model.answer.delta", text: "Verified edit done." }
       yield { type: "model.completed", usage: { inputTokens: 3, outputTokens: 3, totalTokens: 6 } }
     },
@@ -564,6 +624,7 @@ const createVerifiedPatchAgent = (): SocratesAgent => {
     async *stream() {
       step += 1
       if (step === 1) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_verified_patch")
         yield repoDocsPreflightCall("tcall_repo_docs_before_verified_patch")
         yield {
           type: "model.tool_call.completed",
@@ -597,6 +658,11 @@ const createVerifiedPatchAgent = (): SocratesAgent => {
         yield { type: "model.completed" }
         return
       }
+      if (step === 3) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_verified_patch")
+        yield { type: "model.completed" }
+        return
+      }
       yield { type: "model.answer.delta", text: "Verified patch done." }
       yield { type: "model.completed", usage: { inputTokens: 3, outputTokens: 3, totalTokens: 6 } }
     },
@@ -608,6 +674,7 @@ const createStaleEditAgent = (): SocratesAgent => {
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
     async *stream() {
+      yield projectNotesPreflightCall("tcall_project_notes_before_stale_edit")
       yield repoDocsPreflightCall("tcall_repo_docs_before_stale_edit")
       yield {
         type: "model.tool_call.completed",
@@ -624,35 +691,58 @@ const createStaleEditAgent = (): SocratesAgent => {
 }
 
 const createConversationTerminalAgent = (requests: unknown[]): SocratesAgent => {
-  let step = 0
   const command = `node -e "console.log('terminal-ready'); setInterval(() => console.log('terminal-tick'), 250)"`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
     async *stream(request) {
-      step += 1
       requests.push(request)
-      if (step === 1) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_terminal_start",
-            toolName: "bash",
-            input: { operation: "start", command, name: "server-test" },
-          },
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (latestUser.includes("Start a terminal")) {
+        if (!requestHasToolResult(request, "tcall_terminal_start")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_terminal_start")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_start")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_terminal_start",
+              toolName: "bash",
+              input: { operation: "start", command, name: "server-test" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_terminal_start")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_terminal_start")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Terminal observed." }
+        yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
         return
       }
-      if (step === 3) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_terminal_stop_by_name",
-            toolName: "bash",
-            input: { operation: "stop", name: "server-test" },
-          },
+      if (latestUser.includes("Stop terminal by name")) {
+        if (!requestHasToolResult(request, "tcall_terminal_stop_by_name")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_terminal_stop_by_name")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_stop_by_name")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_terminal_stop_by_name",
+              toolName: "bash",
+              input: { operation: "stop", name: "server-test" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_terminal_stop_by_name")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_terminal_stop_by_name")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Terminal observed." }
+        yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 3, totalTokens: 7 } }
         return
       }
       yield { type: "model.answer.delta", text: "Terminal observed." }
@@ -663,42 +753,55 @@ const createConversationTerminalAgent = (requests: unknown[]): SocratesAgent => 
 }
 
 const createUntargetedTerminalStopAgent = (): SocratesAgent => {
-  let step = 0
   const command = `node -e "console.log('solo-ready'); setInterval(() => console.log('solo-tick'), 250)"`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      step += 1
-      if (step === 1) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_terminal_start_solo",
-            toolName: "bash",
-            input: { operation: "start", command, name: "solo-server" },
-          },
+    async *stream(request) {
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (latestUser.includes("Start one terminal")) {
+        if (!requestHasToolResult(request, "tcall_terminal_start_solo")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_terminal_start_solo")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_start_solo")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_terminal_start_solo",
+              toolName: "bash",
+              input: { operation: "start", command, name: "solo-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
-        return
-      }
-      if (step === 2) {
+        if (!requestHasToolResult(request, "tcall_project_memory_after_terminal_start_solo")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_terminal_start_solo")
+          yield { type: "model.completed" }
+          return
+        }
         yield { type: "model.answer.delta", text: "Solo Terminal started." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 3) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_terminal_stop_solo",
-            toolName: "bash",
-            input: { operation: "stop" },
-          },
+      if (latestUser.includes("Stop the only terminal")) {
+        if (!requestHasToolResult(request, "tcall_terminal_stop_solo")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_terminal_stop_solo")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_stop_solo")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_terminal_stop_solo",
+              toolName: "bash",
+              input: { operation: "stop" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
-        return
-      }
-      if (step === 4) {
+        if (!requestHasToolResult(request, "tcall_project_memory_after_terminal_stop_solo")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_terminal_stop_solo")
+          yield { type: "model.completed" }
+          return
+        }
         yield { type: "model.answer.delta", text: "Solo Terminal stopped." }
         yield { type: "model.completed" }
         return
@@ -709,47 +812,62 @@ const createUntargetedTerminalStopAgent = (): SocratesAgent => {
 }
 
 const createAmbiguousTerminalStopAgent = (): SocratesAgent => {
-  let step = 0
   const command = `node -e "console.log('ambiguous-ready'); setInterval(() => console.log('ambiguous-tick'), 250)"`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      step += 1
-      if (step === 1) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_terminal_start_alpha",
-            toolName: "bash",
-            input: { operation: "start", command, name: "alpha-server" },
-          },
+    async *stream(request) {
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (latestUser.includes("Start alpha")) {
+        if (!requestHasToolResult(request, "tcall_terminal_start_alpha")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_terminal_start_alpha")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_start_alpha")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_terminal_start_alpha",
+              toolName: "bash",
+              input: { operation: "start", command, name: "alpha-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
-        return
-      }
-      if (step === 2) {
+        if (!requestHasToolResult(request, "tcall_project_memory_after_terminal_start_alpha")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_terminal_start_alpha")
+          yield { type: "model.completed" }
+          return
+        }
         yield { type: "model.answer.delta", text: "Alpha Terminal started." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 3) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_terminal_start_beta",
-            toolName: "bash",
-            input: { operation: "start", command, name: "beta-server" },
-          },
+      if (latestUser.includes("Start beta")) {
+        if (!requestHasToolResult(request, "tcall_terminal_start_beta")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_terminal_start_beta")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_start_beta")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_terminal_start_beta",
+              toolName: "bash",
+              input: { operation: "start", command, name: "beta-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
-        return
-      }
-      if (step === 4) {
+        if (!requestHasToolResult(request, "tcall_project_memory_after_terminal_start_beta")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_terminal_start_beta")
+          yield { type: "model.completed" }
+          return
+        }
         yield { type: "model.answer.delta", text: "Beta Terminal started." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 5) {
+      if (latestUser.includes("Stop without target")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_terminal_stop_ambiguous")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_terminal_stop_ambiguous")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -758,11 +876,6 @@ const createAmbiguousTerminalStopAgent = (): SocratesAgent => {
             input: { operation: "stop" },
           },
         }
-        yield { type: "model.completed" }
-        return
-      }
-      if (step === 6) {
-        yield { type: "model.answer.delta", text: "Terminal target is ambiguous." }
         yield { type: "model.completed" }
         return
       }
@@ -788,15 +901,27 @@ setInterval(() => {}, 1000)
 `)
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      yield {
-        type: "model.tool_call.completed",
-        toolCall: {
-          toolCallId: "tcall_interactive_terminal_start",
-          toolName: "bash",
-          input: { operation: "start", command, name: "interactive-test" },
-        },
+    async *stream(request) {
+      if (!requestHasToolResult(request, "tcall_interactive_terminal_start")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_interactive_terminal_start")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_interactive_terminal_start")
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_interactive_terminal_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "interactive-test" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
       }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_interactive_terminal_start")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_interactive_terminal_start")
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Interactive Terminal started." }
       yield { type: "model.completed" }
     },
   }
@@ -810,15 +935,27 @@ setInterval(() => {}, 1000)
 `)
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      yield {
-        type: "model.tool_call.completed",
-        toolCall: {
-          toolCallId: "tcall_shutdown_cleanup_start",
-          toolName: "bash",
-          input: { operation: "start", command, name: "shutdown-cleanup-test" },
-        },
+    async *stream(request) {
+      if (!requestHasToolResult(request, "tcall_shutdown_cleanup_start")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_shutdown_cleanup_start")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_shutdown_cleanup_start")
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_shutdown_cleanup_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "shutdown-cleanup-test" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
       }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_shutdown_cleanup_start")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_shutdown_cleanup_start")
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Shutdown cleanup terminal started." }
       yield { type: "model.completed" }
     },
   }
@@ -837,15 +974,27 @@ setInterval(() => {}, 1000)
 `)
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      yield {
-        type: "model.tool_call.completed",
-        toolCall: {
-          toolCallId: "tcall_text_input_terminal_start",
-          toolName: "bash",
-          input: { operation: "start", command, name: "text-input-test" },
-        },
+    async *stream(request) {
+      if (!requestHasToolResult(request, "tcall_text_input_terminal_start")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_text_input_terminal_start")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_text_input_terminal_start")
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_text_input_terminal_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "text-input-test" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
       }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_text_input_terminal_start")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_text_input_terminal_start")
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Text input Terminal started." }
       yield { type: "model.completed" }
     },
   }
@@ -853,7 +1002,6 @@ setInterval(() => {}, 1000)
 }
 
 const createPrematureInteractiveStopAgent = (): SocratesAgent => {
-  let step = 0
   const command = nodeCommand(`
 process.stdout.write("What is your name? ")
 process.stdin.once("data", (data) => {
@@ -865,21 +1013,35 @@ setInterval(() => {}, 1000)
 `)
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      step += 1
-      if (step === 1) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_premature_stop_start",
-            toolName: "bash",
-            input: { operation: "start", command, name: "premature-stop-test" },
-          },
+    async *stream(request) {
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (latestUser.includes("Start interactive")) {
+        if (!requestHasToolResult(request, "tcall_premature_stop_start")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_premature_stop_start")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_premature_stop_start")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_premature_stop_start",
+              toolName: "bash",
+              input: { operation: "start", command, name: "premature-stop-test" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_premature_stop_start")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_premature_stop_start")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Terminal is waiting for user input." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 2) {
+      if (latestUser.includes("Stop before input")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_premature_stop")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_premature_stop")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
@@ -891,101 +1053,148 @@ setInterval(() => {}, 1000)
         yield { type: "model.completed" }
         return
       }
-      yield { type: "model.answer.delta", text: "Terminal is waiting for user input." }
-      yield { type: "model.completed" }
     },
   }
   return new SocratesAgent(provider)
 }
 
 const createTerminalOutputAgent = (): SocratesAgent => {
-  let step = 0
   const command = `node -e "console.log('tail-ready'); setInterval(() => {}, 1000)"`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      step += 1
-      if (step === 1) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_tail_start",
-            toolName: "bash",
-            input: { operation: "start", command, name: "tail-server" },
-          },
+    async *stream(request) {
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (latestUser.includes("Start tail terminal")) {
+        if (!requestHasToolResult(request, "tcall_tail_start")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_tail_start")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_tail_start")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_tail_start",
+              toolName: "bash",
+              input: { operation: "start", command, name: "tail-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
-        yield { type: "model.completed" }
-        return
-      }
-      if (step === 2) {
+        if (!requestHasToolResult(request, "tcall_project_memory_after_tail_start")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_tail_start")
+          yield { type: "model.completed" }
+          return
+        }
         yield { type: "model.answer.delta", text: "Tail Terminal started." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 3) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_tail_output",
-            toolName: "bash",
-            input: { operation: "output", name: "tail-server" },
-          },
+      if (latestUser.includes("Read tail terminal output")) {
+        if (!requestHasToolResult(request, "tcall_tail_output")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_tail_output")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_tail_output")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_tail_output",
+              toolName: "bash",
+              input: { operation: "output", name: "tail-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_tail_output")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_tail_output")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Tail output checked." }
         yield { type: "model.completed" }
         return
       }
-      yield { type: "model.answer.delta", text: "Tail output checked." }
-      yield { type: "model.completed" }
     },
   }
   return new SocratesAgent(provider)
 }
 
 const createTerminalStopDedupAgent = (): SocratesAgent => {
-  let step = 0
   const command = `for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "tick-$i"; sleep 0.1; done`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      step += 1
-      if (step === 1) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_dedup_start",
-            toolName: "bash",
-            input: { operation: "start", command, name: "dedup-server" },
-          },
+    async *stream(request) {
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (latestUser.includes("Start dedup terminal")) {
+        if (!requestHasToolResult(request, "tcall_dedup_start")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_dedup_start")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_dedup_start")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_dedup_start",
+              toolName: "bash",
+              input: { operation: "start", command, name: "dedup-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_dedup_start")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_dedup_start")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Dedup Terminal started." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 2) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_dedup_output",
-            toolName: "bash",
-            input: { operation: "output", name: "dedup-server" },
-          },
+      if (latestUser.includes("Read dedup output")) {
+        if (!requestHasToolResult(request, "tcall_dedup_output")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_dedup_output")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_dedup_output")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_dedup_output",
+              toolName: "bash",
+              input: { operation: "output", name: "dedup-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_dedup_output")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_dedup_output")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Dedup output checked." }
         yield { type: "model.completed" }
         return
       }
-      if (step === 3) {
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_dedup_stop",
-            toolName: "bash",
-            input: { operation: "stop", name: "dedup-server" },
-          },
+      if (latestUser.includes("Stop dedup terminal")) {
+        if (!requestHasToolResult(request, "tcall_dedup_stop")) {
+          yield projectNotesPreflightCall("tcall_project_notes_before_dedup_stop")
+          yield repoDocsPreflightCall("tcall_repo_docs_before_dedup_stop")
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_dedup_stop",
+              toolName: "bash",
+              input: { operation: "stop", name: "dedup-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
         }
+        if (!requestHasToolResult(request, "tcall_project_memory_after_dedup_stop")) {
+          yield projectMemoryReviewCall("tcall_project_memory_after_dedup_stop")
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Dedup checked." }
         yield { type: "model.completed" }
         return
       }
-      yield { type: "model.answer.delta", text: "Dedup checked." }
-      yield { type: "model.completed" }
     },
   }
   return new SocratesAgent(provider)
@@ -995,15 +1204,27 @@ const createFiniteTerminalAgent = (): SocratesAgent => {
   const command = nodeCommand("setTimeout(() => { console.log('finite-done') }, 50)")
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      yield {
-        type: "model.tool_call.completed",
-        toolCall: {
-          toolCallId: "tcall_finite_start",
-          toolName: "bash",
-          input: { operation: "start", command, name: "finite-server" },
-        },
+    async *stream(request) {
+      if (!requestHasToolResult(request, "tcall_finite_start")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_finite_start")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_finite_start")
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_finite_start",
+            toolName: "bash",
+            input: { operation: "start", command, name: "finite-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
       }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_finite_start")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_finite_start")
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Finite Terminal completed." }
       yield { type: "model.completed" }
     },
   }
@@ -1011,22 +1232,38 @@ const createFiniteTerminalAgent = (): SocratesAgent => {
 }
 
 const createDuplicateTerminalStartAgent = (): SocratesAgent => {
-  let step = 0
   const command = `node -e "console.log('reuse-ready'); setInterval(() => {}, 1000)"`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
-    async *stream() {
-      step += 1
-      const toolCallId = step === 1 ? "tcall_reuse_start_first" : "tcall_reuse_start_second"
-      if (step === 1 || step === 2) {
+    async *stream(request) {
+      if (!requestHasToolResult(request, "tcall_reuse_start_first")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_reuse_start")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_reuse_start")
         yield {
           type: "model.tool_call.completed",
           toolCall: {
-            toolCallId,
+            toolCallId: "tcall_reuse_start_first",
             toolName: "bash",
             input: { operation: "start", command, name: "reuse-server" },
           },
         }
+        yield { type: "model.completed" }
+        return
+      }
+      if (!requestHasToolResult(request, "tcall_reuse_start_second")) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_reuse_start_second",
+            toolName: "bash",
+            input: { operation: "start", command, name: "reuse-server" },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_reuse_start")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_reuse_start")
         yield { type: "model.completed" }
         return
       }
@@ -1194,6 +1431,44 @@ const waitForEvent = async <T extends ServerEvent["type"]>(
 
 const waitForToolResult = async (socket: WebSocket): Promise<Extract<ServerEvent, { type: "tool.call.completed" | "tool.call.failed" }>> =>
   Promise.race([waitForEvent(socket, "tool.call.completed"), waitForEvent(socket, "tool.call.failed")])
+
+const waitForToolCompletedByProviderId = async (
+  socket: WebSocket,
+  providerToolCallId: string,
+  timeoutMs = 3_000,
+): Promise<Extract<ServerEvent, { type: "tool.call.completed" }>> => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const event = await waitForEvent(socket, "tool.call.completed", Math.max(10, Math.min(250, deadline - Date.now())))
+      if (event.payload.providerToolCallId === providerToolCallId) {
+        return event
+      }
+    } catch {
+      // Keep polling until the full provider-id deadline expires.
+    }
+  }
+  throw new Error(`Timed out waiting for completed tool ${providerToolCallId}`)
+}
+
+const waitForToolFailedByProviderId = async (
+  socket: WebSocket,
+  providerToolCallId: string,
+  timeoutMs = 3_000,
+): Promise<Extract<ServerEvent, { type: "tool.call.failed" }>> => {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const event = await waitForEvent(socket, "tool.call.failed", Math.max(10, Math.min(250, deadline - Date.now())))
+      if (event.payload.providerToolCallId === providerToolCallId) {
+        return event
+      }
+    } catch {
+      // Keep polling until the full provider-id deadline expires.
+    }
+  }
+  throw new Error(`Timed out waiting for failed tool ${providerToolCallId}`)
+}
 
 const sendCommand = (socket: WebSocket, command: unknown): void => {
   socket.send(JSON.stringify(clientCommandSchema.parse(command)))
@@ -3807,15 +4082,19 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_RULES.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "CONTRACTS.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "APP_FLOW.md"))).toBe(false)
-    expect(JSON.stringify(requests[0])).toContain("<socrates_wake_context>")
-    expect(JSON.stringify(requests[0])).toContain("Quiet startup map")
-    expect(JSON.stringify(requests[0])).toContain("For full project notes")
-    expect(JSON.stringify(requests[0])).toContain("project_docs")
-    expect(JSON.stringify(requests[0])).toContain("WAKE-LEAN-42")
-    expect(JSON.stringify(requests[0])).toContain("lean memory architecture")
-    expect(JSON.stringify(requests[1])).toContain("Socrates State Ledger")
-    expect(JSON.stringify(requests[1])).toContain("Last turn: completed")
-    expect(JSON.stringify(requests[1])).toContain("Captured")
+    const wakeContextText = requests
+      .flatMap((request) => ((request as { messages?: Array<{ role?: string; content?: unknown }> }).messages ?? []).map((message) => String(message.content ?? "")))
+      .filter((content) => content.includes("<socrates_wake_context>"))
+      .join("\n")
+    expect(wakeContextText).toContain("<socrates_wake_context>")
+    expect(wakeContextText).toContain("Stable project recall map")
+    expect(wakeContextText).toContain("project_docs")
+    expect(wakeContextText).toContain("repo_docs")
+    expect(wakeContextText).not.toContain("WAKE-LEAN-42")
+    expect(wakeContextText).not.toContain("lean memory architecture")
+    expect(wakeContextText).not.toContain("Socrates State Ledger")
+    expect(wakeContextText).not.toContain("Last turn: completed")
+    expect(wakeContextText).not.toContain("Captured")
 
     const handle = openDatabase(dbPath)
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome })
@@ -4761,8 +5040,8 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Use bash state", { approvalMode: "approve_all" }))
-      await waitForEvent(socket, "tool.call.completed")
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_cd")
+      await waitForToolCompletedByProviderId(socket, "tcall_state")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
@@ -4774,9 +5053,8 @@ describe("WebSocket API", () => {
         toolRuns: Array<{ toolCallId: string; providerToolCallId?: string; shell?: { stdout: string; cwd: string }; durationMs?: number }>
       }>(response.payload)
 
-        expect(body.ok).toBe(true)
-        if (body.ok) {
-          expect(body.data.toolRuns).toHaveLength(2)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
         const stateRun = body.data.toolRuns.find((run) => run.providerToolCallId === "tcall_state")
         expect(stateRun?.toolCallId).toMatch(/^tcall_/)
         expect(stateRun?.shell?.stdout).toBe("Backend-Test-Project")
@@ -4802,7 +5080,7 @@ describe("WebSocket API", () => {
       expect(startedTerminal.payload.name).toBe("server-test")
       expect(startedTerminal.payload.status).toBe("running")
 
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_terminal_start")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
@@ -4827,7 +5105,7 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Stop terminal by name"))
       const stoppedByTool = await waitForEvent(socket, "terminal.stopped")
       expect(stoppedByTool.payload.terminalId).toBe(startedTerminal.payload.terminalId)
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_terminal_stop_by_name")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
@@ -4859,7 +5137,7 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start cleanup terminal", { approvalMode: "approve_all" }))
       const startedTerminal = await waitForEvent(socket, "terminal.started")
       expect(startedTerminal.payload.name).toBe("shutdown-cleanup-test")
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_shutdown_cleanup_start")
       await waitForEvent(socket, "turn.completed")
 
       const db = new Database(dbPath, { readonly: true })
@@ -4894,13 +5172,13 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start one terminal", { approvalMode: "approve_all" }))
       const startedTerminal = await waitForEvent(socket, "terminal.started")
       expect(startedTerminal.payload.name).toBe("solo-server")
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_terminal_start_solo")
       await waitForEvent(socket, "turn.completed")
 
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Stop the only terminal"))
       const stoppedTerminal = await waitForEvent(socket, "terminal.stopped")
       expect(stoppedTerminal.payload.terminalId).toBe(startedTerminal.payload.terminalId)
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_terminal_stop_solo")
       await waitForEvent(socket, "turn.completed")
     } finally {
       socket.close()
@@ -4919,13 +5197,13 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start tail terminal", { approvalMode: "approve_all" }))
       const startedTerminal = await waitForEvent(socket, "terminal.started")
       terminalId = startedTerminal.payload.terminalId
-      const startCompleted = await waitForEvent(socket, "tool.call.completed")
+      const startCompleted = await waitForToolCompletedByProviderId(socket, "tcall_tail_start")
       expect(startCompleted.payload.resultPreview).toContain("tail-ready")
       await waitForEvent(socket, "turn.completed")
 
       await delay(700)
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Read tail terminal output"))
-      const outputCompleted = await waitForEvent(socket, "tool.call.completed")
+      const outputCompleted = await waitForToolCompletedByProviderId(socket, "tcall_tail_output")
       expect(outputCompleted.payload.providerToolCallId).toBe("tcall_tail_output")
       expect(outputCompleted.payload.resultPreview).not.toContain("tail-ready")
       await waitForEvent(socket, "turn.completed")
@@ -4973,12 +5251,12 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start dedup terminal", { approvalMode: "approve_all" }))
       const startedTerminal = await waitForEvent(socket, "terminal.started")
       expect(startedTerminal.payload.name).toBe("dedup-server")
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_dedup_start")
       await waitForEvent(socket, "turn.completed")
 
       await delay(450)
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Read dedup output"))
-      const outputCompleted = await waitForEvent(socket, "tool.call.completed")
+      const outputCompleted = await waitForToolCompletedByProviderId(socket, "tcall_dedup_output")
       expect(outputCompleted.payload.providerToolCallId).toBe("tcall_dedup_output")
       await waitForEvent(socket, "turn.completed")
 
@@ -4986,7 +5264,7 @@ describe("WebSocket API", () => {
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Stop dedup terminal"))
       const stopped = await waitForEvent(socket, "terminal.stopped")
       expect(stopped.payload.terminalId).toBe(startedTerminal.payload.terminalId)
-      const stopCompleted = await waitForEvent(socket, "tool.call.completed")
+      const stopCompleted = await waitForToolCompletedByProviderId(socket, "tcall_dedup_stop")
       expect(stopCompleted.payload.providerToolCallId).toBe("tcall_dedup_stop")
       await waitForEvent(socket, "turn.completed")
 
@@ -5022,7 +5300,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start finite terminal", { approvalMode: "approve_all" }))
-      const toolResult = await waitForToolResult(socket)
+      const toolResult = await waitForToolCompletedByProviderId(socket, "tcall_finite_start")
       expect(toolResult.type).toBe("tool.call.completed")
       const completedTerminal = await waitForEvent(socket, "terminal.completed")
       expect(completedTerminal.payload.name).toBe("finite-server")
@@ -5061,8 +5339,8 @@ describe("WebSocket API", () => {
       const startedTerminal = await waitForEvent(socket, "terminal.started")
       terminalId = startedTerminal.payload.terminalId
       expect(startedTerminal.payload.name).toBe("reuse-server")
-      const firstCompleted = await waitForEvent(socket, "tool.call.completed")
-      const secondCompleted = await waitForEvent(socket, "tool.call.completed")
+      const firstCompleted = await waitForToolCompletedByProviderId(socket, "tcall_reuse_start_first")
+      const secondCompleted = await waitForToolCompletedByProviderId(socket, "tcall_reuse_start_second")
       expect(firstCompleted.payload.providerToolCallId).toBe("tcall_reuse_start_first")
       expect(secondCompleted.payload.providerToolCallId).toBe("tcall_reuse_start_second")
       expect(secondCompleted.payload.summary).toContain("Reused existing Terminal")
@@ -5107,18 +5385,18 @@ describe("WebSocket API", () => {
       const alpha = await waitForEvent(socket, "terminal.started")
       startedTerminalIds.push(alpha.payload.terminalId)
       expect(alpha.payload.name).toBe("alpha-server")
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_terminal_start_alpha")
       await waitForEvent(socket, "turn.completed")
 
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start beta", { approvalMode: "approve_all" }))
       const beta = await waitForEvent(socket, "terminal.started")
       startedTerminalIds.push(beta.payload.terminalId)
       expect(beta.payload.name).toBe("beta-server")
-      await waitForEvent(socket, "tool.call.completed")
+      await waitForToolCompletedByProviderId(socket, "tcall_terminal_start_beta")
       await waitForEvent(socket, "turn.completed")
 
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Stop without target"))
-      const failed = await waitForEvent(socket, "tool.call.failed")
+      const failed = await waitForToolFailedByProviderId(socket, "tcall_terminal_stop_ambiguous")
       expect(failed.payload.error.code).toBe("terminal_ambiguous")
       expect(JSON.stringify(failed.payload.error.details)).toContain("alpha-server")
       expect(JSON.stringify(failed.payload.error.details)).toContain("beta-server")
@@ -5253,8 +5531,11 @@ describe("WebSocket API", () => {
       expect(inputRequested.payload.name).toBe("premature-stop-test")
       expect(inputRequested.payload.status).toBe("awaiting_input")
 
-      await waitForEvent(socket, "tool.call.completed")
-      const failed = await waitForEvent(socket, "tool.call.failed")
+      await waitForToolCompletedByProviderId(socket, "tcall_premature_stop_start")
+      await waitForEvent(socket, "turn.completed")
+
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Stop before input", { approvalMode: "approve_all" }))
+      const failed = await waitForToolFailedByProviderId(socket, "tcall_premature_stop")
       expect(failed.payload.error.code).toBe("terminal_awaiting_user_input")
       expect(failed.payload.error.recoverable).toBe(true)
       await waitForEvent(socket, "turn.completed")
@@ -5301,8 +5582,8 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Recover bash shell", { approvalMode: "approve_all" }))
-      const failed = await waitForEvent(socket, "tool.call.failed")
-      const completed = await waitForEvent(socket, "tool.call.completed")
+      const failed = await waitForToolFailedByProviderId(socket, "tcall_break_shell")
+      const completed = await waitForToolCompletedByProviderId(socket, "tcall_after_reset")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
@@ -5457,9 +5738,7 @@ describe("WebSocket API", () => {
     try {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Patch README", { approvalMode: "approve_all" }))
-      await waitForEvent(socket, "tool.call.completed")
-      await waitForEvent(socket, "tool.call.completed")
-      const patchCompleted = await waitForEvent(socket, "tool.call.completed")
+      const patchCompleted = await waitForToolCompletedByProviderId(socket, "tcall_verified_patch")
       expect(patchCompleted.payload.providerToolCallId).toBe("tcall_verified_patch")
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
@@ -5580,14 +5859,8 @@ describe("WebSocket API", () => {
 
       sendCommand(secondSocket, chatMessageCommandWithRuntime(project.id, secondConversation.id, "fast workspace mutation", { approvalMode: "approve_all" }))
 
-      const firstToolCompleted = await waitForToolResult(firstSocket)
-      const secondToolCompleted = await waitForToolResult(secondSocket)
-      if (firstToolCompleted.type === "tool.call.failed") {
-        throw new Error(`first workspace mutation failed: ${firstToolCompleted.payload.error.message}`)
-      }
-      if (secondToolCompleted.type === "tool.call.failed") {
-        throw new Error(`second workspace mutation failed: ${secondToolCompleted.payload.error.message}`)
-      }
+      const firstToolCompleted = await waitForToolCompletedByProviderId(firstSocket, "tcall_slow_workspace_mutation")
+      const secondToolCompleted = await waitForToolCompletedByProviderId(secondSocket, "tcall_fast_workspace_mutation")
       expect(firstToolCompleted.type).toBe("tool.call.completed")
       expect(secondToolCompleted.type).toBe("tool.call.completed")
       expect(firstToolCompleted.payload.providerToolCallId).toBe("tcall_slow_workspace_mutation")

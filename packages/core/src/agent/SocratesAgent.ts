@@ -106,6 +106,7 @@ export class SocratesAgent {
     let currentTurnTokenHardStopSent = false
     let docsPreflightSent = false
     let docsSyncCheckpointSent = false
+    let memoryReviewReminderCount = 0
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
@@ -184,6 +185,7 @@ export class SocratesAgent {
       const repeatedToolInputsThisStep = new Set<string>()
       const toolRunIds = new Map<string, string>()
       let stepText = ""
+      const suppressAnswerDeltas = docsLedger.requiresProjectMemoryReview()
       const preferredOpenRouterProvider =
         input.providerId === "openrouter" ? openRouterPreferredProvidersByModel.get(input.modelId) : undefined
       const toolRunIdFor = (providerToolCallId: string): string => {
@@ -216,6 +218,9 @@ export class SocratesAgent {
 
         if (modelEvent.type === "model.answer.delta") {
           stepText += modelEvent.text
+          if (suppressAnswerDeltas) {
+            continue
+          }
         }
 
         if (input.providerId === "openrouter" && (modelEvent.type === "model.usage" || modelEvent.type === "model.completed")) {
@@ -271,6 +276,15 @@ export class SocratesAgent {
         }
 
         yield attachModelMetadata(modelEvent, modelCallId, step)
+      }
+
+      if (toolCalls.length === 0 && docsLedger.requiresProjectMemoryReview()) {
+        if (!input.toolExecutors || tools.length === 0 || memoryReviewReminderCount >= 2) {
+          throw memoryReviewRequiredError()
+        }
+        messages.push({ role: "developer", content: MEMORY_REVIEW_REQUIRED_CHECKPOINT })
+        memoryReviewReminderCount += 1
+        continue
       }
 
       if (!input.toolExecutors || tools.length === 0 || toolCalls.length === 0) {
@@ -509,8 +523,8 @@ export class SocratesAgent {
       return toolErrorResult(toolCall, error)
     }
 
-    if (requiresRepoDocsPreflightBeforePolicy(tool.name) && !docsLedger.hasRepoDocsPreflight()) {
-      const error = repoDocsPreflightError(tool.name)
+    if (requiresActionDocsPreflight(tool.name) && !docsLedger.hasActionPreflight()) {
+      const error = docsPreflightError(tool.name, docsLedger.missingActionPreflight())
       queue.push({
         type: "tool.call.failed",
         toolCallId: toolCall.toolCallId,
@@ -588,8 +602,8 @@ export class SocratesAgent {
         })
       }
 
-      if (requiresRepoDocsPreflightAfterPolicy(tool, policy) && !docsLedger.hasRepoDocsPreflight()) {
-        throw repoDocsPreflightError(tool.name)
+      if (requiresDocsPreflightAfterPolicy(tool, policy) && !docsLedger.hasActionPreflight()) {
+        throw docsPreflightError(tool.name, docsLedger.missingActionPreflight())
       }
 
       if (policy.type === "approval_required") {
@@ -866,15 +880,20 @@ const safeJsonPreview = (value: unknown, limit: number): string => {
 }
 
 const DOCS_PREFLIGHT_CHECKPOINT = `<runtime_socrates_docs_preflight>
-This turn has workspace tools. For nontrivial work, use the Socrates docs loop: 1) before meaningful implementation or repo investigation, read relevant repo_docs and fix stale/missing doctrine before implementing; 2) use project_docs memory after meaningful work for durable outcomes, decisions, constraints, blockers, and handoff facts; 3) use project_docs notes actively for todos, checked files, next commands, partial progress, and restart points. Use tool_docs before unfamiliar, failed, or edge-case tool use. Skip only genuinely tiny one-shot answers.
+This turn has workspace tools. Read-only/chat work does not require project docs. Before any bash, edit, or apply_patch call, first call project_docs with area="notes" and operation read/search, and call repo_docs with operation read/search in this same turn. After any successful bash, edit, or apply_patch call, read/search project_docs area="memory" before final answer; update memory only if there is durable project value. The active state ledger lives in project notes and must be fetched with project_docs, not assumed from the prompt. Use tool_docs before unfamiliar, failed, complex, or edge-case tool use.
 </runtime_socrates_docs_preflight>`
 
 const TOOL_DOCS_FAILURE_NUDGE = "Refer to tool_docs for tool usage before retrying this tool or choosing another tool."
 const MUTATION_SCHEMA_RECOVERY_HINT =
   'Runtime tool-schema recovery: the previous edit/apply_patch input was invalid. For a new file, call edit with exactly { "path": "relative/path.md", "content": "..." }. For a full rewrite of an existing file, use exactly { "path": "relative/path.md", "content": "...", "overwrite": true }. For a targeted replacement, use exactly { "path": "relative/path.md", "oldString": "...", "newString": "..." }. Do not mix content with oldString/newString, and do not set overwrite unless it is true.'
 const FAILED_MUTATION_FORCE_FINAL_THRESHOLD = 4
-const REPO_DOCS_PREFLIGHT_MESSAGE =
-  "Before approval-required mutation or edit/apply_patch, call repo_docs with operation read or search in this turn. Read the relevant repo rules, navigation, contracts, or core idea; update stale repo docs if needed; then retry the mutation."
+const DOCS_PREFLIGHT_MESSAGE =
+  'Before bash, edit, or apply_patch, call project_docs with area="notes" and operation read/search, and call repo_docs with operation read/search in this turn. Then retry the action.'
+const MEMORY_REVIEW_REQUIRED_MESSAGE =
+  'After successful bash, edit, or apply_patch, read/search project_docs area="memory" before final answer. Update memory only if there is durable project value.'
+const MEMORY_REVIEW_REQUIRED_CHECKPOINT = `<runtime_memory_review_required>
+${MEMORY_REVIEW_REQUIRED_MESSAGE}
+</runtime_memory_review_required>`
 
 const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): ToolExecutionResult =>
   toolExecutionResultSchema.parse({
@@ -889,22 +908,30 @@ const toolErrorResult = (toolCall: NormalizedToolCall, error: SocratesError): To
     },
   })
 
-const repoDocsPreflightError = (toolName: ToolName): SocratesError =>
-  new SocratesError("repo_docs_preflight_required", REPO_DOCS_PREFLIGHT_MESSAGE, {
+const docsPreflightError = (toolName: ToolName, missing: string[]): SocratesError =>
+  new SocratesError("docs_preflight_required", DOCS_PREFLIGHT_MESSAGE, {
     recoverable: true,
-    details: { toolName },
+    details: { toolName, missing },
   })
 
-const requiresRepoDocsPreflightBeforePolicy = (toolName: ToolName): boolean => toolName === "edit" || toolName === "apply_patch"
+const memoryReviewRequiredError = (): SocratesError =>
+  new SocratesError("memory_review_required", MEMORY_REVIEW_REQUIRED_MESSAGE, {
+    recoverable: true,
+  })
 
-const requiresRepoDocsPreflightAfterPolicy = (
+const actionToolNames = new Set<ToolName>(["bash", "edit", "apply_patch"])
+
+const requiresActionDocsPreflight = (toolName: ToolName): boolean => actionToolNames.has(toolName)
+
+const requiresDocsPreflightAfterPolicy = (
   tool: { name: ToolName; executeLane: "parallel" | "mutation" },
   policy: ToolPolicyDecision,
 ): boolean =>
   policy.type === "approval_required" &&
   tool.executeLane === "mutation" &&
   tool.name !== "repo_docs" &&
-  tool.name !== "project_docs"
+  tool.name !== "project_docs" &&
+  requiresActionDocsPreflight(tool.name)
 
 type LedgerRecordBatchInput = {
   toolCalls: NormalizedToolCall[]
@@ -923,12 +950,13 @@ class TurnDocsLedger {
   private evidenceToolCalls = 0
   private failedToolCalls = 0
   private projectDocsRead = false
+  private projectMemoryRead = false
+  private projectNotesRead = false
   private projectDocsEdited = false
   private projectMemoryEdited = false
   private projectNotesEdited = false
   private repoDocsRead = false
   private repoDocsEdited = false
-  private repoDocsPreflightComplete = false
   private toolDocsRead = false
   private emptyProjectDocsRead = false
   private mutationSucceeded = false
@@ -936,17 +964,37 @@ class TurnDocsLedger {
   private readonly changedFiles = new Set<string>()
   private readonly commands: string[] = []
 
-  hasRepoDocsPreflight(): boolean {
-    return this.repoDocsPreflightComplete || this.repoDocsRead || this.repoDocsEdited
+  hasActionPreflight(): boolean {
+    return this.projectNotesRead && this.repoDocsRead
+  }
+
+  missingActionPreflight(): string[] {
+    return [
+      this.projectNotesRead ? undefined : "project_docs notes read/search",
+      this.repoDocsRead ? undefined : "repo_docs read/search",
+    ].filter((item): item is string => typeof item === "string")
+  }
+
+  requiresProjectMemoryReview(): boolean {
+    return (this.mutationSucceeded || this.bashSucceeded) && !this.projectMemoryRead
   }
 
   recordImmediatePreflight(result: ToolExecutionResult, toolCall: NormalizedToolCall | undefined): void {
-    if (!result.ok || result.toolName !== "repo_docs") {
+    if (!result.ok) {
       return
     }
     const operation = toolOperation(toolCall)
-    if (operation === undefined || operation === "read" || operation === "search" || operation === "edit") {
-      this.repoDocsPreflightComplete = true
+    if (result.toolName === "repo_docs" && (operation === undefined || operation === "read" || operation === "search")) {
+      this.repoDocsRead = true
+    }
+    if (result.toolName === "project_docs" && (operation === "read" || operation === "search")) {
+      const area = toolArea(toolCall)
+      if (area === "notes") {
+        this.projectNotesRead = true
+      }
+      if (area === "memory") {
+        this.projectMemoryRead = true
+      }
     }
   }
 
@@ -970,16 +1018,12 @@ class TurnDocsLedger {
   }
 
   buildSyncCheckpoint(): string | undefined {
-    if (this.projectMemoryEdited) {
+    if (this.projectMemoryRead && this.projectMemoryEdited) {
       return undefined
     }
-    const meaningfulWork =
-      this.mutationSucceeded ||
-      this.bashSucceeded ||
-      this.evidenceToolCalls >= 5 ||
-      this.totalToolCalls >= 8 ||
-      this.failedToolCalls >= 2
-    if (!meaningfulWork) {
+    const actionWork = this.mutationSucceeded || this.bashSucceeded
+    const broadInvestigation = this.evidenceToolCalls >= 5 || this.totalToolCalls >= 8 || this.failedToolCalls >= 2
+    if (!actionWork && !broadInvestigation) {
       return undefined
     }
 
@@ -989,12 +1033,12 @@ class TurnDocsLedger {
       this.evidenceToolCalls > 0 ? `evidence tools: ${this.evidenceToolCalls}` : undefined,
       this.failedToolCalls > 0 ? `failed tools: ${this.failedToolCalls}` : undefined,
       this.emptyProjectDocsRead ? "project docs looked empty" : undefined,
-      `docs read: project=${this.projectDocsRead ? "yes" : "no"}, repo=${this.repoDocsRead ? "yes" : "no"}, tool=${this.toolDocsRead ? "yes" : "no"}`,
+      `docs read: notes=${this.projectNotesRead ? "yes" : "no"}, memory=${this.projectMemoryRead ? "yes" : "no"}, repo=${this.repoDocsRead ? "yes" : "no"}, tool=${this.toolDocsRead ? "yes" : "no"}`,
       `project_docs edits: memory=${this.projectMemoryEdited ? "yes" : "no"}, notes=${this.projectNotesEdited ? "yes" : "no"}`,
     ].filter((item): item is string => typeof item === "string")
 
     return `<runtime_docs_sync_checkpoint>
-Before final answer, close the Socrates docs loop. This turn did meaningful workspace work (${facts.join("; ")}). You have not updated project_docs memory. Call project_docs memory now with the durable outcome, decision, blocker, changed files/docs, or handoff fact. Notes do not satisfy memory; notes are live scratch state, memory is the cross-conversation record. If active todos, checked files, next commands, partial progress, or restart context matter, also call project_docs notes. If repo behavior, contracts, navigation, provider/tool behavior, or durable pitfalls changed, call repo_docs too. If tools failed and tool_docs was not checked, call tool_docs before retrying or explaining. Skip project_docs memory only when no durable fact exists after meaningful work.
+Before final answer, close the Socrates docs loop. This turn used workspace tools (${facts.join("; ")}). If bash/edit/apply_patch succeeded, read/search project_docs area="memory" before final answer. After reading memory, update it only if there is a durable outcome, decision, blocker, changed files/docs, or handoff fact. If active todos, checked files, next commands, partial progress, or restart context matter, update project_docs notes. If repo behavior, contracts, navigation, provider/tool behavior, or durable pitfalls changed, update repo_docs. If tools failed and tool_docs was not checked, call tool_docs before retrying or explaining.
 </runtime_docs_sync_checkpoint>`
   }
 
@@ -1015,6 +1059,13 @@ Before final answer, close the Socrates docs loop. This turn did meaningful work
         }
       } else {
         this.projectDocsRead = true
+        const area = toolArea(toolCall)
+        if (area === "memory") {
+          this.projectMemoryRead = true
+        }
+        if (area === "notes") {
+          this.projectNotesRead = true
+        }
         this.emptyProjectDocsRead ||= outputContentIsEmpty(result.output)
       }
       return

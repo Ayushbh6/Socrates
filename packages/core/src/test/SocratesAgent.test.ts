@@ -227,6 +227,22 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_project_notes_once",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_notes_1",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_read_1",
               toolName: "read",
               input: { path: "README.md" },
@@ -586,6 +602,38 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_project_notes_1",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_notes_1",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_notes_once",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_notes_1",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_read_1",
               toolName: "read",
               input: { path: "README.md" },
@@ -706,6 +754,22 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_project_notes_once",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_notes_once",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_bad_edit_1",
               toolName: "edit",
               input: { path: "socrates_natural_e2e.md", content: "# Note\n", overwrite: false },
@@ -730,6 +794,14 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_project_notes_preflight",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_repo_docs_preflight",
               toolName: "repo_docs",
               input: { operation: "read", path: "REPO_RULES.md" },
@@ -741,6 +813,18 @@ describe("SocratesAgent", () => {
               toolCallId: "tcall_good_edit_3",
               toolName: "edit",
               input: { path: "socrates_natural_e2e.md", content: "# Natural E2E\n" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 4) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_memory_review",
+              toolName: "project_docs",
+              input: { operation: "read", area: "memory" },
             },
           }
           yield { type: "model.completed", finishReason: "tool-calls" }
@@ -1060,6 +1144,14 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "tcall_project_notes_1",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "tcall_repo_docs_1",
               toolName: "repo_docs",
               input: { operation: "read", path: "REPO_RULES.md" },
@@ -1071,6 +1163,18 @@ describe("SocratesAgent", () => {
               toolCallId: "tcall_edit_1",
               toolName: "edit",
               input: { path: "README.md", oldString: "old", newString: "new" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_memory_1",
+              toolName: "project_docs",
+              input: { operation: "read", area: "memory" },
             },
           }
           yield { type: "model.completed", finishReason: "tool-calls" }
@@ -1187,7 +1291,7 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs")
   })
 
-  it("requires repo_docs preflight before approval-required file mutations", async () => {
+  it("requires project notes and repo docs preflight before action tools", async () => {
     let calls = 0
     const streamRequests: ModelRequestLike[] = []
     const approvals: string[] = []
@@ -1209,7 +1313,7 @@ describe("SocratesAgent", () => {
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
         }
-        yield { type: "model.answer.delta", text: "I need to read repo docs first." }
+        yield { type: "model.answer.delta", text: "I need to read docs first." }
         yield { type: "model.completed" }
       },
     }
@@ -1253,9 +1357,10 @@ describe("SocratesAgent", () => {
     }
 
     const failed = streamed.find((event): event is Extract<SocratesAgentEvent, { type: "tool.call.failed" }> => event.type === "tool.call.failed")
-    expect(failed?.error.code).toBe("repo_docs_preflight_required")
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs_preflight_required")
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("call repo_docs with operation read or search")
+    expect(failed?.error.code).toBe("docs_preflight_required")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("docs_preflight_required")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain('project_docs with area=\\"notes\\"')
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs with operation read/search")
     expect(approvals).toEqual([])
     expect(editInputs).toEqual([])
   })
@@ -1269,6 +1374,14 @@ describe("SocratesAgent", () => {
         streamRequests.push(request)
         calls += 1
         if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_notes_once",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
           yield {
             type: "model.tool_call.completed",
             toolCall: {
@@ -1295,6 +1408,18 @@ describe("SocratesAgent", () => {
               toolCallId: "tcall_bash_after_checkpoint",
               toolName: "bash",
               input: { operation: "run", command: "pnpm test", cwd: "." },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 3) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_project_memory_after_actions",
+              toolName: "project_docs",
+              input: { operation: "read", area: "memory" },
             },
           }
           yield { type: "model.completed", finishReason: "tool-calls" }
@@ -1337,9 +1462,9 @@ describe("SocratesAgent", () => {
       // Drain stream.
     }
 
-    expect(streamRequests).toHaveLength(3)
+    expect(streamRequests).toHaveLength(4)
     const firstRequest = JSON.stringify(streamRequests[0]?.messages)
-    const finalRequest = JSON.stringify(streamRequests[2]?.messages)
+    const finalRequest = JSON.stringify(streamRequests[3]?.messages)
     expect(countSubstring(firstRequest, "<runtime_socrates_docs_preflight>")).toBe(1)
     expect(countSubstring(finalRequest, "<runtime_socrates_docs_preflight>")).toBe(1)
     expect(countSubstring(finalRequest, "<runtime_docs_sync_checkpoint>")).toBe(1)
@@ -1484,9 +1609,37 @@ describe("SocratesAgent", () => {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
+              toolCallId: "call_project_notes_before_terminal",
+              toolName: "project_docs",
+              input: { operation: "read", area: "notes" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "call_repo_docs_before_terminal",
+              toolName: "repo_docs",
+              input: { operation: "read", path: "REPO_RULES.md" },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
               toolCallId: "call_terminal_output",
               toolName: "bash",
               input: { operation: "output", name: "dev-server" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        if (call === 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "call_project_memory_after_terminal",
+              toolName: "project_docs",
+              input: { operation: "read", area: "memory" },
             },
           }
           yield { type: "model.completed" }
