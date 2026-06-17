@@ -271,7 +271,7 @@ describe("context compression", () => {
       "openrouter:deepseek/deepseek-v4-flash",
       "openrouter:deepseek/deepseek-v4-flash",
       "openrouter:xiaomi/mimo-v2.5-pro",
-      "openrouter:z-ai/glm-5.1",
+      "openrouter:z-ai/glm-5.2",
     ])
     expect(completed).toEqual([])
     expect(failed).toEqual([expect.stringMatching(/^ctxcmp_/)])

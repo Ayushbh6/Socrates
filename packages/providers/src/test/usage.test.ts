@@ -6,7 +6,7 @@ describe("provider usage normalization", () => {
   it("keeps OpenRouter provider-reported cost and cache fields", () => {
     const usage = normalizeProviderUsage({
       providerId: "openrouter",
-      modelId: "z-ai/glm-5.1",
+      modelId: "z-ai/glm-5.2",
       usage: {
         inputTokens: 1000,
         outputTokens: 200,

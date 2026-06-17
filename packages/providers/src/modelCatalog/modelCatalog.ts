@@ -112,9 +112,9 @@ export const modelCatalog = [
   }),
   makeModel({
     providerId: "openrouter",
-    modelId: "z-ai/glm-5.1",
-    label: "GLM 5.1",
-    contextWindowTokens: 202800,
+    modelId: "z-ai/glm-5.2",
+    label: "GLM 5.2",
+    contextWindowTokens: 1048576,
     capabilities: { vision: false },
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",

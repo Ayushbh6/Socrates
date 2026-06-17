@@ -47,7 +47,9 @@ const openRouterProviderDisplayNameToSlug = new Map<string, string>([
   ["deepseek", "deepseek"],
   ["digitalocean", "digitalocean"],
   ["fireworks", "fireworks"],
+  ["friendli", "friendli"],
   ["gmicloud", "gmicloud"],
+  ["ionet", "io-net"],
   ["lambda", "lambda"],
   ["morph", "morph"],
   ["nebiusaistudio", "nebius"],
@@ -61,6 +63,7 @@ const openRouterProviderDisplayNameToSlug = new Map<string, string>([
   ["venice", "venice"],
   ["xai", "xai"],
   ["xiaomi", "xiaomi"],
+  ["zai", "z-ai"],
 ])
 
 export const openRouterProviderSlugForPreference = (provider: string | undefined): string | undefined => {
@@ -119,7 +122,7 @@ const deepseekV4FlashTextRouting = orderedFallbackRouting(["baidu", ...deepseekV
 
 export const openRouterProviderRoutingByModelId: Record<string, OpenRouterProviderRouting> = {
   "moonshotai/kimi-k2.6": priceFirstCacheRouting(),
-  "z-ai/glm-5.1": priceFirstCacheRouting(),
+  "z-ai/glm-5.2": priceFirstCacheRouting(),
   "xiaomi/mimo-v2.5-pro": priceFirstCacheRouting(),
   "xiaomi/mimo-v2.5": strictRouting(["xiaomi"]),
   "x-ai/grok-build-0.1": strictRouting(["xai"]),

@@ -9,7 +9,7 @@ import {
 } from "../openRouterRouting"
 import type { ModelRequest } from "../types"
 
-const baseRequest = (thinkingEnabled: boolean, modelId = "z-ai/glm-5.1"): ModelRequest => ({
+const baseRequest = (thinkingEnabled: boolean, modelId = "z-ai/glm-5.2"): ModelRequest => ({
   providerId: "openrouter",
   modelId,
   sessionId: "sess_1",
@@ -91,7 +91,7 @@ describe("OpenRouter provider options", () => {
     const priceFirst = { sort: "price", allow_fallbacks: true }
     expect(openRouterProviderRoutingForModel("xiaomi/mimo-v2.5-pro")).toEqual(priceFirst)
     expect(openRouterProviderRoutingForModel("moonshotai/kimi-k2.6")).toEqual(priceFirst)
-    expect(openRouterProviderRoutingForModel("z-ai/glm-5.1")).toEqual(priceFirst)
+    expect(openRouterProviderRoutingForModel("z-ai/glm-5.2")).toEqual(priceFirst)
     expect(openRouterProviderRoutingForModel("google/gemma-4-31b-it")).toEqual(priceFirst)
   })
 
@@ -136,6 +136,7 @@ describe("OpenRouter provider options", () => {
   it("prefers the routed provider from earlier calls without hard-blocking fallback", () => {
     expect(openRouterProviderSlugForPreference("DeepInfra")).toBe("deepinfra")
     expect(openRouterProviderSlugForPreference("GMICloud")).toBe("gmicloud")
+    expect(openRouterProviderSlugForPreference("Z.AI")).toBe("z-ai")
 
     const request = baseRequest(false, "deepseek/deepseek-v4-pro")
     request.providerRouting = { preferredOpenRouterProvider: "DeepInfra" }

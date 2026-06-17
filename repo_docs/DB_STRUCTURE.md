@@ -1437,7 +1437,7 @@ Compressor model selection:
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash, thinking off
 fallback 1: OpenRouter xiaomi/mimo-v2.5-pro, thinking off
-fallback 2: OpenRouter z-ai/glm-5.1, thinking off
+fallback 2: OpenRouter z-ai/glm-5.2, thinking off
 ```
 
 The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, anchor quality, output length, latency, and cost. Compression outputs remain structured summaries and turn-numbered anchors over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.

@@ -242,7 +242,7 @@ This keeps OpenRouter from silently drifting onto a much more expensive upstream
 
 ```text
 moonshotai/kimi-k2.6
-z-ai/glm-5.1
+z-ai/glm-5.2
 xiaomi/mimo-v2.5-pro
 google/gemma-4-31b-it
 ```
@@ -419,7 +419,7 @@ Google
 
 OpenRouter
   moonshotai/kimi-k2.6
-  z-ai/glm-5.1                  no vision
+  z-ai/glm-5.2                  no vision
   xiaomi/mimo-v2.5-pro
   xiaomi/mimo-v2.5
   x-ai/grok-build-0.1
@@ -486,7 +486,7 @@ modelId = xiaomi/mimo-v2.5-pro
 thinking = off
 
 providerId = openrouter
-modelId = z-ai/glm-5.1
+modelId = z-ai/glm-5.2
 thinking = off
 ```
 
@@ -505,7 +505,7 @@ The local/release evaluation gate should continue to run compressor candidates o
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
 
-The current runtime order is `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.1`. All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active.
+The current runtime order is `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.2`. All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active.
 
 The compressor model is an internal runtime choice. The frontend should not hardcode or expose compressor provider mappings unless a later settings surface is explicitly designed.
 

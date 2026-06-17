@@ -43,7 +43,7 @@ export const DEFAULT_COMPRESSOR_FALLBACK_MODEL = {
 
 export const DEFAULT_COMPRESSOR_SECOND_FALLBACK_MODEL = {
   providerId: "openrouter" as ProviderId,
-  modelId: "z-ai/glm-5.1",
+  modelId: "z-ai/glm-5.2",
 } as const
 
 export type ContextCompressionReason = "precompute" | "threshold" | "emergency" | "manual"

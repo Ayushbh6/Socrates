@@ -871,7 +871,7 @@ Compressor-model selection:
 ```text
 primary: OpenRouter deepseek/deepseek-v4-flash with thinking off
 fallback 1: OpenRouter xiaomi/mimo-v2.5-pro with thinking off
-fallback 2: OpenRouter z-ai/glm-5.1 with thinking off
+fallback 2: OpenRouter z-ai/glm-5.2 with thinking off
 ```
 
 The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.

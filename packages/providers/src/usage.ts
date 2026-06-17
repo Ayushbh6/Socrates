@@ -135,14 +135,15 @@ const openRouterPricingCatalog: Record<string, OpenRouterEndpointPricing[]> = {
     { provider: "Io Net", promptUsdPerToken: 0.00000073, completionUsdPerToken: 0.00000349, inputCacheReadUsdPerToken: 0.00000025 },
     { provider: "Inceptron", promptUsdPerToken: 0.00000073, completionUsdPerToken: 0.0000035, inputCacheReadUsdPerToken: 0.00000025 },
   ],
-  "z-ai/glm-5.1": [
-    { provider: "GMICloud", promptUsdPerToken: 0.00000098, completionUsdPerToken: 0.00000308, inputCacheReadUsdPerToken: 0.000000182 },
-    { provider: "Baidu", promptUsdPerToken: 0.00000098, completionUsdPerToken: 0.00000308, inputCacheReadUsdPerToken: 0.000000182 },
-    { provider: "DeepInfra", promptUsdPerToken: 0.00000105, completionUsdPerToken: 0.0000035, inputCacheReadUsdPerToken: 0.000000205 },
-    { provider: "StreamLake", promptUsdPerToken: 0.00000119, completionUsdPerToken: 0.00000374, inputCacheReadUsdPerToken: 0.000000221 },
-    { provider: "AtlasCloud", promptUsdPerToken: 0.00000126, completionUsdPerToken: 0.00000396, inputCacheReadUsdPerToken: 0.000000234 },
+  "z-ai/glm-5.2": [
+    { provider: "Cloudflare", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
     { provider: "Z.AI", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
-    { provider: "SiliconFlow", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
+    { provider: "Novita", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
+    { provider: "Friendli", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
+    { provider: "DeepInfra", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000025 },
+    { provider: "Parasail", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
+    { provider: "AtlasCloud", promptUsdPerToken: 0.0000014, completionUsdPerToken: 0.0000044, inputCacheReadUsdPerToken: 0.00000026 },
+    { provider: "Io Net", promptUsdPerToken: 0.00000168, completionUsdPerToken: 0.00000528, inputCacheReadUsdPerToken: 0.0000005 },
   ],
   "xiaomi/mimo-v2.5-pro": [
     { provider: "Xiaomi", promptUsdPerToken: 0.000000435, completionUsdPerToken: 0.00000087, inputCacheReadUsdPerToken: 0.0000000036 },
@@ -229,7 +230,7 @@ export const openRouterPricingSnapshotForModel = (modelId: string, routedProvide
       ? {}
       : { cacheWriteInputUsdPer1M: endpoint.inputCacheWriteUsdPerToken * 1_000_000 }),
     outputUsdPer1M: endpoint.completionUsdPerToken * 1_000_000,
-    effectiveAt: "2026-06-05",
+    effectiveAt: modelId === "z-ai/glm-5.2" ? "2026-06-17" : "2026-06-05",
   }
 }
 

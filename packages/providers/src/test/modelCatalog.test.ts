@@ -20,7 +20,7 @@ describe("model catalog", () => {
       "google/gemini-3-flash-preview",
       "google/gemini-3.1-flash-lite-preview",
       "openrouter/moonshotai/kimi-k2.6",
-      "openrouter/z-ai/glm-5.1",
+      "openrouter/z-ai/glm-5.2",
       "openrouter/xiaomi/mimo-v2.5-pro",
       "openrouter/xiaomi/mimo-v2.5",
       "openrouter/x-ai/grok-build-0.1",
@@ -60,7 +60,7 @@ describe("model catalog", () => {
       .filter((model) => model.capabilities?.vision === false)
       .map((model) => model.modelId)
 
-    expect(nonVision).toEqual(["z-ai/glm-5.1", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+    expect(nonVision).toEqual(["z-ai/glm-5.2", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
     expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
   })
 })
