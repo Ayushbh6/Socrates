@@ -130,7 +130,7 @@ Tool routing:
 
 ## Release State
 
-- Current published distribution split: GitHub runtime release `v0.1.9` carries the macOS/Windows runtime bundles; npm launcher `@socrates-ai/cli@0.1.10` adds direct GitHub Release asset lookup so public `npx` installs avoid unauthenticated GitHub API rate limits.
+- Current release target is GitHub runtime release `v0.1.11` with macOS and Windows runtime bundles; npm launcher `@socrates-ai/cli@0.1.11` keeps direct GitHub Release asset lookup so public `npx` installs avoid unauthenticated GitHub API rate limits.
 
 ## Next Major Work
 

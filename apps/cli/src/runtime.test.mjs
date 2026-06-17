@@ -59,13 +59,13 @@ describe("Socrates CLI runtime helpers", () => {
   });
 
   it("constructs direct GitHub release downloads for every supported runtime", () => {
-    expect(releaseDownloadUrl("Ayushbh6/Socrates", "v0.1.9", "SHA256SUMS")).toBe(
-      "https://github.com/Ayushbh6/Socrates/releases/download/v0.1.9/SHA256SUMS",
+    expect(releaseDownloadUrl("Ayushbh6/Socrates", "v0.1.11", "SHA256SUMS")).toBe(
+      "https://github.com/Ayushbh6/Socrates/releases/download/v0.1.11/SHA256SUMS",
     );
-    expect(releaseTagFromDownloadLocation("https://github.com/Ayushbh6/Socrates/releases/download/v0.1.9/SHA256SUMS")).toBe("v0.1.9");
+    expect(releaseTagFromDownloadLocation("https://github.com/Ayushbh6/Socrates/releases/download/v0.1.11/SHA256SUMS")).toBe("v0.1.11");
 
-    const release = directDownloadRelease("Ayushbh6/Socrates", "v0.1.9");
-    expect(release.tagName).toBe("v0.1.9");
+    const release = directDownloadRelease("Ayushbh6/Socrates", "v0.1.11");
+    expect(release.tagName).toBe("v0.1.11");
     expect(release.assets.map((asset) => asset.name)).toEqual([
       "socrates-runtime-darwin-arm64.zip",
       "socrates-runtime-darwin-x64.zip",
@@ -73,7 +73,7 @@ describe("Socrates CLI runtime helpers", () => {
       "SHA256SUMS",
     ]);
     expect(selectAsset(release.assets, "socrates-runtime-win32-x64.zip").url).toBe(
-      "https://github.com/Ayushbh6/Socrates/releases/download/v0.1.9/socrates-runtime-win32-x64.zip",
+      "https://github.com/Ayushbh6/Socrates/releases/download/v0.1.11/socrates-runtime-win32-x64.zip",
     );
   });
 

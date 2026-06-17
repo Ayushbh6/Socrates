@@ -455,7 +455,7 @@ export class ConversationTerminalManager {
     })()
     const trackedDrain = drain.finally(() => {
       if (terminal.drainPromise === trackedDrain) {
-        terminal.drainPromise = undefined
+        delete terminal.drainPromise
       }
     })
     terminal.drainPromise = trackedDrain

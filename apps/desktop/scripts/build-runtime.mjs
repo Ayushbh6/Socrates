@@ -182,6 +182,39 @@ const extractNodeRuntime = async (target) => {
   copy(extractedRoot, target);
 };
 
+const bundledNodeExecutable = (nodeRoot) => path.join(nodeRoot, process.platform === "win32" ? "node.exe" : "bin/node");
+
+const bundledNpmCli = (nodeRoot) => {
+  const candidates =
+    process.platform === "win32"
+      ? [path.join(nodeRoot, "node_modules", "npm", "bin", "npm-cli.js")]
+      : [path.join(nodeRoot, "lib", "node_modules", "npm", "bin", "npm-cli.js")];
+  const cli = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!cli) {
+    throw new Error(`Bundled npm CLI was not found under ${nodeRoot}`);
+  }
+  return cli;
+};
+
+const rebuildPackagedNativeServerDependencies = async () => {
+  if (!includeNodeRuntime) {
+    return;
+  }
+  const nodeRoot = path.join(runtimeDir, "node");
+  const nodeExecutable = bundledNodeExecutable(nodeRoot);
+  assertFile(nodeExecutable, "Bundled Node executable");
+
+  const serverRoot = path.join(runtimeDir, "server");
+  const sqlitePackageRoot = fs.realpathSync(path.join(serverRoot, "node_modules", "better-sqlite3"));
+  fs.rmSync(path.join(sqlitePackageRoot, "build"), { recursive: true, force: true });
+  await run(nodeExecutable, [bundledNpmCli(nodeRoot), "rebuild", "--foreground-scripts", "--ignore-scripts=false", "--workspaces=false", "--prefix", sqlitePackageRoot], {
+    cwd: sqlitePackageRoot,
+    env: {
+      PATH: `${path.dirname(nodeExecutable)}${path.delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+};
+
 fs.rmSync(runtimeDir, { recursive: true, force: true });
 fs.mkdirSync(runtimeDir, { recursive: true });
 
@@ -224,6 +257,7 @@ copy(path.join(desktopRoot, "scripts", "launcher.mjs"), path.join(runtimeDir, "l
 if (includeNodeRuntime) {
   await downloadFile(nodeDownloadUrl, nodeArchivePath);
   await extractNodeRuntime(path.join(runtimeDir, "node"));
+  await rebuildPackagedNativeServerDependencies();
 }
 
 fs.writeFileSync(path.join(runtimeDir, ".gitkeep"), "");
