@@ -192,9 +192,13 @@ When a workspace is created or attached, Socrates creates this project-local sca
 
 ```text
 <workspace>/.socrates/
+<workspace>/.socrates/MEMORY.md
+<workspace>/.socrates/PROJECT_NOTES.md
 <workspace>/.socrates/resources/
 <workspace>/.socrates/repo_docs/
 ```
+
+The project memory, project notes, and runtime `.socrates/repo_docs/*.md` files are structured markdown documents with Socrates YAML frontmatter and explicit `socrates:section` markers. SQLite stores parsed section indexes for lookup, but markdown remains the durable source of truth. Dedicated docs/memory write paths may stamp optional frontmatter fields `updated_at`, `updated_by`, and `last_edited_section` after successful backend-owned edits. Project notes may also include a protected generated `runtime_context` section for workspace scan facts; terminal output and live terminal state must not be persisted there.
 
 Socrates should not edit the workspace root `.gitignore` in V1.
 
@@ -806,7 +810,7 @@ Stores each proposed, applied, or rejected memory edit produced by a memory-agen
 | `job_id` | `TEXT` | yes | FK to `memory_agent_jobs.id`. |
 | `project_id` | `TEXT` | yes | Owning project scope. |
 | `turn_id` | `TEXT` | no | Source/representative turn for the action. |
-| `target_kind` | `TEXT` | yes | `diary`, `learned_patterns`, `tool_usage`, or `soul`. |
+| `target_kind` | `TEXT` | yes | `tool_usage`, `user_profile`, `skills`, or `soul`. Scheduled runs may read skills but cannot create/update them. |
 | `target_path` | `TEXT` | yes | Memory file path being changed. |
 | `status` | `TEXT` | yes | `proposed`, `awaiting_confirmation`, `applied`, or `rejected`. |
 | `requires_confirmation` | `INTEGER` | yes | Boolean; true for soul patches. |
@@ -839,6 +843,52 @@ Stores the internal second-call confirmation flow for soul edits.
 | `requested_at` | `TEXT` | yes | ISO timestamp. |
 | `decided_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Confirmation metadata and normalized decision details. |
+
+## `memory_doc_indexes`
+
+Stores the latest parsed index row for each structured Socrates memory document. The markdown file is still the source of truth; this table is a rebuilt lookup/cache surface.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `mdoc_...`. |
+| `scope` | `TEXT` | yes | `workspace` or `global`. |
+| `project_id` | `TEXT` | yes | Workspace project id, or `global` for global docs. |
+| `path` | `TEXT` | yes | Runtime doc path, such as `.socrates/MEMORY.md` or `tool_usage/read_search.md`. |
+| `doc_type` | `TEXT` | yes | Structured doc type such as `project_memory`, `repo_rules`, `user_profile`, or `tool_doc`. |
+| `owner_tool` | `TEXT` | yes | Dedicated tool that owns mutation: `project_docs`, `repo_docs`, `tool_docs`, `soul`, `user_profile`, or `skills`. |
+| `schema_version` | `INTEGER` | yes | Memory-doc schema version from YAML frontmatter. |
+| `content_hash` | `TEXT` | yes | SHA-256 of the full markdown document. |
+| `section_count` | `INTEGER` | yes | Number of parsed `socrates:section` blocks. |
+| `indexed_at` | `TEXT` | yes | ISO timestamp when this index row was rebuilt. |
+| `metadata_json` | `TEXT` | no | Parser warnings and future index metadata. |
+
+Unique index: `scope + project_id + path`.
+
+## `memory_doc_sections`
+
+Stores parsed section rows for structured Socrates memory documents.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `mdsec_...`. |
+| `doc_index_id` | `TEXT` | yes | FK to `memory_doc_indexes.id`, cascade deleted on reindex. |
+| `scope` | `TEXT` | yes | Copied from the parent index for lookup. |
+| `project_id` | `TEXT` | yes | Copied from the parent index for lookup. |
+| `path` | `TEXT` | yes | Runtime doc path. |
+| `doc_type` | `TEXT` | yes | Parent doc type. |
+| `section_id` | `TEXT` | yes | Stable section id, such as `handoff`, `hard_rules`, or `stable_preferences`. |
+| `kind` | `TEXT` | yes | Section category used for routing and display. |
+| `tags_json` | `TEXT` | yes | JSON array of section tags. |
+| `heading` | `TEXT` | yes | First markdown heading inside the section. |
+| `line_start` | `INTEGER` | yes | 1-based opening marker line. |
+| `line_end` | `INTEGER` | yes | 1-based closing marker line. |
+| `content_hash` | `TEXT` | yes | SHA-256 of section content. |
+| `summary` | `TEXT` | yes | Short generated summary from section text. |
+| `token_estimate` | `INTEGER` | yes | Rough section token estimate. |
+| `updated_at` | `TEXT` | yes | ISO timestamp when indexed. |
+| `metadata_json` | `TEXT` | no | Future section metadata. |
+
+Unique index: `doc_index_id + section_id`. Lookup index: `scope + project_id + doc_type + section_id`.
 
 ## `notifications`
 

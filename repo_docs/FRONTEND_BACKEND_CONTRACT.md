@@ -1066,7 +1066,7 @@ The chat page opens one WebSocket connection for live agent events and subscribe
 
 Active turns are conversation-owned, not browser-socket-owned. The backend must keep the provider/tool stream running across browser refreshes, route changes, tab switches, temporary tab sleep, or reconnects while the local backend process is still alive. Events are persisted first, then broadcast to currently subscribed sockets for that conversation. If no browser is currently subscribed, the turn still continues and future subscribers recover through replay plus HTTP hydration.
 
-The current chat UI sends user messages through `chat.message.send`. The backend creates/reuses the session, stores the user message, creates the running turn, persists the runtime config, loads model-facing history from prior user messages and final assistant answers, injects backend-owned Socrates prompt context, and calls `packages/core`.
+The current chat UI sends user messages through `chat.message.send`. The backend creates/reuses the session, stores the user message, creates the running turn, persists the runtime config, loads model-facing history from prior user messages and final assistant answers, injects stable backend-owned Socrates prompt context such as user/project/instructions, and calls `packages/core`. Changing date/time is not injected into the system prompt; date-sensitive work should use `current_time` or docs-tool `runtime` metadata instead of stale dates from prior docs or conversations.
 
 Suggested URL:
 
@@ -1396,6 +1396,7 @@ type ToolCallStartedPayload = {
     | "edit"
     | "apply_patch"
     | "bash"
+    | "current_time"
     | "trace_retrieve"
     | "tool_docs"
     | "skills"
@@ -1689,6 +1690,7 @@ search
 edit
 apply_patch
 bash
+current_time
 trace_retrieve
 tool_docs
 skills
@@ -1700,7 +1702,7 @@ list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus dynamic MCP tools returned by `mcp_registry`. `projects` and `edit_files` are base contract tools for backend memory workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus dynamic MCP tools returned by `mcp_registry`. `projects` and `edit_files` are base contract tools for backend memory workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -1970,7 +1972,34 @@ Rules:
 - `read`, `search`, and `edit` are preferred for structured file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
 - Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
 
-Before Python installs/runs, the backend injects compact workspace environment hints into the agent prompt. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup.
+Before Python installs/runs, Socrates should read project notes when workspace runtime facts matter. The backend maintains a protected `runtime_context` section in `.socrates/PROJECT_NOTES.md` with generated workspace scan facts such as detected venvs, dependency files, and package-manager hints. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup. Terminal output and live terminal state must not be written into that persisted section.
+
+### `current_time`
+
+Read-only access to the backend-owned current local date, ISO timestamp, and resolved time zone. This tool has no input and exists so changing date/time does not sit at the front of the cache-sensitive system prompt.
+
+Input:
+
+```ts
+type CurrentTimeToolInput = {}
+```
+
+Output:
+
+```ts
+type RuntimeTimeMetadata = {
+  currentDate: string
+  currentDateTime: string
+  timeZone: string
+  source: "system"
+}
+```
+
+Rules:
+
+- Use `current_time({})` for date-sensitive answers, filenames, logs, and document prose that truly needs today's date or exact time.
+- Do not infer today's date from project docs, older conversations, state ledgers, or prior tool outputs.
+- The system prompt must not include changing current date/time fields.
 
 ### `trace_retrieve`
 
@@ -2177,19 +2206,27 @@ Input:
 
 ```ts
 type ProjectDocsToolInput = {
-  operation: "read" | "search" | "edit"
+  operation: "read" | "search" | "edit" | "read_index" | "read_section" | "patch_section"
   area: "memory" | "notes"
+  sectionId?: string
   editMode?: "append" | "replace"
   oldText?: string
   newText?: string
   text?: string
+  replaceAll?: boolean
+  charLimit?: number
 }
 ```
+
+Every `project_docs` output may include `runtime?: RuntimeTimeMetadata` with backend-owned current date/time metadata.
 
 Rules:
 
 - `area: "memory"` is durable cross-conversation project state: goals, decisions, constraints, blockers, durable preferences, changed workflow facts, and handoff facts.
-- `area: "notes"` is the active assistant notebook: current todos, checked files, partial progress, next commands, and short-term restart points.
+- `area: "notes"` is the active assistant notebook: current todos, checked files, partial progress, next commands, short-term restart points, and a protected backend-owned `runtime_context` section.
+- Runtime docs are structured markdown with YAML frontmatter and `socrates:section` markers. `read_index` returns the parsed section map; `read_section` returns one section; `patch_section` limits an exact oldText/newText replacement to one section.
+- `runtime_context` is system-owned. `project_docs` rejects attempts to patch or change it. It may contain workspace scan facts, but must not persist terminal output or live terminal state.
+- Successful `project_docs` edits stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`.
 - Generic `edit` and `apply_patch` writes to these files are rejected; use `project_docs`.
 - After meaningful workspace work, the runtime may inject a docs checkpoint requiring a `project_docs` memory update before final when no durable memory update happened.
 
@@ -2225,7 +2262,7 @@ type SoulToolOutput = {
 
 Rules:
 
-- `soul` can only read `~/.Socrates/primary/identity.md` and `~/.Socrates/primary/operating_principles.md`.
+- `soul` can only read `~/.Socrates/identity.md` and `~/.Socrates/operating_principles.md`.
 - The main agent cannot edit these files through model-visible tools. Soul updates are proposed and applied only by the backend memory agent through verified patches.
 - A proposed soul update must create a confirmation record and run the exact prompt `You are about to make changes to the soul. Are you sure?` followed by `Reply exactly yes or no.` Only an exact normalized `yes` applies the patch.
 - Applied soul updates create durable notifications with rationale and compact diff payloads.
@@ -2242,20 +2279,26 @@ Input:
 
 ```ts
 type RepoDocsToolInput = {
-  operation: "read" | "search" | "edit"
+  operation: "read" | "search" | "edit" | "read_index" | "read_section" | "patch_section"
   path?: "CORE_IDEA.md" | "REPO_NAVIGATION.md" | "REPO_RULES.md" | "CONTRACTS.md"
+  sectionId?: string
   query?: string
   oldText?: string
   newText?: string
-  text?: string
   replaceAll?: boolean
   charLimit?: number
 }
 ```
 
+Every `repo_docs` output may include `runtime?: RuntimeTimeMetadata` with backend-owned current date/time metadata.
+
 Rules:
 
 - Project access creates missing template files only; existing user-edited repo docs are preserved.
+- Runtime repo docs are structured markdown with YAML frontmatter and stable section ids.
+- Prefer `read_index`, then `read_section` or `patch_section`, for focused doctrine lookup and updates.
+- Successful `repo_docs` edits stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`.
+- Whole-file `read`, `search`, and constrained `edit` remain fallback operations.
 - `read` with no path returns a bounded index of the four docs.
 - `search` requires `query` and searches all docs unless `path` narrows it.
 - `patch` requires one allowlisted `path` plus exact `oldText`/`newText`.

@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { conversationStatusSchema, messageRoleSchema, projectResourceKindSchema, projectResourceSourceSchema, projectResourceStatusSchema, projectStatusSchema } from "./entities"
+import { memoryDocIndexSchema, memoryDocSectionSchema } from "./memoryDocs"
 
 export const baseToolNameSchema = z.enum([
   "read",
@@ -7,6 +8,7 @@ export const baseToolNameSchema = z.enum([
   "edit",
   "apply_patch",
   "bash",
+  "current_time",
   "trace_retrieve",
   "tool_docs",
   "skills",
@@ -25,6 +27,22 @@ export type ToolName = z.infer<typeof toolNameSchema>
 
 export const providerMetadataSchema = z.record(z.string(), z.record(z.string(), z.unknown()))
 export type ProviderMetadata = z.infer<typeof providerMetadataSchema>
+
+export const runtimeTimeMetadataSchema = z
+  .object({
+    currentDate: z.string().min(1),
+    currentDateTime: z.string().min(1),
+    timeZone: z.string().min(1),
+    source: z.literal("system"),
+  })
+  .strict()
+export type RuntimeTimeMetadata = z.infer<typeof runtimeTimeMetadataSchema>
+
+export const currentTimeToolInputSchema = z.object({}).strict()
+export type CurrentTimeToolInput = z.infer<typeof currentTimeToolInputSchema>
+
+export const currentTimeToolOutputSchema = runtimeTimeMetadataSchema
+export type CurrentTimeToolOutput = z.infer<typeof currentTimeToolOutputSchema>
 
 export const toolPermissionSchema = z.enum(["read", "mutate", "execute"])
 export type ToolPermission = z.infer<typeof toolPermissionSchema>
@@ -1092,8 +1110,10 @@ export const editFilesToolInputSchema = z
     target: editFilesTargetSchema,
     name: z.string().min(1).optional(),
     editMode: z.enum(["replace", "create"]),
+    sectionId: z.string().min(1).optional(),
     oldText: z.string().optional(),
     newText: z.string().min(1),
+    replaceAll: z.boolean().optional(),
     rationale: z.string().min(1).optional(),
     sourceTurnIds: z.array(z.string().min(1)).optional(),
   })
@@ -1101,6 +1121,9 @@ export const editFilesToolInputSchema = z
   .superRefine((input, context) => {
     if ((input.target === "tool_doc" || input.target === "skill") && !input.name) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required for tool_doc and skill targets." })
+    }
+    if (input.target === "skill" && input.sectionId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "sectionId is not supported for skill targets." })
     }
     if (input.editMode === "replace" && input.oldText === undefined) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["oldText"], message: "replace requires oldText." })
@@ -1116,6 +1139,7 @@ export const editFilesToolOutputSchema = z
     changed: z.boolean(),
     actionId: z.string().min(1).optional(),
     status: z.enum(["applied", "awaiting_confirmation", "rejected", "unchanged"]),
+    section: memoryDocSectionSchema.optional(),
     diff: z.string().optional(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
@@ -1128,19 +1152,32 @@ export type ProjectDocsArea = z.infer<typeof projectDocsAreaSchema>
 
 export const projectDocsToolInputSchema = z
   .object({
-    operation: z.enum(["read", "search", "edit"]),
+    operation: z.enum(["read", "search", "edit", "read_index", "read_section", "patch_section"]),
     area: projectDocsAreaSchema,
+    sectionId: z.string().min(1).optional(),
     query: z.string().min(1).optional(),
     editMode: z.enum(["append", "replace"]).optional(),
     oldText: z.string().optional(),
     newText: z.string().optional(),
     text: z.string().optional(),
+    replaceAll: z.boolean().optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
   .superRefine((input, context) => {
     if (input.operation === "search" && !input.query) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    }
+    if (input.operation === "read_section" && !input.sectionId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "read_section requires sectionId." })
+    }
+    if (input.operation === "patch_section") {
+      if (!input.sectionId) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "patch_section requires sectionId." })
+      }
+      if (input.oldText === undefined || input.newText === undefined) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "patch_section requires oldText and newText." })
+      }
     }
     if (input.operation === "edit") {
       if (!input.editMode) {
@@ -1158,10 +1195,12 @@ export type ProjectDocsToolInput = z.infer<typeof projectDocsToolInputSchema>
 
 export const projectDocsToolOutputSchema = z
   .object({
-    operation: z.enum(["read", "search", "edit"]),
+    operation: z.enum(["read", "search", "edit", "read_index", "read_section", "patch_section"]),
     area: projectDocsAreaSchema,
     path: z.string().min(1),
     content: z.string().optional(),
+    index: memoryDocIndexSchema.optional(),
+    section: memoryDocSectionSchema.optional(),
     matches: z
       .array(
         z
@@ -1173,6 +1212,7 @@ export const projectDocsToolOutputSchema = z
       )
       .optional(),
     changed: z.boolean().optional(),
+    runtime: runtimeTimeMetadataSchema.optional(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
   })
@@ -1189,8 +1229,9 @@ export type RepoDocFile = z.infer<typeof repoDocFileSchema>
 
 export const repoDocsToolInputSchema = z
   .object({
-    operation: z.enum(["read", "search", "edit"]),
+    operation: z.enum(["read", "search", "edit", "read_index", "read_section", "patch_section"]),
     path: repoDocFileSchema.optional(),
+    sectionId: z.string().min(1).optional(),
     query: z.string().min(1).optional(),
     oldText: z.string().optional(),
     newText: z.string().optional(),
@@ -1201,6 +1242,20 @@ export const repoDocsToolInputSchema = z
   .superRefine((input, context) => {
     if (input.operation === "search" && !input.query) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
+    }
+    if ((input.operation === "read_section" || input.operation === "patch_section") && !input.path) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: `${input.operation} requires path.` })
+    }
+    if (input.operation === "read_section" && !input.sectionId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "read_section requires sectionId." })
+    }
+    if (input.operation === "patch_section") {
+      if (!input.sectionId) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "patch_section requires sectionId." })
+      }
+      if (input.oldText === undefined || input.newText === undefined) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: "patch_section requires oldText and newText." })
+      }
     }
     if (input.operation === "edit") {
       if (!input.path) {
@@ -1215,10 +1270,13 @@ export type RepoDocsToolInput = z.infer<typeof repoDocsToolInputSchema>
 
 export const repoDocsToolOutputSchema = z
   .object({
-    operation: z.enum(["read", "search", "edit"]),
+    operation: z.enum(["read", "search", "edit", "read_index", "read_section", "patch_section"]),
     path: z.string().min(1).optional(),
     paths: z.array(z.string().min(1)).optional(),
     content: z.string().optional(),
+    index: memoryDocIndexSchema.optional(),
+    indexes: z.array(memoryDocIndexSchema).optional(),
+    section: memoryDocSectionSchema.optional(),
     matches: z
       .array(
         z
@@ -1231,6 +1289,7 @@ export const repoDocsToolOutputSchema = z
       )
       .optional(),
     changed: z.boolean().optional(),
+    runtime: runtimeTimeMetadataSchema.optional(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
   })

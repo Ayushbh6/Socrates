@@ -1,6 +1,7 @@
 import type { ModelToolDefinition, ToolName } from "@socrates/contracts"
 import { applyPatchTool } from "./applyPatchTool"
 import { bashTool } from "./bashTool"
+import { currentTimeTool } from "./currentTimeTool"
 import { editTool } from "./editTool"
 import { editFilesTool } from "./editFilesTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
@@ -23,6 +24,7 @@ const tools = [
   editTool,
   applyPatchTool,
   bashTool,
+  currentTimeTool,
   traceRetrieveTool,
   toolDocsTool,
   skillsTool,

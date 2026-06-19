@@ -7,7 +7,7 @@ import {
   type SocratesAgent,
   type ToolExecutors,
 } from "@socrates/core"
-import type { ClientCommand, ProjectEmbeddingStatus, ProjectResource } from "@socrates/contracts"
+import type { ClientCommand, ProjectResource } from "@socrates/contracts"
 import type { McpRuntime } from "@socrates/mcp"
 import type { ModelProvider, ModelUsage } from "@socrates/providers"
 import { normalizeError, nowIso, SocratesError } from "@socrates/shared"
@@ -15,8 +15,6 @@ import {
   applyPatchWorkspace,
   editWorkspace,
   FileFreshnessTracker,
-  formatPythonEnvironmentHints,
-  inspectPythonEnvironment,
   isWorkspaceMutationLocked,
   isShellSessionResetError,
   readWorkspacePath,
@@ -31,6 +29,7 @@ import type { ActiveTurns } from "../activeTurns"
 import type { ConversationTerminalManager } from "../conversationTerminals"
 import type { ConversationSubscriptions } from "../conversationSubscriptions"
 import { appendAndEmit, makeEvent, type EventSink } from "../eventSender"
+import { currentRuntimeTime } from "../../services/store/runtimeContext"
 
 const requireCommandScope = (command: ClientCommand): { projectId: string; conversationId: string } => {
   if (!command.projectId || !command.conversationId) {
@@ -40,6 +39,7 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
 }
 
 const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.triggerTokens
+const docsMutationOperations = new Set(["edit", "patch_section"])
 
 const withWakeContext = (
   history: ReturnType<SocratesStore["getConversationModelMessages"]>,
@@ -55,6 +55,30 @@ const withWakeContext = (
     },
     ...history,
   ]
+}
+
+const withLateDeveloperContext = (
+  history: ReturnType<SocratesStore["getConversationModelMessages"]>,
+  terminalContext: string | undefined,
+): ReturnType<SocratesStore["getConversationModelMessages"]> => {
+  const sections = terminalContext?.trim()
+    ? [`<terminal_context>\n${terminalContext.trim()}\n</terminal_context>`]
+    : []
+  if (sections.length === 0) {
+    return history
+  }
+
+  const message = {
+    role: "developer" as const,
+    content: `<socrates_runtime_context>\n${sections.join("\n\n")}\n</socrates_runtime_context>`,
+  }
+  const latestUserIndexFromEnd = [...history].reverse().findIndex((item) => item.role === "user")
+  if (latestUserIndexFromEnd === -1) {
+    return [...history, message]
+  }
+
+  const insertIndex = history.length - latestUserIndexFromEnd - 1
+  return [...history.slice(0, insertIndex), message, ...history.slice(insertIndex)]
 }
 
 export const handleChatMessageSend = async (
@@ -172,16 +196,10 @@ export const handleChatMessageSend = async (
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
   store.ensureProjectMemory(projectId)
   const wakeContext = store.buildWakeMemoryContext(projectId, command.payload.content)
-  const modelHistory = withWakeContext(history, wakeContext)
   const terminalContext = store.terminalContextBrief(conversationId)
+  const modelHistory = withLateDeveloperContext(withWakeContext(history, wakeContext), terminalContext)
   const promptContext = {
     ...store.getAgentContext(projectId),
-    workspaceGuidance: formatPythonEnvironmentHints(inspectPythonEnvironment(workspacePath)),
-    workspaceCommandEnvironment: formatWorkspaceCommandEnvironmentBrief(),
-    semanticRetrievalStatus: formatSemanticRetrievalStatus(store.getProjectEmbeddingStatus(projectId)),
-    mcpRuntimeBrief:
-      "MCP is available on demand through mcp_registry. Browser automation presets such as Playwright are discoverable there; dynamic MCP tool lists/schemas are not included in this prompt or first tool call surface.",
-    ...(terminalContext ? { terminalContext } : {}),
   }
   const modelCallIds: string[] = []
   const latestUsageByModelCallId = new Map<string, ModelUsage>()
@@ -790,15 +808,16 @@ const createToolExecutors = (
       throw error
     }
   },
+  current_time: () => Promise.resolve(currentRuntimeTime()),
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   tool_docs: (input) => Promise.resolve(store.runToolDocsTool(projectId, input)),
   skills: (input) => Promise.resolve(store.runSkillsTool(projectId, input)),
   project_docs: (input, context) =>
-    input.operation === "edit"
+    docsMutationOperations.has(input.operation)
       ? withWorkspaceMutationLock(context.workspacePath, async () => store.runProjectDocsTool(projectId, context.workspacePath, input))
       : Promise.resolve(store.runProjectDocsTool(projectId, context.workspacePath, input)),
   repo_docs: (input, context) =>
-    input.operation === "edit"
+    docsMutationOperations.has(input.operation)
       ? withWorkspaceMutationLock(context.workspacePath, async () => store.runRepoDocsTool(projectId, context.workspacePath, input))
       : Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
@@ -1025,70 +1044,6 @@ const listProjectResourcesForTool = (
   }
 }
 
-const formatWorkspaceCommandEnvironmentBrief = (): string =>
-  [
-    "Workspace Terminal commands run with a sanitized user-workspace environment.",
-    "- Socrates runtime variables, app API URLs, runtime paths, provider API keys, NODE_ENV, npm/yarn production or omit flags, and CI are not inherited from the server process.",
-    "- Safe OS basics such as PATH, HOME/user profile, shell identity, temp paths, locale variables, and Windows system roots are preserved.",
-    "- Explicit command-level env assignments still work when a task intentionally needs them, for example NODE_ENV=production npm run build.",
-  ].join("\n")
-
-const formatSemanticRetrievalStatus = (status: ProjectEmbeddingStatus): string => {
-  const warnings = status.warnings?.length ? `\n- Warnings: ${status.warnings.join(" ")}` : ""
-  const provider = status.providerId && status.modelId ? `${status.providerId}/${status.modelId}` : "not configured"
-  const counts = `documents total=${status.totalDocuments}, indexed=${status.indexedDocuments}, pending=${status.pendingDocuments}, failed=${status.failedDocuments}`
-
-  if (!status.configured) {
-    return [
-      "Semantic retrieval: not configured.",
-      `- Provider/model: ${provider}.`,
-      `- Trace document state: ${counts}.`,
-      "- Use trace_retrieve for lexical/exact search and inspect. Do not claim semantic retrieval was used.",
-      warnings.trim(),
-    ]
-      .filter(Boolean)
-      .join("\n")
-  }
-
-  const activeJob = status.activeJob ? `\n- Active indexing job: ${status.activeJob.status}.` : ""
-  const lastError = status.lastError ? `\n- Last error: ${status.lastError}` : ""
-  const state = semanticRetrievalState(status)
-  const usage =
-    status.ready && status.indexedDocuments > 0
-      ? '- trace_retrieve supports mode="exact" for lexical search, mode="semantic" for fuzzy conceptual recall, mode="combined" for hybrid recall, and mode="audit" for runtime/tool history. Default remains exact.'
-      : "- Treat trace_retrieve as lexical/exact only until indexing is ready. Do not claim semantic retrieval was used."
-
-  return [
-    `Semantic retrieval: ${state}.`,
-    `- Provider/model: ${provider}.`,
-    `- Trace document state: ${counts}.`,
-    usage,
-    activeJob.trim(),
-    lastError.trim(),
-    warnings.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n")
-}
-
-const semanticRetrievalState = (status: ProjectEmbeddingStatus): string => {
-  if (status.status === "failed" || status.lastError) {
-    return "failed"
-  }
-  if (status.ready && status.indexedDocuments > 0 && status.pendingDocuments > 0) {
-    return "ready (partially indexed)"
-  }
-  if (status.ready && status.indexedDocuments > 0) {
-    return "ready"
-  }
-  if (status.activeJob && (status.activeJob.status === "queued" || status.activeJob.status === "running")) {
-    return "indexing"
-  }
-  if (status.ready) {
-    return "ready, waiting for indexed documents"
-  }
-  return status.status ?? "not ready"
-}
 
 const providerCacheKey = (projectId: string, conversationId: string): string => `project:${projectId}:conversation:${conversationId}`
 

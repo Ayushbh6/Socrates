@@ -1044,6 +1044,54 @@ export const sessionState = sqliteTable("session_state", {
   updatedAt: text("updated_at").notNull(),
 })
 
+export const memoryDocIndexes = sqliteTable(
+  "memory_doc_indexes",
+  {
+    id: text("id").primaryKey(),
+    scope: text("scope").notNull(),
+    projectId: text("project_id").notNull(),
+    path: text("path").notNull(),
+    docType: text("doc_type").notNull(),
+    ownerTool: text("owner_tool").notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    contentHash: text("content_hash").notNull(),
+    sectionCount: integer("section_count").notNull(),
+    indexedAt: text("indexed_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    scopeProjectPathIdx: uniqueIndex("memory_doc_indexes_scope_project_path_idx").on(table.scope, table.projectId, table.path),
+    projectIdx: index("memory_doc_indexes_project_idx").on(table.projectId),
+  }),
+)
+
+export const memoryDocSections = sqliteTable(
+  "memory_doc_sections",
+  {
+    id: text("id").primaryKey(),
+    docIndexId: text("doc_index_id").notNull(),
+    scope: text("scope").notNull(),
+    projectId: text("project_id").notNull(),
+    path: text("path").notNull(),
+    docType: text("doc_type").notNull(),
+    sectionId: text("section_id").notNull(),
+    kind: text("kind").notNull(),
+    tagsJson: text("tags_json").notNull(),
+    heading: text("heading").notNull(),
+    lineStart: integer("line_start").notNull(),
+    lineEnd: integer("line_end").notNull(),
+    contentHash: text("content_hash").notNull(),
+    summary: text("summary").notNull(),
+    tokenEstimate: integer("token_estimate").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    docSectionIdx: uniqueIndex("memory_doc_sections_doc_section_idx").on(table.docIndexId, table.sectionId),
+    lookupIdx: index("memory_doc_sections_lookup_idx").on(table.scope, table.projectId, table.docType, table.sectionId),
+  }),
+)
+
 export const schemaMigrations = sqliteTable("schema_migrations", {
   version: integer("version").primaryKey(),
   name: text("name").notNull(),

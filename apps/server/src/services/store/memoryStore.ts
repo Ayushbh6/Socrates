@@ -14,6 +14,8 @@ import type {
   MemoryAgentRunDetail,
   MemoryAgentSignalSnapshot,
   MemoryAgentTimelineItem,
+  MemoryDocIndex,
+  MemoryDocSection,
   ProjectDocsArea,
   ProjectDocsToolInput,
   ProjectDocsToolOutput,
@@ -47,6 +49,8 @@ import {
   events,
   memoryAgentActions,
   memoryAgentConfirmations,
+  memoryDocIndexes,
+  memoryDocSections,
   memoryAgentJobs,
   projectInstructions,
   projectResources,
@@ -76,9 +80,19 @@ import {
   uniqueSkillName,
   type SkillInfo,
 } from "./memorySkills"
-import { ensureStructuredSoulFile } from "./memorySoulDefaults"
+import {
+  ensureStructuredMemoryDoc,
+  memoryDocTypeForEditFilesTarget,
+  memoryDocTypeForRepoDoc,
+  parseMemoryDoc,
+  patchMemoryDocSection,
+  stampMemoryDocFrontmatter,
+  type MemoryDocProfile,
+} from "./memoryDocParser"
 import { StoreBase } from "./shared"
 import { firstMarkdownLine, ToolDocsStore } from "./toolDocsStore"
+import { inspectPythonEnvironment } from "@socrates/workspace"
+import { currentRuntimeTime } from "./runtimeContext"
 
 const DEFAULT_CHAR_LIMIT = 20_000
 const DEFAULT_SEARCH_LIMIT = 20
@@ -92,6 +106,7 @@ const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
 const SOUL_CONFIRMATION_PROMPT = "You are about to make changes to the soul. Are you sure?\nReply exactly yes or no."
 const REPO_DOC_NAMES = ["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "CONTRACTS.md"] as const
 const LEGACY_REPO_DOC_NAMES = ["APP_FLOW.md", "DB_STRUCTURE.md", "FRONTEND_BACKEND_CONTRACT.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
+const PROJECT_NOTES_RUNTIME_CONTEXT_SECTION = "runtime_context"
 
 type MemoryStoreOptions = {
   socratesHome?: string
@@ -170,22 +185,27 @@ export class MemoryStore extends StoreBase {
     this.ensureGlobalKnowledge()
     if (workspacePath) {
       this.migrateLegacyProjectMemory(projectId, workspacePath)
-      ensureFile(path.join(workspacePath, ".socrates", "MEMORY.md"), "# Project Memory\n\nDurable project-specific state, decisions, preferences, and current standing for this workspace.\n")
-      ensureFile(path.join(workspacePath, ".socrates", "PROJECT_NOTES.md"), "# PROJECT_NOTES\n\nRepo-local notes for Socrates. Users may edit this file directly.\n")
+      ensureStructuredMemoryDoc(projectDocPath(workspacePath, "memory"), projectDocProfile(projectId, "memory"))
+      ensureStructuredMemoryDoc(projectDocPath(workspacePath, "notes"), projectDocProfile(projectId, "notes"))
       fs.mkdirSync(path.join(workspacePath, ".socrates", "skills"), { recursive: true })
       ensureBundledRepoDocs(path.join(workspacePath, ".socrates", "repo_docs"))
       removeLegacyRepoDocs(path.join(workspacePath, ".socrates", "repo_docs"))
+      for (const name of REPO_DOC_NAMES) {
+        const profile = repoDocProfile(projectId, name)
+        ensureStructuredMemoryDoc(repoDocPath(repoDocsRoot(workspacePath), name), profile)
+        this.indexMemoryDocFile(repoDocPath(repoDocsRoot(workspacePath), name), profile)
+      }
+      this.indexMemoryDocFile(projectDocPath(workspacePath, "memory"), projectDocProfile(projectId, "memory"))
+      this.indexMemoryDocFile(projectDocPath(workspacePath, "notes"), projectDocProfile(projectId, "notes"))
     }
   }
 
   private ensureGlobalKnowledge(): void {
     migrateGlobalPrimaryFiles(this.socratesHome)
-    ensureStructuredSoulFile(path.join(this.socratesHome, "identity.md"), "identity")
-    ensureStructuredSoulFile(path.join(this.socratesHome, "operating_principles.md"), "operating_principles")
-    ensureStructuredSoulFile(path.join(this.socratesHome, "user_profile.md"), "user_profile")
     migrateIdentityUserSectionsToProfile(this.socratesHome)
     ensureBundledToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
     removeLegacyToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
+    this.ensureAndIndexGlobalDocs()
     fs.mkdirSync(path.join(this.socratesHome, "skills"), { recursive: true })
     migrateUsefulPatternsToSkills(this.socratesHome)
   }
@@ -217,6 +237,31 @@ export class MemoryStore extends StoreBase {
       ensureFile(targetPath, `# Project Memory\n\n${sections.join("\n\n")}\n`)
     }
     removeLegacyProjectRoot(legacyRoot)
+  }
+
+  private ensureAndIndexGlobalDocs(): void {
+    const globalDocs = [
+      globalMemoryDocProfile(this.socratesHome, "identity"),
+      globalMemoryDocProfile(this.socratesHome, "operating_principles"),
+      globalMemoryDocProfile(this.socratesHome, "user_profile"),
+    ]
+    for (const profile of globalDocs) {
+      ensureStructuredMemoryDoc(path.join(this.socratesHome, profile.path), profile)
+      this.indexMemoryDocFile(path.join(this.socratesHome, profile.path), profile)
+    }
+    for (const filePath of listMarkdownFiles(path.join(this.socratesHome, "tool_usage"))) {
+      const relativePath = path.relative(this.socratesHome, filePath).replaceAll(path.sep, "/")
+      const profile: MemoryDocProfile = {
+        docType: "tool_doc",
+        ownerTool: "tool_docs",
+        scope: "global",
+        path: relativePath,
+        projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+        indexTags: ["tool_usage"],
+      }
+      ensureStructuredMemoryDoc(filePath, profile)
+      this.indexMemoryDocFile(filePath, profile)
+    }
   }
 
   runToolDocsTool(projectId: string, workspacePath: string | undefined, input: ToolDocsToolInput, audience: "main" | "memory_agent" = "main"): ToolDocsToolOutput {
@@ -265,9 +310,61 @@ export class MemoryStore extends StoreBase {
 
   runProjectDocsTool(projectId: string, workspacePath: string, input: ProjectDocsToolInput): ProjectDocsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
+    const runtime = currentRuntimeTime()
+    if (input.area === "notes") {
+      this.ensureProjectNotesRuntimeContext(projectId, workspacePath, runtime.currentDateTime)
+    }
     const documentPath = projectDocPath(workspacePath, input.area)
+    const profile = projectDocProfile(projectId, input.area)
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
     const content = fs.readFileSync(documentPath, "utf8")
+    const index = this.indexMemoryDocFile(documentPath, profile)
+    if (input.operation === "read_index") {
+      const serialized = renderMemoryDocIndex(index)
+      return {
+        operation: "read_index",
+        area: input.area,
+        path: projectDocRelativePath(input.area),
+        content: truncate(serialized, charLimit).text,
+        index,
+        runtime,
+        truncation: truncationFor(serialized, charLimit),
+      }
+    }
+    if (input.operation === "read_section") {
+      const section = findMemoryDocSection(index, input.sectionId as string)
+      const clipped = truncate(section.content, charLimit)
+      return {
+        operation: "read_section",
+        area: input.area,
+        path: projectDocRelativePath(input.area),
+        content: clipped.text,
+        section,
+        runtime,
+        truncation: truncationFor(section.content, charLimit),
+        ...(clipped.truncated ? { warnings: [`Section ${section.sectionId} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
+      }
+    }
+    if (input.operation === "patch_section") {
+      const sectionId = input.sectionId as string
+      this.assertProjectDocsSectionMutable(input.area, sectionId)
+      const patched = patchMemoryDocSection(content, profile, sectionId, input.oldText ?? "", input.newText ?? "", input.replaceAll)
+      const next = patched === content ? patched : stampMemoryDocFrontmatter(patched, { updatedAt: runtime.currentDateTime, updatedBy: "project_docs", lastEditedSection: sectionId })
+      fs.writeFileSync(documentPath, next)
+      const nextIndex = this.indexMemoryDocFile(documentPath, profile)
+      const section = findMemoryDocSection(nextIndex, sectionId)
+      return {
+        operation: "patch_section",
+        area: input.area,
+        path: projectDocRelativePath(input.area),
+        changed: next !== content,
+        content: truncate(section.content, charLimit).text,
+        section,
+        index: nextIndex,
+        runtime,
+        truncation: truncationFor(section.content, charLimit),
+      }
+    }
     if (input.operation === "read") {
       const truncated = truncate(content, charLimit)
       return {
@@ -275,6 +372,7 @@ export class MemoryStore extends StoreBase {
         area: input.area,
         path: projectDocRelativePath(input.area),
         content: truncated.text,
+        runtime,
         truncation: truncationFor(content, charLimit),
         ...(truncated.truncated ? { warnings: [`${projectDocRelativePath(input.area)} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
       }
@@ -286,6 +384,7 @@ export class MemoryStore extends StoreBase {
         area: input.area,
         path: projectDocRelativePath(input.area),
         matches: matches.map((match) => ({ line: match.line, text: match.text })),
+        runtime,
         truncation: truncationFor(JSON.stringify(matches), charLimit),
         ...(matches.length === DEFAULT_SEARCH_LIMIT ? { warnings: [`${projectDocRelativePath(input.area)} search hit the match limit; narrow the query.`] } : {}),
       }
@@ -309,14 +408,62 @@ export class MemoryStore extends StoreBase {
       }
       next = content.replace(oldText, newText)
     }
+    this.assertProjectDocsProtectedSectionsUnchanged(input.area, content, next, profile)
+    next = next === content ? next : stampMemoryDocFrontmatter(next, { updatedAt: runtime.currentDateTime, updatedBy: "project_docs", lastEditedSection: "document" })
     fs.writeFileSync(documentPath, next)
+    const nextIndex = this.indexMemoryDocFile(documentPath, profile)
     return {
       operation: "edit",
       area: input.area,
       path: projectDocRelativePath(input.area),
       changed: next !== content,
       content: truncate(next, charLimit).text,
+      index: nextIndex,
+      runtime,
       truncation: truncationFor(next, charLimit),
+    }
+  }
+
+  private ensureProjectNotesRuntimeContext(projectId: string, workspacePath: string, generatedAt: string): void {
+    const notesPath = projectDocPath(workspacePath, "notes")
+    const profile = projectDocProfile(projectId, "notes")
+    const content = fs.readFileSync(notesPath, "utf8")
+    const context = buildProjectNotesRuntimeContext(workspacePath, generatedAt)
+    const next = upsertRuntimeContextSection(content, context.section, context.signature)
+    if (next === content) {
+      return
+    }
+    fs.writeFileSync(
+      notesPath,
+      stampMemoryDocFrontmatter(next, {
+        updatedAt: generatedAt,
+        updatedBy: "system",
+        lastEditedSection: PROJECT_NOTES_RUNTIME_CONTEXT_SECTION,
+      }),
+    )
+    this.indexMemoryDocFile(notesPath, profile)
+  }
+
+  private assertProjectDocsSectionMutable(area: ProjectDocsArea, sectionId: string): void {
+    if (area === "notes" && sectionId === PROJECT_NOTES_RUNTIME_CONTEXT_SECTION) {
+      throw new SocratesError("project_docs_runtime_context_protected", "runtime_context is system-owned and cannot be edited by project_docs.", {
+        recoverable: true,
+        details: { area, sectionId },
+      })
+    }
+  }
+
+  private assertProjectDocsProtectedSectionsUnchanged(area: ProjectDocsArea, before: string, after: string, profile: MemoryDocProfile): void {
+    if (area !== "notes" || before === after) {
+      return
+    }
+    const beforeSection = sectionContentOrUndefined(before, profile, PROJECT_NOTES_RUNTIME_CONTEXT_SECTION)
+    const afterSection = sectionContentOrUndefined(after, profile, PROJECT_NOTES_RUNTIME_CONTEXT_SECTION)
+    if (beforeSection !== afterSection) {
+      throw new SocratesError("project_docs_runtime_context_protected", "runtime_context is system-owned and cannot be changed by project_docs.", {
+        recoverable: true,
+        details: { area, sectionId: PROJECT_NOTES_RUNTIME_CONTEXT_SECTION },
+      })
     }
   }
 
@@ -338,13 +485,76 @@ export class MemoryStore extends StoreBase {
     const notesPath = projectDocPath(workspacePath, "notes")
     const content = fs.readFileSync(notesPath, "utf8")
     const section = formatProjectStateLedgerSection(input)
-    fs.writeFileSync(notesPath, replaceStateLedgerSection(content, section))
+    const runtime = currentRuntimeTime()
+    const next = replaceStateLedgerSection(content, section)
+    fs.writeFileSync(
+      notesPath,
+      stampMemoryDocFrontmatter(next, {
+        updatedAt: runtime.currentDateTime,
+        updatedBy: "system",
+        lastEditedSection: "state_ledger",
+      }),
+    )
+    this.indexMemoryDocFile(notesPath, projectDocProfile(projectId, "notes"))
   }
 
   runRepoDocsTool(projectId: string, workspacePath: string, input: RepoDocsToolInput): RepoDocsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
+    const runtime = currentRuntimeTime()
     const docsRoot = repoDocsRoot(workspacePath)
     const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
+    if (input.operation === "read_index") {
+      const names = input.path ? [input.path] : [...REPO_DOC_NAMES]
+      const indexes = names.map((name) => this.indexMemoryDocFile(repoDocPath(docsRoot, name), repoDocProfile(projectId, name)))
+      const serialized = indexes.map(renderMemoryDocIndex).join("\n\n")
+      return {
+        operation: "read_index",
+        ...(input.path ? { path: `.socrates/repo_docs/${input.path}` } : { paths: names.map((name) => `.socrates/repo_docs/${name}`) }),
+        ...(input.path ? { index: indexes[0] } : { indexes }),
+        content: truncate(serialized, charLimit).text,
+        runtime,
+        truncation: truncationFor(serialized, charLimit),
+      }
+    }
+    if (input.operation === "read_section") {
+      const name = input.path as (typeof REPO_DOC_NAMES)[number]
+      const profile = repoDocProfile(projectId, name)
+      const index = this.indexMemoryDocFile(repoDocPath(docsRoot, name), profile)
+      const section = findMemoryDocSection(index, input.sectionId as string)
+      const clipped = truncate(section.content, charLimit)
+      return {
+        operation: "read_section",
+        path: `.socrates/repo_docs/${name}`,
+        content: clipped.text,
+        section,
+        index,
+        runtime,
+        truncation: truncationFor(section.content, charLimit),
+        ...(clipped.truncated ? { warnings: [`Section ${section.sectionId} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
+      }
+    }
+    if (input.operation === "patch_section") {
+      const name = input.path as (typeof REPO_DOC_NAMES)[number]
+      const absolutePath = repoDocPath(docsRoot, name)
+      const content = fs.readFileSync(absolutePath, "utf8")
+      const profile = repoDocProfile(projectId, name)
+      const sectionId = input.sectionId as string
+      const patched = patchMemoryDocSection(content, profile, sectionId, input.oldText ?? "", input.newText ?? "", input.replaceAll)
+      const next = patched === content ? patched : stampMemoryDocFrontmatter(patched, { updatedAt: runtime.currentDateTime, updatedBy: "repo_docs", lastEditedSection: sectionId })
+      fs.writeFileSync(absolutePath, next)
+      const index = this.indexMemoryDocFile(absolutePath, profile)
+      const section = findMemoryDocSection(index, sectionId)
+      return {
+        operation: "patch_section",
+        path: `.socrates/repo_docs/${name}`,
+        changed: next !== content,
+        content: truncate(section.content, charLimit).text,
+        section,
+        index,
+        runtime,
+        truncation: truncationFor(section.content, charLimit),
+      }
+    }
     if (input.operation === "read") {
       if (!input.path) {
         const paths = [...REPO_DOC_NAMES].map((name) => `.socrates/repo_docs/${name}`)
@@ -353,6 +563,7 @@ export class MemoryStore extends StoreBase {
           operation: "read",
           paths,
           content,
+          runtime,
           truncation: truncationFor(content, charLimit),
         }
       }
@@ -363,6 +574,7 @@ export class MemoryStore extends StoreBase {
         operation: "read",
         path: `.socrates/repo_docs/${input.path}`,
         content: truncated.text,
+        runtime,
         truncation: truncationFor(content, charLimit),
         ...(truncated.truncated ? { warnings: [`${input.path} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
       }
@@ -384,6 +596,7 @@ export class MemoryStore extends StoreBase {
         operation: "search",
         ...(input.path ? { path: `.socrates/repo_docs/${input.path}` } : { paths: docNames.map((name) => `.socrates/repo_docs/${name}`) }),
         matches,
+        runtime,
         truncation: truncationFor(serialized, charLimit),
         ...(matches.length === DEFAULT_SEARCH_LIMIT ? { warnings: ["repo_docs search hit the match limit; narrow the query or path."] } : {}),
       }
@@ -404,13 +617,17 @@ export class MemoryStore extends StoreBase {
         details: { path: `.socrates/repo_docs/${name}`, occurrences },
       })
     }
-    const next = input.replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
+    const patched = input.replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText)
+    const next = patched === content ? patched : stampMemoryDocFrontmatter(patched, { updatedAt: runtime.currentDateTime, updatedBy: "repo_docs", lastEditedSection: "document" })
     fs.writeFileSync(absolutePath, next)
+    const index = this.indexMemoryDocFile(absolutePath, repoDocProfile(projectId, name))
     return {
       operation: "edit",
       path: `.socrates/repo_docs/${name}`,
       changed: next !== content,
       content: truncate(next, charLimit).text,
+      index,
+      runtime,
       truncation: truncationFor(next, charLimit),
     }
   }
@@ -1091,17 +1308,13 @@ export class MemoryStore extends StoreBase {
     if (input.editMode === "create") {
       return this.createMemoryTarget(input, resolved, context)
     }
-    const patch: MemoryPatchProposal = {
-      oldText: input.oldText ?? "",
-      newText: input.newText,
-      ...(input.rationale ? { rationale: input.rationale } : {}),
-      ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
-      ...(resolved.document ? { document: resolved.document } : {}),
-    }
+    const patch = this.editFilesPatchForInput(input, resolved)
     if (resolved.targetKind === "soul") {
       const result = await this.applySoulPatch(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId ? {
         turnId: context.turnId,
-      } : undefined, patch, context.modelSettings)
+      } : undefined, patch, context.modelSettings, input.sectionId)
+      const index = result.applied ? this.indexMemoryDocFile(resolved.path, editFilesMemoryDocProfile(resolved, this.socratesHome)) : undefined
+      const section = index && input.sectionId ? findMemoryDocSection(index, input.sectionId) : undefined
       return {
         target: input.target,
         ...(input.name ? { name: input.name } : {}),
@@ -1109,11 +1322,14 @@ export class MemoryStore extends StoreBase {
         changed: result.applied,
         actionId: result.actionId,
         status: result.applied ? "applied" : "rejected",
+        ...(section ? { section } : {}),
         ...(result.error ? { warnings: [result.error] } : {}),
         truncation: truncationFor(result.error ?? "", DEFAULT_CHAR_LIMIT),
       }
     }
-    const result = this.applyPrimaryPatch(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, resolved.targetKind, resolved.path, patch)
+    const result = this.applyPrimaryPatch(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, resolved.targetKind, resolved.path, patch, input.sectionId)
+    const index = result.applied ? this.indexMemoryDocFile(resolved.path, editFilesMemoryDocProfile(resolved, this.socratesHome)) : undefined
+    const section = index && input.sectionId ? findMemoryDocSection(index, input.sectionId) : undefined
     return {
       target: input.target,
       ...(input.name ? { name: input.name } : {}),
@@ -1122,8 +1338,44 @@ export class MemoryStore extends StoreBase {
       actionId: result.actionId,
       status: result.applied ? "applied" : "rejected",
       diff: simpleDiff(input.oldText ?? "", input.newText),
+      ...(section ? { section } : {}),
       ...(result.error ? { warnings: [result.error] } : {}),
       truncation: truncationFor(result.error ?? "", DEFAULT_CHAR_LIMIT),
+    }
+  }
+
+  private editFilesPatchForInput(
+    input: EditFilesToolInput,
+    resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+  ): MemoryPatchProposal {
+    if (!input.sectionId) {
+      return {
+        oldText: input.oldText ?? "",
+        newText: input.newText,
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+        ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+        ...(resolved.document ? { document: resolved.document } : {}),
+      }
+    }
+    if (resolved.targetKind === "skills") {
+      throw new SocratesError("edit_files_section_not_supported", "sectionId is not supported for skill targets.", {
+        recoverable: true,
+        details: { target: input.target, name: input.name },
+      })
+    }
+    const profile = editFilesMemoryDocProfile(resolved, this.socratesHome)
+    ensureStructuredMemoryDoc(resolved.path, profile)
+    const current = readIfExists(resolved.path) ?? ""
+    const currentIndex = this.indexMemoryDocFile(resolved.path, profile)
+    const currentSection = findMemoryDocSection(currentIndex, input.sectionId)
+    const next = patchMemoryDocSection(current, profile, input.sectionId, input.oldText ?? "", input.newText, input.replaceAll)
+    const nextSection = findMemoryDocSection(parseMemoryDoc(next, profile), input.sectionId)
+    return {
+      oldText: currentSection.content,
+      newText: nextSection.content,
+      ...(input.rationale ? { rationale: input.rationale } : {}),
+      ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+      ...(resolved.document ? { document: resolved.document } : {}),
     }
   }
 
@@ -1162,9 +1414,21 @@ export class MemoryStore extends StoreBase {
     }
     fs.mkdirSync(path.dirname(resolved.path), { recursive: true })
     fs.writeFileSync(resolved.path, input.newText)
+    let finalContent = readIfExists(resolved.path) ?? input.newText
+    if (resolved.targetKind === "tool_usage") {
+      const profile = editFilesMemoryDocProfile(resolved, this.socratesHome)
+      ensureStructuredMemoryDoc(resolved.path, profile)
+      finalContent = stampMemoryDocFrontmatter(readIfExists(resolved.path) ?? input.newText, {
+        updatedAt: currentRuntimeTime().currentDateTime,
+        updatedBy: "edit_files",
+        lastEditedSection: "document",
+      })
+      fs.writeFileSync(resolved.path, finalContent)
+      this.indexMemoryDocFile(resolved.path, profile)
+    }
     this.handle.db
       .update(memoryAgentActions)
-      .set({ status: "applied", afterHash: hashText(input.newText), appliedAt: nowIso() })
+      .set({ status: "applied", afterHash: hashText(finalContent), appliedAt: nowIso() })
       .where(eq(memoryAgentActions.id, action.actionId))
       .run()
     return {
@@ -1174,8 +1438,8 @@ export class MemoryStore extends StoreBase {
       changed: true,
       actionId: action.actionId,
       status: "applied",
-      diff: simpleDiff("", input.newText),
-      truncation: truncationFor(input.newText, DEFAULT_CHAR_LIMIT),
+      diff: simpleDiff("", finalContent),
+      truncation: truncationFor(finalContent, DEFAULT_CHAR_LIMIT),
     }
   }
 
@@ -1421,6 +1685,67 @@ export class MemoryStore extends StoreBase {
     return path.join(this.socratesHome, "user_profile.md")
   }
 
+  private indexMemoryDocFile(filePath: string, profile: MemoryDocProfile): MemoryDocIndex {
+    const index = parseMemoryDoc(fs.readFileSync(filePath, "utf8"), profile)
+    return this.replaceMemoryDocIndex(index)
+  }
+
+  private replaceMemoryDocIndex(index: MemoryDocIndex): MemoryDocIndex {
+    const indexedAt = nowIso()
+    const projectKey = index.projectId ?? GLOBAL_MEMORY_AGENT_PROJECT_ID
+    const existingRows = this.handle.db
+      .select()
+      .from(memoryDocIndexes)
+      .where(and(eq(memoryDocIndexes.scope, index.scope), eq(memoryDocIndexes.projectId, projectKey), eq(memoryDocIndexes.path, index.path)))
+      .all()
+    for (const row of existingRows) {
+      this.handle.db.delete(memoryDocSections).where(eq(memoryDocSections.docIndexId, row.id)).run()
+      this.handle.db.delete(memoryDocIndexes).where(eq(memoryDocIndexes.id, row.id)).run()
+    }
+    const docIndexId = createId("mdoc")
+    this.handle.db
+      .insert(memoryDocIndexes)
+      .values({
+        id: docIndexId,
+        scope: index.scope,
+        projectId: projectKey,
+        path: index.path,
+        docType: index.docType,
+        ownerTool: index.ownerTool,
+        schemaVersion: index.schemaVersion,
+        contentHash: index.contentHash,
+        sectionCount: index.sections.length,
+        indexedAt,
+        metadataJson: JSON.stringify({ warnings: index.warnings ?? [] }),
+      })
+      .run()
+    for (const section of index.sections) {
+      this.handle.db
+        .insert(memoryDocSections)
+        .values({
+          id: createId("mdsec"),
+          docIndexId,
+          scope: index.scope,
+          projectId: projectKey,
+          path: index.path,
+          docType: index.docType,
+          sectionId: section.sectionId,
+          kind: section.kind,
+          tagsJson: JSON.stringify(section.tags),
+          heading: section.heading,
+          lineStart: section.lineStart,
+          lineEnd: section.lineEnd,
+          contentHash: section.contentHash,
+          summary: section.summary,
+          tokenEstimate: section.tokenEstimate,
+          updatedAt: indexedAt,
+          metadataJson: JSON.stringify({}),
+        })
+        .run()
+    }
+    return index
+  }
+
   private memoryAgentModelSettingsFor(): MemoryAgentModelSettings {
     const settings = this.options.getMemoryAgentGlobalSettings?.()
     const thinkingEnabled = settings?.thinkingEnabled ?? DEFAULT_MEMORY_AGENT_THINKING_ENABLED
@@ -1551,6 +1876,7 @@ export class MemoryStore extends StoreBase {
     targetKind: "tool_usage" | "skills" | "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
+    lastEditedSection?: string,
   ): { applied: boolean; actionId: string; error?: string } {
     const action = this.createMemoryAction(projectId, jobId, turnId, targetKind, targetPath, patch, false)
     const current = readIfExists(targetPath) ?? ""
@@ -1566,8 +1892,16 @@ export class MemoryStore extends StoreBase {
       this.appendEvent({ projectId, ...(turnId ? { turnId } : {}), type: "memory.primary.update_rejected", source: "server", payload: { jobId, actionId: action.actionId, path: targetPath, reason: error } })
       return { applied: false, actionId: action.actionId, error }
     }
-    fs.writeFileSync(targetPath, validation.next)
-    const afterHash = hashText(validation.next)
+    const next =
+      targetKind === "skills"
+        ? validation.next
+        : stampMemoryDocFrontmatter(validation.next, {
+            updatedAt: currentRuntimeTime().currentDateTime,
+            updatedBy: "edit_files",
+            lastEditedSection: lastEditedSection ?? "document",
+          })
+    fs.writeFileSync(targetPath, next)
+    const afterHash = hashText(next)
     this.handle.db.update(memoryAgentActions).set({ status: "applied", afterHash, appliedAt: nowIso() }).where(eq(memoryAgentActions.id, action.actionId)).run()
     this.appendEvent({
       projectId,
@@ -1585,6 +1919,7 @@ export class MemoryStore extends StoreBase {
     latest: { conversationId?: string; sessionId?: string; turnId?: string } | undefined,
     patch: MemoryPatchProposal,
     modelSettings: MemoryAgentModelSettings,
+    lastEditedSection?: string,
   ): Promise<{ applied: boolean; actionId: string; error?: string }> {
     const document = patch.document
     const targetPath = document === "identity" || document === "operating_principles" ? this.soulPath(document) : this.soulPath("identity")
@@ -1649,8 +1984,13 @@ export class MemoryStore extends StoreBase {
       this.rejectMemoryAction(action.actionId, validation.error)
       return { applied: false, actionId: action.actionId, error: validation.error }
     }
-    fs.writeFileSync(targetPath, validation.next)
-    const afterHash = hashText(validation.next)
+    const next = stampMemoryDocFrontmatter(validation.next, {
+      updatedAt: currentRuntimeTime().currentDateTime,
+      updatedBy: "edit_files",
+      lastEditedSection: lastEditedSection ?? "document",
+    })
+    fs.writeFileSync(targetPath, next)
+    const afterHash = hashText(next)
     this.handle.db.update(memoryAgentActions).set({ status: "applied", afterHash, appliedAt: nowIso() }).where(eq(memoryAgentActions.id, action.actionId)).run()
     const notification = this.options.createNotification?.({
       projectId,
@@ -1756,9 +2096,89 @@ export class MemoryStore extends StoreBase {
 const projectDocPath = (workspacePath: string, area: ProjectDocsArea): string =>
   area === "memory" ? path.join(workspacePath, ".socrates", "MEMORY.md") : path.join(workspacePath, ".socrates", "PROJECT_NOTES.md")
 const projectDocRelativePath = (area: ProjectDocsArea): string => (area === "memory" ? ".socrates/MEMORY.md" : ".socrates/PROJECT_NOTES.md")
+const projectDocProfile = (projectId: string, area: ProjectDocsArea): MemoryDocProfile => ({
+  docType: area === "memory" ? "project_memory" : "project_notes",
+  ownerTool: "project_docs",
+  scope: "workspace",
+  path: projectDocRelativePath(area),
+  projectId,
+  indexTags: [area === "memory" ? "memory" : "notes", "project"],
+})
 const repoDocsRoot = (workspacePath: string): string => path.join(workspacePath, ".socrates", "repo_docs")
 
 const repoDocPath = (docsRoot: string, name: (typeof REPO_DOC_NAMES)[number]): string => path.join(docsRoot, name)
+
+const repoDocProfile = (projectId: string, name: string): MemoryDocProfile => ({
+  docType: memoryDocTypeForRepoDoc(name),
+  ownerTool: "repo_docs",
+  scope: "workspace",
+  path: `.socrates/repo_docs/${name}`,
+  projectId,
+  indexTags: ["repo_docs"],
+})
+
+const globalMemoryDocProfile = (_socratesHome: string, target: "identity" | "operating_principles" | "user_profile"): MemoryDocProfile => ({
+  docType: target,
+  ownerTool: target === "user_profile" ? "user_profile" : "soul",
+  scope: "global",
+  path: `${target}.md`,
+  projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+  indexTags: target === "user_profile" ? ["profile"] : ["soul"],
+})
+
+const editFilesMemoryDocProfile = (
+  resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+  socratesHome: string,
+): MemoryDocProfile => {
+  const relativePath = path.relative(socratesHome, resolved.path).replaceAll(path.sep, "/")
+  const target = resolved.targetKind === "soul" ? resolved.document ?? "identity" : resolved.targetKind === "tool_usage" ? "tool_doc" : resolved.targetKind === "user_profile" ? "user_profile" : "skill"
+  return {
+    docType: memoryDocTypeForEditFilesTarget(target),
+    ownerTool: resolved.targetKind === "tool_usage" ? "tool_docs" : resolved.targetKind,
+    scope: "global",
+    path: relativePath,
+    projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+    indexTags: [resolved.targetKind],
+  }
+}
+
+const findMemoryDocSection = (index: MemoryDocIndex, sectionId: string): MemoryDocSection => {
+  const section = index.sections.find((candidate) => candidate.sectionId === sectionId)
+  if (!section) {
+    throw new SocratesError("memory_doc_section_not_found", `Section ${sectionId} was not found in ${index.path}.`, {
+      recoverable: true,
+      details: { path: index.path, sectionId },
+    })
+  }
+  return section
+}
+
+const renderMemoryDocIndex = (index: MemoryDocIndex): string =>
+  [
+    `# Memory Doc Index: ${index.path}`,
+    "",
+    `- scope: ${index.scope}`,
+    `- docType: ${index.docType}`,
+    `- ownerTool: ${index.ownerTool}`,
+    `- schemaVersion: ${index.schemaVersion}`,
+    `- contentHash: ${index.contentHash}`,
+    index.warnings && index.warnings.length > 0 ? `- warnings: ${index.warnings.join("; ")}` : undefined,
+    "",
+    "## Sections",
+    ...index.sections.map((section) => [
+      "",
+      `### ${section.sectionId}`,
+      `- kind: ${section.kind}`,
+      `- heading: ${section.heading}`,
+      `- tags: ${section.tags.join(", ") || "none"}`,
+      `- lines: ${section.lineStart}-${section.lineEnd}`,
+      `- tokenEstimate: ${section.tokenEstimate}`,
+      `- contentHash: ${section.contentHash}`,
+      section.summary ? `- summary: ${section.summary}` : "- summary:",
+    ].join("\n")),
+  ]
+    .filter((line): line is string => typeof line === "string")
+    .join("\n")
 
 const bundledToolUsageDocsDir = (): string => {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url))
@@ -1971,6 +2391,89 @@ const extractStateLedgerSection = (content: string): string | undefined => {
   }
   return content.slice(start, end + STATE_LEDGER_END.length)
 }
+
+const buildProjectNotesRuntimeContext = (workspacePath: string, generatedAt: string): { section: string; signature: string } => {
+  const python = inspectPythonEnvironment(workspacePath)
+  const detectedStack = python.virtualEnvironments.length > 0 || python.dependencyFiles.length > 0 ? ["python"] : []
+  const signaturePayload = {
+    workspaceRoot: python.workspacePath,
+    detectedStack,
+    python: {
+      virtualEnvironments: python.virtualEnvironments,
+      dependencyFiles: python.dependencyFiles,
+      packageManagers: python.packageManagers,
+      suggestedVirtualEnvironment: python.suggestedVirtualEnvironment ?? null,
+    },
+  }
+  const signature = hashText(JSON.stringify(signaturePayload))
+  return {
+    signature,
+    section: [
+      `<!-- socrates:section id="${PROJECT_NOTES_RUNTIME_CONTEXT_SECTION}" kind="system" tags="runtime,generated,system" -->`,
+      "## Runtime Context",
+      "",
+      "system_owned: true",
+      `generated_at: ${generatedAt}`,
+      `signature: ${signature}`,
+      "workspace:",
+      `  root: ${python.workspacePath}`,
+      "detected_stack:",
+      ...yamlList(detectedStack, "  "),
+      "python:",
+      "  virtual_environments:",
+      ...yamlList(python.virtualEnvironments, "    "),
+      "  dependency_files:",
+      ...yamlList(python.dependencyFiles, "    "),
+      "  package_managers:",
+      ...yamlList(python.packageManagers, "    "),
+      ...(python.suggestedVirtualEnvironment ? [`  suggested_virtual_environment: ${python.suggestedVirtualEnvironment}`] : []),
+      "terminal_state: omitted",
+      "notes:",
+      "  - Runtime workspace scan facts are generated by the backend.",
+      "  - Terminal output and live terminal state are intentionally not persisted here.",
+      "<!-- /socrates:section -->",
+    ].join("\n"),
+  }
+}
+
+const upsertRuntimeContextSection = (content: string, section: string, signature: string): string => {
+  const currentSignature = runtimeContextSignature(content)
+  if (currentSignature === signature) {
+    return content
+  }
+  const sectionPattern = new RegExp(
+    `<!--\\s*socrates:section\\s+[^>]*id="${PROJECT_NOTES_RUNTIME_CONTEXT_SECTION}"[^>]*-->[\\s\\S]*?<!--\\s*/socrates:section\\s*-->\\n*`,
+    "m",
+  )
+  if (sectionPattern.test(content)) {
+    return content.replace(sectionPattern, `${section}\n\n`)
+  }
+  const titlePattern = /^(---\n[\s\S]*?\n---\n\n# .+?\n\n|# .+?\n\n)/
+  if (titlePattern.test(content)) {
+    return content.replace(titlePattern, (prefix) => `${prefix}${section}\n\n`)
+  }
+  return `${content.trimEnd()}\n\n${section}\n`
+}
+
+const runtimeContextSignature = (content: string): string | undefined => {
+  const sectionPattern = new RegExp(
+    `<!--\\s*socrates:section\\s+[^>]*id="${PROJECT_NOTES_RUNTIME_CONTEXT_SECTION}"[^>]*-->[\\s\\S]*?<!--\\s*/socrates:section\\s*-->`,
+    "m",
+  )
+  const section = sectionPattern.exec(content)?.[0]
+  return /^signature:\s*(.+?)\s*$/m.exec(section ?? "")?.[1]
+}
+
+const sectionContentOrUndefined = (content: string, profile: MemoryDocProfile, sectionId: string): string | undefined => {
+  try {
+    return parseMemoryDoc(content, profile).sections.find((section) => section.sectionId === sectionId)?.content
+  } catch {
+    return undefined
+  }
+}
+
+const yamlList = (items: string[], indent: string): string[] =>
+  items.length > 0 ? items.map((item) => `${indent}- ${item}`) : [`${indent}- none`]
 
 const formatToolRunLedgerLine = (run: ConversationToolRun): string => {
   const target = toolRunTarget(run)

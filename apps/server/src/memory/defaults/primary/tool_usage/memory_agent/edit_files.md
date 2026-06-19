@@ -16,6 +16,7 @@ Do not rewrite broad memory just because a turn was interesting. Do not edit fro
 | --- | --- | --- | --- |
 | `identity` | Soul identity document | No | No |
 | `operating_principles` | Soul operating principles | No | No |
+| `user_profile` | Durable cross-project user profile and preferences | No | No |
 | `tool_doc` | Global tool usage document | Yes | Yes |
 | `skill` | Global skill `SKILL.md` | Yes | No in scheduled runs |
 
@@ -49,13 +50,36 @@ Do not pass raw paths, relative paths, absolute paths, or path-like names.
 
 | Parameter | Meaning | Use When |
 | --- | --- | --- |
-| `target` | `identity`, `operating_principles`, or `tool_doc` | Select memory surface. |
+| `target` | `identity`, `operating_principles`, `user_profile`, `tool_doc`, or `skill` | Select memory surface. |
 | `name` | Tool doc name | Required for `tool_doc`. |
 | `editMode` | `replace` or `create` | Select patch behavior. |
+| `sectionId` | Structured section id | Use when updating one indexed section. |
 | `oldText` | Exact current text to replace | Required for `replace`. |
 | `newText` | Replacement or new file content | Required for all writes. |
 | `rationale` | Why this update is justified | Use for every non-trivial memory write. |
 | `sourceTurnIds` | Inspected source turn ids | Use when `trace_retrieve` supplied stable turn ids. |
+
+## Structured Section Edits
+
+Global memory docs use YAML frontmatter plus `<!-- socrates:section ... -->` markers. When the intended section is known, pass `sectionId` with the exact `oldText` copied from that section. The backend limits the replacement to that section and rejects zero or ambiguous matches. Do not use `sectionId` with `skill`; Agent Skills have their own `SKILL.md` frontmatter contract and scheduled runs cannot update skills.
+
+Successful structured-doc edits stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Do not manually invent "today" in memory prose when the frontmatter stamp is enough.
+
+Good section edit:
+
+```json
+{
+  "target": "user_profile",
+  "editMode": "replace",
+  "sectionId": "stable_preferences",
+  "oldText": "- Prefer concise answers.",
+  "newText": "- Prefer concise answers unless explicitly asking for a deep plan.",
+  "rationale": "Exact trace evidence showed the stable preference needs a scoped qualifier.",
+  "sourceTurnIds": ["turn_..."]
+}
+```
+
+Use whole-document `oldText` replacement only when no structured section applies.
 
 ## Target Selection
 
