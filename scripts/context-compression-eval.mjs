@@ -20,7 +20,7 @@ const candidates = [
 const requiredFacts = [
   "TRACE-ALPHA-42",
   "OpenRouter thinking off must send reasoning effort none and exclude true",
-  "repo_docs/REPO_RULES.md is the strict source of truth",
+  "context-files/REPO_RULES.md is the strict source of truth",
   "Stop during compaction finishes the snapshot then cancels further work",
   "Recent user and assistant messages remain real role-typed messages",
 ]
@@ -38,7 +38,7 @@ const fixture = {
       id: "msg_1",
       turnId: "turn_1",
       content:
-        "Important exact anchor TRACE-ALPHA-42. repo_docs/REPO_RULES.md is the strict source of truth. We need never-ending conversation quality after 7 compactions.",
+        "Important exact anchor TRACE-ALPHA-42. context-files/REPO_RULES.md is the strict source of truth. We need never-ending conversation quality after 7 compactions.",
     },
     {
       role: "assistant",

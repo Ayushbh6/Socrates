@@ -116,7 +116,7 @@ Good investigated:
 - Turn 56 confirmed .socrates/MEMORY.md is agent-owned and should be restored to placeholder only on explicit request.
 
 Good changed:
-- Added durable guidance that root repo_docs/ is the user's Socrates-specific documentation and must not be treated as bundled workspace repo_docs.
+- Added durable guidance that root context-files/ is the user's Socrates-specific documentation and must not be treated as bundled workspace repo_docs.
 
 Good skipped:
 - Skipped advancing lastProcessedEventSequence because no manifest entries were included under the token cap.
@@ -124,7 +124,7 @@ Good skipped:
 Good source-scoped facts:
 - Historical note from Turn 51: the manifest recorded old compaction thresholds; verify current code before turning them into durable memory.
 - Historical source claim from Turn 57: StepFun was described as a compressor fallback; verify current code before storing it as current model guidance.
-- Socrates: root repo_docs/ is user-specific documentation; bundled defaults live under apps/server/src/memory/defaults/workspace/repo_docs/.
+- Socrates: root context-files/ is user-specific documentation; bundled defaults live under apps/server/src/memory/defaults/workspace/repo_docs/.
 
 Good section discipline:
 - investigated: ["Turn 70 showed a failed provider call while creating a handoff artifact."]
@@ -134,7 +134,7 @@ Good section discipline:
 
 Good anchors:
 - Turn 51: inspect the user's exact Global Memory Agent packing requirement.
-- Turn 63: inspect the repo_docs separation rule and the old six-file root docs requirement.
+- Turn 63: inspect the context-files separation rule and the old six-file root docs requirement.
 - Turn 70: inspect the exact schema-validation error before retrying the memory update.
 - Turn 74: inspect the skipped watermark reason and included sequenceTo value.
 

@@ -111,7 +111,7 @@ Field meaning:
 
 <examples>
 Good constraints:
-- Keep root repo_docs/ as the user's Socrates-specific six-file docs; do not sync it with bundled workspace templates.
+- Keep root context-files/ as the user's Socrates-specific six-file docs; do not sync it with bundled workspace templates.
 - Preserve app-data/ and SQLite runtime memory; ask before destructive resets or clean-slate operations.
 
 Good relevantFiles:
@@ -129,7 +129,7 @@ Good section discipline:
 - nextSteps: ["Clean up exercise10_solution.tex, exercise10_solution.log, and exercise10_solution.aux while preserving exercise10_solution.pdf."]
 
 Good anchors:
-- Turn 12: inspect the user's exact instruction that root repo_docs/ is separate from bundled workspace repo_docs.
+- Turn 12: inspect the user's exact instruction that root context-files/ is separate from bundled workspace repo_docs.
 - Turn 18: inspect the failing pnpm test output and the file list changed by the compressor refactor.
 - Turn 23: inspect the exact Google provider error about system messages only being supported at conversation start.
 - Turn 24: inspect the generated artifact path exercise10_solution.pdf and cleanup requirement.
@@ -171,7 +171,7 @@ Rules:
 - Drop anchors that cannot be tied to a real input turn number.
 
 Examples:
-- Turn 7: inspect the user's exact do-not-touch instruction for root repo_docs/.
+- Turn 7: inspect the user's exact do-not-touch instruction for root context-files/.
 - Turn 11: inspect the command failure and the path it affected.`
 
 export const buildSocratesCompressorUserContent = (input: SocratesCompressorUserPromptInput): string => {

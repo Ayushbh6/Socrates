@@ -1,6 +1,6 @@
 # Socrates Memory
 
-Repo-local handoff memory for Socrates. Treat this file plus `repo_docs/` as the restart surface for future work.
+Repo-local handoff memory for Socrates. Treat this file plus `context-files/` as the maintainer restart surface for future work.
 
 ## Current Direction
 

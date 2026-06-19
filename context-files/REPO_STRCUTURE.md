@@ -93,7 +93,7 @@ Socrates/
         index.ts
         time.ts
 
-  repo_docs/
+  context-files/
     APP_FLOW.md
     DB_STRUCTURE.md
     FRONTEND_BACKEND_CONTRACT.md
@@ -603,7 +603,7 @@ apps/web
 
 ## App Routes
 
-The route structure is defined in `repo_docs/APP_FLOW.md`.
+The route structure is defined in `context-files/APP_FLOW.md`.
 
 Initial routes:
 

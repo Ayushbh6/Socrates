@@ -275,7 +275,7 @@ Generated plotting/data scripts should save charts or artifacts to files and pri
 
 `project_docs` is the main workspace memory surface. Use `area: "memory"` for durable cross-conversation project state: goals, decisions, constraints, blockers, durable user/project preferences, changed workflow facts, and handoff facts. Use `area: "notes"` for live assistant notes: active todos, checked files, partial progress, next commands, restart points, and the protected backend-owned `runtime_context` section. Runtime project docs are structured markdown; prefer `read_index`, then `read_section` or `patch_section`, when a known section is enough. `project_docs` outputs include system runtime date/time metadata, and successful edits stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. After meaningful workspace work, the runtime may require a `project_docs` memory update before final; notes are useful but do not satisfy durable memory.
 
-`repo_docs` owns the runtime `.socrates/repo_docs/*.md` doctrine files. They are structured markdown with stable section ids; prefer `read_index`, `read_section`, and `patch_section` for focused doctrine changes. `repo_docs` outputs include system runtime date/time metadata, and successful edits stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Root `repo_docs/*.md` in this repository are maintainer documentation, not Socrates runtime-owned docs.
+`repo_docs` owns the runtime `.socrates/repo_docs/*.md` doctrine files. They are structured markdown with stable section ids; prefer `read_index`, `read_section`, and `patch_section` for focused doctrine changes. `repo_docs` outputs include system runtime date/time metadata, and successful edits stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Root maintainer documentation lives in `context-files/*.md`, not `.socrates/repo_docs/`, so do not confuse it with Socrates runtime-owned docs.
 
 `tool_docs` retrieves Socrates tool-usage guidance, not conversation history. Use `trace_retrieve` for raw conversation/tool provenance, `tool_docs` for tool behavior, `project_docs` for workspace memory/notes, `repo_docs` for repository doctrine, `current_time` for current date/time, and `user_profile` for durable cross-project user profile facts.
 
@@ -472,7 +472,7 @@ Use `rg` or `rg --files` before creating new abstractions.
 
 ## 21. Documentation Must Track Architecture
 
-If package responsibilities, event contracts, approval policy, or dependency direction changes, update `repo_docs/`.
+If package responsibilities, event contracts, approval policy, or dependency direction changes, update `context-files/`.
 
 Architecture docs are not decorative. They are working agreements.
 
