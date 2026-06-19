@@ -148,6 +148,14 @@ Tool routing:
 
 ## Verification
 
+Latest verified for the root maintainer docs rename to `context-files/` on 2026-06-19:
+
+```text
+git diff --check
+pnpm --filter @socrates/core typecheck
+git status --short --branch
+```
+
 Latest verified for the cache-safe runtime context and structured docs update on 2026-06-19:
 
 ```text
