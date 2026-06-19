@@ -6,6 +6,7 @@ describe("memory agent prompt", () => {
     expect(memoryAgentBasePrompt).toContain("You are the Socrates Global Memory Agent")
     expect(memoryAgentBasePrompt).toContain("manifest of completed turns since your durable events.sequence watermark")
     expect(memoryAgentBasePrompt).toContain("trace_retrieve")
+    expect(memoryAgentBasePrompt).toContain("current_time")
     expect(memoryAgentBasePrompt).toContain("projects: list_projects or list_conversations")
     expect(memoryAgentBasePrompt).toContain("edit_files: the only write tool")
     expect(memoryAgentBasePrompt).toContain("Project-level writing belongs to Socrates")

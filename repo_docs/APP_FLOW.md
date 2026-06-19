@@ -649,6 +649,7 @@ enabled:
   provider usage persistence
   header context estimate from context usage snapshots or model-call request fallback
   backend-injected user/project/instruction prompt context
+  read-only current_time tool for current date, ISO timestamp, and time zone
   workspace tools
   approvals
   shell/file/patch execution
@@ -670,6 +671,7 @@ search
 edit
 apply_patch
 bash
+current_time
 trace_retrieve
 tool_docs
 skills
@@ -697,15 +699,17 @@ The frontend Terminal shell is xterm-backed. It replays bounded persisted PTY ou
 
 Terminal already starts in the active workspace. Commands that begin by changing into guessed absolute paths outside that workspace are rejected. For subfolder commands, Socrates should pass `cwd` instead of prefixing commands with `cd`. Before Terminal commands create files or directories, Socrates should verify the intended parent directory exists and use an explicit relative path or `cwd` so outputs do not accidentally land in the workspace root. Relative workspace navigation and approved external destination paths remain allowed.
 
-The backend also injects compact Python and shell environment hints from the active workspace. Socrates should use existing project-local environments or package-manager workflows when present, use PowerShell-compatible command syntax on Windows, ask before creating a new environment when none is found, and save generated plot artifacts to files instead of blocking on GUI display unless the user explicitly asks.
+Workspace runtime scan facts are not injected into the system prompt. The backend maintains a protected `runtime_context` section in `<workspace>/.socrates/PROJECT_NOTES.md` with generated workspace facts such as detected Python environments, dependency files, and package-manager hints. Socrates should read project notes when workspace runtime facts matter, use existing project-local environments or package-manager workflows when present, ask before creating a new environment when none is found, and save generated plot artifacts to files instead of blocking on GUI display unless the user explicitly asks. Terminal output and live terminal state must not be persisted in this notes section.
+
+Current date/time is not injected into the Socrates system prompt. The read-only `current_time({})` tool returns backend-owned `currentDate`, `currentDateTime`, `timeZone`, and `source: "system"`. Socrates should call it for date-sensitive answers, filenames, logs, or document prose that truly needs today's date. It should not derive today's date from older project documents or previous conversations.
 
 `trace_retrieve` retrieves previous conversation memory only when useful. Normal search prevents historical tool dumps from being carried forward or recursively re-retrieved, while explicit `mode = "audit"` keeps full runtime evidence available through SQLite. `mode = "audit"` with `include: ["shell"]` covers foreground shell commands and detached conversation Terminal sessions/chunks through the same investigative shell evidence path; no extra terminal-specific model input parameters are required. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
 
 `tool_docs` is a read/search interface over global Socrates tool-usage guidance. It is the right place to inspect tool behavior before retrying failed tools or using unfamiliar/edge-case tools.
 
-`project_docs` is the constrained read/search/edit interface for `<workspace>/.socrates/MEMORY.md` and `<workspace>/.socrates/PROJECT_NOTES.md`. Memory is durable cross-conversation project state; notes are active working state such as todos, checked files, next commands, and restart points. After meaningful work, the runtime injects one bounded checkpoint if `project_docs memory` has not been updated. A notes edit alone does not satisfy durable memory closure.
+`project_docs` is the constrained read/search/index/edit interface for `<workspace>/.socrates/MEMORY.md` and `<workspace>/.socrates/PROJECT_NOTES.md`. Memory is durable cross-conversation project state; notes are active working state such as todos, checked files, next commands, restart points, and the protected backend-generated `runtime_context` section. Runtime project docs are structured markdown with stable section ids, so agents should prefer `read_index`, `read_section`, and `patch_section` when the section is known. Tool outputs include system runtime date/time metadata, and successful docs mutations stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Agents cannot patch `runtime_context`; terminal output and live terminal state do not belong there. After meaningful work, the runtime injects one bounded checkpoint if `project_docs memory` has not been updated. A notes edit alone does not satisfy durable memory closure.
 
-`repo_docs` is the constrained read/search/edit interface for durable workspace doctrine under `<workspace>/.socrates/repo_docs/`. Project access creates the four template files `CORE_IDEA.md`, `REPO_NAVIGATION.md`, `REPO_RULES.md`, and `CONTRACTS.md` when missing, without overwriting user-edited files. Socrates should read repo docs before meaningful implementation and update these docs after durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or pitfalls change.
+`repo_docs` is the constrained read/search/index/edit interface for durable workspace doctrine under `<workspace>/.socrates/repo_docs/`. Project access creates the four structured template files `CORE_IDEA.md`, `REPO_NAVIGATION.md`, `REPO_RULES.md`, and `CONTRACTS.md` when missing, without overwriting user-edited files. Tool outputs include system runtime date/time metadata, and successful docs mutations stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Socrates should read repo docs before meaningful implementation and update these docs after durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or pitfalls change.
 
 `user_profile` is a read-only model-visible access path for `~/.Socrates/user_profile.md`, which stores durable user profile and stable cross-project preferences. The main agent cannot write it; the backend memory agent updates it through scoped `edit_files`.
 

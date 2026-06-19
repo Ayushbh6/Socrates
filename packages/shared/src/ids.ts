@@ -41,6 +41,8 @@ export type IdPrefix =
   | "memact"
   | "memchk"
   | "memconf"
+  | "mdoc"
+  | "mdsec"
   | "note"
 
 export const createId = (prefix: IdPrefix): string => `${prefix}_${randomUUID().replaceAll("-", "")}`

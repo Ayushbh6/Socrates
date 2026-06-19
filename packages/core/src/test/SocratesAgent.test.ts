@@ -44,6 +44,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("Product copy says Terminal; tool id is bash")
     expect(requestJson).toContain("tool_docs")
     expect(requestJson).toContain("skills")
+    expect(requestJson).toContain("current_time")
     expect(requestJson).toContain("project_docs")
     expect(requestJson).toContain("Use regex=true for regex syntax")
     expect(requestJson).toContain(".socrates/MEMORY.md")
@@ -64,6 +65,7 @@ describe("SocratesAgent", () => {
       "edit",
       "apply_patch",
       "bash",
+      "current_time",
       "trace_retrieve",
       "tool_docs",
       "skills",
@@ -268,6 +270,12 @@ describe("SocratesAgent", () => {
       edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
+      current_time: async () => ({
+        currentDate: "2026-06-19",
+        currentDateTime: "2026-06-19T06:30:00.000Z",
+        timeZone: "Europe/Vienna",
+        source: "system",
+      }),
       trace_retrieve: async () => ({
         results: [],
         totalMatches: 0,
@@ -347,8 +355,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(14)
-    expect(countRequests[1]?.toolCount).toBe(14)
+    expect(countRequests[0]?.toolCount).toBe(15)
+    expect(countRequests[1]?.toolCount).toBe(15)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -674,7 +682,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(14)
+    expect(countRequests[0]?.toolCount).toBe(15)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -1125,7 +1133,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(14)
+    expect(countRequests[0]?.toolCount).toBe(15)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -1205,6 +1213,12 @@ describe("SocratesAgent", () => {
       },
       apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
+      current_time: async () => ({
+        currentDate: "2026-06-19",
+        currentDateTime: "2026-06-19T06:30:00.000Z",
+        timeZone: "Europe/Vienna",
+        source: "system",
+      }),
       trace_retrieve: async () => ({
         results: [],
         totalMatches: 0,
@@ -1725,11 +1739,6 @@ describe("SocratesAgent", () => {
         projectName: "Socrates",
         projectDescription: "Local-first AI workspace.",
         projectInstructions: "Read repo_docs before answering.",
-        workspaceGuidance: "Python Environment Hints\n- Local virtual environments found:\n  - venv/",
-        workspaceCommandEnvironment:
-          "Workspace Terminal commands run with a sanitized user-workspace environment. NODE_ENV, provider secrets, package-manager omit flags, and CI are not inherited.",
-        semanticRetrievalStatus:
-          'Semantic retrieval: ready.\n- Provider/model: openai/text-embedding-3-small.\n- Use trace_retrieve mode="semantic" for fuzzy recall, mode="combined" when exact search is weak.',
       },
     })) {
       // Exhaust the stream.
@@ -1740,13 +1749,14 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("Name: Socrates")
     expect(request.system).toContain("Local-first AI workspace.")
     expect(request.system).toContain("Read repo_docs before answering.")
-    expect(request.system).toContain("Python Environment Hints")
-    expect(request.system).toContain("Workspace command environment:")
-    expect(request.system).toContain("sanitized user-workspace environment")
-    expect(request.system).toContain("provider secrets")
-    expect(request.system).toContain("Semantic retrieval status:")
-    expect(request.system).toContain("Semantic retrieval: ready.")
-    expect(request.system).toContain("MCP available on demand through mcp_registry")
+    expect(request.system).toContain("If the current date or exact time matters, call current_time")
+    expect(request.system).toContain("Project notes may include a backend-owned `runtime_context` section")
+    expect(request.system).not.toContain("Current date: 2026-06-19")
+    expect(request.system).not.toContain("Current timestamp: 2026-06-19T06:30:00.000Z")
+    expect(request.system).not.toContain("Time zone: Europe/Vienna")
+    expect(request.system).not.toContain("Python Environment Hints")
+    expect(request.system).not.toContain("Workspace command environment:")
+    expect(request.system).not.toContain("Semantic retrieval status:")
     expect(request.system).not.toContain("mcp__playwright__")
     expect(request.system).toContain("exact is lexical")
     expect(request.system).toContain("audit is for tools")
@@ -1824,6 +1834,12 @@ const emptyToolExecutors = (): ToolExecutors => ({
   edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   bash: async () => bashOk(),
+  current_time: async () => ({
+    currentDate: "2026-06-19",
+    currentDateTime: "2026-06-19T06:30:00.000Z",
+    timeZone: "Europe/Vienna",
+    source: "system",
+  }),
   trace_retrieve: async () => ({
     results: [],
     totalMatches: 0,

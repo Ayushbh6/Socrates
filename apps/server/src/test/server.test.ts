@@ -1661,6 +1661,8 @@ describe("database migrations", () => {
         "project_memory_agent_settings",
         "memory_agent_actions",
         "memory_agent_confirmations",
+        "memory_doc_indexes",
+        "memory_doc_sections",
         "notifications",
         "session_state",
         "schema_migrations",
@@ -4066,6 +4068,7 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "skills.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "soul.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "tool_docs.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "current_time.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve_global.md"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "tool_docs.md"))).toBe(true)
@@ -4076,6 +4079,8 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(socratesHome, "projects", project.id))).toBe(false)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "MEMORY.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
+    expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "MEMORY.md"), "utf8")).toContain("socrates_doc: project_memory")
+    expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")).toContain("socrates_doc: project_notes")
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "skills"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "CORE_IDEA.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_NAVIGATION.md"))).toBe(true)
@@ -4126,6 +4131,7 @@ describe("WebSocket API", () => {
       })
       expect(projectDocsGuide.results[0]?.snippet).toContain("PROJECT_NOTES.md")
       expect(projectDocsGuide.results[0]?.snippet).toContain("MEMORY.md")
+      expect(projectDocsGuide.results[0]?.snippet).toContain("runtime_context")
       expect(() =>
         store.runToolDocsTool(project.id, {
           operation: "read",
@@ -4134,7 +4140,26 @@ describe("WebSocket API", () => {
         }),
       ).toThrow(/not visible to this agent/)
       const notesRead = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read", area: "notes" })
-      expect(notesRead.content).toContain("PROJECT_NOTES")
+      expect(notesRead.runtime?.source).toBe("system")
+      expect(notesRead.runtime?.currentDate).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+      expect(notesRead.content).toContain("socrates_doc: project_notes")
+      expect(notesRead.content).toContain("# Project Notes")
+      expect(notesRead.content).toContain("## Runtime Context")
+      expect(notesRead.content).toContain("terminal_state: omitted")
+      const notesIndex = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read_index", area: "notes" })
+      expect(notesIndex.index?.sections.some((section) => section.sectionId === "runtime_context")).toBe(true)
+      expect(notesIndex.index?.sections.some((section) => section.sectionId === "state_ledger")).toBe(true)
+      expect(() =>
+        store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
+          operation: "patch_section",
+          area: "notes",
+          sectionId: "runtime_context",
+          oldText: "terminal_state: omitted",
+          newText: "terminal_state: captured",
+        }),
+      ).toThrow(/system-owned/)
+      const notesSection = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read_section", area: "notes", sectionId: "active_todos" })
+      expect(notesSection.section?.sectionId).toBe("active_todos")
       const notesPatch = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
         operation: "edit",
         area: "notes",
@@ -4142,7 +4167,10 @@ describe("WebSocket API", () => {
         text: "- Memory tool smoke note.",
       })
       expect(notesPatch.changed).toBe(true)
-      expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")).toContain("Memory tool smoke note")
+      const projectNotesAfterPatch = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")
+      expect(projectNotesAfterPatch).toContain("Memory tool smoke note")
+      expect(projectNotesAfterPatch).toContain('updated_by: "project_docs"')
+      expect(projectNotesAfterPatch).toContain('last_edited_section: "document"')
       store.recordProjectStateLedgerTurn(project.id, conversation.id, "synthetic_cancelled_turn", "cancelled", "Cancelled after reading evidence.")
       const notesAfterCancelledLedger = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")
       expect(notesAfterCancelledLedger.match(/<!-- socrates-state-ledger:start -->/g)).toHaveLength(1)
@@ -4150,6 +4178,14 @@ describe("WebSocket API", () => {
       expect(notesAfterCancelledLedger).toContain("Cancelled after reading evidence.")
       const memoryRead = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read", area: "memory" })
       expect(memoryRead.content).toContain("WAKE-LEAN-42")
+      const memorySectionPatch = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
+        operation: "patch_section",
+        area: "memory",
+        sectionId: "handoff",
+        oldText: "- Restart-ready handoff facts belong here.",
+        newText: "- Restart with project_docs.read_index before broad reading.",
+      })
+      expect(memorySectionPatch.section?.content).toContain("project_docs.read_index")
       const memoryReplace = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
         operation: "edit",
         area: "memory",
@@ -4159,8 +4195,19 @@ describe("WebSocket API", () => {
       })
       expect(memoryReplace.changed).toBe(true)
       const repoDocsIndex = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, { operation: "read" })
+      expect(repoDocsIndex.runtime?.source).toBe("system")
       expect(repoDocsIndex.paths).toContain(".socrates/repo_docs/REPO_RULES.md")
       expect(repoDocsIndex.paths).toContain(".socrates/repo_docs/CONTRACTS.md")
+      const repoStructuredIndex = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, { operation: "read_index", path: "REPO_RULES.md" })
+      expect(repoStructuredIndex.index?.sections.some((section) => section.sectionId === "hard_rules")).toBe(true)
+      const repoSectionPatch = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, {
+        operation: "patch_section",
+        path: "REPO_RULES.md",
+        sectionId: "hard_rules",
+        oldText: "- Preserve user work; do not revert unrelated changes.",
+        newText: "- Preserve user work; do not revert unrelated changes unless explicitly instructed.",
+      })
+      expect(repoSectionPatch.section?.content).toContain("explicitly instructed")
       const repoDocsSearch = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, { operation: "search", query: "durable", path: "REPO_RULES.md" })
       expect(repoDocsSearch.matches?.[0]?.path).toBe(".socrates/repo_docs/REPO_RULES.md")
       const repoDocsPatch = store.runRepoDocsTool(project.id, primaryWorkspace.path as string, {
@@ -4170,7 +4217,10 @@ describe("WebSocket API", () => {
         newText: "Keep it short, current, practical, and easy for future agents to trust.",
       })
       expect(repoDocsPatch.changed).toBe(true)
-      expect(fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")).toContain("future agents")
+      const repoRulesAfterPatch = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_RULES.md"), "utf8")
+      expect(repoRulesAfterPatch).toContain("future agents")
+      expect(repoRulesAfterPatch).toContain('updated_by: "repo_docs"')
+      expect(repoRulesAfterPatch).toContain('last_edited_section: "document"')
       expect(() =>
         store.runRepoDocsTool(project.id, primaryWorkspace.path as string, {
           operation: "edit",
@@ -4179,6 +4229,10 @@ describe("WebSocket API", () => {
           newText: "- changed ",
         }),
       ).toThrow(/oldText matched more than once/)
+      const indexedRows = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_doc_indexes WHERE project_id = ?").get(project.id) as { count: number }
+      const sectionRows = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_doc_sections WHERE project_id = ? AND section_id IN ('handoff', 'hard_rules')").get(project.id) as { count: number }
+      expect(indexedRows.count).toBeGreaterThanOrEqual(6)
+      expect(sectionRows.count).toBeGreaterThanOrEqual(2)
     } finally {
       await store.close()
     }
@@ -4244,6 +4298,7 @@ describe("WebSocket API", () => {
               input: {
                 target: "user_profile",
                 editMode: "replace",
+                sectionId: "stable_facts",
                 oldText: "- Unknown until repeated or explicit evidence justifies a durable note.",
                 newText:
                   "- Unknown until repeated or explicit evidence justifies a durable note.\n- Configured memory worker can update narrow user profile notes.",
@@ -4280,6 +4335,8 @@ describe("WebSocket API", () => {
       expect(rejectedSkill.error).toContain("cannot create or update skills")
       const profileAction = handle.sqlite.prepare("SELECT status FROM memory_agent_actions WHERE target_kind = 'user_profile'").get() as { status: string }
       expect(profileAction.status).toBe("applied")
+      const profileSection = handle.sqlite.prepare("SELECT section_id AS sectionId FROM memory_doc_sections WHERE path = 'user_profile.md' AND section_id = 'stable_facts'").get() as { sectionId: string }
+      expect(profileSection.sectionId).toBe("stable_facts")
       expect(modelRequests[0]).toEqual({ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false })
       expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "diary"))).toBe(false)
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
@@ -4877,11 +4934,11 @@ describe("WebSocket API", () => {
       expect(request.system).toContain("Name: Context Project")
       expect(request.system).toContain("A test project")
       expect(request.system).toContain("Always answer from the project instructions.")
-      expect(request.system).toContain("Workspace Terminal commands run with a sanitized user-workspace environment.")
-      expect(request.system).toContain("NODE_ENV")
-      expect(request.system).toContain("CI are not inherited")
-      expect(request.system).toContain("Semantic retrieval: not configured.")
-      expect(request.system).toContain("Do not claim semantic retrieval was used.")
+      expect(request.system).not.toContain("Workspace Terminal commands run with a sanitized user-workspace environment.")
+      expect(request.system).not.toContain("Semantic retrieval: not configured.")
+      expect(request.system).not.toContain("Current date:")
+      expect(request.system).toContain("If the current date or exact time matters, call current_time")
+      expect(request.system).toContain("Project notes may include a backend-owned `runtime_context` section")
       expect(latestUserContent(request.messages)).toBe("Use the context")
       expect(request.messages.some((message) => message.role === "developer" && message.content?.includes("runtime_socrates_docs_preflight"))).toBe(true)
     } finally {
@@ -4889,7 +4946,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("injects ready semantic retrieval status into the agent prompt", async () => {
+  it("keeps semantic retrieval status out of the cache-sensitive system prompt", async () => {
     const dbPath = tempDbPath()
     const requests: unknown[] = []
     const app = await buildTestServer(dbPath, createCapturingAgent(requests))
@@ -4939,10 +4996,10 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "message.completed")
 
       const request = requests[0] as { system: string; messages: Array<{ role?: string; content?: string }> }
-      expect(request.system).toContain("Semantic retrieval: ready")
-      expect(request.system).toContain("Provider/model: ollama/embeddinggemma")
-      expect(request.system).toContain("indexed=")
-      expect(request.system).toContain('mode="combined"')
+      expect(request.system).not.toContain("Semantic retrieval: ready")
+      expect(request.system).not.toContain("Provider/model: ollama/embeddinggemma")
+      expect(request.system).not.toContain("indexed=")
+      expect(request.system).toContain("trace_retrieve")
       expect(latestUserContent(request.messages)).toBe("Use semantic context")
       expect(request.messages.some((message) => message.role === "developer" && message.content?.includes("runtime_socrates_docs_preflight"))).toBe(true)
     } finally {
@@ -5098,9 +5155,13 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "message.completed")
       await waitForEvent(socket, "turn.completed")
 
-      const nextTurnRequest = requests.at(-1) as { system?: string }
-      expect(nextTurnRequest.system).not.toContain(startedTerminal.payload.terminalId)
-      expect(nextTurnRequest.system).toContain("name: server-test")
+      const nextTurnRequest = requests.at(-1) as { system?: string; messages?: Array<{ role?: string; content?: unknown }> }
+      const nextTurnMessages = JSON.stringify(nextTurnRequest.messages ?? [])
+      expect(nextTurnRequest.system ?? "").not.toContain(startedTerminal.payload.terminalId)
+      expect(nextTurnRequest.system ?? "").not.toContain("name: server-test")
+      expect(nextTurnMessages).toContain("<socrates_runtime_context>")
+      expect(nextTurnMessages).toContain("name: server-test")
+      expect(nextTurnMessages).not.toContain(startedTerminal.payload.terminalId)
 
       sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Stop terminal by name"))
       const stoppedByTool = await waitForEvent(socket, "terminal.stopped")

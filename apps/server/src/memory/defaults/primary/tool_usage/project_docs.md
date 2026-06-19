@@ -34,6 +34,8 @@ Use `notes` for active state that helps the next few turns:
 - Temporary hypotheses, next commands, and short checklists.
 - Work-in-progress handoff after a cancelled, stopped, or hard-stopped run.
 
+`notes` may also contain a backend-owned `runtime_context` section. That section is generated from workspace scan facts such as detected Python environments, dependency files, and package-manager hints. It is protected: do not try to edit it, and do not persist terminal output or live terminal state there.
+
 ## Expected Cadence
 
 For nontrivial project work, Socrates should usually read or search `memory` and `notes` early unless the current visible context is clearly enough.
@@ -51,6 +53,39 @@ Skip edits when the turn is trivial, speculative, already represented, or has no
 3. Use `notes` actively while working to sustain important live information across sessions: current todos, checked files, next commands, partial progress, and restart points.
 
 ## Operations
+
+Read the parsed section index before broad reads when you only need a map:
+
+```json
+{
+  "operation": "read_index",
+  "area": "memory"
+}
+```
+
+Read one structured section by id:
+
+```json
+{
+  "operation": "read_section",
+  "area": "memory",
+  "sectionId": "handoff"
+}
+```
+
+Patch one structured section by id:
+
+```json
+{
+  "operation": "patch_section",
+  "area": "memory",
+  "sectionId": "handoff",
+  "oldText": "Old handoff fact.",
+  "newText": "Updated handoff fact."
+}
+```
+
+All `project_docs` outputs may include a `runtime` object with backend-owned `currentDate`, `currentDateTime`, `timeZone`, and `source: "system"`. Use it as the date authority for docs workflows when a date is needed. Successful docs edits also stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`.
 
 ```json
 {
@@ -88,6 +123,9 @@ Skip edits when the turn is trivial, speculative, already represented, or has no
 
 ## Rules
 
+- Prefer `read_index` before broad reads when the goal is orientation.
+- Prefer `read_section` and `patch_section` for known sections. Use full-file `read` or `edit` only when the section index is insufficient.
+- Do not patch or replace the `runtime_context` section. It is system-owned.
 - Read or search before editing unless appending a fresh working note.
 - Use `notes` for short-lived work and active todos.
 - Use `memory` only for curated durable state that should survive across conversations.
@@ -112,15 +150,16 @@ Good tool flow:
 
 ```json
 {
-  "operation": "read",
+  "operation": "read_index",
   "area": "memory"
 }
 ```
 
 ```json
 {
-  "operation": "read",
-  "area": "notes"
+  "operation": "read_section",
+  "area": "notes",
+  "sectionId": "state_ledger"
 }
 ```
 

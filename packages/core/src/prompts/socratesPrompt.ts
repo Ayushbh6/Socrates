@@ -16,7 +16,7 @@ Core rules:
 - Read before existing-file mutations. File freshness is tracked by the runtime; do not put hashes in tool inputs.
 - The runtime blocks edits/patches on existing files that were not read in the current turn, or that changed after the last read. If you receive edit_stale_content, call read on that exact path, then retry once if the edit is still needed.
 - Words are not actions. If you say you will read, search, edit, run, retrieve, or inspect something, call the tool in that turn.
-- Treat runtime context below as current state. It overrides stale assumptions about terminals, semantic retrieval, workspace hints, and MCP availability.
+- Treat current tool outputs and backend runtime notices as current state. They override stale assumptions from older memory, docs, or prior conversations.
 
 Memory and recall model:
 - Recent visible messages are already in context. Older exact conversation/tool evidence lives in trace_retrieve.
@@ -24,6 +24,7 @@ Memory and recall model:
 - .socrates/MEMORY.md is Socrates' live cross-conversation project memory. It carries durable facts, decisions, constraints, user preferences for this project, and handoff state across different chats.
 - .socrates/PROJECT_NOTES.md is Socrates' active assistant notebook. Use it for current todos, near-term next steps, investigation breadcrumbs, temporary findings, and things the user asked Socrates to remember or do soon.
 - Durable repo doctrine lives in four repo_docs files: CORE_IDEA.md, REPO_NAVIGATION.md, REPO_RULES.md, CONTRACTS.md.
+- Project notes may include a backend-owned \`runtime_context\` section with generated workspace scan facts such as environment and dependency hints. Read it through project_docs when workspace runtime facts matter.
 - Global Socrates tool guidance lives under ~/.Socrates/tool_usage, accessed through tool_docs.
 - Reusable workflows and learned patterns live as skills in builtin, global, and project skill roots, accessed through skills.
 - Core identity and operating principles live in soul and are read-only for the main agent.
@@ -37,6 +38,7 @@ Pre-answer retrieval routing:
 - If the user asks about Socrates' identity, principles, or "soul", call soul before answering exact stored content.
 - If the user asks about previous/latest/recent chats, old decisions, exact prior wording, screenshots, or old runtime evidence, use trace_retrieve.
 - If a tool fails or you are unsure how to use a Socrates tool efficiently, call tool_docs before retrying or choosing another tool.
+- If the current date or exact time matters, call current_time. Do not infer today's date from older project docs, prior conversations, or stale state ledgers.
 
 Docs update policy:
 - project_docs memory is curated durable state: current goals, decisions, constraints, handoff facts, verified user preferences for this workspace, and facts that should survive across different chats.
@@ -84,8 +86,9 @@ Tool routing:
 - trace_retrieve: old visible conversation and audit evidence. Call this when prior chats, exact old wording, screenshots, or old tool/runtime evidence matter. Search first with query/scope/mode/conversationTitle/conversationLimit; inspect resultNumber/messageId/toolId for exact text. exact is lexical; semantic/combined require ready embeddings; audit is for tools, shell, files, patches, errors.
 - tool_docs({operation:"read"|"search", area?:"tool_usage", path?, query?, searchMode?, limit?, offset?, charLimit?}): read/search global tool guidance. Call this before retrying failed tools, for unfamiliar tool behavior, or for complex/edge-case usage. Read-only for the main agent.
 - skills({operation:"list"|"search"|"read", scope?:"builtin"|"global"|"project", name?, path?, query?, limit?, offset?, charLimit?}): list/search/read reusable skills. Skills are read-only for the main agent.
-- project_docs({operation:"read"|"search"|"edit", area:"memory"|"notes", editMode?:"append"|"replace", oldText?, newText?, text?}): workspace project MEMORY.md and PROJECT_NOTES.md. Memory is cross-conversation project state; notes are the active assistant notebook/todo surface. Use often on meaningful work.
-- repo_docs({operation:"read"|"search"|"edit", path?, query?, oldText?, newText?}): four workspace repo doctrine files. Use for durable repo rules, navigation, contracts, and current core idea. Revisit regularly during repo work and update when durable repo facts change.
+- current_time({}): current system-owned date, time, and time zone. Use for date-sensitive answers, filenames, logs, and dated memory/docs entries.
+- project_docs({operation:"read"|"search"|"edit"|"read_index"|"read_section"|"patch_section", area:"memory"|"notes", sectionId?, editMode?:"append"|"replace", oldText?, newText?, text?}): workspace project MEMORY.md and PROJECT_NOTES.md. Memory is cross-conversation project state; notes are the active assistant notebook/todo surface. Notes may include a protected backend-generated \`runtime_context\` section. Use often on meaningful work.
+- repo_docs({operation:"read"|"search"|"edit"|"read_index"|"read_section"|"patch_section", path?, sectionId?, query?, oldText?, newText?}): four workspace repo doctrine files. Use for durable repo rules, navigation, contracts, and current core idea. Revisit regularly during repo work and update when durable repo facts change.
 - soul({operation:"read", document:"identity"|"operating_principles"|"both"}): exact Socrates identity/principles. Cannot write.
 - user_profile({operation:"read", charLimit?}): exact durable user profile and stable cross-project preferences. Cannot write.
 - list_project_resources({kind?, limit?}): list uploaded project resources before reading a specific resource.
@@ -130,11 +133,6 @@ export type SocratesPromptContext = {
   projectName: string
   projectDescription?: string
   projectInstructions?: string
-  workspaceGuidance?: string
-  workspaceCommandEnvironment?: string
-  semanticRetrievalStatus?: string
-  mcpRuntimeBrief?: string
-  terminalContext?: string
 }
 
 export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): string => {
@@ -146,23 +144,6 @@ export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): stri
     context.projectDescription === undefined || context.projectDescription.length === 0 ? "Not provided." : context.projectDescription
   const projectInstructions =
     context.projectInstructions === undefined || context.projectInstructions.length === 0 ? "Not provided." : context.projectInstructions
-  const workspaceGuidance =
-    context.workspaceGuidance === undefined || context.workspaceGuidance.length === 0 ? "Not provided." : context.workspaceGuidance
-  const workspaceCommandEnvironment =
-    context.workspaceCommandEnvironment === undefined || context.workspaceCommandEnvironment.length === 0
-      ? "Workspace Terminal commands use a sanitized user-workspace environment. Socrates runtime variables, provider secrets, NODE_ENV, package-manager production/omit flags, and CI are not inherited by default. Explicit command-level env assignments still work."
-      : context.workspaceCommandEnvironment
-  const semanticRetrievalStatus =
-    context.semanticRetrievalStatus === undefined || context.semanticRetrievalStatus.length === 0
-      ? "Semantic retrieval status was not provided. Treat trace_retrieve as lexical/exact only unless tool results explicitly show semantic retrieval is ready."
-      : context.semanticRetrievalStatus
-  const mcpRuntimeBrief =
-    context.mcpRuntimeBrief === undefined || context.mcpRuntimeBrief.length === 0
-      ? "MCP available on demand through mcp_registry. Dynamic MCP tool details are not included in this prompt or initial tool schemas."
-      : context.mcpRuntimeBrief
-  const terminalContext =
-    context.terminalContext === undefined || context.terminalContext.length === 0 ? "No active or recent terminals." : context.terminalContext
-
   return `${socratesBasePrompt}
 
 Current user:
@@ -175,30 +156,5 @@ Current project:
 Project instructions:
 <project_instructions>
 ${projectInstructions}
-</project_instructions>
-
-Workspace guidance:
-<workspace_guidance>
-${workspaceGuidance}
-</workspace_guidance>
-
-Workspace command environment:
-<workspace_command_environment>
-${workspaceCommandEnvironment}
-</workspace_command_environment>
-
-Semantic retrieval status:
-<semantic_retrieval_status>
-${semanticRetrievalStatus}
-</semantic_retrieval_status>
-
-MCP runtime:
-<mcp_runtime>
-${mcpRuntimeBrief}
-</mcp_runtime>
-
-Terminal context:
-<terminal_context>
-${terminalContext}
-</terminal_context>`
+</project_instructions>`
 }

@@ -22,6 +22,7 @@ import type {
 } from "@socrates/contracts"
 import type { ToolExecutors } from "@socrates/core"
 import { SocratesError } from "@socrates/shared"
+import { currentRuntimeTime } from "./runtimeContext"
 
 export type MemoryAgentToolCallbacks = {
   traceRetrieve: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
@@ -43,6 +44,7 @@ export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks):
     edit: () => unavailable<EditToolOutput>(),
     apply_patch: () => unavailable<ApplyPatchToolOutput>(),
     bash: () => unavailable<BashToolOutput>(),
+    current_time: () => Promise.resolve(currentRuntimeTime()),
     trace_retrieve: async (input) => tools.traceRetrieve(input),
     projects: async (input) => tools.projects(input),
     tool_docs: async (input) => tools.toolDocs(input),

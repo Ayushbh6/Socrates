@@ -3,6 +3,8 @@ import type {
   ApplyPatchToolOutput,
   BashToolInput,
   BashToolOutput,
+  CurrentTimeToolInput,
+  CurrentTimeToolOutput,
   EditToolInput,
   EditToolOutput,
   ListProjectResourcesToolInput,
@@ -62,6 +64,7 @@ export type ToolExecutors = {
   edit: (input: EditToolInput, context: ToolExecutorContext) => Promise<EditToolOutput>
   apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
+  current_time: (input: CurrentTimeToolInput, context: ToolExecutorContext) => Promise<CurrentTimeToolOutput>
   trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
   tool_docs: (input: ToolDocsToolInput, context: ToolExecutorContext) => Promise<ToolDocsToolOutput>
   skills: (input: SkillsToolInput, context: ToolExecutorContext) => Promise<SkillsToolOutput>

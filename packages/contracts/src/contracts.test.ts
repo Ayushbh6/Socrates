@@ -109,6 +109,8 @@ import {
   agentThinkingDeltaEventSchema,
   bashToolInputSchema,
   bashToolModelInputSchema,
+  currentTimeToolInputSchema,
+  currentTimeToolOutputSchema,
   applyPatchToolInputSchema,
   applyPatchToolModelInputSchema,
   editToolInputSchema,
@@ -1412,11 +1414,22 @@ describe("tool contracts", () => {
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "append", text: "- note" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "memory", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "replace", oldText: "old" }).success).toBe(false)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "read_index", area: "memory" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "read_section", area: "memory", sectionId: "handoff" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "patch_section", area: "memory", sectionId: "handoff", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(projectDocsToolInputSchema.safeParse({ operation: "patch_section", area: "memory", oldText: "old", newText: "new" }).success).toBe(false)
+    expect(currentTimeToolInputSchema.safeParse({}).success).toBe(true)
+    expect(currentTimeToolOutputSchema.safeParse({ currentDate: "2026-06-19", currentDateTime: timestamp, timeZone: "Europe/Vienna", source: "system" }).success).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", sectionId: "stable_preferences", oldText: "old", newText: "new" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "REPO_RULES.md" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "search", query: "contract", path: "CONTRACTS.md" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "edit", path: "CORE_IDEA.md", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "read_index" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "read_section", path: "REPO_RULES.md", sectionId: "hard_rules" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "patch_section", path: "REPO_RULES.md", sectionId: "hard_rules", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(repoDocsToolInputSchema.safeParse({ operation: "patch_section", sectionId: "hard_rules", oldText: "old", newText: "new" }).success).toBe(false)
     expect(repoDocsToolInputSchema.safeParse({ operation: "edit", oldText: "old", newText: "new" }).success).toBe(false)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "../README.md" }).success).toBe(false)
     expect(
@@ -1492,6 +1505,7 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "skill", editMode: "create", newText: "# Missing name\n" }).success).toBe(false)
+    expect(editFilesToolInputSchema.safeParse({ target: "skill", name: "general", editMode: "replace", sectionId: "workflow", oldText: "old", newText: "new" }).success).toBe(false)
     expect(
       editFilesToolOutputSchema.safeParse({
         target: "skill",
@@ -1535,6 +1549,7 @@ describe("tool contracts", () => {
         providerMetadata: { google: { thoughtSignature: "sig_1" } },
       }).success,
     ).toBe(true)
+    expect(normalizedToolCallSchema.safeParse({ toolCallId: "tcall_2", toolName: "current_time", input: {} }).success).toBe(true)
     expect(
       toolExecutionResultSchema.safeParse({
         toolCallId: "tcall_1",

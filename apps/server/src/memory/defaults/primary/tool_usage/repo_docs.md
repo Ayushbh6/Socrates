@@ -37,11 +37,41 @@ Do not write temporary notes here. Temporary investigation state belongs in `pro
 
 ## Common Calls
 
-Read the repo-doc index:
+List repo-doc files:
 
 ```json
 {
   "operation": "read"
+}
+```
+
+Read parsed section indexes:
+
+```json
+{
+  "operation": "read_index"
+}
+```
+
+Read one structured section:
+
+```json
+{
+  "operation": "read_section",
+  "path": "REPO_RULES.md",
+  "sectionId": "hard_rules"
+}
+```
+
+Patch one structured section:
+
+```json
+{
+  "operation": "patch_section",
+  "path": "CONTRACTS.md",
+  "sectionId": "tool_contracts",
+  "oldText": "Old contract text.",
+  "newText": "New contract text."
 }
 ```
 
@@ -74,10 +104,13 @@ Edit one durable rule:
 }
 ```
 
+All `repo_docs` outputs may include a `runtime` object with backend-owned `currentDate`, `currentDateTime`, `timeZone`, and `source: "system"`. Use it as the date authority for repo-doc workflows when a date is needed. Successful repo-doc edits also stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`.
+
 ## Rules
 
 - Use `repo_docs` for durable repo doctrine only.
 - Do not write temporary notes here.
+- Prefer `read_index`, then `read_section` or `patch_section`, when the relevant section is known.
 - Prefer small `oldText`/`newText` replacements with enough context to match once.
 - Do not use generic file edit or apply_patch on repo docs.
 - Update repo docs when architecture, contracts, navigation, workflows, or persistent pitfalls change.
@@ -91,8 +124,9 @@ Good first move:
 
 ```json
 {
-  "operation": "read",
-  "path": "CONTRACTS.md"
+  "operation": "read_section",
+  "path": "CONTRACTS.md",
+  "sectionId": "tool_contracts"
 }
 ```
 
