@@ -1,37 +1,53 @@
+---
+socrates_doc: tool_doc
+schema_version: 1
+owner_tool: tool_docs
+scope: global
+index_tags: [tool_usage]
+---
+
 # skills Usage Guide
 
-`skills` lists, searches, and reads visible skills for this worker.
+<!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
+## Purpose
 
-Scheduled memory runs may read skills for context, but must not create or update skills.
+`skills` lets the Global Memory Agent read reusable workflow guidance.
 
-## Operations
+Skills are read-only background guidance for scheduled memory runs and are not evidence for memory edits.
+<!-- /socrates:section -->
 
-```json
-{
-  "operation": "list",
-  "scope": "global"
-}
-```
+<!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
+## When To Use
 
-```json
-{
-  "operation": "search",
-  "query": "tool usage"
-}
-```
+- A reusable workflow or skill may help interpret a repeated pattern.
+- The manifest suggests a skill candidate that should be reported for human review.
+- You need to understand an existing skill before deciding whether evidence is already represented elsewhere.
+- Do not use skills as proof of user behavior or current project state.
+<!-- /socrates:section -->
 
-```json
-{
-  "operation": "read",
-  "scope": "global",
-  "name": "general"
-}
-```
+<!-- socrates:section id="inputs" kind="schema" tags="tools" -->
+## Inputs
 
-## Rules
+- `operation: "list"` lists skills.
+- `operation: "search"` searches by name or description.
+- `operation: "read"` reads a specific skill by `name` and optional `scope`.
+- `query`, `limit`, `offset`, and `charLimit` control search and output size.
+<!-- /socrates:section -->
 
-- Use skills as read-only background guidance.
-- Do not treat a skill as evidence for a memory edit.
-- Use `trace_retrieve` for evidence.
-- Do not call `edit_files` to create or update skills during scheduled runs.
-- If a useful reusable workflow should become a skill, mention it in `Skipped` so the user can trigger Memory Center `Skills +`.
+<!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
+## Workflow
+
+1. Search or list skills when reusable guidance may apply.
+2. Read the most specific skill before relying on it.
+3. Use `trace_retrieve` for exact evidence before any memory write.
+4. If a new or changed skill seems useful, report the candidate in `Skipped`; scheduled runs must not edit skills.
+<!-- /socrates:section -->
+
+<!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
+## Failure Handling
+
+- If no skill matches, continue with trace evidence and existing memory surfaces.
+- If search is too broad, narrow by workflow name, tool name, or domain.
+- If a skill is missing or stale, report the candidate improvement in `Skipped`.
+- If an attempted skill write is rejected, do not retry; scheduled runs cannot update skills.
+<!-- /socrates:section -->

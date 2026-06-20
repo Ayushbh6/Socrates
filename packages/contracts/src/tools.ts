@@ -1102,7 +1102,7 @@ export const projectsToolOutputSchema = z
   .strict()
 export type ProjectsToolOutput = z.infer<typeof projectsToolOutputSchema>
 
-export const editFilesTargetSchema = z.enum(["identity", "operating_principles", "user_profile", "tool_doc", "skill"])
+export const editFilesTargetSchema = z.enum(["identity", "operating_principles", "user_profile", "skill"])
 export type EditFilesTarget = z.infer<typeof editFilesTargetSchema>
 
 export const editFilesToolInputSchema = z
@@ -1119,8 +1119,8 @@ export const editFilesToolInputSchema = z
   })
   .strict()
   .superRefine((input, context) => {
-    if ((input.target === "tool_doc" || input.target === "skill") && !input.name) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required for tool_doc and skill targets." })
+    if (input.target === "skill" && !input.name) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required for skill targets." })
     }
     if (input.target === "skill" && input.sectionId) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "sectionId is not supported for skill targets." })
@@ -1192,6 +1192,67 @@ export const projectDocsToolInputSchema = z
     }
   })
 export type ProjectDocsToolInput = z.infer<typeof projectDocsToolInputSchema>
+
+const projectDocsModelBaseShape = {
+  area: projectDocsAreaSchema,
+  charLimit: z.number().int().positive().max(80_000).optional(),
+}
+
+export const projectDocsToolModelInputSchema = z.union([
+  z
+    .object({
+      operation: z.literal("read"),
+      ...projectDocsModelBaseShape,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("search"),
+      ...projectDocsModelBaseShape,
+      query: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("read_index"),
+      ...projectDocsModelBaseShape,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("read_section"),
+      ...projectDocsModelBaseShape,
+      sectionId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("patch_section"),
+      ...projectDocsModelBaseShape,
+      sectionId: z.string().min(1),
+      oldText: z.string(),
+      newText: z.string(),
+      replaceAll: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("edit"),
+      ...projectDocsModelBaseShape,
+      editMode: z.literal("append"),
+      text: z.string(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("edit"),
+      ...projectDocsModelBaseShape,
+      editMode: z.literal("replace"),
+      oldText: z.string(),
+      newText: z.string(),
+    })
+    .strict(),
+])
 
 export const projectDocsToolOutputSchema = z
   .object({
@@ -1267,6 +1328,64 @@ export const repoDocsToolInputSchema = z
     }
   })
 export type RepoDocsToolInput = z.infer<typeof repoDocsToolInputSchema>
+
+const repoDocsModelBaseShape = {
+  charLimit: z.number().int().positive().max(80_000).optional(),
+}
+
+export const repoDocsToolModelInputSchema = z.union([
+  z
+    .object({
+      operation: z.literal("read"),
+      ...repoDocsModelBaseShape,
+      path: repoDocFileSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("search"),
+      ...repoDocsModelBaseShape,
+      path: repoDocFileSchema.optional(),
+      query: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("read_index"),
+      ...repoDocsModelBaseShape,
+      path: repoDocFileSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("read_section"),
+      ...repoDocsModelBaseShape,
+      path: repoDocFileSchema,
+      sectionId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("patch_section"),
+      ...repoDocsModelBaseShape,
+      path: repoDocFileSchema,
+      sectionId: z.string().min(1),
+      oldText: z.string(),
+      newText: z.string(),
+      replaceAll: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("edit"),
+      ...repoDocsModelBaseShape,
+      path: repoDocFileSchema,
+      oldText: z.string(),
+      newText: z.string(),
+      replaceAll: z.boolean().optional(),
+    })
+    .strict(),
+])
 
 export const repoDocsToolOutputSchema = z
   .object({

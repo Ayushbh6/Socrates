@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   availablePort,
+  cleanupRuntimeStorage,
   directDownloadRelease,
   parseArgs,
   parseSha256Sums,
@@ -12,7 +13,9 @@ import {
   releaseDownloadUrl,
   releaseTagFromDownloadLocation,
   runtimeAssetName,
+  runtimeCacheDir,
   runtimeDirFor,
+  runtimeRoot,
   selectAsset,
   verifyChecksum,
   zipExtractCommandsFor,
@@ -108,6 +111,35 @@ describe("Socrates CLI runtime helpers", () => {
 
   it("builds runtime cache paths", () => {
     expect(runtimeDirFor("/tmp/home", "v0.1.0", "win32-x64")).toBe(path.join("/tmp/home", "runtimes", "v0.1.0", "win32-x64"));
+  });
+
+  it("prunes old runtime and cache versions", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-cli-retention-test-"));
+    for (const version of ["v0.1.0", "v0.1.1", "v0.1.2", "v0.1.3"]) {
+      fs.mkdirSync(path.join(runtimeRoot(home), version, "darwin-arm64"), { recursive: true });
+      fs.mkdirSync(path.join(runtimeCacheDir(home), version), { recursive: true });
+      fs.writeFileSync(path.join(runtimeCacheDir(home), version, "SHA256SUMS"), version);
+    }
+    fs.mkdirSync(path.join(runtimeRoot(home), "scratch"), { recursive: true });
+    const times = {
+      "v0.1.0": new Date("2026-01-01T00:00:00.000Z"),
+      "v0.1.1": new Date("2026-01-02T00:00:00.000Z"),
+      "v0.1.2": new Date("2026-01-03T00:00:00.000Z"),
+      "v0.1.3": new Date("2026-01-04T00:00:00.000Z"),
+    };
+    for (const [version, time] of Object.entries(times)) {
+      fs.utimesSync(path.join(runtimeRoot(home), version), time, time);
+      fs.utimesSync(path.join(runtimeCacheDir(home), version), time, time);
+    }
+
+    const result = cleanupRuntimeStorage({ home, currentVersion: "v0.1.3", keepRecent: 2 });
+
+    expect(result.kept).toEqual(["v0.1.2", "v0.1.3"]);
+    expect(fs.existsSync(path.join(runtimeRoot(home), "v0.1.0"))).toBe(false);
+    expect(fs.existsSync(path.join(runtimeCacheDir(home), "v0.1.1"))).toBe(false);
+    expect(fs.existsSync(path.join(runtimeRoot(home), "v0.1.2"))).toBe(true);
+    expect(fs.existsSync(path.join(runtimeCacheDir(home), "v0.1.3"))).toBe(true);
+    expect(fs.existsSync(path.join(runtimeRoot(home), "scratch"))).toBe(true);
   });
 
   it("reserves a local TCP port", async () => {

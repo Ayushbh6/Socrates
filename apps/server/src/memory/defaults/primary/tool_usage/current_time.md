@@ -1,44 +1,51 @@
+---
+socrates_doc: tool_doc
+schema_version: 1
+owner_tool: tool_docs
+scope: global
+index_tags: [tool_usage]
+---
+
 # current_time Usage Guide
 
-`current_time` reads the backend-owned current date, ISO timestamp, and resolved time zone.
+<!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
+## Purpose
 
-It takes no input and is read-only.
+`current_time` returns the backend-owned current date, ISO timestamp, and time zone.
 
+Use it as the date authority when a task depends on today's date, relative dates, filenames, timestamps, or time-sensitive memory/docs wording.
+<!-- /socrates:section -->
+
+<!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
 ## When To Use
 
-Use `current_time` when the current date or exact time affects the answer or artifact:
+- The user asks about today, yesterday, tomorrow, this week, deadlines, recency, or date-sensitive status.
+- You need to stamp or reason about generated notes, filenames, or reports.
+- Prior context includes dates that may be stale or from another time zone.
+- A docs or memory update needs a human-readable date and the backend frontmatter stamp is not enough.
+<!-- /socrates:section -->
 
-- Date-sensitive final answers.
-- Dated filenames, logs, changelog entries, or release notes.
-- Memory, project notes, or repo docs prose that truly needs today's date.
-- Any situation where older docs or prior conversation state might contain a stale date.
+<!-- socrates:section id="inputs" kind="schema" tags="tools" -->
+## Inputs
 
-## Correct Flow
+- No input arguments are required.
+- The output includes `currentDate`, `currentDateTime`, `timeZone`, and `source: "system"`.
+- Treat the output as authoritative over model memory or old conversation context.
+<!-- /socrates:section -->
 
-Call with an empty object:
+<!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
+## Workflow
 
-```json
-{}
-```
+1. Call `current_time` before making a date-sensitive claim.
+2. Use `currentDate` for plain dates and `currentDateTime` for precise timestamps.
+3. Mention the date explicitly when correcting user confusion around relative dates.
+4. Prefer backend-owned docs frontmatter stamps over manually writing dates into prose when a visible date is not necessary.
+<!-- /socrates:section -->
 
-Expected output shape:
-
-```json
-{
-  "currentDate": "2026-06-19",
-  "currentDateTime": "2026-06-19T09:30:00.000Z",
-  "timeZone": "Europe/Vienna",
-  "source": "system"
-}
-```
-
-## Rules
-
-- Do not infer today's date from project docs, repo docs, state ledgers, filenames, or previous conversations.
-- Do not ask the user for the current date/time when this tool is available.
-- Do not use `current_time` when no date/time fact is needed.
-- Prefer backend-owned docs frontmatter stamps over manually writing dates into docs prose when a human-readable date is not necessary.
-
+<!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
 ## Failure Handling
 
-If `current_time` fails, avoid making date-sensitive claims. Say the current date/time tool failed and proceed only with non-date-sensitive work.
+- If `current_time` is unavailable, avoid precise relative-date claims and say the date could not be verified.
+- If a prior note conflicts with `current_time`, use `current_time` and state the concrete date.
+- If a memory/doc edit only needs backend metadata, do not duplicate the same timestamp in prose.
+<!-- /socrates:section -->

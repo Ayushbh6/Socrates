@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 
 const defaultRepo = "Ayushbh6/Socrates";
 const host = "127.0.0.1";
+const defaultRuntimeVersionsToKeep = 2;
 
 export const defaultSocratesHome = () => path.join(os.homedir(), ".Socrates");
 
@@ -147,6 +148,7 @@ export const ensureRuntime = async ({ home, platformArch, version, reset = false
   const launcher = path.join(runtimeDir, "launcher.mjs");
 
   if (!reset && fs.existsSync(launcher)) {
+    cleanupRuntimeStorage({ home, currentVersion: resolvedVersion, log });
     return { version: resolvedVersion, runtimeDir };
   }
 
@@ -174,7 +176,31 @@ export const ensureRuntime = async ({ home, platformArch, version, reset = false
   if (!fs.existsSync(launcher)) {
     throw new Error(`Runtime archive did not contain launcher.mjs.`);
   }
+  cleanupRuntimeStorage({ home, currentVersion: resolvedVersion, log });
   return { version: resolvedVersion, runtimeDir };
+};
+
+export const cleanupRuntimeStorage = ({ home, currentVersion, keepRecent = defaultRuntimeVersionsToKeep, log = () => undefined }) => {
+  const keepCount = Math.max(1, Number.isFinite(keepRecent) ? Math.floor(keepRecent) : defaultRuntimeVersionsToKeep);
+  const versions = runtimeStorageVersions(home);
+  const sorted = versions
+    .filter((entry) => entry.name !== currentVersion)
+    .sort((left, right) => right.modifiedAt - left.modifiedAt || right.name.localeCompare(left.name));
+  const keep = new Set([currentVersion, ...sorted.slice(0, Math.max(0, keepCount - 1)).map((entry) => entry.name)]);
+  const removed = [];
+  for (const root of [runtimeRoot(home), runtimeCacheDir(home)]) {
+    if (!fs.existsSync(root)) continue;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !isRuntimeVersionTag(entry.name) || keep.has(entry.name)) continue;
+      const target = path.join(root, entry.name);
+      fs.rmSync(target, { recursive: true, force: true });
+      removed.push(target);
+    }
+  }
+  if (removed.length > 0) {
+    log(`Removed old Socrates runtime/cache versions: ${Array.from(new Set(removed.map((item) => path.basename(item)))).sort().join(", ")}`);
+  }
+  return { kept: Array.from(keep).sort(), removed };
 };
 
 export const runRuntime = ({ runtimeDir, socratesHome, backendPort, webPort, nodePath, onReady }) =>
@@ -247,6 +273,26 @@ export const selectAsset = (assets, name) => {
   }
   return asset;
 };
+
+const runtimeStorageVersions = (home) => {
+  const byName = new Map();
+  for (const root of [runtimeRoot(home), runtimeCacheDir(home)]) {
+    if (!fs.existsSync(root)) continue;
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !isRuntimeVersionTag(entry.name)) continue;
+      const fullPath = path.join(root, entry.name);
+      const modifiedAt = fs.statSync(fullPath).mtimeMs;
+      const existing = byName.get(entry.name);
+      byName.set(entry.name, {
+        name: entry.name,
+        modifiedAt: Math.max(existing?.modifiedAt ?? 0, modifiedAt),
+      });
+    }
+  }
+  return Array.from(byName.values());
+};
+
+const isRuntimeVersionTag = (value) => /^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(value);
 
 const fetchRelease = async (version) => {
   const repo = process.env.SOCRATES_RELEASE_REPO ?? defaultRepo;

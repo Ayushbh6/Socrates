@@ -21,13 +21,15 @@ import type {
   SkillSummary,
   User,
 } from "@socrates/contracts"
-import { clientCommandSchema, serverEventSchema } from "@socrates/contracts"
+import { clientCommandSchema, memoryDocRequiredSections, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
 import type { EmbeddingProvider, ModelProvider, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
 import { SocratesStore } from "../services/store"
+import { parseMemoryDoc } from "../services/store/memoryDocParser"
+import { ToolDocsStore } from "../services/store/toolDocsStore"
 
 type TestServer = Awaited<ReturnType<typeof buildServer>>
 
@@ -43,6 +45,25 @@ const tempDbPath = (): string => {
 }
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
+
+const expectStructuredToolDoc = (socratesHome: string, relativePath: string): string => {
+  const filePath = path.join(socratesHome, "tool_usage", relativePath)
+  const content = fs.readFileSync(filePath, "utf8")
+  const index = parseMemoryDoc(content, {
+    docType: "tool_doc",
+    ownerTool: "tool_docs",
+    scope: "global",
+    path: `tool_usage/${relativePath.replaceAll(path.sep, "/")}`,
+    projectId: "global",
+    indexTags: ["tool_usage"],
+  })
+  expect(index.warnings, relativePath).toBeUndefined()
+  expect(index.sections.map((section) => section.sectionId), relativePath).toEqual(memoryDocRequiredSections.tool_doc)
+  expect(content, relativePath).not.toContain("Legacy Content")
+  expect(content, relativePath).not.toContain("legacy_content")
+  expect(content, relativePath).not.toContain("What this tool guidance is for")
+  return content
+}
 
 const validServerChatCompaction = (overrides: Partial<ChatCompaction> = {}): ChatCompaction => ({
   schemaVersion: 1,
@@ -4037,6 +4058,34 @@ describe("WebSocket API", () => {
     const requests: unknown[] = []
     const dbPath = tempDbPath()
     const socratesHome = tempDir()
+    const scaffoldedToolDoc = [
+      "---",
+      "socrates_doc: tool_doc",
+      "schema_version: 1",
+      "owner_tool: tool_docs",
+      "scope: global",
+      "index_tags: [tool_usage]",
+      "---",
+      "",
+      "# read search Usage Guide",
+      "",
+      '<!-- socrates:section id="purpose" kind="purpose" tags="tools" -->',
+      "## Purpose",
+      "",
+      "- What this tool guidance is for.",
+      "<!-- /socrates:section -->",
+      "",
+      '<!-- socrates:section id="legacy_content" kind="legacy" tags="migration" -->',
+      "## Legacy Content",
+      "",
+      "# read_search Usage Guide",
+      "",
+      "Use `search` to find candidate files or lines.",
+      "<!-- /socrates:section -->",
+      "",
+    ].join("\n")
+    fs.mkdirSync(path.join(socratesHome, "tool_usage"), { recursive: true })
+    fs.writeFileSync(path.join(socratesHome, "tool_usage", "read_search.md"), scaffoldedToolDoc)
     const app = await buildTestServer(dbPath, createCapturingAgent(requests), { socratesHome })
     await onboard(app)
     const { project, primaryWorkspace } = await createProject(app)
@@ -4074,6 +4123,11 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "tool_docs.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "skills.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "soul.md"))).toBe(true)
+    const readSearchToolDoc = expectStructuredToolDoc(socratesHome, "read_search.md")
+    expect(readSearchToolDoc).toContain("Use read/search tools to find candidate workspace files")
+    const projectDocsToolDoc = expectStructuredToolDoc(socratesHome, "project_docs.md")
+    expect(projectDocsToolDoc).toContain("`.socrates/MEMORY.md`")
+    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "edit_files.md"))
     expect(fs.existsSync(path.join(socratesHome, "skills"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "useful_patterns"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "projects", project.id))).toBe(false)
@@ -4132,10 +4186,32 @@ describe("WebSocket API", () => {
       expect(projectDocsGuide.results[0]?.snippet).toContain("PROJECT_NOTES.md")
       expect(projectDocsGuide.results[0]?.snippet).toContain("MEMORY.md")
       expect(projectDocsGuide.results[0]?.snippet).toContain("runtime_context")
+      const projectDocsPatchGuide = store.runToolDocsTool(project.id, {
+        operation: "search",
+        area: "tool_usage",
+        query: "project_docs patch_section",
+        searchMode: "keyword_all",
+      })
+      expect(projectDocsPatchGuide.totalMatches).toBeGreaterThan(0)
       expect(() =>
         store.runToolDocsTool(project.id, {
           operation: "read",
           path: "tool_usage/memory_agent/edit_files.md",
+          charLimit: 12_000,
+        }),
+      ).toThrow(/not visible to this agent/)
+      const memoryAgentToolDocs = new ToolDocsStore(socratesHome, "memory_agent")
+      const memoryAgentDocs = memoryAgentToolDocs.run({
+        operation: "read",
+        path: "edit_files.md",
+        charLimit: 12_000,
+      })
+      expect(memoryAgentDocs.results[0]?.path).toBe("tool_usage/memory_agent/edit_files.md")
+      expect(memoryAgentDocs.results[0]?.snippet).toContain("Tool docs and skills are read-only")
+      expect(() =>
+        memoryAgentToolDocs.run({
+          operation: "read",
+          path: "tool_usage/project_docs.md",
           charLimit: 12_000,
         }),
       ).toThrow(/not visible to this agent/)
@@ -4175,7 +4251,29 @@ describe("WebSocket API", () => {
       const notesAfterCancelledLedger = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")
       expect(notesAfterCancelledLedger.match(/<!-- socrates-state-ledger:start -->/g)).toHaveLength(1)
       expect(notesAfterCancelledLedger).toContain("Last turn: cancelled")
-      expect(notesAfterCancelledLedger).toContain("Cancelled after reading evidence.")
+      expect(notesAfterCancelledLedger).toContain("Outcome: turn cancelled")
+      expect(notesAfterCancelledLedger).toContain("Docs touched: none")
+      expect(notesAfterCancelledLedger).toContain("Recent failed tool attempts: none")
+      expect(notesAfterCancelledLedger).not.toContain("Assistant/status preview")
+      store.appendEvent({
+        projectId: project.id,
+        conversationId: conversation.id,
+        sessionId: "synthetic_session",
+        turnId: "synthetic_failed_turn",
+        type: "tool.call.failed",
+        source: "tool",
+        payload: {
+          error: {
+            code: "invalid_tool_input",
+            message: "Tool input did not match the schema",
+            details: { formErrors: ["patch_section requires oldText and newText."] },
+          },
+        },
+      })
+      store.recordProjectStateLedgerTurn(project.id, conversation.id, "synthetic_failed_turn", "failed")
+      const notesAfterFailedLedger = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")
+      expect(notesAfterFailedLedger).toContain("Outcome: turn failed; 1 failed/rejected attempt recorded")
+      expect(notesAfterFailedLedger).toContain("Recent failed tool attempts: unknown_tool invalid_tool_input: patch_section requires oldText and newText.")
       const memoryRead = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read", area: "memory" })
       expect(memoryRead.content).toContain("WAKE-LEAN-42")
       const memorySectionPatch = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
@@ -4238,7 +4336,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("updates global skills and tool usage with the configured memory agent model", async () => {
+  it("rejects scheduled skill and tool-doc writes while applying scoped profile edits", async () => {
     const dbPath = tempDbPath()
     const socratesHome = tempDir()
     const app = await buildTestServer(dbPath)
@@ -4311,7 +4409,7 @@ describe("WebSocket API", () => {
         }
         yield {
           type: "model.answer.delta",
-          text: "## Investigated\nInspected configured memory worker test evidence.\n\n## Changed\nUpdated tool guidance.\n\n## Skipped\nSkill creation is reserved for Memory Center Skills +.\n\n## Blocked\nNone.",
+          text: "## Investigated\nInspected configured memory worker test evidence.\n\n## Changed\nUpdated user profile.\n\n## Skipped\nSkill creation is reserved for Memory Center Skills +. Tool-doc edits are read-only in v1.\n\n## Blocked\nNone.",
         }
         yield { type: "model.completed" }
       },
@@ -4327,12 +4425,20 @@ describe("WebSocket API", () => {
       const usefulPatternFile = path.join(socratesHome, "skills", "general", "SKILL.md")
       const toolUsageFile = path.join(socratesHome, "tool_usage", "read_search.md")
       const userProfileFile = path.join(socratesHome, "user_profile.md")
-      await waitForFileText(toolUsageFile, "Configured memory worker can refine global tool guidance")
       await waitForFileText(userProfileFile, "Configured memory worker can update narrow user profile notes")
+      const toolUsageContent = fs.readFileSync(toolUsageFile, "utf8")
+      expectStructuredToolDoc(socratesHome, "read_search.md")
+      expect(toolUsageContent).not.toContain("Configured memory worker can refine global tool guidance")
+      expect(toolUsageContent).not.toContain("Legacy Content")
+      expect(toolUsageContent).not.toContain("What this tool guidance is for.")
       expect(fs.existsSync(usefulPatternFile)).toBe(false)
       const rejectedSkill = handle.sqlite.prepare("SELECT status, error FROM memory_agent_actions WHERE target_kind = 'skills'").get() as { status: string; error: string }
       expect(rejectedSkill.status).toBe("rejected")
       expect(rejectedSkill.error).toContain("cannot create or update skills")
+      const toolDocActions = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_actions WHERE target_kind = 'tool_usage'").get() as { count: number }
+      expect(toolDocActions.count).toBe(0)
+      const failedToolDocCall = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'tool.call.failed' AND payload_json LIKE '%memory_edit_tool_doc%'").get() as { count: number }
+      expect(failedToolDocCall.count).toBeGreaterThan(0)
       const profileAction = handle.sqlite.prepare("SELECT status FROM memory_agent_actions WHERE target_kind = 'user_profile'").get() as { status: string }
       expect(profileAction.status).toBe("applied")
       const profileSection = handle.sqlite.prepare("SELECT section_id AS sectionId FROM memory_doc_sections WHERE path = 'user_profile.md' AND section_id = 'stable_facts'").get() as { sectionId: string }
@@ -4939,6 +5045,7 @@ describe("WebSocket API", () => {
       expect(request.system).not.toContain("Current date:")
       expect(request.system).toContain("If the current date or exact time matters, call current_time")
       expect(request.system).toContain("Project notes may include a backend-owned `runtime_context` section")
+      expect(request.system).toContain("On the first assistant response in a new conversation")
       expect(latestUserContent(request.messages)).toBe("Use the context")
       expect(request.messages.some((message) => message.role === "developer" && message.content?.includes("runtime_socrates_docs_preflight"))).toBe(true)
     } finally {

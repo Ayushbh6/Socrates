@@ -38,6 +38,7 @@ import type {
   UserProfileToolInput,
   UserProfileToolOutput,
 } from "@socrates/contracts"
+import { memoryDocRequiredSections } from "@socrates/contracts"
 import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
@@ -91,7 +92,8 @@ import {
 } from "./memoryDocParser"
 import { StoreBase } from "./shared"
 import { firstMarkdownLine, ToolDocsStore } from "./toolDocsStore"
-import { inspectPythonEnvironment } from "@socrates/workspace"
+import type { FailedToolEventForLedger } from "./eventStore"
+import { inspectWorkspaceEnvironment } from "@socrates/workspace"
 import { currentRuntimeTime } from "./runtimeContext"
 
 const DEFAULT_CHAR_LIMIT = 20_000
@@ -251,16 +253,7 @@ export class MemoryStore extends StoreBase {
     }
     for (const filePath of listMarkdownFiles(path.join(this.socratesHome, "tool_usage"))) {
       const relativePath = path.relative(this.socratesHome, filePath).replaceAll(path.sep, "/")
-      const profile: MemoryDocProfile = {
-        docType: "tool_doc",
-        ownerTool: "tool_docs",
-        scope: "global",
-        path: relativePath,
-        projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
-        indexTags: ["tool_usage"],
-      }
-      ensureStructuredMemoryDoc(filePath, profile)
-      this.indexMemoryDocFile(filePath, profile)
+      this.indexMemoryDocFile(filePath, globalToolDocProfile(relativePath))
     }
   }
 
@@ -429,7 +422,7 @@ export class MemoryStore extends StoreBase {
     const profile = projectDocProfile(projectId, "notes")
     const content = fs.readFileSync(notesPath, "utf8")
     const context = buildProjectNotesRuntimeContext(workspacePath, generatedAt)
-    const next = upsertRuntimeContextSection(content, context.section, context.signature)
+    const next = upsertRuntimeContextSection(removeAssistantStatusPreviewLines(content), context.section, context.signature)
     if (next === content) {
       return
     }
@@ -474,8 +467,9 @@ export class MemoryStore extends StoreBase {
       conversationTitle?: string
       turnId: string
       status: "completed" | "cancelled" | "failed"
-      assistantPreview?: string
+      userRequest?: string
       toolRuns: ConversationToolRun[]
+      failedToolEvents: FailedToolEventForLedger[]
     },
   ): void {
     if (!workspacePath) {
@@ -486,7 +480,7 @@ export class MemoryStore extends StoreBase {
     const content = fs.readFileSync(notesPath, "utf8")
     const section = formatProjectStateLedgerSection(input)
     const runtime = currentRuntimeTime()
-    const next = replaceStateLedgerSection(content, section)
+    const next = replaceStateLedgerSection(removeAssistantStatusPreviewLines(content), section)
     fs.writeFileSync(
       notesPath,
       stampMemoryDocFrontmatter(next, {
@@ -1021,6 +1015,29 @@ export class MemoryStore extends StoreBase {
           if (event.type.startsWith("tool.call") || event.type.startsWith("approval.")) {
             toolEvents.push(slimMemoryToolEvent(event))
           }
+          if (event.type === "tool.call.failed") {
+            const details = mergeToolErrorDetails(event.error.details, event.toolName)
+            this.appendEvent({
+              ...(latest?.projectId ? { projectId: latest.projectId } : {}),
+              ...(latest?.conversationId ? { conversationId: latest.conversationId } : {}),
+              ...(latest?.sessionId ? { sessionId: latest.sessionId } : {}),
+              ...(latest?.turnId ? { turnId: latest.turnId } : {}),
+              type: "tool.call.failed",
+              source: "tool",
+              payload: {
+                toolCallId: event.toolCallId,
+                ...(event.providerToolCallId ? { providerToolCallId: event.providerToolCallId } : {}),
+                error: {
+                  code: event.error.code,
+                  message: event.error.message,
+                  ...(Object.keys(details).length > 0 ? { details } : {}),
+                  ...(typeof event.error.recoverable === "boolean" ? { recoverable: event.error.recoverable } : {}),
+                },
+                ...(event.modelCallId ? { modelCallId: event.modelCallId } : {}),
+                ...(typeof event.stepIndex === "number" ? { stepIndex: event.stepIndex } : {}),
+              },
+            })
+          }
         },
       })
       const completedAt = nowIso()
@@ -1346,7 +1363,7 @@ export class MemoryStore extends StoreBase {
 
   private editFilesPatchForInput(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
   ): MemoryPatchProposal {
     if (!input.sectionId) {
       return {
@@ -1381,7 +1398,7 @@ export class MemoryStore extends StoreBase {
 
   private createMemoryTarget(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
     context: { jobId: string; turnId?: string },
   ): EditFilesToolOutput {
     const patch: MemoryPatchProposal = {
@@ -1415,17 +1432,6 @@ export class MemoryStore extends StoreBase {
     fs.mkdirSync(path.dirname(resolved.path), { recursive: true })
     fs.writeFileSync(resolved.path, input.newText)
     let finalContent = readIfExists(resolved.path) ?? input.newText
-    if (resolved.targetKind === "tool_usage") {
-      const profile = editFilesMemoryDocProfile(resolved, this.socratesHome)
-      ensureStructuredMemoryDoc(resolved.path, profile)
-      finalContent = stampMemoryDocFrontmatter(readIfExists(resolved.path) ?? input.newText, {
-        updatedAt: currentRuntimeTime().currentDateTime,
-        updatedBy: "edit_files",
-        lastEditedSection: "document",
-      })
-      fs.writeFileSync(resolved.path, finalContent)
-      this.indexMemoryDocFile(resolved.path, profile)
-    }
     this.handle.db
       .update(memoryAgentActions)
       .set({ status: "applied", afterHash: hashText(finalContent), appliedAt: nowIso() })
@@ -1456,25 +1462,12 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" } {
+  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" } {
     if (input.target === "identity" || input.target === "operating_principles") {
       return { path: this.soulPath(input.target), targetKind: "soul", document: input.target }
     }
     if (input.target === "user_profile") {
       return { path: this.userProfilePath(), targetKind: "user_profile" }
-    }
-    if (input.target === "tool_doc") {
-      const rawName = input.name ?? "trace_retrieve"
-      const normalized = rawName.replaceAll("\\", "/").replace(/^tool_usage\//, "").replace(/\.md$/i, "")
-      const safeName =
-        path
-          .basename(normalized)
-          .toLowerCase()
-          .replace(/[^a-z0-9_-]+/g, "_")
-          .replace(/^_+|_+$/g, "")
-          .slice(0, 80) || "trace_retrieve"
-      const fileName = `${safeName}.md`
-      return { path: safeJoin(path.join(this.socratesHome, "tool_usage"), fileName), targetKind: "tool_usage" }
     }
     const skillName = slugSkillName(input.name ?? "general")
     return { path: safeJoin(path.join(this.socratesHome, "skills"), `${skillName}/SKILL.md`), targetKind: "skills" }
@@ -1873,7 +1866,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "tool_usage" | "skills" | "user_profile",
+    targetKind: "skills" | "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
     lastEditedSection?: string,
@@ -2024,7 +2017,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "tool_usage" | "skills" | "soul" | "user_profile",
+    targetKind: "skills" | "soul" | "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
     requiresConfirmation: boolean,
@@ -2127,14 +2120,14 @@ const globalMemoryDocProfile = (_socratesHome: string, target: "identity" | "ope
 })
 
 const editFilesMemoryDocProfile = (
-  resolved: { path: string; targetKind: "tool_usage" | "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+  resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
   socratesHome: string,
 ): MemoryDocProfile => {
   const relativePath = path.relative(socratesHome, resolved.path).replaceAll(path.sep, "/")
-  const target = resolved.targetKind === "soul" ? resolved.document ?? "identity" : resolved.targetKind === "tool_usage" ? "tool_doc" : resolved.targetKind === "user_profile" ? "user_profile" : "skill"
+  const target = resolved.targetKind === "soul" ? resolved.document ?? "identity" : resolved.targetKind === "user_profile" ? "user_profile" : "skill"
   return {
     docType: memoryDocTypeForEditFilesTarget(target),
-    ownerTool: resolved.targetKind === "tool_usage" ? "tool_docs" : resolved.targetKind,
+    ownerTool: resolved.targetKind,
     scope: "global",
     path: relativePath,
     projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
@@ -2242,7 +2235,7 @@ const ensureBundledToolUsageDocs = (targetDir: string): void => {
     const targetPath = path.join(targetDir, name)
     const content = fs.readFileSync(sourcePath, "utf8")
     fs.mkdirSync(path.dirname(targetPath), { recursive: true })
-    if (!fs.existsSync(targetPath) || isLegacyToolUsageSeed(name, fs.readFileSync(targetPath, "utf8"))) {
+    if (!fs.existsSync(targetPath) || shouldRefreshBundledToolUsageDoc(name, fs.readFileSync(targetPath, "utf8"))) {
       fs.writeFileSync(targetPath, content)
     }
   }
@@ -2347,13 +2340,17 @@ const formatProjectStateLedgerSection = (input: {
   conversationTitle?: string
   turnId: string
   status: "completed" | "cancelled" | "failed"
-  assistantPreview?: string
+  userRequest?: string
   toolRuns: ConversationToolRun[]
+  failedToolEvents: FailedToolEventForLedger[]
 }): string => {
   const tools = input.toolRuns.slice(-12).map(formatToolRunLedgerLine)
   const files = Array.from(new Set(input.toolRuns.flatMap((run) => run.fileOperations?.map((file) => `${file.operation} ${file.path}`) ?? []))).slice(0, 12)
   const commands = input.toolRuns.flatMap((run) => run.shell?.command ? [truncateInline(run.shell.command, 180)] : []).slice(-6)
-  const assistantPreview = input.assistantPreview?.trim()
+  const failedTools = input.failedToolEvents.slice(-8).map(formatFailedToolEventLedgerLine)
+  const docs = summarizeLedgerDocs(input.toolRuns)
+  const outcome = summarizeLedgerOutcome(input.status, input.toolRuns, input.failedToolEvents)
+  const userRequest = input.userRequest?.trim()
   return [
     STATE_LEDGER_START,
     "## Socrates State Ledger",
@@ -2362,10 +2359,13 @@ const formatProjectStateLedgerSection = (input: {
     "",
     `- Updated: ${nowIso()}`,
     `- Last turn: ${input.status}${input.conversationTitle ? ` in "${input.conversationTitle}"` : ""} (${input.turnId})`,
+    userRequest ? `- Last user request: ${truncateInline(userRequest, 220)}` : undefined,
+    `- Outcome: ${outcome}`,
+    `- Docs touched: ${docs}`,
     tools.length > 0 ? `- Recent tools: ${tools.join("; ")}` : "- Recent tools: none",
+    failedTools.length > 0 ? `- Recent failed tool attempts: ${failedTools.join("; ")}` : "- Recent failed tool attempts: none",
     files.length > 0 ? `- Files touched: ${files.join("; ")}` : "- Files touched: none",
     commands.length > 0 ? `- Commands: ${commands.join("; ")}` : "- Commands: none",
-    assistantPreview ? `- Assistant/status preview: ${truncateInline(assistantPreview, 300)}` : undefined,
     "- Startup hint: read full project notes with project_docs({operation:\"read\", area:\"notes\"}) when more detail is needed.",
     STATE_LEDGER_END,
   ]
@@ -2383,6 +2383,12 @@ const replaceStateLedgerSection = (content: string, section: string): string => 
   return `${content.trimEnd()}\n\n${section}\n`
 }
 
+const removeAssistantStatusPreviewLines = (content: string): string =>
+  content
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith("- Assistant/status preview:"))
+    .join("\n")
+
 const extractStateLedgerSection = (content: string): string | undefined => {
   const start = content.indexOf(STATE_LEDGER_START)
   const end = content.indexOf(STATE_LEDGER_END)
@@ -2393,19 +2399,16 @@ const extractStateLedgerSection = (content: string): string | undefined => {
 }
 
 const buildProjectNotesRuntimeContext = (workspacePath: string, generatedAt: string): { section: string; signature: string } => {
-  const python = inspectPythonEnvironment(workspacePath)
-  const detectedStack = python.virtualEnvironments.length > 0 || python.dependencyFiles.length > 0 ? ["python"] : []
+  const environment = inspectWorkspaceEnvironment(workspacePath)
   const signaturePayload = {
-    workspaceRoot: python.workspacePath,
-    detectedStack,
-    python: {
-      virtualEnvironments: python.virtualEnvironments,
-      dependencyFiles: python.dependencyFiles,
-      packageManagers: python.packageManagers,
-      suggestedVirtualEnvironment: python.suggestedVirtualEnvironment ?? null,
-    },
+    workspaceRoot: environment.workspacePath,
+    detectedStack: environment.detectedStack,
+    javascript: environment.javascript,
+    python: environment.python,
+    rust: environment.rust,
   }
   const signature = hashText(JSON.stringify(signaturePayload))
+  const packageManager = environment.javascript.packageManager ?? "none"
   return {
     signature,
     section: [
@@ -2416,17 +2419,36 @@ const buildProjectNotesRuntimeContext = (workspacePath: string, generatedAt: str
       `generated_at: ${generatedAt}`,
       `signature: ${signature}`,
       "workspace:",
-      `  root: ${python.workspacePath}`,
+      `  root: ${environment.workspacePath}`,
       "detected_stack:",
-      ...yamlList(detectedStack, "  "),
+      ...yamlList(environment.detectedStack, "  "),
+      "node:",
+      `  package_manager: ${packageManager}`,
+      "  package_managers:",
+      ...yamlList(environment.javascript.packageManagers, "    "),
+      "  dependency_files:",
+      ...yamlList(environment.javascript.dependencyFiles, "    "),
+      "  package_files:",
+      ...yamlList(environment.javascript.packageFiles, "    "),
+      "  workspace_packages:",
+      ...yamlList(environment.javascript.packageNames, "    "),
+      "  frameworks:",
+      ...yamlList(environment.javascript.frameworks, "    "),
+      "  root_scripts:",
+      ...yamlList(environment.javascript.scripts, "    "),
       "python:",
       "  virtual_environments:",
-      ...yamlList(python.virtualEnvironments, "    "),
+      ...yamlList(environment.python.virtualEnvironments, "    "),
       "  dependency_files:",
-      ...yamlList(python.dependencyFiles, "    "),
+      ...yamlList(environment.python.dependencyFiles, "    "),
       "  package_managers:",
-      ...yamlList(python.packageManagers, "    "),
-      ...(python.suggestedVirtualEnvironment ? [`  suggested_virtual_environment: ${python.suggestedVirtualEnvironment}`] : []),
+      ...yamlList(environment.python.packageManagers, "    "),
+      ...(environment.python.suggestedVirtualEnvironment ? [`  suggested_virtual_environment: ${environment.python.suggestedVirtualEnvironment}`] : []),
+      "rust:",
+      "  dependency_files:",
+      ...yamlList(environment.rust.dependencyFiles, "    "),
+      "  package_managers:",
+      ...yamlList(environment.rust.packageManagers, "    "),
       "terminal_state: omitted",
       "notes:",
       "  - Runtime workspace scan facts are generated by the backend.",
@@ -2497,6 +2519,45 @@ const toolRunTarget = (run: ConversationToolRun): string => {
   return ""
 }
 
+const formatFailedToolEventLedgerLine = (event: FailedToolEventForLedger): string => {
+  const toolName = event.toolName ?? "unknown_tool"
+  return `${toolName} ${event.code}: ${truncateInline(event.message, 120)}`
+}
+
+const summarizeLedgerOutcome = (
+  status: "completed" | "cancelled" | "failed",
+  toolRuns: ConversationToolRun[],
+  failedToolEvents: FailedToolEventForLedger[],
+): string => {
+  const completedTools = toolRuns.filter((run) => run.status === "completed").length
+  const failedRuns = toolRuns.filter((run) => run.status === "failed" || run.status === "rejected" || run.status === "cancelled").length
+  const failedAttempts = failedRuns + failedToolEvents.length
+  const parts = [`turn ${status}`]
+  if (completedTools > 0) {
+    parts.push(`${completedTools} completed tool run${completedTools === 1 ? "" : "s"}`)
+  }
+  if (failedAttempts > 0) {
+    parts.push(`${failedAttempts} failed/rejected attempt${failedAttempts === 1 ? "" : "s"} recorded`)
+  }
+  return parts.join("; ")
+}
+
+const summarizeLedgerDocs = (toolRuns: ConversationToolRun[]): string => {
+  const docsRuns = toolRuns
+    .filter((run) => run.toolName === "project_docs" || run.toolName === "repo_docs")
+    .filter((run) => run.status === "completed")
+    .flatMap((run) => {
+      const args = run.arguments && typeof run.arguments === "object" && !Array.isArray(run.arguments) ? run.arguments as Record<string, unknown> : {}
+      const operation = typeof args.operation === "string" ? args.operation : undefined
+      if (operation !== "edit" && operation !== "patch_section") {
+        return []
+      }
+      const target = run.toolName === "project_docs" ? (typeof args.area === "string" ? args.area : "project") : (typeof args.path === "string" ? args.path : "repo_docs")
+      return [`${run.toolName} ${target} ${operation}`]
+    })
+  return docsRuns.length > 0 ? Array.from(new Set(docsRuns)).slice(0, 6).join("; ") : "none"
+}
+
 const truncateInline = (text: string, limit: number): string => {
   const compact = text.replace(/\s+/g, " ").trim()
   return compact.length > limit ? `${compact.slice(0, Math.max(0, limit - 3))}...` : compact
@@ -2541,8 +2602,49 @@ const removeLegacyProjectRoot = (legacyRoot: string): void => {
   }
 }
 
+const globalToolDocProfile = (relativePath: string): MemoryDocProfile => ({
+  docType: "tool_doc",
+  ownerTool: "tool_docs",
+  scope: "global",
+  path: relativePath,
+  projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+  indexTags: ["tool_usage"],
+})
+
+const shouldRefreshBundledToolUsageDoc = (name: string, content: string): boolean =>
+  isLegacyToolUsageSeed(name, content) || !isStructuredToolUsageDoc(name, content)
+
+const isStructuredToolUsageDoc = (name: string, content: string): boolean => {
+  try {
+    const index = parseMemoryDoc(content, globalToolDocProfile(`tool_usage/${name}`))
+    if (index.warnings?.some((warning) => warning.startsWith("Missing required section") || warning.toLowerCase().includes("frontmatter"))) {
+      return false
+    }
+    const expected = memoryDocRequiredSections.tool_doc
+    const actual = index.sections.map((section) => section.sectionId)
+    return actual.length === expected.length && expected.every((sectionId, index) => actual[index] === sectionId) && !actual.includes("legacy_content")
+  } catch {
+    return false
+  }
+}
+
 const isLegacyToolUsageSeed = (name: string, content: string): boolean => {
   const trimmed = content.trim()
+  if (
+    trimmed.includes("socrates_doc: tool_doc") &&
+    trimmed.includes("- What this tool guidance is for.") &&
+    trimmed.includes('id="legacy_content"')
+  ) {
+    return true
+  }
+  if (
+    name === "project_docs.md" &&
+    trimmed.includes("# project docs Usage Guide") &&
+    trimmed.includes("- What this tool guidance is for.") &&
+    !trimmed.includes('"operation": "patch_section"')
+  ) {
+    return true
+  }
   if (trimmed.length > 500) {
     return false
   }
@@ -2654,6 +2756,14 @@ const slimMemoryToolEvent = (event: { type: string; toolName?: unknown; summary?
   ...(typeof event.resultPreview === "string" ? { resultPreview: event.resultPreview.slice(0, 500) } : {}),
   ...(event.error && typeof event.error === "object" && "message" in event.error ? { error: String((event.error as { message?: unknown }).message ?? "") } : {}),
 })
+
+const mergeToolErrorDetails = (details: unknown, toolName?: string): Record<string, unknown> => {
+  const merged: Record<string, unknown> = details && typeof details === "object" && !Array.isArray(details) ? { ...(details as Record<string, unknown>) } : details === undefined ? {} : { originalDetails: details }
+  if (toolName) {
+    merged.toolName = toolName
+  }
+  return merged
+}
 
 const memoryFileScope = (file: MemoryAgentFileSummary): SkillScope | "" => ("scope" in file && file.scope ? file.scope : "")
 

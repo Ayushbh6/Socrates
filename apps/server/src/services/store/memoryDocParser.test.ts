@@ -2,9 +2,11 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { describe, expect, it } from "vitest"
+import { memoryDocRequiredSections } from "@socrates/contracts"
 import { buildStructuredMemoryDoc, ensureStructuredMemoryDoc, parseMemoryDoc, patchMemoryDocSection, type MemoryDocProfile } from "./memoryDocParser"
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-memory-doc-test-"))
+const bundledToolUsageDir = path.resolve(process.cwd(), "src/memory/defaults/primary/tool_usage")
 
 const projectProfile: MemoryDocProfile = {
   docType: "project_memory",
@@ -63,4 +65,56 @@ describe("memory doc parser", () => {
     expect(content).toContain("Legacy durable note.")
     expect(index.sections.some((section) => section.sectionId === "legacy_content")).toBe(true)
   })
+
+  it("keeps bundled tool docs in the five-section structured format", () => {
+    const files = listMarkdownFiles(bundledToolUsageDir)
+    expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([
+      "current_time.md",
+      "edit_apply_patch.md",
+      "memory_agent/edit_files.md",
+      "memory_agent/projects.md",
+      "memory_agent/skills.md",
+      "memory_agent/soul.md",
+      "memory_agent/tool_docs.md",
+      "memory_agent/trace_retrieve.md",
+      "project_docs.md",
+      "read_search.md",
+      "repo_docs.md",
+      "skills.md",
+      "soul.md",
+      "terminal.md",
+      "tool_docs.md",
+      "trace_retrieve.md",
+    ])
+
+    for (const filePath of files) {
+      const relativePath = path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")
+      const content = fs.readFileSync(filePath, "utf8")
+      const index = parseMemoryDoc(content, {
+        docType: "tool_doc",
+        ownerTool: "tool_docs",
+        scope: "global",
+        path: `tool_usage/${relativePath}`,
+        projectId: "global",
+        indexTags: ["tool_usage"],
+      })
+      expect(index.warnings, relativePath).toBeUndefined()
+      expect(index.sections.map((section) => section.sectionId), relativePath).toEqual(memoryDocRequiredSections.tool_doc)
+      expect(content, relativePath).not.toContain("Legacy Content")
+      expect(content, relativePath).not.toContain("legacy_content")
+      expect(content, relativePath).not.toContain("What this tool guidance is for")
+      for (const section of index.sections) {
+        expect(section.content.trim(), `${relativePath}:${section.sectionId}`).not.toBe("")
+      }
+    }
+  })
 })
+
+const listMarkdownFiles = (root: string): string[] =>
+  fs.readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const absolutePath = path.join(root, entry.name)
+    if (entry.isDirectory()) {
+      return listMarkdownFiles(absolutePath)
+    }
+    return entry.isFile() && entry.name.endsWith(".md") ? [absolutePath] : []
+  })

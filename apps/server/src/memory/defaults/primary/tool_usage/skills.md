@@ -1,57 +1,55 @@
+---
+socrates_doc: tool_doc
+schema_version: 1
+owner_tool: tool_docs
+scope: global
+index_tags: [tool_usage]
+---
+
 # skills Usage Guide
 
-`skills` lists, searches, and reads reusable Socrates skills.
+<!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
+## Purpose
 
-Skills are read-only. Use them when a reusable workflow, learned pattern, or specialized procedure may apply.
+`skills` lists, searches, and reads reusable Socrates skill instructions.
 
-## Operations
+Skills are procedural guidance for repeatable workflows; they are not evidence for facts about the current repo or prior conversation.
+<!-- /socrates:section -->
 
-List visible skills:
+<!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
+## When To Use
 
-```json
-{
-  "operation": "list"
-}
-```
+- A reusable workflow, specialized procedure, or domain-specific instruction may apply.
+- The user names a skill or asks for a kind of work covered by an installed skill.
+- You need to inspect project, global, or builtin skill guidance before acting.
+- Do not use skills as proof of current code state; inspect files or traces for evidence.
+<!-- /socrates:section -->
 
-Search skills:
+<!-- socrates:section id="inputs" kind="schema" tags="tools" -->
+## Inputs
 
-```json
-{
-  "operation": "search",
-  "query": "frontend testing"
-}
-```
+- `operation: "list"` lists visible skills.
+- `operation: "search"` searches by name or description.
+- `operation: "read"` reads one skill by `name` and optional `scope`.
+- `scope` may be `builtin`, `global`, or `project` when supported by the runtime.
+- Some skills reference relative files; resolve them relative to the skill file first.
+<!-- /socrates:section -->
 
-Read a skill:
+<!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
+## Workflow
 
-```json
-{
-  "operation": "read",
-  "name": "memory-review"
-}
-```
+1. List or search when the relevant skill is unknown.
+2. Read the selected skill before applying it.
+3. Follow the skill's routing instructions and only open referenced files needed for the task.
+4. Combine skill guidance with current repo evidence and higher-priority user/developer instructions.
+5. Mention if an expected skill is missing and continue with the best fallback.
+<!-- /socrates:section -->
 
-Read a safe relative file inside a skill:
+<!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
+## Failure Handling
 
-```json
-{
-  "operation": "read",
-  "name": "memory-review",
-  "path": "references/checklist.md"
-}
-```
-
-## Scopes
-
-- `builtin`: shipped immutable skills.
-- `global`: user-level learned skills.
-- `project`: workspace-specific skills under `.socrates/skills`.
-
-## Rules
-
-- List or search first when unsure which skill applies.
-- Read the selected `SKILL.md` before applying it.
-- Read referenced files only when the skill says they matter.
-- Do not create or edit skills from main chat.
-- Do not use generic file edit or apply_patch on `.socrates/skills/**`.
+- If no skill matches, continue from repo evidence and note the missing reusable guidance if relevant.
+- If multiple skills match, read the most specific one first.
+- If a referenced skill file is missing, state the issue and use the next-best local evidence.
+- If a skill conflicts with explicit user/developer instructions, follow the higher-priority instruction.
+<!-- /socrates:section -->

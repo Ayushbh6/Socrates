@@ -11,6 +11,7 @@ import {
   type MemoryDocScope,
   type MemoryDocSection,
   type MemoryDocType,
+  type EditFilesTarget,
 } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 
@@ -155,13 +156,11 @@ const sectionDefinitions: Record<MemoryDocType, SectionDefinition[]> = {
     { id: "stale_or_rejected_facts", kind: "stale", heading: "Stale Or Rejected Facts", tags: ["user"], body: "- Superseded or rejected profile facts belong here." },
   ],
   tool_doc: [
-    { id: "purpose", kind: "purpose", heading: "Purpose", tags: ["tools"], body: "- What this tool guidance is for." },
-    { id: "when_to_use", kind: "routing", heading: "When To Use", tags: ["tools"], body: "- When to call this tool." },
-    { id: "inputs", kind: "schema", heading: "Inputs", tags: ["tools"], body: "- Important inputs and constraints." },
-    { id: "correct_flow", kind: "workflow", heading: "Correct Flow", tags: ["tools"], body: "- Preferred tool flow." },
-    { id: "failure_handling", kind: "recovery", heading: "Failure Handling", tags: ["tools"], body: "- How to recover from common failures." },
-    { id: "examples", kind: "examples", heading: "Examples", tags: ["tools"], body: "- Examples belong here." },
-    { id: "update_policy", kind: "rules", heading: "Update Policy", tags: ["tools"], body: "- Update when stable tool behavior or recurring misuse changes." },
+    { id: "purpose", kind: "purpose", heading: "Purpose", tags: ["tools"], body: "- Describe what this tool guidance is for." },
+    { id: "when_to_use", kind: "routing", heading: "When To Use", tags: ["tools"], body: "- Describe when to call this tool." },
+    { id: "inputs", kind: "schema", heading: "Inputs", tags: ["tools"], body: "- Describe important inputs and constraints." },
+    { id: "workflow", kind: "workflow", heading: "Workflow", tags: ["tools"], body: "- Describe the preferred tool flow." },
+    { id: "failure_handling", kind: "recovery", heading: "Failure Handling", tags: ["tools"], body: "- Describe how to recover from common failures." },
   ],
   skill: [
     { id: "purpose", kind: "purpose", heading: "Purpose", tags: ["skills"], body: "- What this skill is for." },
@@ -366,12 +365,9 @@ export const memoryDocTypeForRepoDoc = (name: string): MemoryDocType => {
   }
 }
 
-export const memoryDocTypeForEditFilesTarget = (target: string): MemoryDocType => {
+export const memoryDocTypeForEditFilesTarget = (target: EditFilesTarget): MemoryDocType => {
   if (target === "identity" || target === "operating_principles" || target === "user_profile") {
     return memoryDocTypeSchema.parse(target)
-  }
-  if (target === "tool_doc") {
-    return "tool_doc"
   }
   return "skill"
 }

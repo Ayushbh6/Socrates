@@ -1,11 +1,12 @@
-import { projectDocsToolInputSchema, projectDocsToolOutputSchema } from "@socrates/contracts"
+import { projectDocsToolInputSchema, projectDocsToolModelInputSchema, projectDocsToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool } from "./types"
 
 export const projectDocsTool: SocratesTool<typeof projectDocsToolInputSchema._type, typeof projectDocsToolOutputSchema._type> = {
   name: "project_docs",
   description:
-    'Read, search, index, or edit workspace-local project docs under .socrates. area="memory" targets MEMORY.md for durable project state; area="notes" targets PROJECT_NOTES.md for active working notes, the state ledger, and protected backend-owned runtime_context. Outputs include system runtime date/time metadata. Prefer operation="read_index" first, then "read_section" or "patch_section" by sectionId for focused recall and edits. Whole-doc read/search remains available as fallback. Generic edit/apply_patch cannot mutate these files.',
+    'Read, search, index, or edit workspace-local project docs under .socrates. area="memory" targets MEMORY.md; area="notes" targets PROJECT_NOTES.md, the state ledger, and protected backend-owned runtime_context. Prefer operation="read_index" first, then "read_section" or "patch_section" by sectionId. For patch_section, provide sectionId plus exact oldText and newText; do not pass text. For append, use operation="edit", editMode="append", and text. Generic edit/apply_patch cannot mutate these files.',
   inputSchema: projectDocsToolInputSchema,
+  modelInputSchema: projectDocsToolModelInputSchema,
   resultSchema: projectDocsToolOutputSchema,
   permission: "mutate",
   executeLane: "mutation",

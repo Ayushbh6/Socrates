@@ -15,6 +15,7 @@ import {
   inferResourceKind,
   inspectWorkspacePath,
   inspectPythonEnvironment,
+  inspectWorkspaceEnvironment,
   listStoredResourceFiles,
   pickWorkspaceFolder,
   readWorkspacePath,
@@ -1479,6 +1480,48 @@ describe("workspace tools", () => {
     expect(hints.dependencyFiles).toContain("requirements-dev.txt")
     expect(hints.dependencyFiles).toContain("pyproject.toml")
     expect(hints.packageManagers).toContain("pip/venv")
+  })
+
+  it("detects JavaScript workspace stack hints without scanning ignored reference folders", () => {
+    const workspacePath = tempDir()
+    fs.mkdirSync(path.join(workspacePath, "apps", "web"), { recursive: true })
+    fs.mkdirSync(path.join(workspacePath, "apps", "server"), { recursive: true })
+    fs.mkdirSync(path.join(workspacePath, "apps", "desktop", "src-tauri"), { recursive: true })
+    fs.mkdirSync(path.join(workspacePath, "tmp-opencode", "apps", "ignored"), { recursive: true })
+    fs.writeFileSync(
+      path.join(workspacePath, "package.json"),
+      JSON.stringify({
+        name: "demo",
+        packageManager: "pnpm@9.15.1",
+        scripts: { build: "pnpm -r build", typecheck: "pnpm -r typecheck" },
+        devDependencies: { typescript: "^5.0.0", vitest: "^4.0.0" },
+      }),
+    )
+    fs.writeFileSync(path.join(workspacePath, "pnpm-workspace.yaml"), "packages:\n  - apps/*\n")
+    fs.writeFileSync(path.join(workspacePath, "pnpm-lock.yaml"), "")
+    fs.writeFileSync(path.join(workspacePath, "tsconfig.json"), "{}")
+    fs.writeFileSync(path.join(workspacePath, "apps", "web", "next.config.ts"), "export default {}")
+    fs.writeFileSync(
+      path.join(workspacePath, "apps", "web", "package.json"),
+      JSON.stringify({ name: "web", dependencies: { next: "16.0.0", react: "19.0.0", "react-dom": "19.0.0", tailwindcss: "^4.0.0" } }),
+    )
+    fs.writeFileSync(
+      path.join(workspacePath, "apps", "server", "package.json"),
+      JSON.stringify({ name: "server", dependencies: { fastify: "^5.0.0", "drizzle-orm": "^0.45.0", "better-sqlite3": "^12.0.0", zod: "^3.0.0" } }),
+    )
+    fs.writeFileSync(path.join(workspacePath, "apps", "desktop", "package.json"), JSON.stringify({ name: "desktop", devDependencies: { "@tauri-apps/cli": "^2.0.0" } }))
+    fs.writeFileSync(path.join(workspacePath, "apps", "desktop", "src-tauri", "Cargo.toml"), "[package]\nname = \"desktop\"\n")
+    fs.writeFileSync(path.join(workspacePath, "tmp-opencode", "apps", "ignored", "package.json"), JSON.stringify({ name: "ignored" }))
+
+    const hints = inspectWorkspaceEnvironment(workspacePath)
+
+    expect(hints.detectedStack).toEqual(expect.arrayContaining(["nodejs", "typescript", "nextjs", "fastify", "rust", "tauri"]))
+    expect(hints.javascript.packageManager).toBe("pnpm@9.15.1")
+    expect(hints.javascript.packageManagers).toContain("pnpm")
+    expect(hints.javascript.packageFiles).toEqual(expect.arrayContaining(["package.json", "apps/server/package.json", "apps/web/package.json"]))
+    expect(hints.javascript.packageFiles).not.toContain("tmp-opencode/apps/ignored/package.json")
+    expect(hints.javascript.frameworks).toEqual(expect.arrayContaining(["nextjs", "react", "fastify", "drizzle", "sqlite", "tailwind", "zod", "vitest"]))
+    expect(hints.rust.dependencyFiles).toContain("apps/desktop/src-tauri/Cargo.toml")
   })
 
   it("recovers after a timed-out PTY run and classifies obvious interactive commands", async () => {

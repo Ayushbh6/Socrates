@@ -77,7 +77,7 @@ import { AttachmentStore } from "./store/attachmentStore"
 import { ContextCompactionStore } from "./store/contextCompactionStore"
 import { ConversationStore } from "./store/conversationStore"
 import { ErrorStore, type RecordErrorInput } from "./store/errorStore"
-import { EventStore } from "./store/eventStore"
+import { EventStore, type FailedToolEventForLedger } from "./store/eventStore"
 import { EmbeddingStore } from "./store/embeddingStore"
 import { FeedbackStore } from "./store/feedbackStore"
 import { InstructionStore } from "./store/instructionStore"
@@ -265,18 +265,28 @@ export class SocratesStore {
     conversationId: string,
     turnId: string,
     status: "completed" | "cancelled" | "failed",
-    assistantPreview?: string,
+    _assistantPreview?: string,
   ): void {
     try {
       const workspacePath = this.primaryWorkspacePathOrUndefined(projectId)
       const conversation = this.conversations.getConversation(projectId, conversationId).conversation
       const toolRuns = this.tools.getConversationToolRuns(conversationId).filter((run) => run.turnId === turnId)
+      const failedToolEvents: FailedToolEventForLedger[] = this.events.listFailedToolEvents(conversationId, turnId)
+      const userMessage = this.handle.sqlite
+        .prepare(
+          `SELECT m.content AS content
+           FROM turns t
+           LEFT JOIN messages m ON m.id = t.user_message_id
+           WHERE t.id = ?`,
+        )
+        .get(turnId) as { content?: string } | undefined
       this.memory.recordProjectStateLedger(projectId, workspacePath, {
         ...(conversation.title ? { conversationTitle: conversation.title } : {}),
         turnId,
         status,
-        ...(assistantPreview ? { assistantPreview } : {}),
+        ...(userMessage?.content ? { userRequest: userMessage.content } : {}),
         toolRuns,
+        failedToolEvents,
       })
     } catch {
       // State-ledger updates are startup-map hints; they must not break chat turns.

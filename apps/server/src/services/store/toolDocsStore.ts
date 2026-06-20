@@ -190,8 +190,14 @@ export class ToolDocsStore {
       return true
     }
     const normalized = filePath.replaceAll("\\", "/")
-    const isMemoryAgentDoc = normalized.startsWith("tool_usage/memory_agent/")
-    return this.audience === "memory_agent" ? isMemoryAgentDoc : !isMemoryAgentDoc
+    const rootPrefix = "tool_usage/"
+    const memoryAgentPrefix = "tool_usage/memory_agent/"
+    if (this.audience === "memory_agent") {
+      const relative = normalized.startsWith(memoryAgentPrefix) ? normalized.slice(memoryAgentPrefix.length) : ""
+      return Boolean(relative) && !relative.includes("/")
+    }
+    const relative = normalized.startsWith(rootPrefix) ? normalized.slice(rootPrefix.length) : ""
+    return Boolean(relative) && !relative.includes("/")
   }
 }
 

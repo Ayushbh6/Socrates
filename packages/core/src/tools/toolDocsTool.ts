@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const toolDocsTool: SocratesTool<typeof toolDocsToolInputSchema._type, typeof toolDocsToolOutputSchema._type> = {
   name: "tool_docs",
   description:
-    'Read or search global Socrates tool-usage guidance under ~/.Socrates/tool_usage. Call this before retrying a failed tool, when exact tool behavior is uncertain, or before complex/edge-case use of trace_retrieve, Terminal, edit/apply_patch, docs, skills, MCP, or resources. Read-only for the main agent.',
+    'Read or search audience-scoped Socrates tool-usage guidance under ~/.Socrates/tool_usage. Main Socrates sees root tool docs; the memory agent sees tool_usage/memory_agent docs. Call before retrying a failed tool, when exact tool behavior is uncertain, or before complex/edge-case tool use. Read-only for model callers.',
   inputSchema: toolDocsToolInputSchema,
   resultSchema: toolDocsToolOutputSchema,
   permission: "read",

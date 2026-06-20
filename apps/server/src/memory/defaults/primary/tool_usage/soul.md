@@ -1,44 +1,52 @@
+---
+socrates_doc: tool_doc
+schema_version: 1
+owner_tool: tool_docs
+scope: global
+index_tags: [tool_usage]
+---
+
 # soul Usage Guide
 
-`soul` reads Socrates global identity and operating principles.
+<!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
+## Purpose
 
-This tool is read-only. Use it when the answer or behavior depends on durable global identity, tone, collaboration rules, or core operating principles.
+`soul` reads global Socrates identity and operating-principle documents.
 
-## Documents
+Use it for durable behavior guidance, not for project-specific facts or temporary state.
+<!-- /socrates:section -->
 
-| Document | Purpose |
-| --- | --- |
-| `identity` | Stable identity and user-facing role of Socrates. |
-| `operating_principles` | Durable global behavior principles. |
-| `both` | Read both documents when the distinction is unclear. |
+<!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
+## When To Use
 
-## Common Calls
+- The task depends on Socrates identity, global behavior rules, or stable operating principles.
+- A memory-agent or system behavior question needs global guidance.
+- You need to distinguish global user/project preferences from repo-local docs.
+- Do not use soul docs as evidence for current code state.
+<!-- /socrates:section -->
 
-```json
-{
-  "operation": "read",
-  "document": "identity"
-}
-```
+<!-- socrates:section id="inputs" kind="schema" tags="tools" -->
+## Inputs
 
-```json
-{
-  "operation": "read",
-  "document": "operating_principles"
-}
-```
+- `document: "identity"` reads identity guidance.
+- `document: "operating_principles"` reads operating principles.
+- `document: "both"` reads both when the distinction is unclear.
+- `charLimit` can bound output for long documents.
+<!-- /socrates:section -->
 
-```json
-{
-  "operation": "read",
-  "document": "both",
-  "charLimit": 12000
-}
-```
+<!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
+## Workflow
 
-## Rules
+1. Choose the narrowest document that can answer the global-behavior question.
+2. Read soul guidance before changing or interpreting durable global behavior.
+3. Use project docs or repo docs for workspace-specific facts.
+4. Treat runtime/developer/user instructions as higher priority than soul docs.
+<!-- /socrates:section -->
 
-- Use `soul` for global identity and principles, not project-specific facts.
-- Use `project_docs` for workspace memory and notes.
-- Use `repo_docs` for repo doctrine.
-- Socrates cannot edit soul documents.
+<!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
+## Failure Handling
+
+- If the wrong document was read, read `both` or the other document before acting.
+- If output is truncated, re-read with a larger `charLimit`.
+- If soul guidance conflicts with current user instructions, follow the current user instruction and avoid writing a global rule without explicit evidence.
+<!-- /socrates:section -->

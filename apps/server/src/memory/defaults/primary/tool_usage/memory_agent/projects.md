@@ -1,235 +1,53 @@
+---
+socrates_doc: tool_doc
+schema_version: 1
+owner_tool: tool_docs
+scope: global
+index_tags: [tool_usage]
+---
+
 # projects Usage Guide
 
-`projects` gives the Global Memory Agent metadata-only orientation across visible Socrates projects and conversations. Use it to decide where to run `trace_retrieve`.
+<!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
+## Purpose
 
-This tool is not evidence for a memory edit. It does not return message bodies, assistant responses, tool calls, shell output, file contents, patches, screenshots, or errors.
+`projects` gives the Global Memory Agent metadata-only orientation across visible Socrates projects and conversations.
 
-## Core Principle
+It helps decide where to run `trace_retrieve`; it is not evidence for a memory edit.
+<!-- /socrates:section -->
 
-Use `projects` to find the right project or conversation. Use `trace_retrieve` to prove what happened.
+<!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
+## When To Use
 
-Project metadata can tell you where to look. It cannot justify a memory change by itself.
+- The relevant project or conversation is unclear from the manifest.
+- A broad memory-agent run needs a project/conversation map before targeted trace retrieval.
+- Conversation titles, update times, or project names can narrow the next `trace_retrieve` call.
+- Do not use project metadata as proof of user preferences, assistant behavior, tool output, or file contents.
+<!-- /socrates:section -->
 
-## What It Can Return
+<!-- socrates:section id="inputs" kind="schema" tags="tools" -->
+## Inputs
 
-- Visible non-deleted projects.
-- Project names and ids.
-- Project descriptions when present.
-- Project status.
-- Last update and last activity times.
-- Conversation and resource counts.
-- Primary workspace path when present.
-- Visible active or archived conversations for a project.
-- Conversation titles, ids, status, update times, and turn counts.
+- `operation: "list_projects"` lists visible projects.
+- `operation: "list_conversations"` lists conversations for a project.
+- `projectId` selects a project for conversation listing.
+- `limit` and `offset` page large result sets.
+<!-- /socrates:section -->
 
-## What It Must Not Do
+<!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
+## Workflow
 
-- It must not be used as proof of a user preference.
-- It must not be used as proof of assistant behavior.
-- It must not replace `trace_retrieve` for exact wording.
-- It must not replace audit retrieval for tool calls, files, shell, patches, or errors.
-- It must not cause memory edits from counts, timestamps, or workspace paths alone.
+1. List projects when the manifest does not clearly identify the target.
+2. List conversations for a candidate project when a conversation title or recent activity matters.
+3. Use returned metadata to choose a focused `trace_retrieve` search.
+4. Inspect trace evidence before making any memory decision.
+<!-- /socrates:section -->
 
-## Mental Model
-
-There are two operations:
-
-1. `list_projects` finds candidate projects.
-2. `list_conversations` finds candidate conversations inside one project.
-
-After orientation, call `trace_retrieve` with `projectTitle`, `projectId`, `conversationTitle`, or `conversationId`.
-
-## Input Reference
-
-| Parameter | Meaning | Use When |
-| --- | --- | --- |
-| `operation` | `list_projects` or `list_conversations` | Select metadata operation. |
-| `projectId` | Project id | Required for `list_conversations`. |
-| `limit` | Result cap, max 100 | Keep output bounded. |
-| `offset` | Skip result count | Page through projects or conversations. |
-
-## list_projects
-
-Use when the manifest references multiple projects, a project title is ambiguous, or a global search needs a narrower target.
-
-```json
-{
-  "operation": "list_projects",
-  "limit": 20
-}
-```
-
-Returned project fields may include:
-
-- `id`
-- `name`
-- `description`
-- `status`
-- `updatedAt`
-- `lastActivityAt`
-- `conversationCount`
-- `resourceCount`
-- `workspacePath`
-
-## list_conversations
-
-Use when you have a `projectId` and need recent visible conversation titles or ids.
-
-```json
-{
-  "operation": "list_conversations",
-  "projectId": "proj_...",
-  "limit": 20
-}
-```
-
-Returned conversation fields may include:
-
-- `id`
-- `projectId`
-- `title`
-- `status`
-- `updatedAt`
-- `turnCount`
-
-## Common Orientation Recipes
-
-### Find the project before global retrieval
-
-1. List projects.
-2. Pick the likely project by `name`, `workspacePath`, and `lastActivityAt`.
-3. Search with `trace_retrieve` using `projectTitle` when the name is clear.
-
-```json
-{
-  "operation": "list_projects",
-  "limit": 50
-}
-```
-
-Then:
-
-```json
-{
-  "operation": "search",
-  "scope": "project",
-  "projectTitle": "Socrates",
-  "mode": "combined",
-  "query": "memory agent exact evidence before edits",
-  "limit": 5
-}
-```
-
-### Disambiguate repeated conversation titles
-
-1. List conversations for the project.
-2. Compare `title`, `updatedAt`, and `turnCount`.
-3. Use `conversationId` only after the metadata makes the title ambiguous.
-
-```json
-{
-  "operation": "list_conversations",
-  "projectId": "proj_...",
-  "limit": 50
-}
-```
-
-Then:
-
-```json
-{
-  "operation": "search",
-  "scope": "project",
-  "projectId": "proj_...",
-  "conversationId": "conv_...",
-  "mode": "exact",
-  "query": "oldText matched more than once",
-  "limit": 5
-}
-```
-
-### Browse recent activity before choosing search terms
-
-1. List projects ordered by activity.
-2. List conversations in the most relevant project.
-3. Use conversation titles as human-readable anchors in `trace_retrieve`.
-
-```json
-{
-  "operation": "list_projects",
-  "limit": 10,
-  "offset": 0
-}
-```
-
-## Good And Bad Uses
-
-Good:
-
-```json
-{
-  "operation": "list_projects",
-  "limit": 20
-}
-```
-
-Then search exact evidence:
-
-```json
-{
-  "operation": "search",
-  "scope": "project",
-  "projectTitle": "AI_DPA",
-  "mode": "combined",
-  "query": "docs markdown notes should stay private",
-  "limit": 5
-}
-```
-
-Bad:
-
-```text
-Project AI_DPA has a workspace path and recent activity, so write a memory saying docs are private.
-```
-
-The bad pattern edits from metadata. It must retrieve exact conversation evidence first.
-
-## Output Interpretation
-
-Prefer these fields:
-
-- `name`: human-readable project selector for later retrieval.
-- `id`: disambiguation selector for later retrieval.
-- `workspacePath`: orientation only; not evidence.
-- `lastActivityAt` / `updatedAt`: recency orientation.
-- `conversationCount` / `turnCount`: size orientation.
-- `title`: human-readable conversation selector.
-- `status`: visible active/archive status.
-- `totalMatches`: whether paging may be needed.
-- `warnings`: must be read and followed.
-
+<!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
 ## Failure Handling
 
-If the project list is too broad:
-
-- Lower `limit` for recent projects.
-- Use `offset` to page.
-- Prefer project titles from the manifest or user-visible context.
-
-If `list_conversations` fails:
-
-- Confirm `projectId` came from `list_projects` or the manifest.
-- Retry only after correcting the id.
-
-If conversation titles repeat:
-
-- Use `updatedAt`, `turnCount`, and `conversationId`.
-- Then inspect exact evidence with `trace_retrieve`.
-
-## Checklist Before trace_retrieve
-
-- Do I know whether this is a project-local or cross-project lesson?
-- Do I have a project title or id?
-- Do I need a conversation title or id to reduce noise?
-- Am I treating metadata as orientation only?
-- Is the next step exact evidence retrieval?
+- If the project list is too broad, narrow by names from the manifest or recent activity.
+- If `projectId` is wrong or missing, list projects again and choose a visible project.
+- If titles are repeated or ambiguous, use timestamps and then verify exact evidence with `trace_retrieve`.
+- If `projects` returns only metadata, do not infer message bodies, tool calls, file changes, or preferences from it.
+<!-- /socrates:section -->

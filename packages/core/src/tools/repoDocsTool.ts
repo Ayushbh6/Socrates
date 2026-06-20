@@ -1,11 +1,12 @@
-import { repoDocsToolInputSchema, repoDocsToolOutputSchema } from "@socrates/contracts"
+import { repoDocsToolInputSchema, repoDocsToolModelInputSchema, repoDocsToolOutputSchema } from "@socrates/contracts"
 import type { SocratesTool } from "./types"
 
 export const repoDocsTool: SocratesTool<typeof repoDocsToolInputSchema._type, typeof repoDocsToolOutputSchema._type> = {
   name: "repo_docs",
   description:
-    "Read, search, index, or edit the active workspace's four .socrates/repo_docs/*.md doctrine files. Outputs include system runtime date/time metadata. Call this before nontrivial repo work when repo rules, architecture, contracts, workflows, or durable pitfalls may matter. Prefer read_index first, then read_section or patch_section by sectionId for focused recall and edits. Whole-file read/search/edit remains available as fallback. Generic edit/apply_patch cannot mutate these files.",
+    'Read, search, index, or edit the active workspace\'s four .socrates/repo_docs/*.md doctrine files. Call this before nontrivial repo work when repo rules, architecture, contracts, workflows, or durable pitfalls may matter. Prefer read_index first, then read_section or patch_section by sectionId. For patch_section, provide path, sectionId, exact oldText, and newText; do not pass text. For whole-doc replacement, use edit with path plus oldText/newText. Generic edit/apply_patch cannot mutate these files.',
   inputSchema: repoDocsToolInputSchema,
+  modelInputSchema: repoDocsToolModelInputSchema,
   resultSchema: repoDocsToolOutputSchema,
   permission: "mutate",
   executeLane: "mutation",

@@ -76,6 +76,6 @@ export const memoryDocRequiredSections: Record<MemoryDocType, string[]> = {
   identity: ["identity", "scope", "non_negotiables", "voice", "change_policy"],
   operating_principles: ["decision_principles", "tool_discipline", "memory_discipline", "safety", "failure_handling"],
   user_profile: ["stable_facts", "stable_preferences", "collaboration_style", "boundaries", "evidence_requirements", "stale_or_rejected_facts"],
-  tool_doc: ["purpose", "when_to_use", "inputs", "correct_flow", "failure_handling", "examples", "update_policy"],
+  tool_doc: ["purpose", "when_to_use", "inputs", "workflow", "failure_handling"],
   skill: ["purpose", "workflow", "examples", "update_policy"],
 }

@@ -13,6 +13,7 @@ export { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue, type WorkspaceEnv
 export { readWorkspacePath } from "./tools/readTool"
 export { searchWorkspace } from "./tools/searchTool"
 export { formatPythonEnvironmentHints, inspectPythonEnvironment, type PythonEnvironmentHints } from "./pythonEnvironment"
+export { inspectWorkspaceEnvironment, type JavaScriptWorkspaceHints, type RustWorkspaceHints, type WorkspaceEnvironmentHints } from "./workspaceEnvironment"
 
 const execFileAsync = promisify(execFile)
 
