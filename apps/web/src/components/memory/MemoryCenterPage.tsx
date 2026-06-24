@@ -3,13 +3,54 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import { Bot, Brain, Clock3, Coins, FileText, FolderOpen, Loader2, Play, Plus, RefreshCw, Sparkles } from "lucide-react";
-import type { GetMemoryAgentResponse, MemoryAgentFileSummary, MemoryAgentTimelineItem } from "@socrates/contracts";
+import {
+  Activity,
+  ArrowLeft,
+  Bot,
+  Brain,
+  CalendarClock,
+  Clock3,
+  Coins,
+  FileText,
+  FolderOpen,
+  Gauge,
+  Loader2,
+  Play,
+  Plus,
+  RefreshCw,
+  Settings2,
+  Sparkles,
+  UserRound,
+} from "lucide-react";
+import type {
+  GetMemoryAgentResponse,
+  MemoryAgentFileSummary,
+  MemoryAgentGlobalSettings,
+  MemoryAgentTimelineItem,
+  ModelOption,
+  ModelThinkingOption,
+  ProviderId,
+  UpdateMemoryAgentGlobalSettingsRequest,
+} from "@socrates/contracts";
 import { BuildSkillDialog } from "@/components/dashboard/BuildSkillDialog";
 import { MemoryFileViewer } from "@/components/memory/MemoryFileViewer";
-import { BackLink } from "@/components/ui/BackLink";
 import { Button } from "@/components/ui/Button";
+import { Switch } from "@/components/ui/Switch";
 import { api } from "@/lib/api";
+
+const cadenceOptions = [
+  { value: 10, label: "Every 10 minutes" },
+  { value: 30, label: "Every 30 minutes" },
+  { value: 60, label: "Every hour" },
+  { value: 300, label: "Every 5 hours" },
+  { value: 1440, label: "Once a day" },
+];
+
+const providerLabels: Record<ProviderId, string> = {
+  openai: "OpenAI",
+  google: "Google",
+  openrouter: "OpenRouter",
+};
 
 const thresholds = [
   { key: "fileChangeEvents", label: "File edits", max: 5 },
@@ -22,10 +63,12 @@ const thresholds = [
 export function MemoryCenterPage() {
   const [overview, setOverview] = useState<GetMemoryAgentResponse | null>(null);
   const [files, setFiles] = useState<MemoryAgentFileSummary[]>([]);
+  const [models, setModels] = useState<ModelOption[]>([]);
   const [selectedFile, setSelectedFile] = useState<MemoryAgentFileSummary | null>(null);
   const [fileContent, setFileContent] = useState("");
   const [isFileLoading, setIsFileLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isBuildingSkill, setIsBuildingSkill] = useState(false);
   const [showSkillDialog, setShowSkillDialog] = useState(false);
@@ -33,20 +76,35 @@ export function MemoryCenterPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
-    const [memoryAgent, fileIndex] = await Promise.all([api.getMemoryAgent(), api.listMemoryAgentFiles()]);
+  const loadData = async () => {
+    const [memoryAgent, fileIndex, modelList] = await Promise.all([api.getMemoryAgent(), api.listMemoryAgentFiles(), api.listModels()]);
     setOverview(memoryAgent);
     setFiles(fileIndex.files);
+    setModels(modelList.models);
+  };
+
+  const refreshNow = async () => {
+    setIsLoading(true);
+    setMessage(null);
+    setError(null);
+    try {
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not refresh Memory Center.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   useEffect(() => {
     let mounted = true;
     const refresh = async () => {
       try {
-        const [memoryAgent, fileIndex] = await Promise.all([api.getMemoryAgent(), api.listMemoryAgentFiles()]);
+        const [memoryAgent, fileIndex, modelList] = await Promise.all([api.getMemoryAgent(), api.listMemoryAgentFiles(), api.listModels()]);
         if (mounted) {
           setOverview(memoryAgent);
           setFiles(fileIndex.files);
+          setModels(modelList.models);
           setError(null);
         }
       } catch (err) {
@@ -67,13 +125,28 @@ export function MemoryCenterPage() {
     };
   }, []);
 
+  const saveSettings = async (input: UpdateMemoryAgentGlobalSettingsRequest) => {
+    setIsSaving(true);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await api.updateMemoryAgentSettings(input);
+      setOverview((current) => (current ? { ...current, settings: response.settings } : current));
+      setMessage("Memory agent settings saved.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save memory agent settings.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
   const runNow = async () => {
     setIsRunning(true);
     setMessage(null);
     setError(null);
     try {
       const result = await api.runMemoryAgent();
-      await load();
+      await loadData();
       setMessage(result.skippedReason ?? result.item?.displayReason ?? "Memory agent run completed.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not run memory agent.");
@@ -104,9 +177,11 @@ export function MemoryCenterPage() {
     setError(null);
     try {
       const response = await api.buildGlobalSkill({ request });
-      await load();
+      await loadData();
       setShowSkillDialog(false);
       setMessage(`Created global skill: ${response.skill.name}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not build global skill.");
     } finally {
       setIsBuildingSkill(false);
     }
@@ -121,133 +196,283 @@ export function MemoryCenterPage() {
     window.setTimeout(() => setCopiedPath(false), 1200);
   };
 
+  const settings = overview?.settings;
+  const selectedModel = settings ? findModelForSettings(models, settings) : undefined;
+  const selectedThinkingOption = settings && selectedModel ? findThinkingOptionForSettings(selectedModel, settings) : undefined;
+  const modelKeyValue = selectedModel ? modelKey(selectedModel) : settings ? `${settings.providerId}:${settings.modelId}` : "";
+  const thinkingValue = selectedThinkingOption?.id ?? "";
+  const nextCheckAt = overview?.state.lastCheckedAt && settings?.enabled ? addMinutes(overview.state.lastCheckedAt, settings.cadenceMinutes) : undefined;
+  const groupedFiles = groupFiles(files);
+
   const tokenSummary = useMemo(() => {
     const runs = overview?.recentItems.filter((item) => item.itemType === "run") ?? [];
     const totalTokens = runs.reduce((sum, run) => sum + (run.totalTokens ?? 0), 0);
     const costUsd = runs.reduce((sum, run) => sum + (run.costUsd ?? 0), 0);
-    return { totalTokens, costUsd };
-  }, [overview?.recentItems]);
-
-  const nextCheckAt = overview?.state.lastCheckedAt && overview.settings.enabled ? addMinutes(overview.state.lastCheckedAt, overview.settings.cadenceMinutes) : undefined;
-  const groupedFiles = groupFiles(files);
+    return {
+      totalTokens,
+      costUsd,
+      runCount: runs.length,
+      checkCount: overview ? overview.recentItems.length - runs.length : 0,
+    };
+  }, [overview]);
 
   return (
-    <main className="min-h-screen bg-[#f7f9fb] px-6 py-8 text-slate-950">
-      <div className="mx-auto w-full max-w-6xl">
-        <BackLink href="/projects" label="Back to projects" />
-        <header className="mt-6 flex flex-col gap-5 border-b border-slate-200 pb-8 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-teal-700">
-              <Brain className="size-4" />
-              Global memory
+    <main className="flex h-screen overflow-hidden bg-brand-bg text-slate-950">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex-none border-b border-slate-200 bg-white/95 px-4 py-3 sm:px-6">
+          <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <Link href="/projects" className="inline-flex items-center gap-2 text-sm text-slate-500 transition hover:text-slate-900">
+                <ArrowLeft className="size-4" />
+                Back to projects
+              </Link>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <div className="flex size-9 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+                  <Brain className="size-5" />
+                </div>
+                <div className="min-w-0">
+                  <h1 className="truncate text-xl font-semibold text-slate-950 sm:text-2xl">Memory Center</h1>
+                  <p className="mt-0.5 hidden text-sm text-slate-600 sm:block">Global memory agent controls, durable files, and run history.</p>
+                </div>
+                {overview && <span className={statusClass(overview.state.status)}>{overview.state.status}</span>}
+              </div>
             </div>
-            <h1 className="mt-3 text-4xl font-serif text-slate-950">Memory Center</h1>
-            <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-600">
-              Watch the global memory agent, inspect what it changed, and browse the files Socrates uses for durable personalization.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={() => void load()} disabled={isLoading}>
-              <RefreshCw className="mr-2 size-4" />
-              Refresh
-            </Button>
-            <Button type="button" variant="outline" onClick={() => setShowSkillDialog(true)}>
-              <Plus className="mr-2 size-4" />
-              Skills +
-            </Button>
-            <Button type="button" onClick={() => void runNow()} disabled={isRunning || isLoading}>
-              {isRunning ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Play className="mr-2 size-4" />}
-              Run now
-            </Button>
+
+            <div className="grid grid-cols-3 gap-2 lg:flex lg:flex-wrap lg:justify-end">
+              <Button type="button" variant="outline" onClick={() => void refreshNow()} disabled={isLoading} className="min-w-0 px-2 sm:px-6">
+                <RefreshCw className={isLoading ? "mr-2 size-4 animate-spin" : "mr-2 size-4"} />
+                Refresh
+              </Button>
+              <Button type="button" variant="outline" onClick={() => setShowSkillDialog(true)} className="min-w-0 px-2 sm:px-6">
+                <Plus className="mr-2 size-4" />
+                Skills +
+              </Button>
+              <Button type="button" onClick={() => void runNow()} disabled={isRunning || isLoading} className="min-w-0 px-2 sm:px-6">
+                {isRunning ? <Loader2 className="mr-2 size-4 animate-spin" /> : <Play className="mr-2 size-4" />}
+                Run now
+              </Button>
+            </div>
           </div>
         </header>
 
-        {error && <div className="mt-6 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
-        {message && <div className="mt-6 rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">{message}</div>}
+        <section className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6" data-memory-scroll-region>
+          <div className="mx-auto grid min-h-full w-full max-w-7xl gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="min-w-0 space-y-4">
+              {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+              {message && <div className="rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">{message}</div>}
 
-        {overview ? (
-          <>
-            <section className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <MetricCard icon={<Bot className="size-5" />} label="Status" value={overview.state.status} detail={overview.settings.enabled ? "Enabled" : "Disabled"} />
-              <MetricCard icon={<Clock3 className="size-5" />} label="Next check" value={nextCheckAt ? formatDate(nextCheckAt) : "Not scheduled"} detail={`Every ${overview.settings.cadenceMinutes} min`} />
-              <MetricCard icon={<Sparkles className="size-5" />} label="Last real run" value={overview.state.lastRealRunAt ? formatDate(overview.state.lastRealRunAt) : "None yet"} detail={overview.state.lastCheckedAt ? `Checked ${formatDate(overview.state.lastCheckedAt)}` : "No checks yet"} />
-              <MetricCard icon={<Coins className="size-5" />} label="Recent usage" value={`${tokenSummary.totalTokens.toLocaleString()} tokens`} detail={tokenSummary.costUsd > 0 ? `$${tokenSummary.costUsd.toFixed(4)}` : "No cost reported"} />
-            </section>
+              {overview && settings ? (
+                <>
+                  <section className="rounded-lg border border-slate-200 bg-white">
+                    <div className="grid gap-px overflow-hidden rounded-lg bg-slate-100 sm:grid-cols-2 2xl:grid-cols-4">
+                      <MetricCell icon={<Bot className="size-4" />} label="Agent" value={overview.state.status} detail={settings.enabled ? "Automatic checks enabled" : "Automatic checks paused"} />
+                      <MetricCell icon={<CalendarClock className="size-4" />} label="Next check" value={nextCheckAt ? formatDate(nextCheckAt) : settings.enabled ? "Pending" : "Disabled"} detail={`Cadence: ${cadenceLabel(settings.cadenceMinutes)}`} />
+                      <MetricCell icon={<Sparkles className="size-4" />} label="Last real run" value={overview.state.lastRealRunAt ? formatDate(overview.state.lastRealRunAt) : "None yet"} detail={overview.state.lastCheckedAt ? `Checked ${formatDate(overview.state.lastCheckedAt)}` : "No checks yet"} />
+                      <MetricCell icon={<Coins className="size-4" />} label="Recent usage" value={`${tokenSummary.totalTokens.toLocaleString()} tokens`} detail={tokenSummary.costUsd > 0 ? `$${tokenSummary.costUsd.toFixed(4)} across ${tokenSummary.runCount} runs` : `${tokenSummary.checkCount} checks`} />
+                    </div>
+                  </section>
 
-            <section className="mt-8 grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/50">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-lg font-semibold text-slate-950">Pending Signal</h2>
-                    <p className="mt-1 text-sm text-slate-600">{overview.pending.displayReason}</p>
-                  </div>
-                  <span className={overview.pending.shouldRun ? "rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold text-teal-800" : "rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600"}>
-                    {overview.pending.shouldRun ? "Ready" : "Accumulating"}
-                  </span>
-                </div>
-                <div className="mt-6 space-y-4">
-                  {thresholds.map((threshold) => (
-                    <ThresholdBar
-                      key={threshold.key}
-                      label={threshold.label}
-                      value={overview.pending[threshold.key]}
-                      max={threshold.max}
-                      suffix={threshold.key === "totalTokens" ? " tokens" : ""}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/50">
-                <h2 className="text-lg font-semibold text-slate-950">Memory Files</h2>
-                <p className="mt-1 text-sm text-slate-600">Read-only global files and skills.</p>
-                <div className="mt-5 space-y-5">
-                  {Object.entries(groupedFiles).map(([group, groupFiles]) => (
-                    <div key={group}>
-                      <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                        <FolderOpen className="size-4" />
-                        {group}
+                  <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+                    <div className="rounded-lg border border-slate-200 bg-white p-5">
+                      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                        <div>
+                          <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+                            <Gauge className="size-4 text-teal-700" />
+                            Pending signal
+                          </div>
+                          <p className="mt-1 text-sm leading-6 text-slate-600">{overview.pending.displayReason}</p>
+                        </div>
+                        <span className={overview.pending.shouldRun ? "rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold text-teal-800" : "rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600"}>
+                          {overview.pending.shouldRun ? "Ready" : "Accumulating"}
+                        </span>
                       </div>
-                      <div className="space-y-2">
-                        {groupFiles.map((file) => (
-                          <button
-                            key={file.id}
-                            type="button"
-                            onClick={() => void openFile(file)}
-                            className="flex w-full items-start gap-3 rounded-lg border border-slate-100 px-3 py-2 text-left transition hover:border-teal-200 hover:bg-teal-50/50"
-                          >
-                            <FileText className="mt-0.5 size-4 shrink-0 text-teal-700" />
-                            <span className="min-w-0">
-                              <span className="block truncate text-sm font-medium text-slate-900">{file.name}</span>
-                              <span className="block truncate text-xs text-slate-500">{file.description ?? file.path}</span>
-                            </span>
-                          </button>
+
+                      <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                        {thresholds.map((threshold) => (
+                          <ThresholdBar
+                            key={threshold.key}
+                            label={threshold.label}
+                            value={overview.pending[threshold.key]}
+                            max={threshold.max}
+                            suffix={threshold.key === "totalTokens" ? " tokens" : ""}
+                          />
                         ))}
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
-            </section>
 
-            <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/50">
-              <div className="flex items-center justify-between gap-4">
+                    <div className="rounded-lg border border-slate-200 bg-white p-5">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-slate-950">
+                        <Settings2 className="size-4 text-teal-700" />
+                        Agent settings
+                      </div>
+                      <p className="mt-1 text-sm leading-6 text-slate-600">Model, thinking, cadence, and scheduled checks live here.</p>
+
+                      <div className="mt-4 space-y-4">
+                        <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                          <div>
+                            <div className="text-sm font-medium text-slate-900">Scheduled checks</div>
+                            <div className="text-xs text-slate-500">{settings.enabled ? "Memory checks run automatically." : "Automatic checks are paused."}</div>
+                          </div>
+                          <Switch
+                            checked={settings.enabled}
+                            disabled={isSaving}
+                            ariaLabel="Enable memory agent"
+                            onCheckedChange={(checked) => void saveSettings({ enabled: checked })}
+                          />
+                        </div>
+
+                        <label className="block text-sm font-medium text-slate-800">
+                          Model
+                          <select
+                            value={modelKeyValue}
+                            onChange={(event) => {
+                              const nextModel = models.find((model) => modelKey(model) === event.target.value);
+                              const thinkingOption = nextModel
+                                ? nextModel.thinkingOptions.find((option) => option.id === nextModel.defaultThinkingOptionId) ?? nextModel.thinkingOptions[0]
+                                : undefined;
+                              if (nextModel && thinkingOption) {
+                                void saveSettings({
+                                  providerId: nextModel.providerId,
+                                  modelId: nextModel.modelId,
+                                  thinkingEnabled: thinkingOption.enabled,
+                                  ...(thinkingOption.effort ? { thinkingEffort: thinkingOption.effort } : {}),
+                                });
+                              }
+                            }}
+                            disabled={models.length === 0 || isSaving}
+                            className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-700/10 disabled:bg-slate-50 disabled:text-slate-500"
+                          >
+                            {models.length === 0 && <option value={modelKeyValue}>{modelLabel(settings, selectedModel)}</option>}
+                            {models.map((model) => (
+                              <option key={modelKey(model)} value={modelKey(model)}>
+                                {model.label} ({model.providerLabel})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="block text-sm font-medium text-slate-800">
+                            Cadence
+                            <select
+                              value={settings.cadenceMinutes}
+                              onChange={(event) => void saveSettings({ cadenceMinutes: Number(event.target.value) })}
+                              disabled={isSaving}
+                              className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-700/10"
+                            >
+                              {cadenceOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          {selectedModel && (
+                            <label className="block text-sm font-medium text-slate-800">
+                              Thinking
+                              <select
+                                value={thinkingValue}
+                                onChange={(event) => {
+                                  const option = selectedModel.thinkingOptions.find((item) => item.id === event.target.value);
+                                  if (option) {
+                                    void saveSettings({
+                                      thinkingEnabled: option.enabled,
+                                      ...(option.effort ? { thinkingEffort: option.effort } : {}),
+                                    });
+                                  }
+                                }}
+                                disabled={isSaving}
+                                className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-700/10"
+                              >
+                                {selectedModel.thinkingOptions.map((option) => (
+                                  <option key={option.id} value={option.id}>
+                                    {option.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-lg border border-slate-200 bg-white p-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h2 className="text-lg font-semibold text-slate-950">Timeline</h2>
+                        <p className="mt-1 text-sm text-slate-600">Real model runs and low-cost checks, newest first.</p>
+                      </div>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                        {tokenSummary.runCount} runs / {tokenSummary.checkCount} checks
+                      </span>
+                    </div>
+                    <div className="mt-5 space-y-3">
+                      {overview.recentItems.length === 0 && <p className="text-sm text-slate-500">No memory checks yet.</p>}
+                      {overview.recentItems.map((item) => (
+                        <TimelineRow key={item.id} item={item} />
+                      ))}
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-500">Loading Memory Center...</div>
+              )}
+            </div>
+
+            <aside className="min-h-0 rounded-lg border border-slate-200 bg-white xl:sticky xl:top-0 xl:max-h-full">
+              <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-4">
                 <div>
-                  <h2 className="text-lg font-semibold text-slate-950">Timeline</h2>
-                  <p className="mt-1 text-sm text-slate-600">Real model runs and low-cost checks.</p>
+                  <h2 className="text-base font-semibold text-slate-950">Memory files</h2>
+                  <p className="mt-1 text-sm text-slate-600">Read-only global files and skills.</p>
                 </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">{files.length} files</span>
               </div>
-              <div className="mt-6 space-y-3">
-                {overview.recentItems.length === 0 && <p className="text-sm text-slate-500">No memory checks yet.</p>}
-                {overview.recentItems.map((item) => (
-                  <TimelineRow key={item.id} item={item} />
+
+              <div className="max-h-[40rem] overflow-y-auto px-4 py-4 xl:max-h-[calc(100vh-17rem)]">
+                {Object.entries(groupedFiles).map(([group, groupFiles]) => (
+                  <div key={group} className="mb-5 last:mb-0">
+                    <div className="mb-2 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      <span className="flex items-center gap-2">
+                        <FolderOpen className="size-4" />
+                        {group}
+                      </span>
+                      <span>{groupFiles.length}</span>
+                    </div>
+                    <div className="space-y-2">
+                      {groupFiles.length === 0 && <p className="rounded-lg border border-dashed border-slate-200 px-3 py-2 text-sm text-slate-500">No files in this group.</p>}
+                      {groupFiles.map((file) => (
+                        <button
+                          key={file.id}
+                          type="button"
+                          onClick={() => void openFile(file)}
+                          className={file.id === selectedFile?.id ? "flex w-full items-start gap-3 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-left transition" : "flex w-full items-start gap-3 rounded-lg border border-slate-100 px-3 py-2 text-left transition hover:border-teal-200 hover:bg-teal-50/50"}
+                        >
+                          <FileIcon file={file} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-sm font-medium text-slate-900">{file.name}</span>
+                            <span className="block truncate text-xs text-slate-500">{file.description ?? file.path}</span>
+                            {file.updatedAt && <span className="mt-1 block text-[11px] text-slate-400">Updated {formatDate(file.updatedAt)}</span>}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 ))}
               </div>
-            </section>
-          </>
-        ) : (
-          <div className="mt-10 text-sm text-slate-500">Loading Memory Center...</div>
-        )}
+            </aside>
+          </div>
+        </section>
+
+        <footer className="flex-none border-t border-slate-200 bg-white px-4 py-2 sm:px-6">
+          <div className="mx-auto grid w-full max-w-7xl gap-2 text-xs text-slate-600 sm:grid-cols-4">
+            <FooterFact icon={<Clock3 className="size-3.5" />} label="Last checked" value={overview?.state.lastCheckedAt ? formatDate(overview.state.lastCheckedAt) : "Never"} />
+            <FooterFact icon={<Activity className="size-3.5" />} label="Last real run" value={overview?.state.lastRealRunAt ? formatDate(overview.state.lastRealRunAt) : "None yet"} />
+            <FooterFact icon={<CalendarClock className="size-3.5" />} label="Next check" value={nextCheckAt ? formatDate(nextCheckAt) : settings?.enabled ? "Pending" : "Disabled"} />
+            <FooterFact icon={<Bot className="size-3.5" />} label="Model" value={settings ? modelLabel(settings, selectedModel) : "Loading"} />
+          </div>
+        </footer>
       </div>
 
       <MemoryFileViewer
@@ -274,12 +499,15 @@ export function MemoryCenterPage() {
   );
 }
 
-function MetricCard({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
+function MetricCell({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/50">
-      <div className="flex items-center gap-2 text-sm font-medium text-teal-700">{icon}{label}</div>
-      <div className="mt-3 text-xl font-semibold text-slate-950">{value}</div>
-      <div className="mt-1 text-xs text-slate-500">{detail}</div>
+    <div className="min-w-0 bg-white p-4">
+      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-teal-700">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-2 break-words text-lg font-semibold leading-6 text-slate-950">{value}</div>
+      <div className="mt-1 break-words text-xs leading-5 text-slate-500">{detail}</div>
     </div>
   );
 }
@@ -287,12 +515,14 @@ function MetricCard({ icon, label, value, detail }: { icon: ReactNode; label: st
 function ThresholdBar({ label, value, max, suffix }: { label: string; value: number; max: number; suffix?: string }) {
   const percent = Math.min(100, Math.round((value / max) * 100));
   return (
-    <div>
-      <div className="mb-1 flex items-center justify-between text-xs">
-        <span className="font-medium text-slate-600">{label}</span>
-        <span className="text-slate-500">{value.toLocaleString()}{suffix} / {max.toLocaleString()}{suffix}</span>
+    <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+      <div className="mb-1 flex min-w-0 items-center justify-between gap-3 text-xs">
+        <span className="font-medium text-slate-700">{label}</span>
+        <span className="shrink-0 text-slate-500">
+          {value.toLocaleString()}{suffix} / {max.toLocaleString()}{suffix}
+        </span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+      <div className="h-1.5 overflow-hidden rounded-full bg-white">
         <div className="h-full rounded-full bg-teal-600 transition-all" style={{ width: `${percent}%` }} />
       </div>
     </div>
@@ -302,18 +532,22 @@ function ThresholdBar({ label, value, max, suffix }: { label: string; value: num
 function TimelineRow({ item }: { item: MemoryAgentTimelineItem }) {
   const time = item.startedAt ?? item.checkedAt ?? item.completedAt;
   const content = (
-    <div className="flex flex-col gap-3 rounded-xl border border-slate-100 px-4 py-3 transition hover:border-teal-200 hover:bg-teal-50/40 sm:flex-row sm:items-start sm:justify-between">
-      <div>
+    <div className="flex flex-col gap-3 rounded-lg border border-slate-100 px-4 py-3 transition hover:border-teal-200 hover:bg-teal-50/40 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className={statusClass(item.status)}>{item.status}</span>
           <span className="text-sm font-medium text-slate-950">{item.title}</span>
         </div>
-        <p className="mt-2 text-sm text-slate-600">{item.displayReason ?? `${item.trigger} / ${item.evidenceTurnCount} turns`}</p>
-        <p className="mt-1 text-xs text-slate-500">
-          {item.itemType} / {item.trigger} / seq {item.sequenceFrom ?? "?"}-{item.sequenceTo ?? "?"} / {item.evidenceTurnCount} turns
-        </p>
+        <p className="mt-2 text-sm leading-6 text-slate-600">{item.displayReason ?? `${item.trigger} / ${item.evidenceTurnCount} turns`}</p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-500">
+          <span>{item.itemType}</span>
+          <span>{item.trigger}</span>
+          <span>seq {item.sequenceFrom ?? "?"}-{item.sequenceTo ?? "?"}</span>
+          <span>{item.evidenceTurnCount} turns</span>
+          {item.totalTokens ? <span>{item.totalTokens.toLocaleString()} tokens</span> : null}
+        </div>
       </div>
-      <div className="text-xs text-slate-500">{time ? formatDate(time) : ""}</div>
+      <div className="shrink-0 text-xs text-slate-500">{time ? formatDate(time) : ""}</div>
     </div>
   );
 
@@ -323,20 +557,57 @@ function TimelineRow({ item }: { item: MemoryAgentTimelineItem }) {
   return content;
 }
 
+function FooterFact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="text-teal-700">{icon}</span>
+      <span className="shrink-0 font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="truncate text-slate-700">{value}</span>
+    </div>
+  );
+}
+
+function FileIcon({ file }: { file: MemoryAgentFileSummary }) {
+  if (file.kind === "user_profile") {
+    return <UserRound className="mt-0.5 size-4 shrink-0 text-teal-700" />;
+  }
+  return <FileText className="mt-0.5 size-4 shrink-0 text-teal-700" />;
+}
+
 const groupFiles = (files: MemoryAgentFileSummary[]): Record<string, MemoryAgentFileSummary[]> => ({
-  Soul: files.filter((file) => file.kind === "identity" || file.kind === "operating_principles"),
+  "Core Memory": files.filter((file) => file.kind === "identity" || file.kind === "operating_principles" || file.kind === "user_profile"),
   "Tool Docs": files.filter((file) => file.kind === "tool_doc"),
   Skills: files.filter((file) => file.kind === "skill"),
 });
 
+const modelKey = (model: Pick<ModelOption, "providerId" | "modelId">): string => `${model.providerId}:${model.modelId}`;
+
+const findModelForSettings = (models: ModelOption[], settings: Pick<MemoryAgentGlobalSettings, "providerId" | "modelId">): ModelOption | undefined =>
+  models.find((model) => model.providerId === settings.providerId && model.modelId === settings.modelId);
+
+const findThinkingOptionForSettings = (
+  model: ModelOption,
+  settings: Pick<MemoryAgentGlobalSettings, "thinkingEnabled" | "thinkingEffort">,
+): ModelThinkingOption | undefined =>
+  model.thinkingOptions.find((option) => option.enabled === settings.thinkingEnabled && option.effort === settings.thinkingEffort) ??
+  (!settings.thinkingEnabled ? model.thinkingOptions.find((option) => !option.enabled) : undefined) ??
+  (settings.thinkingEnabled && (!settings.thinkingEffort || settings.thinkingEffort === "none")
+    ? model.thinkingOptions.find((option) => option.enabled && !option.effort)
+    : undefined);
+
+const modelLabel = (settings: MemoryAgentGlobalSettings, model?: ModelOption): string =>
+  model ? `${model.providerLabel} / ${model.label}` : `${providerLabels[settings.providerId]} / ${settings.modelId}`;
+
+const cadenceLabel = (minutes: number): string => cadenceOptions.find((option) => option.value === minutes)?.label ?? `Every ${minutes} min`;
+
 const statusClass = (status: string): string => {
-  if (status === "completed") {
+  if (status === "completed" || status === "idle" || status === "applied") {
     return "rounded-full bg-teal-100 px-2.5 py-1 text-xs font-semibold text-teal-800";
   }
-  if (status === "failed") {
+  if (status === "failed" || status === "rejected") {
     return "rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700";
   }
-  if (status === "running") {
+  if (status === "running" || status === "awaiting_confirmation") {
     return "rounded-full bg-blue-100 px-2.5 py-1 text-xs font-semibold text-blue-800";
   }
   return "rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600";

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
 import { ArrowLeft, Clock3, Cpu, FileCheck2, Route, Wrench } from "lucide-react";
 import type { MemoryAgentRunDetail } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
@@ -39,7 +40,7 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
   }, [runId]);
 
   return (
-    <main className="min-h-screen bg-[#f7f9fb] px-6 py-8 text-slate-950">
+    <main className="min-h-screen bg-brand-bg px-4 py-6 text-slate-950 sm:px-6 sm:py-8">
       <div className="mx-auto w-full max-w-5xl">
         <Button asChild variant="ghost" className="-ml-3 mb-5">
           <Link href="/memory">
@@ -52,7 +53,7 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
 
         {run ? (
           <>
-            <header className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/50">
+            <header className="rounded-lg border border-slate-200 bg-white p-5">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -62,7 +63,7 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
                   <h1 className="mt-3 text-3xl font-serif text-slate-950">{run.title}</h1>
                   <p className="mt-2 text-sm text-slate-600">{run.displayReason ?? "Memory run detail."}</p>
                 </div>
-                <div className="grid min-w-64 gap-2 text-sm">
+                <div className="grid gap-2 text-sm lg:min-w-80">
                   <RunFact icon={<Clock3 className="size-4" />} label="Started" value={formatDate(run.startedAt ?? "")} />
                   <RunFact icon={<Cpu className="size-4" />} label="Model" value={`${run.providerId} / ${run.modelId}`} />
                   <RunFact icon={<Route className="size-4" />} label="Sequence" value={`${run.sequenceFrom ?? "?"}-${run.sequenceTo ?? "?"}`} />
@@ -70,24 +71,21 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
               </div>
             </header>
 
-            <section className="mt-6 grid gap-4 md:grid-cols-4">
+            <section className="mt-5 grid overflow-hidden rounded-lg border border-slate-200 bg-white md:grid-cols-4 md:divide-x md:divide-slate-100">
               <MiniMetric label="Evidence turns" value={String(run.evidenceTurnCount)} />
               <MiniMetric label="Evidence estimate" value={`${run.evidenceTokensEstimate.toLocaleString()} tokens`} />
               <MiniMetric label="Run tokens" value={run.totalTokens ? run.totalTokens.toLocaleString() : "Not reported"} />
               <MiniMetric label="Cost" value={run.costUsd ? `$${run.costUsd.toFixed(4)}` : "Not reported"} />
             </section>
 
-            <section className="mt-6 grid gap-4 md:grid-cols-2">
+            <section className="mt-5 grid gap-4 md:grid-cols-2">
               {sectionLabels.map(([key, label]) => (
-                <div key={key} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/50">
-                  <h2 className="text-sm font-semibold uppercase tracking-wide text-teal-700">{label}</h2>
-                  <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-700">{run.summary[key].trim() || "None."}</p>
-                </div>
+                <SummarySection key={key} label={label} value={run.summary[key]} />
               ))}
             </section>
 
-            <section className="mt-6 grid gap-6 lg:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/50">
+            <section className="mt-5 grid gap-6 lg:grid-cols-2">
+              <div className="rounded-lg border border-slate-200 bg-white p-5">
                 <div className="flex items-center gap-2 text-lg font-semibold text-slate-950">
                   <FileCheck2 className="size-5 text-teal-700" />
                   Actions
@@ -95,7 +93,7 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
                 <div className="mt-4 space-y-3">
                   {run.actions.length === 0 && <p className="text-sm text-slate-500">No file actions.</p>}
                   {run.actions.map((action) => (
-                    <div key={action.id} className="rounded-xl border border-slate-100 px-3 py-3">
+                    <div key={action.id} className="rounded-lg border border-slate-100 px-3 py-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <span className="text-sm font-medium text-slate-950">{action.targetKind}</span>
                         <span className={statusClass(action.status)}>{action.status}</span>
@@ -108,7 +106,7 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm shadow-slate-200/50">
+              <div className="rounded-lg border border-slate-200 bg-white p-5">
                 <div className="flex items-center gap-2 text-lg font-semibold text-slate-950">
                   <Wrench className="size-5 text-teal-700" />
                   Tool Activity
@@ -132,9 +130,9 @@ export function MemoryRunDetailPage({ runId }: { runId: string }) {
 
 function RunFact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
+    <div className="flex min-w-0 items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
       <span className="text-teal-700">{icon}</span>
-      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
+      <span className="shrink-0 text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       <span className="ml-auto truncate text-xs text-slate-700">{value}</span>
     </div>
   );
@@ -142,9 +140,31 @@ function RunFact({ icon, label, value }: { icon: ReactNode; label: string; value
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm shadow-slate-200/50">
+    <div className="min-w-0 border-b border-slate-100 p-4 last:border-b-0 md:border-b-0">
       <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-2 text-lg font-semibold text-slate-950">{value}</div>
+      <div className="mt-2 truncate text-lg font-semibold text-slate-950">{value}</div>
+    </div>
+  );
+}
+
+function SummarySection({ label, value }: { label: string; value: string }) {
+  const content = value.trim() || "None.";
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-teal-700">{label}</h2>
+      <div className="mt-3 text-sm leading-7 text-slate-700">
+        <ReactMarkdown
+          components={{
+            p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+            ul: ({ children }) => <ul className="mb-3 list-disc space-y-2 pl-5 last:mb-0">{children}</ul>,
+            ol: ({ children }) => <ol className="mb-3 list-decimal space-y-2 pl-5 last:mb-0">{children}</ol>,
+            li: ({ children }) => <li className="pl-1">{children}</li>,
+            code: ({ children }) => <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[0.85em] text-slate-800">{children}</code>,
+          }}
+        >
+          {content}
+        </ReactMarkdown>
+      </div>
     </div>
   );
 }
@@ -152,7 +172,7 @@ function MiniMetric({ label, value }: { label: string; value: string }) {
 function ToolEventRow({ event }: { event: unknown }) {
   const record = event && typeof event === "object" ? (event as Record<string, unknown>) : {};
   return (
-    <div className="rounded-xl border border-slate-100 px-3 py-3">
+    <div className="rounded-lg border border-slate-100 px-3 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-sm font-medium text-slate-950">{typeof record.toolName === "string" ? record.toolName : "tool"}</span>
         <span className="text-xs text-slate-500">{typeof record.type === "string" ? record.type : "event"}</span>

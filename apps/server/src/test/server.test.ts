@@ -3379,6 +3379,37 @@ describe("WebSocket API", () => {
     expect(openRouterUpdated.data.settings.thinkingEffort).toBeUndefined()
   })
 
+  it("exposes user profile in the memory-agent file index", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath, createTestAgent(), { socratesHome })
+    await onboard(app)
+
+    const filesResponse = await app.inject({
+      method: "GET",
+      url: "/api/memory-agent/files",
+    })
+    const files = parseResponse<{ files: Array<{ id: string; kind: string; name: string; path: string; absolutePath: string }> }>(
+      filesResponse.payload,
+    )
+
+    expect(files.ok).toBe(true)
+    if (!files.ok) {
+      throw new Error("Expected memory-agent files success")
+    }
+    expect(files.data.files).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "user_profile:user_profile.md",
+          kind: "user_profile",
+          name: "User Profile",
+          path: "user_profile.md",
+          absolutePath: path.join(socratesHome, "user_profile.md"),
+        }),
+      ]),
+    )
+  })
+
   it("exposes detached terminal sessions through trace_retrieve shell audit", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)

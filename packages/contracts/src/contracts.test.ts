@@ -561,6 +561,14 @@ describe("http contracts", () => {
             absolutePath: "/tmp/.Socrates/identity.md",
             updatedAt: timestamp,
           },
+          {
+            id: "user_profile:user_profile.md",
+            kind: "user_profile",
+            name: "User Profile",
+            path: "user_profile.md",
+            absolutePath: "/tmp/.Socrates/user_profile.md",
+            updatedAt: timestamp,
+          },
         ],
       }).success,
     ).toBe(true)

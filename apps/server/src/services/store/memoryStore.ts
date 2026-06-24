@@ -731,17 +731,37 @@ export class MemoryStore extends StoreBase {
 
   listMemoryAgentFiles(): MemoryAgentFileSummary[] {
     this.ensureGlobalKnowledge()
-    const soulFiles: MemoryAgentFileSummary[] = (["identity", "operating_principles"] as const).flatMap((kind) => {
-      const absolutePath = this.soulPath(kind)
+    const coreMemoryFiles: MemoryAgentFileSummary[] = ([
+      {
+        kind: "identity" as const,
+        name: "Identity",
+        description: "Socrates identity and non-negotiables.",
+        absolutePath: this.soulPath("identity"),
+      },
+      {
+        kind: "operating_principles" as const,
+        name: "Operating Principles",
+        description: "Global operating discipline and safety rules.",
+        absolutePath: this.soulPath("operating_principles"),
+      },
+      {
+        kind: "user_profile" as const,
+        name: "User Profile",
+        description: "Stable user facts, preferences, and collaboration style.",
+        absolutePath: this.userProfilePath(),
+      },
+    ]).flatMap((file) => {
+      const absolutePath = file.absolutePath
       if (!fs.existsSync(absolutePath)) {
         return []
       }
       const stats = fs.statSync(absolutePath)
       return [
         {
-          id: `${kind}:${kind}.md`,
-          kind,
-          name: kind === "identity" ? "Identity" : "Operating Principles",
+          id: `${file.kind}:${path.basename(absolutePath)}`,
+          kind: file.kind,
+          name: file.name,
+          description: file.description,
           path: path.basename(absolutePath),
           absolutePath,
           updatedAt: stats.mtime.toISOString(),
@@ -769,7 +789,7 @@ export class MemoryStore extends StoreBase {
         absolutePath: skill.skillFile,
         updatedAt: skill.updatedAt,
       }))
-    return [...soulFiles, ...toolDocs, ...skills].sort((left, right) => `${left.kind}:${memoryFileScope(left)}:${left.name}`.localeCompare(`${right.kind}:${memoryFileScope(right)}:${right.name}`))
+    return [...coreMemoryFiles, ...toolDocs, ...skills].sort((left, right) => `${left.kind}:${memoryFileScope(left)}:${left.name}`.localeCompare(`${right.kind}:${memoryFileScope(right)}:${right.name}`))
   }
 
   readMemoryAgentFileContent(input: MemoryAgentFileContentQuery): { file: MemoryAgentFileSummary; content: string } {

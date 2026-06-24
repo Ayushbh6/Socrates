@@ -1,7 +1,6 @@
 "use client";
 
 import { ProviderCredentialsPanel } from "@/components/settings/ProviderCredentialsPanel";
-import { MemoryAgentPanel } from "@/components/settings/MemoryAgentPanel";
 import { BackLink } from "@/components/ui/BackLink";
 
 export default function SettingsPage() {
@@ -16,7 +15,6 @@ export default function SettingsPage() {
           </p>
         </div>
         <div className="space-y-6">
-          <MemoryAgentPanel />
           <ProviderCredentialsPanel showUpdater />
         </div>
       </div>
