@@ -73,17 +73,15 @@ export class McpRuntime {
 
   handleRegistryTool(input: McpRegistryToolInput, options: { workspacePath?: string | undefined } = {}): Promise<McpRegistryToolOutput> {
     this.ensureDefaults()
-    const hasExplicitServerLookup = Boolean(input.serverId?.trim() || input.serverName?.trim() || input.preset)
-    const serverLookup = input.operation === "configure" ? input.preset ?? input.serverId ?? input.serverName ?? "playwright" : this.registryServerLookup(input, options)
     switch (input.operation) {
       case "list":
-        return this.list(hasExplicitServerLookup ? serverLookup : undefined, options)
+        return this.list(input.n, options)
       case "describe":
-        return this.describe(serverLookup, options)
+        return this.describe(input, options)
       case "check":
-        return this.check(serverLookup, options)
+        return this.inspectServer(this.registryServerLookup(input, options), options, "check")
       case "configure":
-        return Promise.resolve(this.configure(serverLookup))
+        return Promise.resolve(this.configure(input.preset ?? input.id ?? input.serverId ?? input.name ?? input.serverName ?? "playwright"))
     }
   }
 
@@ -210,7 +208,7 @@ export class McpRuntime {
     serverId: string,
     options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined } = {},
   ): Promise<{ server: NonNullable<McpRegistryToolOutput["server"]>; tools: NonNullable<McpRegistryToolOutput["tools"]>; warnings?: string[] }> {
-    const output = await this.check(serverId, options)
+    const output = await this.inspectServer(serverId, options, "check")
     return {
       server: output.server as NonNullable<McpRegistryToolOutput["server"]>,
       tools: output.tools ?? [],
@@ -218,52 +216,61 @@ export class McpRuntime {
     }
   }
 
-  private async list(namedServer: string | undefined, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
-    const servers = this.scopedServers(options).map((server) => this.serverSummary(server.id, server.config, "unknown", undefined, server.scope, server.paths))
-    const checked = namedServer ? await this.check(namedServer, options) : undefined
+  private async list(n: number | undefined, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
+    const limit = n ?? 15
+    const allServers = this.scopedServers(options).map((server) => this.serverSummaryWithCachedTools(server))
+    const servers = allServers.slice(0, limit)
     return {
       operation: "list",
       configPath: this.configPath,
       envPath: this.envPath,
       servers,
-      ...(checked?.server ? { server: checked.server } : {}),
-      ...(checked?.tools ? { tools: checked.tools } : {}),
-      ...(checked?.docs ? { docs: checked.docs } : {}),
-      summary: servers.length ? `Found ${servers.length} configured MCP server${servers.length === 1 ? "" : "s"}.` : "No MCP servers configured.",
-      ...(checked?.warnings ? { warnings: checked.warnings } : {}),
+      summary: allServers.length
+        ? `Found ${allServers.length} configured MCP server${allServers.length === 1 ? "" : "s"}. Call describe with the exact canonical id from this list to expose one server's tools.`
+        : "No MCP servers configured.",
+      usageHint: "Prefer mcp_registry({ operation: \"describe\", id: \"<exact-listed-id>\" }). Use name only if matching an exact listed display name, and do not put a display name in id.",
+      ...(servers.length < allServers.length ? { warnings: [`Showing ${servers.length} of ${allServers.length} MCP servers. Increase n up to 35 to show more.`] } : {}),
     }
   }
 
-  private async describe(serverId: string, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
-    const resolved = this.resolveServer(serverId, options)
-    const resolvedId = resolved?.id ?? serverId
-    const docs = this.readRegistryDocs(resolvedId, resolved?.paths)
-    const tools = (resolved ? this.readCachedTools(resolvedId, resolved.paths) : []).map((tool) => ({
-      name: tool.name,
-      dynamicName: dynamicToolName(resolvedId, tool.name),
-      ...(tool.description ? { description: tool.description } : {}),
-      ...(tool.inputSchema === undefined ? {} : { inputSchema: tool.inputSchema }),
-    }))
-    return {
-      operation: "describe",
-      configPath: this.configPath,
-      envPath: this.envPath,
-      ...(resolved ? { server: this.serverSummary(resolvedId, resolved.config, tools.length ? "available" : "unknown", tools.length, resolved.scope, resolved.paths) } : {}),
-      tools,
-      docs,
-      summary: resolved ? `${resolvedId} MCP is configured. Use the listed dynamic tool names when exposed.` : `${serverId} MCP is not configured.`,
+  private async describe(input: McpRegistryToolInput, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
+    const conflict = this.describeHandleConflict(input, options)
+    if (conflict) {
+      return conflict
     }
+    const resolved = this.resolveRegistryServer(input, options)
+    if (!resolved) {
+      const handles = [input.id, input.serverId, input.name, input.serverName, input.preset].filter((item): item is string => Boolean(item?.trim()))
+      const servers = this.scopedServers(options).slice(0, 15).map((server) => this.serverSummaryWithCachedTools(server))
+      return {
+        operation: "describe",
+        configPath: this.configPath,
+        envPath: this.envPath,
+        servers,
+        summary: handles.length
+          ? `No MCP server matched ${handles.map((handle) => `"${handle}"`).join(", ")}. Call mcp_registry({ operation: "list" }) to see exact MCP ids and names.`
+          : 'describe requires an exact MCP id or name. Call mcp_registry({ operation: "list" }) first.',
+        usageHint: "Use the canonical id from mcp_registry list whenever possible.",
+        warnings: ["No exact MCP id or name matched."],
+      }
+    }
+    return this.inspectServer(resolved.id, options, "describe")
   }
 
-  private async check(serverId: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
+  private async inspectServer(
+    serverId: string,
+    options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined },
+    operation: McpRegistryToolOutput["operation"],
+  ): Promise<McpRegistryToolOutput> {
     const resolved = this.resolveServer(serverId, options)
     if (!resolved) {
       return {
-        operation: "check",
+        operation,
         configPath: this.configPath,
         envPath: this.envPath,
         server: {
           id: serverId,
+          name: serverId,
           label: serverId,
           ...(options.scope ? { scope: options.scope } : {}),
           configured: false,
@@ -273,10 +280,14 @@ export class McpRuntime {
           configPath: this.configPath,
           envPath: this.envPath,
         },
-        summary: `${serverId} MCP is not configured.`,
+        servers: this.scopedServers(options).slice(0, 15).map((server) => this.serverSummaryWithCachedTools(server)),
+        summary: `${serverId} MCP is not configured. Call mcp_registry({ operation: "list" }) to see exact MCP ids and names.`,
+        usageHint: "Use the canonical id from mcp_registry list whenever possible.",
+        warnings: ["No exact MCP id or name matched."],
       }
     }
 
+    const docs = this.readRegistryDocs(resolved.id, resolved.paths)
     try {
       const client = new StdioMcpClient(resolved.config, this.readEnv(resolved.paths))
       try {
@@ -285,7 +296,7 @@ export class McpRuntime {
         const tools = parseToolsList(response)
         this.writeCachedTools(resolved.id, tools, resolved.paths)
         return {
-          operation: "check",
+          operation,
           configPath: this.configPath,
           envPath: this.envPath,
           server: this.serverSummary(resolved.id, resolved.config, "available", tools.length, resolved.scope, resolved.paths),
@@ -295,18 +306,22 @@ export class McpRuntime {
             ...(tool.description ? { description: tool.description } : {}),
             ...(tool.inputSchema === undefined ? {} : { inputSchema: tool.inputSchema }),
           })),
-          summary: `${resolved.id} MCP is available with ${tools.length} tool${tools.length === 1 ? "" : "s"}.`,
+          docs,
+          summary: `${resolved.id} MCP is available with ${tools.length} tool${tools.length === 1 ? "" : "s"}. Use the returned dynamic mcp__... tool names directly.`,
+          usageHint: "Call the returned dynamic mcp__... tool that matches the user's task. Keep using canonical MCP ids for later describe calls.",
         }
       } finally {
         client.close()
       }
     } catch (error) {
       return {
-        operation: "check",
+        operation,
         configPath: this.configPath,
         envPath: this.envPath,
         server: this.serverSummary(resolved.id, resolved.config, "failed", 0, resolved.scope, resolved.paths),
-        summary: `${resolved.id} MCP check failed.`,
+        docs,
+        summary: `${resolved.id} MCP describe failed while loading tools.`,
+        usageHint: "If needed, call mcp_registry list again and retry describe with the exact canonical id.",
         warnings: [error instanceof Error ? error.message : String(error)],
       }
     }
@@ -372,13 +387,13 @@ export class McpRuntime {
       "",
       "Use Playwright MCP when the task needs a real browser: opening local apps, inspecting pages, clicking, typing, taking screenshots, or debugging UI flows.",
       "",
-      "Call mcp_registry with operation=\"check\" and serverId=\"playwright\" to discover available dynamic tools. Use the returned mcp__playwright__* tool names only after they are exposed in the current turn.",
+      "Call mcp_registry with operation=\"describe\" and id=\"playwright\" to load this server and expose available dynamic tools. Use the returned mcp__playwright__* tool names only after they are exposed in the current turn.",
       "",
       "This bundled preset does not require API keys. Browser sessions may create local browser state and should be used only when browser automation is relevant.",
       "",
     ].join("\n")
     const existing = fs.existsSync(docsPath) ? fs.readFileSync(docsPath, "utf8") : undefined
-    if (!existing || existing.includes('serverName="playwright"')) {
+    if (!existing || existing.includes('serverName="playwright"') || existing.includes('operation="check"')) {
       fs.writeFileSync(docsPath, docs)
     }
   }
@@ -560,20 +575,72 @@ export class McpRuntime {
   }
 
   private registryServerLookup(input: McpRegistryToolInput, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): string {
-    const serverId = input.serverId?.trim()
-    const serverName = input.serverName?.trim()
-    if (serverId && serverName) {
-      const byId = this.resolveServerById(serverId, options)
-      const byName = this.resolveServerByName(serverName, options)
-      if (!byId || !byName || byId.id !== byName.id || byId.scope !== byName.scope) {
-        throw new SocratesError("mcp_server_identity_conflict", "MCP serverId and serverName did not refer to the same configured server.", {
-          details: { serverId, serverName },
-          recoverable: true,
-        })
-      }
-      return byId.id
+    const resolved = this.resolveRegistryServer(input, options)
+    if (resolved) {
+      return resolved.id
     }
-    return serverId ?? serverName ?? input.preset ?? "playwright"
+    return input.id?.trim() ?? input.serverId?.trim() ?? input.name?.trim() ?? input.serverName?.trim() ?? input.preset ?? "playwright"
+  }
+
+  private resolveRegistryServer(input: McpRegistryToolInput, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer | undefined {
+    const handles: Array<{ kind: "id" | "name"; value: string | undefined }> = [
+      { kind: "id", value: input.id },
+      { kind: "id", value: input.serverId },
+      { kind: "name", value: input.name },
+      { kind: "name", value: input.serverName },
+      { kind: "id", value: input.preset },
+    ]
+    for (const handle of handles) {
+      const value = handle.value?.trim()
+      if (!value) continue
+      const resolved = handle.kind === "id" ? this.resolveServerById(value, options) ?? this.resolveServerByName(value, options) : this.resolveServerByName(value, options)
+      if (resolved) return resolved
+    }
+    return undefined
+  }
+
+  private describeHandleConflict(
+    input: McpRegistryToolInput,
+    options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined },
+  ): McpRegistryToolOutput | undefined {
+    const idHandle = input.id?.trim() || input.serverId?.trim() || input.preset
+    const nameHandle = input.name?.trim() || input.serverName?.trim()
+    if (!idHandle || !nameHandle) {
+      return undefined
+    }
+
+    const byId = this.resolveServerById(idHandle, options)
+    const byName = this.resolveServerByName(nameHandle, options)
+    if (byId && byName && byId.id === byName.id && byId.scope === byName.scope) {
+      return undefined
+    }
+    if (!byId && byName) {
+      return undefined
+    }
+    if (byId && nameHandle === idHandle) {
+      return undefined
+    }
+
+    const servers = this.scopedServers(options).slice(0, 15).map((server) => this.serverSummaryWithCachedTools(server))
+    const retryId = byName?.id ?? byId?.id
+    const retryText = retryId ? ` Retry with mcp_registry({ operation: "describe", id: "${retryId}" }) only.` : " Call mcp_registry({ operation: \"list\" }) and retry with one exact canonical id."
+    const mismatch =
+      byId && byName
+        ? `id "${idHandle}" and name "${nameHandle}" matched different MCP servers.`
+        : byName
+          ? `id "${idHandle}" did not match an exact MCP server id, but name "${nameHandle}" matched "${byName.id}".`
+          : byId
+            ? `name "${nameHandle}" did not match the display name for id "${byId.id}".`
+            : `No exact MCP server matched id "${idHandle}" or name "${nameHandle}".`
+    return {
+      operation: "describe",
+      configPath: this.configPath,
+      envPath: this.envPath,
+      servers,
+      summary: `${mismatch}${retryText}`,
+      usageHint: "When both id and name are provided, they must be the exact id/name pair from the same listed MCP server. Prefer id only.",
+      warnings: ["MCP id and name did not resolve to the same exact server."],
+    }
   }
 
   private resolveServer(serverId: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer | undefined {
@@ -642,9 +709,12 @@ export class McpRuntime {
     scope: McpServerScope,
     paths: McpPaths,
   ) {
+    const label = server.label ?? (serverId === "playwright" ? "Playwright MCP" : serverId)
     return {
       id: serverId,
-      label: server.label ?? (serverId === "playwright" ? "Playwright MCP" : serverId),
+      name: label,
+      label,
+      ...(this.serverDescription(serverId, server, paths) ? { description: this.serverDescription(serverId, server, paths) } : {}),
       scope,
       configured: true,
       enabled: server.enabled ?? true,
@@ -655,6 +725,26 @@ export class McpRuntime {
       configPath: paths.configPath,
       envPath: paths.envPath,
     }
+  }
+
+  private serverSummaryWithCachedTools(server: ScopedServer): NonNullable<McpRegistryToolOutput["servers"]>[number] {
+    const cachedTools = this.readCachedTools(server.id, server.paths)
+    return {
+      ...this.serverSummary(server.id, server.config, "unknown", cachedTools.length || undefined, server.scope, server.paths),
+      ...(cachedTools.length ? { toolPreview: cachedTools.slice(0, 2).map((tool) => tool.name), moreToolsAvailable: cachedTools.length > 2 } : {}),
+    }
+  }
+
+  private serverDescription(serverId: string, server: McpServerConfig, paths: McpPaths): string | undefined {
+    if (serverId === "playwright") {
+      return "Browser automation, page inspection, screenshots, and web interaction."
+    }
+    const docs = this.readRegistryDocs(serverId, paths)
+    const paragraph = docs
+      ?.split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("#"))
+    return paragraph ?? server.label
   }
 }
 

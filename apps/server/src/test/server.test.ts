@@ -4178,7 +4178,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("creates lean Socrates memory files, exposes docs tools, and injects first-turn wake context", async () => {
+  it("creates lean Socrates memory files, exposes docs tools, and keeps recall routing in the stable prompt", async () => {
     const requests: unknown[] = []
     const dbPath = tempDbPath()
     const socratesHome = tempDir()
@@ -4215,7 +4215,7 @@ describe("WebSocket API", () => {
     const { project, primaryWorkspace } = await createProject(app)
     fs.writeFileSync(path.join(primaryWorkspace.path as string, ".socrates", "MEMORY.md"), "# Project Memory\n\nDurable recall key: WAKE-LEAN-42.\n")
     fs.writeFileSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "CORE_IDEA.md"), "# Core Idea\n\nCurrent focus: lean memory architecture.\n")
-    const conversation = await createConversation(app, project.id, "Memory Wake")
+    const conversation = await createConversation(app, project.id, "Memory Stable Prompt")
 
     const socket = await connectWebSocket(app)
     try {
@@ -4265,26 +4265,36 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "REPO_RULES.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "CONTRACTS.md"))).toBe(true)
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "repo_docs", "APP_FLOW.md"))).toBe(false)
-    const wakeContextText = requests
-      .flatMap((request) => ((request as { messages?: Array<{ role?: string; content?: unknown }> }).messages ?? []).map((message) => String(message.content ?? "")))
-      .filter((content) => content.includes("<socrates_wake_context>"))
+    const requestTexts = requests.flatMap((request) => {
+      const item = request as { system?: unknown; messages?: Array<{ role?: string; content?: unknown }> }
+      return [String(item.system ?? ""), ...(item.messages ?? []).map((message) => String(message.content ?? ""))]
+    })
+    const allRequestText = requestTexts.join("\n")
+    const systemText = requests.map((request) => String((request as { system?: unknown }).system ?? "")).join("\n")
+    const developerText = requests
+      .flatMap((request) => ((request as { messages?: Array<{ role?: string; content?: unknown }> }).messages ?? []).filter((message) => message.role === "developer").map((message) => String(message.content ?? "")))
       .join("\n")
-    expect(wakeContextText).toContain("<socrates_wake_context>")
-    expect(wakeContextText).toContain("Stable project recall map")
-    expect(wakeContextText).toContain("project_docs")
-    expect(wakeContextText).toContain("repo_docs")
-    expect(wakeContextText).not.toContain("WAKE-LEAN-42")
-    expect(wakeContextText).not.toContain("lean memory architecture")
-    expect(wakeContextText).not.toContain("Socrates State Ledger")
-    expect(wakeContextText).not.toContain("Last turn: completed")
-    expect(wakeContextText).not.toContain("Captured")
+    const controlText = `${systemText}\n${developerText}`
+    expect(allRequestText).not.toContain("<socrates_wake_context>")
+    expect(allRequestText).not.toContain("Stable project recall map")
+    expect(allRequestText).not.toContain("Skill counts:")
+    expect(controlText).not.toContain("WAKE-LEAN-42")
+    expect(controlText).not.toContain("lean memory architecture")
+    expect(controlText).not.toContain("Socrates State Ledger")
+    expect(controlText).not.toContain("Last turn: completed")
+    expect(systemText).toContain("Stable recall routing")
+    expect(systemText).toContain("project_docs notes for active state")
+    expect(systemText).toContain("project_docs memory for durable project state")
+    expect(systemText).toContain("repo_docs for repo doctrine")
+    expect(systemText).toContain("skills for reusable workflows")
+    expect(systemText).toContain("mcp_registry for external tool servers")
 
     const handle = openDatabase(dbPath)
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome })
     try {
       const listedSkills = store.runSkillsTool(project.id, { operation: "list" })
       expect(listedSkills.skills.some((skill) => skill.name === "socrates-skill-writer")).toBe(false)
-      expect(() => store.runSkillsTool(project.id, { operation: "read", name: "socrates-skill-writer", scope: "builtin" })).toThrow(/Skill was not found/)
+      expect(() => store.runSkillsTool(project.id, { operation: "describe", id: "socrates-skill-writer", scope: "builtin" })).toThrow(/Skill was not found/)
       const userProfileRead = store.runUserProfileTool(project.id, { operation: "read" })
       expect(userProfileRead.content).toContain("Root global user profile")
       const projectSkillPath = path.join(primaryWorkspace.path as string, ".socrates", "skills", "memory-review", "SKILL.md")
@@ -4295,16 +4305,9 @@ describe("WebSocket API", () => {
       fs.writeFileSync(globalSkillPath, "---\nname: ginkgo-marker\ndescription: Use when the user mentions ginkgo lantern.\n---\n\n# Ginkgo Marker\n")
       const projectSkills = store.runSkillsTool(project.id, { operation: "list", scope: "project" })
       expect(projectSkills.skills.some((skill) => skill.name === "memory-review")).toBe(true)
-      const skillRead = store.runSkillsTool(project.id, { operation: "read", name: "memory-review", scope: "project" })
+      const skillRead = store.runSkillsTool(project.id, { operation: "describe", id: "memory-review", scope: "project" })
       expect(skillRead.content).toContain("Memory Review")
-      expect(() => store.runSkillsTool(project.id, { operation: "read", name: "memory-review", scope: "project", path: "../outside.md" })).toThrow(/Path must stay inside/)
-      const matchingWake = store.buildWakeMemoryContext(project.id, "Please use the ginkgo lantern skill.")
-      expect(matchingWake).toContain("Required skill preflight")
-      expect(matchingWake).toContain("global:ginkgo-marker")
-      const nonMatchingWake = store.buildWakeMemoryContext(project.id, "Please use the copper lantern project skill.")
-      expect(nonMatchingWake).toContain("High-confidence skill matches for the latest request: none")
-      expect(nonMatchingWake).not.toContain("Required skill preflight")
-      expect(nonMatchingWake).not.toContain("global:ginkgo-marker")
+      expect(() => store.runSkillsTool(project.id, { operation: "describe", id: "memory-review", scope: "project", path: "../outside.md" })).toThrow(/Path must stay inside/)
       const searched = store.runToolDocsTool(project.id, {
         operation: "search",
         area: "tool_usage",

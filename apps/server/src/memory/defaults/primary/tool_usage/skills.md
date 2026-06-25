@@ -11,7 +11,7 @@ index_tags: [tool_usage]
 <!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
 ## Purpose
 
-`skills` lists, searches, and reads reusable Socrates skill instructions.
+`skills` lists and describes reusable Socrates skill instructions.
 
 Skills are procedural guidance for repeatable workflows; they are not evidence for facts about the current repo or prior conversation.
 <!-- /socrates:section -->
@@ -28,9 +28,9 @@ Skills are procedural guidance for repeatable workflows; they are not evidence f
 <!-- socrates:section id="inputs" kind="schema" tags="tools" -->
 ## Inputs
 
-- `operation: "list"` lists visible skills.
-- `operation: "search"` searches by name or description.
-- `operation: "read"` reads one skill by `name` and optional `scope`.
+- `operation: "list"` lists visible skills with exact ids, names, scopes, and descriptions.
+- `operation: "describe"` reads one skill by exact `id` or `name` and optional `scope`.
+- `n` controls list size; it defaults low and is capped by the runtime.
 - `scope` may be `builtin`, `global`, or `project` when supported by the runtime.
 - Some skills reference relative files; resolve them relative to the skill file first.
 <!-- /socrates:section -->
@@ -38,8 +38,8 @@ Skills are procedural guidance for repeatable workflows; they are not evidence f
 <!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
 ## Workflow
 
-1. List or search when the relevant skill is unknown.
-2. Read the selected skill before applying it.
+1. List when the relevant skill is unknown.
+2. Describe the selected skill before applying it.
 3. Follow the skill's routing instructions and only open referenced files needed for the task.
 4. Combine skill guidance with current repo evidence and higher-priority user/developer instructions.
 5. Mention if an expected skill is missing and continue with the best fallback.
@@ -49,7 +49,7 @@ Skills are procedural guidance for repeatable workflows; they are not evidence f
 ## Failure Handling
 
 - If no skill matches, continue from repo evidence and note the missing reusable guidance if relevant.
-- If multiple skills match, read the most specific one first.
+- If multiple skills match, describe the most specific one first.
 - If a referenced skill file is missing, state the issue and use the next-best local evidence.
 - If a skill conflicts with explicit user/developer instructions, follow the higher-priority instruction.
 <!-- /socrates:section -->

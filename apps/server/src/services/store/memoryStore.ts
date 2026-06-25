@@ -103,7 +103,6 @@ const MEMORY_AGENT_TOKEN_CAP = 60_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
 const SKILL_CHAR_LIMIT = 20_000
-const SKILL_PREFLIGHT_SCORE_THRESHOLD = 100
 const STATE_LEDGER_START = "<!-- socrates-state-ledger:start -->"
 const STATE_LEDGER_END = "<!-- socrates-state-ledger:end -->"
 const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
@@ -266,7 +265,7 @@ export class MemoryStore extends StoreBase {
 
   runSkillsTool(projectId: string, workspacePath: string | undefined, input: SkillsToolInput): SkillsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
-    if (input.operation === "read") {
+    if (input.operation === "read" || input.operation === "describe") {
       return this.readSkill(input, workspacePath)
     }
     if (input.operation === "search") {
@@ -669,38 +668,6 @@ export class MemoryStore extends StoreBase {
       truncation: truncationFor(content, charLimit),
       ...(clipped.truncated ? { warnings: ["user_profile.md was truncated. Re-read with a larger charLimit if needed."] } : {}),
     }
-  }
-
-  buildWakeContext(projectId: string, workspacePath: string | undefined, userQuery: string): string | undefined {
-    this.ensureProjectMemory(projectId, workspacePath)
-    if (!workspacePath) {
-      return "Project recall tools are unavailable because this project has no active workspace path."
-    }
-    const skills = this.skillInfos(workspacePath)
-    const scoredSkills = scoreSkillsForQuery(skills, userQuery)
-    const highConfidenceSkills = scoredSkills.filter((skill) => scoreSkillForQuery(skill, userQuery) >= SKILL_PREFLIGHT_SCORE_THRESHOLD).slice(0, 8)
-    const skillRows = highConfidenceSkills.map((skill) => `- ${skill.scope}:${skill.name} - ${skill.description}`)
-    const matchedSkill = highConfidenceSkills[0]
-    const matchedSkillLines = matchedSkill
-      ? [
-          "Required skill preflight for this latest request:",
-          `- Matched ${matchedSkill.scope}:${matchedSkill.name} from the current skill manifest.`,
-          `- Before using content-gathering tools such as list_project_resources, read, search, bash, or MCP tools, call skills({ operation: "read", scope: "${matchedSkill.scope}", name: "${matchedSkill.name}", path: "SKILL.md" }).`,
-          "- Use that skill as the procedure while treating the user's current request as primary.",
-        ]
-      : []
-    return [
-      "Stable project recall map. Use this as model-visible internal context, not as user-visible text.",
-      ...matchedSkillLines,
-      'Project notes, including the active state ledger, are available through project_docs({ operation: "read", area: "notes" }).',
-      'Project memory is available through project_docs({ operation: "read", area: "memory" }).',
-      'Repo doctrine is available through repo_docs({ operation: "read" }) or repo_docs({ operation: "search", query: "..." }).',
-      'Durable user profile and stable preferences are available through user_profile({ operation: "read" }). Use it when personalization, collaboration style, or user-specific context would materially improve the answer.',
-      'Skills are available through skills({ operation: "search", query: "..." }) and skills({ operation: "read", name: "...", scope: "..." }). Read a skill when required above or when a high-confidence listed match clearly applies. Do not read skills for generic overlap alone.',
-      ...(skillRows.length > 0 ? ["High-confidence skill matches for the latest request:", ...skillRows] : ["High-confidence skill matches for the latest request: none. Search skills only if the task is specialized or recurring."]),
-      'Bundled Playwright MCP is available through mcp_registry. For browser, web navigation, internet lookup with page interaction, or screenshot tasks, call mcp_registry({ operation: "check", serverId: "playwright" }) before choosing shell/browser fallbacks, then use returned mcp__playwright__ tools.',
-      "Do not assume project notes, memory, or repo docs were loaded until you call the relevant tool in this turn.",
-    ].join("\n")
   }
 
   async runGlobalMemoryAgent(input: GlobalMemoryAgentRunInput): Promise<TriggerMemoryAgentRunResponse> {
@@ -1638,7 +1605,7 @@ export class MemoryStore extends StoreBase {
   private listSkillsOutput(input: SkillsToolInput, workspacePath: string | undefined): SkillsToolOutput {
     const skills = this.skillInfos(workspacePath, input.scope).map(skillSummary)
     const offset = input.offset ?? 0
-    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
+    const limit = input.n ?? input.limit ?? DEFAULT_SEARCH_LIMIT
     const sliced = skills.slice(offset, offset + limit)
     return {
       operation: "list",
@@ -1651,6 +1618,7 @@ export class MemoryStore extends StoreBase {
         returnedLength: JSON.stringify(sliced).length,
         ...(offset + limit < skills.length ? { nextOffset: offset + limit } : {}),
       },
+      usageHint: 'Prefer skills({ operation: "describe", id: "<exact-listed-id>" }). Use name only if matching an exact listed name, and do not put a display name in id.',
     }
   }
 
@@ -1659,7 +1627,7 @@ export class MemoryStore extends StoreBase {
     const compiled = compileSearch(query, "keyword_any")
     const matches = this.skillInfos(workspacePath, input.scope).filter((skill) => compiled.score(`${skill.name}\n${skill.description}\n${skill.content}`) > 0)
     const offset = input.offset ?? 0
-    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT
+    const limit = input.n ?? input.limit ?? DEFAULT_SEARCH_LIMIT
     const sliced = matches.slice(offset, offset + limit).map(skillSummary)
     return {
       operation: "search",
@@ -1672,13 +1640,20 @@ export class MemoryStore extends StoreBase {
         returnedLength: JSON.stringify(sliced).length,
         ...(offset + limit < matches.length ? { nextOffset: offset + limit } : {}),
       },
+      usageHint: 'Prefer skills({ operation: "describe", id: "<exact-listed-id>" }). Use name only if matching an exact listed name, and do not put a display name in id.',
     }
   }
 
   private readSkill(input: SkillsToolInput, workspacePath: string | undefined): SkillsToolOutput {
-    const skill = this.findSkill(workspacePath, input.name ?? "", input.scope)
+    const skill = this.findSkillByHandle(workspacePath, input, input.scope)
     if (!skill) {
-      throw new SocratesError("skill_not_found", "Skill was not found.", { recoverable: true, details: { name: input.name, scope: input.scope } })
+      const available = this.skillInfos(workspacePath, input.scope)
+        .slice(0, 15)
+        .map((item) => ({ id: item.name, name: item.name, scope: item.scope, description: item.description }))
+      throw new SocratesError("skill_not_found", "Skill was not found. Call skills({ operation: \"list\" }) to see exact skill ids and names, then retry describe with one of those exact handles.", {
+        recoverable: true,
+        details: { id: input.id, name: input.name, scope: input.scope, available },
+      })
     }
     const relativePath = input.path?.replaceAll("\\", "/").replace(/^\/+/, "") || "SKILL.md"
     const targetPath = relativePath === "SKILL.md" ? skill.skillFile : safeJoin(skill.skillDir, relativePath)
@@ -1689,12 +1664,13 @@ export class MemoryStore extends StoreBase {
     const charLimit = input.charLimit ?? SKILL_CHAR_LIMIT
     const truncated = truncate(content, charLimit)
     return {
-      operation: "read",
+      operation: input.operation === "describe" ? "describe" : "read",
       skills: [skillSummary(skill)],
       content: truncated.text,
       path: path.relative(skill.root, targetPath).replaceAll(path.sep, "/"),
       totalMatches: 1,
       truncation: truncationFor(content, charLimit),
+      usageHint: "Follow this skill's instructions for the current task. If the skill references relative files, use normal workspace/resource tools only when those files are needed.",
     }
   }
 
@@ -1711,8 +1687,18 @@ export class MemoryStore extends StoreBase {
       .sort((left, right) => `${left.scope}:${left.name}`.localeCompare(`${right.scope}:${right.name}`))
   }
 
-  private findSkill(workspacePath: string | undefined, name: string, scope?: SkillScope): SkillInfo | undefined {
-    return this.skillInfos(workspacePath, scope).find((skill) => skill.name === name)
+  private findSkillByHandle(workspacePath: string | undefined, input: Pick<SkillsToolInput, "id" | "name">, scope?: SkillScope): SkillInfo | undefined {
+    const skills = this.skillInfos(workspacePath, scope)
+    const id = input.id?.trim()
+    if (id) {
+      const byId = skills.find((skill) => skill.name === id)
+      if (byId) return byId
+    }
+    const name = input.name?.trim()
+    if (name) {
+      return skills.find((skill) => skill.name === name)
+    }
+    return undefined
   }
 
   private availableExplicitSkillName(root: string, name: string): string {
@@ -2793,54 +2779,6 @@ const compileSearch = (query: string, _mode: "keyword_any"): { score: (text: str
 }
 
 const searchTerms = (query: string): string[] => query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 0) ?? []
-
-const skillPreflightStopTerms = new Set([
-  "a",
-  "an",
-  "and",
-  "answer",
-  "for",
-  "from",
-  "global",
-  "help",
-  "i",
-  "local",
-  "me",
-  "need",
-  "please",
-  "project",
-  "response",
-  "skill",
-  "skills",
-  "the",
-  "this",
-  "use",
-  "with",
-  "workspace",
-])
-
-const skillPreflightTerms = (query: string): string[] =>
-  searchTerms(query)
-    .map((term) => term.replace(/^['"]+|['"]+$/g, ""))
-    .filter((term) => term.length >= 3 && !skillPreflightStopTerms.has(term))
-
-const scoreSkillsForQuery = (skills: SkillInfo[], query: string): SkillInfo[] => {
-  const scopeRank: Record<SkillScope, number> = { project: 0, global: 1, builtin: 2 }
-  return [...skills].sort((left, right) => {
-    const rightScore = scoreSkillForQuery(right, query)
-    const leftScore = scoreSkillForQuery(left, query)
-    return rightScore - leftScore || scopeRank[left.scope] - scopeRank[right.scope] || left.name.localeCompare(right.name)
-  })
-}
-
-const scoreSkillForQuery = (skill: SkillInfo, query: string): number => {
-  const terms = skillPreflightTerms(query)
-  if (terms.length === 0) {
-    return 0
-  }
-  const manifestText = `${skill.name}\n${skill.description}`.toLowerCase()
-  return terms.filter((term) => manifestText.includes(term)).length * 50
-}
 
 const parseJsonObject = (text: string | null | undefined): Record<string, unknown> => {
   if (!text) {

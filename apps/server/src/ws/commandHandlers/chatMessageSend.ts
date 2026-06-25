@@ -41,22 +41,6 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
 const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.triggerTokens
 const docsMutationOperations = new Set(["edit", "patch_section"])
 
-const withWakeContext = (
-  history: ReturnType<SocratesStore["getConversationModelMessages"]>,
-  wakeContext: string | undefined,
-): ReturnType<SocratesStore["getConversationModelMessages"]> => {
-  if (!wakeContext?.trim()) {
-    return history
-  }
-  return [
-    {
-      role: "developer",
-      content: `<socrates_wake_context>\n${wakeContext}\n</socrates_wake_context>`,
-    },
-    ...history,
-  ]
-}
-
 const withLateDeveloperContext = (
   history: ReturnType<SocratesStore["getConversationModelMessages"]>,
   terminalContext: string | undefined,
@@ -195,9 +179,8 @@ export const handleChatMessageSend = async (
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
   store.ensureProjectMemory(projectId)
-  const wakeContext = store.buildWakeMemoryContext(projectId, command.payload.content)
   const terminalContext = store.terminalContextBrief(conversationId)
-  const modelHistory = withLateDeveloperContext(withWakeContext(history, wakeContext), terminalContext)
+  const modelHistory = withLateDeveloperContext(history, terminalContext)
   const promptContext = {
     ...store.getAgentContext(projectId),
   }
@@ -754,8 +737,37 @@ const createToolExecutors = (
     const tracker = activeTurns.getFileFreshness(turnId)
     return tracker ? { ...context, fileFreshness: tracker } : context
   }
+  let skillsDiscoverySeen = false
+  let skillsAvailable: boolean | undefined
+  const hasVisibleSkills = (): boolean => {
+    skillsAvailable ??= store.runSkillsTool(projectId, { operation: "list", n: 1 }).totalMatches > 0
+    return skillsAvailable
+  }
+  const requireSkillsDiscoveryForProjectResources = (toolName: "read" | "list_project_resources", resourcePath?: string): void => {
+    if (skillsDiscoverySeen || !hasVisibleSkills()) {
+      return
+    }
+    throw new SocratesError(
+      "skills_discovery_required",
+      `Before using ${toolName} for uploaded project resources, call skills({ operation: "list" }) first, then describe the exact relevant skill id if one applies. Retry ${toolName} after visible skill discovery.`,
+      {
+        recoverable: true,
+        details: {
+          toolName,
+          ...(resourcePath ? { resourcePath } : {}),
+          requiredTool: "skills",
+          requiredOperation: "list",
+        },
+      },
+    )
+  }
   return {
-  read: (input, context) => readWorkspacePath(input, withFreshness(context)),
+  read: (input, context) => {
+    if (isProjectResourceRead(input.path)) {
+      requireSkillsDiscoveryForProjectResources("read", input.path)
+    }
+    return readWorkspacePath(input, withFreshness(context))
+  },
   search: (input, context) => searchWorkspace(input, context),
   edit: (input, context) => editWorkspace(input, withFreshness(context)),
   apply_patch: (input, context) => applyPatchWorkspace(input, withFreshness(context)),
@@ -811,7 +823,13 @@ const createToolExecutors = (
   current_time: () => Promise.resolve(currentRuntimeTime()),
   trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
   tool_docs: (input) => Promise.resolve(store.runToolDocsTool(projectId, input)),
-  skills: (input) => Promise.resolve(store.runSkillsTool(projectId, input)),
+  skills: (input) => {
+    const output = store.runSkillsTool(projectId, input)
+    if (input.operation === "list" || input.operation === "describe" || input.operation === "search" || input.operation === "read") {
+      skillsDiscoverySeen = true
+    }
+    return Promise.resolve(output)
+  },
   project_docs: (input, context) =>
     docsMutationOperations.has(input.operation)
       ? withWorkspaceMutationLock(context.workspacePath, async () => store.runProjectDocsTool(projectId, context.workspacePath, input))
@@ -822,14 +840,17 @@ const createToolExecutors = (
       : Promise.resolve(store.runRepoDocsTool(projectId, context.workspacePath, input)),
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
   user_profile: (input) => Promise.resolve(store.runUserProfileTool(projectId, input)),
-  list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
+  list_project_resources: (input) => {
+    requireSkillsDiscoveryForProjectResources("list_project_resources")
+    return Promise.resolve(listProjectResourcesForTool(store, projectId, input))
+  },
   mcp_registry: async (input, context) => {
     if (!mcpRuntime) {
       throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
     }
     const output = await mcpRuntime.handleRegistryTool(input, { workspacePath: context.workspacePath })
     if (output.tools && output.tools.length > 0) {
-      options.exposeMcpServer?.(output.server?.id ?? input.serverName ?? input.serverId ?? input.preset ?? "playwright")
+      options.exposeMcpServer?.(output.server?.id ?? input.id ?? input.serverId ?? input.name ?? input.serverName ?? input.preset ?? "playwright")
     }
     return output
   },
@@ -991,6 +1012,11 @@ const createContextCompressionRuntime = (
     store.failContextCompactionSnapshot(input)
   },
 })
+
+const isProjectResourceRead = (inputPath: string): boolean => {
+  const normalized = inputPath.replaceAll("\\", "/")
+  return normalized.startsWith(".socrates/resources/") || normalized.includes("/.socrates/resources/")
+}
 
 const listProjectResourcesForTool = (
   store: SocratesStore,

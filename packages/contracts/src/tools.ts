@@ -1002,6 +1002,7 @@ export type SkillScope = z.infer<typeof skillScopeSchema>
 
 export const skillSummarySchema = z
   .object({
+    id: z.string().min(1).optional(),
     name: z.string().min(1),
     description: z.string().min(1),
     scope: skillScopeSchema,
@@ -1013,11 +1014,13 @@ export type SkillSummary = z.infer<typeof skillSummarySchema>
 
 export const skillsToolInputSchema = z
   .object({
-    operation: z.enum(["list", "search", "read"]),
+    operation: z.enum(["list", "describe", "search", "read"]),
     scope: skillScopeSchema.optional(),
-    name: z.string().min(1).optional(),
+    id: z.string().min(1).optional().describe("Canonical skill id copied from skills list. Prefer this for describe."),
+    name: z.string().min(1).optional().describe("Exact listed display/name handle. Use only when matching by name; do not copy a name into id."),
     path: z.string().min(1).optional(),
     query: z.string().min(1).optional(),
+    n: z.number().int().positive().max(35).optional(),
     limit: z.number().int().positive().max(50).optional(),
     offset: z.number().int().nonnegative().optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
@@ -1027,20 +1030,47 @@ export const skillsToolInputSchema = z
     if (input.operation === "search" && !input.query) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["query"], message: "search requires query." })
     }
-    if (input.operation === "read" && !input.name) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "read requires name." })
+    if ((input.operation === "read" || input.operation === "describe") && !input.id && !input.name) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: `${input.operation} requires id or name.` })
     }
   })
 export type SkillsToolInput = z.infer<typeof skillsToolInputSchema>
 
+export const skillsToolModelInputSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("list"),
+      scope: skillScopeSchema.optional(),
+      n: z.number().int().positive().max(35).optional(),
+      charLimit: z.number().int().positive().max(80_000).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("describe"),
+      scope: skillScopeSchema.optional(),
+      id: z.string().min(1).optional().describe("Canonical skill id copied from skills list. Prefer this for describe."),
+      name: z.string().min(1).optional().describe("Exact listed display/name handle. Use only when matching by name; do not copy a name into id."),
+      n: z.number().int().positive().max(35).optional(),
+      charLimit: z.number().int().positive().max(80_000).optional(),
+    })
+    .strict(),
+])
+  .superRefine((input, context) => {
+    if (input.operation === "describe" && !input.id && !input.name) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: "describe requires id or name." })
+    }
+  })
+
 export const skillsToolOutputSchema = z
   .object({
-    operation: z.enum(["list", "search", "read"]),
+    operation: z.enum(["list", "describe", "search", "read"]),
     skills: z.array(skillSummarySchema),
     content: z.string().optional(),
     path: z.string().min(1).optional(),
     totalMatches: z.number().int().nonnegative(),
     truncation: truncationMetadataSchema,
+    usageHint: z.string().optional(),
     warnings: z.array(z.string()).optional(),
   })
   .strict()
@@ -1456,6 +1486,9 @@ export type McpRegistryOperation = z.infer<typeof mcpRegistryOperationSchema>
 export const mcpRegistryToolInputSchema = z
   .object({
     operation: mcpRegistryOperationSchema,
+    id: z.string().min(1).optional().describe("Canonical MCP id copied from mcp_registry list. Prefer this for describe."),
+    name: z.string().min(1).optional().describe("Exact listed MCP display name. Use only when matching by name; do not copy a name into id."),
+    n: z.number().int().positive().max(35).optional(),
     serverId: z.string().min(1).optional(),
     serverName: z.string().min(1).optional(),
     preset: z.enum(["playwright"]).optional(),
@@ -1463,19 +1496,34 @@ export const mcpRegistryToolInputSchema = z
   .strict()
 export type McpRegistryToolInput = z.infer<typeof mcpRegistryToolInputSchema>
 
-export const mcpRegistryToolModelInputSchema = z
-  .object({
-    operation: mcpRegistryOperationSchema,
-    serverId: z.string().min(1).optional(),
-    serverName: z.string().min(1).optional(),
-    preset: z.enum(["playwright"]).optional(),
+export const mcpRegistryToolModelInputSchema = z.discriminatedUnion("operation", [
+  z
+    .object({
+      operation: z.literal("list"),
+      n: z.number().int().positive().max(35).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("describe"),
+      id: z.string().min(1).optional().describe("Canonical MCP id copied from mcp_registry list. Prefer this for describe."),
+      name: z.string().min(1).optional().describe("Exact listed MCP display name. Use only when matching by name; do not copy a name into id."),
+      n: z.number().int().positive().max(35).optional(),
+    })
+    .strict(),
+])
+  .superRefine((input, context) => {
+    if (input.operation === "describe" && !input.id && !input.name) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: "describe requires id or name." })
+    }
   })
-  .strict()
 
 export const mcpRegistryServerSchema = z
   .object({
     id: z.string().min(1),
+    name: z.string().min(1).optional(),
     label: z.string().min(1),
+    description: z.string().optional(),
     scope: mcpServerScopeSchema.optional(),
     configured: z.boolean(),
     enabled: z.boolean(),
@@ -1483,6 +1531,8 @@ export const mcpRegistryServerSchema = z
     requiresSecrets: z.boolean(),
     status: z.enum(["available", "missing", "failed", "unknown"]),
     toolCount: z.number().int().nonnegative().optional(),
+    toolPreview: z.array(z.string()).optional(),
+    moreToolsAvailable: z.boolean().optional(),
     configPath: z.string().min(1).optional(),
     envPath: z.string().min(1).optional(),
     warnings: z.array(z.string()).optional(),
@@ -1509,6 +1559,7 @@ export const mcpRegistryToolOutputSchema = z
     docs: z.string().optional(),
     configured: z.boolean().optional(),
     summary: z.string(),
+    usageHint: z.string().optional(),
     warnings: z.array(z.string()).optional(),
   })
   .strict()

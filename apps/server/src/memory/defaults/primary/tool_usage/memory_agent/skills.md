@@ -11,7 +11,7 @@ index_tags: [tool_usage]
 <!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
 ## Purpose
 
-`skills` lets the Global Memory Agent read reusable workflow guidance.
+`skills` lets the Global Memory Agent list and describe reusable workflow guidance.
 
 Skills are read-only background guidance for scheduled memory runs and are not evidence for memory edits.
 <!-- /socrates:section -->
@@ -28,17 +28,16 @@ Skills are read-only background guidance for scheduled memory runs and are not e
 <!-- socrates:section id="inputs" kind="schema" tags="tools" -->
 ## Inputs
 
-- `operation: "list"` lists skills.
-- `operation: "search"` searches by name or description.
-- `operation: "read"` reads a specific skill by `name` and optional `scope`.
-- `query`, `limit`, `offset`, and `charLimit` control search and output size.
+- `operation: "list"` lists skills with exact ids, names, scopes, and descriptions.
+- `operation: "describe"` reads a specific skill by exact `id` or `name` and optional `scope`.
+- `n` controls list size; `charLimit` controls described skill content size.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
 ## Workflow
 
-1. Search or list skills when reusable guidance may apply.
-2. Read the most specific skill before relying on it.
+1. List skills when reusable guidance may apply.
+2. Describe the most specific skill before relying on it.
 3. Use `trace_retrieve` for exact evidence before any memory write.
 4. If a new or changed skill seems useful, report the candidate in `Skipped`; scheduled runs must not edit skills.
 <!-- /socrates:section -->
@@ -47,7 +46,7 @@ Skills are read-only background guidance for scheduled memory runs and are not e
 ## Failure Handling
 
 - If no skill matches, continue with trace evidence and existing memory surfaces.
-- If search is too broad, narrow by workflow name, tool name, or domain.
+- If the list is too broad, narrow by scope or describe only the strongest exact match.
 - If a skill is missing or stale, report the candidate improvement in `Skipped`.
 - If an attempted skill write is rejected, do not retry; scheduled runs cannot update skills.
 <!-- /socrates:section -->

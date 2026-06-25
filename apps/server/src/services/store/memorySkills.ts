@@ -90,6 +90,7 @@ export const uniqueSkillName = (root: string, desiredName: string): string => {
 }
 
 export const skillSummary = (skill: SkillInfo): SkillSummary => ({
+  id: skill.name,
   name: skill.name,
   description: skill.description,
   scope: skill.scope,

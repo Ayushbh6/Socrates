@@ -119,8 +119,11 @@ import {
   editFilesToolOutputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
+  mcpRegistryToolInputSchema,
   mcpRegistryToolModelInputSchema,
+  mcpRegistryToolOutputSchema,
   normalizedToolCallSchema,
+  skillsToolModelInputSchema,
   skillsToolInputSchema,
   skillsToolOutputSchema,
   toolDocsToolInputSchema,
@@ -1343,8 +1346,32 @@ describe("tool contracts", () => {
     ).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", conversationId: "conv_1", startTurnNo: 2 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", startTurnNo: 2 }).success).toBe(false)
-    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(true)
-    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverId: "srv_1" }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "list", n: 15 }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "list", id: "playwright" }).success).toBe(false)
+    expect(mcpRegistryToolInputSchema.safeParse({ operation: "list", id: "playwright" }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "describe", id: "playwright" }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(false)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "describe" }).success).toBe(false)
+    expect(
+      mcpRegistryToolOutputSchema.safeParse({
+        operation: "list",
+        configPath: "/tmp/mcp.json",
+        envPath: "/tmp/.env",
+        servers: [
+          {
+            id: "playwright",
+            name: "Playwright MCP",
+            label: "Playwright MCP",
+            configured: true,
+            enabled: true,
+            requiresSecrets: false,
+            status: "unknown",
+          },
+        ],
+        summary: "Found 1 configured MCP server.",
+        usageHint: "Prefer describe by exact-listed-id.",
+      }).success,
+    ).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", turnNo: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", role: "system" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ turnId: "turn_1" }).success).toBe(false)
@@ -1417,9 +1444,15 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(skillsToolInputSchema.safeParse({ operation: "list", scope: "project" }).success).toBe(true)
+    expect(skillsToolInputSchema.safeParse({ operation: "list", id: "memory-review" }).success).toBe(true)
     expect(skillsToolInputSchema.safeParse({ operation: "search", query: "memory" }).success).toBe(true)
     expect(skillsToolInputSchema.safeParse({ operation: "read", name: "memory-review", path: "SKILL.md" }).success).toBe(true)
     expect(skillsToolInputSchema.safeParse({ operation: "read" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "list", n: 15 }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "list", id: "memory-review" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "describe", id: "memory-review" }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "search", query: "memory" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "describe" }).success).toBe(false)
     expect(skillsToolOutputSchema.safeParse({ operation: "list", skills: [skill], totalMatches: 1, truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 } }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "read", area: "memory" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "search", area: "notes", query: "decision" }).success).toBe(true)

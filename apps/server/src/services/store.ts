@@ -257,10 +257,6 @@ export class SocratesStore {
     this.memory.ensureProjectMemory(projectId, this.primaryWorkspacePathOrUndefined(projectId))
   }
 
-  buildWakeMemoryContext(projectId: string, userQuery: string): string | undefined {
-    return this.memory.buildWakeContext(projectId, this.primaryWorkspacePathOrUndefined(projectId), userQuery)
-  }
-
   recordProjectStateLedgerTurn(
     projectId: string,
     conversationId: string,

@@ -77,6 +77,10 @@ describe("SocratesAgent", () => {
       "mcp_registry",
     ])
     expect(tools.map((tool) => tool.name).some((name) => name.startsWith("mcp__playwright__"))).toBe(false)
+    expect(tools.find((tool) => tool.name === "mcp_registry")?.description).toContain("helper, extension, server")
+    expect(tools.find((tool) => tool.name === "mcp_registry")?.description).toContain("canonical id")
+    expect(tools.find((tool) => tool.name === "skills")?.description).toContain("saved workflow")
+    expect(tools.find((tool) => tool.name === "skills")?.description).toContain("canonical id")
     expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(
       tools
@@ -1758,7 +1762,12 @@ describe("SocratesAgent", () => {
     expect(request.system).not.toContain("Workspace command environment:")
     expect(request.system).not.toContain("Semantic retrieval status:")
     expect(request.system).toContain("Playwright is bundled by default")
-    expect(request.system).toContain("mcp__playwright__")
+    expect(request.system).toContain('mcp_registry({operation:"list"|"describe"')
+    expect(request.system).toContain("Do not simulate extensions")
+    expect(request.system).toContain("ask the echo helper")
+    expect(request.system).toContain("Do not simulate skills")
+    expect(request.system).toContain("named checklist or saved project workflow")
+    expect(request.system).toContain("After any list operation, prefer canonical ids")
     expect(request.system).toContain("exact is lexical")
     expect(request.system).toContain("audit is for tools")
     expect(request.system).toContain("Do not begin with guessed absolute cd paths")

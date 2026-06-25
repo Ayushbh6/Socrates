@@ -7,19 +7,15 @@ import { McpRuntime } from "./index"
 const tempHome = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-test-"))
 
 describe("McpRuntime", () => {
-  it("configures the bundled Playwright preset without secrets", async () => {
+  it("ensures the bundled Playwright server without secrets", async () => {
     const home = tempHome()
     const runtime = new McpRuntime({ socratesHome: home })
 
-    const configured = await runtime.handleRegistryTool({ operation: "configure", preset: "playwright" })
-    expect(configured.configured).toBe(true)
-    expect(configured.server?.id).toBe("playwright")
-    expect(configured.server?.requiresSecrets).toBe(false)
-    expect(fs.existsSync(path.join(home, "mcp.json"))).toBe(true)
-    expect(fs.existsSync(path.join(home, ".env"))).toBe(true)
-
     const listed = await runtime.handleRegistryTool({ operation: "list" })
     expect(listed.servers?.[0]?.id).toBe("playwright")
+    expect(listed.servers?.[0]?.requiresSecrets).toBe(false)
+    expect(fs.existsSync(path.join(home, "mcp.json"))).toBe(true)
+    expect(fs.existsSync(path.join(home, ".env"))).toBe(true)
     expect(JSON.stringify(fs.readFileSync(path.join(home, "mcp.json"), "utf8"))).not.toContain("API_KEY")
   })
 
@@ -36,13 +32,15 @@ describe("McpRuntime", () => {
 
     expect(listed.servers?.map((server) => server.id).sort()).toEqual(["fake", "playwright"])
     expect(listed.server).toBeUndefined()
+    expect(listed.summary).toContain("canonical id")
+    expect(listed.usageHint).toContain("exact-listed-id")
   })
 
   it("describes Playwright with concise registry docs", async () => {
     const runtime = new McpRuntime({ socratesHome: tempHome() })
-    const described = await runtime.handleRegistryTool({ operation: "describe", serverId: "playwright" })
+    const described = await runtime.handleRegistryTool({ operation: "describe", id: "playwright" })
     expect(described.docs).toContain("Use Playwright MCP")
-    expect(described.docs).toContain('serverId="playwright"')
+    expect(described.docs).toContain('id="playwright"')
     expect(described.docs).not.toContain('serverName="playwright"')
     expect(described.summary).toContain("playwright")
   })
@@ -51,7 +49,6 @@ describe("McpRuntime", () => {
     const home = tempHome()
     const runtime = new McpRuntime({ socratesHome: home })
 
-    await runtime.handleRegistryTool({ operation: "configure", preset: "playwright" })
     fs.mkdirSync(path.join(home, "mcp", "registry"), { recursive: true })
     fs.writeFileSync(
       path.join(home, "mcp", "registry", "playwright.tools.json"),
@@ -98,7 +95,6 @@ describe("McpRuntime", () => {
     const home = tempHome()
     const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-project-")))
     const runtime = new McpRuntime({ socratesHome: home })
-    await runtime.handleRegistryTool({ operation: "configure", preset: "playwright" })
 
     runtime.upsertManagedServer(
       "project",
@@ -136,27 +132,36 @@ describe("McpRuntime", () => {
       { workspacePath: workspace },
     )
 
-    const checked = await runtime.handleRegistryTool({ operation: "check", serverName: "Project Fake MCP" }, { workspacePath: workspace })
-    expect(checked.server?.id).toBe("projectfake")
-    expect(checked.tools?.map((tool) => tool.dynamicName)).toContain("mcp__projectfake__record")
+    const describedByName = await runtime.handleRegistryTool({ operation: "describe", name: "Project Fake MCP" }, { workspacePath: workspace })
+    expect(describedByName.server?.id).toBe("projectfake")
+    expect(describedByName.tools?.map((tool) => tool.dynamicName)).toContain("mcp__projectfake__record")
     expect(fs.existsSync(path.join(workspace, ".socrates", "mcp", "registry", "projectfake.tools.json"))).toBe(true)
     expect(fs.existsSync(path.join(workspace, ".socrates", "mcp", "registry", "Project Fake MCP.tools.json"))).toBe(false)
 
     const [dynamicTool] = runtime.getDynamicToolDefinitions("Project Fake MCP", { workspacePath: workspace })
     expect(dynamicTool?.name).toBe("mcp__projectfake__record")
 
-    const byIdAndName = await runtime.handleRegistryTool(
-      { operation: "check", serverId: "projectfake", serverName: "Project Fake MCP" },
-      { workspacePath: workspace },
-    )
+    const byIdAndName = await runtime.handleRegistryTool({ operation: "describe", id: "projectfake", name: "Project Fake MCP" }, { workspacePath: workspace })
     expect(byIdAndName.server?.id).toBe("projectfake")
 
-    await expect(
-      Promise.resolve().then(() => runtime.handleRegistryTool({ operation: "check", serverId: "projectfake", serverName: "Other MCP" }, { workspacePath: workspace })),
-    ).rejects.toMatchObject({
-      code: "mcp_server_identity_conflict",
-      recoverable: true,
-    })
+    const byDuplicatedId = await runtime.handleRegistryTool({ operation: "describe", id: "projectfake", name: "projectfake" }, { workspacePath: workspace })
+    expect(byDuplicatedId.server?.id).toBe("projectfake")
+
+    const byExactNameInId = await runtime.handleRegistryTool({ operation: "describe", id: "Project Fake MCP" }, { workspacePath: workspace })
+    expect(byExactNameInId.server?.id).toBe("projectfake")
+    expect(byExactNameInId.tools?.map((tool) => tool.dynamicName)).toContain("mcp__projectfake__record")
+
+    const mismatchedName = await runtime.handleRegistryTool({ operation: "describe", id: "projectfake", name: "Other MCP" }, { workspacePath: workspace })
+    expect(mismatchedName.server).toBeUndefined()
+    expect(mismatchedName.summary).toContain("Retry with")
+
+    const duplicatedLabel = await runtime.handleRegistryTool({ operation: "describe", id: "Project Fake MCP", name: "Project Fake MCP" }, { workspacePath: workspace })
+    expect(duplicatedLabel.server?.id).toBe("projectfake")
+    expect(duplicatedLabel.tools?.map((tool) => tool.dynamicName)).toContain("mcp__projectfake__record")
+
+    const missing = await runtime.handleRegistryTool({ operation: "describe", name: "Other MCP" }, { workspacePath: workspace })
+    expect(missing.server).toBeUndefined()
+    expect(missing.summary).toContain("No MCP server matched")
   })
 
   it("reuses dynamic MCP clients within a conversation and runs them in the workspace cwd", async () => {
