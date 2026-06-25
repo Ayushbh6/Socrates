@@ -6,13 +6,19 @@ import {
   buildGlobalSkillRequestSchema,
   buildProjectSkillRequestSchema,
   checkProjectEmbeddingsRequestSchema,
+  checkMcpServerRequestSchema,
+  checkMcpServerResponseSchema,
   checkProviderCredentialRequestSchema,
   configureProjectEmbeddingsRequestSchema,
   createConversationMessageRequestSchema,
   createConversationRequestSchema,
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
+  deleteMcpServerRequestSchema,
+  deleteMcpServerResponseSchema,
   inspectWorkspaceRequestSchema,
+  listMcpServersQuerySchema,
+  listMcpServersResponseSchema,
   getMemoryAgentFileContentResponseSchema,
   getMemoryAgentRunResponseSchema,
   listMemoryAgentFilesResponseSchema,
@@ -26,11 +32,16 @@ import {
   providerIdSchema,
   setProviderCredentialSessionRequestSchema,
   updateMemoryAgentGlobalSettingsRequestSchema,
+  updateMcpServerRequestSchema,
+  updateMcpServerResponseSchema,
   updateProjectWorkspaceRequestSchema,
   updateConversationRequestSchema,
+  upsertMcpServerRequestSchema,
+  upsertMcpServerResponseSchema,
   upsertProjectInstructionsRequestSchema,
 } from "@socrates/contracts"
 import { listModels } from "@socrates/core"
+import type { McpRuntime } from "@socrates/mcp"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
 import type { SocratesStore, UploadedResourceInput } from "../services/store"
@@ -43,6 +54,7 @@ const attachmentParamsSchema = z.object({ projectId: z.string().min(1), conversa
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 const notificationParamsSchema = z.object({ notificationId: z.string().min(1) }).strict()
 const memoryAgentRunParamsSchema = z.object({ runId: z.string().min(1) }).strict()
+const mcpServerParamsSchema = z.object({ serverId: z.string().min(1) }).strict()
 const memoryAgentRunsQuerySchema = z
   .object({
     limit: z.coerce.number().int().positive().max(100).optional(),
@@ -83,6 +95,13 @@ const parseParams = <T>(schema: z.ZodType<T>, params: unknown): T => {
   return parsed.data
 }
 
+const requiredProjectId = (projectId: string | undefined): string => {
+  if (!projectId) {
+    throw new SocratesError("project_id_required", "projectId is required for project-scoped MCP servers.", { recoverable: true })
+  }
+  return projectId
+}
+
 const handleRouteError = (error: unknown) => {
   const api = toApiError(error)
   const statusCode =
@@ -92,6 +111,9 @@ const handleRouteError = (error: unknown) => {
     api.code === "workspace_path_not_directory" ||
     api.code === "conversation_title_required" ||
     api.code === "message_content_required" ||
+    api.code === "project_id_required" ||
+    api.code === "mcp_project_workspace_required" ||
+    api.code === "mcp_server_not_configured" ||
         api.code === "resource_file_required" ||
         api.code === "attachment_file_required" ||
         api.code === "attachment_type_not_supported" ||
@@ -122,6 +144,7 @@ export const registerHttpRoutes = async (
   app: FastifyInstance,
   store: SocratesStore,
   credentials: ProviderCredentialStore,
+  mcpRuntime?: McpRuntime,
   hooks: HttpRouteHooks = {},
 ): Promise<void> => {
   app.get("/health", async () => ok({ status: "ok" }))
@@ -129,6 +152,81 @@ export const registerHttpRoutes = async (
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
 
   app.get("/api/models", async () => ok(listModels()))
+
+  app.get("/api/mcp", async (request, reply) => {
+    try {
+      if (!mcpRuntime) {
+        throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      }
+      const query = parseBody(listMcpServersQuerySchema, request.query)
+      const workspacePath = query.projectId ? store.getPrimaryWorkspacePath(query.projectId) : undefined
+      const servers = mcpRuntime.listManagedServers({ workspacePath })
+      return ok(listMcpServersResponseSchema.parse({ servers: query.scope ? servers.filter((server) => server.scope === query.scope) : servers }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/mcp/servers", async (request, reply) => {
+    try {
+      if (!mcpRuntime) {
+        throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      }
+      const input = parseBody(upsertMcpServerRequestSchema, request.body)
+      const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : undefined
+      return ok(upsertMcpServerResponseSchema.parse({ server: mcpRuntime.upsertManagedServer(input.scope, input.server, { workspacePath }) }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/mcp/servers/:serverId", async (request, reply) => {
+    try {
+      if (!mcpRuntime) {
+        throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      }
+      const { serverId } = parseParams(mcpServerParamsSchema, request.params)
+      const input = parseBody(updateMcpServerRequestSchema, request.body)
+      const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : undefined
+      return ok(updateMcpServerResponseSchema.parse({ server: mcpRuntime.updateManagedServer(input.scope, serverId, input, { workspacePath }) }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.delete("/api/mcp/servers/:serverId", async (request, reply) => {
+    try {
+      if (!mcpRuntime) {
+        throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      }
+      const { serverId } = parseParams(mcpServerParamsSchema, request.params)
+      const input = parseBody(deleteMcpServerRequestSchema, request.body)
+      const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : undefined
+      mcpRuntime.deleteManagedServer(input.scope, serverId, { workspacePath })
+      return ok(deleteMcpServerResponseSchema.parse({ deletedServerId: serverId, scope: input.scope }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/mcp/servers/:serverId/check", async (request, reply) => {
+    try {
+      if (!mcpRuntime) {
+        throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      }
+      const { serverId } = parseParams(mcpServerParamsSchema, request.params)
+      const input = parseBody(checkMcpServerRequestSchema, request.body)
+      const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : input.projectId ? store.getPrimaryWorkspacePath(input.projectId) : undefined
+      return ok(checkMcpServerResponseSchema.parse(await mcpRuntime.checkManagedServer(serverId, { scope: input.scope, workspacePath })))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
 
   app.get("/api/notifications", async (request, reply) => {
     try {

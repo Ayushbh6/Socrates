@@ -15,7 +15,7 @@ import {
   userSchema,
 } from "./entities"
 import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
-import { skillScopeSchema, skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
+import { mcpRegistryServerSchema, mcpRegistryToolDescriptorSchema, mcpServerScopeSchema, skillScopeSchema, skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const getMeResponseSchema = z
   .object({
@@ -360,6 +360,108 @@ export const buildGlobalSkillResponseSchema = z
   })
   .strict()
 export type BuildGlobalSkillResponse = z.infer<typeof buildGlobalSkillResponseSchema>
+
+export const mcpServerConfigInputSchema = z
+  .object({
+    id: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/, "Use lowercase letters, numbers, underscores, or hyphens."),
+    label: z.string().min(1).max(120).optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).max(40).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    enabled: z.boolean().optional(),
+    requiresSecrets: z.boolean().optional(),
+  })
+  .strict()
+export type McpServerConfigInput = z.infer<typeof mcpServerConfigInputSchema>
+
+export const mcpServerStatusSchema = mcpRegistryServerSchema.extend({
+  scope: mcpServerScopeSchema,
+})
+export type McpServerStatus = z.infer<typeof mcpServerStatusSchema>
+
+export const listMcpServersQuerySchema = z
+  .object({
+    projectId: z.string().min(1).optional(),
+    scope: mcpServerScopeSchema.optional(),
+  })
+  .strict()
+export type ListMcpServersQuery = z.infer<typeof listMcpServersQuerySchema>
+
+export const listMcpServersResponseSchema = z
+  .object({
+    servers: z.array(mcpServerStatusSchema),
+  })
+  .strict()
+export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
+
+export const upsertMcpServerRequestSchema = z
+  .object({
+    scope: mcpServerScopeSchema,
+    projectId: z.string().min(1).optional(),
+    server: mcpServerConfigInputSchema,
+  })
+  .strict()
+export type UpsertMcpServerRequest = z.infer<typeof upsertMcpServerRequestSchema>
+
+export const upsertMcpServerResponseSchema = z
+  .object({
+    server: mcpServerStatusSchema,
+  })
+  .strict()
+export type UpsertMcpServerResponse = z.infer<typeof upsertMcpServerResponseSchema>
+
+export const updateMcpServerRequestSchema = z
+  .object({
+    scope: mcpServerScopeSchema,
+    projectId: z.string().min(1).optional(),
+    enabled: z.boolean().optional(),
+  })
+  .strict()
+export type UpdateMcpServerRequest = z.infer<typeof updateMcpServerRequestSchema>
+
+export const updateMcpServerResponseSchema = z
+  .object({
+    server: mcpServerStatusSchema,
+  })
+  .strict()
+export type UpdateMcpServerResponse = z.infer<typeof updateMcpServerResponseSchema>
+
+export const deleteMcpServerRequestSchema = z
+  .object({
+    scope: mcpServerScopeSchema,
+    projectId: z.string().min(1).optional(),
+  })
+  .strict()
+export type DeleteMcpServerRequest = z.infer<typeof deleteMcpServerRequestSchema>
+
+export const deleteMcpServerResponseSchema = z
+  .object({
+    deletedServerId: z.string().min(1),
+    scope: mcpServerScopeSchema,
+  })
+  .strict()
+export type DeleteMcpServerResponse = z.infer<typeof deleteMcpServerResponseSchema>
+
+export const checkMcpServerRequestSchema = z
+  .object({
+    scope: mcpServerScopeSchema.optional(),
+    projectId: z.string().min(1).optional(),
+  })
+  .strict()
+export type CheckMcpServerRequest = z.infer<typeof checkMcpServerRequestSchema>
+
+export const checkMcpServerResponseSchema = z
+  .object({
+    server: mcpServerStatusSchema,
+    tools: z.array(mcpRegistryToolDescriptorSchema),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type CheckMcpServerResponse = z.infer<typeof checkMcpServerResponseSchema>
 
 export const updateMemoryAgentGlobalSettingsResponseSchema = z
   .object({

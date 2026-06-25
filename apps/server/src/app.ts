@@ -55,7 +55,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   })
 
   await registerWebSocketRoutes(app, store, terminals, agent, mcpRuntime, titleProvider)
-  await registerHttpRoutes(app, store, credentials, {
+  await registerHttpRoutes(app, store, credentials, mcpRuntime, {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),
   })

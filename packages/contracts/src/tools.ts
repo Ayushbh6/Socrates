@@ -1447,6 +1447,9 @@ export const listProjectResourcesToolOutputSchema = z
   .strict()
 export type ListProjectResourcesToolOutput = z.infer<typeof listProjectResourcesToolOutputSchema>
 
+export const mcpServerScopeSchema = z.enum(["global", "project"])
+export type McpServerScope = z.infer<typeof mcpServerScopeSchema>
+
 export const mcpRegistryOperationSchema = z.enum(["list", "describe", "check", "configure"])
 export type McpRegistryOperation = z.infer<typeof mcpRegistryOperationSchema>
 
@@ -1472,6 +1475,7 @@ export const mcpRegistryServerSchema = z
   .object({
     id: z.string().min(1),
     label: z.string().min(1),
+    scope: mcpServerScopeSchema.optional(),
     configured: z.boolean(),
     enabled: z.boolean(),
     bundled: z.boolean().optional(),

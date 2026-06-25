@@ -6,12 +6,14 @@ import {
   buildProjectSkillResponseSchema,
   checkProjectEmbeddingsResponseSchema,
   checkProviderCredentialResponseSchema,
+  checkMcpServerResponseSchema,
   completeOnboardingResponseSchema,
   configureProjectEmbeddingsResponseSchema,
   createConversationMessageResponseSchema,
   createConversationResponseSchema,
   createProjectResponseSchema,
   deleteConversationResponseSchema,
+  deleteMcpServerResponseSchema,
   deleteProviderCredentialResponseSchema,
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
@@ -26,6 +28,7 @@ import {
   listNotificationsResponseSchema,
   listMemoryAgentFilesResponseSchema,
   listMemoryAgentRunsResponseSchema,
+  listMcpServersResponseSchema,
   listProjectsResponseSchema,
   listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
@@ -35,11 +38,13 @@ import {
   reindexProjectEmbeddingsResponseSchema,
   setProviderCredentialSessionResponseSchema,
   updateMemoryAgentGlobalSettingsResponseSchema,
+  updateMcpServerResponseSchema,
   triggerMemoryAgentRunResponseSchema,
   uploadProjectResourcesResponseSchema,
   updateProjectWorkspaceResponseSchema,
   updateConversationResponseSchema,
   uploadConversationAttachmentsResponseSchema,
+  upsertMcpServerResponseSchema,
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
@@ -49,6 +54,8 @@ import {
   type BuildProjectSkillResponse,
   type CheckProjectEmbeddingsRequest,
   type CheckProjectEmbeddingsResponse,
+  type CheckMcpServerRequest,
+  type CheckMcpServerResponse,
   type CheckProviderCredentialRequest,
   type CheckProviderCredentialResponse,
   type CompleteOnboardingRequest,
@@ -62,6 +69,8 @@ import {
   type CreateProjectRequest,
   type CreateProjectResponse,
   type DeleteConversationResponse,
+  type DeleteMcpServerRequest,
+  type DeleteMcpServerResponse,
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
@@ -77,6 +86,7 @@ import {
   type ListNotificationsResponse,
   type ListMemoryAgentFilesResponse,
   type ListMemoryAgentRunsResponse,
+  type ListMcpServersResponse,
   type ListProjectsResponse,
   type MarkAllNotificationsReadResponse,
   type MarkNotificationReadResponse,
@@ -89,6 +99,8 @@ import {
   type SetProviderCredentialSessionResponse,
   type UpdateMemoryAgentGlobalSettingsRequest,
   type UpdateMemoryAgentGlobalSettingsResponse,
+  type UpdateMcpServerRequest,
+  type UpdateMcpServerResponse,
   type TriggerMemoryAgentRunResponse,
   type UpdateProjectWorkspaceRequest,
   type UpdateProjectWorkspaceResponse,
@@ -96,6 +108,8 @@ import {
   type UpdateConversationResponse,
   type UploadConversationAttachmentsResponse,
   type UploadProjectResourcesResponse,
+  type UpsertMcpServerRequest,
+  type UpsertMcpServerResponse,
   type UpsertProjectInstructionsRequest,
   type UpsertProjectInstructionsResponse,
 } from "@socrates/contracts";
@@ -330,6 +344,57 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<BuildGlobalSkillResponse>,
+
+  listMcpServers: (input: { projectId?: string; scope?: "global" | "project" } = {}) => {
+    const params = new URLSearchParams();
+    if (input.projectId) {
+      params.set("projectId", input.projectId);
+    }
+    if (input.scope) {
+      params.set("scope", input.scope);
+    }
+    const query = params.toString();
+    return request<typeof listMcpServersResponseSchema>(
+      `/api/mcp${query ? `?${query}` : ""}`,
+      listMcpServersResponseSchema,
+    ) as Promise<ListMcpServersResponse>;
+  },
+
+  upsertMcpServer: (input: UpsertMcpServerRequest) =>
+    request<typeof upsertMcpServerResponseSchema>("/api/mcp/servers", upsertMcpServerResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }) as Promise<UpsertMcpServerResponse>,
+
+  updateMcpServer: (serverId: string, input: UpdateMcpServerRequest) =>
+    request<typeof updateMcpServerResponseSchema>(
+      `/api/mcp/servers/${encodeURIComponent(serverId)}`,
+      updateMcpServerResponseSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpdateMcpServerResponse>,
+
+  deleteMcpServer: (serverId: string, input: DeleteMcpServerRequest) =>
+    request<typeof deleteMcpServerResponseSchema>(
+      `/api/mcp/servers/${encodeURIComponent(serverId)}`,
+      deleteMcpServerResponseSchema,
+      {
+        method: "DELETE",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<DeleteMcpServerResponse>,
+
+  checkMcpServer: (serverId: string, input: CheckMcpServerRequest) =>
+    request<typeof checkMcpServerResponseSchema>(
+      `/api/mcp/servers/${encodeURIComponent(serverId)}/check`,
+      checkMcpServerResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<CheckMcpServerResponse>,
 
   completeOnboarding: (input: CompleteOnboardingRequest) =>
     request<typeof completeOnboardingResponseSchema>("/api/onboarding", completeOnboardingResponseSchema, {

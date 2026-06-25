@@ -8,6 +8,7 @@ import { StartChatAction } from "@/components/dashboard/StartChatAction";
 import { SemanticSearchPanel } from "@/components/dashboard/SemanticSearchPanel";
 import { SkillsPanel } from "@/components/dashboard/SkillsPanel";
 import { WorkspacePanel } from "@/components/dashboard/WorkspacePanel";
+import { McpServersPanel } from "@/components/mcp/McpServersPanel";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
 import type { GetProjectResponse } from "@socrates/contracts";
@@ -271,6 +272,12 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               projectName={data?.project.name ?? "this project"}
               isBuilding={isBuildingSkill}
               onBuild={handleBuildSkill}
+            />
+            <McpServersPanel
+              scope="project"
+              projectId={projectId}
+              title="MCP servers"
+              description="Project-specific MCP tools, with global servers inherited automatically."
             />
             {data && (
               <SemanticSearchPanel

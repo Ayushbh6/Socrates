@@ -49,6 +49,61 @@ describe("McpRuntime", () => {
     expect(tool?.inputSchema.safeParse({ unexpected: "allowed" }).success).toBe(true)
   })
 
+  it("repairs stale bundled Playwright runtime paths", async () => {
+    const home = tempHome()
+    fs.mkdirSync(home, { recursive: true })
+    fs.writeFileSync(
+      path.join(home, "mcp.json"),
+      `${JSON.stringify(
+        {
+          servers: {
+            playwright: {
+              command: path.join(home, "runtimes", "v0.1.2", "darwin-arm64", "node", "bin", "node"),
+              args: [path.join(home, "runtimes", "v0.1.2", "darwin-arm64", "server", "node_modules", "@playwright", "mcp", "cli.js")],
+              enabled: true,
+              requiresSecrets: false,
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    )
+    const runtime = new McpRuntime({ socratesHome: home })
+
+    await runtime.handleRegistryTool({ operation: "list" })
+
+    const repaired = JSON.parse(fs.readFileSync(path.join(home, "mcp.json"), "utf8")) as { servers: { playwright: { command: string; args: string[] } } }
+    expect(repaired.servers.playwright.command).toBe(process.execPath)
+    expect(repaired.servers.playwright.args[0]).toContain("@playwright/mcp")
+    expect(fs.existsSync(repaired.servers.playwright.args[0] as string)).toBe(true)
+  })
+
+  it("stores project MCP servers separately and exposes project dynamic tools", async () => {
+    const home = tempHome()
+    const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-project-")))
+    const runtime = new McpRuntime({ socratesHome: home })
+    await runtime.handleRegistryTool({ operation: "configure", preset: "playwright" })
+
+    runtime.upsertManagedServer(
+      "project",
+      {
+        id: "projectfake",
+        command: process.execPath,
+        args: [path.join(home, "fake-mcp.cjs")],
+      },
+      { workspacePath: workspace },
+    )
+    fs.mkdirSync(path.join(workspace, ".socrates", "mcp", "registry"), { recursive: true })
+    fs.writeFileSync(path.join(workspace, ".socrates", "mcp", "registry", "projectfake.tools.json"), `${JSON.stringify([{ name: "noop" }], null, 2)}\n`)
+
+    const servers = runtime.listManagedServers({ workspacePath: workspace })
+    expect(servers.some((server) => server.id === "projectfake" && server.scope === "project")).toBe(true)
+    expect(fs.existsSync(path.join(workspace, ".socrates", "mcp.json"))).toBe(true)
+    expect(runtime.getDynamicToolDefinitions("projectfake", { workspacePath: workspace })[0]?.name).toBe("mcp__projectfake__noop")
+    expect(runtime.getDynamicToolDefinitions("projectfake")).toEqual([])
+  })
+
   it("reuses dynamic MCP clients within a conversation and runs them in the workspace cwd", async () => {
     const home = tempHome()
     const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-workspace-")))

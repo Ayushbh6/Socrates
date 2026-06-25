@@ -1,14 +1,15 @@
 import { spawn } from "node:child_process"
 import fs from "node:fs"
+import { createRequire } from "node:module"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath } from "node:url"
 import { z } from "zod"
-import type { McpRegistryToolInput, McpRegistryToolOutput, ModelToolDefinition } from "@socrates/contracts"
+import type { McpRegistryToolInput, McpRegistryToolOutput, McpServerScope, ModelToolDefinition } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 
 const mcpServerConfigSchema = z
   .object({
+    label: z.string().optional(),
     command: z.string().min(1),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
@@ -25,6 +26,30 @@ const mcpConfigSchema = z
 
 type McpConfig = z.infer<typeof mcpConfigSchema>
 type McpServerConfig = z.infer<typeof mcpServerConfigSchema>
+
+export type ManagedMcpServerInput = {
+  id: string
+  label?: string | undefined
+  command: string
+  args?: string[] | undefined
+  env?: Record<string, string> | undefined
+  enabled?: boolean | undefined
+  requiresSecrets?: boolean | undefined
+}
+
+type McpPaths = {
+  scope: McpServerScope
+  configPath: string
+  envPath: string
+  registryPath: string
+}
+
+type ScopedServer = {
+  id: string
+  scope: McpServerScope
+  config: McpServerConfig
+  paths: McpPaths
+}
 
 type McpTool = {
   name: string
@@ -46,28 +71,28 @@ export class McpRuntime {
     this.registryPath = path.join(this.socratesHome, "mcp", "registry")
   }
 
-  handleRegistryTool(input: McpRegistryToolInput): Promise<McpRegistryToolOutput> {
+  handleRegistryTool(input: McpRegistryToolInput, options: { workspacePath?: string | undefined } = {}): Promise<McpRegistryToolOutput> {
     this.ensureDefaults()
     const serverName = input.serverName ?? input.serverId ?? input.preset ?? "playwright"
     switch (input.operation) {
       case "list":
-        return Promise.resolve(this.list())
+        return this.list(input.serverName ?? input.serverId ?? input.preset, options)
       case "describe":
-        return this.describe(serverName)
+        return this.describe(serverName, options)
       case "check":
-        return this.check(serverName)
+        return this.check(serverName, options)
       case "configure":
         return Promise.resolve(this.configure(input.preset ?? input.serverName ?? input.serverId ?? "playwright"))
     }
   }
 
-  getDynamicToolDefinitions(serverId = "playwright"): ModelToolDefinition[] {
+  getDynamicToolDefinitions(serverId = "playwright", options: { workspacePath?: string | undefined } = {}): ModelToolDefinition[] {
     this.ensureDefaults()
-    const configured = this.readConfig().servers?.[serverId]
-    if (!configured?.enabled) {
+    const resolved = this.resolveServer(serverId, options)
+    if (!resolved?.config.enabled) {
       return []
     }
-    const cached = this.readCachedTools(serverId)
+    const cached = this.readCachedTools(serverId, resolved.paths)
     return cached.map((tool) => ({
       name: dynamicToolName(serverId, tool.name),
       description: tool.description ?? `Run the ${tool.name} tool from the ${serverId} MCP server.`,
@@ -75,16 +100,16 @@ export class McpRuntime {
     }))
   }
 
-  async callDynamicTool(dynamicName: string, input: unknown, options: { cwd?: string; sessionKey?: string } = {}): Promise<unknown> {
+  async callDynamicTool(dynamicName: string, input: unknown, options: { cwd?: string | undefined; sessionKey?: string | undefined; workspacePath?: string | undefined } = {}): Promise<unknown> {
     const parsed = parseDynamicToolName(dynamicName)
-    const config = this.readConfig().servers?.[parsed.serverId]
-    if (!config?.enabled) {
+    const resolved = this.resolveServer(parsed.serverId, options)
+    if (!resolved?.config.enabled) {
       throw new SocratesError("mcp_server_not_configured", "MCP server is not configured or enabled.", {
         details: { serverId: parsed.serverId },
         recoverable: true,
       })
     }
-    const client = await this.clientFor(parsed.serverId, config, options)
+    const client = await this.clientFor(parsed.serverId, resolved.config, this.readEnv(resolved.paths), options)
     try {
       const response = await client.request("tools/call", { name: parsed.toolName, arguments: input ?? {} })
       if (isMcpToolErrorResponse(response)) {
@@ -109,33 +134,109 @@ export class McpRuntime {
     this.clients.clear()
   }
 
-  private list(): McpRegistryToolOutput {
-    const config = this.readConfig()
-    const servers = Object.entries(config.servers ?? {}).map(([id, server]) => ({
-      id,
-      label: id === "playwright" ? "Playwright MCP" : id,
-      configured: true,
-      enabled: server.enabled ?? true,
-      bundled: id === "playwright",
-      requiresSecrets: server.requiresSecrets ?? false,
-      status: "unknown" as const,
-      configPath: this.configPath,
-      envPath: this.envPath,
-    }))
+  listManagedServers(options: { workspacePath?: string | undefined } = {}): Array<NonNullable<McpRegistryToolOutput["servers"]>[number]> {
+    this.ensureDefaults()
+    return this.scopedServers(options).map((server) => this.serverSummary(server.id, server.config, "unknown", undefined, server.scope, server.paths))
+  }
+
+  upsertManagedServer(scope: McpServerScope, input: ManagedMcpServerInput, options: { workspacePath?: string | undefined } = {}): NonNullable<McpRegistryToolOutput["server"]> {
+    const paths = this.pathsForScope(scope, options.workspacePath)
+    const config = this.readConfig(paths)
+    const next: McpConfig = {
+      ...config,
+      servers: {
+        ...(config.servers ?? {}),
+        [input.id]: {
+          ...(input.label ? { label: input.label } : {}),
+          command: input.command,
+          ...(input.args ? { args: input.args } : {}),
+          ...(input.env ? { env: input.env } : {}),
+          enabled: input.enabled ?? true,
+          requiresSecrets: input.requiresSecrets ?? false,
+        },
+      },
+    }
+    this.writeConfig(next, paths)
+    this.closeServerClients(input.id)
+    return this.serverSummary(input.id, next.servers?.[input.id] as McpServerConfig, "unknown", undefined, scope, paths)
+  }
+
+  updateManagedServer(
+    scope: McpServerScope,
+    serverId: string,
+    input: { enabled?: boolean | undefined },
+    options: { workspacePath?: string | undefined } = {},
+  ): NonNullable<McpRegistryToolOutput["server"]> {
+    const paths = this.pathsForScope(scope, options.workspacePath)
+    const config = this.readConfig(paths)
+    const server = config.servers?.[serverId]
+    if (!server) {
+      throw new SocratesError("mcp_server_not_configured", "MCP server is not configured.", { details: { serverId, scope }, recoverable: true })
+    }
+    const nextServer = {
+      ...server,
+      ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+    }
+    const next: McpConfig = {
+      ...config,
+      servers: {
+        ...(config.servers ?? {}),
+        [serverId]: nextServer,
+      },
+    }
+    this.writeConfig(next, paths)
+    this.closeServerClients(serverId)
+    return this.serverSummary(serverId, nextServer, "unknown", undefined, scope, paths)
+  }
+
+  deleteManagedServer(scope: McpServerScope, serverId: string, options: { workspacePath?: string | undefined } = {}): void {
+    if (scope === "global" && serverId === "playwright") {
+      throw new SocratesError("mcp_bundled_server_required", "Bundled Playwright MCP cannot be deleted. Disable it instead.", {
+        details: { serverId, scope },
+        recoverable: true,
+      })
+    }
+    const paths = this.pathsForScope(scope, options.workspacePath)
+    const config = this.readConfig(paths)
+    const servers = { ...(config.servers ?? {}) }
+    delete servers[serverId]
+    this.writeConfig({ ...config, servers }, paths)
+    this.deleteCachedTools(serverId, paths)
+    this.closeServerClients(serverId)
+  }
+
+  async checkManagedServer(
+    serverId: string,
+    options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined } = {},
+  ): Promise<{ server: NonNullable<McpRegistryToolOutput["server"]>; tools: NonNullable<McpRegistryToolOutput["tools"]>; warnings?: string[] }> {
+    const output = await this.check(serverId, options)
+    return {
+      server: output.server as NonNullable<McpRegistryToolOutput["server"]>,
+      tools: output.tools ?? [],
+      ...(output.warnings ? { warnings: output.warnings } : {}),
+    }
+  }
+
+  private async list(namedServer: string | undefined, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
+    const servers = this.scopedServers(options).map((server) => this.serverSummary(server.id, server.config, "unknown", undefined, server.scope, server.paths))
+    const checked = namedServer ? await this.check(namedServer, options) : undefined
     return {
       operation: "list",
       configPath: this.configPath,
       envPath: this.envPath,
       servers,
+      ...(checked?.server ? { server: checked.server } : {}),
+      ...(checked?.tools ? { tools: checked.tools } : {}),
+      ...(checked?.docs ? { docs: checked.docs } : {}),
       summary: servers.length ? `Found ${servers.length} configured MCP server${servers.length === 1 ? "" : "s"}.` : "No MCP servers configured.",
+      ...(checked?.warnings ? { warnings: checked.warnings } : {}),
     }
   }
 
-  private async describe(serverId: string): Promise<McpRegistryToolOutput> {
-    const config = this.readConfig()
-    const server = config.servers?.[serverId]
-    const docs = this.readRegistryDocs(serverId)
-    const tools = this.readCachedTools(serverId).map((tool) => ({
+  private async describe(serverId: string, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
+    const resolved = this.resolveServer(serverId, options)
+    const docs = this.readRegistryDocs(serverId, resolved?.paths)
+    const tools = (resolved ? this.readCachedTools(serverId, resolved.paths) : []).map((tool) => ({
       name: tool.name,
       dynamicName: dynamicToolName(serverId, tool.name),
       ...(tool.description ? { description: tool.description } : {}),
@@ -145,17 +246,16 @@ export class McpRuntime {
       operation: "describe",
       configPath: this.configPath,
       envPath: this.envPath,
-      ...(server ? { server: this.serverSummary(serverId, server, tools.length ? "available" : "unknown", tools.length) } : {}),
+      ...(resolved ? { server: this.serverSummary(serverId, resolved.config, tools.length ? "available" : "unknown", tools.length, resolved.scope, resolved.paths) } : {}),
       tools,
       docs,
-      summary: server ? `${serverId} MCP is configured. Use the listed dynamic tool names when exposed.` : `${serverId} MCP is not configured.`,
+      summary: resolved ? `${serverId} MCP is configured. Use the listed dynamic tool names when exposed.` : `${serverId} MCP is not configured.`,
     }
   }
 
-  private async check(serverId: string): Promise<McpRegistryToolOutput> {
-    const config = this.readConfig()
-    const server = config.servers?.[serverId]
-    if (!server) {
+  private async check(serverId: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
+    const resolved = this.resolveServer(serverId, options)
+    if (!resolved) {
       return {
         operation: "check",
         configPath: this.configPath,
@@ -163,6 +263,7 @@ export class McpRuntime {
         server: {
           id: serverId,
           label: serverId,
+          ...(options.scope ? { scope: options.scope } : {}),
           configured: false,
           enabled: false,
           requiresSecrets: false,
@@ -175,17 +276,17 @@ export class McpRuntime {
     }
 
     try {
-      const client = new StdioMcpClient(server, this.readEnv())
+      const client = new StdioMcpClient(resolved.config, this.readEnv(resolved.paths))
       try {
         await client.initialize()
         const response = await client.request("tools/list", {})
         const tools = parseToolsList(response)
-        this.writeCachedTools(serverId, tools)
+        this.writeCachedTools(serverId, tools, resolved.paths)
         return {
           operation: "check",
           configPath: this.configPath,
           envPath: this.envPath,
-          server: this.serverSummary(serverId, server, "available", tools.length),
+          server: this.serverSummary(serverId, resolved.config, "available", tools.length, resolved.scope, resolved.paths),
           tools: tools.map((tool) => ({
             name: tool.name,
             dynamicName: dynamicToolName(serverId, tool.name),
@@ -202,7 +303,7 @@ export class McpRuntime {
         operation: "check",
         configPath: this.configPath,
         envPath: this.envPath,
-        server: this.serverSummary(serverId, server, "failed", 0),
+        server: this.serverSummary(serverId, resolved.config, "failed", 0, resolved.scope, resolved.paths),
         summary: `${serverId} MCP check failed.`,
         warnings: [error instanceof Error ? error.message : String(error)],
       }
@@ -220,7 +321,8 @@ export class McpRuntime {
         warnings: [`Add custom MCP config manually to ${this.configPath} and secrets to ${this.envPath}.`],
       }
     }
-    const config = this.readConfig()
+    const paths = this.globalPaths()
+    const config = this.readConfig(paths)
     const next: McpConfig = {
       ...config,
       servers: {
@@ -228,7 +330,7 @@ export class McpRuntime {
         playwright: defaultPlaywrightConfig(),
       },
     }
-    this.writeConfig(next)
+    this.writeConfig(next, paths)
     this.closeServerClients("playwright")
     this.ensureRegistryDocs()
     return {
@@ -236,19 +338,27 @@ export class McpRuntime {
       configPath: this.configPath,
       envPath: this.envPath,
       configured: true,
-      server: this.serverSummary("playwright", next.servers?.playwright as McpServerConfig, "unknown", 0),
+      server: this.serverSummary("playwright", next.servers?.playwright as McpServerConfig, "unknown", 0, "global", paths),
       summary: `Configured Playwright MCP at ${this.configPath}. It does not require secrets.`,
     }
   }
 
   private ensureDefaults(): void {
+    const paths = this.globalPaths()
     fs.mkdirSync(this.socratesHome, { recursive: true })
-    fs.mkdirSync(this.registryPath, { recursive: true })
-    if (!fs.existsSync(this.configPath)) {
-      this.writeConfig({ servers: { playwright: defaultPlaywrightConfig() } })
+    fs.mkdirSync(paths.registryPath, { recursive: true })
+    if (!fs.existsSync(paths.configPath)) {
+      this.writeConfig({ servers: { playwright: defaultPlaywrightConfig() } }, paths)
+    } else {
+      const config = this.readConfig(paths)
+      const repaired = this.repairBundledPlaywrightConfig(config)
+      if (repaired !== config) {
+        this.writeConfig(repaired, paths)
+        this.closeServerClients("playwright")
+      }
     }
-    if (!fs.existsSync(this.envPath)) {
-      fs.writeFileSync(this.envPath, "# Socrates local secrets. MCP API keys can be added here when needed.\n")
+    if (!fs.existsSync(paths.envPath)) {
+      fs.writeFileSync(paths.envPath, "# Socrates local secrets. MCP API keys can be added here when needed.\n")
     }
     this.ensureRegistryDocs()
   }
@@ -271,31 +381,36 @@ export class McpRuntime {
     }
   }
 
-  private readRegistryDocs(serverId: string): string | undefined {
-    const docsPath = path.join(this.registryPath, `${serverId}.md`)
+  private readRegistryDocs(serverId: string, paths = this.globalPaths()): string | undefined {
+    const docsPath = path.join(paths.registryPath, `${serverId}.md`)
     return fs.existsSync(docsPath) ? fs.readFileSync(docsPath, "utf8") : undefined
   }
 
-  private readConfig(): McpConfig {
-    if (!fs.existsSync(this.configPath)) {
+  private readConfig(paths = this.globalPaths()): McpConfig {
+    if (!fs.existsSync(paths.configPath)) {
       return {}
     }
-    const parsed = mcpConfigSchema.safeParse(JSON.parse(fs.readFileSync(this.configPath, "utf8")))
+    const parsed = mcpConfigSchema.safeParse(JSON.parse(fs.readFileSync(paths.configPath, "utf8")))
     if (!parsed.success) {
       throw new SocratesError("mcp_config_invalid", "MCP config file is invalid.", {
-        details: { configPath: this.configPath, issues: parsed.error.flatten() },
+        details: { configPath: paths.configPath, issues: parsed.error.flatten() },
         recoverable: true,
       })
     }
     return parsed.data
   }
 
-  private writeConfig(config: McpConfig): void {
-    fs.mkdirSync(path.dirname(this.configPath), { recursive: true })
-    fs.writeFileSync(this.configPath, `${JSON.stringify(config, null, 2)}\n`)
+  private writeConfig(config: McpConfig, paths = this.globalPaths()): void {
+    fs.mkdirSync(path.dirname(paths.configPath), { recursive: true })
+    fs.writeFileSync(paths.configPath, `${JSON.stringify(config, null, 2)}\n`)
   }
 
-  private async clientFor(serverId: string, config: McpServerConfig, options: { cwd?: string; sessionKey?: string }): Promise<StdioMcpClient> {
+  private async clientFor(
+    serverId: string,
+    config: McpServerConfig,
+    env: Record<string, string>,
+    options: { cwd?: string | undefined; sessionKey?: string | undefined; workspacePath?: string | undefined },
+  ): Promise<StdioMcpClient> {
     const key = this.clientKey(serverId, options)
     const existing = this.clients.get(key)
     if (existing) {
@@ -307,7 +422,7 @@ export class McpRuntime {
     }
 
     const clientPromise = (async () => {
-      const client = new StdioMcpClient(config, this.readEnv(), {
+      const client = new StdioMcpClient(config, env, {
         ...(options.cwd ? { cwd: options.cwd } : {}),
         onClose: () => {
           this.clients.delete(key)
@@ -325,8 +440,8 @@ export class McpRuntime {
     }
   }
 
-  private clientKey(serverId: string, options: { cwd?: string; sessionKey?: string }): string {
-    return [serverId, options.sessionKey ?? "default", options.cwd ? path.resolve(options.cwd) : ""].join("\0")
+  private clientKey(serverId: string, options: { cwd?: string | undefined; sessionKey?: string | undefined; workspacePath?: string | undefined }): string {
+    return [serverId, options.sessionKey ?? "default", options.workspacePath ? path.resolve(options.workspacePath) : "", options.cwd ? path.resolve(options.cwd) : ""].join("\0")
   }
 
   private closeServerClients(serverId: string): void {
@@ -339,12 +454,12 @@ export class McpRuntime {
     }
   }
 
-  private readEnv(): Record<string, string> {
-    if (!fs.existsSync(this.envPath)) {
+  private readEnv(paths = this.globalPaths()): Record<string, string> {
+    if (!fs.existsSync(paths.envPath)) {
       return {}
     }
     const result: Record<string, string> = {}
-    for (const line of fs.readFileSync(this.envPath, "utf8").split(/\r?\n/)) {
+    for (const line of fs.readFileSync(paths.envPath, "utf8").split(/\r?\n/)) {
       const trimmed = line.trim()
       if (!trimmed || trimmed.startsWith("#")) {
         continue
@@ -358,8 +473,8 @@ export class McpRuntime {
     return result
   }
 
-  private readCachedTools(serverId: string): McpTool[] {
-    const cachePath = path.join(this.registryPath, `${serverId}.tools.json`)
+  private readCachedTools(serverId: string, paths = this.globalPaths()): McpTool[] {
+    const cachePath = path.join(paths.registryPath, `${serverId}.tools.json`)
     if (!fs.existsSync(cachePath)) {
       return []
     }
@@ -373,23 +488,135 @@ export class McpRuntime {
       : []
   }
 
-  private writeCachedTools(serverId: string, tools: McpTool[]): void {
-    fs.mkdirSync(this.registryPath, { recursive: true })
-    fs.writeFileSync(path.join(this.registryPath, `${serverId}.tools.json`), `${JSON.stringify(tools, null, 2)}\n`)
+  private writeCachedTools(serverId: string, tools: McpTool[], paths = this.globalPaths()): void {
+    fs.mkdirSync(paths.registryPath, { recursive: true })
+    fs.writeFileSync(path.join(paths.registryPath, `${serverId}.tools.json`), `${JSON.stringify(tools, null, 2)}\n`)
   }
 
-  private serverSummary(serverId: string, server: McpServerConfig, status: "available" | "missing" | "failed" | "unknown", toolCount?: number) {
+  private deleteCachedTools(serverId: string, paths = this.globalPaths()): void {
+    const cachePath = path.join(paths.registryPath, `${serverId}.tools.json`)
+    if (fs.existsSync(cachePath)) {
+      fs.rmSync(cachePath)
+    }
+  }
+
+  private globalPaths(): McpPaths {
+    return {
+      scope: "global",
+      configPath: this.configPath,
+      envPath: this.envPath,
+      registryPath: this.registryPath,
+    }
+  }
+
+  private projectPaths(workspacePath: string): McpPaths {
+    const root = path.join(workspacePath, ".socrates")
+    return {
+      scope: "project",
+      configPath: path.join(root, "mcp.json"),
+      envPath: path.join(root, ".env"),
+      registryPath: path.join(root, "mcp", "registry"),
+    }
+  }
+
+  private pathsForScope(scope: McpServerScope, workspacePath: string | undefined): McpPaths {
+    if (scope === "global") {
+      this.ensureDefaults()
+      return this.globalPaths()
+    }
+    if (!workspacePath) {
+      throw new SocratesError("mcp_project_workspace_required", "Project MCP servers require an active workspace path.", { recoverable: true })
+    }
+    const paths = this.projectPaths(workspacePath)
+    fs.mkdirSync(path.dirname(paths.configPath), { recursive: true })
+    fs.mkdirSync(paths.registryPath, { recursive: true })
+    return paths
+  }
+
+  private scopedServers(options: { workspacePath?: string | undefined }): ScopedServer[] {
+    const globalPaths = this.globalPaths()
+    const globalConfig = this.readConfig(globalPaths)
+    const servers: ScopedServer[] = Object.entries(globalConfig.servers ?? {}).map(([id, config]) => ({
+      id,
+      scope: "global",
+      config: normalizeServerConfig(config),
+      paths: globalPaths,
+    }))
+    if (options.workspacePath) {
+      const projectPaths = this.projectPaths(options.workspacePath)
+      const projectConfig = this.readConfig(projectPaths)
+      servers.push(
+        ...Object.entries(projectConfig.servers ?? {}).map(([id, config]) => ({
+          id,
+          scope: "project" as const,
+          config: normalizeServerConfig(config),
+          paths: projectPaths,
+        })),
+      )
+    }
+    return servers
+  }
+
+  private resolveServer(serverId: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer | undefined {
+    this.ensureDefaults()
+    if (options.scope) {
+      const paths = this.pathsForScope(options.scope, options.workspacePath)
+      const config = this.readConfig(paths).servers?.[serverId]
+      return config ? { id: serverId, scope: options.scope, config: normalizeServerConfig(config), paths } : undefined
+    }
+    const scoped = this.scopedServers(options).filter((server) => server.id === serverId)
+    return scoped.find((server) => server.scope === "project") ?? scoped[0]
+  }
+
+  private repairBundledPlaywrightConfig(config: McpConfig): McpConfig {
+    const existing = config.servers?.playwright
+    if (!existing) {
+      return {
+        ...config,
+        servers: {
+          ...(config.servers ?? {}),
+          playwright: defaultPlaywrightConfig(),
+        },
+      }
+    }
+    if (!isBundledPlaywrightConfig(existing)) {
+      return config
+    }
+    const commandExists = fs.existsSync(existing.command)
+    const firstArg = existing.args?.[0]
+    const cliExists = firstArg ? fs.existsSync(firstArg) : false
+    if (commandExists && cliExists) {
+      return config
+    }
+    return {
+      ...config,
+      servers: {
+        ...(config.servers ?? {}),
+        playwright: defaultPlaywrightConfig(),
+      },
+    }
+  }
+
+  private serverSummary(
+    serverId: string,
+    server: McpServerConfig,
+    status: "available" | "missing" | "failed" | "unknown",
+    toolCount: number | undefined,
+    scope: McpServerScope,
+    paths: McpPaths,
+  ) {
     return {
       id: serverId,
-      label: serverId === "playwright" ? "Playwright MCP" : serverId,
+      label: server.label ?? (serverId === "playwright" ? "Playwright MCP" : serverId),
+      scope,
       configured: true,
       enabled: server.enabled ?? true,
       bundled: serverId === "playwright",
       requiresSecrets: server.requiresSecrets ?? false,
       status,
       ...(toolCount === undefined ? {} : { toolCount }),
-      configPath: this.configPath,
-      envPath: this.envPath,
+      configPath: paths.configPath,
+      envPath: paths.envPath,
     }
   }
 }
@@ -403,6 +630,7 @@ const mcpToolSchema = z
   .strict()
 
 const defaultPlaywrightConfig = (): McpServerConfig => ({
+  label: "Playwright MCP",
   command: process.execPath,
   args: [resolvePlaywrightMcpCli()],
   enabled: true,
@@ -410,8 +638,27 @@ const defaultPlaywrightConfig = (): McpServerConfig => ({
 })
 
 const resolvePlaywrightMcpCli = (): string => {
-  const packageJson = fileURLToPath(import.meta.resolve("@playwright/mcp/package.json"))
+  const require = createRequire(import.meta.url)
+  const packageJson = require.resolve("@playwright/mcp/package.json")
   return path.join(path.dirname(packageJson), "cli.js")
+}
+
+const normalizeServerConfig = (server: McpServerConfig): McpServerConfig => ({
+  ...server,
+  enabled: server.enabled ?? true,
+  requiresSecrets: server.requiresSecrets ?? false,
+})
+
+const isBundledPlaywrightConfig = (server: McpServerConfig): boolean => {
+  const command = server.command
+  const firstArg = server.args?.[0] ?? ""
+  if (firstArg.includes("@playwright/mcp")) {
+    return true
+  }
+  if (firstArg.includes(`${path.sep}.Socrates${path.sep}runtimes${path.sep}`) && firstArg.endsWith(path.join("@playwright", "mcp", "cli.js"))) {
+    return true
+  }
+  return command.includes(`${path.sep}.Socrates${path.sep}runtimes${path.sep}`)
 }
 
 const dynamicToolName = (serverId: string, toolName: string) => `mcp__${serverId}__${toolName}` as const

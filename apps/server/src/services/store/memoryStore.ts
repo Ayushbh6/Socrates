@@ -665,16 +665,33 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  buildWakeContext(projectId: string, workspacePath: string | undefined, _userQuery: string): string | undefined {
+  buildWakeContext(projectId: string, workspacePath: string | undefined, userQuery: string): string | undefined {
     this.ensureProjectMemory(projectId, workspacePath)
     if (!workspacePath) {
       return "Project recall tools are unavailable because this project has no active workspace path."
     }
+    const skills = this.skillInfos(workspacePath)
+    const scoredSkills = scoreSkillsForQuery(skills, userQuery)
+    const skillRows = scoredSkills.slice(0, 12).map((skill) => `- ${skill.scope}:${skill.name} - ${skill.description}`)
+    const matchedSkill = scoredSkills.find((skill) => scoreSkillForQuery(skill, userQuery) > 0)
+    const matchedSkillLines = matchedSkill
+      ? [
+          "Required skill preflight for this latest request:",
+          `- Matched ${matchedSkill.scope}:${matchedSkill.name} from the current skill manifest.`,
+          `- Before using content-gathering tools such as list_project_resources, read, search, bash, or MCP tools, call skills({ operation: "read", scope: "${matchedSkill.scope}", name: "${matchedSkill.name}", path: "SKILL.md" }).`,
+          "- Use that skill as the procedure while treating the user's current request as primary.",
+        ]
+      : []
     return [
       "Stable project recall map. Use this as model-visible internal context, not as user-visible text.",
+      ...matchedSkillLines,
       'Project notes, including the active state ledger, are available through project_docs({ operation: "read", area: "notes" }).',
       'Project memory is available through project_docs({ operation: "read", area: "memory" }).',
       'Repo doctrine is available through repo_docs({ operation: "read" }) or repo_docs({ operation: "search", query: "..." }).',
+      'Durable user profile and stable preferences are available through user_profile({ operation: "read" }). Use it when personalization, collaboration style, or user-specific context would materially improve the answer.',
+      'Skills are available through skills({ operation: "search", query: "..." }) and skills({ operation: "read", name: "...", scope: "..." }). If the latest request matches a listed skill, read that skill before acting.',
+      ...(skillRows.length > 0 ? ["Current skill manifest:", ...skillRows] : ["Current skill manifest: no builtin/global/project skills are currently visible."]),
+      'Bundled Playwright MCP is available through mcp_registry. For browser, web navigation, internet lookup with page interaction, or screenshot tasks, call mcp_registry({ operation: "check", serverName: "playwright" }) before choosing shell/browser fallbacks, then use returned mcp__playwright__ tools.',
       "Do not assume project notes, memory, or repo docs were loaded until you call the relevant tool in this turn.",
     ].join("\n")
   }
@@ -2681,6 +2698,8 @@ const PROJECT_SKILL_BUILDER_SYSTEM_PROMPT = [
   "The provided skill name is mandatory and must appear exactly in YAML frontmatter.",
   "YAML frontmatter must include name and description.",
   "The user's primary request is the main authority. Project instructions, memory, repo docs, and skill-writer guidance are side guidance only; ignore them when irrelevant.",
+  "The body must include clear sections for when to use the skill, workflow, verification or evidence requirements, and output style.",
+  "Descriptions should contain natural trigger words from the user's request so future agents can discover the skill by search.",
   "Keep the skill concise, procedural, and reusable. Do not include secrets, private keys, or long copied project text.",
 ].join("\n")
 
@@ -2723,6 +2742,17 @@ const compileSearch = (query: string, _mode: "keyword_any"): { score: (text: str
 }
 
 const searchTerms = (query: string): string[] => query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 0) ?? []
+
+const scoreSkillsForQuery = (skills: SkillInfo[], query: string): SkillInfo[] => {
+  const scopeRank: Record<SkillScope, number> = { project: 0, global: 1, builtin: 2 }
+  return [...skills].sort((left, right) => {
+    const rightScore = scoreSkillForQuery(right, query)
+    const leftScore = scoreSkillForQuery(left, query)
+    return rightScore - leftScore || scopeRank[left.scope] - scopeRank[right.scope] || left.name.localeCompare(right.name)
+  })
+}
+
+const scoreSkillForQuery = (skill: SkillInfo, query: string): number => compileSearch(query, "keyword_any").score(`${skill.name}\n${skill.description}\n${skill.content}`)
 
 const parseJsonObject = (text: string | null | undefined): Record<string, unknown> => {
   if (!text) {

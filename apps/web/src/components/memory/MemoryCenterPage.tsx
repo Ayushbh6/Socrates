@@ -34,6 +34,7 @@ import type {
 } from "@socrates/contracts";
 import { BuildSkillDialog } from "@/components/dashboard/BuildSkillDialog";
 import { MemoryFileViewer } from "@/components/memory/MemoryFileViewer";
+import { McpServersPanel } from "@/components/mcp/McpServersPanel";
 import { Button } from "@/components/ui/Button";
 import { Switch } from "@/components/ui/Switch";
 import { api } from "@/lib/api";
@@ -415,6 +416,13 @@ export function MemoryCenterPage() {
                       ))}
                     </div>
                   </section>
+
+                  <McpServersPanel
+                    scope="global"
+                    title="Global MCP servers"
+                    description="Bundled and user-added MCP servers available to Socrates in every workspace."
+                    variant="section"
+                  />
                 </>
               ) : (
                 <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-500">Loading Memory Center...</div>

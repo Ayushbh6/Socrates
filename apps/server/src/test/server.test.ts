@@ -18,6 +18,7 @@ import type {
   ServerEvent,
   ChatCompaction,
   MemoryCompaction,
+  McpServerStatus,
   SkillSummary,
   User,
 } from "@socrates/contracts"
@@ -2718,6 +2719,68 @@ describe("HTTP API", () => {
     expect(getBody.ok).toBe(true)
     if (getBody.ok) {
       expect(getBody.data.skills.some((skill) => skill.name === firstBody.data.skill.name)).toBe(true)
+    }
+  })
+
+  it("manages global and project MCP servers through the API", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app)
+
+    const initialResponse = await app.inject({ method: "GET", url: `/api/mcp?projectId=${encodeURIComponent(project.id)}` })
+    const initialBody = parseResponse<{ servers: McpServerStatus[] }>(initialResponse.payload)
+    expect(initialBody.ok, initialResponse.payload).toBe(true)
+    if (!initialBody.ok) return
+    expect(initialBody.data.servers.some((server) => server.id === "playwright" && server.scope === "global")).toBe(true)
+
+    const upsertResponse = await app.inject({
+      method: "POST",
+      url: "/api/mcp/servers",
+      payload: {
+        scope: "project",
+        projectId: project.id,
+        server: {
+          id: "projectfake",
+          label: "Project Fake MCP",
+          command: process.execPath,
+          args: ["-e", "process.exit(0)"],
+        },
+      },
+    })
+    const upsertBody = parseResponse<{ server: McpServerStatus }>(upsertResponse.payload)
+    expect(upsertBody.ok).toBe(true)
+    if (!upsertBody.ok) return
+    expect(upsertBody.data.server).toMatchObject({ id: "projectfake", scope: "project", enabled: true })
+    expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "mcp.json"))).toBe(true)
+
+    const disableResponse = await app.inject({
+      method: "PATCH",
+      url: "/api/mcp/servers/projectfake",
+      payload: { scope: "project", projectId: project.id, enabled: false },
+    })
+    const disableBody = parseResponse<{ server: McpServerStatus }>(disableResponse.payload)
+    expect(disableBody.ok).toBe(true)
+    if (disableBody.ok) {
+      expect(disableBody.data.server.enabled).toBe(false)
+    }
+
+    const deleteResponse = await app.inject({
+      method: "DELETE",
+      url: "/api/mcp/servers/projectfake",
+      payload: { scope: "project", projectId: project.id },
+    })
+    const deleteBody = parseResponse<{ deletedServerId: string; scope: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+    if (deleteBody.ok) {
+      expect(deleteBody.data.deletedServerId).toBe("projectfake")
+      expect(deleteBody.data.scope).toBe("project")
+    }
+
+    const finalResponse = await app.inject({ method: "GET", url: `/api/mcp?projectId=${encodeURIComponent(project.id)}` })
+    const finalBody = parseResponse<{ servers: McpServerStatus[] }>(finalResponse.payload)
+    expect(finalBody.ok).toBe(true)
+    if (finalBody.ok) {
+      expect(finalBody.data.servers.some((server) => server.id === "projectfake")).toBe(false)
     }
   })
 

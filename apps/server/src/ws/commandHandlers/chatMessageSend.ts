@@ -229,7 +229,7 @@ export const handleChatMessageSend = async (
         exposeMcpServer: (serverId) => exposedMcpServers.add(serverId),
       }),
       dynamicTools: () =>
-        mcpRuntime ? [...exposedMcpServers].flatMap((serverId) => mcpRuntime.getDynamicToolDefinitions(serverId)) : [],
+        mcpRuntime ? [...exposedMcpServers].flatMap((serverId) => mcpRuntime.getDynamicToolDefinitions(serverId, { workspacePath })) : [],
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
       maxParallelToolCalls: 5,
       maxToolCallsPerTurn: 80,
@@ -823,11 +823,11 @@ const createToolExecutors = (
   soul: (input) => Promise.resolve(store.runSoulTool(projectId, input)),
   user_profile: (input) => Promise.resolve(store.runUserProfileTool(projectId, input)),
   list_project_resources: (input) => Promise.resolve(listProjectResourcesForTool(store, projectId, input)),
-  mcp_registry: async (input) => {
+  mcp_registry: async (input, context) => {
     if (!mcpRuntime) {
       throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
     }
-    const output = await mcpRuntime.handleRegistryTool(input)
+    const output = await mcpRuntime.handleRegistryTool(input, { workspacePath: context.workspacePath })
     if (output.tools && output.tools.length > 0) {
       options.exposeMcpServer?.(output.server?.id ?? input.serverName ?? input.serverId ?? input.preset ?? "playwright")
     }
@@ -840,6 +840,7 @@ const createToolExecutors = (
     return mcpRuntime.callDynamicTool(input.dynamicName, input.input, {
       cwd: context.workspacePath,
       sessionKey: context.conversationId,
+      workspacePath: context.workspacePath,
     })
   },
   }
