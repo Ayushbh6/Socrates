@@ -4210,6 +4210,9 @@ describe("WebSocket API", () => {
     ].join("\n")
     fs.mkdirSync(path.join(socratesHome, "tool_usage"), { recursive: true })
     fs.writeFileSync(path.join(socratesHome, "tool_usage", "read_search.md"), scaffoldedToolDoc)
+    fs.writeFileSync(path.join(socratesHome, "operating_principles.md"), "# Retired\n\nThis file should be deleted.")
+    fs.mkdirSync(path.join(socratesHome, "primary"), { recursive: true })
+    fs.writeFileSync(path.join(socratesHome, "primary", "operating_principles.md"), "# Retired Primary\n\nThis file should not be copied forward.")
     const app = await buildTestServer(dbPath, createCapturingAgent(requests), { socratesHome })
     await onboard(app)
     const { project, primaryWorkspace } = await createProject(app)
@@ -4231,27 +4234,32 @@ describe("WebSocket API", () => {
     }
 
     expect(fs.existsSync(path.join(socratesHome, "identity.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "operating_principles.md"))).toBe(true)
+    expect(fs.existsSync(path.join(socratesHome, "operating_principles.md"))).toBe(false)
+    expect(fs.existsSync(path.join(socratesHome, "primary", "operating_principles.md"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "user_profile.md"))).toBe(true)
     expect(fs.readFileSync(path.join(socratesHome, "identity.md"), "utf8")).toContain("user_profile.md")
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "trace_retrieve.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_docs.md"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "project_docs.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "repo_docs.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "skills.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "soul.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "tool_docs.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "current_time.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve_global.md"))).toBe(false)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "tool_docs.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "skills.md"))).toBe(true)
-    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "soul.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "skills.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "soul.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "user_profile.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "tool_docs.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "current_time.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve_global.md"))).toBe(false)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "tool_docs.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "skills.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "soul.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "user_profile.md"))).toBe(true)
     const readSearchToolDoc = expectStructuredToolDoc(socratesHome, "read_search.md")
     expect(readSearchToolDoc).toContain("Use read/search tools to find candidate workspace files")
-    const projectDocsToolDoc = expectStructuredToolDoc(socratesHome, "project_docs.md")
-    expect(projectDocsToolDoc).toContain("`.socrates/MEMORY.md`")
-    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "edit_files.md"))
+	    const projectDocsToolDoc = expectStructuredToolDoc(socratesHome, "project_docs.md")
+	    expect(projectDocsToolDoc).toContain("`.socrates/MEMORY.md`")
+	    expectStructuredToolDoc(socratesHome, "user_profile.md")
+	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "edit_files.md"))
+	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "user_profile.md"))
     expect(fs.existsSync(path.join(socratesHome, "skills"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "useful_patterns"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "projects", project.id))).toBe(false)
@@ -4295,8 +4303,17 @@ describe("WebSocket API", () => {
       const listedSkills = store.runSkillsTool(project.id, { operation: "list" })
       expect(listedSkills.skills.some((skill) => skill.name === "socrates-skill-writer")).toBe(false)
       expect(() => store.runSkillsTool(project.id, { operation: "describe", id: "socrates-skill-writer", scope: "builtin" })).toThrow(/Skill was not found/)
-      const userProfileRead = store.runUserProfileTool(project.id, { operation: "read" })
-      expect(userProfileRead.content).toContain("Root global user profile")
+      const soulSectionRead = store.runSoulTool(project.id, { operation: "read_section", sectionId: "operating_principles" })
+      expect(soulSectionRead.content).toContain("Prefer evidence")
+      const soulFullRead = store.runSoulTool(project.id, { operation: "read", charLimit: 80_000 })
+	      expect(soulFullRead.truncation.charLimit).toBe(8_000)
+	      const userProfileRead = store.runUserProfileTool(project.id, { operation: "read" })
+	      expect(userProfileRead.content).toContain("No stable profile facts captured yet")
+	      expect(userProfileRead.truncation.charLimit).toBe(8_000)
+      const userProfileSectionRead = store.runUserProfileTool(project.id, { operation: "read_section", sectionId: "stable_preferences" })
+      expect(userProfileSectionRead.section?.sectionId).toBe("stable_preferences")
+      const userProfileIndexRead = store.runUserProfileTool(project.id, { operation: "read_index", charLimit: 80_000 })
+      expect(userProfileIndexRead.truncation.charLimit).toBe(10_000)
       const projectSkillPath = path.join(primaryWorkspace.path as string, ".socrates", "skills", "memory-review", "SKILL.md")
       fs.mkdirSync(path.dirname(projectSkillPath), { recursive: true })
       fs.writeFileSync(projectSkillPath, "---\nname: memory-review\ndescription: Use when reviewing memory changes.\n---\n\n# Memory Review\n")
@@ -4531,13 +4548,13 @@ describe("WebSocket API", () => {
               toolCallId: "memory_edit_user_profile",
               toolName: "edit_files",
               input: {
-                target: "user_profile",
-                editMode: "replace",
-                sectionId: "stable_facts",
-                oldText: "- Unknown until repeated or explicit evidence justifies a durable note.",
-                newText:
-                  "- Unknown until repeated or explicit evidence justifies a durable note.\n- Configured memory worker can update narrow user profile notes.",
-                rationale: "Test scoped user profile update.",
+	                target: "user_profile",
+	                editMode: "replace",
+	                sectionId: "profile_summary",
+	                oldText: "- No stable profile facts captured yet.",
+	                newText:
+	                  "- No stable profile facts captured yet.\n- Configured memory worker can update narrow user profile notes.",
+	                rationale: "Test scoped user profile update.",
               },
             },
           }
@@ -4578,8 +4595,8 @@ describe("WebSocket API", () => {
       expect(failedToolDocCall.count).toBeGreaterThan(0)
       const profileAction = handle.sqlite.prepare("SELECT status FROM memory_agent_actions WHERE target_kind = 'user_profile'").get() as { status: string }
       expect(profileAction.status).toBe("applied")
-      const profileSection = handle.sqlite.prepare("SELECT section_id AS sectionId FROM memory_doc_sections WHERE path = 'user_profile.md' AND section_id = 'stable_facts'").get() as { sectionId: string }
-      expect(profileSection.sectionId).toBe("stable_facts")
+      const profileSection = handle.sqlite.prepare("SELECT section_id AS sectionId FROM memory_doc_sections WHERE path = 'user_profile.md' AND section_id = 'profile_summary'").get() as { sectionId: string }
+      expect(profileSection.sectionId).toBe("profile_summary")
       expect(modelRequests[0]).toEqual({ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false })
       expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "diary"))).toBe(false)
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)

@@ -98,6 +98,9 @@ import { inspectWorkspaceEnvironment } from "@socrates/workspace"
 import { currentRuntimeTime } from "./runtimeContext"
 
 const DEFAULT_CHAR_LIMIT = 20_000
+const PRIMARY_MEMORY_FULL_READ_CHAR_LIMIT = 8_000
+const PRIMARY_MEMORY_INDEX_CHAR_LIMIT = 10_000
+const PRIMARY_MEMORY_SECTION_CHAR_LIMIT = 10_000
 const DEFAULT_SEARCH_LIMIT = 20
 const MEMORY_AGENT_TOKEN_CAP = 60_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
@@ -206,6 +209,7 @@ export class MemoryStore extends StoreBase {
   private ensureGlobalKnowledge(): void {
     migrateGlobalPrimaryFiles(this.socratesHome)
     migrateIdentityUserSectionsToProfile(this.socratesHome)
+    removeRetiredOperatingPrinciplesFiles(this.socratesHome)
     ensureBundledToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
     removeLegacyToolUsageDocs(path.join(this.socratesHome, "tool_usage"))
     this.ensureAndIndexGlobalDocs()
@@ -245,7 +249,6 @@ export class MemoryStore extends StoreBase {
   private ensureAndIndexGlobalDocs(): void {
     const globalDocs = [
       globalMemoryDocProfile(this.socratesHome, "identity"),
-      globalMemoryDocProfile(this.socratesHome, "operating_principles"),
       globalMemoryDocProfile(this.socratesHome, "user_profile"),
     ]
     for (const profile of globalDocs) {
@@ -633,40 +636,83 @@ export class MemoryStore extends StoreBase {
 
   runSoulTool(projectId: string, workspacePath: string | undefined, input: SoulToolInput): SoulToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
-    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
-    const requested = input.document === "both" ? (["identity", "operating_principles"] as const) : ([input.document] as const)
-    const documents = requested.map((document) => {
-      const absolutePath = this.soulPath(document)
-      const content = fs.readFileSync(absolutePath, "utf8")
-      const clipped = truncate(content, charLimit)
+    const charLimit = primaryMemoryCharLimit(input.operation, input.charLimit)
+    const absolutePath = this.soulPath()
+    const profile = globalMemoryDocProfile(this.socratesHome, "identity")
+    const content = fs.readFileSync(absolutePath, "utf8")
+    const index = this.indexMemoryDocFile(absolutePath, profile)
+    if (input.operation === "read_index") {
+      const serialized = renderMemoryDocIndex(index)
       return {
-        document,
-        path: `${document}.md`,
-        content: clipped.text,
-        truncation: truncationFor(content, charLimit),
+        operation: "read_index",
+        path: "identity.md",
+        content: truncate(serialized, charLimit).text,
+        index,
+        truncation: truncationFor(serialized, charLimit),
       }
-    })
-    const serialized = JSON.stringify(documents)
+    }
+    if (input.operation === "read_section") {
+      const section = findMemoryDocSection(index, input.sectionId as string)
+      const clipped = truncate(section.content, charLimit)
+      return {
+        operation: "read_section",
+        path: "identity.md",
+        content: clipped.text,
+        section,
+        index,
+        truncation: truncationFor(section.content, charLimit),
+        ...(clipped.truncated ? { warnings: [`Section ${section.sectionId} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
+      }
+    }
+    const clipped = truncate(content, charLimit)
     return {
       operation: "read",
-      documents,
-      truncation: truncationFor(serialized, charLimit),
-      ...(serialized.length > charLimit ? { warnings: ["Soul output was truncated. Re-read one document with a larger charLimit if needed."] } : {}),
+      path: "identity.md",
+      content: clipped.text,
+      index,
+      truncation: truncationFor(content, charLimit),
+      ...(clipped.truncated ? { warnings: ["identity.md was truncated. Re-read with a larger charLimit or use read_index/read_section if needed."] } : {}),
     }
   }
 
   runUserProfileTool(projectId: string, workspacePath: string | undefined, input: UserProfileToolInput): UserProfileToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
-    const charLimit = input.charLimit ?? DEFAULT_CHAR_LIMIT
+    const charLimit = primaryMemoryCharLimit(input.operation, input.charLimit)
     const absolutePath = this.userProfilePath()
+    const profile = globalMemoryDocProfile(this.socratesHome, "user_profile")
     const content = fs.readFileSync(absolutePath, "utf8")
+    const index = this.indexMemoryDocFile(absolutePath, profile)
+    if (input.operation === "read_index") {
+      const serialized = renderMemoryDocIndex(index)
+      return {
+        operation: "read_index",
+        path: "user_profile.md",
+        content: truncate(serialized, charLimit).text,
+        index,
+        truncation: truncationFor(serialized, charLimit),
+      }
+    }
+    if (input.operation === "read_section") {
+      const section = findMemoryDocSection(index, input.sectionId as string)
+      const clipped = truncate(section.content, charLimit)
+      return {
+        operation: "read_section",
+        path: "user_profile.md",
+        content: clipped.text,
+        section,
+        index,
+        truncation: truncationFor(section.content, charLimit),
+        ...(clipped.truncated ? { warnings: [`Section ${section.sectionId} was truncated. Re-read with a larger charLimit if needed.`] } : {}),
+      }
+    }
     const clipped = truncate(content, charLimit)
     return {
       operation: "read",
       path: "user_profile.md",
       content: clipped.text,
+      index,
       truncation: truncationFor(content, charLimit),
-      ...(clipped.truncated ? { warnings: ["user_profile.md was truncated. Re-read with a larger charLimit if needed."] } : {}),
+      ...(clipped.truncated ? { warnings: ["user_profile.md was truncated. Re-read with a larger charLimit or use read_index/read_section if needed."] } : {}),
     }
   }
 
@@ -726,14 +772,8 @@ export class MemoryStore extends StoreBase {
       {
         kind: "identity" as const,
         name: "Identity",
-        description: "Socrates identity and non-negotiables.",
-        absolutePath: this.soulPath("identity"),
-      },
-      {
-        kind: "operating_principles" as const,
-        name: "Operating Principles",
-        description: "Global operating discipline and safety rules.",
-        absolutePath: this.soulPath("operating_principles"),
+        description: "Socrates identity, voice, principles, boundaries, and tool discipline.",
+        absolutePath: this.soulPath(),
       },
       {
         kind: "user_profile" as const,
@@ -1379,7 +1419,7 @@ export class MemoryStore extends StoreBase {
 
   private editFilesPatchForInput(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" },
   ): MemoryPatchProposal {
     if (!input.sectionId) {
       return {
@@ -1414,7 +1454,7 @@ export class MemoryStore extends StoreBase {
 
   private createMemoryTarget(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" },
     context: { jobId: string; turnId?: string },
   ): EditFilesToolOutput {
     const patch: MemoryPatchProposal = {
@@ -1478,9 +1518,9 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" } {
-    if (input.target === "identity" || input.target === "operating_principles") {
-      return { path: this.soulPath(input.target), targetKind: "soul", document: input.target }
+  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" } {
+    if (input.target === "identity") {
+      return { path: this.soulPath(), targetKind: "soul", document: "identity" }
     }
     if (input.target === "user_profile") {
       return { path: this.userProfilePath(), targetKind: "user_profile" }
@@ -1744,8 +1784,8 @@ export class MemoryStore extends StoreBase {
     return path.join(this.socratesHome, "projects", projectId)
   }
 
-  private soulPath(document: "identity" | "operating_principles"): string {
-    return path.join(this.socratesHome, `${document}.md`)
+  private soulPath(): string {
+    return path.join(this.socratesHome, "identity.md")
   }
 
   private userProfilePath(): string {
@@ -1898,9 +1938,9 @@ export class MemoryStore extends StoreBase {
       "",
       "Side guidance only. Use when relevant; ignore when not useful.",
       "--- identity.md",
-      truncate(readIfExists(this.soulPath("identity")) ?? "", 4_000).text,
-      "--- operating_principles.md",
-      truncate(readIfExists(this.soulPath("operating_principles")) ?? "", 4_000).text,
+      truncate(readIfExists(this.soulPath()) ?? "", 4_000).text,
+      "--- user_profile.md",
+      truncate(readIfExists(this.userProfilePath()) ?? "", 4_000).text,
       "--- existing global skills",
       globalSkills || "No global skills are registered yet.",
       "--- skill writer guidance",
@@ -1988,11 +2028,11 @@ export class MemoryStore extends StoreBase {
     modelSettings: MemoryAgentModelSettings,
     lastEditedSection?: string,
   ): Promise<{ applied: boolean; actionId: string; error?: string }> {
-    const document = patch.document
-    const targetPath = document === "identity" || document === "operating_principles" ? this.soulPath(document) : this.soulPath("identity")
+    const document = patch.document ?? "identity"
+    const targetPath = this.soulPath()
     const action = this.createMemoryAction(projectId, jobId, latest?.turnId, "soul", targetPath, patch, true)
-    if (document !== "identity" && document !== "operating_principles") {
-      const error = "Soul patch must target identity or operating_principles."
+    if (document !== "identity") {
+      const error = "Soul patch must target identity."
       this.rejectMemoryAction(action.actionId, error)
       return { applied: false, actionId: action.actionId, error }
     }
@@ -2131,7 +2171,7 @@ export class MemoryStore extends StoreBase {
       system: [
         "You are the Socrates backend memory agent confirming a proposed edit to a core soul document.",
         "Consider the target path, rationale, and exact patch. This is an internal self-confirmation test.",
-        "If the edit is evidence-backed, narrow, durable, and appropriate for identity/principles, answer yes.",
+        "If the edit is evidence-backed, narrow, durable, and appropriate for the identity document, answer yes.",
         "If it is speculative, unsafe, noisy, too broad, or not durable, answer no.",
         `Target path: ${targetPath}`,
         `Rationale: ${patch.rationale ?? ""}`,
@@ -2184,7 +2224,7 @@ const repoDocProfile = (projectId: string, name: string): MemoryDocProfile => ({
   indexTags: ["repo_docs"],
 })
 
-const globalMemoryDocProfile = (_socratesHome: string, target: "identity" | "operating_principles" | "user_profile"): MemoryDocProfile => ({
+const globalMemoryDocProfile = (_socratesHome: string, target: "identity" | "user_profile"): MemoryDocProfile => ({
   docType: target,
   ownerTool: target === "user_profile" ? "user_profile" : "soul",
   scope: "global",
@@ -2194,7 +2234,7 @@ const globalMemoryDocProfile = (_socratesHome: string, target: "identity" | "ope
 })
 
 const editFilesMemoryDocProfile = (
-  resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" | "operating_principles" },
+  resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" },
   socratesHome: string,
 ): MemoryDocProfile => {
   const relativePath = path.relative(socratesHome, resolved.path).replaceAll(path.sep, "/")
@@ -2338,10 +2378,17 @@ const migrateGlobalPrimaryFiles = (socratesHome: string): void => {
     return
   }
   copyIfMissing(path.join(primaryRoot, "identity.md"), path.join(socratesHome, "identity.md"))
-  copyIfMissing(path.join(primaryRoot, "operating_principles.md"), path.join(socratesHome, "operating_principles.md"))
   const oldLearned = readIfExists(path.join(primaryRoot, "learned_patterns.md"))
   if (oldLearned?.trim()) {
     ensureFile(path.join(socratesHome, "skills", "general", "SKILL.md"), fallbackSkillMarkdown("general", oldLearned.trim()))
+  }
+}
+
+const removeRetiredOperatingPrinciplesFiles = (socratesHome: string): void => {
+  for (const filePath of [path.join(socratesHome, "operating_principles.md"), path.join(socratesHome, "primary", "operating_principles.md")]) {
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+      fs.unlinkSync(filePath)
+    }
   }
 }
 
@@ -2635,6 +2682,11 @@ const summarizeLedgerDocs = (toolRuns: ConversationToolRun[]): string => {
 const truncateInline = (text: string, limit: number): string => {
   const compact = text.replace(/\s+/g, " ").trim()
   return compact.length > limit ? `${compact.slice(0, Math.max(0, limit - 3))}...` : compact
+}
+
+const primaryMemoryCharLimit = (operation: "read" | "read_index" | "read_section", requested?: number): number => {
+  const cap = operation === "read" ? PRIMARY_MEMORY_FULL_READ_CHAR_LIMIT : operation === "read_index" ? PRIMARY_MEMORY_INDEX_CHAR_LIMIT : PRIMARY_MEMORY_SECTION_CHAR_LIMIT
+  return Math.min(requested ?? cap, cap)
 }
 
 const migrateUsefulPatternsToSkills = (socratesHome: string): void => {

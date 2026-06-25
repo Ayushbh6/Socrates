@@ -2276,14 +2276,14 @@ Rules:
 
 ### `soul`
 
-Read-only access to the core agent soul documents. This tool exists because identity and operating principles are special runtime context, not ordinary searchable memory pages.
+Read-only access to the core agent identity document. This tool exists because identity, voice, operating principles, safety boundaries, and tool/memory discipline are special runtime context, not ordinary searchable memory pages.
 
 Input:
 
 ```ts
 type SoulToolInput = {
-  operation: "read"
-  document: "identity" | "operating_principles" | "both"
+  operation: "read" | "read_index" | "read_section"
+  sectionId?: string
   charLimit?: number
 }
 ```
@@ -2292,13 +2292,11 @@ Output:
 
 ```ts
 type SoulToolOutput = {
-  operation: "read"
-  documents: Array<{
-    document: "identity" | "operating_principles"
-    path: string
-    content: string
-    truncation: TruncationMetadata
-  }>
+  operation: "read" | "read_index" | "read_section"
+  path: "identity.md"
+  content?: string
+  index?: MemoryDocIndex
+  section?: MemoryDocSection
   truncation: TruncationMetadata
   warnings?: string[]
 }
@@ -2306,14 +2304,17 @@ type SoulToolOutput = {
 
 Rules:
 
-- `soul` can only read `~/.Socrates/identity.md` and `~/.Socrates/operating_principles.md`.
-- The main agent cannot edit these files through model-visible tools. Soul updates are proposed and applied only by the backend memory agent through verified patches.
+- `soul` can only read `~/.Socrates/identity.md`.
+- Socrates should prefer `read_index` before full `read`, then use `read_section` for focused context. Full `read` is capped at 8,000 chars and `read_index`/`read_section` are capped at 10,000 chars even if the caller requests a larger `charLimit`.
+- The main agent cannot edit this file through model-visible tools. Identity updates are proposed and applied only by the backend memory agent through verified patches.
 - A proposed soul update must create a confirmation record and run the exact prompt `You are about to make changes to the soul. Are you sure?` followed by `Reply exactly yes or no.` Only an exact normalized `yes` applies the patch.
 - Applied soul updates create durable notifications with rationale and compact diff payloads.
 
 ### `user_profile`
 
-Read-only access to `~/.Socrates/user_profile.md`, which stores durable cross-project user profile facts and stable user preferences. The main Socrates agent should call this before answering user-profile/preference questions. Only the backend memory agent can update this file through scoped `edit_files`.
+Read-only access to `~/.Socrates/user_profile.md`, which stores durable cross-project user profile facts and stable user preferences. It supports `read`, `read_index`, and `read_section` with the same focused section output shape, index-first guidance, and char-limit caps as `soul`. The main Socrates agent should call this before answering user-profile/preference questions. Only the backend memory agent can update this file through scoped `edit_files`.
+
+Primary `identity.md` and `user_profile.md` migrations are special-cased: unlike ordinary structured markdown migrations, they must not preserve a generic `legacy_content` section. Startup normalization routes legacy headings into the canonical primary sections, removes old scaffolding placeholders, and compacts obvious duplicate migrated bullets before Memory Center exposes the files.
 
 ### `repo_docs`
 

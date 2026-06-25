@@ -17,6 +17,14 @@ const projectProfile: MemoryDocProfile = {
   indexTags: ["memory", "project"],
 }
 
+const userProfileProfile: MemoryDocProfile = {
+  docType: "user_profile",
+  ownerTool: "user_profile",
+  scope: "global",
+  path: "user_profile.md",
+  indexTags: ["profile"],
+}
+
 describe("memory doc parser", () => {
   it("builds and parses a structured section index", () => {
     const content = buildStructuredMemoryDoc(projectProfile)
@@ -66,26 +74,81 @@ describe("memory doc parser", () => {
     expect(index.sections.some((section) => section.sectionId === "legacy_content")).toBe(true)
   })
 
+  it("migrates primary user profile docs without preserving legacy scaffolding", () => {
+    const filePath = path.join(tempDir(), "user_profile.md")
+    fs.writeFileSync(
+      filePath,
+      [
+        "---",
+        "socrates_doc: user_profile",
+        "schema_version: 1",
+        "owner_tool: user_profile",
+        "scope: global",
+        "---",
+        "",
+        "# User Profile",
+        "",
+        '<!-- socrates:section id="profile_summary" kind="profile" tags="user" -->',
+        "## Profile Summary",
+        "",
+        "## Stable Facts",
+        "",
+        "- **Name**: Ayush",
+        "- **Primary Project**: Socrates AI -- local-first workspace.",
+        "",
+        "## Legacy Content",
+        "",
+        "# User Profile",
+        "",
+        "## Stable Preferences",
+        "",
+        "- Keep this section narrow. Store only durable preferences that should transfer across projects.",
+        "- Casual, informal communication style -- uses short messages.",
+        "- **Communication Style**: Casual and informal (uses short messages).",
+        "",
+        "## Work And Projects",
+        "",
+        "- Durable cross-project work context belongs here.",
+        "<!-- /socrates:section -->",
+        "",
+      ].join("\n"),
+    )
+
+    ensureStructuredMemoryDoc(filePath, userProfileProfile)
+
+    const content = fs.readFileSync(filePath, "utf8")
+    const index = parseMemoryDoc(content, userProfileProfile)
+    expect(index.warnings).toBeUndefined()
+    expect(index.sections.map((section) => section.sectionId)).toEqual(memoryDocRequiredSections.user_profile)
+    expect(content).not.toContain("Legacy Content")
+    expect(content).not.toContain("Keep this section narrow")
+    expect(content).not.toContain("belongs here")
+    expect(content.match(/\*\*Communication Style\*\*/g) ?? []).toHaveLength(1)
+    expect(content).toContain("- No durable cross-project work context captured yet.")
+  })
+
   it("keeps bundled tool docs in the five-section structured format", () => {
     const files = listMarkdownFiles(bundledToolUsageDir)
     expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([
-      "current_time.md",
-      "edit_apply_patch.md",
-      "memory_agent/edit_files.md",
-      "memory_agent/projects.md",
-      "memory_agent/skills.md",
-      "memory_agent/soul.md",
-      "memory_agent/tool_docs.md",
-      "memory_agent/trace_retrieve.md",
-      "project_docs.md",
-      "read_search.md",
-      "repo_docs.md",
-      "skills.md",
-      "soul.md",
-      "terminal.md",
-      "tool_docs.md",
-      "trace_retrieve.md",
-    ])
+	      "current_time.md",
+	      "edit_apply_patch.md",
+	      "memory_agent/edit_files.md",
+	      "memory_agent/projects.md",
+	      "memory_agent/skills.md",
+	      "memory_agent/soul.md",
+	      "memory_agent/tool_docs.md",
+	      "memory_agent/trace_retrieve.md",
+	      "memory_agent/user_profile.md",
+	      "project_docs.md",
+	      "read_search.md",
+	      "repo_docs.md",
+	      "skills.md",
+	      "soul.md",
+	      "terminal.md",
+	      "tool_docs.md",
+	      "trace_retrieve.md",
+	      "user_profile.md",
+	    ])
 
     for (const filePath of files) {
       const relativePath = path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")

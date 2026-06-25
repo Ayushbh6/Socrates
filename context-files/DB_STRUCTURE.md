@@ -834,7 +834,7 @@ Stores the internal second-call confirmation flow for soul edits.
 | `job_id` | `TEXT` | yes | FK to `memory_agent_jobs.id`. |
 | `action_id` | `TEXT` | yes | FK to `memory_agent_actions.id`. |
 | `project_id` | `TEXT` | yes | Project that triggered the proposal. |
-| `document` | `TEXT` | yes | `identity` or `operating_principles`. |
+| `document` | `TEXT` | yes | `identity`. |
 | `prompt_text` | `TEXT` | yes | Exact confirmation prompt shown to the model. |
 | `response_text` | `TEXT` | no | Raw model response. |
 | `decision` | `TEXT` | no | `yes`, `no`, or `invalid`; only `yes` applies. |

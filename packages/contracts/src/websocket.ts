@@ -406,7 +406,7 @@ export const memorySoulConfirmationRequestedPayloadSchema = z
     jobId: idSchema,
     actionId: idSchema,
     confirmationId: idSchema,
-    document: z.enum(["identity", "operating_principles"]),
+    document: z.literal("identity"),
     prompt: z.string().min(1),
   })
   .strict()
@@ -416,7 +416,7 @@ export const memorySoulConfirmationResolvedPayloadSchema = z
     jobId: idSchema,
     actionId: idSchema,
     confirmationId: idSchema,
-    document: z.enum(["identity", "operating_principles"]),
+    document: z.literal("identity"),
     decision: z.enum(["yes", "no", "invalid"]),
   })
   .strict()
@@ -426,7 +426,7 @@ export const memorySoulUpdatedPayloadSchema = z
     jobId: idSchema,
     actionId: idSchema,
     confirmationId: idSchema,
-    document: z.enum(["identity", "operating_principles"]),
+    document: z.literal("identity"),
     path: z.string().min(1),
     notificationId: idSchema,
     rationale: z.string().min(1).optional(),

@@ -279,9 +279,9 @@ export function MemoryCenterPage() {
           </div>
         </header>
 
-        <section className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6" data-memory-scroll-region>
-          <div className="mx-auto grid min-h-full w-full max-w-7xl gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="min-w-0 space-y-4">
+        <section className="min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6">
+          <div className="mx-auto grid h-full min-h-0 w-full max-w-7xl gap-4 overflow-y-auto xl:grid-cols-[minmax(0,1fr)_380px] xl:overflow-hidden">
+            <div className="min-w-0 space-y-4 xl:min-h-0 xl:overflow-y-auto xl:pr-1" data-memory-scroll-region>
               {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
               {message && <div className="rounded-lg border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-800">{message}</div>}
 
@@ -452,7 +452,7 @@ export function MemoryCenterPage() {
               )}
             </div>
 
-            <aside className="min-h-0 rounded-lg border border-slate-200 bg-white xl:sticky xl:top-0 xl:max-h-full">
+            <aside className="w-full min-w-0 overflow-visible rounded-lg border border-slate-200 bg-white xl:flex xl:h-full xl:min-h-0 xl:flex-col xl:overflow-hidden">
               <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-4 py-4">
                 <div>
                   <h2 className="text-base font-semibold text-slate-950">Memory files</h2>
@@ -461,7 +461,7 @@ export function MemoryCenterPage() {
                 <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">{files.length} files</span>
               </div>
 
-              <div className="max-h-[40rem] overflow-y-auto px-4 py-4 xl:max-h-[calc(100vh-17rem)]">
+              <div className="min-w-0 px-4 py-4 xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
                 {Object.entries(groupedFiles).map(([group, groupFiles]) => (
                   <div key={group} className="mb-5 last:mb-0">
                     <div className="mb-2 flex items-center justify-between gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -509,8 +509,8 @@ export function MemoryCenterPage() {
           </div>
         </section>
 
-        <footer className="flex-none border-t border-slate-200 bg-white px-4 py-2 sm:px-6">
-          <div className="mx-auto grid w-full max-w-7xl gap-2 text-xs text-slate-600 sm:grid-cols-4">
+        <footer className="flex-none border-t border-slate-200 bg-white px-4 py-3 sm:px-6">
+          <div className="mx-auto grid w-full max-w-7xl grid-cols-2 gap-2 text-xs text-slate-600 xl:grid-cols-4">
             <FooterFact icon={<Clock3 className="size-3.5" />} label="Last checked" value={overview?.state.lastCheckedAt ? formatDate(overview.state.lastCheckedAt) : "Never"} />
             <FooterFact icon={<Activity className="size-3.5" />} label="Last real run" value={overview?.state.lastRealRunAt ? formatDate(overview.state.lastRealRunAt) : "None yet"} />
             <FooterFact icon={<CalendarClock className="size-3.5" />} label="Next check" value={nextCheckAt ? formatDate(nextCheckAt) : settings?.enabled ? "Pending" : "Disabled"} />
@@ -603,7 +603,7 @@ function TimelineRow({ item }: { item: MemoryAgentTimelineItem }) {
 
 function FooterFact({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
       <span className="text-teal-700">{icon}</span>
       <span className="shrink-0 font-semibold uppercase tracking-wide text-slate-500">{label}</span>
       <span className="truncate text-slate-700">{value}</span>
@@ -619,7 +619,7 @@ function FileIcon({ file }: { file: MemoryAgentFileSummary }) {
 }
 
 const groupFiles = (files: MemoryAgentFileSummary[]): Record<string, MemoryAgentFileSummary[]> => ({
-  "Core Memory": files.filter((file) => file.kind === "identity" || file.kind === "operating_principles" || file.kind === "user_profile"),
+  "Core Memory": files.filter((file) => file.kind === "identity" || file.kind === "user_profile"),
   "Tool Docs": files.filter((file) => file.kind === "tool_doc"),
   Skills: files.filter((file) => file.kind === "skill"),
 });

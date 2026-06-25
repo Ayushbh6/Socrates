@@ -125,35 +125,36 @@ const sectionDefinitions: Record<MemoryDocType, SectionDefinition[]> = {
   ],
   identity: [
     {
-      id: "identity",
+      id: "core_identity",
       kind: "identity",
-      heading: "Identity",
+      heading: "Core Identity",
       tags: ["soul"],
       body: [
         "- Socrates is a local-first project partner.",
         "- Socrates works from evidence in the current workspace, repo docs, tool traces, and explicit user instructions.",
-        "- Durable user profile and stable cross-project preferences live in `user_profile.md` and are accessed through the `user_profile` tool.",
       ].join("\n"),
     },
-    { id: "scope", kind: "scope", heading: "Scope", tags: ["soul"], body: "- Runtime, developer, and user instructions outrank this file." },
-    { id: "non_negotiables", kind: "rules", heading: "Non-Negotiables", tags: ["soul"], body: "- Do not store secrets, credentials, private keys, or sensitive raw data." },
-    { id: "voice", kind: "style", heading: "Voice", tags: ["soul"], body: "- Be direct, concrete, and technically grounded." },
-    { id: "change_policy", kind: "rules", heading: "Change Policy", tags: ["soul"], body: "- Update only from explicit user statements or repeated behavior with clear support in traces." },
-  ],
-  operating_principles: [
-    { id: "decision_principles", kind: "principles", heading: "Decision Principles", tags: ["behavior"], body: "- Prefer evidence over assumption.\n- Use trace retrieval when prior conversation or tool evidence matters." },
-    { id: "tool_discipline", kind: "tools", heading: "Tool Discipline", tags: ["behavior"], body: "- Read/search before editing." },
-    { id: "memory_discipline", kind: "memory", heading: "Memory Discipline", tags: ["behavior"], body: "- Keep project memory concise and inspectable.\n- Store global principles only when they are durable across projects.\n- Keep project-specific state inside the workspace `.socrates/` tree." },
-    { id: "safety", kind: "safety", heading: "Safety", tags: ["behavior"], body: "- Stop and ask before destructive or sensitive actions without explicit instruction." },
-    { id: "failure_handling", kind: "recovery", heading: "Failure Handling", tags: ["behavior"], body: "- Report failing commands and continue debugging unless the user asked only for diagnosis." },
+    { id: "voice_and_presence", kind: "style", heading: "Voice And Presence", tags: ["soul"], body: "- Be direct, concrete, technically grounded, and emotionally present without becoming theatrical." },
+    {
+      id: "relationship_to_user",
+      kind: "relationship",
+      heading: "Relationship To User",
+      tags: ["soul"],
+      body: "- Work as a durable project partner for one user.\n- Durable user profile and stable cross-project preferences live in `user_profile.md` and are accessed through the `user_profile` tool.",
+    },
+    { id: "operating_principles", kind: "principles", heading: "Operating Principles", tags: ["behavior"], body: "- Prefer evidence over assumption.\n- Gather enough context before changing files.\n- Keep project-specific state inside the workspace `.socrates/` tree." },
+    { id: "safety_boundaries", kind: "safety", heading: "Safety Boundaries", tags: ["soul", "safety"], body: "- Runtime, developer, and user instructions outrank this file.\n- Do not store secrets, credentials, private keys, or sensitive raw data.\n- Stop and ask before destructive or sensitive actions without explicit instruction." },
+    { id: "tool_and_memory_discipline", kind: "tools", heading: "Tool And Memory Discipline", tags: ["tools", "memory"], body: "- Use dedicated docs and memory tools for Socrates-owned docs instead of generic file tools.\n- Update identity only from explicit user statements or repeated behavior with clear support in traces.\n- Prefer small section edits over broad rewrites." },
   ],
   user_profile: [
-    { id: "stable_facts", kind: "profile", heading: "Stable Facts", tags: ["user"], body: "Root global user profile for Socrates. Runtime, developer, and user instructions outrank this file.\n\n- Unknown until repeated or explicit evidence justifies a durable note." },
-    { id: "stable_preferences", kind: "preferences", heading: "Stable Preferences", tags: ["user"], body: "- Durable cross-project preferences belong here." },
+    { id: "profile_summary", kind: "profile", heading: "Profile Summary", tags: ["user"], body: "- No stable profile facts captured yet." },
+    { id: "stable_preferences", kind: "preferences", heading: "Stable Preferences", tags: ["user"], body: "- No durable cross-project preferences captured yet." },
     { id: "collaboration_style", kind: "style", heading: "Collaboration Style", tags: ["user"], body: "- Prefer direct, concrete, technically grounded communication." },
-    { id: "boundaries", kind: "boundaries", heading: "Boundaries", tags: ["user"], body: "- Do not store secrets, credentials, private keys, or sensitive raw data." },
-    { id: "evidence_requirements", kind: "evidence", heading: "Evidence Requirements", tags: ["user"], body: "- Update only from explicit statements or repeated behavior with clear support in traces." },
-    { id: "stale_or_rejected_facts", kind: "stale", heading: "Stale Or Rejected Facts", tags: ["user"], body: "- Superseded or rejected profile facts belong here." },
+    { id: "work_and_projects", kind: "work", heading: "Work And Projects", tags: ["user", "projects"], body: "- No durable cross-project work context captured yet." },
+    { id: "personal_interests", kind: "interests", heading: "Personal Interests", tags: ["user"], body: "- No durable personal interests captured yet." },
+    { id: "boundaries_and_dislikes", kind: "boundaries", heading: "Boundaries And Dislikes", tags: ["user"], body: "- Do not store secrets, credentials, private keys, or sensitive raw data.\n- Strong dislikes or boundaries belong here when explicitly stated." },
+    { id: "recent_context", kind: "recent", heading: "Recent Context", tags: ["user", "recency"], body: "- No short-lived cross-project personal context captured yet." },
+    { id: "evidence_index", kind: "evidence", heading: "Evidence Index", tags: ["user", "evidence"], body: "- No compact source anchors captured yet." },
   ],
   tool_doc: [
     { id: "purpose", kind: "purpose", heading: "Purpose", tags: ["tools"], body: "- Describe what this tool guidance is for." },
@@ -237,16 +238,20 @@ export const ensureStructuredMemoryDoc = (filePath: string, profile: MemoryDocPr
   const current = fs.readFileSync(filePath, "utf8")
   try {
     const parsed = parseMemoryDoc(current, profile)
-    if (isValidStructuredMemoryDoc(parsed, profile.docType)) {
+    if (isValidStructuredMemoryDoc(parsed, profile.docType, current)) {
       return
     }
   } catch {
     // Preserve the original text in a legacy section instead of failing startup on a malformed doc.
   }
+  if (profile.docType === "identity" || profile.docType === "user_profile") {
+    fs.writeFileSync(filePath, buildStructuredMemoryDoc(profile, { sectionBodies: sectionBodiesForPrimaryDocMigration(current, profile) }))
+    return
+  }
   fs.writeFileSync(filePath, buildStructuredMemoryDoc(profile, { legacyContent: current }))
 }
 
-export const buildStructuredMemoryDoc = (profile: MemoryDocProfile, options: { legacyContent?: string } = {}): string => {
+export const buildStructuredMemoryDoc = (profile: MemoryDocProfile, options: { legacyContent?: string; sectionBodies?: Record<string, string> } = {}): string => {
   const title = titleForProfile(profile)
   const frontmatter = [
     "---",
@@ -258,7 +263,7 @@ export const buildStructuredMemoryDoc = (profile: MemoryDocProfile, options: { l
     "---",
     "",
   ].filter((line): line is string => typeof line === "string")
-  const sections = sectionDefinitions[profile.docType].map(renderSection)
+  const sections = sectionDefinitions[profile.docType].map((section) => renderSection({ ...section, body: options.sectionBodies?.[section.id]?.trim() || section.body }))
   const legacy = options.legacyContent?.trim()
   if (legacy) {
     sections.push(
@@ -273,6 +278,245 @@ export const buildStructuredMemoryDoc = (profile: MemoryDocProfile, options: { l
   }
   return [...frontmatter, `# ${title}`, "", ...sections].join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n"
 }
+
+const sectionBodiesForPrimaryDocMigration = (content: string, profile: MemoryDocProfile): Record<string, string> => {
+  const defaults = Object.fromEntries(sectionDefinitions[profile.docType].map((section) => [section.id, section.body]))
+  const buckets: Record<string, string[]> = {}
+  const add = (sectionId: string, body: string): void => {
+    const trimmed = body.trim()
+    if (!trimmed) {
+      return
+    }
+    buckets[sectionId] = [...(buckets[sectionId] ?? []), trimmed]
+  }
+  const entries = existingSectionEntries(content, profile)
+  const fallbackSection = profile.docType === "identity" ? "core_identity" : "profile_summary"
+  if (entries.length === 0) {
+    add(fallbackSection, markdownBodyWithoutFrontmatterAndTitle(content))
+  }
+  for (const entry of entries) {
+    for (const expanded of primaryDocMigrationEntries(entry, profile.docType)) {
+      add(sectionIdForMigratedEntry(profile.docType, expanded.id, expanded.heading), expanded.body)
+    }
+  }
+  for (const section of sectionDefinitions[profile.docType]) {
+    const migrated = buckets[section.id] ?? []
+    if (migrated.length > 0) {
+      defaults[section.id] = cleanPrimarySectionBody(profile.docType, section.id, Array.from(new Set(migrated)).join("\n\n"))
+    }
+  }
+  return defaults
+}
+
+const existingSectionEntries = (content: string, profile: MemoryDocProfile): Array<{ id?: string; heading?: string; body: string }> => {
+  try {
+    const parsed = parseMemoryDoc(content, profile)
+    if (parsed.sections.length > 0) {
+      return parsed.sections.map((section) => ({ id: section.sectionId, heading: section.heading, body: section.content }))
+    }
+  } catch {
+    // Fall back to heading-based extraction for older unstructured files.
+  }
+  return markdownHeadingEntries(content)
+}
+
+const primaryDocMigrationEntries = (entry: { id?: string; heading?: string; body: string }, docType: "identity" | "user_profile"): Array<{ id?: string; heading?: string; body: string }> => {
+  const nested = markdownHeadingEntries(entry.body)
+  if (nested.length === 0) {
+    return [{ id: entry.id, heading: entry.heading, body: cleanPrimaryMigrationBody(entry.body) }].filter((item) => item.body.trim().length > 0)
+  }
+  const expanded: Array<{ id?: string; heading?: string; body: string }> = []
+  for (const nestedEntry of nested) {
+    const key = normalizeSectionKey(nestedEntry.heading)
+    if (isPrimaryMigrationWrapperHeading(key)) {
+      continue
+    }
+    const body = cleanPrimaryMigrationBody(nestedEntry.body)
+    if (body.trim()) {
+      expanded.push({ heading: nestedEntry.heading, body })
+    }
+  }
+  if (expanded.length > 0) {
+    return expanded
+  }
+  return [{ id: entry.id, heading: entry.heading, body: cleanPrimaryMigrationBody(entry.body) }].filter((item) => item.body.trim().length > 0)
+}
+
+const isPrimaryMigrationWrapperHeading = (key: string): boolean =>
+  ["legacycontent", "migratedfromidentitymd", "migratedfromidentity", "migratedfrom"].includes(key)
+
+const cleanPrimaryMigrationBody = (body: string): string =>
+  dedupeMarkdownLines(
+    body
+      .split(/\r?\n/)
+      .filter((line) => !/^#\s+/.test(line.trim()))
+      .join("\n"),
+  )
+
+const cleanPrimarySectionBody = (docType: "identity" | "user_profile", sectionId: string, body: string): string => {
+  const lines = dedupeMarkdownLines(body).split(/\r?\n/)
+  const hasSpecificLine = lines.some((line) => {
+    const trimmed = line.trim()
+    return trimmed.length > 0 && !isPrimaryBoilerplateLine(trimmed, docType, sectionId)
+  })
+  if (!hasSpecificLine) {
+    return sectionDefinitions[docType].find((section) => section.id === sectionId)?.body ?? dedupeMarkdownLines(body)
+  }
+  return compactPrimarySectionBody(docType, sectionId, lines.filter((line) => !isPrimaryBoilerplateLine(line.trim(), docType, sectionId)).join("\n"))
+}
+
+const dedupeMarkdownLines = (body: string): string => {
+  const seen = new Set<string>()
+  const result: string[] = []
+  let previousWasBlank = false
+  for (const line of body.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed) {
+      if (!previousWasBlank) {
+        result.push("")
+      }
+      previousWasBlank = true
+      continue
+    }
+    previousWasBlank = false
+    const key = trimmed.replace(/\s+/g, " ")
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    result.push(line)
+  }
+  return result.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+}
+
+const isPrimaryBoilerplateLine = (line: string, docType: "identity" | "user_profile", sectionId: string): boolean => {
+  if (!line) return false
+  const normalized = line.toLowerCase().replace(/\s+/g, " ")
+  if (docType === "user_profile") {
+    return [
+      "root global user profile for socrates. runtime, developer, and user instructions outrank this file.",
+      "- unknown until repeated or explicit evidence justifies a durable note.",
+      "- keep this section narrow. store only durable preferences that should transfer across projects.",
+      "- durable cross-project preferences belong here.",
+      "- durable cross-project work context belongs here.",
+      "- durable personal interests belong here only when explicit or repeatedly useful.",
+      "- short-lived but useful cross-project personal context belongs here and should be refreshed or removed as it ages.",
+      "- record compact evidence anchors for important profile claims: dates, project names, conversation titles, or short source descriptions.",
+      "- superseded or rejected profile facts belong here.",
+      "- update only from explicit user statements or repeated behavior with clear support in traces.",
+      "- prefer small bullet edits inside existing sections over broad rewrites.",
+      "- update only from explicit statements or repeated behavior with clear support in traces.",
+    ].includes(normalized)
+  }
+  if (docType === "identity" && sectionId === "core_identity") {
+    return ["root global identity for socrates. runtime, developer, and user instructions outrank this file."].includes(normalized)
+  }
+  return false
+}
+
+const compactPrimarySectionBody = (docType: "identity" | "user_profile", sectionId: string, body: string): string => {
+  const lines = dedupeMarkdownLines(body).split(/\r?\n/)
+  const keyToOutputIndex = new Map<string, number>()
+  const output: string[] = []
+  for (const line of lines) {
+    const key = primarySemanticLineKey(docType, sectionId, line)
+    if (!key) {
+      output.push(line)
+      continue
+    }
+    const existingIndex = keyToOutputIndex.get(key)
+    if (existingIndex === undefined) {
+      keyToOutputIndex.set(key, output.length)
+      output.push(line)
+      continue
+    }
+    if (line.length > (output[existingIndex]?.length ?? 0)) {
+      output[existingIndex] = line
+    }
+  }
+  return dedupeMarkdownLines(output.join("\n"))
+}
+
+const primarySemanticLineKey = (docType: "identity" | "user_profile", sectionId: string, line: string): string | undefined => {
+  const trimmed = line.trim()
+  if (!trimmed || !trimmed.startsWith("-")) {
+    return undefined
+  }
+  const boldLabel = /^-\s+\*\*(.+?)\*\*\s*:/.exec(trimmed)
+  if (boldLabel) {
+    const labelKey = normalizeSectionKey(boldLabel[1])
+    if (docType === "user_profile") {
+      if (sectionId === "profile_summary" && labelKey === "primaryproject") return `${docType}:${sectionId}:primaryproject`
+      if (sectionId === "stable_preferences") {
+        if (labelKey === "communicationstyle") return `${docType}:${sectionId}:communicationstyle`
+        if (labelKey === "taskguidance") return `${docType}:${sectionId}:taskguidance`
+        if (labelKey === "toolusage") return `${docType}:${sectionId}:toolusage`
+        if (labelKey === "storage") return `${docType}:${sectionId}:storage`
+      }
+    }
+    return `${docType}:${sectionId}:label:${labelKey}`
+  }
+  const normalized = trimmed.toLowerCase().replace(/[`*_]/g, "").replace(/\s+/g, " ")
+  if (docType === "user_profile") {
+    if (sectionId === "profile_summary" && normalized.includes("primary project")) return `${docType}:${sectionId}:primaryproject`
+    if (sectionId === "stable_preferences") {
+      if (normalized.includes("casual") && normalized.includes("informal")) return `${docType}:${sectionId}:communicationstyle`
+      if (normalized.includes("step-by-step") || normalized.includes("step by step")) return `${docType}:${sectionId}:taskguidance`
+      if (normalized.includes("tests tools extensively")) return `${docType}:${sectionId}:toolusage`
+      if (normalized.includes("onedrive") || normalized.includes("icloud")) return `${docType}:${sectionId}:storage`
+    }
+    if (sectionId === "collaboration_style" && normalized.includes("prefer direct") && normalized.includes("concrete")) return `${docType}:${sectionId}:directconcrete`
+  }
+  return undefined
+}
+
+const sectionIdForMigratedEntry = (docType: "identity" | "user_profile", id: string | undefined, heading: string | undefined): string => {
+  const key = normalizeSectionKey(id || heading || "")
+  if (docType === "identity") {
+    if (["identity", "role", "coreidentity", "coreidentity"].includes(key)) return "core_identity"
+    if (["voice", "style", "voiceandpresence"].includes(key)) return "voice_and_presence"
+    if (["usercontext", "relationship", "relationshiptouser"].includes(key)) return "relationship_to_user"
+    if (["decisionprinciples", "tooluse", "updates", "operatingprinciples", "principles"].includes(key)) return "operating_principles"
+    if (["scope", "nonnegotiables", "boundaries", "safety", "safetyboundaries"].includes(key)) return "safety_boundaries"
+    if (["changepolicy", "evidencerequirements", "tooldiscipline", "memorydiscipline", "toolandmemorydiscipline"].includes(key)) return "tool_and_memory_discipline"
+    return "core_identity"
+  }
+  if (["profile", "stablefacts", "profilesummary", "userprofile"].includes(key)) return "profile_summary"
+  if (["stablepreferences", "preferences"].includes(key)) return "stable_preferences"
+  if (["collaborationstyle", "style"].includes(key)) return "collaboration_style"
+  if (["work", "projects", "workandprojects"].includes(key)) return "work_and_projects"
+  if (["interests", "personalinterests", "hobbies"].includes(key)) return "personal_interests"
+  if (["boundaries", "dislikes", "boundariesanddislikes"].includes(key)) return "boundaries_and_dislikes"
+  if (["recent", "recentcontext"].includes(key)) return "recent_context"
+  if (["evidence", "evidencerequirements", "evidenceindex", "staleorrejectedfacts"].includes(key)) return "evidence_index"
+  return "profile_summary"
+}
+
+const markdownHeadingEntries = (content: string): Array<{ heading: string; body: string }> => {
+  const body = markdownBodyWithoutFrontmatterAndTitle(content)
+  const matches = Array.from(body.matchAll(/^##\s+(.+?)\s*$/gm))
+  if (matches.length === 0) {
+    return []
+  }
+  return matches.map((match, index) => {
+    const start = (match.index ?? 0) + match[0].length
+    const end = index + 1 < matches.length ? matches[index + 1].index ?? body.length : body.length
+    return { heading: match[1].trim(), body: body.slice(start, end).trim() }
+  })
+}
+
+const markdownBodyWithoutFrontmatterAndTitle = (content: string): string => {
+  let body = content.trim()
+  if (body.startsWith("---")) {
+    const end = body.indexOf("\n---", 3)
+    if (end >= 0) {
+      body = body.slice(end + 4).trim()
+    }
+  }
+  return body.replace(/^#\s+.+\s*/m, "").trim()
+}
+
+const normalizeSectionKey = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]/g, "")
 
 export const patchMemoryDocSection = (content: string, profile: MemoryDocProfile, sectionId: string, oldText: string, newText: string, replaceAll = false): string => {
   const parsed = parseMemoryDoc(content, profile)
@@ -366,19 +610,64 @@ export const memoryDocTypeForRepoDoc = (name: string): MemoryDocType => {
 }
 
 export const memoryDocTypeForEditFilesTarget = (target: EditFilesTarget): MemoryDocType => {
-  if (target === "identity" || target === "operating_principles" || target === "user_profile") {
+  if (target === "identity" || target === "user_profile") {
     return memoryDocTypeSchema.parse(target)
   }
   return "skill"
 }
 
-const isValidStructuredMemoryDoc = (index: MemoryDocIndex, docType: MemoryDocType): boolean => {
+const isValidStructuredMemoryDoc = (index: MemoryDocIndex, docType: MemoryDocType, content?: string): boolean => {
   if (index.warnings?.some((warning) => warning.startsWith("Missing required section") || warning.toLowerCase().includes("frontmatter"))) {
+    return false
+  }
+  if ((docType === "identity" || docType === "user_profile") && ((content ? primaryDocContainsLegacyContent(content) || primaryDocContainsOldBoilerplate(content) : false) || primaryDocContainsDuplicateLines(index) || primaryDocContainsSemanticDuplicates(index, docType))) {
     return false
   }
   const required = memoryDocRequiredSections[docType]
   const sectionIds = new Set(index.sections.map((section) => section.sectionId))
   return required.every((sectionId) => sectionIds.has(sectionId))
+}
+
+const primaryDocContainsLegacyContent = (content: string): boolean => /id="legacy_content"|##\s+Legacy Content\b|#\s+Legacy Content\b/i.test(content)
+
+const primaryDocContainsOldBoilerplate = (content: string): boolean =>
+  /Keep this section narrow|Durable cross-project .* belongs here|Unknown until repeated|Root global user profile|Superseded or rejected profile facts belong here/i.test(content)
+
+const primaryDocContainsDuplicateLines = (index: MemoryDocIndex): boolean =>
+  index.sections.some((section) => {
+    const seen = new Set<string>()
+    for (const line of section.content.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed || /^##\s+/.test(trimmed)) {
+        continue
+      }
+      const key = trimmed.replace(/\s+/g, " ")
+      if (seen.has(key)) {
+        return true
+      }
+      seen.add(key)
+    }
+    return false
+  })
+
+const primaryDocContainsSemanticDuplicates = (index: MemoryDocIndex, docType: MemoryDocType): boolean => {
+  if (docType !== "identity" && docType !== "user_profile") {
+    return false
+  }
+  return index.sections.some((section) => {
+    const seen = new Set<string>()
+    for (const line of section.content.split(/\r?\n/)) {
+      const key = primarySemanticLineKey(docType, section.sectionId, line)
+      if (!key) {
+        continue
+      }
+      if (seen.has(key)) {
+        return true
+      }
+      seen.add(key)
+    }
+    return false
+  })
 }
 
 const renderSection = (section: SectionDefinition): string =>

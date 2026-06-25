@@ -313,7 +313,8 @@ describe("SocratesAgent", () => {
       }),
       soul: async () => ({
         operation: "read",
-        documents: [],
+        path: "identity.md",
+        content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
       user_profile: async () => ({
@@ -1256,7 +1257,8 @@ describe("SocratesAgent", () => {
       }),
       soul: async () => ({
         operation: "read",
-        documents: [],
+        path: "identity.md",
+        content: "",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
       user_profile: async () => ({
@@ -1883,7 +1885,8 @@ const emptyToolExecutors = (): ToolExecutors => ({
   }),
   soul: async () => ({
     operation: "read",
-    documents: [],
+    path: "identity.md",
+    content: "",
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
   }),
   user_profile: async () => ({

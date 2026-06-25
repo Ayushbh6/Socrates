@@ -287,7 +287,7 @@ export const memoryAgentRunDetailSchema = memoryAgentTimelineItemSchema
   .strict()
 export type MemoryAgentRunDetail = z.infer<typeof memoryAgentRunDetailSchema>
 
-export const memoryAgentFileKindSchema = z.enum(["identity", "operating_principles", "user_profile", "tool_doc", "skill"])
+export const memoryAgentFileKindSchema = z.enum(["identity", "user_profile", "tool_doc", "skill"])
 export type MemoryAgentFileKind = z.infer<typeof memoryAgentFileKindSchema>
 
 export const memoryAgentFileSummarySchema = z

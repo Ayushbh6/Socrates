@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 
 export type MemoryPatchProposal = {
-  document?: "identity" | "operating_principles"
+  document?: "identity"
   oldText?: string
   newText?: string
   expectedBeforeHash?: string

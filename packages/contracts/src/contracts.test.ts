@@ -1190,9 +1190,16 @@ describe("tool contracts", () => {
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", path: "src" }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 50 }).success).toBe(true)
     expect(searchToolInputSchema.safeParse({ mode: "text", query: "Socrates", maxResults: 51 }).success).toBe(false)
-    expect(soulToolInputSchema.safeParse({ operation: "read", document: "both", charLimit: 20_000 }).success).toBe(true)
-    expect(soulToolInputSchema.safeParse({ operation: "patch", document: "identity" }).success).toBe(false)
+    expect(soulToolInputSchema.safeParse({ operation: "read", charLimit: 20_000 }).success).toBe(true)
+    expect(soulToolInputSchema.safeParse({ operation: "read_index", charLimit: 20_000 }).success).toBe(true)
+    expect(soulToolInputSchema.safeParse({ operation: "read_section", sectionId: "operating_principles", charLimit: 20_000 }).success).toBe(true)
+    expect(soulToolInputSchema.safeParse({ operation: "read", document: "both", charLimit: 20_000 }).success).toBe(false)
+    expect(soulToolInputSchema.safeParse({ operation: "read_section" }).success).toBe(false)
+    expect(soulToolInputSchema.safeParse({ operation: "patch", sectionId: "core_identity" }).success).toBe(false)
     expect(userProfileToolInputSchema.safeParse({ operation: "read", charLimit: 20_000 }).success).toBe(true)
+    expect(userProfileToolInputSchema.safeParse({ operation: "read_index", charLimit: 20_000 }).success).toBe(true)
+    expect(userProfileToolInputSchema.safeParse({ operation: "read_section", sectionId: "stable_preferences", charLimit: 20_000 }).success).toBe(true)
+    expect(userProfileToolInputSchema.safeParse({ operation: "read_section" }).success).toBe(false)
     expect(userProfileToolInputSchema.safeParse({ operation: "edit" }).success).toBe(false)
     expect(
       userProfileToolOutputSchema.safeParse({
@@ -1205,15 +1212,9 @@ describe("tool contracts", () => {
     expect(
       soulToolOutputSchema.safeParse({
         operation: "read",
-        documents: [
-          {
-            document: "identity",
-            path: "primary/identity.md",
-            content: "# Identity",
-            truncation: { truncated: false, charLimit: 20_000, returnedLength: 10 },
-          },
-        ],
-        truncation: { truncated: false, charLimit: 20_000, returnedLength: 100 },
+        path: "identity.md",
+        content: "# Identity",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 10 },
       }).success,
     ).toBe(true)
     expect(editToolInputSchema.safeParse({ path: "README.md", oldString: "old", newString: "new" }).success).toBe(true)
@@ -1473,6 +1474,7 @@ describe("tool contracts", () => {
     expect(currentTimeToolOutputSchema.safeParse({ currentDate: "2026-06-19", currentDateTime: timestamp, timeZone: "Europe/Vienna", source: "system" }).success).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", sectionId: "stable_preferences", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(editFilesToolInputSchema.safeParse({ target: "operating_principles", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(false)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "REPO_RULES.md" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "search", query: "contract", path: "CONTRACTS.md" }).success).toBe(true)

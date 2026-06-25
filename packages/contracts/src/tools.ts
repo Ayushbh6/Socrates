@@ -149,31 +149,27 @@ export const searchToolOutputSchema = z
   .strict()
 export type SearchToolOutput = z.infer<typeof searchToolOutputSchema>
 
-export const soulDocumentSchema = z.enum(["identity", "operating_principles", "both"])
-export type SoulDocument = z.infer<typeof soulDocumentSchema>
-
 export const soulToolInputSchema = z
   .object({
-    operation: z.literal("read"),
-    document: soulDocumentSchema,
+    operation: z.enum(["read", "read_index", "read_section"]),
+    sectionId: z.string().min(1).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
-export type SoulToolInput = z.infer<typeof soulToolInputSchema>
-
-export const soulDocumentOutputSchema = z
-  .object({
-    document: z.enum(["identity", "operating_principles"]),
-    path: z.string().min(1),
-    content: z.string(),
-    truncation: truncationMetadataSchema,
+  .superRefine((input, context) => {
+    if (input.operation === "read_section" && !input.sectionId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "read_section requires sectionId." })
+    }
   })
-  .strict()
+export type SoulToolInput = z.infer<typeof soulToolInputSchema>
 
 export const soulToolOutputSchema = z
   .object({
-    operation: z.literal("read"),
-    documents: z.array(soulDocumentOutputSchema),
+    operation: z.enum(["read", "read_index", "read_section"]),
+    path: z.literal("identity.md"),
+    content: z.string().optional(),
+    index: memoryDocIndexSchema.optional(),
+    section: memoryDocSectionSchema.optional(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
   })
@@ -182,17 +178,25 @@ export type SoulToolOutput = z.infer<typeof soulToolOutputSchema>
 
 export const userProfileToolInputSchema = z
   .object({
-    operation: z.literal("read"),
+    operation: z.enum(["read", "read_index", "read_section"]),
+    sectionId: z.string().min(1).optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
   })
   .strict()
+  .superRefine((input, context) => {
+    if (input.operation === "read_section" && !input.sectionId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "read_section requires sectionId." })
+    }
+  })
 export type UserProfileToolInput = z.infer<typeof userProfileToolInputSchema>
 
 export const userProfileToolOutputSchema = z
   .object({
-    operation: z.literal("read"),
-    path: z.string().min(1),
-    content: z.string(),
+    operation: z.enum(["read", "read_index", "read_section"]),
+    path: z.literal("user_profile.md"),
+    content: z.string().optional(),
+    index: memoryDocIndexSchema.optional(),
+    section: memoryDocSectionSchema.optional(),
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
   })
@@ -1132,7 +1136,7 @@ export const projectsToolOutputSchema = z
   .strict()
 export type ProjectsToolOutput = z.infer<typeof projectsToolOutputSchema>
 
-export const editFilesTargetSchema = z.enum(["identity", "operating_principles", "user_profile", "skill"])
+export const editFilesTargetSchema = z.enum(["identity", "user_profile", "skill"])
 export type EditFilesTarget = z.infer<typeof editFilesTargetSchema>
 
 export const editFilesToolInputSchema = z

@@ -40,7 +40,6 @@ Global `~/.Socrates`:
 ```text
 ~/.Socrates/
   identity.md
-  operating_principles.md
   user_profile.md
   tool_usage/
     trace_retrieve.md
@@ -55,7 +54,7 @@ Global `~/.Socrates`:
     <skill-name>/SKILL.md
 ```
 
-Runtime-owned memory docs use Socrates YAML frontmatter plus `<!-- socrates:section ... -->` section markers. The parser builds a section index for workspace project memory/notes, runtime workspace repo docs, global identity/principles/user profile, and global tool docs. Existing unstructured files are preserved in a `legacy_content` section during migration instead of being discarded.
+Runtime-owned memory docs use Socrates YAML frontmatter plus `<!-- socrates:section ... -->` section markers. The parser builds a section index for workspace project memory/notes, runtime workspace repo docs, global identity/user profile, and global tool docs. Existing unstructured files are preserved in a `legacy_content` section during migration except for `identity.md` and `user_profile.md`, which are rebuilt into their canonical sections without a legacy section.
 
 ## Model-Visible Tool Surface
 
@@ -95,8 +94,9 @@ Tool routing:
 - `mcp_registry` lists and describes available MCP servers. `list` returns compact discovery rows; `describe` with an exact listed id/name loads one server and exposes its dynamic `mcp__...` tools for the same turn.
 - `project_docs` reads/searches/indexes/edits workspace `.socrates/MEMORY.md` and `.socrates/PROJECT_NOTES.md`; prefer `read_index`, `read_section`, and `patch_section` for structured recall and edits.
 - `repo_docs` reads/searches/indexes/edits only the four runtime repo doctrine docs; prefer `read_index`, `read_section`, and `patch_section` for focused repo doctrine changes.
-- `soul` reads root `~/.Socrates/identity.md` and `~/.Socrates/operating_principles.md`; the main agent cannot write them.
-- `user_profile` reads root `~/.Socrates/user_profile.md`; the main agent cannot write it.
+- `soul` reads root `~/.Socrates/identity.md` with `read`, `read_index`, and `read_section`; the main agent cannot write it.
+- `user_profile` reads root `~/.Socrates/user_profile.md` with `read`, `read_index`, and `read_section`; the main agent cannot write it.
+- `soul` and `user_profile` should use `read_index` before full `read`, then `read_section` for focused context. Runtime caps full reads at 8,000 chars and index/section reads at 10,000 chars even if a larger `charLimit` is requested.
 
 ## Runtime Notes
 
@@ -105,17 +105,17 @@ Tool routing:
 - Extension discovery is tool-driven, not prompt-matched. Socrates should call `skills({ operation: "list" })` or `mcp_registry({ operation: "list" })`, then use `describe` with an exact listed canonical id/name. The runtime must not grep the user's prompt for skill or MCP names and inject hidden matches.
 - Current date/time comes from the `current_time` tool. `project_docs` and `repo_docs` outputs also include `runtime.currentDate`, `runtime.currentDateTime`, `runtime.timeZone`, and `runtime.source: "system"` so docs workflows have an authoritative date source after reads.
 - `.socrates/PROJECT_NOTES.md` may contain a backend-owned `runtime_context` section with workspace scan facts such as detected Python environments and dependency files. It is protected from `project_docs` edits and intentionally does not persist terminal output or live terminal state.
-- Project docs, repo docs, global tool docs, identity, operating principles, and user profile updates get backend-owned frontmatter stamps (`updated_at`, `updated_by`, `last_edited_section`) after successful dedicated-tool edits. Model-written prose should not invent "today" when these system stamps are enough.
+- Project docs, repo docs, global tool docs, identity, and user profile updates get backend-owned frontmatter stamps (`updated_at`, `updated_by`, `last_edited_section`) after successful dedicated-tool edits. Model-written prose should not invent "today" when these system stamps are enough.
 - Generic `edit` and `apply_patch` writes to `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/*.md`, and `.socrates/skills/**` are rejected; use dedicated docs tools or the backend project skill builder.
 - Before any `bash`, `edit`, or `apply_patch` can run, Socrates must have read/searched `project_docs` with `area: "notes"` and read/searched `repo_docs` in the same turn. Missing preflight returns recoverable `docs_preflight_required`.
 - After any successful `bash`, `edit`, or `apply_patch`, Socrates must read/search `project_docs` with `area: "memory"` before final answer. Memory edits remain optional; the runtime requires review, then Socrates decides whether a durable update is useful.
-- Terminal commands are preflight-rejected when they mention Socrates-owned protected paths: workspace `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/**`, `.socrates/skills/**`, and global `~/.Socrates/skills/**`, `~/.Socrates/tool_usage/**`, `identity.md`, or `operating_principles.md`. This is an obvious-path guard, not a process sandbox.
+- Terminal commands are preflight-rejected when they mention Socrates-owned protected paths: workspace `.socrates/MEMORY.md`, `.socrates/PROJECT_NOTES.md`, `.socrates/repo_docs/**`, `.socrates/skills/**`, and global `~/.Socrates/skills/**`, `~/.Socrates/tool_usage/**`, `identity.md`, or `user_profile.md`. This is an obvious-path guard, not a process sandbox.
 - The Global Memory Agent is a scheduled app-level specialized `SocratesAgent` run, not a per-turn project worker.
 - The agent reads completed-turn event manifests after the durable `events.sequence` watermark and advances the watermark only after a successful run. Manifest packing now adds completed turns one by one and stops before either 80 turns or 60k estimated tokens.
 - The agent tools are `current_time`, `trace_retrieve` with global search, `projects`, `tool_docs`, `skills`, `soul`, and scoped `edit_files`.
 - Memory-agent `trace_retrieve` supports `all_projects`, `current_project`, `projectTitle`, `projectId`, `conversationTitle`, and `conversationId`; project/conversation selectors may be strings or lists.
 - Memory-agent tool guidance is seeded under `~/.Socrates/tool_usage/memory_agent/` and is readable through the existing `tool_docs` tool.
-- `edit_files` is the only write tool for the memory agent. It writes global `tool_usage`, `user_profile.md`, and gated `identity.md` / `operating_principles.md` edits without exposing raw paths. Scheduled runs may read skills but cannot create or update them.
+- `edit_files` is the only write tool for the memory agent. Scheduled runs can write scoped `user_profile.md` and gated `identity.md` edits without exposing raw paths. Scheduled runs may read skills but cannot create or update them, and tool docs remain read-only for models.
 - Section indexes persist in SQLite tables `memory_doc_indexes` and `memory_doc_sections`; these are rebuilt from markdown content during ensure/index operations and are lookup aids, not the source of truth.
 - Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes.
 - Completed chat turns are indexed for trace retrieval, but they no longer enqueue a per-turn memory job. The scheduler or manual settings-page action wakes the global agent.
@@ -123,8 +123,10 @@ Tool routing:
 - Project skill creation is user-triggered from the dashboard `Skills +` flow and writes `.socrates/skills/<skill-name>/SKILL.md`.
 - Global skill creation/deletion is user-triggered from Memory Center and writes/removes `~/.Socrates/skills/<skill-name>/SKILL.md`; project skill creation/deletion is scoped to the active workspace. The `skills` tool discovers current disk state when called, so new skills are visible on the next tool call.
 - Global MCP servers are available to all projects; project MCP servers are workspace-local and inherit global servers. Playwright MCP is bundled and protected from deletion. The model-facing `mcp_registry` path is `list`/`describe`; UI/API flows handle configure, check, enable/disable, and delete.
+- Memory Center (`/memory`) is the global memory-agent control surface. It uses a fixed `h-screen` shell: header and footer stay anchored, the middle region scrolls, and desktop splits the main content scroller from the Memory Files rail scroller. Core Memory renders only Identity and User Profile.
+- Primary identity/profile migrations never keep a generic legacy block. They route old headings into the canonical sections, drop old scaffolding lines, and compact obvious duplicate migrated bullets.
 - `socrates-skill-writer` is an internal backend builder asset, not exposed as a normal model-visible skill.
-- Soul proposals still require internal confirmation and user-visible notification.
+- Identity proposals through `soul` still require internal confirmation and user-visible notification.
 - Legacy project memory from `~/.Socrates/projects/<projectId>/` is migrated into workspace `.socrates/MEMORY.md` and the old project root is removed.
 - Legacy six repo docs are migrated by scaffold behavior into the four-doc system; old workspace repo-doc files are removed by initialization.
 

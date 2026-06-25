@@ -1,6 +1,6 @@
 {
   "name": "@socrates-ai/cli",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "type": "module",
   "description": "Launch Socrates as a local-first AI workspace from npm.",
   "bin": {

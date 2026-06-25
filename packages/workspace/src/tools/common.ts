@@ -130,7 +130,7 @@ export const assertNotProjectSkillsMutation = (workspacePath: string, targetPath
 }
 
 type ProtectedSocratesPathMention = {
-  targetKind: "project_docs" | "repo_docs" | "project_skills" | "global_skills" | "tool_usage" | "soul"
+  targetKind: "project_docs" | "repo_docs" | "project_skills" | "global_skills" | "tool_usage" | "soul" | "user_profile"
   pattern: string
 }
 
@@ -171,7 +171,7 @@ export const assertNoProtectedSocratesPathMentions = (
   }
   throw new SocratesError(
     "terminal_protected_socrates_path_rejected",
-    "Terminal command rejected because it mentions Socrates-owned memory, docs, tool-usage, soul, or skills paths. Use project_docs, repo_docs, tool_docs, soul, skills, or the dashboard skill builder instead.",
+    "Terminal command rejected because it mentions Socrates-owned memory, docs, tool-usage, soul, user-profile, or skills paths. Use project_docs, repo_docs, tool_docs, soul, user_profile, skills, or the dashboard skill builder instead.",
     {
       recoverable: true,
       details: {
@@ -204,7 +204,7 @@ const protectedSocratesPathPatterns = (homeDir: string): ProtectedSocratesPathMe
       { targetKind: "global_skills" as const, pattern: `${root}/skill` },
       { targetKind: "tool_usage" as const, pattern: `${root}/tool_usage` },
       { targetKind: "soul" as const, pattern: `${root}/identity.md` },
-      { targetKind: "soul" as const, pattern: `${root}/operating_principles.md` },
+      { targetKind: "user_profile" as const, pattern: `${root}/user_profile.md` },
     ]),
   ]
 }
