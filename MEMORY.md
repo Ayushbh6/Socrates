@@ -14,7 +14,7 @@ The current architecture now uses:
 - Exact old conversation/tool evidence through `trace_retrieve`.
 - A read-only `user_profile` tool for durable cross-project user preferences.
 - A first-class no-tool `CompressorAgent` with structured output schemas for chat and memory compaction.
-- No production diary read/write/search/wake-context path.
+- No production diary read/write/search path and no per-turn main-chat wake-context injection.
 
 ## Memory And Docs Layout
 
@@ -91,7 +91,8 @@ Tool routing:
 - `trace_retrieve` is for prior conversation text and audit evidence: tool calls, shell output, file operations, patches, errors, decisions.
 - `current_time` is a read-only no-input tool that returns backend-owned current date, ISO timestamp, and time zone. Use it when the answer or a document entry truly needs today's date/time; do not put changing time in the system prompt.
 - `tool_docs` is read/search only for global tool usage guidance.
-- `skills` lists/searches/reads visible builtin, global, and project skills. The main agent cannot write skills through this tool.
+- `skills` lists and describes visible builtin, global, and project skills through exact ids/names returned by the tool. The main agent cannot write skills through this tool.
+- `mcp_registry` lists and describes available MCP servers. `list` returns compact discovery rows; `describe` with an exact listed id/name loads one server and exposes its dynamic `mcp__...` tools for the same turn.
 - `project_docs` reads/searches/indexes/edits workspace `.socrates/MEMORY.md` and `.socrates/PROJECT_NOTES.md`; prefer `read_index`, `read_section`, and `patch_section` for structured recall and edits.
 - `repo_docs` reads/searches/indexes/edits only the four runtime repo doctrine docs; prefer `read_index`, `read_section`, and `patch_section` for focused repo doctrine changes.
 - `soul` reads root `~/.Socrates/identity.md` and `~/.Socrates/operating_principles.md`; the main agent cannot write them.
@@ -99,8 +100,9 @@ Tool routing:
 
 ## Runtime Notes
 
-- First-turn wake context is stable pointer-only text. It does not paste the state ledger, project memory excerpts, repo-doc excerpts, timestamps, last-turn summaries, turn ids, or assistant previews. It points the agent to `project_docs(area: "notes")` for the active state ledger, `project_docs(area: "memory")` for durable memory, and `repo_docs` for repo doctrine.
-- The Socrates system prompt stays cache-friendly: stable instructions first, with no changing current date/time or workspace scan block in the system prompt.
+- Main chat no longer injects `<socrates_wake_context>` on the first turn or later turns. Stable recall routing now lives in `packages/core/src/prompts/socratesPrompt.ts`, pointing Socrates to `project_docs`, `repo_docs`, `user_profile`, `soul`, `skills`, and `mcp_registry` when the current task needs them.
+- The Socrates system prompt stays cache-friendly: stable instructions first, with no changing current date/time, workspace scan block, skill/MCP counts, or hidden matched skill/MCP ids in the system prompt.
+- Extension discovery is tool-driven, not prompt-matched. Socrates should call `skills({ operation: "list" })` or `mcp_registry({ operation: "list" })`, then use `describe` with an exact listed canonical id/name. The runtime must not grep the user's prompt for skill or MCP names and inject hidden matches.
 - Current date/time comes from the `current_time` tool. `project_docs` and `repo_docs` outputs also include `runtime.currentDate`, `runtime.currentDateTime`, `runtime.timeZone`, and `runtime.source: "system"` so docs workflows have an authoritative date source after reads.
 - `.socrates/PROJECT_NOTES.md` may contain a backend-owned `runtime_context` section with workspace scan facts such as detected Python environments and dependency files. It is protected from `project_docs` edits and intentionally does not persist terminal output or live terminal state.
 - Project docs, repo docs, global tool docs, identity, operating principles, and user profile updates get backend-owned frontmatter stamps (`updated_at`, `updated_by`, `last_edited_section`) after successful dedicated-tool edits. Model-written prose should not invent "today" when these system stamps are enough.
@@ -119,6 +121,8 @@ Tool routing:
 - Completed chat turns are indexed for trace retrieval, but they no longer enqueue a per-turn memory job. The scheduler or manual settings-page action wakes the global agent.
 - Legacy per-project memory-agent settings remain only as inactive DB/store compatibility baggage; the per-turn worker runtime path has been removed.
 - Project skill creation is user-triggered from the dashboard `Skills +` flow and writes `.socrates/skills/<skill-name>/SKILL.md`.
+- Global skill creation/deletion is user-triggered from Memory Center and writes/removes `~/.Socrates/skills/<skill-name>/SKILL.md`; project skill creation/deletion is scoped to the active workspace. The `skills` tool discovers current disk state when called, so new skills are visible on the next tool call.
+- Global MCP servers are available to all projects; project MCP servers are workspace-local and inherit global servers. Playwright MCP is bundled and protected from deletion. The model-facing `mcp_registry` path is `list`/`describe`; UI/API flows handle configure, check, enable/disable, and delete.
 - `socrates-skill-writer` is an internal backend builder asset, not exposed as a normal model-visible skill.
 - Soul proposals still require internal confirmation and user-visible notification.
 - Legacy project memory from `~/.Socrates/projects/<projectId>/` is migrated into workspace `.socrates/MEMORY.md` and the old project root is removed.
@@ -138,11 +142,14 @@ Tool routing:
 
 ## Release State
 
-- Current release target is GitHub runtime release `v0.1.11` with macOS and Windows runtime bundles; npm launcher `@socrates-ai/cli@0.1.11` keeps direct GitHub Release asset lookup so public `npx` installs avoid unauthenticated GitHub API rate limits.
+- Current release target is GitHub runtime release `v0.1.12` with macOS and Windows runtime bundles; npm launcher `@socrates-ai/cli@0.1.12` keeps direct GitHub Release asset lookup so public `npx` installs avoid unauthenticated GitHub API rate limits.
+- Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
+- Local npm auth is currently not confirmed; `npm whoami` returned `E401 Unauthorized` before the v0.1.12 publish attempt. Recheck auth before running the npm publish command.
 
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
+- Finish the v0.1.12 release by bumping launcher metadata, pushing tag `v0.1.12`, verifying the GitHub runtime-release workflow, and publishing `@socrates-ai/cli@0.1.12` after npm auth is valid.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
 
@@ -175,6 +182,18 @@ pnpm --filter @socrates/core test -- SocratesAgent.test.ts
 git diff --check
 ```
 
-Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.
+Latest verified for extension discovery, skill/MCP list-describe contracts, and main-chat wake-context removal on 2026-06-25:
+
+```text
+CI=true pnpm --filter @socrates/core test -- packages/core/src/test/SocratesAgent.test.ts
+CI=true pnpm --filter @socrates/server test -- apps/server/src/test/server.test.ts
+CI=true pnpm --filter @socrates/core typecheck
+CI=true pnpm --filter @socrates/server typecheck
+CI=true pnpm --filter @socrates/contracts test
+CI=true pnpm --filter @socrates/mcp test
+git diff --check
+```
+
+Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. That E2E predates the 2026-06-25 removal of main-chat wake-context injection. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.
 
 Run `git diff --check` and a tracked-file sensitive scan before publishing a release tag.

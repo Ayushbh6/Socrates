@@ -190,12 +190,21 @@ search
 edit
 apply_patch
 bash
+current_time
 trace_retrieve
+tool_docs
+skills
+project_docs
+repo_docs
+soul
+user_profile
 list_project_resources
 mcp_registry
 ```
 
-MCP dynamic tool details must stay out of the system prompt and out of the first provider-call tool schemas. The first call exposes only the core Socrates tools plus `mcp_registry`; if the model checks/configures a server and the runtime exposes tools in that same turn, later provider calls may include the returned `mcp__...` tool definitions.
+Changing runtime facts must stay behind tools, not in prompt headers. Current date/time comes from `current_time`; workspace runtime facts come from `project_docs`; reusable workflows come from `skills`; and external MCP servers come from `mcp_registry`. Main chat must not inject a per-turn wake-context block or hidden skill/MCP matches based on user-query wording.
+
+MCP dynamic tool details must stay out of the system prompt and out of the first provider-call tool schemas. The first call exposes only the core Socrates tools plus `mcp_registry`; if the model describes a server with an exact id/name and the runtime exposes tools in that same turn, later provider calls may include the returned `mcp__...` tool definitions. The model-facing `mcp_registry` schema is `list`/`describe`; configure/check/delete flows are UI/API concerns.
 
 Provider-specific tool-call formats must not leak into `packages/core/tools`, `apps/server`, or `apps/web`. `packages/providers` adapts provider tool-call deltas and completions into normalized `ModelEvent` values. `packages/core` validates the normalized tool call against schemas from `packages/contracts`, checks permission policy, and dispatches through the tool registry.
 
@@ -294,7 +303,7 @@ There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash cache
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
 ```
 
-This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.11` runtime release.
+This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.12` runtime release.
 
 ## Provider-Specific Escape Hatch
 

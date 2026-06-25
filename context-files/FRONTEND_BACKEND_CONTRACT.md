@@ -1702,7 +1702,7 @@ list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus dynamic MCP tools returned by `mcp_registry`. `projects` and `edit_files` are base contract tools for backend memory workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus dynamic MCP tools returned by `mcp_registry`. `projects` and `edit_files` are base contract tools for backend memory workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -2196,7 +2196,51 @@ Rules:
 
 ### `skills`
 
-Read-only list/search/read access to reusable workflows from builtin, global, and project skill roots. The main agent can inspect skills but cannot create or edit skills through this tool.
+Read-only discovery and inspection access to reusable workflows from builtin, global, and project skill roots. The preferred model-facing path is `list` then `describe`; backend compatibility may still support `search`/`read`, but prompts should not make those the default route.
+
+Input:
+
+```ts
+type SkillsToolInput = {
+  operation: "list" | "describe"
+  scope?: "builtin" | "global" | "project"
+  id?: string
+  name?: string
+  n?: number
+  charLimit?: number
+}
+```
+
+Output:
+
+```ts
+type SkillsToolOutput = {
+  operation: "list" | "describe"
+  skills: Array<{
+    id?: string
+    name: string
+    description: string
+    scope: "builtin" | "global" | "project"
+    path: string
+    updatedAt?: string
+  }>
+  content?: string
+  path?: string
+  totalMatches: number
+  truncation: TruncationMetadata
+  usageHint?: string
+  warnings?: string[]
+}
+```
+
+Rules:
+
+- `list` returns compact current rows with exact ids/names/scopes/descriptions. It should default to a bounded count and allow `n` up to the schema cap.
+- `describe` requires either an exact `id` copied from `list` or an exact listed `name`. Prefer canonical `id`.
+- Do not copy a display name into `id`, and do not pass both `id` and `name` unless both values come from the same listed skill row.
+- The runtime must not inject hidden matched skill ids/descriptions by grepping the user prompt.
+- The main agent cannot create, edit, or delete skills through this tool. Global/project skill create/delete flows are explicit backend UI/API actions.
+- Global skills are visible to every project. Project skills are visible only in that project's active workspace.
 
 ### `project_docs`
 
@@ -2347,6 +2391,74 @@ Rules:
 - The model should prefer this tool before probing `.socrates/resources/` with shell commands.
 - Returned resource `uri` values should be sufficient for a follow-up `read` call when the resource is file-backed.
 - Chat image attachments under `.socrates/attachments/` are intentionally excluded from project resources.
+
+### `mcp_registry`
+
+Read-only model-facing discovery and inspection for MCP servers available to Socrates. UI/API routes own MCP configure/check/enable/disable/delete; the main model sees only `list` and `describe`.
+
+Input:
+
+```ts
+type McpRegistryToolInput =
+  | {
+      operation: "list"
+      n?: number
+    }
+  | {
+      operation: "describe"
+      id?: string
+      name?: string
+      n?: number
+    }
+```
+
+Output:
+
+```ts
+type McpRegistryServer = {
+  id: string
+  name?: string
+  label: string
+  description?: string
+  scope?: "global" | "project"
+  configured: boolean
+  enabled: boolean
+  bundled?: boolean
+  requiresSecrets: boolean
+  status: "available" | "missing" | "failed" | "unknown"
+  toolCount?: number
+  toolPreview?: string[]
+  moreToolsAvailable?: boolean
+  warnings?: string[]
+}
+
+type McpRegistryToolOutput = {
+  operation: "list" | "describe"
+  configPath: string
+  envPath: string
+  servers?: McpRegistryServer[]
+  server?: McpRegistryServer
+  tools?: Array<{
+    name: string
+    dynamicName: string
+    description?: string
+    inputSchema?: unknown
+  }>
+  docs?: string
+  summary: string
+  usageHint?: string
+  warnings?: string[]
+}
+```
+
+Rules:
+
+- `list` returns compact global plus project-visible servers with canonical ids, names/labels, descriptions, scopes, and only a short tool preview.
+- `describe` requires an exact listed `id` or exact listed `name`; prefer canonical `id`.
+- If both `id` and `name` are provided, they must resolve to the same listed server. Otherwise the tool returns a constructive recoverable error.
+- Describing a server loads only that server's docs and exposes its dynamic `mcp__...` tool definitions for later provider calls in the same turn.
+- MCP server tool lists and schemas must not be dumped into the system prompt or first provider-call schemas.
+- Global MCP servers are inherited by all projects. Project MCP servers are visible only in that workspace. Bundled Playwright is protected from deletion and should be discoverable for browser/web/page/screenshot tasks.
 
 ## Context Carry-Forward Rule
 
