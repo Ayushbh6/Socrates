@@ -54,6 +54,7 @@ import type {
   BuildProjectSkillResponse,
   BuildGlobalSkillRequest,
   BuildGlobalSkillResponse,
+  DeleteSkillResponse,
   SkillsToolInput,
   SkillsToolOutput,
   SoulToolInput,
@@ -302,11 +303,21 @@ export class SocratesStore {
   }
 
   async buildProjectSkill(projectId: string, input: BuildProjectSkillRequest): Promise<BuildProjectSkillResponse> {
-    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request) }
+    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request, input.name) }
+  }
+
+  deleteProjectSkill(projectId: string, skillName: string): DeleteSkillResponse {
+    const deleted = this.memory.deleteProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), skillName)
+    return { deletedSkillName: deleted.name, scope: deleted.scope }
   }
 
   async buildGlobalSkill(input: BuildGlobalSkillRequest): Promise<BuildGlobalSkillResponse> {
-    return { skill: await this.memory.buildGlobalSkill(input.request) }
+    return { skill: await this.memory.buildGlobalSkill(input.request, input.name) }
+  }
+
+  deleteGlobalSkill(skillName: string): DeleteSkillResponse {
+    const deleted = this.memory.deleteGlobalSkill(skillName)
+    return { deletedSkillName: deleted.name, scope: deleted.scope }
   }
 
   getMemoryAgent(): GetMemoryAgentResponse {

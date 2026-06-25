@@ -2695,12 +2695,13 @@ describe("HTTP API", () => {
     const firstResponse = await app.inject({
       method: "POST",
       url: `/api/projects/${project.id}/skills/build`,
-      payload: { request: "Create a memory review skill for this project." },
+      payload: { name: "memory-review", request: "Create a memory review skill for this project." },
     })
     const firstBody = parseResponse<{ skill: SkillSummary }>(firstResponse.payload)
     expect(firstBody.ok).toBe(true)
     if (!firstBody.ok) return
     expect(firstBody.data.skill.scope).toBe("project")
+    expect(firstBody.data.skill.name).toBe("memory-review")
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "skills", firstBody.data.skill.name, "SKILL.md"))).toBe(true)
 
     const secondResponse = await app.inject({
@@ -2719,6 +2720,35 @@ describe("HTTP API", () => {
     expect(getBody.ok).toBe(true)
     if (getBody.ok) {
       expect(getBody.data.skills.some((skill) => skill.name === firstBody.data.skill.name)).toBe(true)
+    }
+
+    const deleteResponse = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}/skills/${firstBody.data.skill.name}` })
+    const deleteBody = parseResponse<{ deletedSkillName: string; scope: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+    if (!deleteBody.ok) return
+    expect(deleteBody.data).toEqual({ deletedSkillName: "memory-review", scope: "project" })
+    expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "skills", firstBody.data.skill.name))).toBe(false)
+  })
+
+  it("builds and deletes global skills from the Memory Center flow", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+
+    const buildResponse = await app.inject({
+      method: "POST",
+      url: "/api/memory-agent/skills/build",
+      payload: { name: "global-review", request: "Create a global review skill." },
+    })
+    const buildBody = parseResponse<{ skill: SkillSummary }>(buildResponse.payload)
+    expect(buildBody.ok).toBe(true)
+    if (!buildBody.ok) return
+    expect(buildBody.data.skill).toMatchObject({ name: "global-review", scope: "global" })
+
+    const deleteResponse = await app.inject({ method: "DELETE", url: "/api/memory-agent/skills/global-review" })
+    const deleteBody = parseResponse<{ deletedSkillName: string; scope: string }>(deleteResponse.payload)
+    expect(deleteBody.ok).toBe(true)
+    if (deleteBody.ok) {
+      expect(deleteBody.data).toEqual({ deletedSkillName: "global-review", scope: "global" })
     }
   })
 
@@ -4260,11 +4290,21 @@ describe("WebSocket API", () => {
       const projectSkillPath = path.join(primaryWorkspace.path as string, ".socrates", "skills", "memory-review", "SKILL.md")
       fs.mkdirSync(path.dirname(projectSkillPath), { recursive: true })
       fs.writeFileSync(projectSkillPath, "---\nname: memory-review\ndescription: Use when reviewing memory changes.\n---\n\n# Memory Review\n")
+      const globalSkillPath = path.join(socratesHome, "skills", "ginkgo-marker", "SKILL.md")
+      fs.mkdirSync(path.dirname(globalSkillPath), { recursive: true })
+      fs.writeFileSync(globalSkillPath, "---\nname: ginkgo-marker\ndescription: Use when the user mentions ginkgo lantern.\n---\n\n# Ginkgo Marker\n")
       const projectSkills = store.runSkillsTool(project.id, { operation: "list", scope: "project" })
       expect(projectSkills.skills.some((skill) => skill.name === "memory-review")).toBe(true)
       const skillRead = store.runSkillsTool(project.id, { operation: "read", name: "memory-review", scope: "project" })
       expect(skillRead.content).toContain("Memory Review")
       expect(() => store.runSkillsTool(project.id, { operation: "read", name: "memory-review", scope: "project", path: "../outside.md" })).toThrow(/Path must stay inside/)
+      const matchingWake = store.buildWakeMemoryContext(project.id, "Please use the ginkgo lantern skill.")
+      expect(matchingWake).toContain("Required skill preflight")
+      expect(matchingWake).toContain("global:ginkgo-marker")
+      const nonMatchingWake = store.buildWakeMemoryContext(project.id, "Please use the copper lantern project skill.")
+      expect(nonMatchingWake).toContain("High-confidence skill matches for the latest request: none")
+      expect(nonMatchingWake).not.toContain("Required skill preflight")
+      expect(nonMatchingWake).not.toContain("global:ginkgo-marker")
       const searched = store.runToolDocsTool(project.id, {
         operation: "search",
         area: "tool_usage",

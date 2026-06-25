@@ -584,7 +584,8 @@ describe("http contracts", () => {
         content: "# Identity",
       }).success,
     ).toBe(true)
-    expect(buildGlobalSkillRequestSchema.safeParse({ request: "Build a global review skill" }).success).toBe(true)
+    expect(buildGlobalSkillRequestSchema.safeParse({ name: "global-review", request: "Build a global review skill" }).success).toBe(true)
+    expect(buildGlobalSkillRequestSchema.safeParse({ name: "global--review", request: "Build a global review skill" }).success).toBe(false)
     expect(buildGlobalSkillResponseSchema.safeParse({ skill }).success).toBe(true)
     expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, pending, item }).success).toBe(true)
   })
@@ -627,7 +628,8 @@ describe("http contracts", () => {
     expect(upsertProjectInstructionsRequestSchema.safeParse({ content: "Use the repo docs first." }).success).toBe(true)
     expect(upsertProjectInstructionsRequestSchema.safeParse({ content: "" }).success).toBe(false)
     expect(upsertProjectInstructionsResponseSchema.safeParse({ instructions }).success).toBe(true)
-    expect(buildProjectSkillRequestSchema.safeParse({ request: "Build a memory review skill." }).success).toBe(true)
+    expect(buildProjectSkillRequestSchema.safeParse({ name: "memory-review", request: "Build a memory review skill." }).success).toBe(true)
+    expect(buildProjectSkillRequestSchema.safeParse({ name: "memory--review", request: "Build a memory review skill." }).success).toBe(false)
     expect(buildProjectSkillResponseSchema.safeParse({ skill }).success).toBe(true)
   })
 
@@ -1342,7 +1344,7 @@ describe("tool contracts", () => {
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", conversationId: "conv_1", startTurnNo: 2 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", startTurnNo: 2 }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(true)
-    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverId: "srv_1" }).success).toBe(false)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverId: "srv_1" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", turnNo: 0 }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", role: "system" }).success).toBe(false)
     expect(traceRetrieveToolInputSchema.safeParse({ turnId: "turn_1" }).success).toBe(false)

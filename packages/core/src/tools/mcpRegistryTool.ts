@@ -11,7 +11,7 @@ import type { SocratesTool } from "./types"
 export const mcpRegistryTool: SocratesTool<McpRegistryToolInput, McpRegistryToolOutput> = {
   name: "mcp_registry",
   description:
-    "List, describe, check, or configure Model Context Protocol servers available to Socrates. Use this before browser automation or MCP setup. Prefer preset or serverName such as playwright; opaque server ids are runtime-owned. The registry returns concise docs and dynamic MCP tool names when available.",
+    "List, describe, check, or configure Model Context Protocol servers available to Socrates. Use this before browser automation or MCP setup. Prefer canonical serverId values returned by list; serverName is accepted as an exact display-label fallback. The registry returns concise docs and dynamic MCP tool names when available.",
   inputSchema: mcpRegistryToolInputSchema,
   modelInputSchema: mcpRegistryToolModelInputSchema,
   resultSchema: mcpRegistryToolOutputSchema,

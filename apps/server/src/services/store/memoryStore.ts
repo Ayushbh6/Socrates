@@ -77,6 +77,7 @@ import {
   readSkillInfo,
   skillSummary,
   slugSkillName,
+  isValidSkillName,
   stripFrontmatter,
   uniqueSkillName,
   type SkillInfo,
@@ -102,6 +103,7 @@ const MEMORY_AGENT_TOKEN_CAP = 60_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
 const SKILL_CHAR_LIMIT = 20_000
+const SKILL_PREFLIGHT_SCORE_THRESHOLD = 100
 const STATE_LEDGER_START = "<!-- socrates-state-ledger:start -->"
 const STATE_LEDGER_END = "<!-- socrates-state-ledger:end -->"
 const INTERNAL_BUILTIN_SKILL_NAMES = new Set(["socrates-skill-writer"])
@@ -278,12 +280,11 @@ export class MemoryStore extends StoreBase {
     return this.skillInfos(workspacePath, "project").map(skillSummary)
   }
 
-  async buildProjectSkill(projectId: string, workspacePath: string, request: string): Promise<SkillSummary> {
+  async buildProjectSkill(projectId: string, workspacePath: string, request: string, explicitName?: string): Promise<SkillSummary> {
     this.ensureProjectMemory(projectId, workspacePath)
     const skillRoot = path.join(workspacePath, ".socrates", "skills")
     fs.mkdirSync(skillRoot, { recursive: true })
-    const desiredName = slugSkillName(request)
-    const name = uniqueSkillName(skillRoot, desiredName)
+    const name = explicitName ? this.availableExplicitSkillName(skillRoot, explicitName) : uniqueSkillName(skillRoot, slugSkillName(request))
     const skillDir = path.join(skillRoot, name)
     const skillFile = path.join(skillDir, "SKILL.md")
     const content = await this.generateProjectSkill(projectId, workspacePath, request, name)
@@ -299,6 +300,11 @@ export class MemoryStore extends StoreBase {
       throw new SocratesError("project_skill_invalid", "Generated project skill did not pass validation.", { recoverable: true, details: { path: skillFile } })
     }
     return skillSummary(info)
+  }
+
+  deleteProjectSkill(projectId: string, workspacePath: string, name: string): SkillSummary {
+    this.ensureProjectMemory(projectId, workspacePath)
+    return this.deleteSkillFromRoot("project", path.join(workspacePath, ".socrates", "skills"), name)
   }
 
   runProjectDocsTool(projectId: string, workspacePath: string, input: ProjectDocsToolInput): ProjectDocsToolOutput {
@@ -672,8 +678,9 @@ export class MemoryStore extends StoreBase {
     }
     const skills = this.skillInfos(workspacePath)
     const scoredSkills = scoreSkillsForQuery(skills, userQuery)
-    const skillRows = scoredSkills.slice(0, 12).map((skill) => `- ${skill.scope}:${skill.name} - ${skill.description}`)
-    const matchedSkill = scoredSkills.find((skill) => scoreSkillForQuery(skill, userQuery) > 0)
+    const highConfidenceSkills = scoredSkills.filter((skill) => scoreSkillForQuery(skill, userQuery) >= SKILL_PREFLIGHT_SCORE_THRESHOLD).slice(0, 8)
+    const skillRows = highConfidenceSkills.map((skill) => `- ${skill.scope}:${skill.name} - ${skill.description}`)
+    const matchedSkill = highConfidenceSkills[0]
     const matchedSkillLines = matchedSkill
       ? [
           "Required skill preflight for this latest request:",
@@ -689,9 +696,9 @@ export class MemoryStore extends StoreBase {
       'Project memory is available through project_docs({ operation: "read", area: "memory" }).',
       'Repo doctrine is available through repo_docs({ operation: "read" }) or repo_docs({ operation: "search", query: "..." }).',
       'Durable user profile and stable preferences are available through user_profile({ operation: "read" }). Use it when personalization, collaboration style, or user-specific context would materially improve the answer.',
-      'Skills are available through skills({ operation: "search", query: "..." }) and skills({ operation: "read", name: "...", scope: "..." }). If the latest request matches a listed skill, read that skill before acting.',
-      ...(skillRows.length > 0 ? ["Current skill manifest:", ...skillRows] : ["Current skill manifest: no builtin/global/project skills are currently visible."]),
-      'Bundled Playwright MCP is available through mcp_registry. For browser, web navigation, internet lookup with page interaction, or screenshot tasks, call mcp_registry({ operation: "check", serverName: "playwright" }) before choosing shell/browser fallbacks, then use returned mcp__playwright__ tools.',
+      'Skills are available through skills({ operation: "search", query: "..." }) and skills({ operation: "read", name: "...", scope: "..." }). Read a skill when required above or when a high-confidence listed match clearly applies. Do not read skills for generic overlap alone.',
+      ...(skillRows.length > 0 ? ["High-confidence skill matches for the latest request:", ...skillRows] : ["High-confidence skill matches for the latest request: none. Search skills only if the task is specialized or recurring."]),
+      'Bundled Playwright MCP is available through mcp_registry. For browser, web navigation, internet lookup with page interaction, or screenshot tasks, call mcp_registry({ operation: "check", serverId: "playwright" }) before choosing shell/browser fallbacks, then use returned mcp__playwright__ tools.',
       "Do not assume project notes, memory, or repo docs were loaded until you call the relevant tool in this turn.",
     ].join("\n")
   }
@@ -821,11 +828,11 @@ export class MemoryStore extends StoreBase {
     return { file, content }
   }
 
-  async buildGlobalSkill(request: string): Promise<SkillSummary> {
+  async buildGlobalSkill(request: string, explicitName?: string): Promise<SkillSummary> {
     this.ensureGlobalKnowledge()
     const root = path.join(this.socratesHome, "skills")
     fs.mkdirSync(root, { recursive: true })
-    const name = uniqueSkillName(root, slugSkillName(request))
+    const name = explicitName ? this.availableExplicitSkillName(root, explicitName) : uniqueSkillName(root, slugSkillName(request))
     const skillDir = path.join(root, name)
     const skillFile = path.join(skillDir, "SKILL.md")
     const content = await this.generateGlobalSkill(request, name)
@@ -842,6 +849,11 @@ export class MemoryStore extends StoreBase {
       return skillSummary(fallbackInfo)
     }
     return skillSummary(info)
+  }
+
+  deleteGlobalSkill(name: string): SkillSummary {
+    this.ensureGlobalKnowledge()
+    return this.deleteSkillFromRoot("global", path.join(this.socratesHome, "skills"), name)
   }
 
   runProjectsTool(input: ProjectsToolInput): ProjectsToolOutput {
@@ -1701,6 +1713,45 @@ export class MemoryStore extends StoreBase {
 
   private findSkill(workspacePath: string | undefined, name: string, scope?: SkillScope): SkillInfo | undefined {
     return this.skillInfos(workspacePath, scope).find((skill) => skill.name === name)
+  }
+
+  private availableExplicitSkillName(root: string, name: string): string {
+    if (!isValidSkillName(name)) {
+      throw new SocratesError("skill_name_invalid", "Skill name must use lowercase letters, numbers, and hyphens.", {
+        details: { name },
+        recoverable: true,
+      })
+    }
+    if (fs.existsSync(path.join(root, name))) {
+      throw new SocratesError("skill_already_exists", "A skill with that name already exists.", {
+        details: { name },
+        recoverable: true,
+      })
+    }
+    return name
+  }
+
+  private deleteSkillFromRoot(scope: Exclude<SkillScope, "builtin">, root: string, name: string): SkillSummary {
+    if (!isValidSkillName(name)) {
+      throw new SocratesError("skill_name_invalid", "Skill name must use lowercase letters, numbers, and hyphens.", {
+        details: { name, scope },
+        recoverable: true,
+      })
+    }
+    const expectedDir = path.join(root, name)
+    const expectedFile = path.join(expectedDir, "SKILL.md")
+    const skill = readSkillInfo(scope, root, expectedFile)
+    if (!skill) {
+      throw new SocratesError("skill_not_found", "Skill was not found.", { details: { name, scope }, recoverable: true })
+    }
+    if (skill.skillDir !== expectedDir) {
+      throw new SocratesError("skill_path_invalid", "Skill path did not resolve to the expected skill directory.", {
+        details: { name, scope },
+        recoverable: true,
+      })
+    }
+    fs.rmSync(skill.skillDir, { recursive: true, force: false })
+    return skillSummary(skill)
   }
 
   private projectRoot(projectId: string): string {
@@ -2743,6 +2794,36 @@ const compileSearch = (query: string, _mode: "keyword_any"): { score: (text: str
 
 const searchTerms = (query: string): string[] => query.toLowerCase().match(/[a-z0-9_./:-]+/g)?.filter((term) => term.length > 0) ?? []
 
+const skillPreflightStopTerms = new Set([
+  "a",
+  "an",
+  "and",
+  "answer",
+  "for",
+  "from",
+  "global",
+  "help",
+  "i",
+  "local",
+  "me",
+  "need",
+  "please",
+  "project",
+  "response",
+  "skill",
+  "skills",
+  "the",
+  "this",
+  "use",
+  "with",
+  "workspace",
+])
+
+const skillPreflightTerms = (query: string): string[] =>
+  searchTerms(query)
+    .map((term) => term.replace(/^['"]+|['"]+$/g, ""))
+    .filter((term) => term.length >= 3 && !skillPreflightStopTerms.has(term))
+
 const scoreSkillsForQuery = (skills: SkillInfo[], query: string): SkillInfo[] => {
   const scopeRank: Record<SkillScope, number> = { project: 0, global: 1, builtin: 2 }
   return [...skills].sort((left, right) => {
@@ -2752,7 +2833,14 @@ const scoreSkillsForQuery = (skills: SkillInfo[], query: string): SkillInfo[] =>
   })
 }
 
-const scoreSkillForQuery = (skill: SkillInfo, query: string): number => compileSearch(query, "keyword_any").score(`${skill.name}\n${skill.description}\n${skill.content}`)
+const scoreSkillForQuery = (skill: SkillInfo, query: string): number => {
+  const terms = skillPreflightTerms(query)
+  if (terms.length === 0) {
+    return 0
+  }
+  const manifestText = `${skill.name}\n${skill.description}`.toLowerCase()
+  return terms.filter((term) => manifestText.includes(term)).length * 50
+}
 
 const parseJsonObject = (text: string | null | undefined): Record<string, unknown> => {
   if (!text) {

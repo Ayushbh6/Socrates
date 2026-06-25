@@ -73,16 +73,17 @@ export class McpRuntime {
 
   handleRegistryTool(input: McpRegistryToolInput, options: { workspacePath?: string | undefined } = {}): Promise<McpRegistryToolOutput> {
     this.ensureDefaults()
-    const serverName = input.serverName ?? input.serverId ?? input.preset ?? "playwright"
+    const hasExplicitServerLookup = Boolean(input.serverId?.trim() || input.serverName?.trim() || input.preset)
+    const serverLookup = input.operation === "configure" ? input.preset ?? input.serverId ?? input.serverName ?? "playwright" : this.registryServerLookup(input, options)
     switch (input.operation) {
       case "list":
-        return this.list(input.serverName ?? input.serverId ?? input.preset, options)
+        return this.list(hasExplicitServerLookup ? serverLookup : undefined, options)
       case "describe":
-        return this.describe(serverName, options)
+        return this.describe(serverLookup, options)
       case "check":
-        return this.check(serverName, options)
+        return this.check(serverLookup, options)
       case "configure":
-        return Promise.resolve(this.configure(input.preset ?? input.serverName ?? input.serverId ?? "playwright"))
+        return Promise.resolve(this.configure(serverLookup))
     }
   }
 
@@ -371,13 +372,13 @@ export class McpRuntime {
       "",
       "Use Playwright MCP when the task needs a real browser: opening local apps, inspecting pages, clicking, typing, taking screenshots, or debugging UI flows.",
       "",
-      "Call mcp_registry with operation=\"check\" and serverName=\"playwright\" to discover available dynamic tools. Use the returned mcp__playwright__* tool names only after they are exposed in the current turn.",
+      "Call mcp_registry with operation=\"check\" and serverId=\"playwright\" to discover available dynamic tools. Use the returned mcp__playwright__* tool names only after they are exposed in the current turn.",
       "",
       "This bundled preset does not require API keys. Browser sessions may create local browser state and should be used only when browser automation is relevant.",
       "",
     ].join("\n")
     const existing = fs.existsSync(docsPath) ? fs.readFileSync(docsPath, "utf8") : undefined
-    if (!existing || existing.includes('serverId="playwright"')) {
+    if (!existing || existing.includes('serverName="playwright"')) {
       fs.writeFileSync(docsPath, docs)
     }
   }
@@ -558,19 +559,50 @@ export class McpRuntime {
     return servers
   }
 
+  private registryServerLookup(input: McpRegistryToolInput, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): string {
+    const serverId = input.serverId?.trim()
+    const serverName = input.serverName?.trim()
+    if (serverId && serverName) {
+      const byId = this.resolveServerById(serverId, options)
+      const byName = this.resolveServerByName(serverName, options)
+      if (!byId || !byName || byId.id !== byName.id || byId.scope !== byName.scope) {
+        throw new SocratesError("mcp_server_identity_conflict", "MCP serverId and serverName did not refer to the same configured server.", {
+          details: { serverId, serverName },
+          recoverable: true,
+        })
+      }
+      return byId.id
+    }
+    return serverId ?? serverName ?? input.preset ?? "playwright"
+  }
+
   private resolveServer(serverId: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer | undefined {
     this.ensureDefaults()
+    return this.resolveServerById(serverId, options) ?? this.resolveServerByName(serverId, options)
+  }
+
+  private resolveServerById(serverId: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer | undefined {
+    this.ensureDefaults()
+    return findMatchingServer(this.serverCandidates(options), (server) => server.id === serverId)
+  }
+
+  private resolveServerByName(serverName: string, options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer | undefined {
+    this.ensureDefaults()
+    const lookup = serverName.trim()
+    return findMatchingServer(this.serverCandidates(options), (server) => (server.config.label ?? "").trim() === lookup)
+  }
+
+  private serverCandidates(options: { scope?: McpServerScope | undefined; workspacePath?: string | undefined }): ScopedServer[] {
     if (options.scope) {
       const paths = this.pathsForScope(options.scope, options.workspacePath)
-      const servers = Object.entries(this.readConfig(paths).servers ?? {}).map(([id, config]) => ({
+      return Object.entries(this.readConfig(paths).servers ?? {}).map(([id, config]) => ({
         id,
         scope: options.scope as McpServerScope,
         config: normalizeServerConfig(config),
         paths,
       }))
-      return findMatchingServer(servers, serverId)
     }
-    return findMatchingServer(this.scopedServers(options), serverId)
+    return this.scopedServers(options)
   }
 
   private repairBundledPlaywrightConfig(config: McpConfig): McpConfig {
@@ -654,50 +686,16 @@ const normalizeServerConfig = (server: McpServerConfig): McpServerConfig => ({
   requiresSecrets: server.requiresSecrets ?? false,
 })
 
-const findMatchingServer = (servers: ScopedServer[], lookup: string): ScopedServer | undefined => {
-  const trimmed = lookup.trim()
-  const normalized = normalizeLookupText(trimmed)
-  const matchers: Array<(server: ScopedServer) => boolean> = [
-    (server) => server.id === trimmed,
-    (server) => server.config.label === trimmed,
-    (server) => server.id.toLowerCase() === trimmed.toLowerCase(),
-    (server) => server.config.label?.toLowerCase() === trimmed.toLowerCase(),
-    (server) => serverLookupAliases(server).includes(normalized),
-  ]
-
-  for (const matches of matchers) {
-    const matched = servers.filter(matches)
-    const projectMatches = matched.filter((server) => server.scope === "project")
-    if (projectMatches.length === 1) {
-      return projectMatches[0]
-    }
-    if (projectMatches.length > 1) {
-      return undefined
-    }
-    if (matched.length === 1) {
-      return matched[0]
-    }
+const findMatchingServer = (servers: ScopedServer[], matches: (server: ScopedServer) => boolean): ScopedServer | undefined => {
+  const matched = servers.filter(matches)
+  const projectMatches = matched.filter((server) => server.scope === "project")
+  if (projectMatches.length === 1) {
+    return projectMatches[0]
   }
-  return undefined
-}
-
-const normalizeLookupText = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, "")
-
-const serverLookupAliases = (server: ScopedServer): string[] => {
-  const aliases = new Set<string>()
-  for (const value of [server.id, server.config.label]) {
-    if (!value) {
-      continue
-    }
-    const normalized = normalizeLookupText(value)
-    aliases.add(normalized)
-    for (const suffix of ["mcp", "server"]) {
-      if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
-        aliases.add(normalized.slice(0, -suffix.length))
-      }
-    }
+  if (projectMatches.length > 1) {
+    return undefined
   }
-  return [...aliases].filter(Boolean)
+  return matched.length === 1 ? matched[0] : undefined
 }
 
 const isBundledPlaywrightConfig = (server: McpServerConfig): boolean => {

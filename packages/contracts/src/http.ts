@@ -17,6 +17,13 @@ import {
 import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
 import { mcpRegistryServerSchema, mcpRegistryToolDescriptorSchema, mcpServerScopeSchema, skillScopeSchema, skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
+const skillNameInputSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/, "Use lowercase letters, numbers, and hyphens.")
+  .refine((name) => !name.includes("--"), "Use single hyphens only.")
+
 export const getMeResponseSchema = z
   .object({
     user: userSchema.nullable(),
@@ -350,6 +357,7 @@ export type GetMemoryAgentFileContentResponse = z.infer<typeof getMemoryAgentFil
 export const buildGlobalSkillRequestSchema = z
   .object({
     request: z.string().min(1),
+    name: skillNameInputSchema.optional(),
   })
   .strict()
 export type BuildGlobalSkillRequest = z.infer<typeof buildGlobalSkillRequestSchema>
@@ -360,6 +368,14 @@ export const buildGlobalSkillResponseSchema = z
   })
   .strict()
 export type BuildGlobalSkillResponse = z.infer<typeof buildGlobalSkillResponseSchema>
+
+export const deleteSkillResponseSchema = z
+  .object({
+    deletedSkillName: z.string().min(1),
+    scope: skillScopeSchema,
+  })
+  .strict()
+export type DeleteSkillResponse = z.infer<typeof deleteSkillResponseSchema>
 
 export const mcpServerConfigInputSchema = z
   .object({
@@ -659,6 +675,7 @@ export const upsertProjectInstructionsResponseSchema = z
 export const buildProjectSkillRequestSchema = z
   .object({
     request: z.string().min(1),
+    name: skillNameInputSchema.optional(),
   })
   .strict()
 

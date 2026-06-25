@@ -14,6 +14,7 @@ import {
   createProjectResponseSchema,
   deleteConversationResponseSchema,
   deleteMcpServerResponseSchema,
+  deleteSkillResponseSchema,
   deleteProviderCredentialResponseSchema,
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
@@ -71,6 +72,7 @@ import {
   type DeleteConversationResponse,
   type DeleteMcpServerRequest,
   type DeleteMcpServerResponse,
+  type DeleteSkillResponse,
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
@@ -345,6 +347,15 @@ export const api = {
       },
     ) as Promise<BuildGlobalSkillResponse>,
 
+  deleteGlobalSkill: (skillName: string) =>
+    request<typeof deleteSkillResponseSchema>(
+      `/api/memory-agent/skills/${encodeURIComponent(skillName)}`,
+      deleteSkillResponseSchema,
+      {
+        method: "DELETE",
+      },
+    ) as Promise<DeleteSkillResponse>,
+
   listMcpServers: (input: { projectId?: string; scope?: "global" | "project" } = {}) => {
     const params = new URLSearchParams();
     if (input.projectId) {
@@ -561,6 +572,15 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<BuildProjectSkillResponse>,
+
+  deleteProjectSkill: (projectId: string, skillName: string) =>
+    request<typeof deleteSkillResponseSchema>(
+      `/api/projects/${projectId}/skills/${encodeURIComponent(skillName)}`,
+      deleteSkillResponseSchema,
+      {
+        method: "DELETE",
+      },
+    ) as Promise<DeleteSkillResponse>,
 
   uploadProjectResources: (projectId: string, files: File[]) => {
     const body = new FormData();

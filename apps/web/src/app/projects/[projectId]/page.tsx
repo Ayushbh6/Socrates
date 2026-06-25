@@ -12,6 +12,7 @@ import { McpServersPanel } from "@/components/mcp/McpServersPanel";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
 import type { GetProjectResponse } from "@socrates/contracts";
+import type { BuildSkillInput } from "@/components/dashboard/BuildSkillDialog";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 
@@ -26,6 +27,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   const [deletingResourceId, setDeletingResourceId] = useState<string | null>(null);
   const [isSavingInstructions, setIsSavingInstructions] = useState(false);
   const [isBuildingSkill, setIsBuildingSkill] = useState(false);
+  const [deletingSkillName, setDeletingSkillName] = useState<string | null>(null);
   const [isStartingChat, setIsStartingChat] = useState(false);
   const [isSavingConversationAction, setIsSavingConversationAction] = useState(false);
   const [isSavingWorkspace, setIsSavingWorkspace] = useState(false);
@@ -123,10 +125,11 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     }
   };
 
-  const handleBuildSkill = async (request: string) => {
+  const handleBuildSkill = async (input: BuildSkillInput) => {
     setIsBuildingSkill(true);
+    setUploadError(null);
     try {
-      const response = await api.buildProjectSkill(projectId, { request });
+      const response = await api.buildProjectSkill(projectId, input);
       setData((current) =>
         current
           ? {
@@ -135,8 +138,32 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
             }
           : current,
       );
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Could not build skill.");
+      throw err;
     } finally {
       setIsBuildingSkill(false);
+    }
+  };
+
+  const handleDeleteSkill = async (skillName: string) => {
+    setDeletingSkillName(skillName);
+    setUploadError(null);
+    try {
+      const response = await api.deleteProjectSkill(projectId, skillName);
+      setData((current) =>
+        current
+          ? {
+              ...current,
+              skills: current.skills.filter((skill) => skill.name !== response.deletedSkillName),
+            }
+          : current,
+      );
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Could not delete skill.");
+      throw err;
+    } finally {
+      setDeletingSkillName(null);
     }
   };
 
@@ -271,7 +298,9 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               skills={data?.skills ?? []}
               projectName={data?.project.name ?? "this project"}
               isBuilding={isBuildingSkill}
+              deletingSkillName={deletingSkillName}
               onBuild={handleBuildSkill}
+              onDelete={handleDeleteSkill}
             />
             <McpServersPanel
               scope="project"

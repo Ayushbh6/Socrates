@@ -16,6 +16,7 @@ import {
   createProjectResourceRequestSchema,
   deleteMcpServerRequestSchema,
   deleteMcpServerResponseSchema,
+  deleteSkillResponseSchema,
   inspectWorkspaceRequestSchema,
   listMcpServersQuerySchema,
   listMcpServersResponseSchema,
@@ -55,6 +56,8 @@ const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }
 const notificationParamsSchema = z.object({ notificationId: z.string().min(1) }).strict()
 const memoryAgentRunParamsSchema = z.object({ runId: z.string().min(1) }).strict()
 const mcpServerParamsSchema = z.object({ serverId: z.string().min(1) }).strict()
+const skillParamsSchema = z.object({ skillName: z.string().min(1) }).strict()
+const projectSkillParamsSchema = z.object({ projectId: z.string().min(1), skillName: z.string().min(1) }).strict()
 const memoryAgentRunsQuerySchema = z
   .object({
     limit: z.coerce.number().int().positive().max(100).optional(),
@@ -407,6 +410,16 @@ export const registerHttpRoutes = async (
     }
   })
 
+  app.delete("/api/memory-agent/skills/:skillName", async (request, reply) => {
+    try {
+      const { skillName } = parseParams(skillParamsSchema, request.params)
+      return ok(deleteSkillResponseSchema.parse(store.deleteGlobalSkill(skillName)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
   app.get("/api/projects", async (_request, reply) => {
     try {
       return ok({ projects: store.listProjects() })
@@ -578,6 +591,16 @@ export const registerHttpRoutes = async (
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(buildProjectSkillRequestSchema, request.body)
       return ok(await store.buildProjectSkill(projectId, input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.delete("/api/projects/:projectId/skills/:skillName", async (request, reply) => {
+    try {
+      const { projectId, skillName } = parseParams(projectSkillParamsSchema, request.params)
+      return ok(deleteSkillResponseSchema.parse(store.deleteProjectSkill(projectId, skillName)))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

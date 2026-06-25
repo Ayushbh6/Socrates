@@ -1466,6 +1466,7 @@ export type McpRegistryToolInput = z.infer<typeof mcpRegistryToolInputSchema>
 export const mcpRegistryToolModelInputSchema = z
   .object({
     operation: mcpRegistryOperationSchema,
+    serverId: z.string().min(1).optional(),
     serverName: z.string().min(1).optional(),
     preset: z.enum(["playwright"]).optional(),
   })

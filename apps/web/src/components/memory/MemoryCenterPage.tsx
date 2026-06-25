@@ -20,9 +20,11 @@ import {
   RefreshCw,
   Settings2,
   Sparkles,
+  Trash2,
   UserRound,
 } from "lucide-react";
 import type {
+  BuildGlobalSkillRequest,
   GetMemoryAgentResponse,
   MemoryAgentFileSummary,
   MemoryAgentGlobalSettings,
@@ -72,6 +74,7 @@ export function MemoryCenterPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isBuildingSkill, setIsBuildingSkill] = useState(false);
+  const [deletingSkillName, setDeletingSkillName] = useState<string | null>(null);
   const [showSkillDialog, setShowSkillDialog] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -172,12 +175,12 @@ export function MemoryCenterPage() {
     }
   };
 
-  const buildGlobalSkill = async (request: string) => {
+  const buildGlobalSkill = async (input: BuildGlobalSkillRequest) => {
     setIsBuildingSkill(true);
     setMessage(null);
     setError(null);
     try {
-      const response = await api.buildGlobalSkill({ request });
+      const response = await api.buildGlobalSkill(input);
       await loadData();
       setShowSkillDialog(false);
       setMessage(`Created global skill: ${response.skill.name}`);
@@ -185,6 +188,26 @@ export function MemoryCenterPage() {
       setError(err instanceof Error ? err.message : "Could not build global skill.");
     } finally {
       setIsBuildingSkill(false);
+    }
+  };
+
+  const deleteGlobalSkill = async (file: MemoryAgentFileSummary) => {
+    if (file.kind !== "skill" || file.scope !== "global") {
+      return;
+    }
+    setDeletingSkillName(file.name);
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await api.deleteGlobalSkill(file.name);
+      setFiles((current) => current.filter((item) => !(item.kind === "skill" && item.scope === "global" && item.name === response.deletedSkillName)));
+      setSelectedFile((current) => (current?.kind === "skill" && current.name === response.deletedSkillName ? null : current));
+      setFileContent("");
+      setMessage(`Deleted global skill: ${response.deletedSkillName}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete global skill.");
+    } finally {
+      setDeletingSkillName(null);
     }
   };
 
@@ -451,19 +474,32 @@ export function MemoryCenterPage() {
                     <div className="space-y-2">
                       {groupFiles.length === 0 && <p className="rounded-lg border border-dashed border-slate-200 px-3 py-2 text-sm text-slate-500">No files in this group.</p>}
                       {groupFiles.map((file) => (
-                        <button
+                        <div
                           key={file.id}
-                          type="button"
-                          onClick={() => void openFile(file)}
-                          className={file.id === selectedFile?.id ? "flex w-full items-start gap-3 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-left transition" : "flex w-full items-start gap-3 rounded-lg border border-slate-100 px-3 py-2 text-left transition hover:border-teal-200 hover:bg-teal-50/50"}
+                          className={file.id === selectedFile?.id ? "flex items-start gap-2 rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 transition" : "flex items-start gap-2 rounded-lg border border-slate-100 px-3 py-2 transition hover:border-teal-200 hover:bg-teal-50/50"}
                         >
-                          <FileIcon file={file} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm font-medium text-slate-900">{file.name}</span>
-                            <span className="block truncate text-xs text-slate-500">{file.description ?? file.path}</span>
-                            {file.updatedAt && <span className="mt-1 block text-[11px] text-slate-400">Updated {formatDate(file.updatedAt)}</span>}
-                          </span>
-                        </button>
+                          <button type="button" onClick={() => void openFile(file)} className="flex min-w-0 flex-1 items-start gap-3 text-left">
+                            <FileIcon file={file} />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-sm font-medium text-slate-900">{file.name}</span>
+                              <span className="block truncate text-xs text-slate-500">{file.description ?? file.path}</span>
+                              {file.updatedAt && <span className="mt-1 block text-[11px] text-slate-400">Updated {formatDate(file.updatedAt)}</span>}
+                            </span>
+                          </button>
+                          {file.kind === "skill" && file.scope === "global" && (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => void deleteGlobalSkill(file)}
+                              disabled={deletingSkillName === file.name}
+                              className="h-8 shrink-0 rounded-lg px-2 text-red-600 hover:bg-red-50 hover:text-red-700"
+                              aria-label={`Delete ${file.name}`}
+                            >
+                              {deletingSkillName === file.name ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                            </Button>
+                          )}
+                        </div>
                       ))}
                     </div>
                   </div>

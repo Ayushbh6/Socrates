@@ -1,22 +1,26 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import { Loader2, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import type { GetProjectResponse } from "@socrates/contracts";
 import { truncatePreview } from "@/lib/format";
-import { BuildSkillDialog } from "./BuildSkillDialog";
+import { BuildSkillDialog, type BuildSkillInput } from "./BuildSkillDialog";
 
 export function SkillsPanel({
   skills,
   projectName,
   isBuilding,
+  deletingSkillName,
   onBuild,
+  onDelete,
 }: {
   skills: GetProjectResponse["skills"];
   projectName: string;
   isBuilding: boolean;
-  onBuild: (request: string) => Promise<void>;
+  deletingSkillName?: string | null;
+  onBuild: (input: BuildSkillInput) => Promise<void>;
+  onDelete: (skillName: string) => Promise<void>;
 }) {
   const [isOpen, setIsOpen] = useState(false);
 
@@ -37,10 +41,25 @@ export function SkillsPanel({
       </div>
       {skills.length > 0 ? (
         <div className="space-y-3">
-          {skills.slice(0, 4).map((skill) => (
+          {skills.map((skill) => (
             <div key={`${skill.scope}:${skill.name}`} className="rounded-lg border border-gray-100 bg-brand-bg px-3 py-2">
-              <p className="text-sm font-medium text-brand-text-dark">{skill.name}</p>
-              <p className="line-clamp-2 text-xs leading-5 text-brand-text-light">{truncatePreview(skill.description, 120)}</p>
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-brand-text-dark">{skill.name}</p>
+                  <p className="line-clamp-2 text-xs leading-5 text-brand-text-light">{truncatePreview(skill.description, 120)}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void onDelete(skill.name)}
+                  disabled={deletingSkillName === skill.name}
+                  className="h-8 shrink-0 rounded-lg px-2 text-red-600 hover:bg-red-50 hover:text-red-700"
+                  aria-label={`Delete ${skill.name}`}
+                >
+                  {deletingSkillName === skill.name ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                </Button>
+              </div>
             </div>
           ))}
         </div>
@@ -52,8 +71,8 @@ export function SkillsPanel({
           projectName={projectName}
           isBuilding={isBuilding}
           onCancel={() => setIsOpen(false)}
-          onBuild={async (request) => {
-            await onBuild(request);
+          onBuild={async (input) => {
+            await onBuild(input);
             setIsOpen(false);
           }}
         />

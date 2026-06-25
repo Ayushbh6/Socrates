@@ -98,6 +98,10 @@ export const skillSummary = (skill: SkillInfo): SkillSummary => ({
 })
 
 export const fallbackSkillDescription = (request: string): string => {
+  const triggerPhrase = /trigger phrase:\s*([^\n.]+)/i.exec(request)?.[1]?.trim()
+  if (triggerPhrase) {
+    return `Use when the user mentions ${triggerPhrase}.`
+  }
   const compact = request.replace(/\s+/g, " ").trim()
   return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact || "Reusable Socrates skill."
 }
@@ -134,4 +138,4 @@ export const fallbackSkillMarkdown = (name: string, descriptionOrBody: string): 
   return `---\nname: ${skillName}\ndescription: ${description}\n---\n\n${fallbackSkillBody(descriptionOrBody)}\n`
 }
 
-const isValidSkillName = (name: string): boolean => /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name) && !name.includes("--")
+export const isValidSkillName = (name: string): boolean => /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name) && !name.includes("--")

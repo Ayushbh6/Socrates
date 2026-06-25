@@ -23,12 +23,27 @@ describe("McpRuntime", () => {
     expect(JSON.stringify(fs.readFileSync(path.join(home, "mcp.json"), "utf8"))).not.toContain("API_KEY")
   })
 
+  it("lists all configured servers when no lookup is provided", async () => {
+    const runtime = new McpRuntime({ socratesHome: tempHome() })
+    runtime.upsertManagedServer("global", {
+      id: "fake",
+      label: "Fake MCP",
+      command: process.execPath,
+      args: ["-e", ""],
+    })
+
+    const listed = await runtime.handleRegistryTool({ operation: "list" })
+
+    expect(listed.servers?.map((server) => server.id).sort()).toEqual(["fake", "playwright"])
+    expect(listed.server).toBeUndefined()
+  })
+
   it("describes Playwright with concise registry docs", async () => {
     const runtime = new McpRuntime({ socratesHome: tempHome() })
     const described = await runtime.handleRegistryTool({ operation: "describe", serverId: "playwright" })
     expect(described.docs).toContain("Use Playwright MCP")
-    expect(described.docs).toContain('serverName="playwright"')
-    expect(described.docs).not.toContain('serverId="playwright"')
+    expect(described.docs).toContain('serverId="playwright"')
+    expect(described.docs).not.toContain('serverName="playwright"')
     expect(described.summary).toContain("playwright")
   })
 
@@ -130,8 +145,18 @@ describe("McpRuntime", () => {
     const [dynamicTool] = runtime.getDynamicToolDefinitions("Project Fake MCP", { workspacePath: workspace })
     expect(dynamicTool?.name).toBe("mcp__projectfake__record")
 
-    const shortened = await runtime.handleRegistryTool({ operation: "check", serverName: "Project Fake" }, { workspacePath: workspace })
-    expect(shortened.server?.id).toBe("projectfake")
+    const byIdAndName = await runtime.handleRegistryTool(
+      { operation: "check", serverId: "projectfake", serverName: "Project Fake MCP" },
+      { workspacePath: workspace },
+    )
+    expect(byIdAndName.server?.id).toBe("projectfake")
+
+    await expect(
+      Promise.resolve().then(() => runtime.handleRegistryTool({ operation: "check", serverId: "projectfake", serverName: "Other MCP" }, { workspacePath: workspace })),
+    ).rejects.toMatchObject({
+      code: "mcp_server_identity_conflict",
+      recoverable: true,
+    })
   })
 
   it("reuses dynamic MCP clients within a conversation and runs them in the workspace cwd", async () => {
