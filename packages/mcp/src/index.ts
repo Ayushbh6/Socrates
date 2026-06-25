@@ -92,10 +92,10 @@ export class McpRuntime {
     if (!resolved?.config.enabled) {
       return []
     }
-    const cached = this.readCachedTools(serverId, resolved.paths)
+    const cached = this.readCachedTools(resolved.id, resolved.paths)
     return cached.map((tool) => ({
-      name: dynamicToolName(serverId, tool.name),
-      description: tool.description ?? `Run the ${tool.name} tool from the ${serverId} MCP server.`,
+      name: dynamicToolName(resolved.id, tool.name),
+      description: tool.description ?? `Run the ${tool.name} tool from the ${resolved.id} MCP server.`,
       inputSchema: jsonSchemaToZod(tool.inputSchema),
     }))
   }
@@ -109,7 +109,7 @@ export class McpRuntime {
         recoverable: true,
       })
     }
-    const client = await this.clientFor(parsed.serverId, resolved.config, this.readEnv(resolved.paths), options)
+    const client = await this.clientFor(resolved.id, resolved.config, this.readEnv(resolved.paths), options)
     try {
       const response = await client.request("tools/call", { name: parsed.toolName, arguments: input ?? {} })
       if (isMcpToolErrorResponse(response)) {
@@ -121,7 +121,7 @@ export class McpRuntime {
       return response
     } catch (error) {
       if (client.isClosed) {
-        this.clients.delete(this.clientKey(parsed.serverId, options))
+        this.clients.delete(this.clientKey(resolved.id, options))
       }
       throw error
     }
@@ -235,10 +235,11 @@ export class McpRuntime {
 
   private async describe(serverId: string, options: { workspacePath?: string | undefined }): Promise<McpRegistryToolOutput> {
     const resolved = this.resolveServer(serverId, options)
-    const docs = this.readRegistryDocs(serverId, resolved?.paths)
-    const tools = (resolved ? this.readCachedTools(serverId, resolved.paths) : []).map((tool) => ({
+    const resolvedId = resolved?.id ?? serverId
+    const docs = this.readRegistryDocs(resolvedId, resolved?.paths)
+    const tools = (resolved ? this.readCachedTools(resolvedId, resolved.paths) : []).map((tool) => ({
       name: tool.name,
-      dynamicName: dynamicToolName(serverId, tool.name),
+      dynamicName: dynamicToolName(resolvedId, tool.name),
       ...(tool.description ? { description: tool.description } : {}),
       ...(tool.inputSchema === undefined ? {} : { inputSchema: tool.inputSchema }),
     }))
@@ -246,10 +247,10 @@ export class McpRuntime {
       operation: "describe",
       configPath: this.configPath,
       envPath: this.envPath,
-      ...(resolved ? { server: this.serverSummary(serverId, resolved.config, tools.length ? "available" : "unknown", tools.length, resolved.scope, resolved.paths) } : {}),
+      ...(resolved ? { server: this.serverSummary(resolvedId, resolved.config, tools.length ? "available" : "unknown", tools.length, resolved.scope, resolved.paths) } : {}),
       tools,
       docs,
-      summary: resolved ? `${serverId} MCP is configured. Use the listed dynamic tool names when exposed.` : `${serverId} MCP is not configured.`,
+      summary: resolved ? `${resolvedId} MCP is configured. Use the listed dynamic tool names when exposed.` : `${serverId} MCP is not configured.`,
     }
   }
 
@@ -281,19 +282,19 @@ export class McpRuntime {
         await client.initialize()
         const response = await client.request("tools/list", {})
         const tools = parseToolsList(response)
-        this.writeCachedTools(serverId, tools, resolved.paths)
+        this.writeCachedTools(resolved.id, tools, resolved.paths)
         return {
           operation: "check",
           configPath: this.configPath,
           envPath: this.envPath,
-          server: this.serverSummary(serverId, resolved.config, "available", tools.length, resolved.scope, resolved.paths),
+          server: this.serverSummary(resolved.id, resolved.config, "available", tools.length, resolved.scope, resolved.paths),
           tools: tools.map((tool) => ({
             name: tool.name,
-            dynamicName: dynamicToolName(serverId, tool.name),
+            dynamicName: dynamicToolName(resolved.id, tool.name),
             ...(tool.description ? { description: tool.description } : {}),
             ...(tool.inputSchema === undefined ? {} : { inputSchema: tool.inputSchema }),
           })),
-          summary: `${serverId} MCP is available with ${tools.length} tool${tools.length === 1 ? "" : "s"}.`,
+          summary: `${resolved.id} MCP is available with ${tools.length} tool${tools.length === 1 ? "" : "s"}.`,
         }
       } finally {
         client.close()
@@ -303,8 +304,8 @@ export class McpRuntime {
         operation: "check",
         configPath: this.configPath,
         envPath: this.envPath,
-        server: this.serverSummary(serverId, resolved.config, "failed", 0, resolved.scope, resolved.paths),
-        summary: `${serverId} MCP check failed.`,
+        server: this.serverSummary(resolved.id, resolved.config, "failed", 0, resolved.scope, resolved.paths),
+        summary: `${resolved.id} MCP check failed.`,
         warnings: [error instanceof Error ? error.message : String(error)],
       }
     }
@@ -561,11 +562,15 @@ export class McpRuntime {
     this.ensureDefaults()
     if (options.scope) {
       const paths = this.pathsForScope(options.scope, options.workspacePath)
-      const config = this.readConfig(paths).servers?.[serverId]
-      return config ? { id: serverId, scope: options.scope, config: normalizeServerConfig(config), paths } : undefined
+      const servers = Object.entries(this.readConfig(paths).servers ?? {}).map(([id, config]) => ({
+        id,
+        scope: options.scope as McpServerScope,
+        config: normalizeServerConfig(config),
+        paths,
+      }))
+      return findMatchingServer(servers, serverId)
     }
-    const scoped = this.scopedServers(options).filter((server) => server.id === serverId)
-    return scoped.find((server) => server.scope === "project") ?? scoped[0]
+    return findMatchingServer(this.scopedServers(options), serverId)
   }
 
   private repairBundledPlaywrightConfig(config: McpConfig): McpConfig {
@@ -648,6 +653,52 @@ const normalizeServerConfig = (server: McpServerConfig): McpServerConfig => ({
   enabled: server.enabled ?? true,
   requiresSecrets: server.requiresSecrets ?? false,
 })
+
+const findMatchingServer = (servers: ScopedServer[], lookup: string): ScopedServer | undefined => {
+  const trimmed = lookup.trim()
+  const normalized = normalizeLookupText(trimmed)
+  const matchers: Array<(server: ScopedServer) => boolean> = [
+    (server) => server.id === trimmed,
+    (server) => server.config.label === trimmed,
+    (server) => server.id.toLowerCase() === trimmed.toLowerCase(),
+    (server) => server.config.label?.toLowerCase() === trimmed.toLowerCase(),
+    (server) => serverLookupAliases(server).includes(normalized),
+  ]
+
+  for (const matches of matchers) {
+    const matched = servers.filter(matches)
+    const projectMatches = matched.filter((server) => server.scope === "project")
+    if (projectMatches.length === 1) {
+      return projectMatches[0]
+    }
+    if (projectMatches.length > 1) {
+      return undefined
+    }
+    if (matched.length === 1) {
+      return matched[0]
+    }
+  }
+  return undefined
+}
+
+const normalizeLookupText = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, "")
+
+const serverLookupAliases = (server: ScopedServer): string[] => {
+  const aliases = new Set<string>()
+  for (const value of [server.id, server.config.label]) {
+    if (!value) {
+      continue
+    }
+    const normalized = normalizeLookupText(value)
+    aliases.add(normalized)
+    for (const suffix of ["mcp", "server"]) {
+      if (normalized.endsWith(suffix) && normalized.length > suffix.length) {
+        aliases.add(normalized.slice(0, -suffix.length))
+      }
+    }
+  }
+  return [...aliases].filter(Boolean)
+}
 
 const isBundledPlaywrightConfig = (server: McpServerConfig): boolean => {
   const command = server.command

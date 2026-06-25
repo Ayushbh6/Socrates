@@ -104,6 +104,36 @@ describe("McpRuntime", () => {
     expect(runtime.getDynamicToolDefinitions("projectfake")).toEqual([])
   })
 
+  it("resolves human MCP labels to canonical project server ids", async () => {
+    const home = tempHome()
+    const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-label-")))
+    const runtime = new McpRuntime({ socratesHome: home })
+    const scriptPath = writeFakeMcpScript(home)
+
+    runtime.upsertManagedServer(
+      "project",
+      {
+        id: "projectfake",
+        label: "Project Fake MCP",
+        command: process.execPath,
+        args: [scriptPath],
+      },
+      { workspacePath: workspace },
+    )
+
+    const checked = await runtime.handleRegistryTool({ operation: "check", serverName: "Project Fake MCP" }, { workspacePath: workspace })
+    expect(checked.server?.id).toBe("projectfake")
+    expect(checked.tools?.map((tool) => tool.dynamicName)).toContain("mcp__projectfake__record")
+    expect(fs.existsSync(path.join(workspace, ".socrates", "mcp", "registry", "projectfake.tools.json"))).toBe(true)
+    expect(fs.existsSync(path.join(workspace, ".socrates", "mcp", "registry", "Project Fake MCP.tools.json"))).toBe(false)
+
+    const [dynamicTool] = runtime.getDynamicToolDefinitions("Project Fake MCP", { workspacePath: workspace })
+    expect(dynamicTool?.name).toBe("mcp__projectfake__record")
+
+    const shortened = await runtime.handleRegistryTool({ operation: "check", serverName: "Project Fake" }, { workspacePath: workspace })
+    expect(shortened.server?.id).toBe("projectfake")
+  })
+
   it("reuses dynamic MCP clients within a conversation and runs them in the workspace cwd", async () => {
     const home = tempHome()
     const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-workspace-")))
@@ -145,6 +175,14 @@ describe("McpRuntime", () => {
 })
 
 const configureFakeMcp = (home: string): void => {
+  const scriptPath = writeFakeMcpScript(home)
+  fs.writeFileSync(
+    path.join(home, "mcp.json"),
+    `${JSON.stringify({ servers: { fake: { command: process.execPath, args: [scriptPath], enabled: true } } }, null, 2)}\n`,
+  )
+}
+
+const writeFakeMcpScript = (home: string): string => {
   const scriptPath = path.join(home, "fake-mcp.cjs")
   fs.mkdirSync(home, { recursive: true })
   fs.writeFileSync(
@@ -160,6 +198,10 @@ const configureFakeMcp = (home: string): void => {
       "    send(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1.0.0' } });",
       "    return;",
       "  }",
+      "  if (message.method === 'tools/list') {",
+      "    send(message.id, { tools: [{ name: 'record', description: 'Record a fake MCP call.' }, { name: 'fail', description: 'Return a fake MCP failure.' }] });",
+      "    return;",
+      "  }",
       "  if (message.method === 'tools/call') {",
       "    calls += 1;",
       "    if (message.params && message.params.name === 'fail') {",
@@ -173,8 +215,5 @@ const configureFakeMcp = (home: string): void => {
       "});",
     ].join("\n"),
   )
-  fs.writeFileSync(
-    path.join(home, "mcp.json"),
-    `${JSON.stringify({ servers: { fake: { command: process.execPath, args: [scriptPath], enabled: true } } }, null, 2)}\n`,
-  )
+  return scriptPath
 }
