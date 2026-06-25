@@ -142,14 +142,15 @@ Tool routing:
 
 ## Release State
 
-- Current release target is GitHub runtime release `v0.1.12` with macOS and Windows runtime bundles; npm launcher `@socrates-ai/cli@0.1.12` keeps direct GitHub Release asset lookup so public `npx` installs avoid unauthenticated GitHub API rate limits.
+- Current GitHub runtime release is `v0.1.12` with macOS and Windows runtime bundles. The npm launcher source is `@socrates-ai/cli@0.1.12`, but the npm registry still reports `0.1.11` until local npm auth is fixed and publish succeeds.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
-- Local npm auth is currently not confirmed; `npm whoami` returned `E401 Unauthorized` before the v0.1.12 publish attempt. Recheck auth before running the npm publish command.
+- GitHub Actions run `28194345161` published `Socrates v0.1.12` successfully with `SHA256SUMS`, `socrates-runtime-darwin-arm64.zip`, `socrates-runtime-darwin-x64.zip`, and `socrates-runtime-win32-x64.zip`.
+- Local npm auth is broken: `npm whoami` returns `E401 Unauthorized`, and the real `npm publish --access public` attempt for `@socrates-ai/cli@0.1.12` returned `E404 Not Found ... or you do not have permission`. The dry run produced the correct `0.1.12` tarball.
 
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
-- Finish the v0.1.12 release by bumping launcher metadata, pushing tag `v0.1.12`, verifying the GitHub runtime-release workflow, and publishing `@socrates-ai/cli@0.1.12` after npm auth is valid.
+- Publish `@socrates-ai/cli@0.1.12` to npm after npm auth is valid; the GitHub runtime release and tag are already complete.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
 
