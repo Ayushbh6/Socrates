@@ -59,7 +59,7 @@ describe("OpenRouter provider options", () => {
     expect(createOpenRouterProviderOptions(request).openrouter?.prompt_cache_key).toBe("sess_1")
   })
 
-  it("keeps strict provider pins for single-provider and title-generation routes", () => {
+  it("keeps strict provider pins for single-provider routes", () => {
     expect(openRouterProviderRoutingForModel("xiaomi/mimo-v2.5")).toEqual({
       order: ["xiaomi"],
       allow_fallbacks: false,
@@ -75,15 +75,24 @@ describe("OpenRouter provider options", () => {
       allow_fallbacks: false,
       require_parameters: true,
     })
-    expect(openRouterProviderRoutingForModel("meta-llama/llama-4-maverick")).toEqual({
-      order: ["deepinfra"],
-      allow_fallbacks: false,
-      require_parameters: true,
-    })
-    expect(openRouterProviderRoutingForModel("qwen/qwen3.5-flash-02-23")).toEqual({
-      order: ["alibaba"],
-      allow_fallbacks: false,
-      require_parameters: true,
+  })
+
+  it("keeps title helper models unpinned with normal OpenRouter fallback", () => {
+    expect(openRouterProviderRoutingForModel("meta-llama/llama-4-maverick")).toEqual(priceFirstProvider)
+    expect(openRouterProviderRoutingForModel("qwen/qwen3.5-flash-02-23")).toEqual(priceFirstProvider)
+  })
+
+  it("can omit reasoning entirely for title/helper requests", () => {
+    const request = baseRequest(false, "meta-llama/llama-4-maverick")
+    request.providerRouting = { omitReasoning: true }
+
+    expect(createOpenRouterProviderOptions(request)).toEqual({
+      openrouter: {
+        usage: { include: true },
+        session_id: "project:proj_1:conversation:conv_1",
+        prompt_cache_key: "project:proj_1:conversation:conv_1",
+        provider: priceFirstProvider,
+      },
     })
   })
 

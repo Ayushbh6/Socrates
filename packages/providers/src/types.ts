@@ -79,6 +79,12 @@ export type ModelRequest = {
      * provider/cache shard without hard-blocking fallbacks.
      */
     preferredOpenRouterProvider?: string
+    /**
+     * OpenRouter title/helper calls should stay fast and broadly routable. When
+     * set, Socrates omits the reasoning field completely instead of even
+     * sending an explicit "off" value that some endpoints reject.
+     */
+    omitReasoning?: boolean
   }
   system: string
   messages: ModelMessage[]

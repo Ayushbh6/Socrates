@@ -83,9 +83,6 @@ const preferredProviderRouting = (provider: string | undefined): OpenRouterProvi
   return slug ? orderedFallbackRouting([slug]) : undefined
 }
 
-const titleGenerationPrimaryRouting = strictRouting(["deepinfra"])
-const titleGenerationFallbackRouting = strictRouting(["alibaba"])
-
 const deepseekV4ProToolOrder = [
   "deepseek",
   "streamlake",
@@ -133,9 +130,8 @@ export const openRouterProviderRoutingByModelId: Record<string, OpenRouterProvid
 }
 
 // Every OpenRouter model resolves to cost-aware routing. Explicit per-model
-// entries win; title-generation helper models keep their deliberate pins;
-// anything else falls back to price-first cache-sticky routing so no model is
-// ever sent with empty routing (OpenRouter's expensive default).
+// entries win; anything else falls back to price-first cache-sticky routing so
+// no model is ever sent with empty routing (OpenRouter's expensive default).
 export const openRouterProviderRoutingForModel = (
   modelId: string,
   options: OpenRouterProviderRoutingOptions = {},
@@ -155,10 +151,10 @@ export const openRouterProviderRoutingForModel = (
     return explicit
   }
   if (modelId === "meta-llama/llama-4-maverick") {
-    return titleGenerationPrimaryRouting
+    return priceFirstCacheRouting()
   }
   if (modelId === "qwen/qwen3.5-flash-02-23") {
-    return titleGenerationFallbackRouting
+    return priceFirstCacheRouting()
   }
   return priceFirstCacheRouting()
 }

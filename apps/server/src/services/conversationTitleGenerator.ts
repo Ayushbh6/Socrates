@@ -71,6 +71,7 @@ const streamTitleCandidate = async (input: {
       cacheKey: `project:${input.projectId}:conversation:${input.conversationId}:title`,
       system: titleSystemPrompt,
       messages: [input.message],
+      providerRouting: { omitReasoning: true },
       runtimeConfig: titleRuntimeConfig(input.modelId),
       tools: [],
       abortSignal: abortController.signal,

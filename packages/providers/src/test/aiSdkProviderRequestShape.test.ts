@@ -225,6 +225,36 @@ describe("AI SDK provider request shape", () => {
     expect(options.messages?.[3]?.content).toContain("[developer]\n<runtime_docs_sync_checkpoint>")
   })
 
+  it("merges trailing OpenRouter developer messages into the latest user message", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openrouter", "deepseek/deepseek-v4-pro"),
+      messages: [
+        { role: "user", content: "hi" },
+        {
+          role: "developer",
+          content:
+            "<runtime_socrates_docs_preflight>\nRead project docs before workspace actions.\n</runtime_socrates_docs_preflight>",
+        },
+      ],
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { messages?: Array<{ role?: string; content?: unknown }> }
+    expect(options.messages).toEqual([
+      {
+        role: "user",
+        content:
+          "hi\n\n<runtime_socrates_developer_context>\nThe following is Socrates runtime guidance, not user-authored content.\n<runtime_socrates_docs_preflight>\nRead project docs before workspace actions.\n</runtime_socrates_docs_preflight>\n</runtime_socrates_developer_context>",
+      },
+    ])
+    expect(JSON.stringify(options.messages)).not.toContain('"role":"system"')
+  })
+
   it("emits completed OpenAI reasoning metadata before tool calls", async () => {
     aiMocks.streamText.mockReturnValue({
       fullStream: (async function* () {

@@ -104,7 +104,7 @@ export class AiSdkProvider implements ModelProvider {
       const result = streamText({
         model: this.createModel(request),
         system: request.system,
-        messages: request.messages.map((message) => toAiModelMessage(message, request.providerId)),
+        messages: toAiModelMessages(request.messages, request.providerId),
         ...(request.tools && request.tools.length > 0 ? { tools: toAiTools(request.tools) as never } : {}),
         providerOptions: this.createProviderOptions(request),
         ...(request.providerId === "openrouter"
@@ -222,7 +222,7 @@ export class AiSdkProvider implements ModelProvider {
       const result = await generateText({
         model: this.createModel(request),
         system: request.system,
-        messages: request.messages.map((message) => toAiModelMessage(message, request.providerId)),
+        messages: toAiModelMessages(request.messages, request.providerId),
         output: Output.object({ schema: request.schema as never }),
         providerOptions: this.createProviderOptions(request),
         abortSignal: streamTimeout.signal,
@@ -738,6 +738,57 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number], prov
   } as AiModelMessage
 }
 
+const toAiModelMessages = (messages: ModelRequest["messages"], providerId?: ModelRequest["providerId"]): AiModelMessage[] =>
+  providerId === "openrouter"
+    ? normalizeOpenRouterMessages(messages).map((message) => toAiModelMessage(message, providerId))
+    : messages.map((message) => toAiModelMessage(message, providerId))
+
+const normalizeOpenRouterMessages = (messages: ModelRequest["messages"]): ModelRequest["messages"] => {
+  const normalized: ModelRequest["messages"] = []
+  for (const message of messages) {
+    if (message.role !== "developer") {
+      normalized.push(message)
+      continue
+    }
+
+    const developerText = developerContextText(message.content)
+    const previous = normalized[normalized.length - 1]
+    if (previous?.role === "user") {
+      normalized[normalized.length - 1] = {
+        ...previous,
+        content: appendDeveloperContextToUserContent(previous.content, developerText),
+      }
+      continue
+    }
+
+    normalized.push({
+      role: "user",
+      content: developerText,
+    })
+  }
+  return normalized
+}
+
+const developerContextText = (content: ModelRequest["messages"][number]["content"]): string =>
+  [
+    "<runtime_socrates_developer_context>",
+    "The following is Socrates runtime guidance, not user-authored content.",
+    typeof content === "string" ? content : textFromContentParts(content),
+    "</runtime_socrates_developer_context>",
+  ].join("\n")
+
+const appendDeveloperContextToUserContent = (
+  content: ModelRequest["messages"][number]["content"],
+  developerText: string,
+): ModelRequest["messages"][number]["content"] =>
+  typeof content === "string" ? `${content}\n\n${developerText}` : [...content, { type: "text", text: developerText }]
+
+const textFromContentParts = (content: Extract<ModelRequest["messages"][number]["content"], unknown[]>): string =>
+  content
+    .map((part) => (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part ? String(part.text) : ""))
+    .filter(Boolean)
+    .join("\n")
+
 const aiSdkRoleForMessage = (
   role: ModelRequest["messages"][number]["role"],
   providerId?: ModelRequest["providerId"],
@@ -748,21 +799,21 @@ const aiSdkRoleForMessage = (
   // Google/Gemini accepts system instructions only through the top-level
   // system field. Rendering late Socrates developer notes as system messages
   // makes multi-step tool continuations fail provider-side.
-  return providerId === "google" ? "user" : "system"
+  return providerId === "google" || providerId === "openrouter" ? "user" : "system"
 }
 
 const textContentForProvider = (
   text: string,
   role: ModelRequest["messages"][number]["role"],
   providerId?: ModelRequest["providerId"],
-): string => (role === "developer" && providerId === "google" ? `[developer]\n${text}` : text)
+): string => (role === "developer" && (providerId === "google" || providerId === "openrouter") ? `[developer]\n${text}` : text)
 
 const contentPartsForProvider = (
   content: Extract<ModelRequest["messages"][number]["content"], unknown[]>,
   role: ModelRequest["messages"][number]["role"],
   providerId?: ModelRequest["providerId"],
 ): Extract<ModelRequest["messages"][number]["content"], unknown[]> =>
-  role === "developer" && providerId === "google" ? [{ type: "text", text: "[developer]" }, ...content] : content
+  role === "developer" && (providerId === "google" || providerId === "openrouter") ? [{ type: "text", text: "[developer]" }, ...content] : content
 
 const imageDataContent = (data: string): string => {
   const comma = data.indexOf(",")
@@ -883,15 +934,18 @@ export const createOpenRouterProviderOptions = (request: ModelRequest): Provider
   })
   const shouldSendProviderRouting = providerRouting && Object.keys(providerRouting).length > 0
   const stableSessionId = providerSafePromptCacheKey(request)
+  const reasoning = request.providerRouting?.omitReasoning
+    ? undefined
+    : request.runtimeConfig.thinkingEnabled
+      ? { enabled: true, exclude: false }
+      : { enabled: false, effort: "none", exclude: true }
   return {
     openrouter: {
       usage: { include: true },
       ...(stableSessionId ? { session_id: stableSessionId } : {}),
       ...(stableSessionId ? { prompt_cache_key: stableSessionId } : {}),
       ...(shouldSendProviderRouting ? { provider: providerRouting } : {}),
-      reasoning: request.runtimeConfig.thinkingEnabled
-        ? { enabled: true, exclude: false }
-        : { enabled: false, effort: "none", exclude: true },
+      ...(reasoning ? { reasoning } : {}),
     },
   }
 }

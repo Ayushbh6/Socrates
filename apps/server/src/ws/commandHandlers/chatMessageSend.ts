@@ -193,6 +193,7 @@ export const handleChatMessageSend = async (
   let reasoningText = ""
   let latestUsage: ModelUsage | undefined
   let lastAnswerModelCallId: string | undefined
+  let sawToolActivity = false
   const exposedMcpServers = new Set<string>()
 
   try {
@@ -404,6 +405,7 @@ export const handleChatMessageSend = async (
       }
 
       if (agentEvent.type === "tool.call.started") {
+        sawToolActivity = true
         const toolModelCallId = agentEvent.modelCallId ?? latestModelCallId
         store.createToolCall({
           toolCallId: agentEvent.toolCallId,
@@ -441,6 +443,7 @@ export const handleChatMessageSend = async (
       }
 
       if (agentEvent.type === "tool.call.streaming") {
+        sawToolActivity = true
         // Transient pre-call hint so the UI can show "Editing <file>" during the model
         // wait. It is replaced by the persisted tool.call.started event, so we do not store it.
         const event = makeEvent(
@@ -468,6 +471,7 @@ export const handleChatMessageSend = async (
       }
 
       if (agentEvent.type === "tool.call.output") {
+        sawToolActivity = true
         if (agentEvent.text) {
           store.appendShellOutput(agentEvent.toolCallId, agentEvent.stream, agentEvent.text)
         }
@@ -494,6 +498,7 @@ export const handleChatMessageSend = async (
       }
 
       if (agentEvent.type === "tool.call.completed") {
+        sawToolActivity = true
         store.completeToolCall(agentEvent.toolCallId, agentEvent.output)
         if (isBashOutput(agentEvent.output)) {
           store.updateShellCommandMetadata(agentEvent.toolCallId, {
@@ -559,6 +564,7 @@ export const handleChatMessageSend = async (
       }
 
       if (agentEvent.type === "tool.call.failed") {
+        sawToolActivity = true
         const errorId = store.recordError({
           conversationId,
           sessionId: created.sessionId,
@@ -619,6 +625,16 @@ export const handleChatMessageSend = async (
 
     if (abortController.signal.aborted) {
       return
+    }
+
+    if (!answerText.trim() && !sawToolActivity) {
+      throw new SocratesError("model_empty_response", "Model provider completed without returning any assistant text.", {
+        details: {
+          providerId: command.payload.runtimeConfig.providerId,
+          modelId: command.payload.runtimeConfig.modelId,
+        },
+        recoverable: true,
+      })
     }
 
     const assistantMessage = store.completeAgentTurn({

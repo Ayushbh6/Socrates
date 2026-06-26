@@ -465,6 +465,23 @@ const createFailingAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createEmptyResponseAgent = (): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream() {
+      yield {
+        type: "model.completed",
+        usage: {
+          inputTokens: 4,
+          outputTokens: 1,
+          totalTokens: 5,
+        },
+      }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createPersistentBashAgent = (): SocratesAgent => {
   let step = 0
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
@@ -6256,6 +6273,47 @@ describe("WebSocket API", () => {
         expect(row.failed_model_call_count).toBe(1)
         expect(row.completed_trace_jobs).toBe(1)
         expect(row.trace_error_count).toBe(1)
+      } finally {
+        sqlite.close()
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("emits turn.failed and does not persist an assistant message when the provider returns empty text", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath, createEmptyResponseAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Please answer"))
+      const started = await waitForEvent(socket, "turn.started")
+
+      const failed = await waitForEvent(socket, "turn.failed")
+      expect(failed.payload.turnId).toBe(started.payload.turnId)
+      expect(failed.payload.error.code).toBe("model_empty_response")
+
+      const sqlite = new Database(dbPath)
+      try {
+        const row = sqlite
+          .prepare(
+            `SELECT
+               (SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND role = 'assistant') AS assistant_count,
+               (SELECT COUNT(*) FROM turns WHERE id = ? AND status = 'failed') AS failed_turn_count,
+               (SELECT COUNT(*) FROM model_calls WHERE turn_id = ? AND status = 'failed') AS failed_model_call_count`,
+          )
+          .get(conversation.id, started.payload.turnId, started.payload.turnId) as {
+          assistant_count: number
+          failed_turn_count: number
+          failed_model_call_count: number
+        }
+        expect(row.assistant_count).toBe(0)
+        expect(row.failed_turn_count).toBe(1)
+        expect(row.failed_model_call_count).toBe(1)
       } finally {
         sqlite.close()
       }
