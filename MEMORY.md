@@ -145,15 +145,15 @@ Tool routing:
 
 ## Release State
 
-- Current GitHub runtime and npm launcher release is `v0.1.14`.
-- `v0.1.14` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13` and adds tolerant primary-doc recovery before indexing, so malformed duplicate `stable_preferences` sections are normalized instead of crashing startup.
-- Follow-up mainline work after `v0.1.14` tightens the memory-agent evidence-index contract and treats duplicate markdown headings inside primary doc sections as unclean, so visible repeated `## Profile Summary` / `## Evidence Index` headings are normalized too.
+- Current release target is `v0.1.15`.
+- `v0.1.15` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13`, the duplicate-section startup recovery from `v0.1.14`, and adds memory-agent evidence-index guidance plus duplicate markdown-heading normalization for primary docs.
+- `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id or trace handle when available, the supported claim, and the profile section using that claim.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
 
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
-- Publish the next patch release after the evidence-index prompt tightening and duplicate-heading cleanup are verified.
+- After `v0.1.15` is tagged and published, verify the GitHub latest runtime points at `v0.1.15` and npm latest reports `@socrates-ai/cli@0.1.15`.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
 
