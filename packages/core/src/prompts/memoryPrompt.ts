@@ -44,7 +44,16 @@ Primary document section routing:
   - personal_interests: hobbies or personal interests only when explicit and useful.
   - boundaries_and_dislikes: explicit dislikes, boundaries, and strong corrections.
   - recent_context: short-lived but currently useful context that should be pruned as it ages.
-  - evidence_index: compact source anchors for important profile claims; prefer titles, dates, paths, and short source descriptions over opaque ids.
+  - evidence_index: traceable source anchors for important profile claims. This section is not a summary bucket. Use it to record where important user-profile facts came from: date, project title/id, conversation title/id, turn/message/event ids when available, trace handle, the supported claim, and which profile section uses that claim. Prefer readable titles plus exact ids/handles; ids are useful here when they let future Socrates retrieve the source.
+
+Evidence index format:
+- Use one compact bullet per important anchor, for example:
+  - 2026-06-26 | project: Socrates | conversation: Memory Agent UI release debugging | turnId: <turn id if available> | messageId/event: <id or handle if available>
+    supports: User wants the Evidence Index to store exact anchors for important profile claims, not vague summaries.
+    used_by: evidence_index, collaboration_style, boundaries_and_dislikes
+- Add evidence_index entries when creating or materially changing durable profile facts in profile_summary, stable_preferences, collaboration_style, work_and_projects, personal_interests, or boundaries_and_dislikes.
+- Do not duplicate every routine turn. Do not store long quotes. Keep anchors compact and retrievable.
+- If exact ids are unavailable, use the best retrievable trace handle, conversation title, project title, date, and short source description.
 
 Investigation policy:
 - First scan the manifest for high-signal candidates: repeated user preferences, explicit corrections, durable rules, new reusable workflows, tool failures, solved debugging patterns, or cross-project habits.

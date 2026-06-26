@@ -54,7 +54,7 @@ Global `~/.Socrates`:
     <skill-name>/SKILL.md
 ```
 
-Runtime-owned memory docs use Socrates YAML frontmatter plus `<!-- socrates:section ... -->` section markers. The parser builds a section index for workspace project memory/notes, runtime workspace repo docs, global identity/user profile, and global tool docs. Existing unstructured files are preserved in a `legacy_content` section during migration except for `identity.md` and `user_profile.md`, which are rebuilt into their canonical sections without a legacy section.
+Runtime-owned memory docs use Socrates YAML frontmatter plus `<!-- socrates:section ... -->` section markers. The parser builds a section index for workspace project memory/notes, runtime workspace repo docs, global identity/user profile, and global tool docs. Existing unstructured files are preserved in a `legacy_content` section during migration except for `identity.md` and `user_profile.md`, which are rebuilt into their canonical sections without a legacy section. Primary docs must also have exactly one markdown `##` heading inside each section; duplicate inner headings trigger normalization before indexing.
 
 ## Model-Visible Tool Surface
 
@@ -97,6 +97,7 @@ Tool routing:
 - `soul` reads root `~/.Socrates/identity.md` with `read`, `read_index`, and `read_section`; the main agent cannot write it.
 - `user_profile` reads root `~/.Socrates/user_profile.md` with `read`, `read_index`, and `read_section`; the main agent cannot write it.
 - `soul` and `user_profile` should use `read_index` before full `read`, then `read_section` for focused context. Runtime caps full reads at 8,000 chars and index/section reads at 10,000 chars even if a larger `charLimit` is requested.
+- `user_profile.evidence_index` is a source-anchor section, not a summary bucket. It should store compact traceable anchors for important profile claims: date, project/conversation title or id, turn/message/event id or trace handle when available, the claim supported, and the profile section using that claim.
 
 ## Runtime Notes
 
@@ -144,15 +145,15 @@ Tool routing:
 
 ## Release State
 
-- Current patch target is `v0.1.14` after `v0.1.13` exposed a startup crash on existing `~/.Socrates/user_profile.md` files with nested duplicate Socrates section markers.
-- `v0.1.14` must preserve the Memory Center / identity-user-profile cleanup from `v0.1.13` and add tolerant primary-doc recovery before indexing, so malformed duplicate `stable_preferences` sections are normalized instead of crashing startup.
-- `v0.1.13` is already published to npm and has a GitHub runtime release with macOS arm64, macOS x64, and Windows x64 assets, but users with old nested profile docs should move to `v0.1.14`.
+- Current GitHub runtime and npm launcher release is `v0.1.14`.
+- `v0.1.14` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13` and adds tolerant primary-doc recovery before indexing, so malformed duplicate `stable_preferences` sections are normalized instead of crashing startup.
+- Follow-up mainline work after `v0.1.14` tightens the memory-agent evidence-index contract and treats duplicate markdown headings inside primary doc sections as unclean, so visible repeated `## Profile Summary` / `## Evidence Index` headings are normalized too.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
 
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
-- Publish `@socrates-ai/cli@0.1.14` and the matching GitHub runtime release after the duplicate-section startup hotfix is verified.
+- Publish the next patch release after the evidence-index prompt tightening and duplicate-heading cleanup are verified.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
 

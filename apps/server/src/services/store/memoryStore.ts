@@ -2738,7 +2738,10 @@ const globalToolDocProfile = (relativePath: string): MemoryDocProfile => ({
 })
 
 const shouldRefreshBundledToolUsageDoc = (name: string, content: string): boolean =>
-  isLegacyToolUsageSeed(name, content) || !isStructuredToolUsageDoc(name, content)
+  isLegacyToolUsageSeed(name, content) || isOutdatedBundledToolUsageDoc(name, content) || !isStructuredToolUsageDoc(name, content)
+
+const isOutdatedBundledToolUsageDoc = (name: string, content: string): boolean =>
+  ["user_profile.md", path.join("memory_agent", "user_profile.md")].includes(name) && !content.includes("turnId/messageId/event")
 
 const isStructuredToolUsageDoc = (name: string, content: string): boolean => {
   try {

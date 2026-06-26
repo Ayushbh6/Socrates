@@ -188,6 +188,30 @@ describe("memory doc parser", () => {
     expect(content).toContain("- **Communication Style**: Casual and informal.")
   })
 
+  it("repairs duplicate markdown headings inside primary user profile sections", () => {
+    const filePath = path.join(tempDir(), "user_profile.md")
+    const content = buildStructuredMemoryDoc(userProfileProfile, {
+      sectionBodies: {
+        profile_summary: "## Profile Summary\n\n- **Name**: Ayush",
+        stable_preferences: "## Stable Preferences\n\n- **Communication Style**: Casual and informal.",
+        evidence_index: "## Evidence Index",
+      },
+    })
+    fs.writeFileSync(filePath, content)
+
+    ensureStructuredMemoryDoc(filePath, userProfileProfile)
+
+    const next = fs.readFileSync(filePath, "utf8")
+    const index = parseMemoryDoc(next, userProfileProfile)
+    expect(index.warnings).toBeUndefined()
+    expect(index.sections.map((section) => section.sectionId)).toEqual(memoryDocRequiredSections.user_profile)
+    expect(next.match(/^## Profile Summary$/gm) ?? []).toHaveLength(1)
+    expect(next.match(/^## Stable Preferences$/gm) ?? []).toHaveLength(1)
+    expect(next.match(/^## Evidence Index$/gm) ?? []).toHaveLength(1)
+    expect(next).toContain("- **Name**: Ayush")
+    expect(next).toContain("- **Communication Style**: Casual and informal.")
+  })
+
   it("keeps bundled tool docs in the five-section structured format", () => {
     const files = listMarkdownFiles(bundledToolUsageDir)
     expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([

@@ -154,7 +154,16 @@ const sectionDefinitions: Record<MemoryDocType, SectionDefinition[]> = {
     { id: "personal_interests", kind: "interests", heading: "Personal Interests", tags: ["user"], body: "- No durable personal interests captured yet." },
     { id: "boundaries_and_dislikes", kind: "boundaries", heading: "Boundaries And Dislikes", tags: ["user"], body: "- Do not store secrets, credentials, private keys, or sensitive raw data.\n- Strong dislikes or boundaries belong here when explicitly stated." },
     { id: "recent_context", kind: "recent", heading: "Recent Context", tags: ["user", "recency"], body: "- No short-lived cross-project personal context captured yet." },
-    { id: "evidence_index", kind: "evidence", heading: "Evidence Index", tags: ["user", "evidence"], body: "- No compact source anchors captured yet." },
+    {
+      id: "evidence_index",
+      kind: "evidence",
+      heading: "Evidence Index",
+      tags: ["user", "evidence"],
+      body: [
+        "- No source anchors captured yet.",
+        "- Entry shape: `YYYY-MM-DD | project: <title/id> | conversation: <title/id> | turnId/messageId/event: <id or trace handle>`; `supports: <claim>`; `used_by: <profile section ids>`.",
+      ].join("\n"),
+    },
   ],
   tool_doc: [
     { id: "purpose", kind: "purpose", heading: "Purpose", tags: ["tools"], body: "- Describe what this tool guidance is for." },
@@ -662,7 +671,7 @@ const isValidStructuredMemoryDoc = (index: MemoryDocIndex, docType: MemoryDocTyp
   if (index.warnings?.some((warning) => warning.startsWith("Missing required section") || warning.toLowerCase().includes("frontmatter"))) {
     return false
   }
-  if ((docType === "identity" || docType === "user_profile") && ((content ? primaryDocContainsLegacyContent(content) || primaryDocContainsOldBoilerplate(content) : false) || primaryDocContainsDuplicateLines(index) || primaryDocContainsSemanticDuplicates(index, docType))) {
+  if ((docType === "identity" || docType === "user_profile") && ((content ? primaryDocContainsLegacyContent(content) || primaryDocContainsOldBoilerplate(content) : false) || primaryDocContainsDuplicateLines(index) || primaryDocContainsSemanticDuplicates(index, docType) || primaryDocContainsExtraSectionHeadings(index, docType))) {
     return false
   }
   const required = memoryDocRequiredSections[docType]
@@ -709,6 +718,24 @@ const primaryDocContainsSemanticDuplicates = (index: MemoryDocIndex, docType: Me
       seen.add(key)
     }
     return false
+  })
+}
+
+const primaryDocContainsExtraSectionHeadings = (index: MemoryDocIndex, docType: MemoryDocType): boolean => {
+  if (docType !== "identity" && docType !== "user_profile") {
+    return false
+  }
+  const definitions = new Map(sectionDefinitions[docType].map((section) => [section.id, section.heading]))
+  return index.sections.some((section) => {
+    const expectedHeading = definitions.get(section.sectionId)
+    if (!expectedHeading) {
+      return false
+    }
+    const headings = section.content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => /^#{1,6}\s+/.test(line))
+    return headings.length !== 1 || headings[0] !== `## ${expectedHeading}`
   })
 }
 

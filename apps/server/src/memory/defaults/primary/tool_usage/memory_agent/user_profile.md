@@ -42,7 +42,14 @@ Section meanings:
 - `personal_interests`: hobbies or personal interests only when explicit and useful.
 - `boundaries_and_dislikes`: explicit dislikes, boundaries, and strong corrections.
 - `recent_context`: short-lived but currently useful context that should be pruned as it ages.
-- `evidence_index`: compact source anchors for important profile claims.
+- `evidence_index`: traceable source anchors for important profile claims. It should record where important profile facts came from: date, project title/id, conversation title/id, turn/message/event ids or trace handles when available, the supported claim, and which profile section uses that claim.
+
+Evidence index entry shape:
+- `YYYY-MM-DD | project: <title/id> | conversation: <title/id> | turnId/messageId/event: <id or trace handle>`
+  `supports: <short claim this evidence supports>`
+  `used_by: <profile section ids>`
+
+Use exact ids/handles when they make the source retrievable. If ids are unavailable, use the best project title, conversation title, date, and trace handle. Do not put vague summaries or routine turns here.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
@@ -52,7 +59,8 @@ Section meanings:
 2. Read the relevant profile section before considering a profile edit.
 3. Compare the current document against inspected trace evidence.
 4. Use `edit_files` only for small, durable, global profile changes.
-5. Keep profile facts useful and non-invasive; do not store secrets or sensitive personal data.
+5. When adding or materially changing an important profile claim, add or update a compact `evidence_index` anchor for the source turn/message/trace.
+6. Keep profile facts useful and non-invasive; do not store secrets or sensitive personal data.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->

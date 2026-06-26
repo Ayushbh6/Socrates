@@ -2314,7 +2314,7 @@ Rules:
 
 Read-only access to `~/.Socrates/user_profile.md`, which stores durable cross-project user profile facts and stable user preferences. It supports `read`, `read_index`, and `read_section` with the same focused section output shape, index-first guidance, and char-limit caps as `soul`. The main Socrates agent should call this before answering user-profile/preference questions. Only the backend memory agent can update this file through scoped `edit_files`.
 
-Primary `identity.md` and `user_profile.md` migrations are special-cased: unlike ordinary structured markdown migrations, they must not preserve a generic `legacy_content` section. Startup normalization routes legacy headings into the canonical primary sections, removes old scaffolding placeholders, and compacts obvious duplicate migrated bullets before Memory Center exposes the files.
+Primary `identity.md` and `user_profile.md` migrations are special-cased: unlike ordinary structured markdown migrations, they must not preserve a generic `legacy_content` section. Startup normalization routes legacy headings into the canonical primary sections, removes old scaffolding placeholders, strips duplicate inner markdown headings, and compacts obvious duplicate migrated bullets before Memory Center exposes the files. `user_profile.evidence_index` is a compact source-anchor section for important profile claims, using dates, project/conversation titles or ids, turn/message/event ids or trace handles when available, the supported claim, and the profile section using that claim.
 
 ### `repo_docs`
 
