@@ -145,7 +145,7 @@ Tool routing:
 
 ## Release State
 
-- Current release target is `v0.1.15`.
+- Current GitHub runtime and npm launcher release is `v0.1.15`; npm latest reports `@socrates-ai/cli@0.1.15`, and GitHub latest runtime redirects to `v0.1.15`.
 - `v0.1.15` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13`, the duplicate-section startup recovery from `v0.1.14`, and adds memory-agent evidence-index guidance plus duplicate markdown-heading normalization for primary docs.
 - `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id or trace handle when available, the supported claim, and the profile section using that claim.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
@@ -153,7 +153,6 @@ Tool routing:
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
-- After `v0.1.15` is tagged and published, verify the GitHub latest runtime points at `v0.1.15` and npm latest reports `@socrates-ai/cli@0.1.15`.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
 
