@@ -127,6 +127,67 @@ describe("memory doc parser", () => {
     expect(content).toContain("- No durable cross-project work context captured yet.")
   })
 
+  it("repairs nested duplicate primary user profile sections before indexing", () => {
+    const filePath = path.join(tempDir(), "user_profile.md")
+    fs.writeFileSync(
+      filePath,
+      [
+        "---",
+        "socrates_doc: user_profile",
+        "schema_version: 1",
+        "owner_tool: user_profile",
+        "scope: global",
+        "index_tags: [profile]",
+        "---",
+        "",
+        "# User Profile",
+        "",
+        '<!-- socrates:section id="profile_summary" kind="profile" tags="user" -->',
+        "## Profile Summary",
+        "<!-- /socrates:section -->",
+        "",
+        '<!-- socrates:section id="stable_preferences" kind="preferences" tags="user" -->',
+        "",
+        "---",
+        "socrates_doc: user_profile",
+        "schema_version: 1",
+        "owner_tool: user_profile",
+        "scope: global",
+        "index_tags: [profile]",
+        "",
+        '<!-- socrates:section id="profile_summary" kind="profile" tags="user" -->',
+        "",
+        "- **Name**: Ayush",
+        "- **Primary Project**: Socrates AI (`npm socrates-ai`)",
+        "<!-- /socrates:section -->",
+        "",
+        '<!-- socrates:section id="stable_preferences" kind="preferences" tags="user" -->',
+        "## Stable Preferences",
+        "- **Communication Style**: Casual and informal.",
+        "<!-- /socrates:section -->",
+        "",
+        '<!-- socrates:section id="collaboration_style" kind="style" tags="user" -->',
+        "## Collaboration Style",
+        "- Prefer direct, concrete, technically grounded communication.",
+        "<!-- /socrates:section -->",
+        "",
+      ].join("\n"),
+    )
+
+    ensureStructuredMemoryDoc(filePath, userProfileProfile)
+
+    const content = fs.readFileSync(filePath, "utf8")
+    const index = parseMemoryDoc(content, userProfileProfile)
+    expect(index.warnings).toBeUndefined()
+    expect(index.sections.map((section) => section.sectionId)).toEqual(memoryDocRequiredSections.user_profile)
+    expect(content.match(/id="stable_preferences"/g) ?? []).toHaveLength(1)
+    expect(content.match(/id="profile_summary"/g) ?? []).toHaveLength(1)
+    expect(content.match(/^socrates_doc: user_profile$/gm) ?? []).toHaveLength(1)
+    expect(content.match(/^## Profile Summary$/gm) ?? []).toHaveLength(1)
+    expect(content).toContain("- **Name**: Ayush")
+    expect(content).toContain("- **Communication Style**: Casual and informal.")
+  })
+
   it("keeps bundled tool docs in the five-section structured format", () => {
     const files = listMarkdownFiles(bundledToolUsageDir)
     expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([

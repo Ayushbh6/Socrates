@@ -315,9 +315,44 @@ const existingSectionEntries = (content: string, profile: MemoryDocProfile): Arr
       return parsed.sections.map((section) => ({ id: section.sectionId, heading: section.heading, body: section.content }))
     }
   } catch {
-    // Fall back to heading-based extraction for older unstructured files.
+    // Fall through to tolerant extraction. Primary docs can contain nested or
+    // duplicate section markers from older migrations; strict parsing must not
+    // make startup unrecoverable.
+  }
+  const tolerantEntries = tolerantSectionMarkerEntries(content)
+  if (tolerantEntries.length > 0) {
+    return tolerantEntries
   }
   return markdownHeadingEntries(content)
+}
+
+const tolerantSectionMarkerEntries = (content: string): Array<{ id?: string; heading?: string; body: string }> => {
+  const body = markdownBodyWithoutFrontmatterAndTitle(content)
+  const lines = body.split(/\r?\n/)
+  const stack: Array<{ id?: string; start: number }> = []
+  const entries: Array<{ id?: string; heading?: string; body: string }> = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ""
+    const open = /^<!--\s*socrates:section\s+(.+?)\s*-->\s*$/.exec(line)
+    if (open) {
+      const attributes = parseAttributes(open[1] ?? "")
+      stack.push({ id: attributes.id, start: index + 1 })
+      continue
+    }
+    if (!/^<!--\s*\/socrates:section\s*-->\s*$/.test(line)) {
+      continue
+    }
+    const entry = stack.pop()
+    if (!entry) {
+      continue
+    }
+    const entryBody = lines.slice(entry.start, index).join("\n").trim()
+    const heading = firstHeading(entryBody)
+    if (entryBody) {
+      entries.push({ id: entry.id, ...(heading ? { heading } : {}), body: entryBody })
+    }
+  }
+  return entries
 }
 
 const primaryDocMigrationEntries = (entry: { id?: string; heading?: string; body: string }, docType: "identity" | "user_profile"): Array<{ id?: string; heading?: string; body: string }> => {
@@ -348,8 +383,15 @@ const isPrimaryMigrationWrapperHeading = (key: string): boolean =>
 const cleanPrimaryMigrationBody = (body: string): string =>
   dedupeMarkdownLines(
     body
+      .replace(/<!--\s*\/?socrates:section\b[^>]*-->/gi, "")
       .split(/\r?\n/)
-      .filter((line) => !/^#\s+/.test(line.trim()))
+      .filter((line) => {
+        const trimmed = line.trim()
+        if (/^#{1,6}\s+/.test(trimmed)) return false
+        if (trimmed === "---") return false
+        if (/^(socrates_doc|schema_version|owner_tool|scope|index_tags|updated_at|updated_by|last_edited_section):\s*/i.test(trimmed)) return false
+        return true
+      })
       .join("\n"),
   )
 

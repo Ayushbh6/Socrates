@@ -303,7 +303,7 @@ There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash cache
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
 ```
 
-This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.12` runtime release.
+This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.14` runtime release.
 
 ## Provider-Specific Escape Hatch
 

@@ -144,15 +144,15 @@ Tool routing:
 
 ## Release State
 
-- Current GitHub runtime release is `v0.1.12` with macOS and Windows runtime bundles. The npm launcher source is `@socrates-ai/cli@0.1.12`, but the npm registry still reports `0.1.11` until local npm auth is fixed and publish succeeds.
+- Current patch target is `v0.1.14` after `v0.1.13` exposed a startup crash on existing `~/.Socrates/user_profile.md` files with nested duplicate Socrates section markers.
+- `v0.1.14` must preserve the Memory Center / identity-user-profile cleanup from `v0.1.13` and add tolerant primary-doc recovery before indexing, so malformed duplicate `stable_preferences` sections are normalized instead of crashing startup.
+- `v0.1.13` is already published to npm and has a GitHub runtime release with macOS arm64, macOS x64, and Windows x64 assets, but users with old nested profile docs should move to `v0.1.14`.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
-- GitHub Actions run `28194345161` published `Socrates v0.1.12` successfully with `SHA256SUMS`, `socrates-runtime-darwin-arm64.zip`, `socrates-runtime-darwin-x64.zip`, and `socrates-runtime-win32-x64.zip`.
-- Local npm auth is broken: `npm whoami` returns `E401 Unauthorized`, and the real `npm publish --access public` attempt for `@socrates-ai/cli@0.1.12` returned `E404 Not Found ... or you do not have permission`. The dry run produced the correct `0.1.12` tarball.
 
 ## Next Major Work
 
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
-- Publish `@socrates-ai/cli@0.1.12` to npm after npm auth is valid; the GitHub runtime release and tag are already complete.
+- Publish `@socrates-ai/cli@0.1.14` and the matching GitHub runtime release after the duplicate-section startup hotfix is verified.
 - Add a repeated-compaction torture/eval suite covering 5-10 compactions with canaries for strict user rules, file paths, commands, failures, unresolved tasks, anchors, and exact quotes.
 - Consider a dedicated safety rule for files whose names clearly ask not to be opened, because the latest Gemini E2E still opened `please_do_not_open.md`.
 
