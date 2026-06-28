@@ -198,7 +198,7 @@ When a workspace is created or attached, Socrates creates this project-local sca
 <workspace>/.socrates/repo_docs/
 ```
 
-The project memory, project notes, and runtime `.socrates/repo_docs/*.md` files are structured markdown documents with Socrates YAML frontmatter and explicit `socrates:section` markers. SQLite stores parsed section indexes for lookup, but markdown remains the durable source of truth. Dedicated docs/memory write paths may stamp optional frontmatter fields `updated_at`, `updated_by`, and `last_edited_section` after successful backend-owned edits. Project notes may also include a protected generated `runtime_context` section for workspace scan facts; terminal output and live terminal state must not be persisted there.
+The project memory, project notes, and runtime `.socrates/repo_docs/*.md` files are structured markdown documents with Socrates YAML frontmatter and explicit `socrates:section` markers. SQLite stores parsed section indexes for lookup, but markdown remains the durable source of truth. Dedicated docs/memory write paths may stamp optional frontmatter fields `updated_at`, `updated_by`, and `last_edited_section` after successful backend-owned edits. Project notes include active project context and may also include a protected generated `runtime_context` section for compact workspace scan facts; terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be persisted there.
 
 Socrates should not edit the workspace root `.gitignore` in V1.
 
@@ -817,6 +817,7 @@ Stores Socrates-to-Memory-Agent notepad leads. The model-facing create contract 
 | `turn_id` | `TEXT` | no | Backend-attached source turn id. |
 | `message_id` | `TEXT` | no | Backend-attached current user message id. |
 | `message_excerpt` | `TEXT` | no | Bounded source user-message excerpt returned by `memory_notes.read`. |
+| `resolution` | `TEXT` | no | One-line Memory Agent closure reason recorded by `memory_notes.mark_done`, such as the profile section updated, skill proposal created, or why the note was skipped. |
 | `created_by_agent` | `TEXT` | yes | Sending agent id, usually `socrates`. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 | `claimed_at` | `TEXT` | no | ISO timestamp when a Memory Agent run starts processing it. |

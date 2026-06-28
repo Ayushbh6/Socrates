@@ -20,7 +20,7 @@ It is the normal way Socrates should update `.socrates/MEMORY.md` and `.socrates
 ## When To Use
 
 - Use `area: "memory"` for durable project facts that should survive across conversations.
-- Use `area: "notes"` for active todos, investigation breadcrumbs, next commands, and short-lived handoff state.
+- Use `area: "notes"` for active project context, active todos, investigation breadcrumbs, next commands, and short-lived handoff state.
 - Read project docs before meaningful workspace work when continuity, prior decisions, or active todos matter.
 - Update project docs after meaningful work only when there is durable value, changed standing, a blocker, or useful restart context.
 <!-- /socrates:section -->
@@ -43,8 +43,9 @@ It is the normal way Socrates should update `.socrates/MEMORY.md` and `.socrates
 1. Read `notes` for active state and `memory` for durable project context.
 2. Use `read_index` or `read_section` before precise structured updates.
 3. Use `patch_section` for bounded section edits and `edit append` for appending short notes.
-4. Do not edit the backend-owned `runtime_context` section in `PROJECT_NOTES.md`.
-5. Keep memory concise: store durable state in `MEMORY.md`, temporary state in `PROJECT_NOTES.md`, and repo doctrine in `repo_docs`.
+4. Use the `active_context` section for project-local open loops or recall that should be visible when the workspace is reopened.
+5. Do not edit the backend-owned `runtime_context` section in `PROJECT_NOTES.md`.
+6. Keep memory concise: store durable state in `MEMORY.md`, temporary state in `PROJECT_NOTES.md`, and repo doctrine in `repo_docs`.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->

@@ -22,7 +22,7 @@ It writes only global `identity` and `user_profile` primary-memory targets. For 
 - Use it only after exact evidence has been inspected with `trace_retrieve`.
 - Use it for small durable global memory improvements, not routine summaries.
 - Use the `identity` target rarely and only for broad identity, voice, operating-principle, safety, or tool/memory discipline changes.
-- Use `user_profile` for stable cross-project user facts or preferences.
+- Use `user_profile` for stable cross-project user facts, preferences, or global active context.
 - Use `skill` only when evidence supports reusable procedure. User facts, preferences, allergies, boundaries, or temporary context usually belong in `user_profile`, not skills. For allergies and safety/dietary facts, preserve only what the user said; do not add severity labels, diagnoses, symptoms, causes, or other medical detail unless explicit in the source.
 - Do not use it for tool-doc improvements; report those candidates in the final `Skipped` section with evidence.
 - Route edits to the smallest relevant structured section. Do not add a generic legacy block to identity or user profile.
@@ -55,7 +55,7 @@ User profile section ids:
 - `work_and_projects`: stable workspaces, repos, study areas, and recurring project context.
 - `personal_interests`: hobbies or personal interests only when explicit and useful.
 - `boundaries_and_dislikes`: explicit dislikes, boundaries, and strong corrections.
-- `recent_context`: short-lived but currently useful context that should be pruned as it ages.
+- `active_context`: short-lived but currently useful user-life context that is global across projects and should be pruned as it ages.
 - `evidence_index`: compact source anchors for important profile claims.
 <!-- /socrates:section -->
 
@@ -78,5 +78,5 @@ User profile section ids:
 - If soul confirmation rejects an edit, do not force it; report the rejection in the final summary.
 - If a skill proposal is rejected by the backend, report the reason and do not retry unless the fix is obvious and narrow.
 - If a tool-doc update seems useful, never retry with `target: "tool_doc"`; tool docs are read-only for models in v1.
-- If evidence is weak, stale, or project-specific, skip the edit.
+- If evidence is weak, stale, or project-specific rather than global, skip the edit and record the reason in the memory-note resolution.
 <!-- /socrates:section -->

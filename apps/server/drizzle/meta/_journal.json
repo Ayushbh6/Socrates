@@ -127,6 +127,13 @@
       "when": 1782662400000,
       "tag": "0017_worker_model_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1782662400001,
+      "tag": "0018_memory_note_resolution",
+      "breakpoints": true
     }
   ]
 }

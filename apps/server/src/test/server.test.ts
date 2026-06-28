@@ -4414,8 +4414,10 @@ describe("WebSocket API", () => {
     expect(controlText).not.toContain("lean memory architecture")
     expect(controlText).not.toContain("Socrates State Ledger")
     expect(controlText).not.toContain("Last turn: completed")
+    expect(systemText).toContain("Mandatory first-turn active recall")
     expect(systemText).toContain("Stable recall routing")
-    expect(systemText).toContain("project_docs notes for active state")
+    expect(systemText).toContain("project_docs notes active_context for project-local open loops and active recall")
+    expect(systemText).toContain("For project-local \"remember/keep in mind\" items, update notes `active_context`")
     expect(systemText).toContain("project_docs memory for durable project state")
     expect(systemText).toContain("repo_docs for repo doctrine")
     expect(systemText).toContain("skills for reusable workflows")
@@ -4430,14 +4432,20 @@ describe("WebSocket API", () => {
       const soulSectionRead = store.runSoulTool(project.id, { operation: "read_section", sectionId: "operating_principles" })
       expect(soulSectionRead.content).toContain("Prefer evidence")
       const soulFullRead = store.runSoulTool(project.id, { operation: "read", charLimit: 80_000 })
-	      expect(soulFullRead.truncation.charLimit).toBe(8_000)
-	      const userProfileRead = store.runUserProfileTool(project.id, { operation: "read" })
-	      expect(userProfileRead.content).toContain("No stable profile facts captured yet")
-	      expect(userProfileRead.truncation.charLimit).toBe(8_000)
+      expect(soulFullRead.truncation.charLimit).toBe(8_000)
+      const userProfileRead = store.runUserProfileTool(project.id, { operation: "read" })
+      expect(userProfileRead.content).toContain("No stable profile facts captured yet")
+      expect(userProfileRead.content).toContain("## Active Context")
+      expect(userProfileRead.truncation.charLimit).toBe(8_000)
       const userProfileSectionRead = store.runUserProfileTool(project.id, { operation: "read_section", sectionId: "stable_preferences" })
       expect(userProfileSectionRead.section?.sectionId).toBe("stable_preferences")
+      const userProfileActiveSectionRead = store.runUserProfileTool(project.id, { operation: "read_section", sectionId: "active_context" })
+      expect(userProfileActiveSectionRead.section?.sectionId).toBe("active_context")
+      const userProfileLegacySectionRead = store.runUserProfileTool(project.id, { operation: "read_section", sectionId: "recent_context" })
+      expect(userProfileLegacySectionRead.section?.sectionId).toBe("active_context")
       const userProfileIndexRead = store.runUserProfileTool(project.id, { operation: "read_index", charLimit: 80_000 })
       expect(userProfileIndexRead.truncation.charLimit).toBe(10_000)
+      expect(userProfileIndexRead.index?.sections.some((section) => section.sectionId === "active_context")).toBe(true)
       const projectSkillPath = path.join(primaryWorkspace.path as string, ".socrates", "skills", "memory-review", "SKILL.md")
       fs.mkdirSync(path.dirname(projectSkillPath), { recursive: true })
       fs.writeFileSync(projectSkillPath, "---\nname: memory-review\ndescription: Use when reviewing memory changes.\n---\n\n# Memory Review\n")
@@ -4503,6 +4511,7 @@ describe("WebSocket API", () => {
       const notesIndex = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read_index", area: "notes" })
       expect(notesIndex.index?.sections.some((section) => section.sectionId === "runtime_context")).toBe(true)
       expect(notesIndex.index?.sections.some((section) => section.sectionId === "state_ledger")).toBe(true)
+      expect(notesIndex.index?.sections.some((section) => section.sectionId === "active_context")).toBe(true)
       expect(() =>
         store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
           operation: "patch_section",
@@ -4514,6 +4523,8 @@ describe("WebSocket API", () => {
       ).toThrow(/system-owned/)
       const notesSection = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read_section", area: "notes", sectionId: "active_todos" })
       expect(notesSection.section?.sectionId).toBe("active_todos")
+      const activeContextSection = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, { operation: "read_section", area: "notes", sectionId: "active_context" })
+      expect(activeContextSection.section?.sectionId).toBe("active_context")
       const notesPatch = store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
         operation: "edit",
         area: "notes",
@@ -4691,10 +4702,13 @@ describe("WebSocket API", () => {
         messageExcerpt: expect.stringContaining("allergic to shellfish"),
       })
 
-      const completed = store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1 })
-      expect(completed.notes[0]).toMatchObject({ noteNumber: 1, status: "done" })
+      expect(() => store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1 })).toThrow(/resolution/)
+      const completed = store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1, resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
+      expect(completed.notes[0]).toMatchObject({ noteNumber: 1, status: "done", resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
+      const completedRow = handle.sqlite.prepare("SELECT resolution FROM memory_notes WHERE note_number = 1").get() as { resolution: string }
+      expect(completedRow.resolution).toContain("user_profile.active_context")
       const completedEvent = handle.sqlite.prepare("SELECT payload_json AS payloadJson FROM events WHERE type = 'memory.note.completed' ORDER BY sequence DESC LIMIT 1").get() as { payloadJson: string }
-      expect(JSON.parse(completedEvent.payloadJson)).toEqual({ noteNumber: 1 })
+      expect(JSON.parse(completedEvent.payloadJson)).toEqual({ noteNumber: 1, resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
     } finally {
       await store.close()
     }
@@ -5535,7 +5549,8 @@ describe("WebSocket API", () => {
       expect(request.system).not.toContain("Semantic retrieval: not configured.")
       expect(request.system).not.toContain("Current date:")
       expect(request.system).toContain("If the current date or exact time matters, call current_time")
-      expect(request.system).toContain("Project notes may include a backend-owned `runtime_context` section")
+      expect(request.system).toContain("Project notes include an `active_context` section")
+      expect(request.system).toContain("backend-owned `runtime_context` section with compact generated workspace scan facts")
       expect(request.system).toContain("On the first assistant response in a new conversation")
       expect(latestUserContent(request.messages)).toBe("Use the context")
       expect(request.messages.some((message) => message.role === "developer" && message.content?.includes("runtime_socrates_docs_preflight"))).toBe(true)

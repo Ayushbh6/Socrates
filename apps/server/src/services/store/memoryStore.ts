@@ -379,8 +379,15 @@ export class MemoryStore extends StoreBase {
       const notes = [this.memoryNoteToolRow(updated, true)]
       return { operation: "read", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
     }
+    const resolution = input.resolution?.trim()
+    if (!resolution) {
+      throw new SocratesError("memory_note_resolution_required", "memory_notes.mark_done requires a one-line resolution.", {
+        recoverable: true,
+        details: { noteNumber: row.noteNumber },
+      })
+    }
     const completedAt = nowIso()
-    this.handle.db.update(memoryNotes).set({ status: "done", completedAt }).where(eq(memoryNotes.id, row.id)).run()
+    this.handle.db.update(memoryNotes).set({ status: "done", completedAt, resolution }).where(eq(memoryNotes.id, row.id)).run()
     const updated = this.mustGetMemoryNote(input.noteNumber as number)
     this.appendEvent({
       ...(updated.projectId ? { projectId: updated.projectId } : {}),
@@ -389,7 +396,7 @@ export class MemoryStore extends StoreBase {
       ...(updated.turnId ? { turnId: updated.turnId } : {}),
       type: "memory.note.completed",
       source: "server",
-      payload: { noteNumber: updated.noteNumber },
+      payload: { noteNumber: updated.noteNumber, resolution: updated.resolution },
     })
     const notes = [this.memoryNoteToolRow(updated, true)]
     return { operation: "mark_done", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
@@ -1699,12 +1706,13 @@ export class MemoryStore extends StoreBase {
       })
     }
     const profile = editFilesMemoryDocProfile(resolved, this.socratesHome)
+    const sectionId = canonicalMemoryDocSectionId(profile.docType, input.sectionId)
     ensureStructuredMemoryDoc(resolved.path, profile)
     const current = readIfExists(resolved.path) ?? ""
     const currentIndex = this.indexMemoryDocFile(resolved.path, profile)
-    const currentSection = findMemoryDocSection(currentIndex, input.sectionId)
-    const next = patchMemoryDocSection(current, profile, input.sectionId, input.oldText ?? "", input.newText, input.replaceAll)
-    const nextSection = findMemoryDocSection(parseMemoryDoc(next, profile), input.sectionId)
+    const currentSection = findMemoryDocSection(currentIndex, sectionId)
+    const next = patchMemoryDocSection(current, profile, sectionId, input.oldText ?? "", input.newText, input.replaceAll)
+    const nextSection = findMemoryDocSection(parseMemoryDoc(next, profile), sectionId)
     return {
       oldText: currentSection.content,
       newText: nextSection.content,
@@ -1892,6 +1900,7 @@ export class MemoryStore extends StoreBase {
       ...(row.turnId ? { turnId: row.turnId } : {}),
       ...(row.messageId ? { messageId: row.messageId } : {}),
       ...(row.messageExcerpt ? { messageExcerpt: row.messageExcerpt } : {}),
+      ...(row.resolution ? { resolution: row.resolution } : {}),
       createdAt: row.createdAt,
       ...(row.completedAt ? { completedAt: row.completedAt } : {}),
     }
@@ -2738,14 +2747,22 @@ const editFilesMemoryDocProfile = (
 }
 
 const findMemoryDocSection = (index: MemoryDocIndex, sectionId: string): MemoryDocSection => {
-  const section = index.sections.find((candidate) => candidate.sectionId === sectionId)
+  const canonicalSectionId = canonicalMemoryDocSectionId(index.docType, sectionId)
+  const section = index.sections.find((candidate) => candidate.sectionId === canonicalSectionId)
   if (!section) {
-    throw new SocratesError("memory_doc_section_not_found", `Section ${sectionId} was not found in ${index.path}.`, {
+    throw new SocratesError("memory_doc_section_not_found", `Section ${canonicalSectionId} was not found in ${index.path}.`, {
       recoverable: true,
-      details: { path: index.path, sectionId },
+      details: { path: index.path, sectionId: canonicalSectionId, requestedSectionId: sectionId },
     })
   }
   return section
+}
+
+const canonicalMemoryDocSectionId = (docType: MemoryDocIndex["docType"], sectionId: string): string => {
+  if (docType === "user_profile" && sectionId === "recent_context") {
+    return "active_context"
+  }
+  return sectionId
 }
 
 const renderMemoryDocIndex = (index: MemoryDocIndex): string =>
@@ -3009,15 +3026,21 @@ const extractStateLedgerSection = (content: string): string | undefined => {
 
 const buildProjectNotesRuntimeContext = (workspacePath: string, generatedAt: string): { section: string; signature: string } => {
   const environment = inspectWorkspaceEnvironment(workspacePath)
+  const packageManager = environment.javascript.packageManager ?? environment.javascript.packageManagers[0] ?? "none"
+  const suggestedVirtualEnvironment = environment.python.suggestedVirtualEnvironment ?? environment.python.virtualEnvironments[0] ?? "none"
   const signaturePayload = {
     workspaceRoot: environment.workspacePath,
     detectedStack: environment.detectedStack,
-    javascript: environment.javascript,
-    python: environment.python,
-    rust: environment.rust,
+    node: {
+      packageManager,
+      packageManagers: environment.javascript.packageManagers,
+    },
+    python: {
+      virtualEnvironments: environment.python.virtualEnvironments,
+      suggestedVirtualEnvironment,
+    },
   }
   const signature = hashText(JSON.stringify(signaturePayload))
-  const packageManager = environment.javascript.packageManager ?? "none"
   return {
     signature,
     section: [
@@ -3035,33 +3058,14 @@ const buildProjectNotesRuntimeContext = (workspacePath: string, generatedAt: str
       `  package_manager: ${packageManager}`,
       "  package_managers:",
       ...yamlList(environment.javascript.packageManagers, "    "),
-      "  dependency_files:",
-      ...yamlList(environment.javascript.dependencyFiles, "    "),
-      "  package_files:",
-      ...yamlList(environment.javascript.packageFiles, "    "),
-      "  workspace_packages:",
-      ...yamlList(environment.javascript.packageNames, "    "),
-      "  frameworks:",
-      ...yamlList(environment.javascript.frameworks, "    "),
-      "  root_scripts:",
-      ...yamlList(environment.javascript.scripts, "    "),
       "python:",
       "  virtual_environments:",
       ...yamlList(environment.python.virtualEnvironments, "    "),
-      "  dependency_files:",
-      ...yamlList(environment.python.dependencyFiles, "    "),
-      "  package_managers:",
-      ...yamlList(environment.python.packageManagers, "    "),
-      ...(environment.python.suggestedVirtualEnvironment ? [`  suggested_virtual_environment: ${environment.python.suggestedVirtualEnvironment}`] : []),
-      "rust:",
-      "  dependency_files:",
-      ...yamlList(environment.rust.dependencyFiles, "    "),
-      "  package_managers:",
-      ...yamlList(environment.rust.packageManagers, "    "),
+      `  suggested_virtual_environment: ${suggestedVirtualEnvironment}`,
       "terminal_state: omitted",
       "notes:",
       "  - Runtime workspace scan facts are generated by the backend.",
-      "  - Terminal output and live terminal state are intentionally not persisted here.",
+      "  - Terminal output, live terminal state, dependency dumps, package lists, and root scripts are intentionally not persisted here.",
       "<!-- /socrates:section -->",
     ].join("\n"),
   }

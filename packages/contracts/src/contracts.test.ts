@@ -1546,6 +1546,8 @@ describe("tool contracts", () => {
     expect(memoryNotesToolInputSchema.safeParse({ operation: "list", limit: 11 }).success).toBe(false)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "read", noteNumber: 1 }).success).toBe(true)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done" }).success).toBe(false)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done", noteNumber: 1 }).success).toBe(false)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done", noteNumber: 1, resolution: "classified to user_profile.active_context" }).success).toBe(true)
     expect(
       memoryNotesToolOutputSchema.safeParse({
         operation: "read",
@@ -1562,6 +1564,7 @@ describe("tool contracts", () => {
             conversationId: conversation.id,
             turnId: "turn_1",
             messageId: "msg_1",
+            resolution: "classified to user_profile.active_context",
             createdAt: timestamp,
           },
         ],

@@ -1108,11 +1108,18 @@ export const memoryNotesToolInputSchema = z
     operation: z.enum(["list", "read", "mark_done"]),
     noteNumber: z.number().int().positive().optional(),
     limit: z.number().int().positive().max(10).optional(),
+    resolution: z.string().min(1).max(500).optional(),
   })
   .strict()
   .superRefine((input, context) => {
     if ((input.operation === "read" || input.operation === "mark_done") && !input.noteNumber) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["noteNumber"], message: `${input.operation} requires noteNumber.` })
+    }
+    if (input.operation === "mark_done" && !input.resolution?.trim()) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["resolution"], message: "mark_done requires a one-line resolution." })
+    }
+    if (input.operation !== "mark_done" && input.resolution) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["resolution"], message: "resolution is only used with mark_done." })
     }
   })
 export type MemoryNotesToolInput = z.infer<typeof memoryNotesToolInputSchema>
@@ -1136,6 +1143,7 @@ export const memoryNotesToolOutputSchema = z
           turnId: z.string().min(1).optional(),
           messageId: z.string().min(1).optional(),
           messageExcerpt: z.string().optional(),
+          resolution: z.string().optional(),
           createdAt: z.string().min(1),
           completedAt: z.string().min(1).optional(),
         })

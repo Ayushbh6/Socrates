@@ -5,7 +5,7 @@ import type { SocratesTool } from "./types"
 export const memoryNotesTool: SocratesTool<typeof memoryNotesToolInputSchema._type, typeof memoryNotesToolOutputSchema._type> = {
   name: "memory_notes",
   description:
-    "Read the Global Memory Agent's numbered notepad inbox. Use list with at most 10 notes to see open previews, read(noteNumber) to load one full note plus backend trace lookup refs, and mark_done(noteNumber) after processing. Notes are leads; classify before acting and chain into trace_retrieve for exact evidence.",
+    "Read the Global Memory Agent's numbered notepad inbox. Use list with at most 10 notes to see open previews, read(noteNumber) to load one full note plus backend trace lookup refs, and mark_done(noteNumber, resolution) after processing. Notes are leads; classify before acting, chain into trace_retrieve for exact evidence, and always close with a one-line resolution.",
   inputSchema: memoryNotesToolInputSchema,
   resultSchema: memoryNotesToolOutputSchema,
   permission: "read",

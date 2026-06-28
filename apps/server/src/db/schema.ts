@@ -702,6 +702,7 @@ export const memoryNotes = sqliteTable(
     turnId: text("turn_id"),
     messageId: text("message_id"),
     messageExcerpt: text("message_excerpt"),
+    resolution: text("resolution"),
     createdByAgent: text("created_by_agent").notNull(),
     createdAt: text("created_at").notNull(),
     claimedAt: text("claimed_at"),

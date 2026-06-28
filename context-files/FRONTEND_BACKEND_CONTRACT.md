@@ -1979,7 +1979,9 @@ Rules:
 - `read`, `search`, and `edit` are preferred for structured file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
 - Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
 
-Before Python installs/runs, Socrates should read project notes when workspace runtime facts matter. The backend maintains a protected `runtime_context` section in `.socrates/PROJECT_NOTES.md` with generated workspace scan facts such as detected venvs, dependency files, and package-manager hints. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup. Terminal output and live terminal state must not be written into that persisted section.
+Before Python installs/runs, Socrates should read project notes when workspace runtime facts matter. The backend maintains a protected `runtime_context` section in `.socrates/PROJECT_NOTES.md` with compact generated workspace scan facts such as detected stack, package manager, and virtual-environment hints. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup. Terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be written into that persisted section.
+
+First-turn project recall is mandatory for light greetings, "continue", "where were we", and broad project-status openers. Socrates must read `project_docs` notes `active_context` before answering so project-local open loops can surface naturally without global user-profile pollution.
 
 ### `current_time`
 
@@ -2238,12 +2240,13 @@ type MemoryNotesToolInput = {
   operation: "list" | "read" | "mark_done"
   limit?: number // list only; capped at 10
   noteNumber?: number
+  resolution?: string // mark_done only; one-line closure reason
 }
 ```
 
-`list` returns at most 10 numbered rows with importance, a short note slice, source project/workspace metadata when available, and a default skill-scope hint. `read` returns the full note, source user-message excerpt, and backend lookup refs (`conversationId`, `messageId`, `turnId`) so the Memory Agent can chain into `trace_retrieve`. These refs are backend-produced lookup values, not fields the sending model authored.
+`list` returns at most 10 numbered rows with importance, a short note slice, source project/workspace metadata when available, and a default skill-scope hint. `read` returns the full note, source user-message excerpt, and backend lookup refs (`conversationId`, `messageId`, `turnId`) so the Memory Agent can chain into `trace_retrieve`. `mark_done` requires a compact human-readable `resolution` explaining what was applied, proposed, or skipped; skipped/ignored notes must always say why. These refs are backend-produced lookup values, not fields the sending model authored.
 
-The Memory Agent must classify each note before acting: durable user facts/preferences/current context go to `user_profile.md`, rare identity/behavior updates use the identity confirmation flow, reusable procedures may become skill proposals, and weak leads are skipped. Socrates-originated notes default to project-local skill scope; the Memory Agent may keep that scope or upgrade a procedural skill proposal to global when it is clearly reusable across projects.
+The Memory Agent must classify each note before acting: durable user facts/preferences and global active user context go to `user_profile.md`, rare identity/behavior updates use the identity confirmation flow, reusable procedures may become skill proposals, and weak leads are skipped. Project-specific active context does not belong in global user profile; the Memory Agent should close those notes with a skip resolution because Socrates owns project notes. Mixed turns must be split strictly: global user facts may be profiled, but project-local implementation order, feature sequencing, workspace todos, and active project reminders stay out of `user_profile`. Profile corrections must update both the content section and evidence anchors so stale evidence does not keep supporting the old claim. Socrates-originated notes default to project-local skill scope; the Memory Agent may keep that scope or upgrade a procedural skill proposal to global when it is clearly reusable across projects.
 
 ### `skills`
 
@@ -2364,9 +2367,9 @@ Every `project_docs` output may include `runtime?: RuntimeTimeMetadata` with bac
 Rules:
 
 - `area: "memory"` is durable cross-conversation project state: goals, decisions, constraints, blockers, durable preferences, changed workflow facts, and handoff facts.
-- `area: "notes"` is the active assistant notebook: current todos, checked files, partial progress, next commands, short-term restart points, and a protected backend-owned `runtime_context` section.
+- `area: "notes"` is the active assistant notebook: active project context, current todos, checked files, partial progress, next commands, short-term restart points, and a protected backend-owned `runtime_context` section.
 - Runtime docs are structured markdown with YAML frontmatter and `socrates:section` markers. `read_index` returns the parsed section map; `read_section` returns one section; `patch_section` limits an exact oldText/newText replacement to one section.
-- `runtime_context` is system-owned. `project_docs` rejects attempts to patch or change it. It may contain workspace scan facts, but must not persist terminal output or live terminal state.
+- `runtime_context` is system-owned. `project_docs` rejects attempts to patch or change it. It may contain compact workspace scan facts, but must not persist terminal output, live terminal state, dependency dumps, package lists, or root-script inventories.
 - Successful `project_docs` edits stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`.
 - Generic `edit` and `apply_patch` writes to these files are rejected; use `project_docs`.
 - After meaningful workspace work, the runtime may inject a docs checkpoint requiring a `project_docs` memory update before final when no durable memory update happened.

@@ -13,7 +13,7 @@ index_tags: [tool_usage]
 
 `user_profile` reads the global durable profile for the user, `user_profile.md`.
 
-Use it for stable user facts, preferences, collaboration style, boundaries, interests, and cross-project context. It is read-only for the main Socrates agent.
+Use it for stable user facts, preferences, collaboration style, boundaries, interests, and global active context. It is read-only for the main Socrates agent.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
@@ -31,7 +31,7 @@ Use it for stable user facts, preferences, collaboration style, boundaries, inte
 - `operation: "read"` reads the full user profile as bounded markdown. Use it only when the whole profile is genuinely needed, and pass a tight `charLimit`.
 - `operation: "read_index"` returns the structured section map.
 - `operation: "read_section"` reads one known section by `sectionId`.
-- `sectionId` can be `profile_summary`, `stable_preferences`, `collaboration_style`, `work_and_projects`, `personal_interests`, `boundaries_and_dislikes`, `recent_context`, or `evidence_index`.
+- `sectionId` can be `profile_summary`, `stable_preferences`, `collaboration_style`, `work_and_projects`, `personal_interests`, `boundaries_and_dislikes`, `active_context`, or `evidence_index`.
 - `charLimit` can bound output for long documents.
 
 Section meanings:
@@ -41,7 +41,7 @@ Section meanings:
 - `work_and_projects`: stable workspaces, repos, study areas, and recurring project context.
 - `personal_interests`: hobbies or personal interests only when explicit and useful.
 - `boundaries_and_dislikes`: explicit dislikes, boundaries, and strong corrections.
-- `recent_context`: short-lived but currently useful context that should be pruned as it ages.
+- `active_context`: short-lived but currently useful user-life context that is global across projects and should be pruned as it ages. It may include a compact source project/conversation label, but not project-local task state.
 - `evidence_index`: traceable source anchors for important profile claims. It records where important profile facts came from: date, project title/id, conversation title/id, turn/message/event ids or trace handles when available, the supported claim, and which profile section uses that claim.
 
 Evidence index entry shape:
