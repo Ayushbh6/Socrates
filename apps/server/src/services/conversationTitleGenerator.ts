@@ -1,19 +1,18 @@
 import fs from "node:fs"
-import type { Message, MessageAttachment, RuntimeConfig } from "@socrates/contracts"
+import type { Message, MessageAttachment, ProviderId, RuntimeConfig, WorkerModelSettings } from "@socrates/contracts"
 import type { ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
 
-export const conversationTitleProviderId = "openrouter"
+export const conversationTitleProviderId: ProviderId = "openrouter"
 export const conversationTitlePrimaryModelId = "meta-llama/llama-4-maverick"
 export const conversationTitleFallbackModelId = "qwen/qwen3.5-flash-02-23"
 
 const titleTimeoutMs = 12_000
 const maxTitleImages = 3
 const maxTitleCharacters = 48
-const titleModelIds = [conversationTitlePrimaryModelId, conversationTitleFallbackModelId]
 
 export type ConversationTitleGenerationResult = {
   title: string
-  providerId: typeof conversationTitleProviderId
+  providerId: ProviderId
   modelId: string
   usage?: ModelUsage
 }
@@ -24,6 +23,7 @@ export const generateConversationTitle = async (input: {
   conversationId: string
   message: Message
   fallbackTitle: string
+  modelSettings?: WorkerModelSettings
   abortSignal?: AbortSignal
 }): Promise<ConversationTitleGenerationResult | undefined> => {
   if (input.abortSignal?.aborted) {
@@ -31,10 +31,11 @@ export const generateConversationTitle = async (input: {
   }
 
   const titleMessage = buildTitleMessage(input.message)
-  for (const modelId of titleModelIds) {
+  const candidates = titleModelCandidates(input.modelSettings)
+  for (const candidate of candidates) {
     const result = await streamTitleCandidate({
       ...input,
-      modelId,
+      modelSettings: candidate,
       message: titleMessage,
     })
     if (result?.title) {
@@ -47,7 +48,7 @@ const streamTitleCandidate = async (input: {
   provider: ModelProvider
   projectId: string
   conversationId: string
-  modelId: string
+  modelSettings: TitleModelSettings
   message: ModelMessage
   fallbackTitle: string
   abortSignal?: AbortSignal
@@ -65,14 +66,14 @@ const streamTitleCandidate = async (input: {
     let answer = ""
     let latestUsage: ModelUsage | undefined
     for await (const event of input.provider.stream({
-      providerId: conversationTitleProviderId,
-      modelId: input.modelId,
+      providerId: input.modelSettings.providerId,
+      modelId: input.modelSettings.modelId,
       sessionId: input.conversationId,
       cacheKey: `project:${input.projectId}:conversation:${input.conversationId}:title`,
       system: titleSystemPrompt,
       messages: [input.message],
       providerRouting: { omitReasoning: true },
-      runtimeConfig: titleRuntimeConfig(input.modelId),
+      runtimeConfig: titleRuntimeConfig(input.modelSettings),
       tools: [],
       abortSignal: abortController.signal,
     })) {
@@ -97,8 +98,8 @@ const streamTitleCandidate = async (input: {
     return title
       ? {
           title,
-          providerId: conversationTitleProviderId,
-          modelId: input.modelId,
+          providerId: input.modelSettings.providerId,
+          modelId: input.modelSettings.modelId,
           ...(latestUsage ? { usage: latestUsage } : {}),
         }
       : undefined
@@ -169,10 +170,51 @@ const readAttachmentDataUrl = (attachment: MessageAttachment): string | undefine
   }
 }
 
-const titleRuntimeConfig = (modelId: string): RuntimeConfig => ({
-  providerId: conversationTitleProviderId,
-  modelId,
-  thinkingEnabled: false,
+type TitleModelSettings = {
+  providerId: ProviderId
+  modelId: string
+  thinkingEnabled: boolean
+  thinkingEffort?: RuntimeConfig["thinkingEffort"]
+}
+
+const titleModelCandidates = (settings: WorkerModelSettings | undefined): TitleModelSettings[] => {
+  const primary: TitleModelSettings = settings
+    ? {
+        providerId: settings.providerId,
+        modelId: settings.modelId,
+        thinkingEnabled: settings.thinkingEnabled,
+        ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),
+      }
+    : {
+        providerId: conversationTitleProviderId,
+        modelId: conversationTitlePrimaryModelId,
+        thinkingEnabled: false,
+      }
+  const fallback: TitleModelSettings = {
+    providerId: conversationTitleProviderId,
+    modelId: conversationTitleFallbackModelId,
+    thinkingEnabled: false,
+  }
+  return uniqueTitleModels([primary, fallback])
+}
+
+const uniqueTitleModels = (models: TitleModelSettings[]): TitleModelSettings[] => {
+  const seen = new Set<string>()
+  return models.filter((model) => {
+    const key = `${model.providerId}:${model.modelId}`
+    if (seen.has(key)) {
+      return false
+    }
+    seen.add(key)
+    return true
+  })
+}
+
+const titleRuntimeConfig = (settings: TitleModelSettings): RuntimeConfig => ({
+  providerId: settings.providerId,
+  modelId: settings.modelId,
+  thinkingEnabled: settings.thinkingEnabled,
+  ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),
   approvalMode: "read_only_auto",
   sandboxMode: "read_only",
 })

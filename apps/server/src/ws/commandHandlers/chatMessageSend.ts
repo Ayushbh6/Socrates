@@ -128,6 +128,7 @@ export const handleChatMessageSend = async (
       conversationId,
       message: created.userMessage,
       fallbackTitle: created.fallbackTitle,
+      modelSettings: store.getWorkerModelSetting("title_generator"),
       abortSignal: abortController.signal,
     })
       .then((result) => {
@@ -846,6 +847,12 @@ const createToolExecutors = (
     }
     return Promise.resolve(output)
   },
+  memory_note: (input, context) =>
+    Promise.resolve(store.createMemoryNote(projectId, input, {
+      conversationId: context.conversationId,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+    })),
   project_docs: (input, context) =>
     docsMutationOperations.has(input.operation)
       ? withWorkspaceMutationLock(context.workspacePath, async () => store.runProjectDocsTool(projectId, context.workspacePath, input))
@@ -1012,22 +1019,29 @@ const createContextCompressionRuntime = (
   conversationId: string,
   sessionId: string,
   turnId: string,
-): ContextCompressionRuntime => ({
-  enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
-  getLatestSnapshot: () => store.getLatestContextCompactionSnapshot(conversationId),
-  startSnapshot: (input) =>
-    store.startContextCompactionSnapshot({
-      ...input,
-      projectId,
-      conversationId,
-      sessionId,
-      turnId,
-    }),
-  completeSnapshot: (input) => store.completeContextCompactionSnapshot(input),
-  failSnapshot: (input) => {
-    store.failContextCompactionSnapshot(input)
-  },
-})
+): ContextCompressionRuntime => {
+  const compressor = store.getWorkerModelSetting("context_compactor")
+  return {
+    enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
+    compressorProviderId: compressor.providerId,
+    compressorModelId: compressor.modelId,
+    compressorThinkingEnabled: compressor.thinkingEnabled,
+    ...(compressor.thinkingEffort ? { compressorThinkingEffort: compressor.thinkingEffort } : {}),
+    getLatestSnapshot: () => store.getLatestContextCompactionSnapshot(conversationId),
+    startSnapshot: (input) =>
+      store.startContextCompactionSnapshot({
+        ...input,
+        projectId,
+        conversationId,
+        sessionId,
+        turnId,
+      }),
+    completeSnapshot: (input) => store.completeContextCompactionSnapshot(input),
+    failSnapshot: (input) => {
+      store.failContextCompactionSnapshot(input)
+    },
+  }
+}
 
 const isProjectResourceRead = (inputPath: string): boolean => {
   const normalized = inputPath.replaceAll("\\", "/")

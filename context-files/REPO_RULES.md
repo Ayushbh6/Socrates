@@ -489,3 +489,30 @@ When implementing a feature, the default path is:
 5. Avoid one-off local implementations.
 
 If a one-off is unavoidable, leave a short comment explaining why it is intentionally not shared.
+
+## 23. Model-Driven Capabilities Must Be Real Agents
+
+Any serious model-driven capability must follow the shared agent pattern instead of becoming a one-off provider call hidden inside a route, store, or UI handler.
+
+Required pattern:
+
+```text
+prompt
+  -> shared runner
+  -> scoped tool registry
+  -> executor mapping
+  -> structured validation
+  -> typed events and persistence
+```
+
+This applies to Socrates, the Global Memory Agent, the Skill Writer Agent, and future reusable subagents. Backend stores may coordinate, persist, validate, and apply approved effects, but they must not own private model orchestration for agent-like work.
+
+Agent-to-agent communication should start simple and reusable. The accepted first protocol is a backend-backed notepad:
+
+- Socrates creates `memory_note` with only a human `note` and optional `importance`.
+- The backend attaches current-turn lookup refs such as conversation id, message id, turn id, source project, workspace path when available, and a default project-local skill-scope hint.
+- The receiving agent reads at most 10 numbered notes through an inbox-style `memory_notes` interface, classifies each lead before acting, chains into `trace_retrieve` when exact evidence is needed, and marks the note done after applying or deliberately skipping it.
+
+Do not expose backend lookup refs as fields that the sending model has to author. They are storage and retrieval plumbing, not a human-facing contract.
+
+Skill writing follows the same rule. The Memory Agent may decide that an approved skill create/update should happen, chooses project/global scope, and uses human-facing skill names. Socrates-originated notes default to project scope unless the Memory Agent deliberately upgrades a procedural skill to global. Final `SKILL.md` authoring belongs to the Skill Writer Agent. `skill_write` is a narrow scoped save/validation tool, not another model or hidden fourth agent.

@@ -215,25 +215,27 @@ describe("memory doc parser", () => {
   it("keeps bundled tool docs in the five-section structured format", () => {
     const files = listMarkdownFiles(bundledToolUsageDir)
     expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([
-	      "current_time.md",
-	      "edit_apply_patch.md",
-	      "memory_agent/edit_files.md",
-	      "memory_agent/projects.md",
-	      "memory_agent/skills.md",
-	      "memory_agent/soul.md",
-	      "memory_agent/tool_docs.md",
-	      "memory_agent/trace_retrieve.md",
-	      "memory_agent/user_profile.md",
-	      "project_docs.md",
-	      "read_search.md",
-	      "repo_docs.md",
-	      "skills.md",
-	      "soul.md",
-	      "terminal.md",
-	      "tool_docs.md",
-	      "trace_retrieve.md",
-	      "user_profile.md",
-	    ])
+      "current_time.md",
+      "edit_apply_patch.md",
+      "memory_agent/edit_files.md",
+      "memory_agent/memory_notes.md",
+      "memory_agent/projects.md",
+      "memory_agent/skills.md",
+      "memory_agent/soul.md",
+      "memory_agent/tool_docs.md",
+      "memory_agent/trace_retrieve.md",
+      "memory_agent/user_profile.md",
+      "memory_note.md",
+      "project_docs.md",
+      "read_search.md",
+      "repo_docs.md",
+      "skills.md",
+      "soul.md",
+      "terminal.md",
+      "tool_docs.md",
+      "trace_retrieve.md",
+      "user_profile.md",
+    ])
 
     for (const filePath of files) {
       const relativePath = path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")

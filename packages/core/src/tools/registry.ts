@@ -5,6 +5,8 @@ import { currentTimeTool } from "./currentTimeTool"
 import { editTool } from "./editTool"
 import { editFilesTool } from "./editFilesTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
+import { memoryNoteTool } from "./memoryNoteTool"
+import { memoryNotesTool } from "./memoryNotesTool"
 import { mcpRegistryTool } from "./mcpRegistryTool"
 import { projectDocsTool } from "./projectDocsTool"
 import { projectsTool } from "./projectsTool"
@@ -12,6 +14,7 @@ import { readTool } from "./readTool"
 import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
 import { skillsTool } from "./skillsTool"
+import { skillWriteTool } from "./skillWriteTool"
 import { soulTool } from "./soulTool"
 import { toolDocsTool } from "./toolDocsTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
@@ -34,6 +37,7 @@ const tools = [
   userProfileTool,
   listProjectResourcesTool,
   mcpRegistryTool,
+  memoryNoteTool,
 ] as const
 
 export type RegisteredTool = SocratesTool<any, any>
@@ -66,6 +70,10 @@ export class ToolRegistry {
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
 
-const memoryTools = [traceRetrieveTool, projectsTool, toolDocsTool, skillsTool, soulTool, userProfileTool, editFilesTool] as const
+const memoryTools = [traceRetrieveTool, projectsTool, toolDocsTool, skillsTool, memoryNotesTool, soulTool, userProfileTool, editFilesTool] as const
 
 export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)
+
+const skillWriterTools = [currentTimeTool, traceRetrieveTool, skillsTool, userProfileTool, soulTool, projectDocsTool, repoDocsTool, skillWriteTool] as const
+
+export const createSkillWriterToolRegistry = (): ToolRegistry => new ToolRegistry(skillWriterTools)

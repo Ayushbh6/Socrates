@@ -14,6 +14,10 @@ import type {
   MemoryAgentRunDetail,
   MemoryAgentSignalSnapshot,
   MemoryAgentTimelineItem,
+  MemoryNoteToolInput,
+  MemoryNoteToolOutput,
+  MemoryNotesToolInput,
+  MemoryNotesToolOutput,
   MemoryDocIndex,
   MemoryDocSection,
   ProjectDocsArea,
@@ -25,6 +29,8 @@ import type {
   RepoDocsToolOutput,
   SkillScope,
   SkillSummary,
+  SkillWriteToolInput,
+  SkillWriteToolOutput,
   SkillsToolInput,
   SkillsToolOutput,
   SoulToolInput,
@@ -37,12 +43,14 @@ import type {
   TruncationMetadata,
   UserProfileToolInput,
   UserProfileToolOutput,
+  WorkerModelRole,
+  WorkerModelSettings,
 } from "@socrates/contracts"
 import { memoryDocRequiredSections } from "@socrates/contracts"
 import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, or } from "drizzle-orm"
 import {
   conversations,
   errors,
@@ -53,32 +61,27 @@ import {
   memoryDocIndexes,
   memoryDocSections,
   memoryAgentJobs,
-  projectInstructions,
+  memoryNotes,
+  messages,
   projectResources,
   projects,
   projectWorkspaces,
+  skillWriterJobs,
+  turns,
 } from "../../db/schema"
 import { hashText, simpleDiff, validateMemoryPatch, type MemoryPatchProposal } from "./memoryAgentOutput"
 import { runMemoryAgentTurn, type MemoryAgentModelSettings } from "./memoryAgentRunner"
-import {
-  DEFAULT_MEMORY_AGENT_MODEL_ID,
-  DEFAULT_MEMORY_AGENT_PROVIDER_ID,
-  DEFAULT_MEMORY_AGENT_THINKING_EFFORT,
-  DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
-} from "./memoryAgentDefaults"
+import { runSkillWriterTurn, type SkillWriterModelSettings } from "./skillWriterAgentRunner"
 import { emptyMemoryAgentSignal, scoreMemoryAgentSignal } from "./memoryAgentSignals"
 import { emptyMemoryAgentSummary, parseMemoryAgentSummarySections } from "./memoryAgentSummary"
 import {
   discoverSkills,
-  fallbackSkillBody,
-  fallbackSkillDescription,
   fallbackSkillMarkdown,
   parseSkillMarkdown,
   readSkillInfo,
   skillSummary,
   slugSkillName,
   isValidSkillName,
-  stripFrontmatter,
   uniqueSkillName,
   type SkillInfo,
 } from "./memorySkills"
@@ -121,6 +124,7 @@ type MemoryStoreOptions = {
   traceRetrieve?: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
   traceRetrieveGlobal?: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
   getMemoryAgentGlobalSettings?: () => MemoryAgentGlobalSettings
+  getWorkerModelSettings?: (workerId: WorkerModelRole) => WorkerModelSettings
   createNotification?: (input: {
     projectId?: string
     conversationId?: string
@@ -170,6 +174,32 @@ type GlobalTurnManifestEntry = GlobalTurnManifestRow & {
     shellCommands: number
     errors: number
   }
+}
+
+type WritableSkillScope = Extract<SkillScope, "global" | "project">
+
+type ResolvedEditFilesTarget = {
+  path: string
+  targetKind: "skills" | "soul" | "user_profile"
+  document?: "identity"
+  scope?: WritableSkillScope
+  projectId?: string
+  projectName?: string
+  workspacePath?: string
+}
+
+type ApprovedSkillWriterTask = {
+  scope: WritableSkillScope
+  operation: "create" | "update"
+  name: string
+  request: string
+  projectId: string
+  workspacePath?: string
+  conversationId?: string
+  sessionId?: string
+  turnId?: string
+  sourceKind: "dashboard" | "memory_agent_action"
+  sourceId?: string
 }
 
 const scopedIds = (input: { conversationId?: string; sessionId?: string; turnId?: string }) => ({
@@ -277,6 +307,146 @@ export class MemoryStore extends StoreBase {
     return this.listSkillsOutput(input, workspacePath)
   }
 
+  createMemoryNote(input: MemoryNoteToolInput, source: { projectId: string; conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
+    this.ensureGlobalKnowledge()
+    const turn = this.handle.db.select().from(turns).where(eq(turns.id, source.turnId)).get()
+    const userMessageId = turn?.userMessageId
+    const userMessage = userMessageId ? this.handle.db.select().from(messages).where(eq(messages.id, userMessageId)).get() : undefined
+    const sourceProject = this.handle.db.select().from(projects).where(eq(projects.id, source.projectId)).limit(1).get()
+    const sourceWorkspace = this.handle.db
+      .select()
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.projectId, source.projectId), eq(projectWorkspaces.isPrimary, true)))
+      .limit(1)
+      .get()
+    const defaultSkillScope: SkillScope = "project"
+    const now = nowIso()
+    const nextNumberRow = this.handle.sqlite.prepare("SELECT COALESCE(MAX(note_number), 0) + 1 AS nextNumber FROM memory_notes").get() as { nextNumber: number }
+    const noteNumber = nextNumberRow.nextNumber
+    const importance = input.importance ?? "normal"
+    this.handle.db
+      .insert(memoryNotes)
+      .values({
+        id: createId("memnote"),
+        noteNumber,
+        status: "open",
+        priority: importance,
+        intent: "review_current_turn",
+        note: input.note.trim(),
+        projectId: source.projectId,
+        conversationId: source.conversationId,
+        sessionId: source.sessionId,
+        turnId: source.turnId,
+        messageId: userMessageId,
+        messageExcerpt: userMessage?.content ? truncateInline(userMessage.content, 600) : undefined,
+        createdByAgent: "socrates",
+        createdAt: now,
+        metadataJson: JSON.stringify({
+          attachedSource: "current_user_message",
+          defaultSkillScope,
+          ...(sourceProject?.name ? { projectName: sourceProject.name } : {}),
+          ...(sourceWorkspace?.path ? { workspacePath: sourceWorkspace.path } : {}),
+        }),
+      })
+      .run()
+    this.appendEvent({
+      projectId: source.projectId,
+      conversationId: source.conversationId,
+      sessionId: source.sessionId,
+      turnId: source.turnId,
+      type: "memory.note.created",
+      source: "server",
+      payload: { noteNumber, importance, defaultSkillScope },
+    })
+    return { noteNumber, status: "open", attachedSource: "current_user_message" }
+  }
+
+  runMemoryNotesTool(input: MemoryNotesToolInput): MemoryNotesToolOutput {
+    this.ensureGlobalKnowledge()
+    if (input.operation === "list") {
+      const limit = Math.min(input.limit ?? 10, 10)
+      const rows = this.openMemoryNoteRows(limit)
+      const total = this.openMemoryNoteCount()
+      const notes = rows.map((row) => this.memoryNoteToolRow(row, false))
+      return { operation: "list", notes, totalMatches: total, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
+    }
+    const row = this.mustGetMemoryNote(input.noteNumber as number)
+    if (input.operation === "read") {
+      if (row.status === "open") {
+        this.handle.db.update(memoryNotes).set({ status: "processing", claimedAt: nowIso() }).where(eq(memoryNotes.id, row.id)).run()
+      }
+      const updated = this.mustGetMemoryNote(input.noteNumber as number)
+      const notes = [this.memoryNoteToolRow(updated, true)]
+      return { operation: "read", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
+    }
+    const completedAt = nowIso()
+    this.handle.db.update(memoryNotes).set({ status: "done", completedAt }).where(eq(memoryNotes.id, row.id)).run()
+    const updated = this.mustGetMemoryNote(input.noteNumber as number)
+    this.appendEvent({
+      ...(updated.projectId ? { projectId: updated.projectId } : {}),
+      ...(updated.conversationId ? { conversationId: updated.conversationId } : {}),
+      ...(updated.sessionId ? { sessionId: updated.sessionId } : {}),
+      ...(updated.turnId ? { turnId: updated.turnId } : {}),
+      type: "memory.note.completed",
+      source: "server",
+      payload: { noteNumber: updated.noteNumber },
+    })
+    const notes = [this.memoryNoteToolRow(updated, true)]
+    return { operation: "mark_done", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
+  }
+
+  async approveMemorySkillProposal(actionId: string): Promise<{ actionId: string; skill: SkillSummary }> {
+    this.ensureGlobalKnowledge()
+    const action = this.handle.db.select().from(memoryAgentActions).where(eq(memoryAgentActions.id, actionId)).limit(1).get()
+    if (!action) {
+      throw new SocratesError("memory_skill_proposal_not_found", "Memory skill proposal was not found.", { recoverable: true, details: { actionId } })
+    }
+    if (action.targetKind !== "skill_request") {
+      throw new SocratesError("memory_skill_proposal_invalid", "Memory action is not a skill proposal.", { recoverable: true, details: { actionId, targetKind: action.targetKind } })
+    }
+    if (action.status !== "proposed") {
+      throw new SocratesError("memory_skill_proposal_not_pending", "Memory skill proposal is not pending approval.", { recoverable: true, details: { actionId, status: action.status } })
+    }
+
+    const metadata = parseJsonObject(action.metadataJson)
+    const patch = parseJsonObject(action.patchJson)
+    const scope = metadata.scope === "project" ? "project" : "global"
+    const operation = metadata.operation === "update" ? "update" : "create"
+    const name = typeof metadata.skillName === "string" ? metadata.skillName : path.basename(path.dirname(action.targetPath))
+    const request = typeof patch.newText === "string" ? patch.newText : action.rationale ?? ""
+    const sourceTurn = action.turnId ? this.handle.db.select().from(turns).where(eq(turns.id, action.turnId)).limit(1).get() : undefined
+    const workspacePath = typeof metadata.workspacePath === "string" ? metadata.workspacePath : undefined
+    const skill = await this.runApprovedSkillWriterTask({
+      scope,
+      operation,
+      name,
+      request,
+      projectId: scope === "project" && action.projectId !== GLOBAL_MEMORY_AGENT_PROJECT_ID ? action.projectId : GLOBAL_MEMORY_AGENT_PROJECT_ID,
+      ...(workspacePath ? { workspacePath } : {}),
+      ...(sourceTurn?.conversationId ? { conversationId: sourceTurn.conversationId } : {}),
+      ...(sourceTurn?.sessionId ? { sessionId: sourceTurn.sessionId } : {}),
+      ...(action.turnId ? { turnId: action.turnId } : {}),
+      sourceKind: "memory_agent_action",
+      sourceId: actionId,
+    })
+    const finalContent = readIfExists(action.targetPath) ?? ""
+    this.handle.db
+      .update(memoryAgentActions)
+      .set({ status: "applied", afterHash: hashText(finalContent), appliedAt: nowIso() })
+      .where(eq(memoryAgentActions.id, actionId))
+      .run()
+    this.appendEvent({
+      ...(action.projectId && action.projectId !== GLOBAL_MEMORY_AGENT_PROJECT_ID ? { projectId: action.projectId } : {}),
+      ...(sourceTurn?.conversationId ? { conversationId: sourceTurn.conversationId } : {}),
+      ...(sourceTurn?.sessionId ? { sessionId: sourceTurn.sessionId } : {}),
+      ...(action.turnId ? { turnId: action.turnId } : {}),
+      type: "memory.skill.approved",
+      source: "server",
+      payload: { actionId, scope, operation, skillName: name, path: skill.path },
+    })
+    return { actionId, skill }
+  }
+
   listProjectSkills(projectId: string, workspacePath: string | undefined): SkillSummary[] {
     this.ensureProjectMemory(projectId, workspacePath)
     return this.skillInfos(workspacePath, "project").map(skillSummary)
@@ -287,21 +457,15 @@ export class MemoryStore extends StoreBase {
     const skillRoot = path.join(workspacePath, ".socrates", "skills")
     fs.mkdirSync(skillRoot, { recursive: true })
     const name = explicitName ? this.availableExplicitSkillName(skillRoot, explicitName) : uniqueSkillName(skillRoot, slugSkillName(request))
-    const skillDir = path.join(skillRoot, name)
-    const skillFile = path.join(skillDir, "SKILL.md")
-    const content = await this.generateProjectSkill(projectId, workspacePath, request, name)
-    const parsed = parseSkillMarkdown(content, skillFile)
-    const finalContent =
-      parsed?.name === name
-        ? content
-        : `---\nname: ${name}\ndescription: ${parsed?.description ?? fallbackSkillDescription(request)}\n---\n\n${stripFrontmatter(content).trim() || fallbackSkillBody(request)}\n`
-    fs.mkdirSync(skillDir, { recursive: true })
-    fs.writeFileSync(skillFile, finalContent)
-    const info = readSkillInfo("project", skillRoot, skillFile)
-    if (!info) {
-      throw new SocratesError("project_skill_invalid", "Generated project skill did not pass validation.", { recoverable: true, details: { path: skillFile } })
-    }
-    return skillSummary(info)
+    return this.runApprovedSkillWriterTask({
+      scope: "project",
+      operation: "create",
+      name,
+      request,
+      projectId,
+      workspacePath,
+      sourceKind: "dashboard",
+    })
   }
 
   deleteProjectSkill(projectId: string, workspacePath: string, name: string): SkillSummary {
@@ -840,22 +1004,14 @@ export class MemoryStore extends StoreBase {
     const root = path.join(this.socratesHome, "skills")
     fs.mkdirSync(root, { recursive: true })
     const name = explicitName ? this.availableExplicitSkillName(root, explicitName) : uniqueSkillName(root, slugSkillName(request))
-    const skillDir = path.join(root, name)
-    const skillFile = path.join(skillDir, "SKILL.md")
-    const content = await this.generateGlobalSkill(request, name)
-    fs.mkdirSync(skillDir, { recursive: true })
-    fs.writeFileSync(skillFile, content)
-    const info = readSkillInfo("global", root, skillFile)
-    if (!info) {
-      const fallback = fallbackSkillMarkdown(name, request)
-      fs.writeFileSync(skillFile, fallback)
-      const fallbackInfo = readSkillInfo("global", root, skillFile)
-      if (!fallbackInfo) {
-        throw new SocratesError("global_skill_invalid", "Generated global skill did not match the Agent Skill format.", { recoverable: true })
-      }
-      return skillSummary(fallbackInfo)
-    }
-    return skillSummary(info)
+    return this.runApprovedSkillWriterTask({
+      scope: "global",
+      operation: "create",
+      name,
+      request,
+      projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
+      sourceKind: "dashboard",
+    })
   }
 
   deleteGlobalSkill(name: string): SkillSummary {
@@ -964,7 +1120,7 @@ export class MemoryStore extends StoreBase {
       const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
       return { state, pending: signal, item, skippedReason: reason }
     }
-    if (entries.entries.length === 0) {
+    if (entries.entries.length === 0 && !signal.shouldRun) {
       const reason = "No new completed turns since the memory watermark."
       const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
       const state = input.updateState({ status: "idle", lastCheckedAt: now, activeJobId: null, error: null })
@@ -1035,6 +1191,7 @@ export class MemoryStore extends StoreBase {
     const toolEvents: unknown[] = []
     let latestUsage: unknown
     try {
+      const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
       const output = await runMemoryAgentTurn({
         provider: this.options.provider,
         modelSettings,
@@ -1044,6 +1201,7 @@ export class MemoryStore extends StoreBase {
         sessionId: latest?.sessionId ?? "",
         turnId: latest?.turnId ?? "",
         socratesHome: this.socratesHome,
+        ...(contextCompressorSettings ? { contextCompressorSettings } : {}),
         tools: {
           traceRetrieve: async (toolInput) => {
             if (!this.options.traceRetrieveGlobal) {
@@ -1054,6 +1212,7 @@ export class MemoryStore extends StoreBase {
           projects: async (toolInput) => this.runProjectsTool(toolInput),
           toolDocs: async (toolInput) => this.runToolDocsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput, "memory_agent"),
           skills: async (toolInput) => this.runSkillsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
+          memoryNotes: async (toolInput) => this.runMemoryNotesTool(toolInput),
           soul: async (toolInput) => this.runSoulTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           userProfile: async (toolInput) => this.runUserProfileTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           editFiles: async (toolInput) =>
@@ -1216,7 +1375,21 @@ export class MemoryStore extends StoreBase {
       "",
       "Use trace_retrieve for message/tool evidence. This manifest intentionally omits message bodies.",
       "",
+      this.renderMemoryNotesManifest(),
+      "",
       ...renderedEntries,
+    ].join("\n")
+  }
+
+  private renderMemoryNotesManifest(): string {
+    const rows = this.openMemoryNoteRows(10)
+    if (rows.length === 0) {
+      return "Memory notes inbox: no open notes."
+    }
+    return [
+      `Memory notes inbox: ${rows.length} open/processing note${rows.length === 1 ? "" : "s"} shown, capped at 10.`,
+      "Use memory_notes.list/read for full note details and attached trace lookup ids.",
+      ...rows.map((row) => `- #${row.noteNumber} [${row.priority}] ${truncateInline(row.note, 250)}`),
     ].join("\n")
   }
 
@@ -1253,12 +1426,26 @@ export class MemoryStore extends StoreBase {
   }
 
   private signalForManifest(manifest: { entries: GlobalTurnManifestEntry[]; sequenceFrom: number; sequenceTo: number }): MemoryAgentSignalSnapshot {
+    const openNotes = this.openMemoryNoteCount()
     if (manifest.entries.length === 0) {
-      return emptyMemoryAgentSignal(manifest.sequenceTo)
+      if (openNotes === 0) {
+        return emptyMemoryAgentSignal(manifest.sequenceTo)
+      }
+      return {
+        sequenceTo: manifest.sequenceTo,
+        turnCount: 0,
+        toolCalls: 0,
+        fileChangeEvents: 0,
+        distinctChangedFiles: 0,
+        totalTokens: 0,
+        shouldRun: true,
+        reasons: [`${openNotes} open memory ${openNotes === 1 ? "note" : "notes"}`],
+        displayReason: `Memory note inbox has ${openNotes} open/processing ${openNotes === 1 ? "note" : "notes"}.`,
+      }
     }
     const turnIds = manifest.entries.map((entry) => entry.turnId)
     const fileStats = this.changedFileStats(turnIds)
-    return scoreMemoryAgentSignal({
+    const signal = scoreMemoryAgentSignal({
       sequenceFrom: manifest.sequenceFrom,
       sequenceTo: manifest.sequenceTo,
       turnCount: manifest.entries.length,
@@ -1267,6 +1454,18 @@ export class MemoryStore extends StoreBase {
       distinctChangedFiles: fileStats.distinctChangedFiles,
       totalTokens: this.totalTokensForTurns(turnIds),
     })
+    if (openNotes === 0) {
+      return signal
+    }
+    const reasons = [...signal.reasons, `${openNotes} open memory ${openNotes === 1 ? "note" : "notes"}`]
+    return {
+      ...signal,
+      shouldRun: true,
+      reasons,
+      displayReason: signal.shouldRun
+        ? `${signal.displayReason} Memory note inbox also has ${openNotes} open/processing ${openNotes === 1 ? "note" : "notes"}.`
+        : `Memory note inbox has ${openNotes} open/processing ${openNotes === 1 ? "note" : "notes"}.`,
+    }
   }
 
   private changedFileStats(turnIds: string[]): { fileChangeEvents: number; distinctChangedFiles: number } {
@@ -1365,18 +1564,9 @@ export class MemoryStore extends StoreBase {
     context: { jobId: string; turnId?: string; modelSettings: MemoryAgentModelSettings; allowSkillWrites?: boolean },
   ): Promise<EditFilesToolOutput> {
     this.ensureGlobalKnowledge()
-    const resolved = this.resolveEditFilesTarget(input)
-    if (resolved.targetKind === "skills" && !context.allowSkillWrites) {
-      const patch: MemoryPatchProposal = {
-        oldText: input.editMode === "create" ? "" : input.oldText ?? "",
-        newText: input.newText,
-        ...(input.rationale ? { rationale: input.rationale } : {}),
-        ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
-      }
-      const action = this.createMemoryAction(GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, "skills", resolved.path, patch, false)
-      const error = "Scheduled memory runs may read skills but cannot create or update skills. Use the Memory Center Skills + flow for global skill creation."
-      this.rejectMemoryAction(action.actionId, error)
-      return this.rejectedEditFilesOutput(input, resolved.path, action.actionId, error)
+    const resolved = this.resolveEditFilesTarget(input, context)
+    if (resolved.targetKind === "skills") {
+      return this.proposeSkillWrite(input, resolved, context)
     }
     if (input.editMode === "create") {
       return this.createMemoryTarget(input, resolved, context)
@@ -1417,9 +1607,81 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  private proposeSkillWrite(
+    input: EditFilesToolInput,
+    resolved: ResolvedEditFilesTarget,
+    context: { jobId: string; turnId?: string },
+  ): EditFilesToolOutput {
+    const targetPath = resolved.path
+    const name = path.basename(path.dirname(targetPath))
+    const scope = resolved.scope ?? "global"
+    const operation = input.editMode === "create" ? "create" : "update"
+    const patch: MemoryPatchProposal = {
+      oldText: input.editMode === "create" ? "" : input.oldText ?? "",
+      newText: input.newText,
+      ...(input.rationale ? { rationale: input.rationale } : {}),
+      ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+    }
+    const action = this.createMemoryAction(scope === "project" ? resolved.projectId ?? GLOBAL_MEMORY_AGENT_PROJECT_ID : GLOBAL_MEMORY_AGENT_PROJECT_ID, context.jobId, context.turnId, "skill_request", targetPath, patch, false, {
+      scope,
+      operation,
+      skillName: name,
+      ...(resolved.projectName ? { projectName: resolved.projectName } : {}),
+      ...(resolved.workspacePath ? { workspacePath: resolved.workspacePath } : {}),
+    })
+    const body = input.rationale?.trim() || truncateInline(input.newText, 180)
+    const scopeLabel = scope === "project" ? "project" : "global"
+    const readableSkillName = humanizeSkillName(name)
+    const notification = this.options.createNotification?.({
+      ...(scope === "project" && resolved.projectId ? { projectId: resolved.projectId } : {}),
+      ...(context.turnId ? { turnId: context.turnId } : {}),
+      type: "memory.skill.proposed",
+      title: `Memory Agent proposed ${operation === "create" ? "a new" : "an updated"} ${scopeLabel} skill`,
+      body: `${readableSkillName}${resolved.projectName ? ` (${resolved.projectName})` : ""}: ${body}`,
+      severity: "info",
+      payload: {
+        actionId: action.actionId,
+        scope,
+        operation,
+        skillName: name,
+        skillTitle: readableSkillName,
+        ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
+        ...(resolved.projectName ? { projectName: resolved.projectName } : {}),
+        request: input.newText,
+        ...(input.rationale ? { rationale: input.rationale } : {}),
+      },
+    })
+    this.appendEvent({
+      ...(context.turnId ? { turnId: context.turnId } : {}),
+      type: "memory.skill.proposed",
+      source: "server",
+      payload: {
+        jobId: context.jobId,
+        actionId: action.actionId,
+        notificationId: notification?.id,
+        scope,
+        operation,
+        skillName: name,
+        skillTitle: readableSkillName,
+        ...(resolved.projectId ? { projectId: resolved.projectId } : {}),
+        path: skillDisplayPath(scope, this.socratesHome, resolved.workspacePath, targetPath),
+      },
+    })
+    return {
+      target: input.target,
+      name,
+      path: skillDisplayPath(scope, this.socratesHome, resolved.workspacePath, targetPath),
+      changed: false,
+      actionId: action.actionId,
+      status: "proposed",
+      warnings: ["Skill proposal created. Approve it from notifications to run the Skill Writer Agent."],
+      truncation: truncationFor(input.newText, DEFAULT_CHAR_LIMIT),
+    }
+  }
+
   private editFilesPatchForInput(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" },
+    resolved: ResolvedEditFilesTarget,
   ): MemoryPatchProposal {
     if (!input.sectionId) {
       return {
@@ -1454,7 +1716,7 @@ export class MemoryStore extends StoreBase {
 
   private createMemoryTarget(
     input: EditFilesToolInput,
-    resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" },
+    resolved: ResolvedEditFilesTarget,
     context: { jobId: string; turnId?: string },
   ): EditFilesToolOutput {
     const patch: MemoryPatchProposal = {
@@ -1518,7 +1780,7 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private resolveEditFilesTarget(input: EditFilesToolInput): { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" } {
+  private resolveEditFilesTarget(input: EditFilesToolInput, context?: { turnId?: string }): ResolvedEditFilesTarget {
     if (input.target === "identity") {
       return { path: this.soulPath(), targetKind: "soul", document: "identity" }
     }
@@ -1526,7 +1788,59 @@ export class MemoryStore extends StoreBase {
       return { path: this.userProfilePath(), targetKind: "user_profile" }
     }
     const skillName = slugSkillName(input.name ?? "general")
-    return { path: safeJoin(path.join(this.socratesHome, "skills"), `${skillName}/SKILL.md`), targetKind: "skills" }
+    const source = this.skillProposalSource(input.sourceTurnIds?.[0] ?? context?.turnId)
+    const scope = input.scope ?? (source?.workspacePath ? "project" : "global")
+    if (scope === "project") {
+      if (!source?.workspacePath || !source.projectId) {
+        throw new SocratesError("memory_skill_project_source_missing", "Project skill proposals require a source project workspace. Choose scope=\"global\" only if the skill is truly cross-project.", {
+          recoverable: true,
+          details: { name: input.name, sourceTurnIds: input.sourceTurnIds },
+        })
+      }
+      return {
+        path: safeJoin(path.join(source.workspacePath, ".socrates", "skills"), `${skillName}/SKILL.md`),
+        targetKind: "skills",
+        scope: "project",
+        projectId: source.projectId,
+        ...(source.projectName ? { projectName: source.projectName } : {}),
+        workspacePath: source.workspacePath,
+      }
+    }
+    return { path: safeJoin(path.join(this.socratesHome, "skills"), `${skillName}/SKILL.md`), targetKind: "skills", scope: "global" }
+  }
+
+  private skillProposalSource(turnId: string | undefined): { projectId?: string; projectName?: string; workspacePath?: string } | undefined {
+    if (!turnId) {
+      return undefined
+    }
+    const turn = this.handle.db.select().from(turns).where(eq(turns.id, turnId)).limit(1).get()
+    if (!turn?.sessionId) {
+      return undefined
+    }
+    const sessionRow = this.handle.sqlite
+      .prepare(
+        `SELECT s.project_id AS projectId, s.workspace_path AS sessionWorkspacePath, p.name AS projectName
+           FROM sessions s
+           LEFT JOIN projects p ON p.id = s.project_id
+          WHERE s.id = ?
+          LIMIT 1`,
+      )
+      .get(turn.sessionId) as { projectId?: string; sessionWorkspacePath?: string | null; projectName?: string | null } | undefined
+    if (!sessionRow?.projectId) {
+      return undefined
+    }
+    const workspace = this.handle.db
+      .select()
+      .from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.projectId, sessionRow.projectId), eq(projectWorkspaces.isPrimary, true)))
+      .limit(1)
+      .get()
+    const workspacePath = sessionRow.sessionWorkspacePath ?? workspace?.path ?? undefined
+    return {
+      projectId: sessionRow.projectId,
+      ...(sessionRow.projectName ? { projectName: sessionRow.projectName } : {}),
+      ...(workspacePath ? { workspacePath } : {}),
+    }
   }
 
   private mustGetMemoryAgentJob(jobId: string): typeof memoryAgentJobs.$inferSelect {
@@ -1535,6 +1849,52 @@ export class MemoryStore extends StoreBase {
       throw new SocratesError("memory_agent_job_not_found", "Memory agent job was not found.", { details: { jobId } })
     }
     return row
+  }
+
+  private mustGetMemoryNote(noteNumber: number): typeof memoryNotes.$inferSelect {
+    const row = this.handle.db.select().from(memoryNotes).where(eq(memoryNotes.noteNumber, noteNumber)).limit(1).get()
+    if (!row) {
+      throw new SocratesError("memory_note_not_found", "Memory note was not found.", { recoverable: true, details: { noteNumber } })
+    }
+    return row
+  }
+
+  private openMemoryNoteCount(): number {
+    const row = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_notes WHERE status IN ('open', 'processing')").get() as { count: number }
+    return row.count
+  }
+
+  private openMemoryNoteRows(limit: number): Array<typeof memoryNotes.$inferSelect> {
+    return this.handle.db
+      .select()
+      .from(memoryNotes)
+      .where(or(eq(memoryNotes.status, "open"), eq(memoryNotes.status, "processing")))
+      .orderBy(memoryNotes.noteNumber)
+      .limit(limit)
+      .all()
+  }
+
+  private memoryNoteToolRow(row: typeof memoryNotes.$inferSelect, includeFull: boolean): MemoryNotesToolOutput["notes"][number] {
+    const metadata = parseJsonObject(row.metadataJson)
+    const defaultSkillScope = metadata.defaultSkillScope === "global" || metadata.defaultSkillScope === "project" ? metadata.defaultSkillScope : undefined
+    const projectName = typeof metadata.projectName === "string" ? metadata.projectName : undefined
+    const workspacePath = typeof metadata.workspacePath === "string" ? metadata.workspacePath : undefined
+    return {
+      noteNumber: row.noteNumber,
+      status: row.status as MemoryNotesToolOutput["notes"][number]["status"],
+      importance: row.priority === "high" ? "high" : "normal",
+      ...(includeFull ? { note: row.note } : { notePreview: truncateInline(row.note, 250) }),
+      ...(row.projectId ? { projectId: row.projectId } : {}),
+      ...(projectName ? { projectName } : {}),
+      ...(defaultSkillScope ? { defaultSkillScope } : {}),
+      ...(workspacePath ? { workspacePath } : {}),
+      ...(row.conversationId ? { conversationId: row.conversationId } : {}),
+      ...(row.turnId ? { turnId: row.turnId } : {}),
+      ...(row.messageId ? { messageId: row.messageId } : {}),
+      ...(row.messageExcerpt ? { messageExcerpt: row.messageExcerpt } : {}),
+      createdAt: row.createdAt,
+      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+    }
   }
 
   private mustGetMemoryAgentCheck(checkId: string): typeof memoryAgentChecks.$inferSelect {
@@ -1853,126 +2213,261 @@ export class MemoryStore extends StoreBase {
     return index
   }
 
-  private memoryAgentModelSettingsFor(): MemoryAgentModelSettings {
-    const settings = this.options.getMemoryAgentGlobalSettings?.()
-    const thinkingEnabled = settings?.thinkingEnabled ?? DEFAULT_MEMORY_AGENT_THINKING_ENABLED
-    const thinkingEffort = settings?.thinkingEffort ?? (thinkingEnabled ? undefined : DEFAULT_MEMORY_AGENT_THINKING_EFFORT)
+  private skillWriterModelSettingsFor(): SkillWriterModelSettings {
+    const settings = this.options.getWorkerModelSettings?.("skill_writer")
+    if (settings) {
+      return {
+        providerId: settings.providerId,
+        modelId: settings.modelId,
+        thinkingEnabled: settings.thinkingEnabled,
+        ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),
+      }
+    }
     return {
-      providerId: settings?.providerId ?? DEFAULT_MEMORY_AGENT_PROVIDER_ID,
-      modelId: settings?.modelId ?? DEFAULT_MEMORY_AGENT_MODEL_ID,
-      thinkingEnabled,
-      ...(thinkingEffort ? { thinkingEffort } : {}),
+      providerId: "openrouter",
+      modelId: "xiaomi/mimo-v2.5-pro",
+      thinkingEnabled: false,
     }
   }
 
-  private async generateProjectSkill(projectId: string, workspacePath: string, request: string, name: string): Promise<string> {
-    const fallback = fallbackSkillMarkdown(name, request)
+  private async runApprovedSkillWriterTask(input: ApprovedSkillWriterTask): Promise<SkillSummary> {
     if (!this.options.provider) {
-      return fallback
+      throw new SocratesError("skill_writer_provider_unavailable", "Skill Writer Agent requires a configured model provider.", { recoverable: true })
     }
-    const modelSettings = this.memoryAgentModelSettingsFor()
-    const instructionRow = this.handle.db
-      .select()
-      .from(projectInstructions)
-      .where(and(eq(projectInstructions.projectId, projectId), eq(projectInstructions.status, "active")))
-      .orderBy(desc(projectInstructions.updatedAt))
-      .get()
-    const context = [
-      `Skill name to use exactly: ${name}`,
-      "Primary user request:",
-      request.trim(),
-      "",
-      "Side guidance only. Use when relevant; ignore when not useful.",
-      "--- project instructions",
-      instructionRow?.content ?? "Not provided.",
-      "--- project MEMORY.md",
-      truncate(readIfExists(path.join(workspacePath, ".socrates", "MEMORY.md")) ?? "", 4_000).text,
-      "--- repo docs",
-      ...REPO_DOC_NAMES.map((docName) => `--- ${docName}\n${truncate(readIfExists(path.join(workspacePath, ".socrates", "repo_docs", docName)) ?? "", 3_000).text}`),
-      "--- skill writer guidance",
-      truncate(readIfExists(path.join(bundledSkillsDir(), "socrates-skill-writer", "SKILL.md")) ?? "", 5_000).text,
-    ].join("\n\n")
-    try {
-      let text = ""
-      for await (const event of this.options.provider.stream({
+    if (!isValidSkillName(input.name)) {
+      throw new SocratesError("skill_name_invalid", "Skill name must use lowercase letters, numbers, and hyphens.", {
+        recoverable: true,
+        details: { name: input.name },
+      })
+    }
+    if (input.scope === "project" && !input.workspacePath) {
+      throw new SocratesError("skill_writer_project_workspace_missing", "Project skill writing requires a workspace path.", { recoverable: true, details: { projectId: input.projectId } })
+    }
+
+    const modelSettings: SkillWriterModelSettings = this.skillWriterModelSettingsFor()
+    const jobId = createId("skjob")
+    const startedAt = nowIso()
+    const metadataBase = {
+      sourceKind: input.sourceKind,
+      sourceId: input.sourceId,
+      thinkingEnabled: modelSettings.thinkingEnabled,
+      thinkingEffort: modelSettings.thinkingEffort,
+    }
+    this.handle.db
+      .insert(skillWriterJobs)
+      .values({
+        id: jobId,
+        scope: input.scope,
+        operation: input.operation,
+        skillName: input.name,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        sourceKind: input.sourceKind,
+        sourceId: input.sourceId,
+        status: "running",
         providerId: modelSettings.providerId,
         modelId: modelSettings.modelId,
-        system: PROJECT_SKILL_BUILDER_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: context }],
-        runtimeConfig: {
-          providerId: modelSettings.providerId,
-          modelId: modelSettings.modelId,
-          thinkingEnabled: modelSettings.thinkingEnabled,
-          ...(modelSettings.thinkingEffort ? { thinkingEffort: modelSettings.thinkingEffort } : {}),
-          approvalMode: "read_only_auto",
-          sandboxMode: "read_only",
+        startedAt,
+        metadataJson: JSON.stringify(metadataBase),
+      })
+      .run()
+    this.appendEvent({
+      ...(input.projectId !== GLOBAL_MEMORY_AGENT_PROJECT_ID ? { projectId: input.projectId } : {}),
+      ...scopedIds(input),
+      type: "memory.skill_writer.started",
+      source: "server",
+      payload: { jobId, scope: input.scope, operation: input.operation, skillName: input.name, sourceKind: input.sourceKind, sourceId: input.sourceId },
+    })
+
+    const toolEvents: unknown[] = []
+    let latestUsage: unknown
+    let written: SkillWriteToolOutput | undefined
+    try {
+      const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
+      const answer = await runSkillWriterTurn({
+        provider: this.options.provider,
+        modelSettings,
+        scope: input.scope,
+        operation: input.operation,
+        name: input.name,
+        request: input.request,
+        projectId: input.projectId,
+        conversationId: input.conversationId ?? "",
+        sessionId: input.sessionId ?? "",
+        turnId: input.turnId ?? "",
+        ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+        socratesHome: this.socratesHome,
+        ...(contextCompressorSettings ? { contextCompressorSettings } : {}),
+        tools: {
+          traceRetrieve: async (toolInput) => {
+            if (input.scope === "project" && input.conversationId && this.options.traceRetrieve) {
+              return this.options.traceRetrieve(input.projectId, input.conversationId, toolInput)
+            }
+            if (this.options.traceRetrieveGlobal) {
+              return this.options.traceRetrieveGlobal(toolInput)
+            }
+            throw new SocratesError("skill_writer_trace_unavailable", "trace_retrieve is not available to this Skill Writer run.", { recoverable: true })
+          },
+          skills: async (toolInput) => this.runSkillsTool(input.projectId, input.workspacePath, toolInput),
+          soul: async (toolInput) => this.runSoulTool(input.projectId, input.workspacePath, toolInput),
+          userProfile: async (toolInput) => this.runUserProfileTool(input.projectId, input.workspacePath, toolInput),
+          projectDocs: async (toolInput) => {
+            if (!input.workspacePath) {
+              throw new SocratesError("skill_writer_project_docs_unavailable", "project_docs is only available for project skill runs.", { recoverable: true })
+            }
+            this.assertSkillWriterProjectDocsReadOnly(toolInput)
+            return this.runProjectDocsTool(input.projectId, input.workspacePath, toolInput)
+          },
+          repoDocs: async (toolInput) => {
+            if (!input.workspacePath) {
+              throw new SocratesError("skill_writer_repo_docs_unavailable", "repo_docs is only available for project skill runs.", { recoverable: true })
+            }
+            this.assertSkillWriterRepoDocsReadOnly(toolInput)
+            return this.runRepoDocsTool(input.projectId, input.workspacePath, toolInput)
+          },
+          skillWrite: async (toolInput) => {
+            if (written) {
+              throw new SocratesError("skill_write_already_completed", "Skill Writer already wrote the skill for this run.", { recoverable: true })
+            }
+            written = this.runSkillWriteTool(toolInput, {
+              expectedScope: input.scope,
+              expectedOperation: input.operation,
+              expectedName: input.name,
+              ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
+            })
+            return written
+          },
         },
-      })) {
-        if (event.type === "model.answer.delta") {
-          text += event.text
-        }
-        if (event.type === "model.failed") {
-          throw event.error
-        }
+        onEvent: (event) => {
+          if ((event.type === "model.usage" || event.type === "model.completed") && "usage" in event && event.usage) {
+            latestUsage = event.usage
+          }
+          if (event.type.startsWith("tool.call") || event.type.startsWith("approval.")) {
+            toolEvents.push(slimMemoryToolEvent(event))
+          }
+        },
+      })
+      if (!written) {
+        throw new SocratesError("skill_writer_no_write", "Skill Writer finished without calling skill_write.", { recoverable: true })
       }
-      const cleaned = stripMarkdownFence(text.trim())
-      return parseSkillMarkdown(cleaned, path.join(workspacePath, ".socrates", "skills", name, "SKILL.md")) ? cleaned : fallback
-    } catch {
-      return fallback
+      const completedAt = nowIso()
+      this.handle.db
+        .update(skillWriterJobs)
+        .set({
+          status: "completed",
+          outputJson: JSON.stringify({ skill: written.summary, answer: answer.trim() }),
+          completedAt,
+          metadataJson: JSON.stringify({ ...metadataBase, toolEvents, usage: latestUsage }),
+        })
+        .where(eq(skillWriterJobs.id, jobId))
+        .run()
+      this.appendEvent({
+        ...(input.projectId !== GLOBAL_MEMORY_AGENT_PROJECT_ID ? { projectId: input.projectId } : {}),
+        ...scopedIds(input),
+        type: "memory.skill.updated",
+        source: "server",
+        payload: {
+          jobId,
+          scope: input.scope,
+          operation: input.operation,
+          skillName: input.name,
+          path: written.path,
+          sourceKind: input.sourceKind,
+          sourceId: input.sourceId,
+        },
+      })
+      return written.summary
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const completedAt = nowIso()
+      this.handle.db
+        .update(skillWriterJobs)
+        .set({
+          status: "failed",
+          error: message,
+          completedAt,
+          metadataJson: JSON.stringify({ ...metadataBase, toolEvents, usage: latestUsage, error: message }),
+        })
+        .where(eq(skillWriterJobs.id, jobId))
+        .run()
+      this.appendEvent({
+        ...(input.projectId !== GLOBAL_MEMORY_AGENT_PROJECT_ID ? { projectId: input.projectId } : {}),
+        ...scopedIds(input),
+        type: "memory.skill_writer.failed",
+        source: "server",
+        payload: { jobId, scope: input.scope, operation: input.operation, skillName: input.name, error: { code: "skill_writer_failed", message } },
+      })
+      throw error
     }
   }
 
-  private async generateGlobalSkill(request: string, name: string): Promise<string> {
-    const fallback = fallbackSkillMarkdown(name, request)
-    if (!this.options.provider) {
-      return fallback
-    }
-    const modelSettings = this.memoryAgentModelSettingsFor()
-    const globalSkills = this.skillInfos(undefined, "global")
-      .map((skill) => `- ${skill.name}: ${skill.description}`)
-      .join("\n")
-    const context = [
-      `Skill name to use exactly: ${name}`,
-      "Primary user request:",
-      request.trim(),
-      "",
-      "Side guidance only. Use when relevant; ignore when not useful.",
-      "--- identity.md",
-      truncate(readIfExists(this.soulPath()) ?? "", 4_000).text,
-      "--- user_profile.md",
-      truncate(readIfExists(this.userProfilePath()) ?? "", 4_000).text,
-      "--- existing global skills",
-      globalSkills || "No global skills are registered yet.",
-      "--- skill writer guidance",
-      truncate(readIfExists(path.join(bundledSkillsDir(), "socrates-skill-writer", "SKILL.md")) ?? "", 5_000).text,
-    ].join("\n\n")
-    try {
-      let text = ""
-      for await (const event of this.options.provider.stream({
-        providerId: modelSettings.providerId,
-        modelId: modelSettings.modelId,
-        system: PROJECT_SKILL_BUILDER_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: context }],
-        runtimeConfig: {
-          providerId: modelSettings.providerId,
-          modelId: modelSettings.modelId,
-          thinkingEnabled: modelSettings.thinkingEnabled,
-          ...(modelSettings.thinkingEffort ? { thinkingEffort: modelSettings.thinkingEffort } : {}),
-          approvalMode: "read_only_auto",
-          sandboxMode: "read_only",
+  private runSkillWriteTool(
+    input: SkillWriteToolInput,
+    constraints: { expectedScope: WritableSkillScope; expectedOperation: "create" | "update"; expectedName: string; workspacePath?: string },
+  ): SkillWriteToolOutput {
+    if (input.scope !== constraints.expectedScope || input.operation !== constraints.expectedOperation || input.name !== constraints.expectedName) {
+      throw new SocratesError("skill_write_scope_mismatch", "skill_write must match the approved scope, operation, and skill name.", {
+        recoverable: true,
+        details: {
+          approved: { scope: constraints.expectedScope, operation: constraints.expectedOperation, name: constraints.expectedName },
+          received: { scope: input.scope, operation: input.operation, name: input.name },
         },
-      })) {
-        if (event.type === "model.answer.delta") {
-          text += event.text
-        }
-        if (event.type === "model.failed") {
-          throw event.error
-        }
-      }
-      const cleaned = stripMarkdownFence(text.trim())
-      return parseSkillMarkdown(cleaned, path.join(this.socratesHome, "skills", name, "SKILL.md")) ? cleaned : fallback
-    } catch {
-      return fallback
+      })
+    }
+    if (!isValidSkillName(input.name)) {
+      throw new SocratesError("skill_name_invalid", "Skill name must use lowercase letters, numbers, and hyphens.", { recoverable: true, details: { name: input.name } })
+    }
+    if (input.scope === "project" && !constraints.workspacePath) {
+      throw new SocratesError("skill_write_project_workspace_missing", "Project skill writing requires a workspace path.", { recoverable: true })
+    }
+    const root = input.scope === "global" ? path.join(this.socratesHome, "skills") : path.join(constraints.workspacePath as string, ".socrates", "skills")
+    const skillFile = safeJoin(root, `${input.name}/SKILL.md`)
+    const existed = fs.existsSync(skillFile)
+    if (input.operation === "create" && existed) {
+      throw new SocratesError("skill_already_exists", "A skill with that name already exists.", { recoverable: true, details: { name: input.name, scope: input.scope } })
+    }
+    if (input.operation === "update" && !existed) {
+      throw new SocratesError("skill_not_found", "Cannot update a skill that does not exist.", { recoverable: true, details: { name: input.name, scope: input.scope } })
+    }
+    const parsed = parseSkillMarkdown(input.content, skillFile)
+    if (!parsed || parsed.name !== input.name) {
+      throw new SocratesError("skill_write_invalid_markdown", "skill_write content must be a valid SKILL.md with matching frontmatter name.", {
+        recoverable: true,
+        details: { name: input.name, scope: input.scope },
+      })
+    }
+    const before = readIfExists(skillFile)
+    fs.mkdirSync(path.dirname(skillFile), { recursive: true })
+    if (before !== input.content) {
+      fs.writeFileSync(skillFile, input.content)
+    }
+    const info = readSkillInfo(input.scope, root, skillFile)
+    if (!info) {
+      throw new SocratesError("skill_write_validation_failed", "Written skill did not pass validation.", { recoverable: true, details: { name: input.name, scope: input.scope } })
+    }
+    const displayRoot = input.scope === "global" ? this.socratesHome : constraints.workspacePath as string
+    return {
+      scope: input.scope,
+      operation: input.operation,
+      name: input.name,
+      path: path.relative(displayRoot, skillFile).replaceAll(path.sep, "/"),
+      changed: before !== input.content,
+      summary: skillSummary(info),
+      truncation: truncationFor(input.content, DEFAULT_CHAR_LIMIT),
+    }
+  }
+
+  private assertSkillWriterProjectDocsReadOnly(input: ProjectDocsToolInput): void {
+    if (input.operation === "edit" || input.operation === "patch_section") {
+      throw new SocratesError("skill_writer_project_docs_read_only", "Skill Writer may read project_docs but cannot write them.", { recoverable: true, details: { operation: input.operation } })
+    }
+  }
+
+  private assertSkillWriterRepoDocsReadOnly(input: RepoDocsToolInput): void {
+    if (input.operation === "edit" || input.operation === "patch_section") {
+      throw new SocratesError("skill_writer_repo_docs_read_only", "Skill Writer may read repo_docs but cannot write them.", { recoverable: true, details: { operation: input.operation } })
     }
   }
 
@@ -1980,7 +2475,7 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "skills" | "user_profile",
+    targetKind: "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
     lastEditedSection?: string,
@@ -1993,20 +2488,11 @@ export class MemoryStore extends StoreBase {
       this.appendEvent({ projectId, ...(turnId ? { turnId } : {}), type: "memory.primary.update_rejected", source: "server", payload: { jobId, actionId: action.actionId, path: targetPath, reason: validation.error } })
       return { applied: false, actionId: action.actionId, error: validation.error }
     }
-    if (targetKind === "skills" && path.basename(targetPath) === "SKILL.md" && !parseSkillMarkdown(validation.next, targetPath)) {
-      const error = "Skill patch must preserve valid Agent Skill frontmatter with matching folder name."
-      this.rejectMemoryAction(action.actionId, error)
-      this.appendEvent({ projectId, ...(turnId ? { turnId } : {}), type: "memory.primary.update_rejected", source: "server", payload: { jobId, actionId: action.actionId, path: targetPath, reason: error } })
-      return { applied: false, actionId: action.actionId, error }
-    }
-    const next =
-      targetKind === "skills"
-        ? validation.next
-        : stampMemoryDocFrontmatter(validation.next, {
-            updatedAt: currentRuntimeTime().currentDateTime,
-            updatedBy: "edit_files",
-            lastEditedSection: lastEditedSection ?? "document",
-          })
+    const next = stampMemoryDocFrontmatter(validation.next, {
+      updatedAt: currentRuntimeTime().currentDateTime,
+      updatedBy: "edit_files",
+      lastEditedSection: lastEditedSection ?? "document",
+    })
     fs.writeFileSync(targetPath, next)
     const afterHash = hashText(next)
     this.handle.db.update(memoryAgentActions).set({ status: "applied", afterHash, appliedAt: nowIso() }).where(eq(memoryAgentActions.id, action.actionId)).run()
@@ -2131,10 +2617,11 @@ export class MemoryStore extends StoreBase {
     projectId: string,
     jobId: string,
     turnId: string | undefined,
-    targetKind: "skills" | "soul" | "user_profile",
+    targetKind: "skill_request" | "skills" | "soul" | "user_profile",
     targetPath: string,
     patch: MemoryPatchProposal,
     requiresConfirmation: boolean,
+    metadata?: Record<string, unknown>,
   ): { actionId: string; beforeHash: string } {
     const content = readIfExists(targetPath) ?? ""
     const beforeHash = hashText(content)
@@ -2154,6 +2641,7 @@ export class MemoryStore extends StoreBase {
         patchJson: JSON.stringify(patch),
         rationale: patch.rationale,
         createdAt: nowIso(),
+        ...(metadata ? { metadataJson: JSON.stringify(metadata) } : {}),
       })
       .run()
     return { actionId, beforeHash }
@@ -2784,22 +3272,6 @@ const isLegacyToolUsageSeed = (name: string, content: string): boolean => {
   )
 }
 
-const PROJECT_SKILL_BUILDER_SYSTEM_PROMPT = [
-  "You generate one Agent Skill for Socrates.",
-  "Return only the complete SKILL.md markdown. Do not include a markdown fence, prefix, or suffix.",
-  "The provided skill name is mandatory and must appear exactly in YAML frontmatter.",
-  "YAML frontmatter must include name and description.",
-  "The user's primary request is the main authority. Project instructions, memory, repo docs, and skill-writer guidance are side guidance only; ignore them when irrelevant.",
-  "The body must include clear sections for when to use the skill, workflow, verification or evidence requirements, and output style.",
-  "Descriptions should contain natural trigger words from the user's request so future agents can discover the skill by search.",
-  "Keep the skill concise, procedural, and reusable. Do not include secrets, private keys, or long copied project text.",
-].join("\n")
-
-const stripMarkdownFence = (text: string): string => {
-  const match = /^```(?:markdown|md)?\s*\n([\s\S]*?)\n```$/i.exec(text.trim())
-  return match?.[1]?.trim() ?? text.trim()
-}
-
 const ensureFile = (filePath: string, content: string): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   if (!fs.existsSync(filePath)) {
@@ -2897,6 +3369,18 @@ const mergeToolErrorDetails = (details: unknown, toolName?: string): Record<stri
 }
 
 const memoryFileScope = (file: MemoryAgentFileSummary): SkillScope | "" => ("scope" in file && file.scope ? file.scope : "")
+
+const humanizeSkillName = (name: string): string =>
+  name
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ")
+
+const skillDisplayPath = (scope: WritableSkillScope, socratesHome: string, workspacePath: string | undefined, targetPath: string): string => {
+  const root = scope === "project" && workspacePath ? workspacePath : socratesHome
+  return path.relative(root, targetPath).replaceAll(path.sep, "/")
+}
 
 const safeJoin = (root: string, relativePath: string): string => {
   const resolved = path.resolve(root, relativePath)

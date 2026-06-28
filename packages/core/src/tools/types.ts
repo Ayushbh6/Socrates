@@ -9,6 +9,10 @@ import type {
   EditToolOutput,
   ListProjectResourcesToolInput,
   ListProjectResourcesToolOutput,
+  MemoryNoteToolInput,
+  MemoryNoteToolOutput,
+  MemoryNotesToolInput,
+  MemoryNotesToolOutput,
   McpRegistryToolInput,
   McpRegistryToolOutput,
   ModelToolDefinition,
@@ -27,6 +31,8 @@ import type {
   SearchToolOutput,
   SkillsToolInput,
   SkillsToolOutput,
+  SkillWriteToolInput,
+  SkillWriteToolOutput,
   SoulToolInput,
   SoulToolOutput,
   ToolDocsToolInput,
@@ -78,6 +84,9 @@ export type ToolExecutors = {
     input: ListProjectResourcesToolInput,
     context: ToolExecutorContext,
   ) => Promise<ListProjectResourcesToolOutput>
+  memory_note?: (input: MemoryNoteToolInput, context: ToolExecutorContext) => Promise<MemoryNoteToolOutput>
+  memory_notes?: (input: MemoryNotesToolInput, context: ToolExecutorContext) => Promise<MemoryNotesToolOutput>
+  skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
   mcp_registry?: (input: McpRegistryToolInput, context: ToolExecutorContext) => Promise<McpRegistryToolOutput>
   mcp_dynamic?: (input: { dynamicName: string; input: unknown }, context: ToolExecutorContext) => Promise<unknown>
 }

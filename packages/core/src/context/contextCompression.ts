@@ -1,6 +1,6 @@
 import { chatCompactionSchema, memoryCompactionSchema, type ChatCompaction, type MemoryCompaction } from "@socrates/contracts"
 import { estimateTextTokens, type ModelMessage, type ModelMessagePart, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
-import type { ModelToolDefinition, ProviderId, RuntimeConfig } from "@socrates/contracts"
+import type { ModelToolDefinition, ProviderId, RuntimeConfig, ThinkingEffort } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
 import { CompressorAgent } from "../agent/CompressorAgent"
 import {
@@ -122,6 +122,8 @@ export type ContextCompressionRuntime = {
   thresholds?: Partial<ContextCompressionThresholds>
   compressorProviderId?: ProviderId
   compressorModelId?: string
+  compressorThinkingEnabled?: boolean
+  compressorThinkingEffort?: ThinkingEffort
   compressorFallbackProviderId?: ProviderId
   compressorFallbackModelId?: string
   getLatestSnapshot?: () => Promise<ContextCompactionSummary | undefined> | ContextCompactionSummary | undefined
@@ -325,6 +327,8 @@ const runContextCompaction = async (
   const snapshotId = createId("ctxcmp")
   const compressorProviderId = compression.compressorProviderId ?? DEFAULT_COMPRESSOR_MODEL.providerId
   const compressorModelId = compression.compressorModelId ?? DEFAULT_COMPRESSOR_MODEL.modelId
+  const compressorThinkingEnabled = compression.compressorThinkingEnabled ?? false
+  const compressorThinkingEffort = compression.compressorThinkingEffort
   const compressorFallbackProviderId = compression.compressorFallbackProviderId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.providerId
   const compressorFallbackModelId = compression.compressorFallbackModelId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.modelId
   const mode = compression.mode ?? "chat"
@@ -366,7 +370,12 @@ const runContextCompaction = async (
     const compressorResult = await compressor.run({
       provider: input.provider,
       mode,
-      primary: { providerId: compressorProviderId, modelId: compressorModelId },
+      primary: {
+        providerId: compressorProviderId,
+        modelId: compressorModelId,
+        thinkingEnabled: compressorThinkingEnabled,
+        ...(compressorThinkingEffort ? { thinkingEffort: compressorThinkingEffort } : {}),
+      },
       fallbacks: [
         { providerId: compressorFallbackProviderId, modelId: compressorFallbackModelId },
         DEFAULT_COMPRESSOR_SECOND_FALLBACK_MODEL,

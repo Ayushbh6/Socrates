@@ -2,6 +2,7 @@
 
 import {
   apiResponseSchema,
+  approveMemorySkillProposalResponseSchema,
   buildGlobalSkillResponseSchema,
   buildProjectSkillResponseSchema,
   checkProjectEmbeddingsResponseSchema,
@@ -33,6 +34,7 @@ import {
   listProjectsResponseSchema,
   listModelsHttpResponseSchema,
   listProjectConversationsResponseSchema,
+  listWorkerModelSettingsResponseSchema,
   markAllNotificationsReadResponseSchema,
   markNotificationReadResponseSchema,
   pickWorkspaceFolderResponseSchema,
@@ -40,6 +42,7 @@ import {
   setProviderCredentialSessionResponseSchema,
   updateMemoryAgentGlobalSettingsResponseSchema,
   updateMcpServerResponseSchema,
+  updateWorkerModelSettingsResponseSchema,
   triggerMemoryAgentRunResponseSchema,
   uploadProjectResourcesResponseSchema,
   updateProjectWorkspaceResponseSchema,
@@ -49,6 +52,7 @@ import {
   upsertProjectInstructionsResponseSchema,
   type ApiError,
   type ApiResponse,
+  type ApproveMemorySkillProposalResponse,
   type BuildGlobalSkillRequest,
   type BuildGlobalSkillResponse,
   type BuildProjectSkillRequest,
@@ -94,6 +98,7 @@ import {
   type MarkNotificationReadResponse,
   type ListModelsHttpResponse,
   type ListProjectConversationsResponse,
+  type ListWorkerModelSettingsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
   type ReindexProjectEmbeddingsResponse,
@@ -108,12 +113,15 @@ import {
   type UpdateProjectWorkspaceResponse,
   type UpdateConversationRequest,
   type UpdateConversationResponse,
+  type UpdateWorkerModelSettingsRequest,
+  type UpdateWorkerModelSettingsResponse,
   type UploadConversationAttachmentsResponse,
   type UploadProjectResourcesResponse,
   type UpsertMcpServerRequest,
   type UpsertMcpServerResponse,
   type UpsertProjectInstructionsRequest,
   type UpsertProjectInstructionsResponse,
+  type WorkerModelRole,
 } from "@socrates/contracts";
 import type { z } from "zod";
 
@@ -214,6 +222,22 @@ export const api = {
 
   listModels: () =>
     request<typeof listModelsHttpResponseSchema>("/api/models", listModelsHttpResponseSchema) as Promise<ListModelsHttpResponse>,
+
+  listWorkerModelSettings: () =>
+    request<typeof listWorkerModelSettingsResponseSchema>(
+      "/api/worker-model-settings",
+      listWorkerModelSettingsResponseSchema,
+    ) as Promise<ListWorkerModelSettingsResponse>,
+
+  updateWorkerModelSettings: (workerId: WorkerModelRole, input: UpdateWorkerModelSettingsRequest) =>
+    request<typeof updateWorkerModelSettingsResponseSchema>(
+      `/api/worker-model-settings/${encodeURIComponent(workerId)}`,
+      updateWorkerModelSettingsResponseSchema,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    ) as Promise<UpdateWorkerModelSettingsResponse>,
 
   listNotifications: (input: { unreadOnly?: boolean; limit?: number } = {}) => {
     const params = new URLSearchParams();
@@ -336,6 +360,15 @@ export const api = {
     request<typeof triggerMemoryAgentRunResponseSchema>("/api/memory-agent/run", triggerMemoryAgentRunResponseSchema, {
       method: "POST",
     }) as Promise<TriggerMemoryAgentRunResponse>,
+
+  approveMemorySkillProposal: (actionId: string) =>
+    request<typeof approveMemorySkillProposalResponseSchema>(
+      `/api/memory-agent/skill-proposals/${encodeURIComponent(actionId)}/approve`,
+      approveMemorySkillProposalResponseSchema,
+      {
+        method: "POST",
+      },
+    ) as Promise<ApproveMemorySkillProposalResponse>,
 
   buildGlobalSkill: (input: BuildGlobalSkillRequest) =>
     request<typeof buildGlobalSkillResponseSchema>(

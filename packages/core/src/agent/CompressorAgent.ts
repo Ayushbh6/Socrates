@@ -8,7 +8,7 @@ import {
   type MemoryCompaction,
 } from "@socrates/contracts"
 import type { ModelProvider, ModelUsage, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
-import type { ProviderId } from "@socrates/contracts"
+import type { ProviderId, ThinkingEffort } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
 import { SOCRATES_ANCHOR_REPAIR_SYSTEM_PROMPT } from "../prompts/socratesCompressorPrompt"
 
@@ -17,6 +17,8 @@ export type CompressorAgentMode = "chat" | "memory"
 export type CompressorAgentModel = {
   providerId: ProviderId
   modelId: string
+  thinkingEnabled?: boolean
+  thinkingEffort?: ThinkingEffort
 }
 
 export type CompressorAgentRunInput = {
@@ -174,8 +176,8 @@ const schemasForMode = (mode: CompressorAgentMode) =>
 const compressorRuntimeConfig = (model: CompressorAgentModel) => ({
   providerId: model.providerId,
   modelId: model.modelId,
-  thinkingEnabled: false,
-  thinkingEffort: "none" as const,
+  thinkingEnabled: model.thinkingEnabled ?? false,
+  ...(model.thinkingEffort ? { thinkingEffort: model.thinkingEffort } : model.thinkingEnabled ? {} : { thinkingEffort: "none" as const }),
   approvalMode: "read_only_auto" as const,
   sandboxMode: "read_only" as const,
 })

@@ -178,6 +178,23 @@ export const modelCatalog = [
     thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
     defaultThinkingOptionId: "off",
   }),
+  makeModel({
+    providerId: "openrouter",
+    modelId: "meta-llama/llama-4-maverick",
+    label: "Llama 4 Maverick",
+    contextWindowTokens: 1048576,
+    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    defaultThinkingOptionId: "off",
+  }),
+  makeModel({
+    providerId: "openrouter",
+    modelId: "qwen/qwen3.5-flash-02-23",
+    label: "Qwen 3.5 Flash",
+    contextWindowTokens: 1048576,
+    capabilities: { vision: false },
+    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    defaultThinkingOptionId: "off",
+  }),
 ] satisfies ModelOption[]
 
 export const defaultModel = modelCatalog.find((model) => model.isDefault) ?? modelCatalog[0]

@@ -28,6 +28,8 @@ describe("model catalog", () => {
       "openrouter/deepseek/deepseek-v4-pro",
       "openrouter/deepseek/deepseek-v4-flash",
       "openrouter/google/gemma-4-31b-it",
+      "openrouter/meta-llama/llama-4-maverick",
+      "openrouter/qwen/qwen3.5-flash-02-23",
     ])
   })
 
@@ -60,7 +62,12 @@ describe("model catalog", () => {
       .filter((model) => model.capabilities?.vision === false)
       .map((model) => model.modelId)
 
-    expect(nonVision).toEqual(["z-ai/glm-5.2", "deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash"])
+    expect(nonVision).toEqual([
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro",
+      "deepseek/deepseek-v4-flash",
+      "qwen/qwen3.5-flash-02-23",
+    ])
     expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
   })
 })

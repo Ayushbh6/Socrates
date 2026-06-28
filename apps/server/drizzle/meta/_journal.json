@@ -113,6 +113,20 @@
       "when": 1781433600000,
       "tag": "0015_memory_doc_sections",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1782576000000,
+      "tag": "0016_memory_notes_and_skill_writer",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1782662400000,
+      "tag": "0017_worker_model_settings",
+      "breakpoints": true
     }
   ]
 }

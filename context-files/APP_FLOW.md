@@ -659,6 +659,11 @@ enabled:
 not yet enabled:
   dedicated git tool
   sub-agent/task/todo tools
+
+accepted next/refactor direction:
+  memory_note for Socrates-to-Memory-Agent leads
+  Memory Agent skill freshness suggestions and approved update requests
+  Skill Writer Agent as a real specialized agent path, not a one-off provider workflow
 ```
 
 ## Tooling And Context Management Target
@@ -682,6 +687,8 @@ user_profile
 list_project_resources
 mcp_registry
 ```
+
+The main-agent `memory_note` tool is intentionally small: Socrates supplies only a human `note` and optional `importance`; the backend attaches the current user message, conversation id, message id, turn id, source project, workspace path when available, and a default project-local skill-scope hint automatically. Those refs are backend lookup values for later trace chaining, not fields Socrates should manually write into the note.
 
 `read` handles bounded reads of files, directories, PDFs, documents, slide decks, structured data, and images. Its default model-visible output cap is an estimated 4,000 tokens, and the hard model-requested `tokenLimit` cap is 6,000 estimated tokens across all readable formats. `charLimit` still exists for compatibility and offset paging, but the effective returned text is bounded by both `charLimit` and the token cap, with clear truncation metadata. File reads include full-file freshness metadata (`contentHash`, `mtimeMs`, `sizeBytes`, and line endings for text) so later edits can prove they are based on current disk content. The first implementation should use pragmatic local extractors or lightweight parsers rather than overbuilding a full document-processing platform.
 
@@ -709,7 +716,7 @@ Main chat does not inject a per-turn wake-context block. Stable recall guidance 
 
 `tool_docs` is a read/search interface over global Socrates tool-usage guidance. It is the right place to inspect tool behavior before retrying failed tools or using unfamiliar/edge-case tools.
 
-`skills` is a model-visible discovery/inspection tool for builtin, global, and project skills. The preferred model path is `skills({ operation: "list" })` with an optional `scope`, followed by `skills({ operation: "describe", id: "<exact-listed-id>" })` or an exact listed `name`. `list` returns compact rows with id/name/scope/description; `describe` returns the selected `SKILL.md` content. The main agent cannot create, edit, or delete skills through this tool; user-triggered Memory Center and project dashboard flows call backend skill builders/deleters.
+`skills` is a model-visible discovery/inspection tool for builtin, global, and project skills. The preferred model path is `skills({ operation: "list" })` with an optional `scope`, followed by `skills({ operation: "describe", id: "<exact-listed-id>" })` or an exact listed `name`. `list` returns compact rows with id/name/scope/description; `describe` returns the selected `SKILL.md` content. The main Socrates agent cannot create, edit, or delete skills through this tool. Skill creation/update should route through explicit UI approval plus the Skill Writer Agent, whose narrow internal write path is `skill_write`.
 
 `project_docs` is the constrained read/search/index/edit interface for `<workspace>/.socrates/MEMORY.md` and `<workspace>/.socrates/PROJECT_NOTES.md`. Memory is durable cross-conversation project state; notes are active working state such as todos, checked files, next commands, restart points, and the protected backend-generated `runtime_context` section. Runtime project docs are structured markdown with stable section ids, so agents should prefer `read_index`, `read_section`, and `patch_section` when the section is known. Tool outputs include system runtime date/time metadata, and successful docs mutations stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Agents cannot patch `runtime_context`; terminal output and live terminal state do not belong there. After meaningful work, the runtime injects one bounded checkpoint if `project_docs memory` has not been updated. A notes edit alone does not satisfy durable memory closure.
 
@@ -719,9 +726,71 @@ Main chat does not inject a per-turn wake-context block. Stable recall guidance 
 
 `soul` is the read-only model-visible access path for `~/.Socrates/identity.md`, which now contains core identity, voice/presence, relationship-to-user, operating-principle, safety-boundary, and tool/memory-discipline sections. It supports `read`, `read_index`, and `read_section`; Socrates should prefer index then section reads, while full reads are reserved for whole-document needs and capped at 8,000 chars. It cannot write. Identity edits are backend memory-agent owned: the memory agent proposes exact oldText/newText patches, the backend verifies target text and hashes, then a second internal model call must answer the literal confirmation prompt `You are about to make changes to the soul. Are you sure?` with exact `yes` before the patch is applied. Applied identity updates are audited and create persistent top-right notifications with compact diffs. Standalone `operating_principles.md` is retired and removed during global memory initialization.
 
-The backend Global Memory Agent replaces the old diary-only helper. It is a scheduled/manual app-level `SocratesAgent` run over completed-turn event manifests after the durable `events.sequence` watermark, not a per-turn project worker. Manifest packing adds completed turns one by one and stops before either 80 turns or the 60k estimated-token cap. The memory-agent model call uses the same V1 170k context-compression trigger as normal chat calls, but passes memory mode so `memoryCompactionSchema` and `memoryAgentCompressorPrompt.ts` compact old memory-agent context. Failures are logged in events and memory-agent tables and must not fail the user chat turn.
+The backend Global Memory Agent replaces the old diary-only helper. It is a scheduled/manual app-level `SocratesAgent` run over completed-turn event manifests after the durable `events.sequence` watermark, not a per-turn project worker. Manifest packing adds completed turns one by one and stops before either 80 turns or the 60k estimated-token cap. The Memory Agent also consumes Socrates-authored memory notes as high-signal leads. Its responsibility is to classify evidence before action, keep `user_profile.md`, `identity.md`, and skill freshness up to date, and mark processed notes done. It may update user profile directly through scoped edits, may update identity only through the existing confirmation policy, and should send approved skill create/update tasks to the Skill Writer Agent instead of writing final skill markdown itself. The memory-agent model call uses the same V1 170k context-compression trigger as normal chat calls, but passes memory mode so `memoryCompactionSchema` and `memoryAgentCompressorPrompt.ts` compact old memory-agent context. Failures are logged in events and memory-agent tables and must not fail the user chat turn.
 
 Memory Center (`/memory`) is the global memory-agent UI. It contains agent status, pending signal, model/thinking/cadence settings, run history, global MCP controls, global skill creation/deletion, and read-only memory files. It must remain a fixed-shell professional UI: header and footer do not scroll, the middle region is the scroll surface, and on desktop the left content and right Memory Files rail scroll independently. Core Memory shows only `identity.md` and `user_profile.md`; `operating_principles.md` is not a file card because those principles are a section inside Identity.
+
+## Memory Notes And Skill Writing Target
+
+Socrates-to-Memory-Agent communication should be a simple backend-backed notepad, not a complex model-facing A2A envelope. For the main Socrates agent, the create tool is:
+
+```text
+memory_note({
+  note: "This turn shows the user's strong preference for human-facing contracts and simple agent handoffs. Review whether it is durable.",
+  importance: "high"
+})
+```
+
+On create, the backend automatically attaches the current user message excerpt, conversation id, message id, turn id, source project, workspace path when available, and default project-local skill-scope hint. Socrates should write the human note only. It should not copy ids into the prose unless the user specifically gave an external id as part of the task. It should not ask for a skill, invent a skill name, choose project/global scope, or name a target memory section.
+
+The Memory Agent receives a separate `memory_notes` inbox:
+
+```text
+list
+  returns at most 10 numbered rows with importance, source project/workspace metadata, default skill-scope hint, and the first short note slice
+
+read(noteNumber)
+  returns full note, attached user message excerpt, and backend trace lookup ids
+
+mark_done(noteNumber)
+  closes the item after profile, identity, or skill-freshness work is handled
+```
+
+The read result deliberately includes trace lookup ids so the Memory Agent can chain into `trace_retrieve` for the full conversation/tool evidence. The note is a lead, not the whole memory item.
+
+Memory Agent classification comes before writes. Durable facts, preferences, allergy/safety boundaries, and current user context belong in `user_profile.md` with evidence anchors when important. Rare Socrates behavior/identity changes go through the identity confirmation path. Only reusable procedures become skill proposals; weak or current-turn-only leads should be skipped and marked done.
+
+Skill proposal scope is owned by the Memory Agent. Socrates-originated notes carry a backend default of project scope because they came from a project turn; the Memory Agent keeps that scope for most project-local workflows and upgrades to global only when the procedure is clearly reusable across projects. Autonomous Memory Agent skill proposals also choose project or global scope.
+
+Memory Agent skill freshness flow:
+
+```text
+completed turns or memory note
+  -> Memory Agent inspects trace evidence and full existing SKILL.md content
+  -> Memory Agent creates a user-visible skill proposal or update proposal
+  -> user approves manually by default, with auto-approve possible later
+  -> approved task goes to Skill Writer Agent
+  -> Skill Writer Agent writes/updates the final SKILL.md through skill_write
+```
+
+Skill Writer Agent is a craft executor. It should not decide whether a skill should exist, accept or reject the product intent, or run broad investigation. It should always perform the approved create/update task unless its read, validation, or scoped write tools fail. There is no fourth agent behind it: `skill_write` is just the narrow save/validation tool.
+
+Skill Writer Agent tools should be narrow:
+
+```text
+trace_retrieve
+skills list/describe/read full skill content
+skill_write for final create/update only
+user_profile read-only
+soul read-only
+project_docs read-only for project skills
+repo_docs read-only for project skills
+current_time when truly needed
+```
+
+It should not receive Terminal, arbitrary filesystem read/write, generic patch tools, identity/profile writes, project/repo docs writes, or raw path mutation tools.
+
+Settings exposes independent worker model selectors for Skill Writer, Context Compactor, and Title Generator. Each selector uses the normal model registry and thinking options, with defaults preserving the current production choices.
 
 `mcp_registry` is the model-visible MCP discovery/inspection tool. The model-facing contract is intentionally just `list` and `describe`: `list` returns compact global plus project-visible servers with canonical ids, names, scopes, descriptions, and the first tool previews; `describe` takes an exact listed `id` or exact listed `name`, loads that single server, and returns docs plus dynamic `mcp__...` tool names. UI/API flows handle configure, check, enable/disable, and delete. The system prompt carries only concise registry-first guidance; it must not dump MCP server tool lists or schemas. The first provider call exposes only the core tools plus `mcp_registry`; dynamic `mcp__...` tool names may be added to later same-turn provider requests only after the registry/runtime reports them available.
 
@@ -979,7 +1048,7 @@ Conversation title behavior:
 - A newly created conversation starts with the persisted title `New conversation`.
 - When the first user message is sent, the backend immediately updates the conversation title to the first 15 normalized characters followed by `...` when truncated.
 - If the first message is image-only, the immediate placeholder is `Image chat...`.
-- In the WebSocket chat path, the backend then generates a personalized title from the first text/image message. It tries OpenRouter `meta-llama/llama-4-maverick` pinned to DeepInfra first, and falls back to OpenRouter `qwen/qwen3.5-flash-02-23` pinned to Alibaba if Llama does not return a title.
+- In the WebSocket chat path, the backend then generates a personalized title from the first text/image message. It tries OpenRouter `meta-llama/llama-4-maverick` with cost-aware routing first, and falls back to OpenRouter `qwen/qwen3.5-flash-02-23` with cost-aware routing if Llama does not return a title.
 - Generated title updates are emitted as `conversation.updated` so the sidebar/header can replace the placeholder without a full refresh.
 - Later user messages do not auto-rename the conversation.
 - Manual rename through the conversation row menu overrides the title.

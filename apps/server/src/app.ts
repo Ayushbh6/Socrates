@@ -18,6 +18,7 @@ export type BuildServerOptions = {
   databaseHandle?: DatabaseHandle
   agent?: SocratesAgent
   titleProvider?: ModelProvider | false
+  memoryProvider?: ModelProvider
   socratesHome?: string
 }
 
@@ -27,7 +28,10 @@ export const buildServer = async (options: BuildServerOptions) => {
 
   const socratesHome = options.socratesHome ?? (options.dbPath === ":memory:" ? undefined : path.dirname(options.dbPath))
   const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
-  const store = new SocratesStore(handle, undefined, credentials, socratesHome ? { socratesHome } : {})
+  const store = new SocratesStore(handle, undefined, credentials, {
+    ...(socratesHome ? { socratesHome } : {}),
+    ...(options.memoryProvider ? { memoryProvider: options.memoryProvider } : {}),
+  })
   store.cancelStaleActiveTurns()
   store.startGlobalMemoryScheduler()
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Bell, LayoutDashboard, Eye, EyeOff, X } from "lucide-react";
+import { Bell, Check, LayoutDashboard, Eye, EyeOff, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientCommand, Conversation, ConversationCostUsage, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent, TurnUsageReport } from "@socrates/contracts";
 import { api } from "@/lib/api";
@@ -167,6 +167,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [notifications, setNotifications] = useState<SocratesNotification[]>([]);
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
+  const [approvingSkillActionId, setApprovingSkillActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
@@ -987,6 +988,26 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     }
   };
 
+  const handleApproveSkillProposal = async (notification: SocratesNotification) => {
+    const payload = notification.payload && typeof notification.payload === "object" ? (notification.payload as Record<string, unknown>) : {};
+    const actionId = typeof payload.actionId === "string" ? payload.actionId : "";
+    if (!actionId) {
+      return;
+    }
+    setApprovingSkillActionId(actionId);
+    try {
+      await api.approveMemorySkillProposal(actionId);
+      await api.markNotificationRead(notification.id);
+      const response = await api.listNotifications({ limit: 20 });
+      setNotifications(response.notifications);
+      setUnreadNotificationCount(response.unreadCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not approve skill proposal.");
+    } finally {
+      setApprovingSkillActionId((current) => (current === actionId ? null : current));
+    }
+  };
+
   const handleAllNotificationsRead = async () => {
     try {
       const response = await api.markAllNotificationsRead();
@@ -1129,6 +1150,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             onClose={() => setIsNotificationCenterOpen(false)}
             onRead={handleNotificationRead}
             onReadAll={handleAllNotificationsRead}
+            onApproveSkillProposal={handleApproveSkillProposal}
+            approvingSkillActionId={approvingSkillActionId}
           />
           {hasTerminals ? (
             <button
@@ -1254,6 +1277,8 @@ function NotificationCenter({
   onClose,
   onRead,
   onReadAll,
+  onApproveSkillProposal,
+  approvingSkillActionId,
 }: {
   notifications: SocratesNotification[];
   unreadCount: number;
@@ -1262,6 +1287,8 @@ function NotificationCenter({
   onClose: () => void;
   onRead: (notificationId: string) => void;
   onReadAll: () => void;
+  onApproveSkillProposal: (notification: SocratesNotification) => void;
+  approvingSkillActionId: string | null;
 }) {
   return (
     <div className="relative ml-auto shrink-0">
@@ -1303,14 +1330,15 @@ function NotificationCenter({
                 const payload = notification.payload && typeof notification.payload === "object" ? (notification.payload as Record<string, unknown>) : {};
                 const diff = typeof payload.diff === "string" ? payload.diff : undefined;
                 const rationale = typeof payload.rationale === "string" ? payload.rationale : undefined;
+                const actionId = typeof payload.actionId === "string" ? payload.actionId : undefined;
+                const isSkillProposal = notification.type === "memory.skill.proposed" && Boolean(actionId);
+                const isApproving = Boolean(actionId && approvingSkillActionId === actionId);
                 return (
-                  <button
+                  <div
                     key={notification.id}
-                    type="button"
-                    className={`block w-full border-b border-gray-100 px-3 py-3 text-left hover:bg-gray-50 ${
+                    className={`border-b border-gray-100 px-3 py-3 ${
                       notification.readAt ? "bg-white" : "bg-teal-50/40"
                     }`}
-                    onClick={() => onRead(notification.id)}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
@@ -1325,8 +1353,32 @@ function NotificationCenter({
                         {diff}
                       </pre>
                     ) : null}
-                    <p className="mt-2 font-mono text-[10px] text-brand-text-light">{new Date(notification.createdAt).toLocaleString()}</p>
-                  </button>
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <p className="font-mono text-[10px] text-brand-text-light">{new Date(notification.createdAt).toLocaleString()}</p>
+                      <div className="flex shrink-0 items-center gap-2">
+                        {isSkillProposal ? (
+                          <button
+                            type="button"
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-brand-button px-2.5 text-xs font-medium text-white hover:bg-brand-button-hover disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={isApproving}
+                            onClick={() => onApproveSkillProposal(notification)}
+                          >
+                            <Check className="size-3.5" />
+                            {isApproving ? "Creating" : "Approve"}
+                          </button>
+                        ) : null}
+                        {!notification.readAt ? (
+                          <button
+                            type="button"
+                            className="h-8 rounded-md border border-gray-200 px-2.5 text-xs font-medium text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark"
+                            onClick={() => onRead(notification.id)}
+                          >
+                            Mark read
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
                 );
               })
             )}

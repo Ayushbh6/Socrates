@@ -13,15 +13,16 @@ index_tags: [tool_usage]
 
 `skills` lets the Global Memory Agent list and describe reusable workflow guidance.
 
-Skills are read-only background guidance for scheduled memory runs and are not evidence for memory edits.
+Skills are readable background guidance for scheduled memory runs and are not evidence for user behavior by themselves. Use them to understand what already exists before proposing a new skill or update through `edit_files`.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
 ## When To Use
 
 - A reusable workflow or skill may help interpret a repeated pattern.
-- The manifest suggests a skill candidate that should be reported for human review.
+- The manifest or a `memory_notes` lead suggests a procedural skill candidate that should become a user-visible proposal.
 - You need to understand an existing skill before deciding whether evidence is already represented elsewhere.
+- You are about to propose updating an existing skill and need to read its current `SKILL.md` carefully.
 - Do not use skills as proof of user behavior or current project state.
 <!-- /socrates:section -->
 
@@ -39,7 +40,8 @@ Skills are read-only background guidance for scheduled memory runs and are not e
 1. List skills when reusable guidance may apply.
 2. Describe the most specific skill before relying on it.
 3. Use `trace_retrieve` for exact evidence before any memory write.
-4. If a new or changed skill seems useful, report the candidate in `Skipped`; scheduled runs must not edit skills.
+4. If an existing skill should change, describe/read it first so the proposal reflects the current contents.
+5. If a new or changed skill seems useful, decide project/global scope, use a human-facing skill slug, then call `edit_files` with `target: "skill"`, `scope`, and a concise Skill Writer request. This records a proposal; it does not write final markdown during your run.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
@@ -47,6 +49,6 @@ Skills are read-only background guidance for scheduled memory runs and are not e
 
 - If no skill matches, continue with trace evidence and existing memory surfaces.
 - If the list is too broad, narrow by scope or describe only the strongest exact match.
-- If a skill is missing or stale, report the candidate improvement in `Skipped`.
-- If an attempted skill write is rejected, do not retry; scheduled runs cannot update skills.
+- If a skill is missing or stale, propose a new skill or update only when the evidence is durable and reusable.
+- If a skill proposal is rejected, do not retry unless the error points to a simple name or request correction.
 <!-- /socrates:section -->

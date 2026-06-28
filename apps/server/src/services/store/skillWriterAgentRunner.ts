@@ -1,14 +1,15 @@
 import type {
   ProviderId,
   RuntimeConfig,
+  SkillScope,
   ThinkingEffort,
   WorkerModelSettings,
 } from "@socrates/contracts"
-import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, SocratesAgent, type SocratesAgentEvent } from "@socrates/core"
+import { buildSkillWriterSystemPrompt, createSkillWriterToolRegistry, SocratesAgent, type SocratesAgentEvent } from "@socrates/core"
 import type { ModelProvider } from "@socrates/providers"
-import { createMemoryAgentToolExecutors, type MemoryAgentToolCallbacks } from "./memoryAgentToolExecutors"
+import { createSkillWriterToolExecutors, type SkillWriterToolCallbacks } from "./skillWriterToolExecutors"
 
-const MEMORY_AGENT_RUNTIME_CONFIG = (input: MemoryAgentModelSettings): RuntimeConfig => ({
+const SKILL_WRITER_RUNTIME_CONFIG = (input: SkillWriterModelSettings): RuntimeConfig => ({
   providerId: input.providerId,
   modelId: input.modelId,
   thinkingEnabled: input.thinkingEnabled,
@@ -17,34 +18,50 @@ const MEMORY_AGENT_RUNTIME_CONFIG = (input: MemoryAgentModelSettings): RuntimeCo
   sandboxMode: "read_only",
 })
 
-export type MemoryAgentModelSettings = {
+export type SkillWriterModelSettings = {
   providerId: ProviderId
   modelId: string
   thinkingEnabled: boolean
   thinkingEffort?: ThinkingEffort
 }
 
-export type MemoryAgentRunInput = {
+export type SkillWriterRunInput = {
   provider: ModelProvider
-  modelSettings: MemoryAgentModelSettings
-  evidence: string
+  modelSettings: SkillWriterModelSettings
+  scope: SkillScope
+  operation: "create" | "update"
+  name: string
+  request: string
   projectId: string
   conversationId: string
   sessionId: string
   turnId: string
   workspacePath?: string
   socratesHome: string
-  tools: MemoryAgentToolCallbacks
+  tools: SkillWriterToolCallbacks
   contextCompressorSettings?: WorkerModelSettings
   onEvent?: (event: SocratesAgentEvent) => void
 }
 
-export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<string> => {
-  const agent = new SocratesAgent(input.provider, createMemoryToolRegistry())
-  const runtimeConfig = MEMORY_AGENT_RUNTIME_CONFIG(input.modelSettings)
-  const systemPrompt = buildMemoryAgentSystemPrompt({
+export const runSkillWriterTurn = async (input: SkillWriterRunInput): Promise<string> => {
+  const agent = new SocratesAgent(input.provider, createSkillWriterToolRegistry())
+  const runtimeConfig = SKILL_WRITER_RUNTIME_CONFIG(input.modelSettings)
+  const systemPrompt = buildSkillWriterSystemPrompt({
     socratesHome: input.socratesHome,
+    ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
   })
+  const task = [
+    "# Approved Skill Writer Task",
+    `scope: ${input.scope}`,
+    `operation: ${input.operation}`,
+    `skill_name: ${input.name}`,
+    "",
+    "Approved request:",
+    input.request.trim(),
+    "",
+    "You must call skill_write with the complete final SKILL.md.",
+  ].join("\n")
+
   let text = ""
   for await (const event of agent.streamTurn({
     projectId: input.projectId,
@@ -54,17 +71,17 @@ export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<st
     providerId: input.modelSettings.providerId,
     modelId: input.modelSettings.modelId,
     runtimeConfig,
-    messages: [{ role: "user", content: input.evidence }],
+    messages: [{ role: "user", content: task }],
     systemPromptOverride: systemPrompt,
     workspacePath: input.workspacePath ?? input.socratesHome,
-    toolExecutors: createMemoryAgentToolExecutors(input.tools),
+    toolExecutors: createSkillWriterToolExecutors(input.tools),
     requestApproval: async () => ({
       decision: "rejected",
-      reason: "Backend memory agent writes only through scoped edit_files, which does not require external approval.",
+      reason: "Skill Writer Agent only writes through scoped skill_write, which does not require external approval.",
     }),
-    maxToolCallsPerTurn: 60,
-    maxParallelToolCalls: 4,
-    maxConfirmedToolErrorsPerTurn: 8,
+    maxToolCallsPerTurn: 20,
+    maxParallelToolCalls: 2,
+    maxConfirmedToolErrorsPerTurn: 4,
     contextCompression: {
       enabled: true,
       mode: "memory",

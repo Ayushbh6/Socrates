@@ -32,6 +32,7 @@ export {
 } from "./context/contextCompression"
 export { buildSocratesSystemPrompt, socratesBasePrompt, type SocratesPromptContext } from "./prompts/socratesPrompt"
 export { buildMemoryAgentSystemPrompt, memoryAgentBasePrompt, type MemoryAgentPromptContext } from "./prompts/memoryPrompt"
+export { buildSkillWriterSystemPrompt, skillWriterBasePrompt, type SkillWriterPromptContext } from "./prompts/skillWriterPrompt"
 export {
   SOCRATES_COMPRESSOR_SYSTEM_PROMPT,
   buildSocratesCompressorUserContent,
@@ -45,5 +46,5 @@ export {
   renderMemoryCompactionMarkdown,
   type MemoryAgentCompressorUserPromptInput,
 } from "./prompts/memoryAgentCompressorPrompt"
-export { createDefaultToolRegistry, createMemoryToolRegistry, ToolRegistry } from "./tools/registry"
+export { createDefaultToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"

@@ -127,6 +127,8 @@ export const openRouterProviderRoutingByModelId: Record<string, OpenRouterProvid
   "deepseek/deepseek-v4-pro": deepseekV4ProToolRouting,
   "deepseek/deepseek-v4-flash": deepseekV4FlashToolRouting,
   "google/gemma-4-31b-it": priceFirstCacheRouting(),
+  "meta-llama/llama-4-maverick": priceFirstCacheRouting(),
+  "qwen/qwen3.5-flash-02-23": priceFirstCacheRouting(),
 }
 
 // Every OpenRouter model resolves to cost-aware routing. Explicit per-model
@@ -149,12 +151,6 @@ export const openRouterProviderRoutingForModel = (
   const explicit = openRouterProviderRoutingByModelId[modelId]
   if (explicit) {
     return explicit
-  }
-  if (modelId === "meta-llama/llama-4-maverick") {
-    return priceFirstCacheRouting()
-  }
-  if (modelId === "qwen/qwen3.5-flash-02-23") {
-    return priceFirstCacheRouting()
   }
   return priceFirstCacheRouting()
 }

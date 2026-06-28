@@ -687,6 +687,64 @@ export const memoryAgentJobs = sqliteTable(
   }),
 )
 
+export const memoryNotes = sqliteTable(
+  "memory_notes",
+  {
+    id: text("id").primaryKey(),
+    noteNumber: integer("note_number").notNull(),
+    status: text("status").notNull(),
+    priority: text("priority").notNull(),
+    intent: text("intent").notNull(),
+    note: text("note").notNull(),
+    projectId: text("project_id"),
+    conversationId: text("conversation_id"),
+    sessionId: text("session_id"),
+    turnId: text("turn_id"),
+    messageId: text("message_id"),
+    messageExcerpt: text("message_excerpt"),
+    createdByAgent: text("created_by_agent").notNull(),
+    createdAt: text("created_at").notNull(),
+    claimedAt: text("claimed_at"),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    statusIdx: index("memory_notes_status_idx").on(table.status, table.noteNumber),
+    sourceTurnIdx: index("memory_notes_source_turn_idx").on(table.turnId),
+    conversationIdx: index("memory_notes_conversation_idx").on(table.conversationId),
+    noteNumberIdx: uniqueIndex("memory_notes_number_idx").on(table.noteNumber),
+  }),
+)
+
+export const skillWriterJobs = sqliteTable(
+  "skill_writer_jobs",
+  {
+    id: text("id").primaryKey(),
+    scope: text("scope").notNull(),
+    operation: text("operation").notNull(),
+    skillName: text("skill_name").notNull(),
+    projectId: text("project_id"),
+    conversationId: text("conversation_id"),
+    sessionId: text("session_id"),
+    turnId: text("turn_id"),
+    sourceKind: text("source_kind").notNull(),
+    sourceId: text("source_id"),
+    status: text("status").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    outputJson: text("output_json"),
+    error: text("error"),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    statusIdx: index("skill_writer_jobs_status_idx").on(table.status, table.startedAt),
+    sourceIdx: index("skill_writer_jobs_source_idx").on(table.sourceKind, table.sourceId),
+    skillIdx: index("skill_writer_jobs_skill_idx").on(table.scope, table.skillName),
+  }),
+)
+
 export const projectMemoryAgentSettings = sqliteTable(
   "project_memory_agent_settings",
   {
@@ -715,6 +773,23 @@ export const memoryAgentGlobalSettings = sqliteTable("memory_agent_global_settin
   ...timestamps,
   metadataJson: text("metadata_json"),
 })
+
+export const workerModelSettings = sqliteTable(
+  "worker_model_settings",
+  {
+    id: text("id").primaryKey(),
+    workerId: text("worker_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
+    thinkingEffort: text("thinking_effort"),
+    ...timestamps,
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    workerIdx: uniqueIndex("worker_model_settings_worker_idx").on(table.workerId),
+  }),
+)
 
 export const memoryAgentGlobalState = sqliteTable("memory_agent_global_state", {
   id: text("id").primaryKey(),

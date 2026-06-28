@@ -14,7 +14,7 @@ import {
   projectWorkspaceSchema,
   userSchema,
 } from "./entities"
-import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
+import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema, workerModelRoleSchema, workerModelSettingsSchema } from "./models"
 import { mcpRegistryServerSchema, mcpRegistryToolDescriptorSchema, mcpServerScopeSchema, skillScopeSchema, skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 const skillNameInputSchema = z
@@ -369,6 +369,14 @@ export const buildGlobalSkillResponseSchema = z
   .strict()
 export type BuildGlobalSkillResponse = z.infer<typeof buildGlobalSkillResponseSchema>
 
+export const approveMemorySkillProposalResponseSchema = z
+  .object({
+    actionId: idSchema,
+    skill: skillSummarySchema,
+  })
+  .strict()
+export type ApproveMemorySkillProposalResponse = z.infer<typeof approveMemorySkillProposalResponseSchema>
+
 export const deleteSkillResponseSchema = z
   .object({
     deletedSkillName: z.string().min(1),
@@ -485,6 +493,36 @@ export const updateMemoryAgentGlobalSettingsResponseSchema = z
   })
   .strict()
 export type UpdateMemoryAgentGlobalSettingsResponse = z.infer<typeof updateMemoryAgentGlobalSettingsResponseSchema>
+
+export const listWorkerModelSettingsResponseSchema = z
+  .object({
+    settings: z.array(workerModelSettingsSchema),
+  })
+  .strict()
+export type ListWorkerModelSettingsResponse = z.infer<typeof listWorkerModelSettingsResponseSchema>
+
+export const updateWorkerModelSettingsRequestSchema = z
+  .object({
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    thinkingEnabled: z.boolean(),
+    thinkingEffort: thinkingEffortSchema.optional(),
+  })
+  .strict()
+export type UpdateWorkerModelSettingsRequest = z.infer<typeof updateWorkerModelSettingsRequestSchema>
+
+export const updateWorkerModelSettingsResponseSchema = z
+  .object({
+    settings: workerModelSettingsSchema,
+  })
+  .strict()
+export type UpdateWorkerModelSettingsResponse = z.infer<typeof updateWorkerModelSettingsResponseSchema>
+
+export const workerModelSettingsParamsSchema = z
+  .object({
+    workerId: workerModelRoleSchema,
+  })
+  .strict()
 
 export const triggerMemoryAgentRunResponseSchema = z
   .object({

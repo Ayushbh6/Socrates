@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   apiResponseSchema,
+  approveMemorySkillProposalResponseSchema,
   approvalDecideCommandSchema,
   approvalRequestedEventSchema,
   approvalResolvedEventSchema,
@@ -69,7 +70,14 @@ import {
   memoryAgentCheckedEventSchema,
   memoryAgentFailedEventSchema,
   memoryAgentStartedEventSchema,
+  memoryNoteCompletedEventSchema,
+  memoryNoteCreatedEventSchema,
   memoryPrimaryUpdatedEventSchema,
+  memorySkillApprovedEventSchema,
+  memorySkillProposedEventSchema,
+  memorySkillUpdatedEventSchema,
+  memorySkillWriterFailedEventSchema,
+  memorySkillWriterStartedEventSchema,
   memorySoulConfirmationRequestedEventSchema,
   memorySoulConfirmationResolvedEventSchema,
   memorySoulUpdatedEventSchema,
@@ -100,6 +108,8 @@ import {
   updateConversationResponseSchema,
   updateMemoryAgentGlobalSettingsRequestSchema,
   updateMemoryAgentGlobalSettingsResponseSchema,
+  updateWorkerModelSettingsRequestSchema,
+  updateWorkerModelSettingsResponseSchema,
   updateProjectWorkspaceRequestSchema,
   updateProjectWorkspaceResponseSchema,
   upsertProjectInstructionsRequestSchema,
@@ -119,6 +129,10 @@ import {
   editFilesToolOutputSchema,
   listProjectResourcesToolInputSchema,
   listProjectResourcesToolOutputSchema,
+  memoryNoteToolInputSchema,
+  memoryNoteToolOutputSchema,
+  memoryNotesToolInputSchema,
+  memoryNotesToolOutputSchema,
   mcpRegistryToolInputSchema,
   mcpRegistryToolModelInputSchema,
   mcpRegistryToolOutputSchema,
@@ -126,6 +140,8 @@ import {
   skillsToolModelInputSchema,
   skillsToolInputSchema,
   skillsToolOutputSchema,
+  skillWriteToolInputSchema,
+  skillWriteToolOutputSchema,
   toolDocsToolInputSchema,
   toolDocsToolOutputSchema,
   projectDocsToolInputSchema,
@@ -148,6 +164,8 @@ import {
   traceRetrieveToolModelInputSchema,
   traceRetrieveToolOutputSchema,
   triggerMemoryAgentRunResponseSchema,
+  listWorkerModelSettingsResponseSchema,
+  workerModelSettingsParamsSchema,
   conversationToolRunSchema,
   editToolOutputSchema,
 } from "./index"
@@ -590,6 +608,7 @@ describe("http contracts", () => {
     expect(buildGlobalSkillRequestSchema.safeParse({ name: "global-review", request: "Build a global review skill" }).success).toBe(true)
     expect(buildGlobalSkillRequestSchema.safeParse({ name: "global--review", request: "Build a global review skill" }).success).toBe(false)
     expect(buildGlobalSkillResponseSchema.safeParse({ skill }).success).toBe(true)
+    expect(approveMemorySkillProposalResponseSchema.safeParse({ actionId: "memact_1", skill }).success).toBe(true)
     expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, pending, item }).success).toBe(true)
   })
 
@@ -984,8 +1003,73 @@ describe("websocket server event contracts", () => {
       envelope("memory.primary.updated", {
         jobId: "memjob_1",
         actionId: "memact_1",
-        path: "/tmp/skills/general/SKILL.md",
-        targetKind: "skills",
+        path: "/tmp/user_profile.md",
+        targetKind: "user_profile",
+      }),
+    ),
+    memoryNoteCreatedEventSchema.safeParse(
+      envelope("memory.note.created", {
+        noteNumber: 1,
+        importance: "normal",
+        defaultSkillScope: "project",
+      }),
+    ),
+    memoryNoteCompletedEventSchema.safeParse(
+      envelope("memory.note.completed", {
+        noteNumber: 1,
+      }),
+    ),
+    memorySkillProposedEventSchema.safeParse(
+      envelope("memory.skill.proposed", {
+        jobId: "memjob_1",
+        actionId: "memact_1",
+        notificationId: "note_1",
+        scope: "global",
+        operation: "create",
+        skillName: "memory-review",
+        path: "skills/memory-review/SKILL.md",
+      }),
+    ),
+    memorySkillApprovedEventSchema.safeParse(
+      envelope("memory.skill.approved", {
+        actionId: "memact_1",
+        scope: "global",
+        operation: "create",
+        skillName: "memory-review",
+        path: "skills/memory-review/SKILL.md",
+      }),
+    ),
+    memorySkillUpdatedEventSchema.safeParse(
+      envelope("memory.skill.updated", {
+        jobId: "skjob_1",
+        scope: "global",
+        operation: "create",
+        skillName: "memory-review",
+        path: "skills/memory-review/SKILL.md",
+        sourceKind: "memory_agent_action",
+        sourceId: "memact_1",
+      }),
+    ),
+    memorySkillWriterStartedEventSchema.safeParse(
+      envelope("memory.skill_writer.started", {
+        jobId: "skjob_1",
+        scope: "global",
+        operation: "create",
+        skillName: "memory-review",
+        sourceKind: "memory_agent_action",
+        sourceId: "memact_1",
+      }),
+    ),
+    memorySkillWriterFailedEventSchema.safeParse(
+      envelope("memory.skill_writer.failed", {
+        jobId: "skjob_1",
+        scope: "global",
+        operation: "create",
+        skillName: "memory-review",
+        error: {
+          code: "skill_writer_failed",
+          message: "failed",
+        },
       }),
     ),
     memorySoulConfirmationRequestedEventSchema.safeParse(
@@ -1455,6 +1539,74 @@ describe("tool contracts", () => {
     expect(skillsToolModelInputSchema.safeParse({ operation: "search", query: "memory" }).success).toBe(false)
     expect(skillsToolModelInputSchema.safeParse({ operation: "describe" }).success).toBe(false)
     expect(skillsToolOutputSchema.safeParse({ operation: "list", skills: [skill], totalMatches: 1, truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 } }).success).toBe(true)
+    expect(memoryNoteToolInputSchema.safeParse({ note: "User gave a strong testing preference in this turn.", importance: "high" }).success).toBe(true)
+    expect(memoryNoteToolInputSchema.safeParse({ note: "User gave a strong testing preference in this turn.", intent: "profile_preference", priority: "high" }).success).toBe(false)
+    expect(memoryNoteToolOutputSchema.safeParse({ noteNumber: 1, status: "open", attachedSource: "current_user_message" }).success).toBe(true)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "list", limit: 10 }).success).toBe(true)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "list", limit: 11 }).success).toBe(false)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "read", noteNumber: 1 }).success).toBe(true)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done" }).success).toBe(false)
+    expect(
+      memoryNotesToolOutputSchema.safeParse({
+        operation: "read",
+        notes: [
+          {
+            noteNumber: 1,
+            status: "processing",
+            importance: "normal",
+            note: "This turn has a reusable workflow.",
+            projectId: project.id,
+            projectName: "Memory Project",
+            defaultSkillScope: "project",
+            workspacePath: "/tmp/memory-project",
+            conversationId: conversation.id,
+            turnId: "turn_1",
+            messageId: "msg_1",
+            createdAt: timestamp,
+          },
+        ],
+        totalMatches: 1,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
+      }).success,
+    ).toBe(true)
+    expect(workerModelSettingsParamsSchema.safeParse({ workerId: "skill_writer" }).success).toBe(true)
+    expect(workerModelSettingsParamsSchema.safeParse({ workerId: "unknown" }).success).toBe(false)
+    expect(
+      updateWorkerModelSettingsRequestSchema.safeParse({
+        providerId: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        thinkingEnabled: false,
+      }).success,
+    ).toBe(true)
+    const workerSetting = {
+      workerId: "skill_writer",
+      providerId: "openrouter",
+      modelId: "xiaomi/mimo-v2.5-pro",
+      thinkingEnabled: false,
+      updatedAt: timestamp,
+    }
+    expect(listWorkerModelSettingsResponseSchema.safeParse({ settings: [workerSetting] }).success).toBe(true)
+    expect(updateWorkerModelSettingsResponseSchema.safeParse({ settings: workerSetting }).success).toBe(true)
+    expect(
+      skillWriteToolInputSchema.safeParse({
+        scope: "global",
+        operation: "create",
+        name: "memory-review",
+        content: "---\nname: memory-review\ndescription: Use when reviewing memory.\n---\n\n# Memory Review\n",
+      }).success,
+    ).toBe(true)
+    expect(skillWriteToolInputSchema.safeParse({ scope: "builtin", operation: "create", name: "memory-review", content: "# bad" }).success).toBe(false)
+    expect(
+      skillWriteToolOutputSchema.safeParse({
+        scope: "global",
+        operation: "create",
+        name: "memory-review",
+        path: "skills/memory-review/SKILL.md",
+        changed: true,
+        summary: skill,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
+      }).success,
+    ).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "read", area: "memory" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "search", area: "notes", query: "decision" }).success).toBe(true)
     expect(projectDocsToolInputSchema.safeParse({ operation: "edit", area: "notes", editMode: "append", text: "- note" }).success).toBe(true)
@@ -1561,8 +1713,8 @@ describe("tool contracts", () => {
         target: "skill",
         name: "general",
         path: "skills/general/SKILL.md",
-        changed: true,
-        status: "applied",
+        changed: false,
+        status: "proposed",
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 20 },
       }).success,
     ).toBe(true)

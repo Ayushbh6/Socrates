@@ -312,7 +312,7 @@ It owns:
 - Context compression policy, prompts, packing, and provider-call-boundary budget checks.
 - Approval flow orchestration.
 - Session orchestration.
-- Sub-agent orchestration later.
+- Specialized-agent and sub-agent orchestration, including the Global Memory Agent, Skill Writer Agent, and future reusable subagents.
 - Event emission from agent execution.
 
 The core package should depend on interfaces and contracts, not hardcoded providers or UI details.
@@ -330,10 +330,15 @@ tools/
   editTool.ts
   bashTool.ts
   traceRetrieveTool.ts
-  socratesMemoryTool.ts
-  projectNotesTool.ts
+  toolDocsTool.ts
+  skillsTool.ts
+  projectDocsTool.ts
+  repoDocsTool.ts
+  memoryNoteTool.ts
   soulTool.ts
+  userProfileTool.ts
   listProjectResourcesTool.ts
+  mcpRegistryTool.ts
 ```
 
 Rules for core tool files:
@@ -413,6 +418,8 @@ list_project_resources
 mcp_registry
 ```
 
+The main Socrates surface includes `memory_note`. The Memory Agent's `memory_notes` inbox and the Skill Writer Agent's `skill_write` mutation tool are specialized-agent/internal tools, not normal main-chat tools.
+
 Implementation can be split into narrower workspace files such as text readers, PDF readers, image readers, search helpers, patch helpers, shell runners, and trace readers. These are internal helpers unless explicitly registered as model-visible tools like `apply_patch`.
 
 Reader implementations should stay pragmatic. The initial `read` implementation can wrap local extractors or lightweight libraries, for example text file reads, `pdftotext`-style PDF extraction when available, document/slide text extraction, CSV/JSON previews, and image metadata or OCR/description extraction. Socrates should not build a large document-processing platform before the coding-agent loop works.
@@ -420,6 +427,8 @@ Reader implementations should stay pragmatic. The initial `read` implementation 
 The `read`, `edit`, and `apply_patch` implementations together own file freshness and verification. `read` returns full-file content hashes and file metadata. `edit` is the single-file mutation tool for targeted replacements, new-file writes, and explicit whole-file overwrites; existing-file `content` writes require `overwrite: true`, and all existing-file edits require a prior active-turn `read`, with freshness tracked by the harness rather than model-carried hashes. `apply_patch` exposes `patchText` to the model and accepts the structured `*** Begin Patch` envelope for model-friendly multi-file changes, with `@@` labels treated as optional hints and exact old lines used for matching. Existing-file patch, delete, and rename operations also require a prior active-turn `read`; after any successful edit or patch, another mutation to the same path must re-read first. Standard unified diffs remain accepted for compatibility when already valid; structured patches are normalized, applied, and verified with patched, created, deleted, and renamed intent. Non-dry-run writes must read/stat/hash before mutation, verify disk after mutation, and report recoverable workspace errors rather than successful edits when freshness or read-back checks fail. Workspace mutation helpers also enforce the project-docs and repo-docs boundaries: `<workspace>/.socrates/MEMORY.md` and `<workspace>/.socrates/PROJECT_NOTES.md` can be read normally but cannot be created, edited, patched, deleted, or renamed through generic `edit`/`apply_patch`; mutations must go through `project_docs`. `<workspace>/.socrates/repo_docs/*.md` can be read/searched normally but must be changed through `repo_docs`. Before `edit`, `apply_patch`, or approval-required mutation tools can run, Socrates must have read, searched, or edited `repo_docs` in the same turn.
 
 `apps/server/src/services/store/memoryStore.ts` owns Socrates memory scaffolding, `tool_docs`, `skills`, `project_docs`, `repo_docs`, `soul`, `user_profile`, the backend memory agent, primary doc patches, and soul confirmation. Main chat no longer receives a per-turn wake-context block; stable routing lives in the base prompt, and changing memory/runtime facts are fetched through tools. `project_docs` is the workspace memory/notes surface for `.socrates/MEMORY.md` and `.socrates/PROJECT_NOTES.md`; `repo_docs` is the runtime doctrine surface for `.socrates/repo_docs/*.md`. Runtime memory docs use YAML frontmatter plus `socrates:section` markers, and `apps/server/src/services/store/memoryDocParser.ts` parses/builds section indexes for `read_index`, `read_section`, and `patch_section`. Parsed indexes are persisted in `memory_doc_indexes` and `memory_doc_sections`; markdown remains the source of truth. `tool_docs` is read-only tool guidance for the main agent; primary tool-usage markdown lives in `apps/server/src/memory/defaults/primary/tool_usage/`, is copied into server `dist` during build, and is installed into `~/.Socrates/tool_usage/` on memory initialization. `skills` discovers builtin, global, and project skills from disk at call time; the model-facing path is list/describe with exact ids/names, while backend UI flows create/delete global or project skills. `soul` reads `~/.Socrates/identity.md` through read/index/section operations, while `user_profile` reads durable cross-project user profile facts through the same focused read pattern. Standalone `operating_principles.md` is retired and deleted during global memory initialization. Workspace repo-doc templates live in `apps/server/src/memory/defaults/workspace/repo_docs/` and are installed into `<workspace>/.socrates/repo_docs/` only when missing. Memory-agent actions and confirmations are persisted in SQLite, and applied identity updates create durable notification rows through `apps/server/src/services/store/notificationStore.ts`.
+
+The accepted refactor is to slim `memoryStore.ts` back toward persistence, scaffolding, and coordination. Serious model-driven capabilities must not live there as one-off provider streams. The current skill-builder path, including the hidden `socrates-skill-writer` asset plus `generateProjectSkill`/`generateGlobalSkill`, should become a real Skill Writer Agent built with the same runner, prompt, tool-registry, validation, event, and persistence structure as Socrates and the Global Memory Agent.
 
 The `bash` implementation is the compatibility id for the Terminal tool and remains a real escape hatch. Even when a structured reader/searcher exists, approved Terminal commands may be used for fallback extraction or diagnostics. The safety boundary is approval, workspace scoping, command policy, timeout, and output truncation, not a blanket ban on commands that overlap with `read` or `search`. Terminal v3 uses PTY shell adapters in `packages/workspace/src/tools/bashTool.ts`: POSIX on macOS/Linux, ConPTY `powershell.exe` then `pwsh` on Windows, and `cmd.exe` only as fallback. Blocking `run` uses a fresh PTY command and returns a normalized terminal transcript; it does not preserve exported environment or cwd across separate calls. `packages/workspace/src/tools/mutationLock.ts` owns the per-workspace mutation queue used by `edit`, `apply_patch`, Socrates-owned markdown patches, and foreground mutating Terminal commands across concurrent conversations. `start`/`status`/`output`/`stop` are server-level conversation Terminal operations managed by `apps/server/src/ws/conversationTerminals.ts`; they own conversation-scoped PTY handles, bounded output buffers, persistence in `terminal_sessions`/`terminal_output_chunks`, `terminal.data` WebSocket chunks, auto-detach, supervisor reconciliation, user-only raw stdin, resize, and cleanup on stop/delete/workspace switch/shutdown/TTL. Model-facing Terminal control uses natural targeting only: omit the target when exactly one active Terminal exists or pass the human Terminal name; opaque terminal/process ids and output cursors stay internal for UI/runtime compatibility. Duplicate starts with an already-running human name reuse the existing Terminal and return recent DB-backed output instead of spawning another process. Because Terminal already starts in the active workspace, commands that begin by changing into a guessed external absolute path are rejected with a recoverable tool error. For subfolder commands, the model should pass `cwd` instead of prefixing commands with `cd`; before file- or directory-creating commands, it should verify the intended parent directory exists and use explicit relative paths or `cwd`. Relative workspace navigation and approved external destination arguments remain allowed.
 
@@ -460,6 +469,27 @@ model-visible access
 Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Completed context compaction snapshots are indexed as hidden `conversation_summary` trace evidence. Rolling conversation summaries outside compaction remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
 Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, `CompressorAgent`, compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression or tokenizer behavior must not leak into `apps/web` or route handlers.
+
+### Specialized Agent Ownership
+
+Socrates, the Global Memory Agent, and the Skill Writer Agent should share one production-grade agent pattern:
+
+```text
+agent prompt
+  -> shared agent runner
+  -> scoped tool registry
+  -> executor mapping
+  -> structured validation
+  -> typed events and persistence
+```
+
+Do not add serious model-driven workflows as bespoke provider calls inside routes, stores, or UI handlers. A store method may enqueue work, load context, persist outputs, and apply validated effects, but it should not own a private prompt loop for a capability that behaves like an agent.
+
+Role boundaries:
+
+- Socrates writes workspace project memory, project notes, and repo docs through `project_docs` and `repo_docs`. It may create `memory_note` leads for the Memory Agent. It does not write identity, user profile, or skills.
+- The Global Memory Agent writes user profile through scoped edits, proposes/applies identity only through the confirmation policy, inspects full skills for freshness, and sends approved skill create/update tasks to the Skill Writer Agent.
+- The Skill Writer Agent reads approved task context and existing skill content, then writes the final `SKILL.md` through `skill_write`. It does not decide whether the skill should exist.
 
 ### `packages/providers`
 

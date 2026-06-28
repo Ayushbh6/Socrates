@@ -29,7 +29,7 @@ type SectionDefinition = {
   kind: string
   heading: string
   tags?: string[]
-  body?: string
+  body: string
 }
 
 const STATE_LEDGER_START = "<!-- socrates-state-ledger:start -->"
@@ -289,7 +289,11 @@ export const buildStructuredMemoryDoc = (profile: MemoryDocProfile, options: { l
 }
 
 const sectionBodiesForPrimaryDocMigration = (content: string, profile: MemoryDocProfile): Record<string, string> => {
-  const defaults = Object.fromEntries(sectionDefinitions[profile.docType].map((section) => [section.id, section.body]))
+  if (profile.docType !== "identity" && profile.docType !== "user_profile") {
+    return {}
+  }
+  const docType = profile.docType
+  const defaults = Object.fromEntries(sectionDefinitions[docType].map((section) => [section.id, section.body]))
   const buckets: Record<string, string[]> = {}
   const add = (sectionId: string, body: string): void => {
     const trimmed = body.trim()
@@ -299,19 +303,19 @@ const sectionBodiesForPrimaryDocMigration = (content: string, profile: MemoryDoc
     buckets[sectionId] = [...(buckets[sectionId] ?? []), trimmed]
   }
   const entries = existingSectionEntries(content, profile)
-  const fallbackSection = profile.docType === "identity" ? "core_identity" : "profile_summary"
+  const fallbackSection = docType === "identity" ? "core_identity" : "profile_summary"
   if (entries.length === 0) {
     add(fallbackSection, markdownBodyWithoutFrontmatterAndTitle(content))
   }
   for (const entry of entries) {
-    for (const expanded of primaryDocMigrationEntries(entry, profile.docType)) {
-      add(sectionIdForMigratedEntry(profile.docType, expanded.id, expanded.heading), expanded.body)
+    for (const expanded of primaryDocMigrationEntries(entry, docType)) {
+      add(sectionIdForMigratedEntry(docType, expanded.id, expanded.heading), expanded.body)
     }
   }
-  for (const section of sectionDefinitions[profile.docType]) {
+  for (const section of sectionDefinitions[docType]) {
     const migrated = buckets[section.id] ?? []
     if (migrated.length > 0) {
-      defaults[section.id] = cleanPrimarySectionBody(profile.docType, section.id, Array.from(new Set(migrated)).join("\n\n"))
+      defaults[section.id] = cleanPrimarySectionBody(docType, section.id, Array.from(new Set(migrated)).join("\n\n"))
     }
   }
   return defaults
@@ -345,7 +349,7 @@ const tolerantSectionMarkerEntries = (content: string): Array<{ id?: string; hea
     const open = /^<!--\s*socrates:section\s+(.+?)\s*-->\s*$/.exec(line)
     if (open) {
       const attributes = parseAttributes(open[1] ?? "")
-      stack.push({ id: attributes.id, start: index + 1 })
+      stack.push({ ...(attributes.id ? { id: attributes.id } : {}), start: index + 1 })
       continue
     }
     if (!/^<!--\s*\/socrates:section\s*-->\s*$/.test(line)) {
@@ -358,7 +362,7 @@ const tolerantSectionMarkerEntries = (content: string): Array<{ id?: string; hea
     const entryBody = lines.slice(entry.start, index).join("\n").trim()
     const heading = firstHeading(entryBody)
     if (entryBody) {
-      entries.push({ id: entry.id, ...(heading ? { heading } : {}), body: entryBody })
+      entries.push({ ...(entry.id ? { id: entry.id } : {}), ...(heading ? { heading } : {}), body: entryBody })
     }
   }
   return entries
@@ -367,7 +371,8 @@ const tolerantSectionMarkerEntries = (content: string): Array<{ id?: string; hea
 const primaryDocMigrationEntries = (entry: { id?: string; heading?: string; body: string }, docType: "identity" | "user_profile"): Array<{ id?: string; heading?: string; body: string }> => {
   const nested = markdownHeadingEntries(entry.body)
   if (nested.length === 0) {
-    return [{ id: entry.id, heading: entry.heading, body: cleanPrimaryMigrationBody(entry.body) }].filter((item) => item.body.trim().length > 0)
+    const body = cleanPrimaryMigrationBody(entry.body)
+    return body.trim().length > 0 ? [{ ...(entry.id ? { id: entry.id } : {}), ...(entry.heading ? { heading: entry.heading } : {}), body }] : []
   }
   const expanded: Array<{ id?: string; heading?: string; body: string }> = []
   for (const nestedEntry of nested) {
@@ -383,7 +388,8 @@ const primaryDocMigrationEntries = (entry: { id?: string; heading?: string; body
   if (expanded.length > 0) {
     return expanded
   }
-  return [{ id: entry.id, heading: entry.heading, body: cleanPrimaryMigrationBody(entry.body) }].filter((item) => item.body.trim().length > 0)
+  const body = cleanPrimaryMigrationBody(entry.body)
+  return body.trim().length > 0 ? [{ ...(entry.id ? { id: entry.id } : {}), ...(entry.heading ? { heading: entry.heading } : {}), body }] : []
 }
 
 const isPrimaryMigrationWrapperHeading = (key: string): boolean =>
@@ -495,7 +501,7 @@ const primarySemanticLineKey = (docType: "identity" | "user_profile", sectionId:
   }
   const boldLabel = /^-\s+\*\*(.+?)\*\*\s*:/.exec(trimmed)
   if (boldLabel) {
-    const labelKey = normalizeSectionKey(boldLabel[1])
+    const labelKey = normalizeSectionKey(boldLabel[1] ?? "")
     if (docType === "user_profile") {
       if (sectionId === "profile_summary" && labelKey === "primaryproject") return `${docType}:${sectionId}:primaryproject`
       if (sectionId === "stable_preferences") {
@@ -551,8 +557,9 @@ const markdownHeadingEntries = (content: string): Array<{ heading: string; body:
   }
   return matches.map((match, index) => {
     const start = (match.index ?? 0) + match[0].length
-    const end = index + 1 < matches.length ? matches[index + 1].index ?? body.length : body.length
-    return { heading: match[1].trim(), body: body.slice(start, end).trim() }
+    const nextMatch = matches[index + 1]
+    const end = nextMatch ? nextMatch.index ?? body.length : body.length
+    return { heading: (match[1] ?? "").trim(), body: body.slice(start, end).trim() }
   })
 }
 

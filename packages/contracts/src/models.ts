@@ -46,6 +46,21 @@ export const listModelsResponseSchema = z
   })
   .strict()
 
+export const workerModelRoleSchema = z.enum(["skill_writer", "context_compactor", "title_generator"])
+export type WorkerModelRole = z.infer<typeof workerModelRoleSchema>
+
+export const workerModelSettingsSchema = z
+  .object({
+    workerId: workerModelRoleSchema,
+    providerId: providerIdSchema,
+    modelId: z.string().min(1),
+    thinkingEnabled: z.boolean(),
+    thinkingEffort: thinkingEffortSchema.optional(),
+    updatedAt: z.string().min(1),
+  })
+  .strict()
+export type WorkerModelSettings = z.infer<typeof workerModelSettingsSchema>
+
 export const conversationTokenUsageSchema = z
   .object({
     totalTokens: z.number().int().nonnegative(),

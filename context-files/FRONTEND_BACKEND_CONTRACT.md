@@ -1008,8 +1008,8 @@ WebSocket chat title generation:
 normal chat send uses WebSocket chat.message.send
 after the first user message is saved, emit conversation.updated with the placeholder title
 generate a personalized title from the first text/image message
-primary title model: openrouter meta-llama/llama-4-maverick, pinned to DeepInfra
-fallback title model: openrouter qwen/qwen3.5-flash-02-23, pinned to Alibaba
+primary title model: openrouter meta-llama/llama-4-maverick, using cost-aware OpenRouter routing
+fallback title model: openrouter qwen/qwen3.5-flash-02-23, using cost-aware OpenRouter routing
 if a generated title is returned and the title is still the placeholder, update the conversation and emit conversation.updated
 record title-generation usage into ai_usage_events with source_kind = conversation_title when provider usage is available
 ```
@@ -1563,14 +1563,18 @@ type ContextCompactionFailedPayload = {
 
 ### Memory And Notification Events
 
-The backend Global Memory Agent runs on schedule or manual request when cumulative completed-turn evidence after the durable watermark reaches its signal thresholds. It packs completed-turn manifest entries one by one up to 80 turns or the 60k estimated-token cap, then runs through `SocratesAgent` with the same V1 170k context-compression trigger used by normal chat calls. Memory-agent context compression must use the memory compressor prompt and `memoryCompactionSchema`, not the chat compressor prompt/schema. It must never block or fail the user's chat turn. Its lifecycle and user-visible notice events are contract-validated:
+The backend Global Memory Agent runs on schedule or manual request when cumulative completed-turn evidence after the durable watermark reaches its signal thresholds. It packs completed-turn manifest entries one by one up to 80 turns or the 60k estimated-token cap, then runs through `SocratesAgent` with the same V1 170k context-compression trigger used by normal chat calls. It also consumes Socrates-authored memory notes as high-signal leads for profile, identity, and skill freshness. Memory-agent context compression must use the memory compressor prompt and `memoryCompactionSchema`, not the chat compressor prompt/schema. It must never block or fail the user's chat turn. Its lifecycle and user-visible notice events are contract-validated:
 
 ```text
 memory.agent.started
 memory.agent.completed
 memory.agent.failed
-memory.diary.appended
 memory.primary.updated
+memory.note.created
+memory.note.completed
+memory.skill.proposed
+memory.skill.approved
+memory.skill.updated
 memory.soul.confirmation.requested
 memory.soul.confirmation.resolved
 memory.soul.updated
@@ -1580,7 +1584,8 @@ notification.read
 
 Rules:
 
-- Memory-agent events are audit/runtime events for background synthesis, diary writes, primary doc updates, and soul confirmation.
+- Memory-agent events are audit/runtime events for background synthesis, primary doc updates, memory-note processing, skill-freshness proposals, Skill Writer Agent results, and soul confirmation.
+- Skill proposal notifications should show a concise human summary and default to per-skill manual approval. A future setting may allow auto-approval, but the Skill Writer Agent still receives only approved create/update tasks.
 - `memory.soul.confirmation.requested` and `memory.soul.confirmation.resolved` persist the internal yes/no confirmation flow before a soul patch can apply.
 - `notification.created` carries the full notification row. `notification.read` carries the notification id plus updated unread count.
 - The frontend should update the notification badge from `notification.created` and `notification.read`, while HTTP remains the reload/source-of-truth path.
@@ -1702,7 +1707,9 @@ list_project_resources
 mcp_registry
 ```
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus dynamic MCP tools returned by `mcp_registry`. `projects` and `edit_files` are base contract tools for backend memory workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+The main-agent `memory_note` tool uses only `note` and optional `importance` as model-authored input. The backend attaches current-turn lookup refs, source project/workspace metadata, and default project-local skill-scope hint automatically.
+
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus `memory_note` and dynamic MCP tools returned by `mcp_registry`. `projects`, `edit_files`, `memory_notes`, and `skill_write` are base/specialized contract tools for backend agent workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -2194,6 +2201,50 @@ Rules:
 - Search results are bounded snippets. Exact guidance should be read with `operation: "read"` and a returned path.
 - The main agent cannot edit tool docs. Backend memory workflows may update tool docs through scoped `edit_files`.
 
+### `memory_note`
+
+Accepted next main-agent tool for sending a simple lead to the Global Memory Agent. This is an agent-to-agent notepad entry, not a complex A2A envelope.
+
+Input:
+
+```ts
+type MemoryNoteToolInput = {
+  note: string
+  importance?: "normal" | "high"
+}
+```
+
+Output:
+
+```ts
+type MemoryNoteToolOutput = {
+  noteNumber: number
+  status: "open"
+  attachedSource: "current_user_message"
+}
+```
+
+Rules:
+
+- Socrates writes the note in human language and keeps it short.
+- Socrates should not manually include conversation id, message id, or turn id. The backend attaches those refs from the current turn.
+- Socrates should not request a skill, provide a skill name, choose project/global scope, or name the target memory file/section. The Memory Agent owns classification and routing.
+- The note is only a lead. The Memory Agent must use `memory_notes.read` and `trace_retrieve` when exact evidence matters.
+
+Specialized Memory Agent inbox:
+
+```ts
+type MemoryNotesToolInput = {
+  operation: "list" | "read" | "mark_done"
+  limit?: number // list only; capped at 10
+  noteNumber?: number
+}
+```
+
+`list` returns at most 10 numbered rows with importance, a short note slice, source project/workspace metadata when available, and a default skill-scope hint. `read` returns the full note, source user-message excerpt, and backend lookup refs (`conversationId`, `messageId`, `turnId`) so the Memory Agent can chain into `trace_retrieve`. These refs are backend-produced lookup values, not fields the sending model authored.
+
+The Memory Agent must classify each note before acting: durable user facts/preferences/current context go to `user_profile.md`, rare identity/behavior updates use the identity confirmation flow, reusable procedures may become skill proposals, and weak leads are skipped. Socrates-originated notes default to project-local skill scope; the Memory Agent may keep that scope or upgrade a procedural skill proposal to global when it is clearly reusable across projects.
+
 ### `skills`
 
 Read-only discovery and inspection access to reusable workflows from builtin, global, and project skill roots. The preferred model-facing path is `list` then `describe`; backend compatibility may still support `search`/`read`, but prompts should not make those the default route.
@@ -2239,8 +2290,54 @@ Rules:
 - `describe` requires either an exact `id` copied from `list` or an exact listed `name`. Prefer canonical `id`.
 - Do not copy a display name into `id`, and do not pass both `id` and `name` unless both values come from the same listed skill row.
 - The runtime must not inject hidden matched skill ids/descriptions by grepping the user prompt.
-- The main agent cannot create, edit, or delete skills through this tool. Global/project skill create/delete flows are explicit backend UI/API actions.
+- The main Socrates agent cannot create, edit, or delete skills through this tool. Global/project skill create/delete flows and Memory Agent skill-freshness proposals route approved work to the Skill Writer Agent.
+- The Memory Agent and Skill Writer Agent must be able to inspect full existing `SKILL.md` content before making or applying exact updates. If output is truncated, they should request the full content before deciding the edit.
 - Global skills are visible to every project. Project skills are visible only in that project's active workspace.
+- Memory Agent skill proposal notifications include `scope` and, for project skills, the project id/name. Skill names should be human-facing slugs, not random ids or test suffixes.
+
+### Skill Writer Agent Internal Write Path
+
+The Skill Writer Agent is a specialized agent, not a UI helper and not a hidden fourth model behind a tool. It receives approved create/update tasks from the user flow or Memory Agent, reads the relevant context, authors the final markdown, and calls `skill_write`.
+
+```ts
+type SkillWriteInput = {
+  scope: "global" | "project"
+  operation: "create" | "update"
+  name: string
+  content: string
+}
+```
+
+Rules:
+
+- `skill_write` validates and saves the final `SKILL.md`; it does not interpret product intent.
+- The Skill Writer Agent should always perform approved tasks unless validation, read, or write tooling fails.
+- It should have narrow read tools only: `trace_retrieve`, `skills`, read-only `user_profile`, read-only `soul`, and read-only project/repo docs for project skills.
+- It must not receive Terminal, arbitrary filesystem writes, identity/profile writes, project/repo docs writes, or raw path mutation tools.
+
+### Worker Model Settings
+
+Skill Writer, Context Compactor, and Title Generator model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these three workers while preserving the default models already used by the app.
+
+```ts
+type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator"
+
+type WorkerModelSettings = {
+  workerId: WorkerModelRole
+  providerId: "openai" | "google" | "openrouter"
+  modelId: string
+  thinkingEnabled: boolean
+  thinkingEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+  updatedAt: string
+}
+
+GET /api/worker-model-settings
+  -> { settings: WorkerModelSettings[] }
+
+PATCH /api/worker-model-settings/:workerId
+  body { providerId, modelId, thinkingEnabled, thinkingEffort? }
+  -> { settings: WorkerModelSettings }
+```
 
 ### `project_docs`
 

@@ -11,9 +11,9 @@ index_tags: [tool_usage]
 <!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
 ## Purpose
 
-`edit_files` is the Global Memory Agent's only scheduled-run write tool.
+`edit_files` is the Global Memory Agent's write/proposal tool.
 
-In v1 it writes only global `identity` and `user_profile` targets during scheduled memory runs. Tool docs and skills are read-only for scheduled memory runs.
+It writes only global `identity` and `user_profile` primary-memory targets. For `skill`, it creates a user-visible skill proposal; final `SKILL.md` is written later by the Skill Writer Agent after user approval. Tool docs remain read-only for scheduled memory runs.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
@@ -23,7 +23,8 @@ In v1 it writes only global `identity` and `user_profile` targets during schedul
 - Use it for small durable global memory improvements, not routine summaries.
 - Use the `identity` target rarely and only for broad identity, voice, operating-principle, safety, or tool/memory discipline changes.
 - Use `user_profile` for stable cross-project user facts or preferences.
-- Do not use it for tool-doc or skill improvements; report those candidates in the final `Skipped` section with evidence.
+- Use `skill` only when evidence supports reusable procedure. User facts, preferences, allergies, boundaries, or temporary context usually belong in `user_profile`, not skills. For allergies and safety/dietary facts, preserve only what the user said; do not add severity labels, diagnoses, symptoms, causes, or other medical detail unless explicit in the source.
+- Do not use it for tool-doc improvements; report those candidates in the final `Skipped` section with evidence.
 - Route edits to the smallest relevant structured section. Do not add a generic legacy block to identity or user profile.
 <!-- /socrates:section -->
 
@@ -31,7 +32,9 @@ In v1 it writes only global `identity` and `user_profile` targets during schedul
 ## Inputs
 
 - `target`: `identity`, `user_profile`, or `skill`.
-- `skill` is exposed as a target shape but scheduled runs cannot create or update skills.
+- `target: "skill"` requires `name`; `scope` should be `project` or `global`; `newText` is the short approved request for the Skill Writer Agent, not a full file write.
+- Project scope is the default for Socrates-originated notes with a source project/workspace. Choose global only when the workflow should clearly transfer across projects.
+- Use human-facing skill slugs such as `agent-contracts` or `release-checklist`. Do not add random suffixes, timestamps, ids, or test-style names unless resolving a real collision.
 - `editMode: "replace"` requires exact `oldText` and `newText`.
 - `sectionId` can narrow replacement to one structured section for identity or user profile.
 - `rationale` should explain why the evidence is durable.
@@ -64,7 +67,8 @@ User profile section ids:
 3. Choose the smallest exact `oldText` span that should change.
 4. Prefer `sectionId` when updating a structured memory section.
 5. Call `edit_files` with a focused replacement and evidence-backed rationale.
-6. If evidence suggests a tool-doc or skill improvement, do not call `edit_files`; report the proposed wording and evidence in `Skipped`.
+6. For a skill proposal, inspect the relevant existing skill first with `skills` when updating, decide project/global scope, then call `edit_files` with `target: "skill"`, `scope`, a human-facing `name`, and a concise request describing what the Skill Writer should create or change.
+7. If evidence suggests a tool-doc improvement, do not call `edit_files`; report the proposed wording and evidence in `Skipped`.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
@@ -72,7 +76,7 @@ User profile section ids:
 
 - If `oldText` matches zero or multiple times, re-read the target and retry only with a clearly unique span.
 - If soul confirmation rejects an edit, do not force it; report the rejection in the final summary.
-- If a skill write is rejected, report the skill candidate in `Skipped`.
+- If a skill proposal is rejected by the backend, report the reason and do not retry unless the fix is obvious and narrow.
 - If a tool-doc update seems useful, never retry with `target: "tool_doc"`; tool docs are read-only for models in v1.
 - If evidence is weak, stale, or project-specific, skip the edit.
 <!-- /socrates:section -->

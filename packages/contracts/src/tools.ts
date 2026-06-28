@@ -20,6 +20,9 @@ export const baseToolNameSchema = z.enum([
   "user_profile",
   "list_project_resources",
   "mcp_registry",
+  "memory_note",
+  "memory_notes",
+  "skill_write",
 ])
 export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
 export const toolNameSchema = z.union([baseToolNameSchema, dynamicMcpToolNameSchema])
@@ -1080,6 +1083,95 @@ export const skillsToolOutputSchema = z
   .strict()
 export type SkillsToolOutput = z.infer<typeof skillsToolOutputSchema>
 
+export const memoryNoteImportanceSchema = z.enum(["normal", "high"])
+export type MemoryNoteImportance = z.infer<typeof memoryNoteImportanceSchema>
+
+export const memoryNoteToolInputSchema = z
+  .object({
+    note: z.string().min(1).max(2_000),
+    importance: memoryNoteImportanceSchema.optional(),
+  })
+  .strict()
+export type MemoryNoteToolInput = z.infer<typeof memoryNoteToolInputSchema>
+
+export const memoryNoteToolOutputSchema = z
+  .object({
+    noteNumber: z.number().int().positive(),
+    status: z.literal("open"),
+    attachedSource: z.literal("current_user_message"),
+  })
+  .strict()
+export type MemoryNoteToolOutput = z.infer<typeof memoryNoteToolOutputSchema>
+
+export const memoryNotesToolInputSchema = z
+  .object({
+    operation: z.enum(["list", "read", "mark_done"]),
+    noteNumber: z.number().int().positive().optional(),
+    limit: z.number().int().positive().max(10).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if ((input.operation === "read" || input.operation === "mark_done") && !input.noteNumber) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["noteNumber"], message: `${input.operation} requires noteNumber.` })
+    }
+  })
+export type MemoryNotesToolInput = z.infer<typeof memoryNotesToolInputSchema>
+
+export const memoryNotesToolOutputSchema = z
+  .object({
+    operation: z.enum(["list", "read", "mark_done"]),
+    notes: z.array(
+      z
+        .object({
+          noteNumber: z.number().int().positive(),
+          status: z.enum(["open", "processing", "done", "dismissed"]),
+          importance: memoryNoteImportanceSchema,
+          notePreview: z.string().optional(),
+          note: z.string().optional(),
+          projectId: z.string().min(1).optional(),
+          projectName: z.string().min(1).optional(),
+          defaultSkillScope: skillScopeSchema.optional(),
+          workspacePath: z.string().min(1).optional(),
+          conversationId: z.string().min(1).optional(),
+          turnId: z.string().min(1).optional(),
+          messageId: z.string().min(1).optional(),
+          messageExcerpt: z.string().optional(),
+          createdAt: z.string().min(1),
+          completedAt: z.string().min(1).optional(),
+        })
+        .strict(),
+    ),
+    totalMatches: z.number().int().nonnegative(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type MemoryNotesToolOutput = z.infer<typeof memoryNotesToolOutputSchema>
+
+export const skillWriteToolInputSchema = z
+  .object({
+    scope: z.enum(["global", "project"]),
+    operation: z.enum(["create", "update"]),
+    name: z.string().min(1).max(64),
+    content: z.string().min(1).max(80_000),
+  })
+  .strict()
+export type SkillWriteToolInput = z.infer<typeof skillWriteToolInputSchema>
+
+export const skillWriteToolOutputSchema = z
+  .object({
+    scope: z.enum(["global", "project"]),
+    operation: z.enum(["create", "update"]),
+    name: z.string().min(1),
+    path: z.string().min(1),
+    changed: z.boolean(),
+    summary: skillSummarySchema,
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type SkillWriteToolOutput = z.infer<typeof skillWriteToolOutputSchema>
+
 export const projectsToolInputSchema = z
   .object({
     operation: z.enum(["list_projects", "list_conversations"]),
@@ -1143,6 +1235,7 @@ export const editFilesToolInputSchema = z
   .object({
     target: editFilesTargetSchema,
     name: z.string().min(1).optional(),
+    scope: skillScopeSchema.optional(),
     editMode: z.enum(["replace", "create"]),
     sectionId: z.string().min(1).optional(),
     oldText: z.string().optional(),
@@ -1155,6 +1248,9 @@ export const editFilesToolInputSchema = z
   .superRefine((input, context) => {
     if (input.target === "skill" && !input.name) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required for skill targets." })
+    }
+    if (input.target !== "skill" && input.scope) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "scope is supported only for skill targets." })
     }
     if (input.target === "skill" && input.sectionId) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: "sectionId is not supported for skill targets." })
@@ -1172,7 +1268,7 @@ export const editFilesToolOutputSchema = z
     path: z.string().min(1),
     changed: z.boolean(),
     actionId: z.string().min(1).optional(),
-    status: z.enum(["applied", "awaiting_confirmation", "rejected", "unchanged"]),
+    status: z.enum(["applied", "awaiting_confirmation", "proposed", "rejected", "unchanged"]),
     section: memoryDocSectionSchema.optional(),
     diff: z.string().optional(),
     truncation: truncationMetadataSchema,

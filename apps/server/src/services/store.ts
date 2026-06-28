@@ -47,7 +47,14 @@ import type {
   ListMemoryAgentRunsResponse,
   UpdateMemoryAgentGlobalSettingsRequest,
   UpdateMemoryAgentGlobalSettingsResponse,
+  UpdateWorkerModelSettingsRequest,
+  UpdateWorkerModelSettingsResponse,
   MemoryAgentFileContentQuery,
+  MemoryNoteToolInput,
+  MemoryNoteToolOutput,
+  MemoryNotesToolInput,
+  MemoryNotesToolOutput,
+  ApproveMemorySkillProposalResponse,
   ProjectResource,
   ProjectWorkspace,
   BuildProjectSkillRequest,
@@ -70,6 +77,8 @@ import type {
   UpsertProjectInstructionsRequest,
   User,
   ServerEvent,
+  WorkerModelRole,
+  WorkerModelSettings,
 } from "@socrates/contracts"
 import { AiSdkProvider, createDefaultEmbeddingProvider, type EmbeddingProvider, type ModelProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import type { DatabaseHandle } from "../db/client"
@@ -88,6 +97,7 @@ import { MemoryAgentGlobalSettingsStore } from "./store/memoryAgentGlobalSetting
 import { NotificationStore } from "./store/notificationStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
+import { WorkerModelSettingsStore } from "./store/workerModelSettingsStore"
 import type { StoreContext } from "./store/shared"
 import { TraceStore } from "./store/traceStore"
 import { TerminalStore } from "./store/terminalStore"
@@ -138,6 +148,7 @@ export class SocratesStore {
   private readonly traces: TraceStore
   private readonly memory: MemoryStore
   private readonly memoryAgentSettings: MemoryAgentGlobalSettingsStore
+  private readonly workerModelSettings: WorkerModelSettingsStore
   private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
@@ -172,6 +183,7 @@ export class SocratesStore {
     this.traces = new TraceStore(context, this.embeddings)
     this.notifications = new NotificationStore(context)
     this.memoryAgentSettings = new MemoryAgentGlobalSettingsStore(context)
+    this.workerModelSettings = new WorkerModelSettingsStore(context)
     const memoryOptions = {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
       ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
@@ -179,6 +191,7 @@ export class SocratesStore {
       traceRetrieve: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => this.traces.retrieve(projectId, conversationId, input),
       traceRetrieveGlobal: (input: TraceRetrieveToolInput) => this.traces.retrieveGlobal(input),
       getMemoryAgentGlobalSettings: () => this.memoryAgentSettings.ensureSettings(),
+      getWorkerModelSettings: (workerId: WorkerModelRole) => this.workerModelSettings.ensureSetting(workerId),
       createNotification: (input: Parameters<NotificationStore["createNotification"]>[0]) => this.notifications.createNotification(input),
     }
     this.memory = new MemoryStore(context, memoryOptions)
@@ -298,6 +311,14 @@ export class SocratesStore {
     return this.memory.runSkillsTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
   }
 
+  createMemoryNote(projectId: string, input: MemoryNoteToolInput, source: { conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
+    return this.memory.createMemoryNote(input, { projectId, ...source })
+  }
+
+  runMemoryNotesTool(input: MemoryNotesToolInput): MemoryNotesToolOutput {
+    return this.memory.runMemoryNotesTool(input)
+  }
+
   async buildProjectSkill(projectId: string, input: BuildProjectSkillRequest): Promise<BuildProjectSkillResponse> {
     return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request, input.name) }
   }
@@ -309,6 +330,10 @@ export class SocratesStore {
 
   async buildGlobalSkill(input: BuildGlobalSkillRequest): Promise<BuildGlobalSkillResponse> {
     return { skill: await this.memory.buildGlobalSkill(input.request, input.name) }
+  }
+
+  async approveMemorySkillProposal(actionId: string): Promise<ApproveMemorySkillProposalResponse> {
+    return this.memory.approveMemorySkillProposal(actionId)
   }
 
   deleteGlobalSkill(skillName: string): DeleteSkillResponse {
@@ -345,6 +370,18 @@ export class SocratesStore {
 
   updateMemoryAgentSettings(input: UpdateMemoryAgentGlobalSettingsRequest): UpdateMemoryAgentGlobalSettingsResponse {
     return { settings: this.memoryAgentSettings.updateSettings(input) }
+  }
+
+  listWorkerModelSettings(): { settings: WorkerModelSettings[] } {
+    return { settings: this.workerModelSettings.ensureAll() }
+  }
+
+  getWorkerModelSetting(workerId: WorkerModelRole): WorkerModelSettings {
+    return this.workerModelSettings.ensureSetting(workerId)
+  }
+
+  updateWorkerModelSettings(workerId: WorkerModelRole, input: UpdateWorkerModelSettingsRequest): UpdateWorkerModelSettingsResponse {
+    return { settings: this.workerModelSettings.updateSetting(workerId, input) }
   }
 
   async runGlobalMemoryAgent(trigger: "scheduled" | "manual" = "manual"): Promise<TriggerMemoryAgentRunResponse> {

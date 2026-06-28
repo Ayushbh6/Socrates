@@ -3,7 +3,7 @@ import { apiErrorSchema } from "./api"
 import { conversationSchema, idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
 import { memoryAgentSignalSnapshotSchema } from "./http"
 import { providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
-import { terminalStatusSchema, toolNameSchema } from "./tools"
+import { memoryNoteImportanceSchema, skillScopeSchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const schemaVersionSchema = z.literal(1)
 
@@ -396,8 +396,69 @@ export const memoryPrimaryUpdatedPayloadSchema = z
     jobId: idSchema,
     actionId: idSchema,
     path: z.string().min(1),
-    targetKind: z.enum(["tool_usage", "skills"]),
+    targetKind: z.enum(["tool_usage", "skills", "user_profile"]),
     rationale: z.string().min(1).optional(),
+  })
+  .strict()
+
+export const memoryNoteCreatedPayloadSchema = z
+  .object({
+    noteNumber: z.number().int().positive(),
+    importance: memoryNoteImportanceSchema,
+    defaultSkillScope: skillScopeSchema.optional(),
+  })
+  .strict()
+
+export const memoryNoteCompletedPayloadSchema = z
+  .object({
+    noteNumber: z.number().int().positive(),
+  })
+  .strict()
+
+export const memorySkillProposalPayloadSchema = z
+  .object({
+    jobId: idSchema.optional(),
+    actionId: idSchema,
+    notificationId: idSchema.optional(),
+    scope: z.enum(["global", "project"]),
+    operation: z.enum(["create", "update"]),
+    skillName: z.string().min(1),
+    skillTitle: z.string().min(1).optional(),
+    projectId: idSchema.optional(),
+    path: z.string().min(1).optional(),
+  })
+  .strict()
+
+export const memorySkillUpdatedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    scope: z.enum(["global", "project"]),
+    operation: z.enum(["create", "update"]),
+    skillName: z.string().min(1),
+    path: z.string().min(1),
+    sourceKind: z.string().min(1),
+    sourceId: idSchema.optional(),
+  })
+  .strict()
+
+export const memorySkillWriterStartedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    scope: skillScopeSchema,
+    operation: z.enum(["create", "update"]),
+    skillName: z.string().min(1),
+    sourceKind: z.string().min(1),
+    sourceId: idSchema.optional(),
+  })
+  .strict()
+
+export const memorySkillWriterFailedPayloadSchema = z
+  .object({
+    jobId: idSchema,
+    scope: skillScopeSchema,
+    operation: z.enum(["create", "update"]),
+    skillName: z.string().min(1),
+    error: apiErrorSchema,
   })
   .strict()
 
@@ -576,6 +637,13 @@ export const memoryAgentCompletedEventSchema = socketEnvelopeSchema("memory.agen
 export const memoryAgentFailedEventSchema = socketEnvelopeSchema("memory.agent.failed", memoryAgentFailedPayloadSchema)
 export const memoryAgentCheckedEventSchema = socketEnvelopeSchema("memory.agent.checked", memoryAgentCheckedPayloadSchema)
 export const memoryPrimaryUpdatedEventSchema = socketEnvelopeSchema("memory.primary.updated", memoryPrimaryUpdatedPayloadSchema)
+export const memoryNoteCreatedEventSchema = socketEnvelopeSchema("memory.note.created", memoryNoteCreatedPayloadSchema)
+export const memoryNoteCompletedEventSchema = socketEnvelopeSchema("memory.note.completed", memoryNoteCompletedPayloadSchema)
+export const memorySkillProposedEventSchema = socketEnvelopeSchema("memory.skill.proposed", memorySkillProposalPayloadSchema)
+export const memorySkillApprovedEventSchema = socketEnvelopeSchema("memory.skill.approved", memorySkillProposalPayloadSchema)
+export const memorySkillUpdatedEventSchema = socketEnvelopeSchema("memory.skill.updated", memorySkillUpdatedPayloadSchema)
+export const memorySkillWriterStartedEventSchema = socketEnvelopeSchema("memory.skill_writer.started", memorySkillWriterStartedPayloadSchema)
+export const memorySkillWriterFailedEventSchema = socketEnvelopeSchema("memory.skill_writer.failed", memorySkillWriterFailedPayloadSchema)
 export const memorySoulConfirmationRequestedEventSchema = socketEnvelopeSchema(
   "memory.soul.confirmation.requested",
   memorySoulConfirmationRequestedPayloadSchema,
@@ -623,6 +691,13 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   memoryAgentFailedEventSchema,
   memoryAgentCheckedEventSchema,
   memoryPrimaryUpdatedEventSchema,
+  memoryNoteCreatedEventSchema,
+  memoryNoteCompletedEventSchema,
+  memorySkillProposedEventSchema,
+  memorySkillApprovedEventSchema,
+  memorySkillUpdatedEventSchema,
+  memorySkillWriterStartedEventSchema,
+  memorySkillWriterFailedEventSchema,
   memorySoulConfirmationRequestedEventSchema,
   memorySoulConfirmationResolvedEventSchema,
   memorySoulUpdatedEventSchema,

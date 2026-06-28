@@ -21,6 +21,7 @@ import type {
   McpServerStatus,
   SkillSummary,
   User,
+  WorkerModelSettings,
 } from "@socrates/contracts"
 import { clientCommandSchema, memoryDocRequiredSections, serverEventSchema } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
@@ -119,7 +120,7 @@ const hasToolResultPart = (messages: unknown[]): boolean =>
 const buildTestServer = async (
   dbPath = tempDbPath(),
   agent = createTestAgent(),
-  options: { socratesHome?: string; titleProvider?: ModelProvider | false } = {},
+  options: { socratesHome?: string; titleProvider?: ModelProvider | false; memoryProvider?: ModelProvider } = {},
 ): Promise<TestServer> => {
   const app = await buildServer({ dbPath, agent, ...options })
   servers.push(app)
@@ -186,6 +187,9 @@ const serializedRequestMessages = (request: { messages: unknown }): string => JS
 const requestHasToolResult = (request: { messages: unknown }, providerToolCallId: string): boolean =>
   serializedRequestMessages(request).includes(providerToolCallId)
 
+const plainRequestText = (request: { messages: Array<{ content: unknown }> }): string =>
+  request.messages.map((message) => (typeof message.content === "string" ? message.content : "")).join("\n")
+
 const processExists = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
@@ -231,6 +235,57 @@ const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
     baseTokens,
     method: "local_tiktoken",
     safetyMarginPercent: 0,
+  }
+}
+
+const createSkillWriterProvider = (): ModelProvider => {
+  let writeIndex = 0
+  return {
+    countTokens: fakeCountTokens,
+    async *stream(request) {
+      const hasSkillWrite = request.tools?.some((tool) => tool.name === "skill_write") ?? false
+      const serialized = serializedRequestMessages(request)
+      if (hasSkillWrite && !serialized.includes('"tool-result"')) {
+        writeIndex += 1
+        const taskText = plainRequestText(request)
+        const scope = /\bscope:\s*(global|project)/.exec(taskText)?.[1] ?? "global"
+        const operation = /\boperation:\s*(create|update)/.exec(taskText)?.[1] ?? "create"
+        const name = /\bskill_name:\s*([a-z0-9-]+)/.exec(taskText)?.[1] ?? `generated-skill-${writeIndex}`
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: `skill_writer_write_${writeIndex}`,
+            toolName: "skill_write",
+            input: {
+              scope,
+              operation,
+              name,
+              content: [
+                "---",
+                `name: ${name}`,
+                `description: Use when handling ${name.replaceAll("-", " ")} workflows.`,
+                "---",
+                "",
+                `# ${name}`,
+                "",
+                "Use this skill when the approved request matches this reusable workflow.",
+                "",
+                "## Workflow",
+                "",
+                "- Inspect the relevant local context first.",
+                "- Apply the approved guidance narrowly.",
+                "- Verify the result with the smallest meaningful check.",
+                "",
+              ].join("\n"),
+            },
+          },
+        }
+        yield { type: "model.completed", finishReason: "tool-calls" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Skill written." }
+      yield { type: "model.completed", usage: { totalTokens: 42 } }
+    },
   }
 }
 
@@ -1991,6 +2046,58 @@ describe("HTTP API", () => {
     expect(updated.displayName).toBe("Aparajit")
   })
 
+  it("configures worker model settings through the HTTP API", async () => {
+    const app = await buildTestServer()
+    await onboard(app)
+
+    const listResponse = await app.inject({ method: "GET", url: "/api/worker-model-settings" })
+    const listBody = parseResponse<{ settings: WorkerModelSettings[] }>(listResponse.payload)
+    expect(listResponse.statusCode).toBe(200)
+    expect(listBody.ok).toBe(true)
+    if (!listBody.ok) {
+      throw new Error("Expected worker model settings list success")
+    }
+    expect(listBody.data.settings.map((setting) => setting.workerId)).toEqual(["skill_writer", "context_compactor", "title_generator"])
+    expect(listBody.data.settings.find((setting) => setting.workerId === "skill_writer")).toMatchObject({
+      providerId: "openrouter",
+      modelId: "xiaomi/mimo-v2.5-pro",
+      thinkingEnabled: false,
+    })
+
+    const updateResponse = await app.inject({
+      method: "PATCH",
+      url: "/api/worker-model-settings/title_generator",
+      payload: {
+        providerId: "google",
+        modelId: "gemini-3.3-flash-preview",
+        thinkingEnabled: false,
+      },
+    })
+    const updateBody = parseResponse<{ settings: WorkerModelSettings }>(updateResponse.payload)
+    expect(updateResponse.statusCode).toBe(200)
+    expect(updateBody.ok).toBe(true)
+    if (!updateBody.ok) {
+      throw new Error("Expected worker model settings update success")
+    }
+    expect(updateBody.data.settings).toMatchObject({
+      workerId: "title_generator",
+      providerId: "google",
+      modelId: "gemini-3.3-flash-preview",
+      thinkingEnabled: false,
+    })
+
+    const invalidResponse = await app.inject({
+      method: "PATCH",
+      url: "/api/worker-model-settings/unknown_worker",
+      payload: {
+        providerId: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        thinkingEnabled: false,
+      },
+    })
+    expect(invalidResponse.statusCode).toBe(400)
+  })
+
   it("allows browser CORS preflights for project PATCH routes", async () => {
     const app = await buildTestServer()
     const response = await app.inject({
@@ -2705,7 +2812,7 @@ describe("HTTP API", () => {
   })
 
   it("builds project skills from the dashboard flow", async () => {
-    const app = await buildTestServer()
+    const app = await buildTestServer(undefined, createTestAgent(), { memoryProvider: createSkillWriterProvider() })
     await onboard(app)
     const { project, primaryWorkspace } = await createProject(app)
 
@@ -2748,7 +2855,7 @@ describe("HTTP API", () => {
   })
 
   it("builds and deletes global skills from the Memory Center flow", async () => {
-    const app = await buildTestServer()
+    const app = await buildTestServer(undefined, createTestAgent(), { memoryProvider: createSkillWriterProvider() })
     await onboard(app)
 
     const buildResponse = await app.inject({
@@ -4378,7 +4485,7 @@ describe("WebSocket API", () => {
         charLimit: 12_000,
       })
       expect(memoryAgentDocs.results[0]?.path).toBe("tool_usage/memory_agent/edit_files.md")
-      expect(memoryAgentDocs.results[0]?.snippet).toContain("Tool docs and skills are read-only")
+      expect(memoryAgentDocs.results[0]?.snippet).toContain("user-visible skill proposal")
       expect(() =>
         memoryAgentToolDocs.run({
           operation: "read",
@@ -4507,6 +4614,176 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("creates human-facing memory notes with backend-attached source refs and a capped inbox", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app, "Memory Notes Project")
+    const conversation = await createConversation(app, project.id, "Memory Note Source")
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome })
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(
+        handle.sqlite,
+        conversation.id,
+        sessionId,
+        "I am comparing fans for the apartment, and please remember that I am allergic to shellfish.",
+        "I can help compare fan options.",
+        nowIso(),
+      )
+
+      for (let index = 0; index < 12; index += 1) {
+        store.createMemoryNote(
+          project.id,
+          {
+            note:
+              index === 0
+                ? "User mentioned a shellfish allergy and current fan-shopping context in the same natural turn."
+                : `Follow-up durable-looking note ${index + 1}.`,
+            ...(index === 0 ? { importance: "high" as const } : {}),
+          },
+          { conversationId: conversation.id, sessionId, turnId: turn.turnId },
+        )
+      }
+
+      const stored = handle.sqlite
+        .prepare("SELECT priority, intent, message_id AS messageId, message_excerpt AS messageExcerpt, metadata_json AS metadataJson FROM memory_notes WHERE note_number = 1")
+        .get() as { priority: string; intent: string; messageId: string; messageExcerpt: string; metadataJson: string }
+      expect(stored.priority).toBe("high")
+      expect(stored.intent).toBe("review_current_turn")
+      expect(stored.messageId).toBe(turn.userMessageId)
+      expect(stored.messageExcerpt).toContain("allergic to shellfish")
+      expect(JSON.parse(stored.metadataJson)).toMatchObject({
+        attachedSource: "current_user_message",
+        defaultSkillScope: "project",
+        projectName: "Memory Notes Project",
+        workspacePath: primaryWorkspace.path,
+      })
+
+      const createdEvent = handle.sqlite.prepare("SELECT payload_json AS payloadJson FROM events WHERE type = 'memory.note.created' ORDER BY sequence LIMIT 1").get() as { payloadJson: string }
+      expect(JSON.parse(createdEvent.payloadJson)).toMatchObject({ noteNumber: 1, importance: "high", defaultSkillScope: "project" })
+
+      const listed = store.runMemoryNotesTool({ operation: "list", limit: 10 })
+      expect(listed.notes).toHaveLength(10)
+      expect(listed.totalMatches).toBe(12)
+      expect(listed.notes[0]).toMatchObject({
+        noteNumber: 1,
+        status: "open",
+        importance: "high",
+        notePreview: expect.stringContaining("shellfish allergy"),
+        projectId: project.id,
+        projectName: "Memory Notes Project",
+        defaultSkillScope: "project",
+        workspacePath: primaryWorkspace.path,
+      })
+      expect(listed.notes[0] as Record<string, unknown>).not.toHaveProperty("intent")
+      expect(listed.notes[0] as Record<string, unknown>).not.toHaveProperty("priority")
+
+      const read = store.runMemoryNotesTool({ operation: "read", noteNumber: 1 })
+      expect(read.notes[0]).toMatchObject({
+        status: "processing",
+        note: expect.stringContaining("shellfish allergy"),
+        conversationId: conversation.id,
+        turnId: turn.turnId,
+        messageId: turn.userMessageId,
+        messageExcerpt: expect.stringContaining("allergic to shellfish"),
+      })
+
+      const completed = store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1 })
+      expect(completed.notes[0]).toMatchObject({ noteNumber: 1, status: "done" })
+      const completedEvent = handle.sqlite.prepare("SELECT payload_json AS payloadJson FROM events WHERE type = 'memory.note.completed' ORDER BY sequence DESC LIMIT 1").get() as { payloadJson: string }
+      expect(JSON.parse(completedEvent.payloadJson)).toEqual({ noteNumber: 1 })
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("defaults Memory Agent skill proposals to project scope when source evidence has a workspace", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app, "Project Scoped Skills")
+    const conversation = await createConversation(app, project.id, "Project Skill Source")
+    const handle = openDatabase(dbPath)
+    let sourceTurnId = ""
+    let callIndex = 0
+    const memoryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream() {
+        callIndex += 1
+        if (callIndex === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_project_skill_proposal",
+              toolName: "edit_files",
+              input: {
+                target: "skill",
+                name: "fan-buying-guidance",
+                editMode: "create",
+                newText: "Create a project skill for comparing fan purchases in this workspace when the user is actively shopping.",
+                rationale: "The pattern is tied to this project's current appliance-buying work.",
+                sourceTurnIds: [sourceTurnId],
+              },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nReviewed the source turn.\n\n## Changed\nProposed a project skill.\n\n## Skipped\nNone.\n\n## Blocked\nNone.",
+        }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      for (let index = 0; index < 4; index += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Fan buying workflow source ${index + 1}`, "Queued for memory.", nowIso())
+        if (index === 0) {
+          sourceTurnId = turn.turnId
+        }
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      }
+
+      await store.runGlobalMemoryAgent("manual")
+      const proposedSkill = handle.sqlite
+        .prepare("SELECT project_id AS projectId, status, target_path AS targetPath, metadata_json AS metadataJson FROM memory_agent_actions WHERE target_kind = 'skill_request'")
+        .get() as { projectId: string; status: string; targetPath: string; metadataJson: string }
+      expect(proposedSkill.status).toBe("proposed")
+      expect(proposedSkill.projectId).toBe(project.id)
+      expect(proposedSkill.targetPath).toBe(path.join(primaryWorkspace.path as string, ".socrates", "skills", "fan-buying-guidance", "SKILL.md"))
+      expect(JSON.parse(proposedSkill.metadataJson)).toMatchObject({
+        scope: "project",
+        operation: "create",
+        skillName: "fan-buying-guidance",
+        projectName: "Project Scoped Skills",
+        workspacePath: primaryWorkspace.path,
+      })
+      const notification = handle.sqlite.prepare("SELECT project_id AS projectId, payload_json AS payloadJson FROM notifications WHERE type = 'memory.skill.proposed'").get() as {
+        projectId: string
+        payloadJson: string
+      }
+      expect(notification.projectId).toBe(project.id)
+      expect(JSON.parse(notification.payloadJson)).toMatchObject({
+        scope: "project",
+        operation: "create",
+        skillName: "fan-buying-guidance",
+        skillTitle: "Fan Buying Guidance",
+        projectId: project.id,
+        projectName: "Project Scoped Skills",
+      })
+      expect(fs.existsSync(path.join(socratesHome, "skills", "fan-buying-guidance", "SKILL.md"))).toBe(false)
+    } finally {
+      await store.close()
+    }
+  })
+
   it("rejects scheduled skill and tool-doc writes while applying scoped profile edits", async () => {
     const dbPath = tempDbPath()
     const socratesHome = tempDir()
@@ -4516,7 +4793,8 @@ describe("WebSocket API", () => {
     const conversation = await createConversation(app, project.id, "Memory Source")
     const handle = openDatabase(dbPath)
     const modelRequests: Array<{ providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string }> = []
-    let callIndex = 0
+    let memoryCallIndex = 0
+    let skillWriteIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
       async *stream(request) {
@@ -4526,8 +4804,34 @@ describe("WebSocket API", () => {
           thinkingEnabled: request.runtimeConfig.thinkingEnabled,
           ...(request.runtimeConfig.thinkingEffort ? { thinkingEffort: request.runtimeConfig.thinkingEffort } : {}),
         })
-        callIndex += 1
-        if (callIndex === 1) {
+        const hasSkillWrite = request.tools?.some((tool) => tool.name === "skill_write") ?? false
+        const serialized = serializedRequestMessages(request)
+        if (hasSkillWrite && !serialized.includes('"tool-result"')) {
+          skillWriteIndex += 1
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: `memory_skill_writer_${skillWriteIndex}`,
+              toolName: "skill_write",
+              input: {
+                scope: "global",
+                operation: "create",
+                name: "general",
+                content:
+                  "---\nname: general\ndescription: Use when preserving configured memory worker workflow guidance.\n---\n\n# General\n\nConfigured memory worker approved this global skill.\n",
+              },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (hasSkillWrite) {
+          yield { type: "model.answer.delta", text: "Created general." }
+          yield { type: "model.completed" }
+          return
+        }
+        memoryCallIndex += 1
+        if (memoryCallIndex === 1) {
           yield {
             type: "model.tool_call.completed",
             toolCall: {
@@ -4536,9 +4840,9 @@ describe("WebSocket API", () => {
               input: {
                 target: "skill",
                 name: "general",
+                scope: "global",
                 editMode: "create",
-                newText:
-                  "---\nname: general\ndescription: Configured memory worker test skill.\n---\n\n# General\n\nConfigured memory worker updated this global skill.\n",
+                newText: "Create a global skill named general for preserving configured memory worker workflow guidance.",
                 rationale: "Test skill creation.",
               },
             },
@@ -4580,13 +4884,18 @@ describe("WebSocket API", () => {
         }
         yield {
           type: "model.answer.delta",
-          text: "## Investigated\nInspected configured memory worker test evidence.\n\n## Changed\nUpdated user profile.\n\n## Skipped\nSkill creation is reserved for Memory Center Skills +. Tool-doc edits are read-only in v1.\n\n## Blocked\nNone.",
+          text: "## Investigated\nInspected configured memory worker test evidence.\n\n## Changed\nUpdated user profile and proposed a skill.\n\n## Skipped\nTool-doc edits are read-only in v1.\n\n## Blocked\nNone.",
         }
         yield { type: "model.completed" }
       },
     }
     const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
     try {
+      store.updateWorkerModelSettings("skill_writer", {
+        providerId: "google",
+        modelId: "gemini-3.3-flash-preview",
+        thinkingEnabled: false,
+      })
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       for (let index = 0; index < 4; index += 1) {
         const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Memory user message ${index + 1}`, "Memory assistant answer", nowIso())
@@ -4603,9 +4912,12 @@ describe("WebSocket API", () => {
       expect(toolUsageContent).not.toContain("Legacy Content")
       expect(toolUsageContent).not.toContain("What this tool guidance is for.")
       expect(fs.existsSync(usefulPatternFile)).toBe(false)
-      const rejectedSkill = handle.sqlite.prepare("SELECT status, error FROM memory_agent_actions WHERE target_kind = 'skills'").get() as { status: string; error: string }
-      expect(rejectedSkill.status).toBe("rejected")
-      expect(rejectedSkill.error).toContain("cannot create or update skills")
+      const proposedSkill = handle.sqlite.prepare("SELECT id, status, metadata_json AS metadataJson FROM memory_agent_actions WHERE target_kind = 'skill_request'").get() as { id: string; status: string; metadataJson: string }
+      expect(proposedSkill.status).toBe("proposed")
+      expect(JSON.parse(proposedSkill.metadataJson)).toMatchObject({ scope: "global", operation: "create", skillName: "general" })
+      const notification = handle.sqlite.prepare("SELECT type, payload_json AS payloadJson FROM notifications WHERE type = 'memory.skill.proposed'").get() as { type: string; payloadJson: string }
+      expect(notification.type).toBe("memory.skill.proposed")
+      expect(JSON.parse(notification.payloadJson)).toMatchObject({ actionId: proposedSkill.id, skillName: "general" })
       const toolDocActions = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_actions WHERE target_kind = 'tool_usage'").get() as { count: number }
       expect(toolDocActions.count).toBe(0)
       const failedToolDocCall = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'tool.call.failed' AND payload_json LIKE '%memory_edit_tool_doc%'").get() as { count: number }
@@ -4617,6 +4929,14 @@ describe("WebSocket API", () => {
       expect(modelRequests[0]).toEqual({ providerId: "openrouter", modelId: "xiaomi/mimo-v2.5-pro", thinkingEnabled: false })
       expect(fs.existsSync(path.join(socratesHome, "projects", project.id, "diary"))).toBe(false)
       expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"))).toBe(true)
+      const approved = await store.approveMemorySkillProposal(proposedSkill.id)
+      expect(approved.skill).toMatchObject({ name: "general", scope: "global" })
+      expect(fs.readFileSync(usefulPatternFile, "utf8")).toContain("Configured memory worker approved this global skill")
+      expect(modelRequests).toContainEqual({ providerId: "google", modelId: "gemini-3.3-flash-preview", thinkingEnabled: false })
+      const appliedSkill = handle.sqlite.prepare("SELECT status FROM memory_agent_actions WHERE id = ?").get(proposedSkill.id) as { status: string }
+      expect(appliedSkill.status).toBe("applied")
+      const skillWriterJob = handle.sqlite.prepare("SELECT status, skill_name AS skillName FROM skill_writer_jobs WHERE source_id = ?").get(proposedSkill.id) as { status: string; skillName: string }
+      expect(skillWriterJob).toEqual({ status: "completed", skillName: "general" })
     } finally {
       await store.close()
     }
@@ -4709,7 +5029,7 @@ describe("WebSocket API", () => {
       const toolNames = ((requests[0]?.tools as Array<{ name: string }> | undefined) ?? []).map((tool) => tool.name)
       expect(requests[0]?.system).toContain("You are the Socrates Global Memory Agent")
       expect(requests[0]?.system).toContain("edit_files: the only write tool")
-      expect(toolNames).toEqual(expect.arrayContaining(["trace_retrieve", "projects", "tool_docs", "skills", "soul", "user_profile", "edit_files"]))
+      expect(toolNames).toEqual(expect.arrayContaining(["trace_retrieve", "projects", "tool_docs", "skills", "memory_notes", "soul", "user_profile", "edit_files"]))
       expect(toolNames).not.toContain("bash")
       expect(toolNames).not.toContain("edit")
       expect(JSON.stringify(requests[1]?.messages)).toContain("memory-agent trace marker")

@@ -53,6 +53,7 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("Explicit docs operating loop")
     expect(requestJson).toContain("repo_docs")
     expect(requestJson).toContain("A separate Global Memory Agent runs in the background")
+    expect(requestJson).toContain("Explicit user-stated allergies")
     expect(requestJson).toContain("compare stack trace lines to current files")
     expect(requestJson).toContain("distinguish config/credential issues from service availability")
   })
@@ -75,12 +76,14 @@ describe("SocratesAgent", () => {
       "user_profile",
       "list_project_resources",
       "mcp_registry",
+      "memory_note",
     ])
     expect(tools.map((tool) => tool.name).some((name) => name.startsWith("mcp__playwright__"))).toBe(false)
     expect(tools.find((tool) => tool.name === "mcp_registry")?.description).toContain("helper, extension, server")
     expect(tools.find((tool) => tool.name === "mcp_registry")?.description).toContain("canonical id")
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("saved workflow")
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("canonical id")
+    expect(tools.find((tool) => tool.name === "memory_note")?.description).toContain("Memory Agent")
     expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(
       tools
@@ -360,8 +363,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(15)
-    expect(countRequests[1]?.toolCount).toBe(15)
+    expect(countRequests[0]?.toolCount).toBe(16)
+    expect(countRequests[1]?.toolCount).toBe(16)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -687,7 +690,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(15)
+    expect(countRequests[0]?.toolCount).toBe(16)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -1138,7 +1141,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(15)
+    expect(countRequests[0]?.toolCount).toBe(16)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")

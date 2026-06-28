@@ -800,9 +800,48 @@ Stores each backend Global Memory Agent batch. Scheduled and manual runs inspect
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Batch metadata, model attempts, and truncation notes. |
 
+## `memory_notes`
+
+Stores Socrates-to-Memory-Agent notepad leads. The model-facing create contract stays small (`note`, optional `importance`); source refs, source project/workspace metadata, and the default project-local skill-scope hint are backend-attached lookup values so the Memory Agent can chain into `trace_retrieve`.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `memnote_...`. |
+| `note_number` | `INTEGER` | yes | Human-facing inbox number for list/read/mark_done. |
+| `status` | `TEXT` | yes | `open`, `processing`, `done`, or `dismissed`. |
+| `priority` | `TEXT` | yes | Compatibility storage for note importance; runtime uses `normal` or `high`. |
+| `intent` | `TEXT` | yes | Compatibility storage; Socrates no longer authors intent and new rows use a fixed internal review intent. |
+| `note` | `TEXT` | yes | Human note written by Socrates or another sending agent. |
+| `project_id` | `TEXT` | no | Source project when the note came from a project conversation. |
+| `conversation_id` | `TEXT` | no | Backend-attached source conversation id. |
+| `turn_id` | `TEXT` | no | Backend-attached source turn id. |
+| `message_id` | `TEXT` | no | Backend-attached current user message id. |
+| `message_excerpt` | `TEXT` | no | Bounded source user-message excerpt returned by `memory_notes.read`. |
+| `created_by_agent` | `TEXT` | yes | Sending agent id, usually `socrates`. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `claimed_at` | `TEXT` | no | ISO timestamp when a Memory Agent run starts processing it. |
+| `completed_at` | `TEXT` | no | ISO timestamp when marked done/dismissed. |
+| `metadata_json` | `TEXT` | no | Extra backend refs, `attachedSource`, `defaultSkillScope`, source project name, workspace path, trace lookup hints, and processing notes. |
+
+## `worker_model_settings`
+
+Stores user-configurable model choices for background workers that do not have a dedicated chat-side picker.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable id like `wms_...`. |
+| `worker_id` | `TEXT` | yes | Unique worker role: `skill_writer`, `context_compactor`, or `title_generator`. |
+| `provider_id` | `TEXT` | yes | Provider id from the normal model registry. |
+| `model_id` | `TEXT` | yes | Provider model id from the normal model registry. |
+| `thinking_enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
+| `thinking_effort` | `TEXT` | no | Optional thinking effort when enabled/supported. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Reserved for future worker-model metadata. |
+
 ## `memory_agent_actions`
 
-Stores each proposed, applied, or rejected memory edit produced by a memory-agent job.
+Stores each proposed, applied, or rejected memory edit or skill-freshness request produced by a memory-agent job.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -810,14 +849,14 @@ Stores each proposed, applied, or rejected memory edit produced by a memory-agen
 | `job_id` | `TEXT` | yes | FK to `memory_agent_jobs.id`. |
 | `project_id` | `TEXT` | yes | Owning project scope. |
 | `turn_id` | `TEXT` | no | Source/representative turn for the action. |
-| `target_kind` | `TEXT` | yes | `tool_usage`, `user_profile`, `skills`, or `soul`. Scheduled runs may read skills but cannot create/update them. |
-| `target_path` | `TEXT` | yes | Memory file path being changed. |
+| `target_kind` | `TEXT` | yes | `user_profile`, `soul`, or `skill_request`. Tool docs remain read-only for models. |
+| `target_path` | `TEXT` | no | Memory file path being changed, or target skill path/id after a Skill Writer Agent task is created. |
 | `status` | `TEXT` | yes | `proposed`, `awaiting_confirmation`, `applied`, or `rejected`. |
 | `requires_confirmation` | `INTEGER` | yes | Boolean; true for soul patches. |
 | `confirmation_id` | `TEXT` | no | FK to `memory_agent_confirmations.id`. |
 | `before_hash` | `TEXT` | no | SHA-256 hash before patch application. |
 | `after_hash` | `TEXT` | no | SHA-256 hash after patch application. |
-| `patch_json` | `TEXT` | yes | Backend-controlled patch proposal with expected hash, old text, new text, rationale, and source turn ids. |
+| `patch_json` | `TEXT` | yes | Backend-controlled patch proposal or approved skill task with expected hash, old text, new text, rationale, and source turn ids when applicable. |
 | `rationale` | `TEXT` | no | Concise evidence-backed rationale. |
 | `error` | `TEXT` | no | Rejection/failure reason. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
@@ -1148,9 +1187,13 @@ patch.failed
 memory.agent.started
 memory.agent.completed
 memory.agent.failed
-memory.diary.appended
 memory.primary.updated
 memory.primary.update_rejected
+memory.note.created
+memory.note.completed
+memory.skill.proposed
+memory.skill.approved
+memory.skill.updated
 memory.soul.confirmation.requested
 memory.soul.confirmation.resolved
 memory.soul.updated

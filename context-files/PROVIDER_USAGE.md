@@ -202,7 +202,9 @@ list_project_resources
 mcp_registry
 ```
 
-Changing runtime facts must stay behind tools, not in prompt headers. Current date/time comes from `current_time`; workspace runtime facts come from `project_docs`; reusable workflows come from `skills`; and external MCP servers come from `mcp_registry`. Main chat must not inject a per-turn wake-context block or hidden skill/MCP matches based on user-query wording.
+The main-agent `memory_note` provider-visible schema stays tiny: `note` and optional `importance`. The backend attaches current-turn refs, source project/workspace metadata, and default project-local skill-scope hint; providers should not see a complicated source-ref contract authored by the model. `memory_notes` and `skill_write` are specialized-agent/internal tools, not normal first-call Socrates chat tools.
+
+Changing runtime facts must stay behind tools, not in prompt headers. Current date/time comes from `current_time`; workspace runtime facts come from `project_docs`; reusable workflows come from `skills`; Memory Agent leads come from `memory_note`; and external MCP servers come from `mcp_registry`. Main chat must not inject a per-turn wake-context block or hidden skill/MCP matches based on user-query wording.
 
 MCP dynamic tool details must stay out of the system prompt and out of the first provider-call tool schemas. The first call exposes only the core Socrates tools plus `mcp_registry`; if the model describes a server with an exact id/name and the runtime exposes tools in that same turn, later provider calls may include the returned `mcp__...` tool definitions. The model-facing `mcp_registry` schema is `list`/`describe`; configure/check/delete flows are UI/API concerns.
 
@@ -283,8 +285,8 @@ Single-provider or deliberately pinned routes still use OpenRouter provider slug
 xiaomi/mimo-v2.5 -> xiaomi
 x-ai/grok-build-0.1 -> xai
 stepfun/step-3.7-flash -> stepfun
-meta-llama/llama-4-maverick title generation -> deepinfra
-qwen/qwen3.5-flash-02-23 title fallback -> alibaba
+meta-llama/llama-4-maverick title generation -> price-first OpenRouter route
+qwen/qwen3.5-flash-02-23 title fallback -> price-first OpenRouter route
 ```
 
 Cost accounting order is:
@@ -436,9 +438,11 @@ OpenRouter
   deepseek/deepseek-v4-pro   default
   deepseek/deepseek-v4-flash    no vision
   google/gemma-4-31b-it
+  meta-llama/llama-4-maverick
+  qwen/qwen3.5-flash-02-23    no vision
 ```
 
-Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM and the DeepSeek V4 models, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. MiMo Pro is vision-capable and must keep native image paths enabled.
+Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, the DeepSeek V4 models, and Qwen 3.5 Flash, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. MiMo Pro and Llama 4 Maverick are vision-capable and must keep native image paths enabled.
 
 Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
 

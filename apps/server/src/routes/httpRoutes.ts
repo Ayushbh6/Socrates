@@ -3,6 +3,7 @@ import fs from "node:fs"
 import { z } from "zod"
 import {
   completeOnboardingRequestSchema,
+  approveMemorySkillProposalResponseSchema,
   buildGlobalSkillRequestSchema,
   buildProjectSkillRequestSchema,
   checkProjectEmbeddingsRequestSchema,
@@ -24,6 +25,7 @@ import {
   getMemoryAgentRunResponseSchema,
   listMemoryAgentFilesResponseSchema,
   listMemoryAgentRunsResponseSchema,
+  listWorkerModelSettingsResponseSchema,
   memoryAgentFileContentQuerySchema,
   listNotificationsResponseSchema,
   markAllNotificationsReadResponseSchema,
@@ -33,6 +35,8 @@ import {
   providerIdSchema,
   setProviderCredentialSessionRequestSchema,
   updateMemoryAgentGlobalSettingsRequestSchema,
+  updateWorkerModelSettingsRequestSchema,
+  updateWorkerModelSettingsResponseSchema,
   updateMcpServerRequestSchema,
   updateMcpServerResponseSchema,
   updateProjectWorkspaceRequestSchema,
@@ -40,6 +44,7 @@ import {
   upsertMcpServerRequestSchema,
   upsertMcpServerResponseSchema,
   upsertProjectInstructionsRequestSchema,
+  workerModelSettingsParamsSchema,
 } from "@socrates/contracts"
 import { listModels } from "@socrates/core"
 import type { McpRuntime } from "@socrates/mcp"
@@ -54,6 +59,7 @@ const conversationParamsSchema = z.object({ projectId: z.string().min(1), conver
 const attachmentParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1), attachmentId: z.string().min(1) }).strict()
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 const notificationParamsSchema = z.object({ notificationId: z.string().min(1) }).strict()
+const memoryActionParamsSchema = z.object({ actionId: z.string().min(1) }).strict()
 const memoryAgentRunParamsSchema = z.object({ runId: z.string().min(1) }).strict()
 const mcpServerParamsSchema = z.object({ serverId: z.string().min(1) }).strict()
 const skillParamsSchema = z.object({ skillName: z.string().min(1) }).strict()
@@ -126,6 +132,7 @@ const handleRouteError = (error: unknown) => {
     api.code === "embedding_check_failed" ||
     api.code === "memory_agent_model_required" ||
     api.code === "memory_agent_cadence_invalid" ||
+    api.code === "worker_model_required" ||
     api.code === "workspace_env_file_not_allowed"
       ? 400
       : api.code.endsWith("_not_found")
@@ -155,6 +162,26 @@ export const registerHttpRoutes = async (
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
 
   app.get("/api/models", async () => ok(listModels()))
+
+  app.get("/api/worker-model-settings", async (_request, reply) => {
+    try {
+      return ok(listWorkerModelSettingsResponseSchema.parse(store.listWorkerModelSettings()))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/worker-model-settings/:workerId", async (request, reply) => {
+    try {
+      const { workerId } = parseParams(workerModelSettingsParamsSchema, request.params)
+      const input = parseBody(updateWorkerModelSettingsRequestSchema, request.body)
+      return ok(updateWorkerModelSettingsResponseSchema.parse(store.updateWorkerModelSettings(workerId, input)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
 
   app.get("/api/mcp", async (request, reply) => {
     try {
@@ -261,6 +288,16 @@ export const registerHttpRoutes = async (
   app.post("/api/notifications/read-all", async (_request, reply) => {
     try {
       return ok(markAllNotificationsReadResponseSchema.parse(store.markAllNotificationsRead()))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/memory-agent/skill-proposals/:actionId/approve", async (request, reply) => {
+    try {
+      const { actionId } = parseParams(memoryActionParamsSchema, request.params)
+      return ok(approveMemorySkillProposalResponseSchema.parse(await store.approveMemorySkillProposal(actionId)))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
