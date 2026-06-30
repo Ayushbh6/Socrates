@@ -4949,10 +4949,132 @@ describe("WebSocket API", () => {
       expect(modelRequests).toContainEqual({ providerId: "google", modelId: "gemini-3.3-flash-preview", thinkingEnabled: false })
       const appliedSkill = handle.sqlite.prepare("SELECT status FROM memory_agent_actions WHERE id = ?").get(proposedSkill.id) as { status: string }
       expect(appliedSkill.status).toBe("applied")
+      const approvedNotification = store.listNotifications({ limit: 10 }).notifications.find((item) => item.type === "memory.skill.proposed")
+      expect(approvedNotification?.readAt).toBeDefined()
+      expect(approvedNotification?.payload).toMatchObject({
+        actionId: proposedSkill.id,
+        actionStatus: "applied",
+        proposalStatus: "approved",
+        skillExists: true,
+      })
       const skillWriterJob = handle.sqlite.prepare("SELECT status, skill_name AS skillName FROM skill_writer_jobs WHERE source_id = ?").get(proposedSkill.id) as { status: string; skillName: string }
       expect(skillWriterJob).toEqual({ status: "completed", skillName: "general" })
     } finally {
       await store.close()
+    }
+  })
+
+  it("rejects pending memory skill proposals and reports stale proposal status in notifications", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath, createTestAgent(), { socratesHome })
+    const handle = openDatabase(dbPath)
+    try {
+      const now = nowIso()
+      const actionId = createId("memact")
+      const notificationId = createId("note")
+      const targetPath = path.join(socratesHome, "skills", "reject-me", "SKILL.md")
+      handle.sqlite
+        .prepare(
+          `INSERT INTO memory_agent_actions (
+            id, job_id, project_id, target_kind, target_path, status, requires_confirmation, patch_json, created_at, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          actionId,
+          createId("memjob"),
+          "global",
+          "skill_request",
+          targetPath,
+          "proposed",
+          0,
+          JSON.stringify({ oldText: "", newText: "Create a test skill." }),
+          now,
+          JSON.stringify({ scope: "global", operation: "create", skillName: "reject-me" }),
+        )
+      handle.sqlite
+        .prepare(
+          `INSERT INTO notifications (
+            id, type, title, body, severity, payload_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          notificationId,
+          "memory.skill.proposed",
+          "Socrates proposed a new skill",
+          "Reject me.",
+          "info",
+          JSON.stringify({ actionId, scope: "global", operation: "create", skillName: "reject-me" }),
+          now,
+        )
+
+      const pending = await app.inject({ method: "GET", url: "/api/notifications" })
+      expect(pending.statusCode).toBe(200)
+      expect(JSON.parse(pending.body).data.notifications[0].payload).toMatchObject({
+        actionId,
+        proposalStatus: "pending",
+        actionStatus: "proposed",
+      })
+
+      const rejected = await app.inject({ method: "POST", url: `/api/memory-agent/skill-proposals/${actionId}/reject` })
+      expect(rejected.statusCode).toBe(200)
+      expect(JSON.parse(rejected.body).data).toEqual({ actionId, status: "rejected" })
+      const rejectedAction = handle.sqlite.prepare("SELECT status, error FROM memory_agent_actions WHERE id = ?").get(actionId) as { status: string; error: string }
+      expect(rejectedAction).toEqual({ status: "rejected", error: "Rejected by user." })
+      const readNotification = handle.sqlite.prepare("SELECT read_at AS readAt FROM notifications WHERE id = ?").get(notificationId) as { readAt: string | null }
+      expect(readNotification.readAt).toBeTruthy()
+      const rejectedList = await app.inject({ method: "GET", url: "/api/notifications" })
+      expect(JSON.parse(rejectedList.body).data.notifications[0].payload).toMatchObject({
+        actionId,
+        proposalStatus: "rejected",
+        actionStatus: "rejected",
+      })
+
+      const deletedActionId = createId("memact")
+      const deletedNotificationId = createId("note")
+      handle.sqlite
+        .prepare(
+          `INSERT INTO memory_agent_actions (
+            id, job_id, project_id, target_kind, target_path, status, requires_confirmation, patch_json, created_at, applied_at, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          deletedActionId,
+          createId("memjob"),
+          "global",
+          "skill_request",
+          path.join(socratesHome, "skills", "deleted-skill", "SKILL.md"),
+          "applied",
+          0,
+          JSON.stringify({ oldText: "", newText: "Create a deleted skill." }),
+          nowIso(),
+          nowIso(),
+          JSON.stringify({ scope: "global", operation: "create", skillName: "deleted-skill" }),
+        )
+      handle.sqlite
+        .prepare(
+          `INSERT INTO notifications (
+            id, type, title, body, severity, payload_json, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          deletedNotificationId,
+          "memory.skill.proposed",
+          "Socrates proposed a new skill",
+          "Deleted skill.",
+          "info",
+          JSON.stringify({ actionId: deletedActionId, scope: "global", operation: "create", skillName: "deleted-skill" }),
+          nowIso(),
+        )
+      const stale = await app.inject({ method: "GET", url: "/api/notifications" })
+      expect(JSON.parse(stale.body).data.notifications[0].payload).toMatchObject({
+        actionId: deletedActionId,
+        proposalStatus: "deleted",
+        actionStatus: "applied",
+        skillExists: false,
+      })
+    } finally {
+      handle.close()
     }
   })
 

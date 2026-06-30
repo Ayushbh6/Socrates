@@ -39,6 +39,7 @@ import {
   markNotificationReadResponseSchema,
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
+  rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionResponseSchema,
   updateMemoryAgentGlobalSettingsResponseSchema,
   updateMcpServerResponseSchema,
@@ -101,6 +102,7 @@ import {
   type ListWorkerModelSettingsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
+  type RejectMemorySkillProposalResponse,
   type ReindexProjectEmbeddingsResponse,
   type SetProviderCredentialSessionRequest,
   type SetProviderCredentialSessionResponse,
@@ -369,6 +371,15 @@ export const api = {
         method: "POST",
       },
     ) as Promise<ApproveMemorySkillProposalResponse>,
+
+  rejectMemorySkillProposal: (actionId: string) =>
+    request<typeof rejectMemorySkillProposalResponseSchema>(
+      `/api/memory-agent/skill-proposals/${encodeURIComponent(actionId)}/reject`,
+      rejectMemorySkillProposalResponseSchema,
+      {
+        method: "POST",
+      },
+    ) as Promise<RejectMemorySkillProposalResponse>,
 
   buildGlobalSkill: (input: BuildGlobalSkillRequest) =>
     request<typeof buildGlobalSkillResponseSchema>(

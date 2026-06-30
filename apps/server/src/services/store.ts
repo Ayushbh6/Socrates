@@ -55,6 +55,7 @@ import type {
   MemoryNotesToolInput,
   MemoryNotesToolOutput,
   ApproveMemorySkillProposalResponse,
+  RejectMemorySkillProposalResponse,
   ProjectResource,
   ProjectWorkspace,
   BuildProjectSkillRequest,
@@ -333,7 +334,15 @@ export class SocratesStore {
   }
 
   async approveMemorySkillProposal(actionId: string): Promise<ApproveMemorySkillProposalResponse> {
-    return this.memory.approveMemorySkillProposal(actionId)
+    const response = await this.memory.approveMemorySkillProposal(actionId)
+    this.notifications.markSkillProposalNotificationsRead(actionId)
+    return response
+  }
+
+  rejectMemorySkillProposal(actionId: string): RejectMemorySkillProposalResponse {
+    const response = this.memory.rejectMemorySkillProposal(actionId)
+    this.notifications.markSkillProposalNotificationsRead(actionId)
+    return response
   }
 
   deleteGlobalSkill(skillName: string): DeleteSkillResponse {

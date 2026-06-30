@@ -168,6 +168,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [isNotificationCenterOpen, setIsNotificationCenterOpen] = useState(false);
   const [approvingSkillActionId, setApprovingSkillActionId] = useState<string | null>(null);
+  const [rejectingSkillActionId, setRejectingSkillActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
@@ -997,7 +998,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     setApprovingSkillActionId(actionId);
     try {
       await api.approveMemorySkillProposal(actionId);
-      await api.markNotificationRead(notification.id);
       const response = await api.listNotifications({ limit: 20 });
       setNotifications(response.notifications);
       setUnreadNotificationCount(response.unreadCount);
@@ -1005,6 +1005,25 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       setError(err instanceof Error ? err.message : "Could not approve skill proposal.");
     } finally {
       setApprovingSkillActionId((current) => (current === actionId ? null : current));
+    }
+  };
+
+  const handleRejectSkillProposal = async (notification: SocratesNotification) => {
+    const payload = notification.payload && typeof notification.payload === "object" ? (notification.payload as Record<string, unknown>) : {};
+    const actionId = typeof payload.actionId === "string" ? payload.actionId : "";
+    if (!actionId) {
+      return;
+    }
+    setRejectingSkillActionId(actionId);
+    try {
+      await api.rejectMemorySkillProposal(actionId);
+      const response = await api.listNotifications({ limit: 20 });
+      setNotifications(response.notifications);
+      setUnreadNotificationCount(response.unreadCount);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reject skill proposal.");
+    } finally {
+      setRejectingSkillActionId((current) => (current === actionId ? null : current));
     }
   };
 
@@ -1151,7 +1170,9 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             onRead={handleNotificationRead}
             onReadAll={handleAllNotificationsRead}
             onApproveSkillProposal={handleApproveSkillProposal}
+            onRejectSkillProposal={handleRejectSkillProposal}
             approvingSkillActionId={approvingSkillActionId}
+            rejectingSkillActionId={rejectingSkillActionId}
           />
           {hasTerminals ? (
             <button
@@ -1269,6 +1290,42 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   );
 }
 
+type SkillProposalStatus = "pending" | "approved" | "rejected" | "deleted" | "missing";
+
+const skillProposalStatusLabel = (status: SkillProposalStatus): string => {
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "approved":
+      return "Approved";
+    case "rejected":
+      return "Rejected";
+    case "deleted":
+      return "Skill deleted";
+    case "missing":
+      return "Unavailable";
+  }
+};
+
+const skillProposalStatusClass = (status: SkillProposalStatus): string => {
+  switch (status) {
+    case "pending":
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    case "approved":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    case "rejected":
+      return "border-gray-200 bg-gray-50 text-brand-text-light";
+    case "deleted":
+    case "missing":
+      return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+};
+
+const skillProposalStatusFromPayload = (payload: Record<string, unknown>): SkillProposalStatus => {
+  const status = payload.proposalStatus;
+  return status === "approved" || status === "rejected" || status === "deleted" || status === "missing" ? status : "pending";
+};
+
 function NotificationCenter({
   notifications,
   unreadCount,
@@ -1278,7 +1335,9 @@ function NotificationCenter({
   onRead,
   onReadAll,
   onApproveSkillProposal,
+  onRejectSkillProposal,
   approvingSkillActionId,
+  rejectingSkillActionId,
 }: {
   notifications: SocratesNotification[];
   unreadCount: number;
@@ -1288,7 +1347,9 @@ function NotificationCenter({
   onRead: (notificationId: string) => void;
   onReadAll: () => void;
   onApproveSkillProposal: (notification: SocratesNotification) => void;
+  onRejectSkillProposal: (notification: SocratesNotification) => void;
   approvingSkillActionId: string | null;
+  rejectingSkillActionId: string | null;
 }) {
   return (
     <div className="relative ml-auto shrink-0">
@@ -1332,7 +1393,10 @@ function NotificationCenter({
                 const rationale = typeof payload.rationale === "string" ? payload.rationale : undefined;
                 const actionId = typeof payload.actionId === "string" ? payload.actionId : undefined;
                 const isSkillProposal = notification.type === "memory.skill.proposed" && Boolean(actionId);
+                const proposalStatus = isSkillProposal ? skillProposalStatusFromPayload(payload) : undefined;
+                const isPendingSkillProposal = proposalStatus === "pending";
                 const isApproving = Boolean(actionId && approvingSkillActionId === actionId);
+                const isRejecting = Boolean(actionId && rejectingSkillActionId === actionId);
                 return (
                   <div
                     key={notification.id}
@@ -1356,11 +1420,28 @@ function NotificationCenter({
                     <div className="mt-3 flex items-center justify-between gap-2">
                       <p className="font-mono text-[10px] text-brand-text-light">{new Date(notification.createdAt).toLocaleString()}</p>
                       <div className="flex shrink-0 items-center gap-2">
-                        {isSkillProposal ? (
+                        {isSkillProposal && proposalStatus && !isPendingSkillProposal ? (
+                          <span
+                            className={`inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium ${skillProposalStatusClass(proposalStatus)}`}
+                          >
+                            {skillProposalStatusLabel(proposalStatus)}
+                          </span>
+                        ) : null}
+                        {isPendingSkillProposal ? (
+                          <button
+                            type="button"
+                            className="h-8 rounded-md border border-gray-200 px-2.5 text-xs font-medium text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark disabled:cursor-not-allowed disabled:opacity-60"
+                            disabled={isApproving || isRejecting}
+                            onClick={() => onRejectSkillProposal(notification)}
+                          >
+                            {isRejecting ? "Rejecting" : "Reject"}
+                          </button>
+                        ) : null}
+                        {isPendingSkillProposal ? (
                           <button
                             type="button"
                             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-brand-button px-2.5 text-xs font-medium text-white hover:bg-brand-button-hover disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled={isApproving}
+                            disabled={isApproving || isRejecting}
                             onClick={() => onApproveSkillProposal(notification)}
                           >
                             <Check className="size-3.5" />

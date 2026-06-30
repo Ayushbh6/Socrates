@@ -89,6 +89,7 @@ import {
   pickWorkspaceFolderRequestSchema,
   pickWorkspaceFolderResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
+  rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionRequestSchema,
   setProviderCredentialSessionResponseSchema,
   projectResourceSchema,
@@ -133,6 +134,8 @@ import {
   memoryNoteToolOutputSchema,
   memoryNotesToolInputSchema,
   memoryNotesToolOutputSchema,
+  postTurnMemoryRouteSchema,
+  preTurnMemoryRouteSchema,
   mcpRegistryToolInputSchema,
   mcpRegistryToolModelInputSchema,
   mcpRegistryToolOutputSchema,
@@ -609,6 +612,7 @@ describe("http contracts", () => {
     expect(buildGlobalSkillRequestSchema.safeParse({ name: "global--review", request: "Build a global review skill" }).success).toBe(false)
     expect(buildGlobalSkillResponseSchema.safeParse({ skill }).success).toBe(true)
     expect(approveMemorySkillProposalResponseSchema.safeParse({ actionId: "memact_1", skill }).success).toBe(true)
+    expect(rejectMemorySkillProposalResponseSchema.safeParse({ actionId: "memact_1", status: "rejected" }).success).toBe(true)
     expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, pending, item }).success).toBe(true)
   })
 
@@ -1262,6 +1266,47 @@ describe("context compaction contracts", () => {
       chatCompactionSchema.safeParse({
         ...chat,
         decisions: [{ decision: "old shape", handles: [] }],
+      }).success,
+    ).toBe(false)
+  })
+})
+
+describe("memory route contracts", () => {
+  it("validates simple structured memory routes", () => {
+    expect(
+      preTurnMemoryRouteSchema.safeParse({
+        projectNotes: true,
+        projectMemory: false,
+        repoDocs: true,
+        userProfile: false,
+        saveTarget: "project_notes",
+        saveText: "- Remember the local root MEMORY.md is separate from Socrates runtime memory.",
+        reason: "The user gave project-local guidance before asking for repo work.",
+      }).success,
+    ).toBe(true)
+    expect(
+      preTurnMemoryRouteSchema.safeParse({
+        projectNotes: false,
+        projectMemory: false,
+        repoDocs: false,
+        userProfile: false,
+        saveTarget: "none",
+        saveText: "do not allow extra save text",
+        reason: "No durable item.",
+      }).success,
+    ).toBe(false)
+    expect(
+      postTurnMemoryRouteSchema.safeParse({
+        saveTarget: "project_memory",
+        saveText: "- Verified the memory loop uses structured output.",
+        reason: "The turn produced a durable implementation fact.",
+      }).success,
+    ).toBe(true)
+    expect(
+      postTurnMemoryRouteSchema.safeParse({
+        saveTarget: "global_memory",
+        saveText: "",
+        reason: "A non-none route must include a concise saved text.",
       }).success,
     ).toBe(false)
   })

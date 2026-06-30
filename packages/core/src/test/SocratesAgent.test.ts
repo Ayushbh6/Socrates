@@ -371,6 +371,206 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
   })
 
+  it("runs a structured pre-turn memory route and saves explicit project-local remembers before answering", async () => {
+    const streamRequests: ModelRequestLike[] = []
+    const structuredSystems: string[] = []
+    const projectDocsInputs: unknown[] = []
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async generateStructured(request) {
+        structuredSystems.push(request.system)
+        return {
+          output: {
+            projectNotes: true,
+            projectMemory: false,
+            repoDocs: true,
+            userProfile: false,
+            saveTarget: "project_notes",
+            saveText: "Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces.",
+            reason: "The user gave project-local guidance before asking for repo work.",
+          } as never,
+        }
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        yield { type: "model.answer.delta", text: "Got it." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.project_docs = async (input) => {
+      projectDocsInputs.push(input)
+      if (input.operation === "read_section") {
+        return projectDocsSectionOutput("notes", "active_context", "- Existing active item.")
+      }
+      return {
+        operation: "patch_section",
+        area: "notes",
+        path: ".socrates/PROJECT_NOTES.md",
+        changed: true,
+        content: "- Existing active item.\n- [pre-turn] Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces.",
+        section: memoryDocSection("active_context", "- Existing active item.\n- [pre-turn] Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces."),
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 120 },
+      }
+    }
+    executors.repo_docs = async (input) => ({
+      operation: "read_index",
+      paths: [".socrates/repo_docs/REPO_RULES.md"],
+      content: "hard_rules",
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: 10 },
+    })
+
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openrouter",
+      modelId: "z-ai/glm-4.5",
+      runtimeConfig: {
+        providerId: "openrouter",
+        modelId: "z-ai/glm-4.5",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Remember this project boundary, then inspect the repo." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    expect(structuredSystems[0]).toContain("pre-turn memory router")
+    expect(projectDocsInputs).toEqual([
+      { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
+      { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
+      {
+        operation: "patch_section",
+        area: "notes",
+        sectionId: "active_context",
+        oldText: "- Existing active item.",
+        newText: "- Existing active item.\n- [pre-turn] Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces.",
+      },
+    ])
+    const toolNames = streamed.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)
+    expect(toolNames).toEqual(["project_docs", "repo_docs", "project_docs", "project_docs"])
+    expect(JSON.stringify(streamRequests[0]?.messages)).toContain("socrates_memory_loop")
+    expect(JSON.stringify(streamRequests[0]?.messages)).toContain("root MEMORY.md and context-files")
+  })
+
+  it("runs a structured post-evidence route and syncs project memory before the final model step", async () => {
+    const streamRequests: ModelRequestLike[] = []
+    const structuredSystems: string[] = []
+    const projectDocsInputs: unknown[] = []
+    let streamCalls = 0
+    let structuredCalls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async generateStructured(request) {
+        structuredCalls += 1
+        structuredSystems.push(request.system)
+        if (structuredCalls === 1) {
+          return {
+            output: {
+              projectNotes: false,
+              projectMemory: false,
+              repoDocs: false,
+              userProfile: false,
+              saveTarget: "none",
+              saveText: "",
+              reason: "No pre-turn recall needed.",
+            } as never,
+          }
+        }
+        return {
+          output: {
+            saveTarget: "project_memory",
+            saveText: "Verified README mentions the Socrates memory loop.",
+            reason: "A read tool produced a durable project fact.",
+          } as never,
+        }
+      },
+      async *stream(request) {
+        streamRequests.push(request)
+        streamCalls += 1
+        if (streamCalls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "tcall_read_memory_loop", toolName: "read", input: { path: "README.md" } },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Verified and saved." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async () => ({
+      path: "README.md",
+      kind: "file",
+      content: "Socrates memory loop",
+      truncation: { truncated: false, charLimit: 20_000, returnedLength: 20 },
+    })
+    executors.project_docs = async (input) => {
+      projectDocsInputs.push(input)
+      return {
+        operation: "edit",
+        area: "memory",
+        path: ".socrates/MEMORY.md",
+        changed: true,
+        content: "- [post-evidence] Verified README mentions the Socrates memory loop.",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 70 },
+      }
+    }
+
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Check the README for memory-loop state." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    expect(structuredSystems[0]).toContain("pre-turn memory router")
+    expect(structuredSystems[1]).toContain("post-evidence memory router")
+    expect(projectDocsInputs).toEqual([
+      {
+        operation: "edit",
+        area: "memory",
+        editMode: "append",
+        text: "- [post-evidence] Verified README mentions the Socrates memory loop.",
+      },
+    ])
+    const toolNames = streamed.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)
+    expect(toolNames).toEqual(["read", "project_docs"])
+    expect(streamRequests).toHaveLength(2)
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Verified README mentions the Socrates memory loop")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("socrates_memory_loop")
+  })
+
   it("preserves OpenAI reasoning item metadata when continuing after tool calls", async () => {
     const seenMessages: unknown[] = []
     let calls = 0
@@ -1840,6 +2040,28 @@ const stringMessageContents = (messages: unknown): string[] =>
 const snapshotCountRequest = (request: ModelRequestLike): CountedRequest => ({
   messages: JSON.parse(JSON.stringify(request.messages)) as unknown,
   toolCount: request.tools?.length ?? 0,
+})
+
+const memoryDocSection = (sectionId: string, content: string) => ({
+  sectionId,
+  kind: "context",
+  tags: ["test"],
+  heading: "Active Context",
+  content,
+  lineStart: 1,
+  lineEnd: 3,
+  contentHash: `hash_${sectionId}`,
+  summary: content,
+  tokenEstimate: 10,
+})
+
+const projectDocsSectionOutput = (area: "memory" | "notes", sectionId: string, content: string) => ({
+  operation: "read_section" as const,
+  area,
+  path: area === "memory" ? ".socrates/MEMORY.md" : ".socrates/PROJECT_NOTES.md",
+  content,
+  section: memoryDocSection(sectionId, content),
+  truncation: { truncated: false, charLimit: 20_000, returnedLength: content.length },
 })
 
 const emptyToolExecutors = (): ToolExecutors => ({

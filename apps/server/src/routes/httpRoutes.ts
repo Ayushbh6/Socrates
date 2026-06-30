@@ -33,6 +33,7 @@ import {
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
   providerIdSchema,
+  rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionRequestSchema,
   updateMemoryAgentGlobalSettingsRequestSchema,
   updateWorkerModelSettingsRequestSchema,
@@ -369,6 +370,16 @@ export const registerHttpRoutes = async (
   app.get("/api/memory-agent", async (_request, reply) => {
     try {
       return ok(store.getMemoryAgent())
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/memory-agent/skill-proposals/:actionId/reject", async (request, reply) => {
+    try {
+      const { actionId } = parseParams(memoryActionParamsSchema, request.params)
+      return ok(rejectMemorySkillProposalResponseSchema.parse(store.rejectMemorySkillProposal(actionId)))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

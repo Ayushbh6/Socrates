@@ -454,6 +454,39 @@ export class MemoryStore extends StoreBase {
     return { actionId, skill }
   }
 
+  rejectMemorySkillProposal(actionId: string): { actionId: string; status: "rejected" } {
+    this.ensureGlobalKnowledge()
+    const action = this.handle.db.select().from(memoryAgentActions).where(eq(memoryAgentActions.id, actionId)).limit(1).get()
+    if (!action) {
+      throw new SocratesError("memory_skill_proposal_not_found", "Memory skill proposal was not found.", { recoverable: true, details: { actionId } })
+    }
+    if (action.targetKind !== "skill_request") {
+      throw new SocratesError("memory_skill_proposal_invalid", "Memory action is not a skill proposal.", { recoverable: true, details: { actionId, targetKind: action.targetKind } })
+    }
+    if (action.status !== "proposed") {
+      throw new SocratesError("memory_skill_proposal_not_pending", "Memory skill proposal is not pending approval.", { recoverable: true, details: { actionId, status: action.status } })
+    }
+
+    this.handle.db
+      .update(memoryAgentActions)
+      .set({ status: "rejected", error: "Rejected by user." })
+      .where(eq(memoryAgentActions.id, actionId))
+      .run()
+
+    const metadata = parseJsonObject(action.metadataJson)
+    const scope = metadata.scope === "project" ? "project" : "global"
+    const operation = metadata.operation === "update" ? "update" : "create"
+    const skillName = typeof metadata.skillName === "string" ? metadata.skillName : path.basename(path.dirname(action.targetPath))
+    this.appendEvent({
+      ...(action.projectId && action.projectId !== GLOBAL_MEMORY_AGENT_PROJECT_ID ? { projectId: action.projectId } : {}),
+      ...(action.turnId ? { turnId: action.turnId } : {}),
+      type: "memory.skill.rejected",
+      source: "server",
+      payload: { actionId, scope, operation, skillName, path: action.targetPath },
+    })
+    return { actionId, status: "rejected" }
+  }
+
   listProjectSkills(projectId: string, workspacePath: string | undefined): SkillSummary[] {
     this.ensureProjectMemory(projectId, workspacePath)
     return this.skillInfos(workspacePath, "project").map(skillSummary)

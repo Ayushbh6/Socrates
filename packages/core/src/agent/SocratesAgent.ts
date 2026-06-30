@@ -1,8 +1,13 @@
 import {
   normalizedToolCallSchema,
+  postTurnMemoryRouteSchema,
+  preTurnMemoryRouteSchema,
   toolExecutionResultSchema,
+  type MemoryRouteSaveTarget,
   type ModelToolDefinition,
   type NormalizedToolCall,
+  type PostTurnMemoryRoute,
+  type PreTurnMemoryRoute,
   type ProviderId,
   type RuntimeConfig,
   type ToolExecutionResult,
@@ -18,6 +23,12 @@ import {
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
 } from "../context/contextCompression"
+import {
+  buildPostTurnMemoryRouterUserContent,
+  buildPreTurnMemoryRouterUserContent,
+  POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
+  PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
+} from "../prompts/memoryRoutingPrompt"
 import { buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
@@ -107,6 +118,18 @@ export class SocratesAgent {
     let docsPreflightSent = false
     let docsSyncCheckpointSent = false
     let memoryReviewReminderCount = 0
+    let preTurnMemoryLoopSummary: string | undefined
+    let postEvidenceMemoryLoopSent = false
+    let accumulatedAnswerText = ""
+
+    const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger)
+    preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
+    for (const event of preTurnMemoryLoop.events) {
+      yield event
+    }
+    if (preTurnMemoryLoop.developerMessage) {
+      messages.push({ role: "developer", content: preTurnMemoryLoop.developerMessage })
+    }
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
@@ -218,6 +241,7 @@ export class SocratesAgent {
 
         if (modelEvent.type === "model.answer.delta") {
           stepText += modelEvent.text
+          accumulatedAnswerText += modelEvent.text
           if (suppressAnswerDeltas) {
             continue
           }
@@ -369,6 +393,20 @@ export class SocratesAgent {
       for (const warning of ledgerUpdate.warnings) {
         messages.push({ role: "developer", content: warning })
       }
+      if (!postEvidenceMemoryLoopSent && shouldRunPostEvidenceMemoryLoop(execution.results)) {
+        const postTurnMemoryLoop = await this.runPostEvidenceMemoryLoop(input, messages, docsLedger, {
+          ...(preTurnMemoryLoopSummary ? { preflightSummary: preTurnMemoryLoopSummary } : {}),
+          toolSummary: summarizeToolResultsForMemoryLoop(execution.results),
+          assistantDraft: accumulatedAnswerText,
+        })
+        postEvidenceMemoryLoopSent = true
+        for (const event of postTurnMemoryLoop.events) {
+          yield event
+        }
+        if (postTurnMemoryLoop.developerMessage) {
+          messages.push({ role: "developer", content: postTurnMemoryLoop.developerMessage })
+        }
+      }
       if (!docsSyncCheckpointSent) {
         const checkpoint = docsLedger.buildSyncCheckpoint()
         if (checkpoint) {
@@ -478,6 +516,309 @@ export class SocratesAgent {
     })
 
     return { events: queue, done }
+  }
+
+  private async runPreTurnMemoryLoop(
+    input: SocratesAgentTurnInput,
+    messages: ModelMessage[],
+    docsLedger: TurnDocsLedger,
+  ): Promise<MemoryLoopRunResult> {
+    if (!canRunMemoryLoop(this.provider, input)) {
+      return emptyMemoryLoopRunResult()
+    }
+
+    try {
+      const generated = await this.generateStructuredMemoryRoute<PreTurnMemoryRoute>(input, {
+        system: PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
+        userContent: buildPreTurnMemoryRouterUserContent({
+          ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
+          ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
+          userMessage: latestUserText(messages),
+          recentMessages: messages,
+        }),
+        schema: preTurnMemoryRouteSchema,
+      })
+      const parsed = preTurnMemoryRouteSchema.safeParse(generated)
+      if (!parsed.success) {
+        return memoryLoopWarning("pre_turn", "Structured pre-turn route did not match the memory-route schema.")
+      }
+      const route = parsed.data
+      const events: ToolLifecycleEvent[] = []
+      const records: MemoryLoopToolRecord[] = []
+      const skipped: string[] = []
+
+      for (const request of preTurnRecallRequests(route)) {
+        const record = await this.executeMemoryLoopTool(input, docsLedger, request)
+        events.push(...record.events)
+        records.push(record)
+      }
+
+      const saveResult = await this.executeMemoryLoopSave(input, docsLedger, route.saveTarget, route.saveText, "pre_turn")
+      events.push(...saveResult.events)
+      records.push(...saveResult.records)
+      skipped.push(...saveResult.skipped)
+
+      const summary = summarizeMemoryLoop("pre_turn", route, records, skipped)
+      return {
+        events,
+        summary,
+        developerMessage: renderMemoryLoopDeveloperMessage("pre_turn", route, records, skipped),
+      }
+    } catch (error) {
+      const normalized = normalizeError(error)
+      return memoryLoopWarning("pre_turn", `${normalized.code}: ${normalized.message}`)
+    }
+  }
+
+  private async runPostEvidenceMemoryLoop(
+    input: SocratesAgentTurnInput,
+    messages: ModelMessage[],
+    docsLedger: TurnDocsLedger,
+    context: { preflightSummary?: string; toolSummary: string; assistantDraft: string },
+  ): Promise<MemoryLoopRunResult> {
+    if (!canRunMemoryLoop(this.provider, input)) {
+      return emptyMemoryLoopRunResult()
+    }
+
+    try {
+      const generated = await this.generateStructuredMemoryRoute<PostTurnMemoryRoute>(input, {
+        system: POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
+        userContent: buildPostTurnMemoryRouterUserContent({
+          ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
+          ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
+          userMessage: latestUserText(messages),
+          recentMessages: messages,
+          ...(context.preflightSummary ? { preflightSummary: context.preflightSummary } : {}),
+          toolSummary: context.toolSummary,
+          assistantDraft: context.assistantDraft,
+        }),
+        schema: postTurnMemoryRouteSchema,
+      })
+      const parsed = postTurnMemoryRouteSchema.safeParse(generated)
+      if (!parsed.success) {
+        return memoryLoopWarning("post_evidence", "Structured post-evidence route did not match the memory-route schema.")
+      }
+      const route = parsed.data
+      const saveResult = await this.executeMemoryLoopSave(input, docsLedger, route.saveTarget, route.saveText, "post_evidence")
+      const summary = summarizeMemoryLoop("post_evidence", route, saveResult.records, saveResult.skipped)
+      return {
+        events: saveResult.events,
+        summary,
+        developerMessage: renderMemoryLoopDeveloperMessage("post_evidence", route, saveResult.records, saveResult.skipped),
+      }
+    } catch (error) {
+      const normalized = normalizeError(error)
+      return memoryLoopWarning("post_evidence", `${normalized.code}: ${normalized.message}`)
+    }
+  }
+
+  private async generateStructuredMemoryRoute<TOutput>(
+    input: SocratesAgentTurnInput,
+    request: { system: string; userContent: string; schema: unknown },
+  ): Promise<TOutput> {
+    const method = this.provider.generateStructured
+    if (!method) {
+      throw new SocratesError("memory_route_structured_generation_unavailable", "Memory routing requires provider.generateStructured().", {
+        recoverable: true,
+      })
+    }
+    const bound = method.bind(this.provider) as <T>(structuredRequest: {
+      providerId: ProviderId
+      modelId: string
+      sessionId?: string
+      cacheKey?: string
+      system: string
+      messages: ModelMessage[]
+      runtimeConfig: RuntimeConfig
+      schema: unknown
+      modelCallId?: string
+      abortSignal?: AbortSignal
+    }) => Promise<{ output: T }>
+    const generated = await bound<TOutput>({
+      providerId: input.providerId,
+      modelId: input.modelId,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+      ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:memory-route` } : {}),
+      system: request.system,
+      messages: [{ role: "user", content: request.userContent }],
+      runtimeConfig: memoryRouterRuntimeConfig(input.runtimeConfig),
+      schema: request.schema,
+      modelCallId: createId("mcall"),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    })
+    return generated.output
+  }
+
+  private async executeMemoryLoopSave(
+    input: SocratesAgentTurnInput,
+    docsLedger: TurnDocsLedger,
+    target: MemoryRouteSaveTarget,
+    text: string,
+    phase: MemoryLoopPhase,
+  ): Promise<MemoryLoopSaveResult> {
+    const saveText = text.trim()
+    if (target === "none" || !saveText) {
+      return emptyMemoryLoopSaveResult()
+    }
+    if (target === "project_notes") {
+      return this.patchMemoryLoopSection(input, docsLedger, {
+        toolName: "project_docs",
+        readInput: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
+        patchInput: (oldText, newText) => ({
+          operation: "patch_section",
+          area: "notes",
+          sectionId: "active_context",
+          oldText,
+          newText,
+        }),
+        text: saveText,
+        phase,
+      })
+    }
+    if (target === "project_memory") {
+      const record = await this.executeMemoryLoopTool(input, docsLedger, {
+        toolName: "project_docs",
+        input: { operation: "edit", area: "memory", editMode: "append", text: memoryLoopEntry(saveText, phase) },
+      })
+      return { events: record.events, records: [record], skipped: [] }
+    }
+    if (target === "repo_docs") {
+      return this.patchMemoryLoopSection(input, docsLedger, {
+        toolName: "repo_docs",
+        readInput: { operation: "read_section", path: "REPO_RULES.md", sectionId: "hard_rules", charLimit: 20_000 },
+        patchInput: (oldText, newText) => ({
+          operation: "patch_section",
+          path: "REPO_RULES.md",
+          sectionId: "hard_rules",
+          oldText,
+          newText,
+        }),
+        text: saveText,
+        phase,
+      })
+    }
+    const record = await this.executeMemoryLoopTool(input, docsLedger, {
+      toolName: "memory_note",
+      input: { note: saveText, importance: phase === "pre_turn" ? "high" : "normal" },
+    })
+    return { events: record.events, records: [record], skipped: [] }
+  }
+
+  private async patchMemoryLoopSection(
+    input: SocratesAgentTurnInput,
+    docsLedger: TurnDocsLedger,
+    request: {
+      toolName: "project_docs" | "repo_docs"
+      readInput: Record<string, unknown>
+      patchInput: (oldText: string, newText: string) => Record<string, unknown>
+      text: string
+      phase: MemoryLoopPhase
+    },
+  ): Promise<MemoryLoopSaveResult> {
+    const readRecord = await this.executeMemoryLoopTool(input, docsLedger, {
+      toolName: request.toolName,
+      input: request.readInput,
+    })
+    const events = [...readRecord.events]
+    const records = [readRecord]
+    if (!readRecord.result.ok) {
+      return { events, records, skipped: [] }
+    }
+    const oldText = memoryLoopSectionContent(readRecord.result.output)
+    if (!oldText) {
+      if (request.toolName === "repo_docs") {
+        return { events, records, skipped: ["repo_docs section content was empty, so the memory-loop repo_docs write was skipped."] }
+      }
+      const fallbackRecord = await this.executeMemoryLoopFallbackAppend(input, docsLedger, request.toolName, request.text, request.phase)
+      return { events: [...events, ...fallbackRecord.events], records: [...records, fallbackRecord], skipped: [] }
+    }
+    if (oldText.includes(request.text)) {
+      return {
+        events,
+        records,
+        skipped: [`${request.toolName} already contained the selected memory text.`],
+      }
+    }
+    const patchRecord = await this.executeMemoryLoopTool(input, docsLedger, {
+      toolName: request.toolName,
+      input: request.patchInput(oldText, appendMemoryLoopEntry(oldText, request.text, request.phase)),
+    })
+    return { events: [...events, ...patchRecord.events], records: [...records, patchRecord], skipped: [] }
+  }
+
+  private async executeMemoryLoopFallbackAppend(
+    input: SocratesAgentTurnInput,
+    docsLedger: TurnDocsLedger,
+    toolName: "project_docs" | "repo_docs",
+    text: string,
+    phase: MemoryLoopPhase,
+  ): Promise<MemoryLoopToolRecord> {
+    if (toolName === "project_docs") {
+      return this.executeMemoryLoopTool(input, docsLedger, {
+        toolName,
+        input: { operation: "edit", area: "notes", editMode: "append", text: memoryLoopEntry(text, phase) },
+      })
+    }
+    const error = new SocratesError("memory_loop_repo_docs_fallback_unavailable", "repo_docs fallback append requires a readable target section.", {
+      recoverable: true,
+    })
+    const toolCallId = createId("tcall")
+    return {
+      toolName,
+      input: { operation: "edit", path: "REPO_RULES.md" },
+      events: [],
+      result: toolErrorResult({ toolCallId, toolName, input: { operation: "edit", path: "REPO_RULES.md" } }, error),
+    }
+  }
+
+  private async executeMemoryLoopTool(
+    input: SocratesAgentTurnInput,
+    docsLedger: TurnDocsLedger,
+    request: { toolName: ToolName; input: unknown },
+  ): Promise<MemoryLoopToolRecord> {
+    if (!input.toolExecutors || !input.workspacePath || !input.requestApproval) {
+      const error = new SocratesError("memory_loop_tool_context_unavailable", "Memory loop tool execution requires tools, workspacePath, and approval handler.", {
+        recoverable: true,
+      })
+      const toolCallId = createId("tcall")
+      return {
+        toolName: request.toolName,
+        input: request.input,
+        events: [],
+        result: toolErrorResult({ toolCallId, toolName: request.toolName, input: request.input }, error),
+      }
+    }
+
+    const queue = new AsyncEventQueue<ToolLifecycleEvent>()
+    const toolCall: NormalizedToolCall = {
+      toolCallId: createId("tcall"),
+      toolName: request.toolName,
+      input: request.input,
+    }
+    const done = this.executeOneToolCall(
+      toolCall,
+      {
+        projectId: input.projectId ?? "",
+        conversationId: input.conversationId ?? "",
+        sessionId: input.sessionId ?? "",
+        turnId: input.turnId ?? "",
+        workspacePath: input.workspacePath,
+        runtimeConfig: input.runtimeConfig,
+        executors: input.toolExecutors,
+        requestApproval: input.requestApproval,
+        ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      },
+      queue,
+      new Map(),
+      docsLedger,
+    ).finally(() => queue.close())
+    const events: ToolLifecycleEvent[] = []
+    for await (const event of queue) {
+      events.push(event)
+    }
+    const result = await done
+    return { toolName: request.toolName, input: request.input, events, result }
   }
 
   private async executeOneToolCall(
@@ -756,6 +1097,166 @@ export class SocratesAgent {
       return toolErrorResult(toolCall, normalized)
     }
   }
+}
+
+type MemoryLoopPhase = "pre_turn" | "post_evidence"
+
+type MemoryLoopRunResult = {
+  events: ToolLifecycleEvent[]
+  summary?: string
+  developerMessage?: string
+}
+
+type MemoryLoopSaveResult = {
+  events: ToolLifecycleEvent[]
+  records: MemoryLoopToolRecord[]
+  skipped: string[]
+}
+
+type MemoryLoopToolRecord = {
+  toolName: ToolName
+  input: unknown
+  events: ToolLifecycleEvent[]
+  result: ToolExecutionResult
+}
+
+const emptyMemoryLoopRunResult = (): MemoryLoopRunResult => ({ events: [] })
+const emptyMemoryLoopSaveResult = (): MemoryLoopSaveResult => ({ events: [], records: [], skipped: [] })
+
+const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput): boolean =>
+  typeof provider.generateStructured === "function" &&
+  Boolean(input.toolExecutors && input.workspacePath && input.requestApproval && input.projectId && input.conversationId && input.sessionId && input.turnId)
+
+const memoryRouterRuntimeConfig = (runtimeConfig: RuntimeConfig): RuntimeConfig => ({
+  ...runtimeConfig,
+  thinkingEnabled: false,
+  thinkingEffort: "none",
+  approvalMode: "read_only_auto",
+  sandboxMode: "read_only",
+})
+
+const preTurnRecallRequests = (route: PreTurnMemoryRoute): Array<{ toolName: ToolName; input: unknown }> => {
+  const requests: Array<{ toolName: ToolName; input: unknown }> = []
+  if (route.projectNotes) {
+    requests.push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 } })
+  }
+  if (route.projectMemory) {
+    requests.push({ toolName: "project_docs", input: { operation: "read", area: "memory", charLimit: 20_000 } })
+  }
+  if (route.repoDocs) {
+    requests.push({ toolName: "repo_docs", input: { operation: "read_index", charLimit: 20_000 } })
+  }
+  if (route.userProfile) {
+    requests.push({ toolName: "user_profile", input: { operation: "read_index", charLimit: 20_000 } })
+  }
+  return requests
+}
+
+const shouldRunPostEvidenceMemoryLoop = (results: ToolExecutionResult[]): boolean =>
+  results.some((result) => result.ok && ["read", "search", "trace_retrieve", "bash", "edit", "apply_patch", "project_docs", "repo_docs"].includes(result.toolName))
+
+const latestUserText = (messages: ModelMessage[]): string => {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== "user") {
+      continue
+    }
+    if (typeof message.content === "string") {
+      return message.content
+    }
+    return message.content.map((part) => (part.type === "text" ? part.text : `[${part.type}]`)).join("\n")
+  }
+  return ""
+}
+
+const memoryLoopSectionContent = (output: unknown): string | undefined => {
+  const record = output && typeof output === "object" && !Array.isArray(output) ? (output as Record<string, unknown>) : undefined
+  const section = record?.section && typeof record.section === "object" && !Array.isArray(record.section) ? (record.section as Record<string, unknown>) : undefined
+  return typeof section?.content === "string" ? section.content : typeof record?.content === "string" ? record.content : undefined
+}
+
+const memoryLoopEntry = (text: string, phase: MemoryLoopPhase): string => `- [${phase === "pre_turn" ? "pre-turn" : "post-evidence"}] ${text.trim()}`
+
+const appendMemoryLoopEntry = (oldText: string, text: string, phase: MemoryLoopPhase): string => {
+  const entry = memoryLoopEntry(text, phase)
+  return oldText.trimEnd().length === 0 ? entry : `${oldText.trimEnd()}\n${entry}`
+}
+
+const summarizeToolResultsForMemoryLoop = (results: ToolExecutionResult[]): string => {
+  if (results.length === 0) {
+    return "No tool results."
+  }
+  return results
+    .slice(0, 12)
+    .map((result, index) => {
+      const status = result.ok ? "ok" : `failed:${result.error?.code ?? "unknown"}`
+      return `${index + 1}. ${result.toolName} ${status}: ${clipText(previewMemoryLoopOutput(result.output), 800)}`
+    })
+    .join("\n")
+}
+
+const summarizeMemoryLoop = (
+  phase: MemoryLoopPhase,
+  route: PreTurnMemoryRoute | PostTurnMemoryRoute,
+  records: MemoryLoopToolRecord[],
+  skipped: string[],
+): string => {
+  const routeSummary =
+    "projectNotes" in route
+      ? `load projectNotes=${route.projectNotes}, projectMemory=${route.projectMemory}, repoDocs=${route.repoDocs}, userProfile=${route.userProfile}; saveTarget=${route.saveTarget}`
+      : `saveTarget=${route.saveTarget}`
+  const actions = records.map((record) => `${record.toolName}:${record.result.ok ? "ok" : record.result.error?.code ?? "failed"}`)
+  return [`${phase}: ${routeSummary}`, `reason: ${route.reason}`, actions.length ? `actions: ${actions.join(", ")}` : "actions: none", ...skipped].join("\n")
+}
+
+const renderMemoryLoopDeveloperMessage = (
+  phase: MemoryLoopPhase,
+  route: PreTurnMemoryRoute | PostTurnMemoryRoute,
+  records: MemoryLoopToolRecord[],
+  skipped: string[],
+): string =>
+  [
+    `<socrates_memory_loop phase="${phase}">`,
+    "Structured memory route was executed by the runtime before the next user-visible answer.",
+    `route: ${JSON.stringify(route)}`,
+    skipped.length ? `skipped: ${skipped.join("; ")}` : undefined,
+    records.length > 0 ? "tool_results:" : "tool_results: none",
+    ...records.map((record, index) =>
+      [
+        `- ${index + 1}. ${record.toolName} ${record.result.ok ? "ok" : `failed:${record.result.error?.code ?? "unknown"}`}`,
+        `  input: ${clipText(JSON.stringify(record.input), 800)}`,
+        `  output: ${clipText(previewMemoryLoopOutput(record.result.output), 4_000)}`,
+      ].join("\n"),
+    ),
+    "Use these results as current context. Mention saved memory/docs actions in the answer when relevant; do not repeat the same save unless new information materially changes it.",
+    "</socrates_memory_loop>",
+  ]
+    .filter((line): line is string => typeof line === "string")
+    .join("\n")
+
+const memoryLoopWarning = (phase: MemoryLoopPhase, warning: string): MemoryLoopRunResult => ({
+  events: [],
+  summary: `${phase}: memory loop warning: ${warning}`,
+  developerMessage: `<socrates_memory_loop phase="${phase}" status="warning">\n${warning}\nContinue normally, but do not claim memory was saved by the structured loop.\n</socrates_memory_loop>`,
+})
+
+const previewMemoryLoopOutput = (output: unknown): string => {
+  if (output === undefined) {
+    return ""
+  }
+  if (typeof output === "string") {
+    return output
+  }
+  try {
+    return JSON.stringify(output, null, 2)
+  } catch {
+    return String(output)
+  }
+}
+
+const clipText = (text: string | undefined, limit: number): string => {
+  const value = text ?? ""
+  return value.length > limit ? `${value.slice(0, limit)}...` : value
 }
 
 const nativeFollowUpMessagesForToolResult = (result: ToolExecutionResult, workspacePath: string | undefined): ModelMessage[] => {

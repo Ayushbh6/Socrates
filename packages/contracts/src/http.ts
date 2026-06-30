@@ -377,6 +377,14 @@ export const approveMemorySkillProposalResponseSchema = z
   .strict()
 export type ApproveMemorySkillProposalResponse = z.infer<typeof approveMemorySkillProposalResponseSchema>
 
+export const rejectMemorySkillProposalResponseSchema = z
+  .object({
+    actionId: idSchema,
+    status: z.literal("rejected"),
+  })
+  .strict()
+export type RejectMemorySkillProposalResponse = z.infer<typeof rejectMemorySkillProposalResponseSchema>
+
 export const deleteSkillResponseSchema = z
   .object({
     deletedSkillName: z.string().min(1),
