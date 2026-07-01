@@ -2057,10 +2057,20 @@ describe("HTTP API", () => {
     if (!listBody.ok) {
       throw new Error("Expected worker model settings list success")
     }
-    expect(listBody.data.settings.map((setting) => setting.workerId)).toEqual(["skill_writer", "context_compactor", "title_generator"])
+    expect(listBody.data.settings.map((setting) => setting.workerId)).toEqual([
+      "skill_writer",
+      "context_compactor",
+      "title_generator",
+      "memory_router",
+    ])
     expect(listBody.data.settings.find((setting) => setting.workerId === "skill_writer")).toMatchObject({
       providerId: "openrouter",
       modelId: "xiaomi/mimo-v2.5-pro",
+      thinkingEnabled: false,
+    })
+    expect(listBody.data.settings.find((setting) => setting.workerId === "memory_router")).toMatchObject({
+      providerId: "openrouter",
+      modelId: "deepseek/deepseek-v4-flash",
       thinkingEnabled: false,
     })
 

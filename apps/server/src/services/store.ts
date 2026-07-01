@@ -652,6 +652,22 @@ export class SocratesStore {
     this.modelTelemetry.recordConversationTitleUsage(input)
   }
 
+  recordMemoryRouterUsage(input: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId: string
+    sourceId: string
+    providerId: string
+    modelId: string
+    status: string
+    startedAt?: string
+    completedAt?: string
+    usage?: StoredModelUsage
+  }): void {
+    this.modelTelemetry.recordMemoryRouterUsage(input)
+  }
+
   getLatestContextCompactionSnapshot(conversationId: string): ContextCompactionSummary | undefined {
     return this.contextCompactions.getLatestActive(conversationId)
   }

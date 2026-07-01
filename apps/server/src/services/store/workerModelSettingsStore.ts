@@ -29,9 +29,15 @@ export const DEFAULT_WORKER_MODEL_SETTINGS: Record<WorkerModelRole, Omit<WorkerM
     modelId: "meta-llama/llama-4-maverick",
     thinkingEnabled: false,
   },
+  memory_router: {
+    workerId: "memory_router",
+    providerId: "openrouter",
+    modelId: "deepseek/deepseek-v4-flash",
+    thinkingEnabled: false,
+  },
 }
 
-const workerOrder: WorkerModelRole[] = ["skill_writer", "context_compactor", "title_generator"]
+const workerOrder: WorkerModelRole[] = ["skill_writer", "context_compactor", "title_generator", "memory_router"]
 
 export class WorkerModelSettingsStore extends StoreBase {
   ensureAll(): WorkerModelSettings[] {

@@ -444,6 +444,38 @@ export class ModelTelemetryStore extends StoreBase {
     })
   }
 
+  recordMemoryRouterUsage(input: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId: string
+    sourceId: string
+    providerId: string
+    modelId: string
+    status: string
+    startedAt?: string
+    completedAt?: string
+    usage?: StoredModelUsage
+  }): void {
+    if (!input.usage) {
+      return
+    }
+    this.recordAiUsageEvent({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      sourceKind: "memory_router",
+      sourceId: input.sourceId,
+      providerId: input.providerId,
+      modelId: input.modelId,
+      status: input.status,
+      ...(input.startedAt ? { startedAt: input.startedAt } : {}),
+      ...(input.completedAt ? { completedAt: input.completedAt } : {}),
+      usage: input.usage,
+    })
+  }
+
   buildTurnUsageReport(turnId: string): TurnUsageReport | undefined {
     const rows = this.getAiUsageEventRowsByTurn(turnId)
     if (rows.length === 0) {
@@ -621,7 +653,7 @@ export class ModelTelemetryStore extends StoreBase {
     conversationId: string
     sessionId: string
     turnId: string
-    sourceKind: "main_model_call" | "context_compaction" | "conversation_title"
+    sourceKind: "main_model_call" | "context_compaction" | "conversation_title" | "memory_router"
     sourceId: string
     providerId: string
     modelId: string
@@ -707,7 +739,7 @@ type AiUsageEventRow = {
   conversation_id: string
   session_id: string
   turn_id: string
-  source_kind: "main_model_call" | "context_compaction" | "conversation_title"
+  source_kind: "main_model_call" | "context_compaction" | "conversation_title" | "memory_router"
   source_id: string
   provider_id: string
   model_id: string

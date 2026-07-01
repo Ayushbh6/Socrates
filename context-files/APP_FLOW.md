@@ -790,7 +790,7 @@ current_time when truly needed
 
 It should not receive Terminal, arbitrary filesystem read/write, generic patch tools, identity/profile writes, project/repo docs writes, or raw path mutation tools.
 
-Settings exposes independent worker model selectors for Skill Writer, Context Compactor, and Title Generator. Each selector uses the normal model registry and thinking options, with defaults preserving the current production choices.
+Settings exposes independent worker model selectors for Skill Writer, Context Compactor, Title Generator, and Memory Router. Each selector uses the normal model registry and thinking options, with defaults preserving the current production choices. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
 
 `mcp_registry` is the model-visible MCP discovery/inspection tool. The model-facing contract is intentionally just `list` and `describe`: `list` returns compact global plus project-visible servers with canonical ids, names, scopes, descriptions, and the first tool previews; `describe` takes an exact listed `id` or exact listed `name`, loads that single server, and returns docs plus dynamic `mcp__...` tool names. UI/API flows handle configure, check, enable/disable, and delete. The system prompt carries only concise registry-first guidance; it must not dump MCP server tool lists or schemas. The first provider call exposes only the core tools plus `mcp_registry`; dynamic `mcp__...` tool names may be added to later same-turn provider requests only after the registry/runtime reports them available.
 
@@ -896,7 +896,9 @@ The estimate is provider-aware. Before each model call, Socrates counts the asse
 
 Compression is enabled by default and can be disabled only with `SOCRATES_CONTEXT_COMPRESSION_ENABLED=false`.
 
-The chat header displays the latest estimated model-facing context usage, for example `23,433 tokens`, plus the cumulative conversation cost from completed turn usage reports. Provider-reported token usage remains persisted for compatibility diagnostics, but `turn_usage_reports` and `ai_usage_events` are the source of truth for cost/cache reporting. If exact provider cost is unavailable, computed costs are clearly marked through usage quality flags and the frontend cost marker.
+The chat header displays the latest estimated model-facing context usage, for example `23,433 tokens`, plus the cumulative conversation cost from completed turn usage reports. Provider-reported token usage remains persisted for compatibility diagnostics, but `turn_usage_reports` and `ai_usage_events` are the source of truth for cost/cache reporting. Memory Router usage is included in the same total through `ai_usage_events`, not displayed as a separate cost category. If exact provider cost is unavailable, computed costs are clearly marked through usage quality flags and the frontend cost marker.
+
+Socrates' answer voice should hide machinery by default. It can use tools, docs, memory, ids, hashes, model names, and backend state internally, but the final answer should sound like a capable human collaborator unless the user explicitly asks for exact audit details.
 
 Example:
 

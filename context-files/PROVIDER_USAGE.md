@@ -520,7 +520,7 @@ The local/release evaluation gate should continue to run compressor candidates o
 
 The current runtime order is `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.2`. All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active.
 
-The compressor model is an internal runtime choice. The frontend should not hardcode or expose compressor provider mappings unless a later settings surface is explicitly designed.
+The compressor model is now a worker model setting, so the frontend exposes it through the shared registry-backed worker settings surface instead of hardcoding provider mappings. The Memory Router is also a worker model setting; it defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off, and router usage should be recorded into `ai_usage_events` as `source_kind = "memory_router"` so normal turn/conversation cost totals include it without a separate visible router-cost widget.
 
 Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
 

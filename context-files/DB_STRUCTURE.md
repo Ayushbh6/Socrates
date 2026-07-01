@@ -541,7 +541,7 @@ Stores token usage and cost for model calls.
 
 ## `ai_usage_events`
 
-Canonical append/update ledger for billable AI work tied to a visible turn. Rows use `source_kind` (`main_model_call`, `context_compaction`, or `conversation_title`) plus `source_id` to connect model calls, compaction snapshots, and title generation to provider/model/status, token totals, cache read/write tokens, `cost_usd`, `cost_source`, `routed_provider`, `pricing_snapshot_json`, raw provider usage metadata, and provider metadata.
+Canonical append/update ledger for billable AI work tied to a visible turn. Rows use `source_kind` (`main_model_call`, `context_compaction`, `conversation_title`, or `memory_router`) plus `source_id` to connect model calls, compaction snapshots, title generation, and structured memory-router calls to provider/model/status, token totals, cache read/write tokens, `cost_usd`, `cost_source`, `routed_provider`, `pricing_snapshot_json`, raw provider usage metadata, and provider metadata.
 
 ## `turn_usage_reports`
 

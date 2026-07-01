@@ -206,6 +206,7 @@ export const handleChatMessageSend = async (
       providerId: command.payload.runtimeConfig.providerId,
       modelId: command.payload.runtimeConfig.modelId,
       runtimeConfig: command.payload.runtimeConfig,
+      memoryRouterModelSettings: store.getWorkerModelSetting("memory_router"),
       cacheKey: providerCacheKey(projectId, conversationId),
       messages: modelHistory,
       promptContext,
@@ -293,6 +294,21 @@ export const handleChatMessageSend = async (
         )
         appendAndEmit(emitEvent, store, event, "server")
         return activeTurns.waitForApproval(created.turnId, approvalId, abortController.signal)
+      },
+      recordMemoryRouterUsage: async (usageEvent) => {
+        store.recordMemoryRouterUsage({
+          projectId,
+          conversationId,
+          sessionId: created.sessionId,
+          turnId: created.turnId,
+          sourceId: usageEvent.sourceId,
+          providerId: usageEvent.providerId,
+          modelId: usageEvent.modelId,
+          status: "completed",
+          startedAt: usageEvent.startedAt,
+          completedAt: usageEvent.completedAt,
+          usage: toStoredUsage(usageEvent.usage),
+        })
       },
       abortSignal: abortController.signal,
     })) {

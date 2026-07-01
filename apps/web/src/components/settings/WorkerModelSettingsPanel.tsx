@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Type } from "lucide-react";
+import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Route, Type } from "lucide-react";
 import type { ModelOption, ModelThinkingOption, WorkerModelRole, WorkerModelSettings } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
@@ -29,6 +29,12 @@ const workers: Array<{
     title: "Title Generator",
     description: "Creates short names for new conversations.",
     icon: Type,
+  },
+  {
+    id: "memory_router",
+    title: "Memory Router",
+    description: "Chooses project, repo, and profile recall before and after turns.",
+    icon: Route,
   },
 ];
 
@@ -118,7 +124,7 @@ export function WorkerModelSettingsPanel() {
             <h2 className="text-base font-semibold text-brand-text-dark">Worker models</h2>
           </div>
           <p className="mt-1 text-sm leading-6 text-brand-text-light">
-            Choose the model used by background writers without changing the chat model.
+            Choose helper models without changing the main chat model.
           </p>
         </div>
         <Button type="button" variant="outline" size="sm" onClick={() => void refresh()} disabled={isLoading || savingWorkerId !== null}>

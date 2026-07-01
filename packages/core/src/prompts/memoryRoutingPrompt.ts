@@ -14,6 +14,7 @@ Use these human-facing targets:
 - none: no immediate save.
 
 Routing rules:
+- If the latest user message is only a light greeting or casual check-in, load projectNotes only, set projectMemory=false, repoDocs=false, userProfile=false, and saveTarget="none".
 - If a request is about the active repo/workspace, load projectNotes.
 - If a request asks to continue, resume, check prior project status, or mentions project notes/memory, load projectNotes and projectMemory.
 - If a request asks to inspect code, architecture, contracts, startup, repo rules, or implementation details, load repoDocs.

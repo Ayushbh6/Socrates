@@ -374,10 +374,13 @@ describe("SocratesAgent", () => {
   it("runs a structured pre-turn memory route and saves explicit project-local remembers before answering", async () => {
     const streamRequests: ModelRequestLike[] = []
     const structuredSystems: string[] = []
+    const structuredRequests: unknown[] = []
+    const recordedRouterUsage: unknown[] = []
     const projectDocsInputs: unknown[] = []
     const provider: ModelProvider = {
       countTokens: fakeCountTokens,
       async generateStructured(request) {
+        structuredRequests.push(request)
         structuredSystems.push(request.system)
         return {
           output: {
@@ -389,6 +392,7 @@ describe("SocratesAgent", () => {
             saveText: "Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces.",
             reason: "The user gave project-local guidance before asking for repo work.",
           } as never,
+          usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16, costUsd: 0.0001 },
         }
       },
       async *stream(request) {
@@ -437,6 +441,15 @@ describe("SocratesAgent", () => {
         approvalMode: "manual",
         sandboxMode: "workspace_write",
       },
+      memoryRouterModelSettings: {
+        providerId: "google",
+        modelId: "gemini-3.3-flash-preview",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+      },
+      recordMemoryRouterUsage: (usage) => {
+        recordedRouterUsage.push(usage)
+      },
       messages: [{ role: "user", content: "Remember this project boundary, then inspect the repo." }],
       workspacePath: "/tmp",
       toolExecutors: executors,
@@ -446,6 +459,28 @@ describe("SocratesAgent", () => {
     }
 
     expect(structuredSystems[0]).toContain("pre-turn memory router")
+    expect(structuredRequests).toHaveLength(1)
+    expect(structuredRequests[0]).toMatchObject({
+      providerId: "google",
+      modelId: "gemini-3.3-flash-preview",
+      runtimeConfig: {
+        providerId: "google",
+        modelId: "gemini-3.3-flash-preview",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "read_only_auto",
+        sandboxMode: "read_only",
+      },
+    })
+    expect(recordedRouterUsage).toEqual([
+      expect.objectContaining({
+        phase: "pre_turn",
+        sourceId: "turn_1:memory_router:pre_turn",
+        providerId: "google",
+        modelId: "gemini-3.3-flash-preview",
+        usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16, costUsd: 0.0001 },
+      }),
+    ])
     expect(projectDocsInputs).toEqual([
       { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
       { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
@@ -1964,6 +1999,10 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("Project notes include an `active_context` section")
     expect(request.system).toContain("write one compact entry to project_docs notes `active_context`")
     expect(request.system).toContain("backend-owned `runtime_context` section with compact generated workspace scan facts")
+    expect(request.system).toContain("Be human first: warm, curious, grounded, and quietly wise")
+    expect(request.system).toContain("Translate them into plain human language before speaking")
+    expect(request.system).toContain("do not give a backend status report")
+    expect(request.system).toContain("not a status daemon narrating its database")
     expect(request.system).not.toContain("Current date: 2026-06-19")
     expect(request.system).not.toContain("Current timestamp: 2026-06-19T06:30:00.000Z")
     expect(request.system).not.toContain("Time zone: Europe/Vienna")

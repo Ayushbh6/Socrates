@@ -46,7 +46,7 @@ export const listModelsResponseSchema = z
   })
   .strict()
 
-export const workerModelRoleSchema = z.enum(["skill_writer", "context_compactor", "title_generator"])
+export const workerModelRoleSchema = z.enum(["skill_writer", "context_compactor", "title_generator", "memory_router"])
 export type WorkerModelRole = z.infer<typeof workerModelRoleSchema>
 
 export const workerModelSettingsSchema = z
@@ -83,7 +83,7 @@ export const conversationContextUsageSchema = z
 
 export const aiUsageCostSourceSchema = z.enum(["provider_reported", "computed", "unknown", "mixed"])
 
-export const aiUsageSourceKindSchema = z.enum(["main_model_call", "context_compaction", "conversation_title"])
+export const aiUsageSourceKindSchema = z.enum(["main_model_call", "context_compaction", "conversation_title", "memory_router"])
 
 export const usageBreakdownItemSchema = z
   .object({

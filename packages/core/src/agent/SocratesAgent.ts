@@ -10,12 +10,14 @@ import {
   type PreTurnMemoryRoute,
   type ProviderId,
   type RuntimeConfig,
+  type ThinkingEffort,
   type ToolExecutionResult,
   type ToolName,
+  type WorkerModelSettings,
 } from "@socrates/contracts"
 import fs from "node:fs"
 import path from "node:path"
-import { createId, normalizeError, SocratesError } from "@socrates/shared"
+import { createId, normalizeError, nowIso, SocratesError } from "@socrates/shared"
 import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage, TokenCountResult } from "@socrates/providers"
 import {
   prepareContextForModelCall,
@@ -42,6 +44,7 @@ export type SocratesAgentTurnInput = {
   providerId: ProviderId
   modelId: string
   runtimeConfig: RuntimeConfig
+  memoryRouterModelSettings?: MemoryRouterModelSettings
   messages: ModelMessage[]
   promptContext?: SocratesPromptContext
   systemPromptOverride?: string
@@ -58,6 +61,7 @@ export type SocratesAgentTurnInput = {
     tools: ModelToolDefinition[]
   }) => string
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  recordMemoryRouterUsage?: (input: MemoryRouterUsageRecord) => void | Promise<void>
   contextCompression?: ContextCompressionRuntime
   maxToolCallsPerTurn?: number
   maxConfirmedToolErrorsPerTurn?: number
@@ -65,6 +69,20 @@ export type SocratesAgentTurnInput = {
   dynamicTools?: ModelToolDefinition[] | (() => ModelToolDefinition[])
   abortSignal?: AbortSignal
   fileFreshness?: import("../tools/types").FileFreshnessTracker
+}
+
+export type MemoryLoopPhase = "pre_turn" | "post_evidence"
+
+export type MemoryRouterModelSettings = Pick<WorkerModelSettings, "providerId" | "modelId" | "thinkingEnabled" | "thinkingEffort">
+
+export type MemoryRouterUsageRecord = {
+  phase: MemoryLoopPhase
+  sourceId: string
+  providerId: ProviderId
+  modelId: string
+  usage: ModelUsage
+  startedAt: string
+  completedAt: string
 }
 
 export type SocratesAgentContextPrecomputeInput = {
@@ -528,7 +546,7 @@ export class SocratesAgent {
     }
 
     try {
-      const generated = await this.generateStructuredMemoryRoute<PreTurnMemoryRoute>(input, {
+      const generated = await this.generateStructuredMemoryRoute<PreTurnMemoryRoute>(input, "pre_turn", {
         system: PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
         userContent: buildPreTurnMemoryRouterUserContent({
           ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
@@ -581,7 +599,7 @@ export class SocratesAgent {
     }
 
     try {
-      const generated = await this.generateStructuredMemoryRoute<PostTurnMemoryRoute>(input, {
+      const generated = await this.generateStructuredMemoryRoute<PostTurnMemoryRoute>(input, "post_evidence", {
         system: POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
         userContent: buildPostTurnMemoryRouterUserContent({
           ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
@@ -614,6 +632,7 @@ export class SocratesAgent {
 
   private async generateStructuredMemoryRoute<TOutput>(
     input: SocratesAgentTurnInput,
+    phase: MemoryLoopPhase,
     request: { system: string; userContent: string; schema: unknown },
   ): Promise<TOutput> {
     const method = this.provider.generateStructured
@@ -633,19 +652,32 @@ export class SocratesAgent {
       schema: unknown
       modelCallId?: string
       abortSignal?: AbortSignal
-    }) => Promise<{ output: T }>
+    }) => Promise<{ output: T; usage?: ModelUsage }>
+    const routerModel = memoryRouterModelSettingsFor(input)
+    const startedAt = nowIso()
     const generated = await bound<TOutput>({
-      providerId: input.providerId,
-      modelId: input.modelId,
+      providerId: routerModel.providerId,
+      modelId: routerModel.modelId,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:memory-route` } : {}),
       system: request.system,
       messages: [{ role: "user", content: request.userContent }],
-      runtimeConfig: memoryRouterRuntimeConfig(input.runtimeConfig),
+      runtimeConfig: memoryRouterRuntimeConfig(routerModel),
       schema: request.schema,
       modelCallId: createId("mcall"),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     })
+    if (generated.usage && input.recordMemoryRouterUsage) {
+      await input.recordMemoryRouterUsage({
+        phase,
+        sourceId: `${input.turnId ?? "turn"}:memory_router:${phase}`,
+        providerId: routerModel.providerId,
+        modelId: routerModel.modelId,
+        usage: generated.usage,
+        startedAt,
+        completedAt: nowIso(),
+      })
+    }
     return generated.output
   }
 
@@ -1099,8 +1131,6 @@ export class SocratesAgent {
   }
 }
 
-type MemoryLoopPhase = "pre_turn" | "post_evidence"
-
 type MemoryLoopRunResult = {
   events: ToolLifecycleEvent[]
   summary?: string
@@ -1127,13 +1157,28 @@ const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput
   typeof provider.generateStructured === "function" &&
   Boolean(input.toolExecutors && input.workspacePath && input.requestApproval && input.projectId && input.conversationId && input.sessionId && input.turnId)
 
-const memoryRouterRuntimeConfig = (runtimeConfig: RuntimeConfig): RuntimeConfig => ({
-  ...runtimeConfig,
-  thinkingEnabled: false,
-  thinkingEffort: "none",
-  approvalMode: "read_only_auto",
-  sandboxMode: "read_only",
-})
+const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRouterModelSettings =>
+  input.memoryRouterModelSettings ?? {
+    providerId: input.providerId,
+    modelId: input.modelId,
+    thinkingEnabled: false,
+    thinkingEffort: "none",
+  }
+
+const memoryRouterRuntimeConfig = (settings: MemoryRouterModelSettings): RuntimeConfig => {
+  const config: RuntimeConfig = {
+    providerId: settings.providerId,
+    modelId: settings.modelId,
+    thinkingEnabled: settings.thinkingEnabled,
+    approvalMode: "read_only_auto",
+    sandboxMode: "read_only",
+  }
+  const effort: ThinkingEffort | undefined = settings.thinkingEffort ?? (!settings.thinkingEnabled ? "none" : undefined)
+  if (effort) {
+    config.thinkingEffort = effort
+  }
+  return config
+}
 
 const preTurnRecallRequests = (route: PreTurnMemoryRoute): Array<{ toolName: ToolName; input: unknown }> => {
   const requests: Array<{ toolName: ToolName; input: unknown }> = []

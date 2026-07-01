@@ -2320,10 +2320,10 @@ Rules:
 
 ### Worker Model Settings
 
-Skill Writer, Context Compactor, and Title Generator model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these three workers while preserving the default models already used by the app.
+Skill Writer, Context Compactor, Title Generator, and Memory Router model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these workers while preserving the default models already used by the app. Memory Router controls the structured pre-turn and post-evidence routing calls.
 
 ```ts
-type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator"
+type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator" | "memory_router"
 
 type WorkerModelSettings = {
   workerId: WorkerModelRole
@@ -2341,6 +2341,8 @@ PATCH /api/worker-model-settings/:workerId
   body { providerId, modelId, thinkingEnabled, thinkingEffort? }
   -> { settings: WorkerModelSettings }
 ```
+
+The Memory Router default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off. Its token/cost usage should be counted in normal turn/conversation totals through `ai_usage_events`; the frontend does not need a separate router-cost display.
 
 ### `project_docs`
 

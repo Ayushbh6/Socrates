@@ -1618,6 +1618,7 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(workerModelSettingsParamsSchema.safeParse({ workerId: "skill_writer" }).success).toBe(true)
+    expect(workerModelSettingsParamsSchema.safeParse({ workerId: "memory_router" }).success).toBe(true)
     expect(workerModelSettingsParamsSchema.safeParse({ workerId: "unknown" }).success).toBe(false)
     expect(
       updateWorkerModelSettingsRequestSchema.safeParse({

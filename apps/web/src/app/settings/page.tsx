@@ -12,7 +12,7 @@ export default function SettingsPage() {
         <div className="mb-8">
           <h1 className="text-3xl font-serif text-brand-text-dark">Settings</h1>
           <p className="mt-2 text-sm text-brand-text-light">
-            Manage provider access, embedding prerequisites, and desktop updates.
+            Manage provider access, helper models, embedding prerequisites, and desktop updates.
           </p>
         </div>
         <div className="space-y-6">
