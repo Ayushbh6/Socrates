@@ -223,6 +223,8 @@ GET    /api/provider-credentials/status
 POST   /api/provider-credentials/check
 POST   /api/provider-credentials/session
 DELETE /api/provider-credentials/:providerId
+POST   /api/provider-credentials/openai/chatgpt/oauth/start
+DELETE /api/provider-credentials/openai/chatgpt
 
 POST   /api/workspaces/pick-folder
 POST   /api/workspaces/inspect
@@ -293,7 +295,7 @@ type CompleteOnboardingResponse = {
 }
 ```
 
-The onboarding page must also require OpenRouter provider setup before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints plus either CLI local-file persistence or Tauri keychain commands.
+The onboarding page should require at least one chat-capable provider auth source before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints plus either CLI local-file persistence, Tauri keychain commands, or the ChatGPT Codex OAuth flow.
 
 ### Provider Credential Endpoints
 
@@ -302,12 +304,23 @@ Provider credential APIs expose only presence, source, and validation status. Th
 ```ts
 type ProviderCredentialSource = "keychain" | "local_file" | "session" | "env" | "missing"
 
+type ProviderAuthMode = "api_key" | "chatgpt_subscription"
+
+type ProviderAuthCredentialStatus = {
+  authMode: ProviderAuthMode
+  label: string
+  configured: boolean
+  source: ProviderCredentialSource
+  message?: string
+}
+
 type ProviderCredentialStatus = {
   providerId: "openai" | "google" | "openrouter"
   providerLabel: string
   required: boolean
   configured: boolean
   source: ProviderCredentialSource
+  authModes?: ProviderAuthCredentialStatus[]
   message?: string
 }
 
@@ -327,14 +340,18 @@ type SetProviderCredentialSessionRequest = {
 
 `POST /api/provider-credentials/session` stores a secret in the running backend process so newly saved credentials are immediately usable. With `source = "local_file"`, the backend also writes the key to `~/.Socrates/.env`; with `source = "keychain"`, Tauri owns OS keychain persistence. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback.
 
-OpenRouter is required for the default chat/compression path. OpenAI is required only for hosted embeddings when local Ollama is not used. Google is optional.
+`POST /api/provider-credentials/openai/chatgpt/oauth/start` starts the experimental ChatGPT Codex subscription auth flow and returns an authorization URL, state, redirect URI, and expiry. The local callback server completes the PKCE code exchange and stores token metadata under local credential storage. `DELETE /api/provider-credentials/openai/chatgpt` removes the stored ChatGPT Codex token metadata. OpenAI API keys and ChatGPT Codex tokens are separate auth modes.
+
+OpenRouter is no longer universally required for chat/compression. It is one available auth source. OpenAI API is required for hosted embeddings when local Ollama is not used. Google is optional. Chat send and worker saves should be disabled only when no credentialed model is available.
 
 ### `GET /api/models`
 
-Returns the backend-owned provider/model/thinking catalog.
+Returns the backend-owned credential-filtered provider/model/thinking catalog.
 
 ```ts
 type ProviderId = "openai" | "google" | "openrouter"
+
+type ProviderAuthMode = "api_key" | "chatgpt_subscription"
 
 type ThinkingEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
 
@@ -347,6 +364,7 @@ type ModelThinkingOption = {
 
 type ModelOption = {
   providerId: ProviderId
+  authMode: ProviderAuthMode
   providerLabel: string
   modelId: string
   label: string
@@ -363,9 +381,10 @@ type ListModelsResponse = {
   models: ModelOption[]
   defaultModel: {
     providerId: ProviderId
+    authMode: ProviderAuthMode
     modelId: string
     thinkingOptionId: string
-  }
+  } | null
 }
 ```
 
@@ -374,6 +393,7 @@ Frontend rule:
 ```text
 render model and thinking controls from this response
 do not hardcode selectable model ids in the composer
+group OpenAI API and ChatGPT Codex separately when both are configured
 use capabilities.vision === false to warn users and avoid sending image bytes to non-vision models
 ```
 
@@ -1008,8 +1028,9 @@ WebSocket chat title generation:
 normal chat send uses WebSocket chat.message.send
 after the first user message is saved, emit conversation.updated with the placeholder title
 generate a personalized title from the first text/image message
-primary title model: openrouter meta-llama/llama-4-maverick, using cost-aware OpenRouter routing
-fallback title model: openrouter qwen/qwen3.5-flash-02-23, using cost-aware OpenRouter routing
+title model: resolved Title Generator worker model setting
+OpenRouter built-in default: openrouter meta-llama/llama-4-maverick with thinking off
+ChatGPT Codex effective default, when connected and the saved setting is built-in/default unavailable: openai chatgpt_subscription gpt-5.4-mini with low reasoning
 if a generated title is returned and the title is still the placeholder, update the conversation and emit conversation.updated
 record title-generation usage into ai_usage_events with source_kind = conversation_title when provider usage is available
 ```
@@ -2322,12 +2343,15 @@ Rules:
 
 Skill Writer, Context Compactor, Title Generator, and Memory Router model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these workers while preserving the default models already used by the app. Memory Router controls the structured pre-turn and post-evidence routing calls.
 
+All model settings are auth-mode-aware. `authMode = "api_key"` means normal provider API credentials. `authMode = "chatgpt_subscription"` is currently valid only for OpenAI ChatGPT Codex subscription auth. Saved unavailable settings are preserved, and runtime/UI resolution returns an effective fallback without overwriting the saved row.
+
 ```ts
 type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator" | "memory_router"
 
 type WorkerModelSettings = {
   workerId: WorkerModelRole
   providerId: "openai" | "google" | "openrouter"
+  authMode?: "api_key" | "chatgpt_subscription"
   modelId: string
   thinkingEnabled: boolean
   thinkingEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
@@ -2338,11 +2362,11 @@ GET /api/worker-model-settings
   -> { settings: WorkerModelSettings[] }
 
 PATCH /api/worker-model-settings/:workerId
-  body { providerId, modelId, thinkingEnabled, thinkingEffort? }
+  body { providerId, authMode?, modelId, thinkingEnabled, thinkingEffort? }
   -> { settings: WorkerModelSettings }
 ```
 
-The Memory Router default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off. Its token/cost usage should be counted in normal turn/conversation totals through `ai_usage_events`; the frontend does not need a separate router-cost display.
+The built-in Memory Router default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off. When ChatGPT Codex is connected and the saved router setting is the built-in default or unavailable, the effective runtime default is ChatGPT Codex `gpt-5.4-mini` with low reasoning. Its token/cost usage should be counted in normal turn/conversation totals through `ai_usage_events`; the frontend does not need a separate router-cost display.
 
 ### `project_docs`
 
@@ -2576,7 +2600,7 @@ new user query
 current-turn tool calls only
 ```
 
-When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles. Global Memory Agent runs use the memory-specific structured compaction schema and prompt.
+When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. The compressor model comes from the resolved Context Compactor worker setting; built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
 
 If older conversation memory is needed, the agent should call normal `trace_retrieve` explicitly. If older runtime evidence is needed, it should retry with `mode = "audit"`. Full raw history remains persisted in SQLite for audit and replay.
 

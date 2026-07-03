@@ -406,6 +406,7 @@ This is what allows one conversation/session to freely switch models, thinking m
 | `id` | `TEXT` | yes | Primary key, stable id like `trc_...`. |
 | `turn_id` | `TEXT` | yes | FK to `turns.id`, usually one config per turn. |
 | `provider_id` | `TEXT` | yes | `openai`, `anthropic`, `google`, `openrouter`, `ollama`, `litellm`, etc. |
+| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is the experimental OpenAI ChatGPT Codex mode. |
 | `model_id` | `TEXT` | yes | Provider model id. |
 | `thinking_enabled` | `INTEGER` | yes | Boolean as `0` or `1`. |
 | `thinking_effort` | `TEXT` | no | `none`, `low`, `medium`, `high`, `xhigh`, or provider-specific mapped value. |
@@ -776,6 +777,24 @@ Stores proposed and applied patches.
 | `applied_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Extra patch metadata. |
 
+## `memory_agent_global_settings`
+
+Stores the single global Memory Agent model/cadence configuration used by scheduled and manual memory-agent runs.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key; current runtime uses the singleton id `global`. |
+| `provider_id` | `TEXT` | yes | Provider id from the credential-aware model registry. |
+| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex. |
+| `model_id` | `TEXT` | yes | Provider model id. |
+| `thinking_enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
+| `thinking_effort` | `TEXT` | no | Optional thinking effort when enabled/supported. |
+| `enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
+| `cadence_minutes` | `INTEGER` | yes | Scheduler cadence in minutes. |
+| `created_at` | `TEXT` | yes | ISO timestamp. |
+| `updated_at` | `TEXT` | yes | ISO timestamp. |
+| `metadata_json` | `TEXT` | no | Reserved for future memory-agent model metadata. |
+
 ## `memory_agent_jobs`
 
 Stores each backend Global Memory Agent batch. Scheduled and manual runs inspect completed-turn evidence after the durable watermark, run only when cumulative signal thresholds are met, and pack manifest entries up to 80 turns or the 60k estimated-token cap.
@@ -831,8 +850,9 @@ Stores user-configurable model choices for background workers that do not have a
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `wms_...`. |
-| `worker_id` | `TEXT` | yes | Unique worker role: `skill_writer`, `context_compactor`, or `title_generator`. |
+| `worker_id` | `TEXT` | yes | Unique worker role: `skill_writer`, `context_compactor`, `title_generator`, or `memory_router`. |
 | `provider_id` | `TEXT` | yes | Provider id from the normal model registry. |
+| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex worker selections. |
 | `model_id` | `TEXT` | yes | Provider model id from the normal model registry. |
 | `thinking_enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
 | `thinking_effort` | `TEXT` | no | Optional thinking effort when enabled/supported. |
@@ -1529,12 +1549,14 @@ Recent visible messages must remain represented as real role-typed chat messages
 Compressor model selection:
 
 ```text
-primary: OpenRouter deepseek/deepseek-v4-flash, thinking off
-fallback 1: OpenRouter xiaomi/mimo-v2.5-pro, thinking off
-fallback 2: OpenRouter z-ai/glm-5.2, thinking off
+built-in default worker setting: OpenRouter deepseek/deepseek-v4-flash, thinking off
+ChatGPT Codex effective default when connected and the saved setting is built-in/default unavailable:
+  OpenAI chatgpt_subscription gpt-5.4-mini, low reasoning
+fallback:
+  credential-aware available default model only
 ```
 
-The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, anchor quality, output length, latency, and cost. Compression outputs remain structured summaries and turn-numbered anchors over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
+Hard-coded OpenRouter compressor fallbacks must not run when OpenRouter is unavailable. The evaluation should store enough metadata to compare faithfulness, preserved decisions/rules, anchor quality, output length, latency, and cost. Compression outputs remain structured summaries and turn-numbered anchors over raw rows; they do not replace `messages`, `tool_calls`, `events`, or trace source rows.
 
 ## Context Window Tracking
 

@@ -120,7 +120,9 @@ packaged Tauri app
   -> frontend also posts the key to the local backend session so the current process can use it immediately
 ```
 
-OpenRouter is required for the default chat and compression path. OpenAI is required only when the user selects hosted OpenAI embeddings instead of local Ollama embeddings. Google is optional. The backend and frontend must return only credential presence/source/status, never secret values.
+Model availability is credential-aware. The backend exposes only models whose provider/auth mode is configured, and the frontend must render that filtered list rather than a static catalog. Provider ids are not enough to identify billing/auth source: model selection also carries `authMode = "api_key"` or `authMode = "chatgpt_subscription"`. OpenRouter API keys expose OpenRouter models and keep DeepSeek V4 Pro as the default available chat model when present. OpenAI API keys expose OpenAI API models and remain required for hosted OpenAI embeddings. ChatGPT Codex subscription auth exposes only the supported Codex subscription models. Google API keys expose Google models. If no model auth source is configured, chat send and worker saves should be disabled with a connect-provider state instead of failing with credential errors.
+
+OpenAI has two separate credential statuses: OpenAI API key and ChatGPT Codex subscription auth. The ChatGPT Codex flow is experimental. It starts a PKCE OAuth flow against `auth.openai.com`, listens on the local callback server, stores Socrates-owned refresh/access token metadata in local credential storage, refreshes access tokens on demand, and routes subscription-mode OpenAI requests through the Codex backend auth shim. OpenAI API-key behavior and ChatGPT Codex subscription behavior must remain separate; embeddings stay API-key only.
 
 Manual update flow:
 
@@ -950,12 +952,14 @@ context compaction snapshots are indexed as hidden conversation_summary evidence
 Compressor-model selection:
 
 ```text
-primary: OpenRouter deepseek/deepseek-v4-flash with thinking off
-fallback 1: OpenRouter xiaomi/mimo-v2.5-pro with thinking off
-fallback 2: OpenRouter z-ai/glm-5.2 with thinking off
+built-in default worker setting: OpenRouter deepseek/deepseek-v4-flash with thinking off
+ChatGPT Codex effective default, when Codex is connected and the saved worker setting is built-in/default unavailable:
+  OpenAI chatgpt_subscription gpt-5.4-mini with low reasoning
+fallback:
+  credential-aware available default model only, never a hard-coded OpenRouter fallback when OpenRouter is unavailable
 ```
 
-The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. OpenRouter thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`.
+The local/release evaluation should keep using identical conversation/tool-history fixtures and compare faithfulness, preservation of exact decisions/rules, trace-handle usefulness, concision, latency, and cost. For OpenRouter compression calls, thinking off must use the explicit reasoning-off provider options documented in `PROVIDER_USAGE.md`. For ChatGPT Codex compression calls, reasoning effort is one of low, medium, high, or xhigh; the effective Codex default is low.
 
 OpenRouter cache-friendly routing uses a stable project/conversation cache-affinity key, sent as top-level `session_id` and `prompt_cache_key` provider options. Socrates no longer leaves multi-provider routing empty: multi-provider OpenRouter models send price-first routing with `sort: "price"` and `allow_fallbacks: true`, while DeepSeek V4 routes use cheap-compatible ranked provider orders. After the first OpenRouter call in a turn reports its actual routed provider, later continuations in that same turn prefer that provider while keeping fallbacks allowed. Deliberate provider pins use OpenRouter provider slugs, not display labels; title-generation routes pin `deepinfra` or `alibaba`. OpenRouter usage metadata is persisted with routed provider, raw usage, cache-read/write tokens, and provider response metadata; when provider cost is absent, Socrates computes a marked estimate from the versioned endpoint-pricing snapshot in `packages/providers`.
 

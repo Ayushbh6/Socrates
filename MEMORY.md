@@ -82,11 +82,6 @@ soul
 user_profile
 list_project_resources
 mcp_registry
-```
-
-Accepted next main-agent tool addition:
-
-```text
 memory_note
 ```
 
@@ -138,8 +133,10 @@ Tool routing:
 - Mixed evidence turns must be split strictly: if a turn contains both a global user fact and a project-local active plan, the Memory Agent may update `user_profile.md` only for the global fact and must leave repo/workspace sequencing, implementation order, and active project reminders to Socrates/project notes. Profile corrections must update the content section and evidence anchors together so stale evidence does not keep supporting the old claim.
 - Socrates-originated notes default to project-local skill scope because Socrates is acting inside a project. The Memory Agent may keep that project scope or deliberately upgrade to global only when the procedure is clearly reusable across projects. Memory-Agent-discovered skill proposals must also choose project or global scope explicitly.
 - Section indexes persist in SQLite tables `memory_doc_indexes` and `memory_doc_sections`; these are rebuilt from markdown content during ensure/index operations and are lookup aids, not the source of truth.
-- Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes.
-- Worker model settings live behind `/api/worker-model-settings` and are surfaced on the Settings page for Skill Writer, Context Compactor, Title Generator, and Memory Router. Defaults preserve the current working models while allowing any registry model/thinking option to be selected for each worker independently.
+- Model identity includes both provider and auth mode. `authMode = "api_key"` covers OpenRouter, OpenAI API, and Google API keys; `authMode = "chatgpt_subscription"` covers the experimental ChatGPT Codex OAuth path for OpenAI subscription models. `/api/models` is credential-aware and returns only models whose provider/auth mode is configured. If OpenRouter is configured, DeepSeek V4 Pro remains the default available chat model; otherwise the backend chooses the first available curated model. If ChatGPT Codex is connected, the main composer prefers ChatGPT Codex models for new/effective chat selection while API-key models remain selectable.
+- OpenAI now has two separate credential statuses: `OpenAI API` and `ChatGPT Codex`. The ChatGPT Codex flow uses PKCE OAuth against `auth.openai.com`, stores Socrates-owned token metadata under local credential storage, refreshes access tokens on demand, and routes subscription requests through the Codex backend auth shim. OpenAI embeddings remain API-key only.
+- Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes, but credential-aware resolution prefers ChatGPT Codex `gpt-5.5` with low reasoning when ChatGPT Codex is connected and the saved setting is still the built-in default or unavailable.
+- Worker model settings live behind `/api/worker-model-settings` and are surfaced on the Settings page for Skill Writer, Context Compactor, Title Generator, and Memory Router. Settings persist provider, auth mode, model, and thinking choice. Defaults preserve the current working models, but credential-aware resolution prefers ChatGPT Codex `gpt-5.4-mini` with low reasoning for built-in/default unavailable worker settings when ChatGPT Codex is connected.
 - Memory Router provider usage is recorded as `ai_usage_events.source_kind = "memory_router"` and rolled into the existing turn/conversation cost total. Do not add a separate visible router-cost widget unless the product direction changes.
 - Socrates' visible voice should be warm, direct, and human. Internal evidence such as tool names, ids, hashes, model names, backend state, empty active-context wording, and commit SHAs should be translated into plain language unless the user asks for exact diagnostics.
 - Completed chat turns are indexed for trace retrieval, but they no longer enqueue a per-turn memory job. The scheduler or manual settings-page action wakes the global agent.
@@ -165,7 +162,7 @@ Tool routing:
 - Compressor prompts live in `packages/core/src/prompts/socratesCompressorPrompt.ts` and `memoryAgentCompressorPrompt.ts`; the backend memory-agent runner must pass `contextCompression: { enabled: true, mode: "memory" }`.
 - Strict Zod validation happens before snapshot activation. Invalid new-schema output never becomes active memory; legacy invalid snapshots are ignored rather than migrated.
 - Anchors must start with `Turn <number>:`. If only anchors fail, the compressor repairs anchors through the structured anchor repair schema.
-- Default compressor model order is OpenRouter `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.2`.
+- The server chooses the compressor through the Context Compactor worker setting plus credential-aware model resolution. The built-in default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off. When ChatGPT Codex is connected and the saved worker setting is the built-in default or unavailable, the effective compressor is ChatGPT Codex `gpt-5.4-mini` with low reasoning. Hard-coded OpenRouter fallbacks must not run when OpenRouter is unavailable.
 
 ## Release State
 
@@ -173,6 +170,7 @@ Tool routing:
 - `v0.1.15` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13`, the duplicate-section startup recovery from `v0.1.14`, and adds memory-agent evidence-index guidance plus duplicate markdown-heading normalization for primary docs.
 - `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id or trace handle when available, the supported claim, and the profile section using that claim.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
+- Credential-aware model routing and experimental ChatGPT Codex auth commit `6a29dad Add ChatGPT Codex auth model routing` is pushed to `origin/main`. It adds auth-mode-aware model settings, filtered `/api/models`, ChatGPT Codex OAuth/token refresh, Codex request routing, UI credential status, Codex-preferred defaults for chat/workers/memory-agent, and compressor regression coverage for active context, anchors, full fields, and source handles.
 
 ## Next Major Work
 
@@ -220,6 +218,15 @@ CI=true pnpm --filter @socrates/server typecheck
 CI=true pnpm --filter @socrates/contracts test
 CI=true pnpm --filter @socrates/mcp test
 git diff --check
+```
+
+Latest verified for credential-aware model routing and ChatGPT Codex auth on 2026-07-03:
+
+```text
+git diff --check
+pnpm --filter @socrates/core test
+pnpm --filter @socrates/providers test
+pnpm --filter @socrates/server test
 ```
 
 Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. That E2E predates the 2026-06-25 removal of main-chat wake-context injection. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.

@@ -468,7 +468,7 @@ model-visible access
 
 Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Completed context compaction snapshots are indexed as hidden `conversation_summary` trace evidence. Rolling conversation summaries outside compaction remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
 
-Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, `CompressorAgent`, compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression or tokenizer behavior must not leak into `apps/web` or route handlers.
+Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, `CompressorAgent`, compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `apps/server/src/services/store/modelSettingsResolver.ts` resolves saved worker and memory-agent settings against the credential-filtered model list before runtime use. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression, auth-mode request behavior, or tokenizer behavior must not leak into `apps/web` or route handlers.
 
 ### Specialized Agent Ownership
 
@@ -500,12 +500,12 @@ It owns:
 - The internal `ModelProvider` interface.
 - Internal embedding provider interface.
 - Vercel AI SDK adapter.
-- Provider/model registry.
-- Provider config loading.
+- Provider/model registry, including auth-mode-specific catalog entries.
+- Provider config loading and credential-auth resolution.
 - Provider-aware request token counting with local tokenizer fallback, safety-margin metadata, and provider-exact counting where available.
 - Future LiteLLM, Ollama, OpenRouter, OpenAI, Anthropic, or Gemini direct adapters if needed.
 
-The agent core should call only the internal provider interface.
+The agent core should call only the internal provider interface. Runtime model identity is `{ providerId, authMode, modelId }`; provider id alone is not enough when a provider supports both API-key billing and subscription-auth request paths.
 
 Embedding generation for trace documents stays behind provider abstractions. Chat turns do not import or call embedding SDKs directly. The semantic phase added a provider-agnostic `EmbeddingProvider` boundary in `packages/providers`, separate from the chat `ModelProvider`.
 
@@ -611,7 +611,7 @@ apps/web
   routes through /welcome, /onboarding, /projects, project dashboard, and project chat
   subscribes the chat WebSocket to the active conversation with `chat.conversation.subscribe`
   sends user messages through WebSocket `chat.message.send`
-  renders backend-owned model/thinking controls from `GET /api/models`
+  renders backend-owned credential-filtered model/thinking controls from `GET /api/models`
   or captures voice input and sends the transcript as a user message
 
 apps/server

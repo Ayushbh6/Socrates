@@ -353,7 +353,7 @@ export type ModelUsage = {
 
 This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. `routedProvider` is the upstream endpoint that actually served the request: for OpenRouter this is the routed provider such as `DeepInfra` or `GMICloud`, and for direct providers it is the provider id itself. OpenRouter cost/cache fields should use provider-reported usage metadata first. OpenAI and Google may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
 
-Direct-provider pricing snapshots must cover every direct model exposed in the picker. The current coverage is OpenAI `gpt-5`, `gpt-5.4`, `gpt-5.4-mini` and Google `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`. Gemini 3.1 Pro pricing must switch to the documented long-context rates when a provider call has more than 200k prompt/input tokens.
+Direct-provider pricing snapshots must cover every API-key billed direct model exposed in the picker. The current coverage is OpenAI API `gpt-5`, `gpt-5.4`, `gpt-5.4-mini` and Google `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`. ChatGPT Codex subscription models are not OpenAI Platform API billing and should keep cost source unknown unless a future reliable subscription-usage signal exists. Gemini 3.1 Pro pricing must switch to the documented long-context rates when a provider call has more than 200k prompt/input tokens.
 
 Google/Gemini accepts system instructions only through the top-level provider `system` field. Socrates may still use internal `developer` messages for hidden compaction summaries or backend reminders, but the Google adapter must render those continuation messages as normal user-role text prefixed with `[developer]` instead of AI SDK `system` messages. OpenAI/OpenRouter can continue receiving Socrates `developer` messages as AI SDK system messages when appropriate.
 
@@ -406,12 +406,13 @@ The npm CLI/browser app stores user provider keys in `~/.Socrates/.env` through 
 Credential policy:
 
 ```text
-OpenRouter -> required for default chat and context compression
-OpenAI     -> required only for hosted OpenAI embeddings when local Ollama embeddings are not selected/available
-Google     -> optional chat provider
+OpenRouter API key -> exposes OpenRouter chat/worker models; DeepSeek V4 Pro remains the default available chat model when OpenRouter is configured
+OpenAI API key     -> exposes OpenAI API chat/worker models; required for hosted OpenAI embeddings when local Ollama embeddings are not selected/available
+ChatGPT Codex      -> experimental OpenAI subscription auth; exposes only ChatGPT Codex subscription models and uses Socrates-owned OAuth token storage
+Google API key     -> exposes Google chat/worker models
 ```
 
-Provider APIs, model calls, telemetry, events, and SQLite rows must never persist or return raw provider key values. Credential status APIs may return only provider id, configured boolean, source, required flag, and safe messages.
+Provider APIs, model calls, telemetry, events, and SQLite rows must never persist or return raw provider key values. Credential status APIs may return only provider id, configured boolean, source, required flag, auth-mode status rows, and safe messages. OpenAI status is auth-mode-aware and must distinguish OpenAI API from ChatGPT Codex subscription auth.
 
 ## V1 Model Catalog And Thinking Rules
 
@@ -423,8 +424,13 @@ OpenAI
   gpt-5.4
   gpt-5
 
+ChatGPT Codex subscription
+  gpt-5.5
+  gpt-5.4-mini
+
 Google
   gemini-3.1-pro-preview
+  gemini-3.5-flash
   gemini-3-flash-preview
   gemini-3.1-flash-lite-preview
 
@@ -447,12 +453,17 @@ Vision capability must come from the backend model catalog. For OpenRouter, all 
 Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
 
 ```text
-OpenAI:
+OpenAI API:
   none, low, medium, high, xhigh
   none means non-thinking mode
 
+ChatGPT Codex subscription:
+  low, medium, high, xhigh
+  no non-thinking option is shown for subscription-mode models
+
 Google:
   gemini-3.1-pro-preview -> low, medium, high
+  gemini-3.5-flash -> minimal, low, medium, high
   gemini-3-flash-preview -> minimal, low, medium, high
   gemini-3.1-flash-lite-preview -> minimal, low, medium, high
 
@@ -463,13 +474,14 @@ OpenRouter:
 Provider mapping:
 
 ```text
-OpenAI -> providerOptions.openai.reasoningEffort
+OpenAI API -> providerOptions.openai.reasoningEffort
+ChatGPT Codex subscription -> Codex backend request auth plus reasoning effort mapping
 Google -> providerOptions.google.thinkingConfig.thinkingLevel
 OpenRouter on -> providerOptions.openrouter.reasoning enabled
 OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude true
 ```
 
-OpenAI prompt caching is automatic for supported models when the stable prefix is large enough. Socrates sends `providerOptions.openai.promptCacheKey` from the same project/conversation cache key to improve cache-affinity routing, but does not create explicit OpenAI cache resources.
+OpenAI API prompt caching is automatic for supported models when the stable prefix is large enough. Socrates sends `providerOptions.openai.promptCacheKey` from the same project/conversation cache key to improve cache-affinity routing, but does not create explicit OpenAI cache resources. ChatGPT Codex subscription usage is not OpenAI Platform billing; normal token pricing/cost calculations should not pretend to know subscription quota consumption.
 
 Google/Gemini implicit caching is automatic for supported models when prompts meet model thresholds. Socrates does not create explicit Gemini cached-content resources by default; explicit Gemini caches are a separate workflow and should be added only if there is a clear product need.
 
@@ -479,31 +491,29 @@ OpenRouter streams can arrive in provider-side bursts after a long first-token d
 
 Provider streams must not hang forever. The AI SDK adapter applies an idle stream timeout with a default of `120000` milliseconds, configurable through `SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS`. If no model event arrives before the timeout, the provider layer aborts the request and emits a structured `model.failed` event with code `model_stream_idle_timeout`, including provider/model/timeout details.
 
-The frontend must render this catalog from the backend response. It must not hardcode model ids or provider option mappings.
+The frontend must render the credential-filtered catalog from the backend response. It must not hardcode model ids or provider option mappings. If both OpenAI API and ChatGPT Codex are configured, the UI should show separate `OpenAI API` and `ChatGPT Codex` groups so auth/billing source is obvious.
 
 ## Context Compressor Model Selection
 
-The locked primary compressor is:
+The compressor model is a worker model setting resolved against the same credential-aware model list as the composer and other workers. The built-in default worker setting is:
 
 ```text
 providerId = openrouter
+authMode = api_key
 modelId = deepseek/deepseek-v4-flash
 thinking = off
 ```
 
-The locked fallback compressor order is:
+When ChatGPT Codex is connected and the saved Context Compactor setting is the built-in default or unavailable, the effective runtime setting is:
 
 ```text
-providerId = openrouter
-modelId = xiaomi/mimo-v2.5-pro
-thinking = off
-
-providerId = openrouter
-modelId = z-ai/glm-5.2
-thinking = off
+providerId = openai
+authMode = chatgpt_subscription
+modelId = gpt-5.4-mini
+thinking = low
 ```
 
-Both compressor routes must use OpenRouter thinking off explicitly:
+OpenRouter compressor routes must use OpenRouter thinking off explicitly:
 
 ```text
 providerOptions.openrouter.reasoning = { effort: "none", exclude: true }
@@ -518,9 +528,9 @@ The local/release evaluation gate should continue to run compressor candidates o
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
 
-The current runtime order is `deepseek/deepseek-v4-flash`, then `xiaomi/mimo-v2.5-pro`, then `z-ai/glm-5.2`. All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active.
+All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active. Server fallback selection is credential-aware: the runtime may add the available default model as a fallback when it differs from the primary, but hard-coded OpenRouter fallbacks must not run when OpenRouter is unavailable.
 
-The compressor model is now a worker model setting, so the frontend exposes it through the shared registry-backed worker settings surface instead of hardcoding provider mappings. The Memory Router is also a worker model setting; it defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off, and router usage should be recorded into `ai_usage_events` as `source_kind = "memory_router"` so normal turn/conversation cost totals include it without a separate visible router-cost widget.
+The frontend exposes the compressor through the shared registry-backed worker settings surface instead of hardcoding provider mappings. The Memory Router is also a worker model setting; its built-in default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off, and credential-aware resolution prefers ChatGPT Codex `gpt-5.4-mini` with low reasoning when ChatGPT Codex is connected and the saved setting is the built-in default or unavailable. Router usage should be recorded into `ai_usage_events` as `source_kind = "memory_router"` so normal turn/conversation cost totals include it without a separate visible router-cost widget.
 
 Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
 
@@ -645,7 +655,7 @@ export class ProviderRouter implements ModelProvider {
 
 The router gives us a stable place to change mappings later.
 
-The rest of the app should not care whether `providerId = openai` is routed to `AiSdkProvider` or `OpenAIProvider`.
+The rest of the app should not care whether `providerId = openai` with a given `authMode` is routed to `AiSdkProvider`, `OpenAIProvider`, or the ChatGPT Codex auth shim.
 
 ## Database Implications
 
@@ -770,7 +780,7 @@ Do not embed old provider reasoning streams as semantic conversation memory by d
 
 ## Frontend Implications
 
-The frontend should use provider ids and model ids from Socrates contracts/config.
+The frontend should use provider ids, auth modes, and model ids from Socrates contracts/config.
 
 The frontend must not know provider SDK details.
 
@@ -778,6 +788,7 @@ Good:
 
 ```text
 providerId = openai
+authMode = api_key
 modelId = gpt-...
 ```
 
