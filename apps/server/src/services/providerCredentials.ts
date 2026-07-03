@@ -2,12 +2,22 @@ import fs from "node:fs"
 import path from "node:path"
 import type {
   CheckProviderCredentialResponse,
+  ProviderAuthMode,
   ProviderCredentialSource,
   ProviderCredentialStatus,
   ProviderId,
   SetProviderCredentialSessionRequest,
 } from "@socrates/contracts"
-import { envProviderApiKey, type ProviderCredentialResolver } from "@socrates/providers"
+import { envProviderApiKey, type ProviderCredentialResolver, type ProviderResolvedCredential } from "@socrates/providers"
+import { SocratesError, nowIso } from "@socrates/shared"
+import {
+  OPENAI_CODEX_API_ENDPOINT,
+  OPENAI_CODEX_DUMMY_API_KEY,
+  OpenAiCodexOAuthCoordinator,
+  openAiCodexTokensToStored,
+  refreshOpenAiCodexAccessToken,
+  type OpenAiCodexStoredTokens,
+} from "./openAiCodexOAuth"
 
 const providerLabels: Record<ProviderId, string> = {
   openai: "OpenAI",
@@ -27,17 +37,51 @@ type ProviderCredentialStoreOptions = {
   socratesHome?: string | undefined
 }
 
+type OpenAiChatGptTokens = OpenAiCodexStoredTokens
+
 export class ProviderCredentialStore implements ProviderCredentialResolver {
   private readonly sessionKeys = new Map<ProviderId, string>()
   private readonly sessionSources = new Map<ProviderId, Exclude<ProviderCredentialSource, "env" | "missing">>()
   private readonly localEnvPath: string | undefined
+  private readonly openAiChatGptTokenPath: string | undefined
+  private readonly openAiCodexOAuth: OpenAiCodexOAuthCoordinator
+  private openAiChatGptSessionTokens: OpenAiChatGptTokens | undefined
+  private refreshOpenAiChatGptPromise: Promise<OpenAiChatGptTokens> | undefined
 
   constructor(options: ProviderCredentialStoreOptions = {}) {
     this.localEnvPath = options.socratesHome ? path.join(options.socratesHome, ".env") : undefined
+    this.openAiChatGptTokenPath = options.socratesHome
+      ? path.join(options.socratesHome, ".credentials", "openai-chatgpt-oauth.json")
+      : undefined
+    this.openAiCodexOAuth = new OpenAiCodexOAuthCoordinator((tokens) => this.writeOpenAiChatGptTokens(tokens))
   }
 
   getApiKey(providerId: ProviderId): string | undefined {
     return this.sessionKeys.get(providerId) ?? this.localFileApiKey(providerId) ?? envProviderApiKey(providerId)
+  }
+
+  resolveAuth(providerId: ProviderId, authMode: ProviderAuthMode = "api_key"): ProviderResolvedCredential | undefined {
+    if (authMode === "api_key") {
+      const apiKey = this.getApiKey(providerId)
+      return apiKey ? { authMode: "api_key", apiKey } : undefined
+    }
+    if (providerId !== "openai" || !this.readOpenAiChatGptTokens()) {
+      return undefined
+    }
+    return {
+      authMode: "chatgpt_subscription",
+      apiKey: OPENAI_CODEX_DUMMY_API_KEY,
+      fetch: (requestInput: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => this.fetchOpenAiCodex(requestInput, init),
+    }
+  }
+
+  availableAuthModes(): Array<{ providerId: ProviderId; authMode: ProviderAuthMode }> {
+    return [
+      ...(this.getApiKey("openrouter") ? [{ providerId: "openrouter" as const, authMode: "api_key" as const }] : []),
+      ...(this.getApiKey("openai") ? [{ providerId: "openai" as const, authMode: "api_key" as const }] : []),
+      ...(this.readOpenAiChatGptTokens() ? [{ providerId: "openai" as const, authMode: "chatgpt_subscription" as const }] : []),
+      ...(this.getApiKey("google") ? [{ providerId: "google" as const, authMode: "api_key" as const }] : []),
+    ]
   }
 
   listStatus(): {
@@ -86,18 +130,67 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
 
   statusFor(providerId: ProviderId): ProviderCredentialStatus {
     const source = this.sourceFor(providerId)
+    const openAiChatGptSource = providerId === "openai" ? this.openAiChatGptSourceFor() : "missing"
+    const authModes = this.authModesFor(providerId)
     return {
       providerId,
       providerLabel: providerLabels[providerId],
       required: providerId === "openrouter",
-      configured: source !== "missing",
-      source,
+      configured: source !== "missing" || openAiChatGptSource !== "missing",
+      source: source !== "missing" ? source : openAiChatGptSource,
+      authModes,
       ...(providerId === "openrouter"
-        ? { message: "Required for chat and context compression." }
+        ? { message: "Required for the default chat model and context compression." }
         : providerId === "openai"
-          ? { message: "Required when hosted OpenAI embeddings are selected instead of local Ollama embeddings." }
+          ? { message: "OpenAI API keys support chat and hosted embeddings. ChatGPT Codex uses subscription auth for chat only." }
           : { message: "Optional chat provider." }),
     }
+  }
+
+  async startOpenAiChatGptOAuth(): Promise<{ authorizationUrl: string; state: string; redirectUri: string; expiresAt: string }> {
+    return this.openAiCodexOAuth.start()
+  }
+
+  deleteOpenAiChatGptOAuth(): ProviderCredentialStatus {
+    this.openAiChatGptSessionTokens = undefined
+    this.refreshOpenAiChatGptPromise = undefined
+    this.openAiCodexOAuth.close()
+    if (this.openAiChatGptTokenPath && fs.existsSync(this.openAiChatGptTokenPath)) {
+      fs.rmSync(this.openAiChatGptTokenPath)
+    }
+    return this.statusFor("openai")
+  }
+
+  private authModesFor(providerId: ProviderId): ProviderCredentialStatus["authModes"] {
+    if (providerId === "openai") {
+      const apiSource = this.sourceFor("openai")
+      const chatGptSource = this.openAiChatGptSourceFor()
+      return [
+        {
+          authMode: "api_key",
+          label: "OpenAI API",
+          configured: apiSource !== "missing",
+          source: apiSource,
+          message: apiSource !== "missing" ? "OpenAI API key configured." : "OpenAI API key missing.",
+        },
+        {
+          authMode: "chatgpt_subscription",
+          label: "ChatGPT Codex",
+          configured: chatGptSource !== "missing",
+          source: chatGptSource,
+          message: chatGptSource !== "missing" ? "ChatGPT Codex subscription auth configured." : "ChatGPT Codex auth not connected.",
+        },
+      ]
+    }
+    const source = this.sourceFor(providerId)
+    return [
+      {
+        authMode: "api_key",
+        label: `${providerLabels[providerId]} API`,
+        configured: source !== "missing",
+        source,
+      },
+    ]
   }
 
   private sourceFor(providerId: ProviderId): ProviderCredentialSource {
@@ -108,6 +201,13 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
       return "local_file"
     }
     return envProviderApiKey(providerId) ? "env" : "missing"
+  }
+
+  private openAiChatGptSourceFor(): ProviderCredentialSource {
+    if (this.openAiChatGptSessionTokens) {
+      return "session"
+    }
+    return this.openAiChatGptTokenPath && fs.existsSync(this.openAiChatGptTokenPath) ? "local_file" : "missing"
   }
 
   private sessionSourceFor(
@@ -168,6 +268,98 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
     if (process.platform !== "win32") {
       fs.chmodSync(this.localEnvPath, 0o600)
     }
+  }
+
+  private readOpenAiChatGptTokens(): OpenAiChatGptTokens | undefined {
+    if (this.openAiChatGptSessionTokens) {
+      return this.openAiChatGptSessionTokens
+    }
+    if (!this.openAiChatGptTokenPath || !fs.existsSync(this.openAiChatGptTokenPath)) {
+      return undefined
+    }
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.openAiChatGptTokenPath, "utf8")) as Partial<OpenAiChatGptTokens>
+      if (!parsed.refresh || !parsed.access || typeof parsed.expires !== "number") {
+        return undefined
+      }
+      this.openAiChatGptSessionTokens = {
+        refresh: parsed.refresh,
+        access: parsed.access,
+        expires: parsed.expires,
+        ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
+        ...(parsed.email ? { email: parsed.email } : {}),
+        updatedAt: parsed.updatedAt ?? nowIso(),
+      }
+      return this.openAiChatGptSessionTokens
+    } catch {
+      return undefined
+    }
+  }
+
+  private writeOpenAiChatGptTokens(tokens: OpenAiChatGptTokens): void {
+    this.openAiChatGptSessionTokens = tokens
+    if (!this.openAiChatGptTokenPath) {
+      return
+    }
+    fs.mkdirSync(path.dirname(this.openAiChatGptTokenPath), { recursive: true })
+    fs.writeFileSync(this.openAiChatGptTokenPath, `${JSON.stringify(tokens, null, 2)}\n`, { mode: 0o600 })
+    if (process.platform !== "win32") {
+      fs.chmodSync(this.openAiChatGptTokenPath, 0o600)
+    }
+  }
+
+  private async freshOpenAiChatGptTokens(): Promise<OpenAiChatGptTokens> {
+    const tokens = this.readOpenAiChatGptTokens()
+    if (!tokens) {
+      throw new SocratesError("openai_chatgpt_auth_missing", "ChatGPT Codex auth is not connected.", { recoverable: true })
+    }
+    if (tokens.expires > Date.now() + 30_000) {
+      return tokens
+    }
+    if (!this.refreshOpenAiChatGptPromise) {
+      this.refreshOpenAiChatGptPromise = refreshOpenAiCodexAccessToken(tokens.refresh)
+        .then((response) => {
+          const refreshed = openAiCodexTokensToStored(response, tokens)
+          this.writeOpenAiChatGptTokens(refreshed)
+          return refreshed
+        })
+        .finally(() => {
+          this.refreshOpenAiChatGptPromise = undefined
+        })
+    }
+    return this.refreshOpenAiChatGptPromise
+  }
+
+  private async fetchOpenAiCodex(requestInput: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): Promise<Response> {
+    const tokens = await this.freshOpenAiChatGptTokens()
+    const headers = new Headers(requestInput instanceof Request ? requestInput.headers : undefined)
+    if (init?.headers) {
+      new Headers(init.headers).forEach((value, key) => headers.set(key, value))
+    }
+    headers.delete("authorization")
+    headers.set("authorization", `Bearer ${tokens.access}`)
+    if (tokens.accountId) {
+      headers.set("ChatGPT-Account-Id", tokens.accountId)
+    }
+
+    const parsed = requestInput instanceof URL
+      ? requestInput
+      : new URL(typeof requestInput === "string" ? requestInput : requestInput.url)
+    const url = parsed.pathname.includes("/v1/responses") || parsed.pathname.includes("/chat/completions")
+      ? new URL(OPENAI_CODEX_API_ENDPOINT)
+      : parsed
+    return fetch(url, {
+      ...(requestInput instanceof Request
+        ? {
+            method: requestInput.method,
+            body: requestInput.body,
+            redirect: requestInput.redirect,
+            signal: requestInput.signal,
+          }
+        : {}),
+      ...init,
+      headers,
+    })
   }
 }
 

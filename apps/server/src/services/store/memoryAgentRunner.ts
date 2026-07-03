@@ -10,6 +10,7 @@ import { createMemoryAgentToolExecutors, type MemoryAgentToolCallbacks } from ".
 
 const MEMORY_AGENT_RUNTIME_CONFIG = (input: MemoryAgentModelSettings): RuntimeConfig => ({
   providerId: input.providerId,
+  authMode: input.authMode ?? "api_key",
   modelId: input.modelId,
   thinkingEnabled: input.thinkingEnabled,
   ...(input.thinkingEffort ? { thinkingEffort: input.thinkingEffort } : {}),
@@ -19,6 +20,7 @@ const MEMORY_AGENT_RUNTIME_CONFIG = (input: MemoryAgentModelSettings): RuntimeCo
 
 export type MemoryAgentModelSettings = {
   providerId: ProviderId
+  authMode?: RuntimeConfig["authMode"]
   modelId: string
   thinkingEnabled: boolean
   thinkingEffort?: ThinkingEffort
@@ -71,6 +73,7 @@ export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<st
       ...(input.contextCompressorSettings
         ? {
             compressorProviderId: input.contextCompressorSettings.providerId,
+            compressorAuthMode: input.contextCompressorSettings.authMode ?? "api_key",
             compressorModelId: input.contextCompressorSettings.modelId,
             compressorThinkingEnabled: input.contextCompressorSettings.thinkingEnabled,
             ...(input.contextCompressorSettings.thinkingEffort ? { compressorThinkingEffort: input.contextCompressorSettings.thinkingEffort } : {}),

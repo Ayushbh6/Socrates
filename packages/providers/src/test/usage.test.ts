@@ -81,6 +81,34 @@ describe("provider usage normalization", () => {
     expect(usage.pricingSnapshot?.providerId).toBe("openai")
   })
 
+  it("does not compute API dollar cost for ChatGPT Codex subscription usage", () => {
+    const apiPricingSnapshot = pricingSnapshotForModel("openai", "gpt-5.4-mini")
+    expect(apiPricingSnapshot).toBeDefined()
+
+    const usage = normalizeProviderUsage({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      usage: {
+        inputTokens: 1000,
+        outputTokens: 100,
+        cachedInputTokens: 400,
+        costUsd: 123,
+        costSource: "provider_reported",
+        pricingSnapshot: apiPricingSnapshot!,
+        raw: { usage: { cost: 321 } },
+      },
+    })
+
+    expect(usage.costSource).toBe("unknown")
+    expect(usage.costUsd).toBeUndefined()
+    expect(usage.pricingSnapshot).toBeUndefined()
+    expect(usage.inputTokens).toBe(1000)
+    expect(usage.outputTokens).toBe(100)
+    expect(usage.cachedInputTokens).toBe(400)
+    expect(usage.routedProvider).toBe("openai")
+  })
+
   it("computes Google Gemini 3 Flash cost from the local pricing snapshot when provider cost is absent", () => {
     const usage = normalizeProviderUsage({
       providerId: "google",
@@ -160,7 +188,11 @@ describe("provider usage normalization", () => {
 
   it("has local pricing for all direct provider catalog models", () => {
     const missing = modelCatalog
-      .filter((model) => model.providerId === "openai" || model.providerId === "google")
+      .filter(
+        (model) =>
+          (model.providerId === "openai" && (model.authMode ?? "api_key") === "api_key") ||
+          model.providerId === "google",
+      )
       .filter((model) => pricingSnapshotForModel(model.providerId, model.modelId) === undefined)
       .map((model) => `${model.providerId}:${model.modelId}`)
 

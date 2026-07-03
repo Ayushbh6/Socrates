@@ -10,6 +10,7 @@ import type {
   GetProviderCredentialsStatusResponse,
   Message,
   MessageAttachment,
+  ListModelsResponse,
   Project,
   ProjectEmbeddingStatus,
   ProjectInstructions,
@@ -19,6 +20,7 @@ import type {
   ChatCompaction,
   MemoryCompaction,
   McpServerStatus,
+  ModelSettingsResolution,
   SkillSummary,
   User,
   WorkerModelSettings,
@@ -47,6 +49,20 @@ const tempDbPath = (): string => {
 }
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
+
+const writeTestChatGptCodexTokens = (socratesHome: string): void => {
+  const credentialDir = path.join(socratesHome, ".credentials")
+  fs.mkdirSync(credentialDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(credentialDir, "openai-chatgpt-oauth.json"),
+    `${JSON.stringify({
+      refresh: "refresh-test",
+      access: "access-test",
+      expires: Date.now() + 60 * 60 * 1000,
+      updatedAt: nowIso(),
+    })}\n`,
+  )
+}
 
 const expectStructuredToolDoc = (socratesHome: string, relativePath: string): string => {
   const filePath = path.join(socratesHome, "tool_usage", relativePath)
@@ -122,7 +138,15 @@ const buildTestServer = async (
   agent = createTestAgent(),
   options: { socratesHome?: string; titleProvider?: ModelProvider | false; memoryProvider?: ModelProvider } = {},
 ): Promise<TestServer> => {
-  const app = await buildServer({ dbPath, agent, ...options })
+  const socratesHome = options.socratesHome ?? path.dirname(dbPath)
+  if (dbPath !== ":memory:") {
+    fs.mkdirSync(socratesHome, { recursive: true })
+    const envPath = path.join(socratesHome, ".env")
+    if (!fs.existsSync(envPath)) {
+      fs.writeFileSync(envPath, "OPENAI_API_KEY=\"sk-test-openai\"\n", { mode: 0o600 })
+    }
+  }
+  const app = await buildServer({ dbPath, agent, ...options, socratesHome })
   servers.push(app)
   return app
 }
@@ -2074,12 +2098,19 @@ describe("HTTP API", () => {
       thinkingEnabled: false,
     })
 
+    await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/session",
+      payload: { providerId: "google", apiKey: "sk-google-test", source: "manual" },
+    })
+
     const updateResponse = await app.inject({
       method: "PATCH",
       url: "/api/worker-model-settings/title_generator",
       payload: {
         providerId: "google",
-        modelId: "gemini-3.3-flash-preview",
+        authMode: "api_key",
+        modelId: "gemini-3.5-flash",
         thinkingEnabled: false,
       },
     })
@@ -2092,7 +2123,8 @@ describe("HTTP API", () => {
     expect(updateBody.data.settings).toMatchObject({
       workerId: "title_generator",
       providerId: "google",
-      modelId: "gemini-3.3-flash-preview",
+      authMode: "api_key",
+      modelId: "gemini-3.5-flash",
       thinkingEnabled: false,
     })
 
@@ -2106,6 +2138,51 @@ describe("HTTP API", () => {
       },
     })
     expect(invalidResponse.statusCode).toBe(400)
+  })
+
+  it("prefers ChatGPT Codex defaults for built-in worker settings when connected", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-worker-codex-test-"))
+    writeTestChatGptCodexTokens(home)
+    const app = await buildServer({ dbPath: path.join(home, "socrates.sqlite"), socratesHome: home, agent: createTestAgent() })
+    servers.push(app)
+    await onboard(app)
+
+    const listResponse = await app.inject({ method: "GET", url: "/api/worker-model-settings" })
+    const listBody = parseResponse<{ settings: WorkerModelSettings[]; resolutions: ModelSettingsResolution[] }>(listResponse.payload)
+    expect(listBody.ok).toBe(true)
+    if (!listBody.ok) {
+      throw new Error("Expected worker model settings list success")
+    }
+
+    const resolutionByWorker = new Map(listBody.data.settings.map((setting, index) => [setting.workerId, listBody.data.resolutions[index]] as const))
+    expect(resolutionByWorker.get("skill_writer")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
+    expect(resolutionByWorker.get("context_compactor")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
+    expect(resolutionByWorker.get("title_generator")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
+    expect(resolutionByWorker.get("memory_router")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
   })
 
   it("allows browser CORS preflights for project PATCH routes", async () => {
@@ -2154,6 +2231,32 @@ describe("HTTP API", () => {
     expect(deleteResponse.statusCode).toBe(200)
     expect(deleteResponse.payload).not.toContain("sk-secret-test")
     expect(fs.readFileSync(path.join(home, ".env"), "utf8")).not.toContain("OPENROUTER_API_KEY=")
+  })
+
+  it("filters HTTP model list by configured provider credentials", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-models-test-"))
+    const app = await buildServer({ dbPath: path.join(home, "socrates.sqlite"), socratesHome: home, agent: createTestAgent() })
+    servers.push(app)
+
+    const emptyResponse = await app.inject({ method: "GET", url: "/api/models" })
+    const emptyBody = parseResponse<ListModelsResponse>(emptyResponse.payload)
+    expect(emptyBody.ok && emptyBody.data.models).toEqual([])
+    expect(emptyBody.ok && emptyBody.data.defaultModel).toBeNull()
+
+    await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/session",
+      payload: { providerId: "openrouter", apiKey: "sk-openrouter-test", source: "manual" },
+    })
+
+    const openRouterResponse = await app.inject({ method: "GET", url: "/api/models" })
+    const openRouterBody = parseResponse<ListModelsResponse>(openRouterResponse.payload)
+    expect(openRouterBody.ok && openRouterBody.data.models.every((model) => model.providerId === "openrouter")).toBe(true)
+    expect(openRouterBody.ok && openRouterBody.data.defaultModel).toMatchObject({
+      providerId: "openrouter",
+      authMode: "api_key",
+      modelId: "deepseek/deepseek-v4-pro",
+    })
   })
 
   it("creates, lists, gets, and patches projects", async () => {
@@ -3268,7 +3371,7 @@ describe("WebSocket API", () => {
 
       const generatedUpdate = await waitForEvent(socket, "conversation.updated")
       expect(generatedUpdate.payload.conversation.title).toBe("Screenshot Debugging Plan")
-      expect(requestedTitleModels).toEqual(["meta-llama/llama-4-maverick"])
+      expect(requestedTitleModels).toEqual(["gpt-5.4-mini"])
 
       await waitForEvent(socket, "turn.completed")
 
@@ -3286,7 +3389,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("falls back to Qwen title generation when Llama does not return a title", async () => {
+  it("generates titles with the resolved available title model", async () => {
     const requestedTitleModels: string[] = []
     const app = await buildTestServer(tempDbPath(), createTestAgent(), {
       titleProvider: createFallbackTitleProvider("Fallback Screenshot Title", requestedTitleModels),
@@ -3302,7 +3405,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "conversation.updated")
       const generatedUpdate = await waitForEvent(socket, "conversation.updated")
       expect(generatedUpdate.payload.conversation.title).toBe("Fallback Screenshot Title")
-      expect(requestedTitleModels).toEqual(["meta-llama/llama-4-maverick", "qwen/qwen3.5-flash-02-23"])
+      expect(requestedTitleModels).toEqual(["gpt-5.4-mini"])
     } finally {
       socket.close()
     }
@@ -3413,6 +3516,11 @@ describe("WebSocket API", () => {
     const requests: unknown[] = []
     const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
     await onboard(app)
+    await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/session",
+      payload: { providerId: "openrouter", apiKey: "sk-openrouter-test", source: "manual" },
+    })
     const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
     const boundary = "----socrates-nonvision-attachment-boundary"
@@ -3501,6 +3609,7 @@ describe("WebSocket API", () => {
         contextUsage?: { contextUsedTokens: number; contextWindowTokens: number }
         lastRuntimeConfig?: {
           providerId: string
+          authMode?: string
           modelId: string
           thinkingEnabled: boolean
           thinkingEffort?: string
@@ -3516,6 +3625,7 @@ describe("WebSocket API", () => {
         expect(body.data.contextUsage?.contextUsedTokens).not.toBe(body.data.tokenUsage.totalTokens)
         expect(body.data.lastRuntimeConfig).toEqual({
           providerId: "openai",
+          authMode: "api_key",
           modelId: "gpt-5.4-mini",
           thinkingEnabled: false,
           thinkingEffort: "none",
@@ -3545,8 +3655,8 @@ describe("WebSocket API", () => {
       throw new Error("Expected memory agent success")
     }
     expect(current.data.settings).toMatchObject({
-      providerId: "openrouter",
-      modelId: "xiaomi/mimo-v2.5-pro",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
       thinkingEnabled: false,
       enabled: true,
       cadenceMinutes: 10,
@@ -3581,29 +3691,56 @@ describe("WebSocket API", () => {
       enabled: false,
     })
 
-    const openRouterUpdateResponse = await app.inject({
+    const openAiUpdateResponse = await app.inject({
       method: "PATCH",
       url: "/api/memory-agent/settings",
       payload: {
-        providerId: "openrouter",
-        modelId: "xiaomi/mimo-v2.5-pro",
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
         thinkingEnabled: true,
         enabled: true,
       },
     })
-    const openRouterUpdated = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; enabled: boolean } }>(
-      openRouterUpdateResponse.payload,
+    const openAiUpdated = parseResponse<{ settings: { providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string; enabled: boolean } }>(
+      openAiUpdateResponse.payload,
     )
-    expect(openRouterUpdated.ok).toBe(true)
-    if (!openRouterUpdated.ok) {
-      throw new Error("Expected OpenRouter settings update success")
+    expect(openAiUpdated.ok).toBe(true)
+    if (!openAiUpdated.ok) {
+      throw new Error("Expected OpenAI settings update success")
     }
-    expect(openRouterUpdated.data.settings).toMatchObject({
-      providerId: "openrouter",
-      modelId: "xiaomi/mimo-v2.5-pro",
+    expect(openAiUpdated.data.settings).toMatchObject({
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
       thinkingEnabled: true,
     })
-    expect(openRouterUpdated.data.settings.thinkingEffort).toBeUndefined()
+    expect(openAiUpdated.data.settings.thinkingEffort).toBeUndefined()
+  })
+
+  it("prefers ChatGPT Codex for the built-in global memory agent default when connected", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-memory-agent-codex-test-"))
+    writeTestChatGptCodexTokens(home)
+    const app = await buildServer({ dbPath: path.join(home, "socrates.sqlite"), socratesHome: home, agent: createTestAgent() })
+    servers.push(app)
+    await onboard(app)
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/memory-agent",
+    })
+    const body = parseResponse<{ settings: { providerId: string; authMode?: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string } }>(
+      response.payload,
+    )
+    expect(body.ok).toBe(true)
+    if (!body.ok) {
+      throw new Error("Expected memory agent success")
+    }
+    expect(body.data.settings).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.5",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
   })
 
   it("exposes user profile in the memory-agent file index", async () => {

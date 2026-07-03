@@ -45,6 +45,7 @@ import type {
   TriggerMemoryAgentRunResponse,
   ListMemoryAgentFilesResponse,
   ListMemoryAgentRunsResponse,
+  ListModelsResponse,
   UpdateMemoryAgentGlobalSettingsRequest,
   UpdateMemoryAgentGlobalSettingsResponse,
   UpdateWorkerModelSettingsRequest,
@@ -78,10 +79,13 @@ import type {
   UpsertProjectInstructionsRequest,
   User,
   ServerEvent,
+  ModelSettingsResolution,
+  ModelSettingsSelection,
   WorkerModelRole,
   WorkerModelSettings,
 } from "@socrates/contracts"
-import { AiSdkProvider, createDefaultEmbeddingProvider, type EmbeddingProvider, type ModelProvider, type ProviderCredentialResolver } from "@socrates/providers"
+import { AiSdkProvider, createDefaultEmbeddingProvider, listAvailableModels, type EmbeddingProvider, type ModelProvider, type ProviderCredentialResolver } from "@socrates/providers"
+import { SocratesError } from "@socrates/shared"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
 import { AttachmentStore } from "./store/attachmentStore"
@@ -95,6 +99,7 @@ import { InstructionStore } from "./store/instructionStore"
 import { ModelTelemetryStore } from "./store/modelTelemetryStore"
 import { MemoryStore } from "./store/memoryStore"
 import { MemoryAgentGlobalSettingsStore } from "./store/memoryAgentGlobalSettingsStore"
+import { resolveModelSettingsForAvailableModels } from "./store/modelSettingsResolver"
 import { NotificationStore } from "./store/notificationStore"
 import { ProjectStore } from "./store/projectStore"
 import { ResourceStore } from "./store/resourceStore"
@@ -158,7 +163,7 @@ export class SocratesStore {
   constructor(
     private readonly handle: DatabaseHandle,
     embeddingProvider?: EmbeddingProvider,
-    credentials?: ProviderCredentialResolver,
+    private readonly credentials?: ProviderCredentialResolver,
     options: { socratesHome?: string; memoryProvider?: ModelProvider } = {},
   ) {
     this.events = new EventStore(handle)
@@ -192,7 +197,7 @@ export class SocratesStore {
       traceRetrieve: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => this.traces.retrieve(projectId, conversationId, input),
       traceRetrieveGlobal: (input: TraceRetrieveToolInput) => this.traces.retrieveGlobal(input),
       getMemoryAgentGlobalSettings: () => this.memoryAgentSettings.ensureSettings(),
-      getWorkerModelSettings: (workerId: WorkerModelRole) => this.workerModelSettings.ensureSetting(workerId),
+      getWorkerModelSettings: (workerId: WorkerModelRole) => this.getWorkerModelSetting(workerId),
       createNotification: (input: Parameters<NotificationStore["createNotification"]>[0]) => this.notifications.createNotification(input),
     }
     this.memory = new MemoryStore(context, memoryOptions)
@@ -352,9 +357,11 @@ export class SocratesStore {
 
   getMemoryAgent(): GetMemoryAgentResponse {
     const settings = this.memoryAgentSettings.ensureSettings()
+    const resolution = this.resolveModelSettings(settings, "memory_agent")
+    const effectiveSettings = resolution.effective ? { ...settings, ...resolution.effective } : settings
     const state = this.memoryAgentSettings.ensureState()
     return {
-      settings,
+      settings: effectiveSettings,
       state,
       pending: this.memory.getMemoryAgentPending(state),
       recentItems: this.memory.listMemoryAgentTimeline(25, 0).items,
@@ -378,25 +385,83 @@ export class SocratesStore {
   }
 
   updateMemoryAgentSettings(input: UpdateMemoryAgentGlobalSettingsRequest): UpdateMemoryAgentGlobalSettingsResponse {
-    return { settings: this.memoryAgentSettings.updateSettings(input) }
+    const settings = this.memoryAgentSettings.updateSettings(input)
+    const resolution = this.resolveModelSettings(settings, "memory_agent")
+    return { settings: resolution.effective ? { ...settings, ...resolution.effective } : settings }
   }
 
-  listWorkerModelSettings(): { settings: WorkerModelSettings[] } {
-    return { settings: this.workerModelSettings.ensureAll() }
+  listAvailableModels(): ListModelsResponse {
+    return listAvailableModels(this.credentials?.availableAuthModes?.() ?? [])
+  }
+
+  resolveModelSettings(saved: ModelSettingsSelection, role: "chat" | "memory_agent" | WorkerModelRole): ModelSettingsResolution {
+    return resolveModelSettingsForAvailableModels(saved, role, this.listAvailableModels())
+  }
+
+  resolveRuntimeConfig(runtimeConfig: RuntimeConfig): RuntimeConfig {
+    const resolution = this.resolveModelSettings(
+      {
+        providerId: runtimeConfig.providerId,
+        authMode: runtimeConfig.authMode ?? "api_key",
+        modelId: runtimeConfig.modelId,
+        thinkingEnabled: runtimeConfig.thinkingEnabled,
+        ...(runtimeConfig.thinkingEffort ? { thinkingEffort: runtimeConfig.thinkingEffort } : {}),
+      },
+      "chat",
+    )
+    if (!resolution.effective) {
+      throw new SocratesError("model_unavailable", resolution.reason ?? "No available model is configured.", { recoverable: true })
+    }
+    const resolved: RuntimeConfig = {
+      ...runtimeConfig,
+      providerId: resolution.effective.providerId,
+      authMode: resolution.effective.authMode,
+      modelId: resolution.effective.modelId,
+      thinkingEnabled: resolution.effective.thinkingEnabled,
+      ...(resolution.effective.thinkingEffort ? { thinkingEffort: resolution.effective.thinkingEffort } : {}),
+    }
+    if (!resolution.effective.thinkingEffort) {
+      delete resolved.thinkingEffort
+    }
+    return resolved
+  }
+
+  listWorkerModelSettings(): { settings: WorkerModelSettings[]; resolutions: ModelSettingsResolution[] } {
+    const settings = this.workerModelSettings.ensureAll()
+    return {
+      settings,
+      resolutions: settings.map((setting) => this.resolveModelSettings(setting, setting.workerId)),
+    }
   }
 
   getWorkerModelSetting(workerId: WorkerModelRole): WorkerModelSettings {
-    return this.workerModelSettings.ensureSetting(workerId)
+    const saved = this.workerModelSettings.ensureSetting(workerId)
+    const resolution = this.resolveModelSettings(saved, workerId)
+    return resolution.effective ? { ...saved, ...resolution.effective } : saved
   }
 
   updateWorkerModelSettings(workerId: WorkerModelRole, input: UpdateWorkerModelSettingsRequest): UpdateWorkerModelSettingsResponse {
+    if (this.credentials?.availableAuthModes) {
+      const model = this.listAvailableModels().models.find(
+        (candidate) =>
+          candidate.providerId === input.providerId &&
+          candidate.authMode === (input.authMode ?? "api_key") &&
+          candidate.modelId === input.modelId,
+      )
+      if (!model) {
+        throw new SocratesError("worker_model_unavailable", "Choose an available model before saving this worker setting.", { recoverable: true })
+      }
+    }
     return { settings: this.workerModelSettings.updateSetting(workerId, input) }
   }
 
   async runGlobalMemoryAgent(trigger: "scheduled" | "manual" = "manual"): Promise<TriggerMemoryAgentRunResponse> {
+    const settings = this.memoryAgentSettings.ensureSettings()
+    const resolution = this.resolveModelSettings(settings, "memory_agent")
+    const effectiveSettings = resolution.effective ? { ...settings, ...resolution.effective } : settings
     return this.memory.runGlobalMemoryAgent({
       trigger,
-      settings: this.memoryAgentSettings.ensureSettings(),
+      settings: effectiveSettings,
       state: this.memoryAgentSettings.ensureState(),
       updateState: (patch) => this.memoryAgentSettings.updateState(patch),
     })

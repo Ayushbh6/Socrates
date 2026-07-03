@@ -221,12 +221,14 @@ export function MemoryCenterPage() {
   };
 
   const settings = overview?.settings;
-  const selectedModel = settings ? findModelForSettings(models, settings) : undefined;
+  const savedSelectedModel = settings ? findModelForSettings(models, settings) : undefined;
+  const selectedModel = savedSelectedModel ?? models[0];
   const selectedThinkingOption = settings && selectedModel ? findThinkingOptionForSettings(selectedModel, settings) : undefined;
-  const modelKeyValue = selectedModel ? modelKey(selectedModel) : settings ? `${settings.providerId}:${settings.modelId}` : "";
+  const modelKeyValue = selectedModel ? modelKey(selectedModel) : settings ? `${settings.providerId}:${settings.authMode ?? "api_key"}:${settings.modelId}` : "";
   const thinkingValue = selectedThinkingOption?.id ?? "";
   const nextCheckAt = overview?.state.lastCheckedAt && settings?.enabled ? addMinutes(overview.state.lastCheckedAt, settings.cadenceMinutes) : undefined;
   const groupedFiles = groupFiles(files);
+  const modelGroups = useMemo(() => groupModels(models), [models]);
 
   const tokenSummary = useMemo(() => {
     const runs = overview?.recentItems.filter((item) => item.itemType === "run") ?? [];
@@ -357,6 +359,7 @@ export function MemoryCenterPage() {
                               if (nextModel && thinkingOption) {
                                 void saveSettings({
                                   providerId: nextModel.providerId,
+                                  authMode: nextModel.authMode,
                                   modelId: nextModel.modelId,
                                   thinkingEnabled: thinkingOption.enabled,
                                   ...(thinkingOption.effort ? { thinkingEffort: thinkingOption.effort } : {}),
@@ -367,10 +370,14 @@ export function MemoryCenterPage() {
                             className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition focus:border-teal-700 focus:ring-2 focus:ring-teal-700/10 disabled:bg-slate-50 disabled:text-slate-500"
                           >
                             {models.length === 0 && <option value={modelKeyValue}>{modelLabel(settings, selectedModel)}</option>}
-                            {models.map((model) => (
-                              <option key={modelKey(model)} value={modelKey(model)}>
-                                {model.label} ({model.providerLabel})
-                              </option>
+                            {modelGroups.map((group) => (
+                              <optgroup key={group.label} label={group.label}>
+                                {group.models.map((model) => (
+                                  <option key={modelKey(model)} value={modelKey(model)}>
+                                    {model.label}
+                                  </option>
+                                ))}
+                              </optgroup>
                             ))}
                           </select>
                         </label>
@@ -624,10 +631,10 @@ const groupFiles = (files: MemoryAgentFileSummary[]): Record<string, MemoryAgent
   Skills: files.filter((file) => file.kind === "skill"),
 });
 
-const modelKey = (model: Pick<ModelOption, "providerId" | "modelId">): string => `${model.providerId}:${model.modelId}`;
+const modelKey = (model: Pick<ModelOption, "providerId" | "authMode" | "modelId">): string => `${model.providerId}:${model.authMode ?? "api_key"}:${model.modelId}`;
 
-const findModelForSettings = (models: ModelOption[], settings: Pick<MemoryAgentGlobalSettings, "providerId" | "modelId">): ModelOption | undefined =>
-  models.find((model) => model.providerId === settings.providerId && model.modelId === settings.modelId);
+const findModelForSettings = (models: ModelOption[], settings: Pick<MemoryAgentGlobalSettings, "providerId" | "authMode" | "modelId">): ModelOption | undefined =>
+  models.find((model) => model.providerId === settings.providerId && model.authMode === (settings.authMode ?? "api_key") && model.modelId === settings.modelId);
 
 const findThinkingOptionForSettings = (
   model: ModelOption,
@@ -641,6 +648,19 @@ const findThinkingOptionForSettings = (
 
 const modelLabel = (settings: MemoryAgentGlobalSettings, model?: ModelOption): string =>
   model ? `${model.providerLabel} / ${model.label}` : `${providerLabels[settings.providerId]} / ${settings.modelId}`;
+
+const groupModels = (models: ModelOption[]): Array<{ label: string; models: ModelOption[] }> => {
+  const groups: Array<{ label: string; models: ModelOption[] }> = [];
+  for (const model of models) {
+    const existing = groups.find((group) => group.label === model.providerLabel);
+    if (existing) {
+      existing.models.push(model);
+    } else {
+      groups.push({ label: model.providerLabel, models: [model] });
+    }
+  }
+  return groups;
+};
 
 const cadenceLabel = (minutes: number): string => cadenceOptions.find((option) => option.value === minutes)?.label ?? `Every ${minutes} min`;
 

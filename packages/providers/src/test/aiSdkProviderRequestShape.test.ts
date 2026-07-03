@@ -6,6 +6,7 @@ import type { ModelEvent, ModelRequest } from "../types"
 const aiMocks = vi.hoisted(() => ({
   generateText: vi.fn(),
   outputObject: vi.fn((input: unknown) => ({ type: "mock-output-object", input })),
+  streamObject: vi.fn(),
   streamText: vi.fn(),
   smoothStream: vi.fn(() => ({ transform: "smooth" })),
 }))
@@ -19,6 +20,7 @@ vi.mock("ai", async (importOriginal) => {
       ...actual.Output,
       object: aiMocks.outputObject,
     },
+    streamObject: aiMocks.streamObject,
     streamText: aiMocks.streamText,
     smoothStream: aiMocks.smoothStream,
   }
@@ -28,6 +30,7 @@ describe("AI SDK provider request shape", () => {
   beforeEach(() => {
     aiMocks.generateText.mockReset()
     aiMocks.outputObject.mockClear()
+    aiMocks.streamObject.mockReset()
     aiMocks.streamText.mockReset()
     aiMocks.smoothStream.mockClear()
     aiMocks.generateText.mockResolvedValue({
@@ -41,6 +44,34 @@ describe("AI SDK provider request shape", () => {
       },
       response: { id: "gen_structured_1" },
       warnings: [],
+    })
+    aiMocks.streamObject.mockReturnValue({
+      object: Promise.resolve(validStructuredOutput()),
+      usage: Promise.resolve({
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        inputTokenDetails: {},
+        outputTokenDetails: {},
+      }),
+      providerMetadata: Promise.resolve(undefined),
+      response: Promise.resolve({ id: "stream_structured_1" }),
+      warnings: Promise.resolve([]),
+      fullStream: (async function* () {
+        yield {
+          type: "finish",
+          finishReason: "stop",
+          usage: {
+            inputTokens: 100,
+            outputTokens: 20,
+            totalTokens: 120,
+            inputTokenDetails: {},
+            outputTokenDetails: {},
+          },
+          response: { id: "stream_structured_1" },
+          providerMetadata: undefined,
+        }
+      })(),
     })
     aiMocks.streamText.mockReturnValue({
       fullStream: (async function* () {
@@ -100,6 +131,62 @@ describe("AI SDK provider request shape", () => {
     const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
     expect(options.providerOptions?.openai?.promptCacheKey).toBe("project:proj_1:conversation:conv_1")
     expect(options.providerOptions?.openai?.promptCacheRetention).toBe("24h")
+  })
+
+  it("runs ChatGPT subscription OpenAI responses in stateless mode", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => undefined,
+      resolveAuth: () => ({
+        authMode: "chatgpt_subscription",
+        apiKey: "dummy-chatgpt-subscription-key",
+        fetch,
+      }),
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openai", "gpt-5.5"),
+      runtimeConfig: {
+        ...runtimeConfig("openai", "gpt-5.5"),
+        authMode: "chatgpt_subscription",
+        thinkingEnabled: true,
+        thinkingEffort: "medium",
+      },
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { providerOptions?: Record<string, Record<string, unknown>> }
+    expect(options.providerOptions?.openai).toMatchObject({
+      store: false,
+      reasoningEffort: "medium",
+      reasoningSummary: "auto",
+    })
+    expect(options.providerOptions?.openai).not.toHaveProperty("promptCacheRetention")
+  })
+
+  it("normalizes blank provider API errors into non-empty model failures", async () => {
+    aiMocks.streamText.mockReturnValue({
+      fullStream: (async function* () {
+        const error = new Error("")
+        Object.assign(error, {
+          name: "AI_APICallError",
+          statusCode: 400,
+          responseBody: "{\"detail\":\"Store must be set to false\"}",
+        })
+        yield { type: "error", error }
+      })(),
+    })
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    const events: ModelEvent[] = []
+    for await (const event of provider.stream(modelRequest("openai", "gpt-5.5"))) {
+      events.push(event)
+    }
+
+    const failed = events.find((event): event is Extract<ModelEvent, { type: "model.failed" }> => event.type === "model.failed")
+    expect(failed?.error.message).toBe("Model provider failed: Store must be set to false")
   })
 
   it("shortens long OpenAI prompt cache keys to provider-safe stable values", async () => {
@@ -380,6 +467,45 @@ describe("AI SDK provider request shape", () => {
     expect(options.messages).toEqual([{ role: "user", content: "Old turns" }])
     expect(options.output).toEqual({ type: "mock-output-object", input: { schema: chatCompactionSchema } })
     expect(options).not.toHaveProperty("tools")
+    expect(result?.output).toEqual(validStructuredOutput())
+    expect(result?.usage).toMatchObject({ inputTokens: 100, outputTokens: 20, totalTokens: 120 })
+  })
+
+  it("streams structured ChatGPT subscription generations", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => undefined,
+      resolveAuth: () => ({
+        authMode: "chatgpt_subscription",
+        apiKey: "dummy-chatgpt-subscription-key",
+        fetch,
+      }),
+    })
+
+    const result = await provider.generateStructured?.({
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      system: "Compress context.",
+      messages: [{ role: "user", content: "Old turns" }],
+      runtimeConfig: {
+        ...runtimeConfig("openai", "gpt-5.4-mini"),
+        authMode: "chatgpt_subscription",
+      },
+      schema: chatCompactionSchema,
+    })
+
+    expect(aiMocks.generateText).not.toHaveBeenCalled()
+    expect(aiMocks.streamObject).toHaveBeenCalledTimes(1)
+    const options = aiMocks.streamObject.mock.calls[0]?.[0] as {
+      system?: string
+      messages?: unknown[]
+      schema?: unknown
+      providerOptions?: Record<string, Record<string, unknown>>
+    }
+    expect(options.system).toBe("Compress context.")
+    expect(options.messages).toEqual([{ role: "user", content: "Old turns" }])
+    expect(options.schema).toBe(chatCompactionSchema)
+    expect(options.providerOptions?.openai).toMatchObject({ store: false })
+    expect(options.providerOptions?.openai).not.toHaveProperty("promptCacheRetention")
     expect(result?.output).toEqual(validStructuredOutput())
     expect(result?.usage).toMatchObject({ inputTokens: 100, outputTokens: 20, totalTokens: 120 })
   })

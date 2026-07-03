@@ -1,6 +1,5 @@
 "use client";
 
-import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
@@ -51,12 +50,7 @@ export default function OnboardingPage() {
 
   return (
     <main className="min-h-screen bg-brand-bg flex items-center justify-center p-6">
-      <motion.div 
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: "easeOut" }}
-        className="max-w-3xl w-full"
-      >
+      <div className="max-w-3xl w-full">
         <h1 className="text-3xl font-serif mb-6 text-brand-text-dark text-center">Welcome to Socrates</h1>
         <p className="text-brand-text-light mb-8 text-center text-lg">Set up your local workspace and provider access.</p>
         <form onSubmit={handleSubmit} className="mx-auto max-w-md flex flex-col gap-4">
@@ -75,7 +69,7 @@ export default function OnboardingPage() {
         <div className="mt-8">
           <ProviderCredentialsPanel onOpenRouterReadyChange={setOpenRouterReady} />
         </div>
-      </motion.div>
+      </div>
     </main>
   );
 }

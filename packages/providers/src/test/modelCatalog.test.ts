@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { listModelsResponseSchema } from "@socrates/contracts"
-import { listModels, modelCatalog } from "../modelCatalog/modelCatalog"
+import { listAvailableModels, listModels, modelCatalog } from "../modelCatalog/modelCatalog"
 
 describe("model catalog", () => {
   it("exposes the curated V1 models and default", () => {
@@ -8,6 +8,7 @@ describe("model catalog", () => {
 
     expect(response.defaultModel).toEqual({
       providerId: "openrouter",
+      authMode: "api_key",
       modelId: "deepseek/deepseek-v4-pro",
       thinkingOptionId: "off",
     })
@@ -31,6 +32,47 @@ describe("model catalog", () => {
       "openrouter/meta-llama/llama-4-maverick",
       "openrouter/qwen/qwen3.5-flash-02-23",
     ])
+  })
+
+  it("filters models by configured auth modes", () => {
+    expect(listAvailableModels([])).toEqual({ models: [], defaultModel: null })
+
+    const openRouterOnly = listAvailableModels([{ providerId: "openrouter", authMode: "api_key" }])
+    expect(openRouterOnly.models.every((model) => model.providerId === "openrouter")).toBe(true)
+    expect(openRouterOnly.defaultModel).toMatchObject({
+      providerId: "openrouter",
+      authMode: "api_key",
+      modelId: "deepseek/deepseek-v4-pro",
+    })
+
+    const openAiModes = listAvailableModels([
+      { providerId: "openai", authMode: "api_key" },
+      { providerId: "openai", authMode: "chatgpt_subscription" },
+    ])
+    expect(openAiModes.models.map((model) => `${model.providerLabel}:${model.authMode}:${model.modelId}`)).toEqual([
+      "OpenAI API:api_key:gpt-5.4-mini",
+      "OpenAI API:api_key:gpt-5.4",
+      "OpenAI API:api_key:gpt-5",
+      "ChatGPT Codex:chatgpt_subscription:gpt-5.5",
+      "ChatGPT Codex:chatgpt_subscription:gpt-5.4-mini",
+    ])
+  })
+
+  it("exposes the ChatGPT Codex subscription model set", () => {
+    const response = listAvailableModels([{ providerId: "openai", authMode: "chatgpt_subscription" }])
+
+    expect(response.models.map((model) => model.modelId)).toEqual(["gpt-5.5", "gpt-5.4-mini"])
+    expect(response.defaultModel).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.5",
+      thinkingOptionId: "xhigh",
+    })
+    for (const model of response.models) {
+      expect(model.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high", "xhigh"])
+    }
+    expect(response.models.find((model) => model.modelId === "gpt-5.5")?.defaultThinkingOptionId).toBe("xhigh")
+    expect(response.models.find((model) => model.modelId === "gpt-5.4-mini")?.defaultThinkingOptionId).toBe("low")
   })
 
   it("does not expose non-thinking mode for Gemini 3.1 Pro", () => {

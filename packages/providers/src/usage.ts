@@ -1,4 +1,4 @@
-import type { ProviderId } from "@socrates/contracts"
+import type { ProviderAuthMode, ProviderId } from "@socrates/contracts"
 import type { ModelUsage, PricingSnapshot } from "./types"
 
 type UsageLike = {
@@ -249,10 +249,13 @@ export const computeUsageCost = (providerId: ProviderId, modelId: string, usage:
 
 export const normalizeProviderUsage = (input: {
   providerId: ProviderId
+  authMode?: ProviderAuthMode
   modelId: string
   usage: ModelUsage
 }): ModelUsage => {
   const providerMetadata = input.usage.providerMetadata
+  const isChatGptSubscription =
+    input.providerId === "openai" && (input.authMode ?? "api_key") === "chatgpt_subscription"
   const routedOpenRouterProvider = firstString(
     getPath(providerMetadata, ["openrouter", "provider"]),
     getPath(input.usage.raw, ["provider"]),
@@ -290,23 +293,30 @@ export const normalizeProviderUsage = (input: {
       ? { uncachedInputTokens: Math.max(0, inputTokens - (cachedInputTokens ?? 0) - (cacheWriteTokens ?? 0)) }
       : {}),
   }
-  const providerCostUsd = firstFiniteNumber(
-    getPath(providerMetadata, ["openrouter", "usage", "cost"]),
-    getPath(input.usage.raw, ["cost"]),
-    getPath(input.usage.raw, ["usage", "cost"]),
-  )
-  const costUsd = normalizedUsage.costUsd ?? providerCostUsd
+  const { costUsd: normalizedCostUsd, costSource: normalizedCostSource, pricingSnapshot: normalizedPricingSnapshot, ...usageForReturn } = normalizedUsage
+  const providerCostUsd = isChatGptSubscription
+    ? undefined
+    : firstFiniteNumber(
+        getPath(providerMetadata, ["openrouter", "usage", "cost"]),
+        getPath(input.usage.raw, ["cost"]),
+        getPath(input.usage.raw, ["usage", "cost"]),
+      )
+  const costUsd = isChatGptSubscription ? undefined : normalizedCostUsd ?? providerCostUsd
   const costSource =
-    costUsd === undefined ? undefined : normalizedUsage.costSource ?? (providerCostUsd === undefined ? "computed" : "provider_reported")
+    isChatGptSubscription
+      ? ("unknown" as const)
+      : costUsd === undefined
+        ? undefined
+        : normalizedCostSource ?? (providerCostUsd === undefined ? "computed" : "provider_reported")
   const computed =
-    costUsd === undefined
+    costUsd === undefined && !isChatGptSubscription
       ? input.providerId === "openrouter"
         ? computeOpenRouterUsageCost(input.modelId, normalizedUsage, routedOpenRouterProvider)
         : computeUsageCost(input.providerId, input.modelId, normalizedUsage)
       : {}
 
   return {
-    ...normalizedUsage,
+    ...usageForReturn,
     ...(routedProvider === undefined ? {} : { routedProvider }),
     ...(costUsd === undefined && computed.costUsd !== undefined ? { costUsd: computed.costUsd } : costUsd === undefined ? {} : { costUsd }),
     ...(costSource === undefined && computed.costUsd !== undefined
@@ -314,7 +324,11 @@ export const normalizeProviderUsage = (input: {
       : costSource === undefined
         ? { costSource: "unknown" as const }
         : { costSource }),
-    ...(normalizedUsage.pricingSnapshot ? { pricingSnapshot: normalizedUsage.pricingSnapshot } : computed.pricingSnapshot ? { pricingSnapshot: computed.pricingSnapshot } : {}),
+    ...(!isChatGptSubscription && normalizedPricingSnapshot
+      ? { pricingSnapshot: normalizedPricingSnapshot }
+      : computed.pricingSnapshot
+        ? { pricingSnapshot: computed.pricingSnapshot }
+        : {}),
   }
 }
 

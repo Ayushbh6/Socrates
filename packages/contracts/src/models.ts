@@ -2,6 +2,8 @@ import { z } from "zod"
 import { idSchema } from "./entities"
 
 export const providerIdSchema = z.enum(["openai", "google", "openrouter"])
+export const providerAuthModeSchema = z.enum(["api_key", "chatgpt_subscription"])
+export const defaultProviderAuthMode = "api_key" as const
 
 export const thinkingEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh"])
 
@@ -17,6 +19,7 @@ export const modelThinkingOptionSchema = z
 export const modelOptionSchema = z
   .object({
     providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.default(defaultProviderAuthMode),
     providerLabel: z.string().min(1),
     modelId: z.string().min(1),
     label: z.string().min(1),
@@ -39,12 +42,46 @@ export const listModelsResponseSchema = z
     defaultModel: z
       .object({
         providerId: providerIdSchema,
+        authMode: providerAuthModeSchema.default(defaultProviderAuthMode),
         modelId: z.string().min(1),
         thinkingOptionId: z.string().min(1),
       })
-      .strict(),
+      .strict()
+      .nullable(),
   })
   .strict()
+
+export const modelSelectionSchema = z
+  .object({
+    providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.optional(),
+    modelId: z.string().min(1),
+  })
+  .strict()
+export type ModelSelection = z.infer<typeof modelSelectionSchema>
+
+export const resolvedModelSelectionStatusSchema = z.enum(["selected", "resolved_fallback", "unavailable"])
+
+export const modelSettingsSelectionSchema = z
+  .object({
+    providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.optional(),
+    modelId: z.string().min(1),
+    thinkingEnabled: z.boolean(),
+    thinkingEffort: thinkingEffortSchema.optional(),
+  })
+  .strict()
+export type ModelSettingsSelection = z.infer<typeof modelSettingsSelectionSchema>
+
+export const modelSettingsResolutionSchema = z
+  .object({
+    status: resolvedModelSelectionStatusSchema,
+    reason: z.string().min(1).optional(),
+    saved: modelSettingsSelectionSchema,
+    effective: modelSettingsSelectionSchema.optional(),
+  })
+  .strict()
+export type ModelSettingsResolution = z.infer<typeof modelSettingsResolutionSchema>
 
 export const workerModelRoleSchema = z.enum(["skill_writer", "context_compactor", "title_generator", "memory_router"])
 export type WorkerModelRole = z.infer<typeof workerModelRoleSchema>
@@ -53,6 +90,7 @@ export const workerModelSettingsSchema = z
   .object({
     workerId: workerModelRoleSchema,
     providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.optional(),
     modelId: z.string().min(1),
     thinkingEnabled: z.boolean(),
     thinkingEffort: thinkingEffortSchema.optional(),
@@ -60,6 +98,11 @@ export const workerModelSettingsSchema = z
   })
   .strict()
 export type WorkerModelSettings = z.infer<typeof workerModelSettingsSchema>
+
+export const resolvedWorkerModelSettingsSchema = workerModelSettingsSchema.extend({
+  resolution: modelSettingsResolutionSchema,
+})
+export type ResolvedWorkerModelSettings = z.infer<typeof resolvedWorkerModelSettingsSchema>
 
 export const conversationTokenUsageSchema = z
   .object({
@@ -140,6 +183,7 @@ export const conversationCostUsageSchema = z
   .strict()
 
 export type ProviderId = z.infer<typeof providerIdSchema>
+export type ProviderAuthMode = z.infer<typeof providerAuthModeSchema>
 export type ThinkingEffort = z.infer<typeof thinkingEffortSchema>
 export type ModelThinkingOption = z.infer<typeof modelThinkingOptionSchema>
 export type ModelOption = z.infer<typeof modelOptionSchema>

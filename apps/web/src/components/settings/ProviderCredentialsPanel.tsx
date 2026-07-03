@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, KeyRound, RefreshCw, Trash2, Upload } from "lucide-react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { CheckCircle2, ExternalLink, KeyRound, RefreshCw, Trash2, Upload } from "lucide-react";
 import type { ProviderCredentialStatus, ProviderId } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
@@ -28,6 +28,11 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
     () => statuses.some((status) => status.providerId === "openrouter" && status.configured),
     [statuses],
   );
+  const chatGptCodexConfigured = useMemo(
+    () => statuses.some((status) => status.authModes?.some((item) => item.authMode === "chatgpt_subscription" && item.configured)),
+    [statuses],
+  );
+  const [isChatGptCodexAuthPending, setIsChatGptCodexAuthPending] = useState(false);
 
   useEffect(() => {
     onOpenRouterReadyChange?.(openRouterReady);
@@ -38,10 +43,40 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
     return () => window.clearTimeout(timer);
   }, []);
 
-  const loadStatus = async () => {
+  const loadStatus = useCallback(async () => {
     const data = await api.getProviderCredentialStatus();
     setStatuses(data.providers);
-  };
+    return data.providers;
+  }, []);
+
+  useEffect(() => {
+    if (!isChatGptCodexAuthPending) {
+      return;
+    }
+    if (chatGptCodexConfigured) {
+      setIsChatGptCodexAuthPending(false);
+      setMessage("ChatGPT Codex signed in. Socrates will prefer ChatGPT Codex models by default.");
+      return;
+    }
+
+    let attempts = 0;
+    const interval = window.setInterval(() => {
+      attempts += 1;
+      void loadStatus().then((providers) => {
+        const connected = providers.some((status) =>
+          status.authModes?.some((item) => item.authMode === "chatgpt_subscription" && item.configured),
+        );
+        if (connected) {
+          setIsChatGptCodexAuthPending(false);
+          setMessage("ChatGPT Codex signed in. Socrates will prefer ChatGPT Codex models by default.");
+        } else if (attempts >= 60) {
+          setIsChatGptCodexAuthPending(false);
+        }
+      });
+    }, 2000);
+
+    return () => window.clearInterval(interval);
+  }, [chatGptCodexConfigured, isChatGptCodexAuthPending, loadStatus]);
 
   useEffect(() => {
     let mounted = true;
@@ -108,6 +143,41 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
     }
   };
 
+  const connectChatGptCodex = async () => {
+    setIsBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const response = await api.startOpenAiChatGptOAuth();
+      window.open(response.authorizationUrl, "_blank", "noopener,noreferrer");
+      setMessage("Finish ChatGPT Codex authorization in the browser window.");
+      setIsChatGptCodexAuthPending(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not start ChatGPT Codex authorization.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const disconnectChatGptCodex = async () => {
+    const confirmed = window.confirm("Remove the saved ChatGPT Codex connection from Socrates?");
+    if (!confirmed) {
+      return;
+    }
+    setIsBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.deleteOpenAiChatGptOAuth();
+      await loadStatus();
+      setMessage("ChatGPT Codex connection removed.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove ChatGPT Codex connection.");
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const importEnvFile = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const path = envImportPath.trim();
@@ -155,6 +225,7 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
       <section className="space-y-3">
         {providerOrder.map((providerId) => {
           const status = statuses.find((item) => item.providerId === providerId);
+          const chatGptCodexStatus = status?.authModes?.find((item) => item.authMode === "chatgpt_subscription");
           return (
             <div key={providerId} className="rounded-lg border border-gray-200 bg-white p-4">
               <div className="flex items-start justify-between gap-4">
@@ -168,6 +239,21 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
                   <p className="mt-2 text-xs text-brand-text-light">
                     {status?.configured ? `Configured from ${status.source}.` : "Not configured."}
                   </p>
+                  {status?.authModes && status.authModes.length > 1 && (
+                    <div className="mt-3 space-y-1 text-xs text-brand-text-light">
+                      {status.authModes.map((authMode) => (
+                        <div key={authMode.authMode} className="flex items-center gap-2">
+                          {authMode.configured && <CheckCircle2 className="size-3.5 text-green-600" />}
+                          <span>{authMode.label}: {authMode.configured ? `connected (${authMode.source})` : "not configured"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {providerId === "openai" && chatGptCodexStatus?.configured && (
+                    <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs leading-5 text-green-800">
+                      ChatGPT Codex is signed in. Socrates will prefer ChatGPT Codex models by default, while API-key models remain selectable.
+                    </div>
+                  )}
                 </div>
                 <Button
                   type="button"
@@ -181,6 +267,28 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
                   <Trash2 className="size-4" />
                 </Button>
               </div>
+              {providerId === "openai" && (
+                <div className="mt-3 flex flex-col gap-2 border-t border-gray-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-xs text-brand-text-light">ChatGPT Codex subscription auth</div>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" onClick={() => void connectChatGptCodex()} disabled={isBusy}>
+                      <ExternalLink className="mr-2 size-4" />
+                      Connect
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => void disconnectChatGptCodex()}
+                      disabled={isBusy || !status?.authModes?.some((item) => item.authMode === "chatgpt_subscription" && item.configured)}
+                      aria-label="Remove ChatGPT Codex connection"
+                      title="Remove ChatGPT Codex connection"
+                    >
+                      <Trash2 className="size-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
               <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                 <input
                   type="password"

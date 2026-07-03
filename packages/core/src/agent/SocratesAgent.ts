@@ -73,7 +73,7 @@ export type SocratesAgentTurnInput = {
 
 export type MemoryLoopPhase = "pre_turn" | "post_evidence"
 
-export type MemoryRouterModelSettings = Pick<WorkerModelSettings, "providerId" | "modelId" | "thinkingEnabled" | "thinkingEffort">
+export type MemoryRouterModelSettings = Pick<WorkerModelSettings, "providerId" | "authMode" | "modelId" | "thinkingEnabled" | "thinkingEffort">
 
 export type MemoryRouterUsageRecord = {
   phase: MemoryLoopPhase
@@ -1160,6 +1160,7 @@ const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput
 const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRouterModelSettings =>
   input.memoryRouterModelSettings ?? {
     providerId: input.providerId,
+    authMode: input.runtimeConfig.authMode ?? "api_key",
     modelId: input.modelId,
     thinkingEnabled: false,
     thinkingEffort: "none",
@@ -1168,6 +1169,7 @@ const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRout
 const memoryRouterRuntimeConfig = (settings: MemoryRouterModelSettings): RuntimeConfig => {
   const config: RuntimeConfig = {
     providerId: settings.providerId,
+    authMode: settings.authMode ?? "api_key",
     modelId: settings.modelId,
     thinkingEnabled: settings.thinkingEnabled,
     approvalMode: "read_only_auto",

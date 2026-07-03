@@ -1177,7 +1177,7 @@ export class MemoryStore extends StoreBase {
       const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
       return { state, pending: signal, item, skippedReason: reason }
     }
-    if (this.options.credentials && !this.options.credentials.getApiKey(input.settings.providerId)) {
+    if (this.options.credentials && !this.options.credentials.resolveAuth?.(input.settings.providerId, input.settings.authMode ?? "api_key") && !this.options.credentials.getApiKey(input.settings.providerId)) {
       const reason = `${input.settings.providerId} credential is not configured.`
       const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
       const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
@@ -1186,6 +1186,7 @@ export class MemoryStore extends StoreBase {
 
     const modelSettings: MemoryAgentModelSettings = {
       providerId: input.settings.providerId,
+      authMode: input.settings.authMode ?? "api_key",
       modelId: input.settings.modelId,
       thinkingEnabled: input.settings.thinkingEnabled,
       ...(input.settings.thinkingEffort ? { thinkingEffort: input.settings.thinkingEffort } : {}),
@@ -2260,6 +2261,7 @@ export class MemoryStore extends StoreBase {
     if (settings) {
       return {
         providerId: settings.providerId,
+        authMode: settings.authMode ?? "api_key",
         modelId: settings.modelId,
         thinkingEnabled: settings.thinkingEnabled,
         ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),

@@ -15,7 +15,15 @@ export {
   type TokenCountMethod,
   type TokenCountResult,
 } from "./tokenCounting"
-export { defaultModel, findModelOption, listModels, modelCatalog } from "./modelCatalog/modelCatalog"
+export {
+  chatGptCodexModelCatalog,
+  defaultModel,
+  findModelOption,
+  listAvailableModels,
+  listModels,
+  modelCatalog,
+  type AvailableProviderAuth,
+} from "./modelCatalog/modelCatalog"
 export { computeUsageCost, normalizeProviderUsage, pricingSnapshotForModel } from "./usage"
 export {
   DEFAULT_TURN_EFFICIENCY_THRESHOLDS,
@@ -40,6 +48,7 @@ export type {
   ModelUsage,
   PricingSnapshot,
   ProviderCredentialResolver,
+  ProviderResolvedCredential,
   StructuredModelRequest,
   StructuredModelResult,
 } from "./types"

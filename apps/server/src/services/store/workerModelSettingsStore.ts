@@ -1,5 +1,6 @@
 import type {
   ProviderId,
+  ProviderAuthMode,
   ThinkingEffort,
   UpdateWorkerModelSettingsRequest,
   WorkerModelRole,
@@ -14,24 +15,28 @@ export const DEFAULT_WORKER_MODEL_SETTINGS: Record<WorkerModelRole, Omit<WorkerM
   skill_writer: {
     workerId: "skill_writer",
     providerId: "openrouter",
+    authMode: "api_key",
     modelId: "xiaomi/mimo-v2.5-pro",
     thinkingEnabled: false,
   },
   context_compactor: {
     workerId: "context_compactor",
     providerId: "openrouter",
+    authMode: "api_key",
     modelId: "deepseek/deepseek-v4-flash",
     thinkingEnabled: false,
   },
   title_generator: {
     workerId: "title_generator",
     providerId: "openrouter",
+    authMode: "api_key",
     modelId: "meta-llama/llama-4-maverick",
     thinkingEnabled: false,
   },
   memory_router: {
     workerId: "memory_router",
     providerId: "openrouter",
+    authMode: "api_key",
     modelId: "deepseek/deepseek-v4-flash",
     thinkingEnabled: false,
   },
@@ -57,6 +62,7 @@ export class WorkerModelSettingsStore extends StoreBase {
         id: createId("wms"),
         workerId,
         providerId: defaults.providerId,
+        authMode: defaults.authMode,
         modelId: defaults.modelId,
         thinkingEnabled: defaults.thinkingEnabled,
         thinkingEffort: defaults.thinkingEffort ?? null,
@@ -79,6 +85,7 @@ export class WorkerModelSettingsStore extends StoreBase {
       .update(workerModelSettings)
       .set({
         providerId: input.providerId,
+        authMode: input.authMode ?? "api_key",
         modelId,
         thinkingEnabled: input.thinkingEnabled,
         thinkingEffort: thinkingEffort ?? null,
@@ -110,6 +117,7 @@ const normalizeThinkingEffort = (thinkingEnabled: boolean, thinkingEffort: Think
 const mapSetting = (row: typeof workerModelSettings.$inferSelect): WorkerModelSettings => ({
   workerId: row.workerId as WorkerModelRole,
   providerId: row.providerId as ProviderId,
+  authMode: (row.authMode ?? "api_key") as ProviderAuthMode,
   modelId: row.modelId,
   thinkingEnabled: row.thinkingEnabled,
   ...(row.thinkingEffort ? { thinkingEffort: row.thinkingEffort as ThinkingEffort } : {}),

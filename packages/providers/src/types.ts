@@ -4,6 +4,7 @@ import type {
   ProjectEmbeddingProvider,
   ProviderId,
   ProviderMetadata,
+  ProviderAuthMode,
   RuntimeConfig,
   ThinkingEffort,
 } from "@socrates/contracts"
@@ -181,6 +182,21 @@ export type ProviderThinkingConfig =
   | { providerId: "google"; effort: Extract<ThinkingEffort, "minimal" | "low" | "medium" | "high"> }
   | { providerId: "openrouter"; enabled: boolean }
 
+export type ProviderApiKeyCredential = {
+  authMode: "api_key"
+  apiKey: string
+}
+
+export type ProviderChatGptSubscriptionCredential = {
+  authMode: "chatgpt_subscription"
+  apiKey: string
+  fetch: typeof fetch
+}
+
+export type ProviderResolvedCredential = ProviderApiKeyCredential | ProviderChatGptSubscriptionCredential
+
 export type ProviderCredentialResolver = {
   getApiKey: (providerId: ProviderId) => string | undefined
+  resolveAuth?: (providerId: ProviderId, authMode?: ProviderAuthMode) => ProviderResolvedCredential | undefined
+  availableAuthModes?: () => Array<{ providerId: ProviderId; authMode: ProviderAuthMode }>
 }

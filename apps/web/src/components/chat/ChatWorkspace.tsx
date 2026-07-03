@@ -33,19 +33,23 @@ const TERMINAL_DOCK_HEIGHT_KEY_PREFIX = "socrates-terminal-dock-height-v1";
 const TERMINAL_DOCK_OPEN_KEY_PREFIX = "socrates-terminal-dock-open-v1";
 const TERMINAL_DOCK_ACTIVE_KEY_PREFIX = "socrates-terminal-dock-active-v1";
 const COMPOSER_MODEL_KEY_PREFIX = "socrates-composer-model-v1";
+const CHATGPT_CODEX_AUTH_MODE = "chatgpt_subscription";
+const CHATGPT_CODEX_DEFAULT_MODEL_ID = "gpt-5.5";
 
 type LastRuntimeConfig = NonNullable<GetConversationResponse["lastRuntimeConfig"]>;
 
 type StoredComposerModelPreference = {
   providerId: string;
+  authMode?: ModelOption["authMode"];
   modelId: string;
+  source?: "user" | "auto_chatgpt_codex";
   thinkingOptionId?: string;
   thinkingEnabled?: boolean;
   thinkingEffort?: ModelThinkingOption["effort"];
 };
 
-const findModelSelection = (models: ModelOption[], providerId: string, modelId: string): ModelOption | null =>
-  models.find((model) => model.providerId === providerId && model.modelId === modelId) ?? null;
+const findModelSelection = (models: ModelOption[], providerId: string, modelId: string, authMode: string = "api_key"): ModelOption | null =>
+  models.find((model) => model.providerId === providerId && model.authMode === authMode && model.modelId === modelId) ?? null;
 
 const selectDefaultThinkingOption = (model: ModelOption, preferredThinkingOptionId?: string): ModelThinkingOption | null =>
   model.thinkingOptions.find((option) => option.id === preferredThinkingOptionId) ??
@@ -107,7 +111,9 @@ const readComposerModelPreference = (storageKey: string): StoredComposerModelPre
     }
     return {
       providerId: parsed.providerId,
+      ...(parsed.authMode === "api_key" || parsed.authMode === "chatgpt_subscription" ? { authMode: parsed.authMode } : {}),
       modelId: parsed.modelId,
+      ...(parsed.source === "user" || parsed.source === "auto_chatgpt_codex" ? { source: parsed.source } : {}),
       ...(typeof parsed.thinkingOptionId === "string" ? { thinkingOptionId: parsed.thinkingOptionId } : {}),
       ...(typeof parsed.thinkingEnabled === "boolean" ? { thinkingEnabled: parsed.thinkingEnabled } : {}),
       ...(typeof parsed.thinkingEffort === "string" ? { thinkingEffort: parsed.thinkingEffort } : {}),
@@ -121,6 +127,7 @@ const writeComposerModelPreference = (
   storageKey: string,
   model: ModelOption | null,
   thinkingOption: ModelThinkingOption | null,
+  source: StoredComposerModelPreference["source"] = "user",
 ) => {
   if (typeof window === "undefined") {
     return;
@@ -134,11 +141,18 @@ const writeComposerModelPreference = (
     storageKey,
     JSON.stringify({
       providerId: model.providerId,
+      authMode: model.authMode,
       modelId: model.modelId,
+      source,
       ...(thinkingOption ? { thinkingOptionId: thinkingOption.id, thinkingEnabled: thinkingOption.enabled } : {}),
       ...(thinkingOption?.effort ? { thinkingEffort: thinkingOption.effort } : {}),
     } satisfies StoredComposerModelPreference),
   );
+};
+
+const preferredChatGptCodexModel = (models: ModelOption[]): ModelOption | null => {
+  const chatGptCodexModels = models.filter((model) => model.providerId === "openai" && model.authMode === CHATGPT_CODEX_AUTH_MODE);
+  return chatGptCodexModels.find((model) => model.modelId === CHATGPT_CODEX_DEFAULT_MODEL_ID) ?? chatGptCodexModels[0] ?? null;
 };
 
 export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps) {
@@ -704,29 +718,35 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           setModels(modelsResponse.models);
           setNotifications(notificationsResponse.notifications);
           setUnreadNotificationCount(notificationsResponse.unreadCount);
-          const defaultModel =
-            modelsResponse.models.find(
-              (model) =>
-                model.providerId === modelsResponse.defaultModel.providerId &&
-                model.modelId === modelsResponse.defaultModel.modelId,
-            ) ?? modelsResponse.models[0] ?? null;
+          const chatGptCodexModel = preferredChatGptCodexModel(modelsResponse.models);
+          const defaultModel = modelsResponse.defaultModel
+            ? modelsResponse.models.find(
+                (model) =>
+                  model.providerId === modelsResponse.defaultModel?.providerId &&
+                  model.authMode === modelsResponse.defaultModel?.authMode &&
+                  model.modelId === modelsResponse.defaultModel?.modelId,
+              ) ?? modelsResponse.models[0] ?? null
+            : modelsResponse.models[0] ?? null;
           const storedPreference = readComposerModelPreference(composerModelKey);
           const storedModel = storedPreference
-            ? findModelSelection(modelsResponse.models, storedPreference.providerId, storedPreference.modelId)
+            ? findModelSelection(modelsResponse.models, storedPreference.providerId, storedPreference.modelId, storedPreference.authMode ?? "api_key")
             : null;
           const lastRuntimeConfig = conversation.lastRuntimeConfig;
           const runtimeModel = lastRuntimeConfig
-            ? findModelSelection(modelsResponse.models, lastRuntimeConfig.providerId, lastRuntimeConfig.modelId)
+            ? findModelSelection(modelsResponse.models, lastRuntimeConfig.providerId, lastRuntimeConfig.modelId, lastRuntimeConfig.authMode ?? "api_key")
             : null;
-          const initialModel = storedModel ?? runtimeModel ?? defaultModel;
-          const initialThinkingOption = storedModel
+          const storedUserModel = storedPreference?.source === "user" ? storedModel : null;
+          const initialModel = storedUserModel ?? chatGptCodexModel ?? runtimeModel ?? defaultModel;
+          const initialThinkingOption = storedUserModel
             ? storedPreference
-              ? selectThinkingOptionFromStoredPreference(storedModel, storedPreference) ?? selectDefaultThinkingOption(storedModel)
-              : selectDefaultThinkingOption(storedModel)
+              ? selectThinkingOptionFromStoredPreference(storedUserModel, storedPreference) ?? selectDefaultThinkingOption(storedUserModel)
+              : selectDefaultThinkingOption(storedUserModel)
+            : chatGptCodexModel
+              ? selectDefaultThinkingOption(chatGptCodexModel)
             : runtimeModel && lastRuntimeConfig
               ? selectThinkingOptionFromRuntimeConfig(runtimeModel, lastRuntimeConfig) ?? selectDefaultThinkingOption(runtimeModel)
               : defaultModel
-                ? selectDefaultThinkingOption(defaultModel, modelsResponse.defaultModel.thinkingOptionId)
+                ? selectDefaultThinkingOption(defaultModel, modelsResponse.defaultModel?.thinkingOptionId)
                 : null;
           setSelectedModel(initialModel);
           setSelectedThinkingOption(initialModel ? (initialThinkingOption ?? selectDefaultThinkingOption(initialModel)) : null);
@@ -845,6 +865,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
           ...(attachments.length > 0 ? { attachmentIds: attachments.map((attachment) => attachment.id) } : {}),
           runtimeConfig: {
             providerId: selectedModel.providerId,
+            authMode: selectedModel.authMode,
             modelId: selectedModel.modelId,
             thinkingEnabled: selectedThinkingOption.enabled,
             ...(selectedThinkingOption.effort ? { thinkingEffort: selectedThinkingOption.effort } : {}),

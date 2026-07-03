@@ -11,6 +11,7 @@ import { createSkillWriterToolExecutors, type SkillWriterToolCallbacks } from ".
 
 const SKILL_WRITER_RUNTIME_CONFIG = (input: SkillWriterModelSettings): RuntimeConfig => ({
   providerId: input.providerId,
+  authMode: input.authMode ?? "api_key",
   modelId: input.modelId,
   thinkingEnabled: input.thinkingEnabled,
   ...(input.thinkingEffort ? { thinkingEffort: input.thinkingEffort } : {}),
@@ -20,6 +21,7 @@ const SKILL_WRITER_RUNTIME_CONFIG = (input: SkillWriterModelSettings): RuntimeCo
 
 export type SkillWriterModelSettings = {
   providerId: ProviderId
+  authMode?: RuntimeConfig["authMode"]
   modelId: string
   thinkingEnabled: boolean
   thinkingEffort?: ThinkingEffort
@@ -88,6 +90,7 @@ export const runSkillWriterTurn = async (input: SkillWriterRunInput): Promise<st
       ...(input.contextCompressorSettings
         ? {
             compressorProviderId: input.contextCompressorSettings.providerId,
+            compressorAuthMode: input.contextCompressorSettings.authMode ?? "api_key",
             compressorModelId: input.contextCompressorSettings.modelId,
             compressorThinkingEnabled: input.contextCompressorSettings.thinkingEnabled,
             ...(input.contextCompressorSettings.thinkingEffort ? { compressorThinkingEffort: input.contextCompressorSettings.thinkingEffort } : {}),

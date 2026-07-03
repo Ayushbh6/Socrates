@@ -14,7 +14,19 @@ import {
   projectWorkspaceSchema,
   userSchema,
 } from "./entities"
-import { conversationContextUsageSchema, conversationCostUsageSchema, conversationTokenUsageSchema, listModelsResponseSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema, workerModelRoleSchema, workerModelSettingsSchema } from "./models"
+import {
+  conversationContextUsageSchema,
+  conversationCostUsageSchema,
+  conversationTokenUsageSchema,
+  listModelsResponseSchema,
+  modelSettingsResolutionSchema,
+  providerAuthModeSchema,
+  providerIdSchema,
+  thinkingEffortSchema,
+  turnUsageReportSchema,
+  workerModelRoleSchema,
+  workerModelSettingsSchema,
+} from "./models"
 import { mcpRegistryServerSchema, mcpRegistryToolDescriptorSchema, mcpServerScopeSchema, skillScopeSchema, skillSummarySchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 const skillNameInputSchema = z
@@ -35,6 +47,17 @@ export const listModelsHttpResponseSchema = listModelsResponseSchema
 export const providerCredentialSourceSchema = z.enum(["keychain", "local_file", "session", "env", "missing"])
 export type ProviderCredentialSource = z.infer<typeof providerCredentialSourceSchema>
 
+export const providerAuthCredentialStatusSchema = z
+  .object({
+    authMode: providerAuthModeSchema,
+    label: z.string().min(1),
+    configured: z.boolean(),
+    source: providerCredentialSourceSchema,
+    message: z.string().min(1).optional(),
+  })
+  .strict()
+export type ProviderAuthCredentialStatus = z.infer<typeof providerAuthCredentialStatusSchema>
+
 export const providerCredentialStatusSchema = z
   .object({
     providerId: providerIdSchema,
@@ -42,6 +65,7 @@ export const providerCredentialStatusSchema = z
     required: z.boolean(),
     configured: z.boolean(),
     source: providerCredentialSourceSchema,
+    authModes: z.array(providerAuthCredentialStatusSchema).optional(),
     message: z.string().min(1).optional(),
   })
   .strict()
@@ -98,6 +122,16 @@ export const deleteProviderCredentialResponseSchema = z
   })
   .strict()
 export type DeleteProviderCredentialResponse = z.infer<typeof deleteProviderCredentialResponseSchema>
+
+export const startOpenAiChatGptOAuthResponseSchema = z
+  .object({
+    authorizationUrl: z.string().url(),
+    state: z.string().min(1),
+    redirectUri: z.string().url(),
+    expiresAt: z.string().min(1),
+  })
+  .strict()
+export type StartOpenAiChatGptOAuthResponse = z.infer<typeof startOpenAiChatGptOAuthResponseSchema>
 
 export const completeOnboardingRequestSchema = z
   .object({
@@ -170,6 +204,7 @@ export const memoryAgentGlobalSettingsSchema = z
   .object({
     id: idSchema,
     providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.optional(),
     modelId: z.string().min(1),
     thinkingEnabled: z.boolean(),
     thinkingEffort: thinkingEffortSchema.optional(),
@@ -183,6 +218,7 @@ export type MemoryAgentGlobalSettings = z.infer<typeof memoryAgentGlobalSettings
 export const updateMemoryAgentGlobalSettingsRequestSchema = z
   .object({
     providerId: providerIdSchema.optional(),
+    authMode: providerAuthModeSchema.optional(),
     modelId: z.string().min(1).optional(),
     thinkingEnabled: z.boolean().optional(),
     thinkingEffort: thinkingEffortSchema.optional(),
@@ -505,6 +541,7 @@ export type UpdateMemoryAgentGlobalSettingsResponse = z.infer<typeof updateMemor
 export const listWorkerModelSettingsResponseSchema = z
   .object({
     settings: z.array(workerModelSettingsSchema),
+    resolutions: z.array(modelSettingsResolutionSchema).optional(),
   })
   .strict()
 export type ListWorkerModelSettingsResponse = z.infer<typeof listWorkerModelSettingsResponseSchema>
@@ -512,6 +549,7 @@ export type ListWorkerModelSettingsResponse = z.infer<typeof listWorkerModelSett
 export const updateWorkerModelSettingsRequestSchema = z
   .object({
     providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.optional(),
     modelId: z.string().min(1),
     thinkingEnabled: z.boolean(),
     thinkingEffort: thinkingEffortSchema.optional(),
@@ -954,6 +992,7 @@ export const getConversationResponseSchema = z
     lastRuntimeConfig: z
       .object({
         providerId: providerIdSchema,
+        authMode: providerAuthModeSchema.optional(),
         modelId: z.string().min(1),
         thinkingEnabled: z.boolean(),
         thinkingEffort: thinkingEffortSchema.optional(),

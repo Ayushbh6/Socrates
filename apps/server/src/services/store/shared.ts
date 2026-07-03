@@ -154,6 +154,7 @@ export class StoreBase {
         id,
         turnId,
         providerId: runtimeConfig.providerId,
+        authMode: runtimeConfig.authMode ?? "api_key",
         modelId: runtimeConfig.modelId,
         thinkingEnabled: runtimeConfig.thinkingEnabled,
         thinkingEffort: runtimeConfig.thinkingEffort,

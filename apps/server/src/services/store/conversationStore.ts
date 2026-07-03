@@ -210,6 +210,7 @@ export class ConversationStore extends StoreBase {
       .prepare(
         `SELECT
            turn_runtime_configs.provider_id as providerId,
+           turn_runtime_configs.auth_mode as authMode,
            turn_runtime_configs.model_id as modelId,
            turn_runtime_configs.thinking_enabled as thinkingEnabled,
            turn_runtime_configs.thinking_effort as thinkingEffort,
@@ -224,6 +225,7 @@ export class ConversationStore extends StoreBase {
       .get(conversationId) as
       | {
           providerId: RuntimeConfig["providerId"]
+          authMode: RuntimeConfig["authMode"] | null
           modelId: string
           thinkingEnabled: boolean | 0 | 1
           thinkingEffort: RuntimeConfig["thinkingEffort"] | null
@@ -238,6 +240,7 @@ export class ConversationStore extends StoreBase {
 
     return {
       providerId: row.providerId,
+      authMode: row.authMode ?? "api_key",
       modelId: row.modelId,
       thinkingEnabled: Boolean(row.thinkingEnabled),
       ...(row.thinkingEffort ? { thinkingEffort: row.thinkingEffort } : {}),

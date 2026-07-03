@@ -1,4 +1,4 @@
-import type { ListModelsResponse, ModelOption, ModelThinkingOption, ProviderId } from "@socrates/contracts"
+import type { ListModelsResponse, ModelOption, ModelThinkingOption, ProviderAuthMode, ProviderId } from "@socrates/contracts"
 
 const offOption: ModelThinkingOption = {
   id: "off",
@@ -27,10 +27,12 @@ const effortOption = (effort: Exclude<ModelThinkingOption["effort"], undefined>)
   effort,
 })
 
-const providerLabel = (providerId: ProviderId): string => {
+const chatGptCodexThinkingOptions = [effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")]
+
+const providerLabel = (providerId: ProviderId, authMode: ProviderAuthMode = "api_key"): string => {
   switch (providerId) {
     case "openai":
-      return "OpenAI"
+      return authMode === "chatgpt_subscription" ? "ChatGPT Codex" : "OpenAI API"
     case "google":
       return "Google"
     case "openrouter":
@@ -38,9 +40,10 @@ const providerLabel = (providerId: ProviderId): string => {
   }
 }
 
-const makeModel = (input: Omit<ModelOption, "providerLabel" | "isDefault"> & { isDefault?: boolean }): ModelOption => ({
+const makeModel = (input: Omit<ModelOption, "providerLabel" | "isDefault" | "authMode"> & { authMode?: ProviderAuthMode; isDefault?: boolean }): ModelOption => ({
   ...input,
-  providerLabel: providerLabel(input.providerId),
+  authMode: input.authMode ?? "api_key",
+  providerLabel: providerLabel(input.providerId, input.authMode ?? "api_key"),
   isDefault: input.isDefault ?? false,
   capabilities: input.capabilities ?? { vision: true },
 })
@@ -197,6 +200,30 @@ export const modelCatalog = [
   }),
 ] satisfies ModelOption[]
 
+const makeChatGptCodexModel = (input: Omit<Parameters<typeof makeModel>[0], "providerId" | "authMode">): ModelOption =>
+  makeModel({
+    ...input,
+    providerId: "openai",
+    authMode: "chatgpt_subscription",
+  })
+
+export const chatGptCodexModelCatalog = [
+  makeChatGptCodexModel({
+    modelId: "gpt-5.5",
+    label: "GPT-5.5",
+    contextWindowTokens: 400000,
+    thinkingOptions: chatGptCodexThinkingOptions,
+    defaultThinkingOptionId: "xhigh",
+  }),
+  makeChatGptCodexModel({
+    modelId: "gpt-5.4-mini",
+    label: "GPT-5.4 mini",
+    contextWindowTokens: 258000,
+    thinkingOptions: chatGptCodexThinkingOptions,
+    defaultThinkingOptionId: "low",
+  }),
+] satisfies ModelOption[]
+
 export const defaultModel = modelCatalog.find((model) => model.isDefault) ?? modelCatalog[0]
 
 if (!defaultModel) {
@@ -207,10 +234,44 @@ export const listModels = (): ListModelsResponse => ({
   models: modelCatalog,
   defaultModel: {
     providerId: defaultModel.providerId,
+    authMode: defaultModel.authMode,
     modelId: defaultModel.modelId,
     thinkingOptionId: defaultModel.defaultThinkingOptionId,
   },
 })
 
-export const findModelOption = (providerId: string, modelId: string): ModelOption | undefined =>
-  modelCatalog.find((model) => model.providerId === providerId && model.modelId === modelId)
+export type AvailableProviderAuth = {
+  providerId: ProviderId
+  authMode: ProviderAuthMode
+}
+
+export const listAvailableModels = (availableAuth: readonly AvailableProviderAuth[]): ListModelsResponse => {
+  const models = availableAuth.flatMap((auth) => catalogForAuthMode(auth.providerId, auth.authMode))
+  const defaultAvailableModel = models.find((model) => model.isDefault) ?? models[0]
+  return {
+    models,
+    defaultModel: defaultAvailableModel
+      ? {
+          providerId: defaultAvailableModel.providerId,
+          authMode: defaultAvailableModel.authMode,
+          modelId: defaultAvailableModel.modelId,
+          thinkingOptionId: defaultAvailableModel.defaultThinkingOptionId,
+        }
+      : null,
+  }
+}
+
+export const catalogForAuthMode = (providerId: ProviderId, authMode: ProviderAuthMode = "api_key"): ModelOption[] => {
+  if (providerId === "openai" && authMode === "chatgpt_subscription") {
+    return chatGptCodexModelCatalog
+  }
+  if (authMode !== "api_key") {
+    return []
+  }
+  return modelCatalog.filter((model) => model.providerId === providerId)
+}
+
+export const findModelOption = (providerId: string, modelId: string, authMode: ProviderAuthMode = "api_key"): ModelOption | undefined =>
+  [...modelCatalog, ...chatGptCodexModelCatalog].find(
+    (model) => model.providerId === providerId && model.authMode === authMode && model.modelId === modelId,
+  )

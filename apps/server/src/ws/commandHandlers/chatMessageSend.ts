@@ -77,9 +77,11 @@ export const handleChatMessageSend = async (
   titleProvider?: ModelProvider,
 ): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
+  const runtimeConfig = store.resolveRuntimeConfig(command.payload.runtimeConfig)
+  const payload = { ...command.payload, runtimeConfig }
   subscriptions.subscribe(socket, conversationId)
   const emitEvent: EventSink = (event) => subscriptions.emit(event, socket)
-  const created = store.createTurnFromUserMessage(projectId, conversationId, command.payload)
+  const created = store.createTurnFromUserMessage(projectId, conversationId, payload)
   const abortController = activeTurns.create(created.turnId)
 
   emitEvent(
@@ -175,7 +177,7 @@ export const handleChatMessageSend = async (
       .catch(() => undefined)
   }
 
-  const selectedModel = findModelOption(command.payload.runtimeConfig.providerId, command.payload.runtimeConfig.modelId)
+  const selectedModel = findModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key")
   const includeImageParts = selectedModel?.capabilities?.vision === true
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
@@ -203,9 +205,9 @@ export const handleChatMessageSend = async (
       conversationId,
       sessionId: created.sessionId,
       turnId: created.turnId,
-      providerId: command.payload.runtimeConfig.providerId,
-      modelId: command.payload.runtimeConfig.modelId,
-      runtimeConfig: command.payload.runtimeConfig,
+      providerId: runtimeConfig.providerId,
+      modelId: runtimeConfig.modelId,
+      runtimeConfig,
       memoryRouterModelSettings: store.getWorkerModelSetting("memory_router"),
       cacheKey: providerCacheKey(projectId, conversationId),
       messages: modelHistory,
@@ -647,8 +649,8 @@ export const handleChatMessageSend = async (
     if (!answerText.trim() && !sawToolActivity) {
       throw new SocratesError("model_empty_response", "Model provider completed without returning any assistant text.", {
         details: {
-          providerId: command.payload.runtimeConfig.providerId,
-          modelId: command.payload.runtimeConfig.modelId,
+          providerId: runtimeConfig.providerId,
+          modelId: runtimeConfig.modelId,
         },
         recoverable: true,
       })
@@ -712,9 +714,9 @@ export const handleChatMessageSend = async (
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({
-      providerId: command.payload.runtimeConfig.providerId,
-      modelId: command.payload.runtimeConfig.modelId,
-      runtimeConfig: command.payload.runtimeConfig,
+      providerId: runtimeConfig.providerId,
+      modelId: runtimeConfig.modelId,
+      runtimeConfig,
       messages: postTurnHistory,
       promptContext,
       contextCompression: createContextCompressionRuntime(store, projectId, conversationId, created.sessionId, created.turnId),
@@ -1037,12 +1039,15 @@ const createContextCompressionRuntime = (
   turnId: string,
 ): ContextCompressionRuntime => {
   const compressor = store.getWorkerModelSetting("context_compactor")
+  const fallback = contextCompressorFallback(store, compressor)
   return {
     enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
     compressorProviderId: compressor.providerId,
+    compressorAuthMode: compressor.authMode ?? "api_key",
     compressorModelId: compressor.modelId,
     compressorThinkingEnabled: compressor.thinkingEnabled,
     ...(compressor.thinkingEffort ? { compressorThinkingEffort: compressor.thinkingEffort } : {}),
+    ...(fallback ? { compressorFallbacks: [fallback] } : {}),
     getLatestSnapshot: () => store.getLatestContextCompactionSnapshot(conversationId),
     startSnapshot: (input) =>
       store.startContextCompactionSnapshot({
@@ -1056,6 +1061,32 @@ const createContextCompressionRuntime = (
     failSnapshot: (input) => {
       store.failContextCompactionSnapshot(input)
     },
+  }
+}
+
+const contextCompressorFallback = (
+  store: SocratesStore,
+  primary: ReturnType<SocratesStore["getWorkerModelSetting"]>,
+): NonNullable<ContextCompressionRuntime["compressorFallbacks"]>[number] | undefined => {
+  const available = store.listAvailableModels()
+  const fallback = available.defaultModel
+    ? available.models.find(
+        (model) =>
+          model.providerId === available.defaultModel?.providerId &&
+          model.authMode === available.defaultModel?.authMode &&
+          model.modelId === available.defaultModel?.modelId,
+      )
+    : undefined
+  if (!fallback || (fallback.providerId === primary.providerId && fallback.authMode === (primary.authMode ?? "api_key") && fallback.modelId === primary.modelId)) {
+    return undefined
+  }
+  const thinking = fallback.thinkingOptions.find((option) => option.id === fallback.defaultThinkingOptionId) ?? fallback.thinkingOptions[0]
+  return {
+    providerId: fallback.providerId,
+    authMode: fallback.authMode,
+    modelId: fallback.modelId,
+    thinkingEnabled: thinking?.enabled ?? false,
+    ...(thinking?.effort ? { thinkingEffort: thinking.effort } : {}),
   }
 }
 

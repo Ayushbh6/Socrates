@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowUp, Brain, ChevronDown, EyeOff, ImagePlus, Square, Sparkles, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MessageAttachment, ModelOption, ModelThinkingOption } from "@socrates/contracts";
 import { socratesApiBaseUrl } from "@/lib/api";
 
@@ -40,11 +40,47 @@ export function ChatComposer({
   const [isThinkingMenuOpen, setIsThinkingMenuOpen] = useState(false);
   const [dismissedVisionWarningKey, setDismissedVisionWarningKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
+  const thinkingMenuRef = useRef<HTMLDivElement | null>(null);
   const canSend = (content.trim().length > 0 || attachments.length > 0) && !isSending && !isUploading && isConnected && Boolean(selectedModel);
   const selectedModelHasNoVision = selectedModel?.capabilities?.vision === false;
-  const selectedModelKey = selectedModel ? `${selectedModel.providerId}:${selectedModel.modelId}` : "none";
+  const selectedModelKey = selectedModel ? modelKey(selectedModel) : "none";
+  const selectedModelLabel = selectedModel ? `${selectedModel.label} · ${selectedModel.providerLabel}` : models.length === 0 ? "Connect provider" : "Model";
   const visionWarningKey = `${warningResetKey ?? "default"}:${selectedModelKey}`;
   const shouldShowVisionWarning = selectedModelHasNoVision && dismissedVisionWarningKey !== visionWarningKey;
+  const modelGroups = groupModels(models);
+
+  useEffect(() => {
+    if (!isModelMenuOpen && !isThinkingMenuOpen) {
+      return;
+    }
+
+    const closeMenus = () => {
+      setIsModelMenuOpen(false);
+      setIsThinkingMenuOpen(false);
+    };
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (modelMenuRef.current?.contains(target) || thinkingMenuRef.current?.contains(target))) {
+        return;
+      }
+      closeMenus();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeMenus();
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isModelMenuOpen, isThinkingMenuOpen]);
 
   const uploadFiles = async (fileList: File[] | FileList) => {
     const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
@@ -174,47 +210,55 @@ export function ChatComposer({
           >
             <ImagePlus className="size-4" />
           </button>
-          <div className="relative">
+          <div ref={modelMenuRef} className="relative">
             <button
               type="button"
-              className="inline-flex h-9 max-w-52 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              className="inline-flex h-9 max-w-72 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              title={selectedModelLabel}
               onClick={() => {
                 setIsModelMenuOpen((current) => !current);
                 setIsThinkingMenuOpen(false);
               }}
             >
               <Sparkles className="size-4 text-brand-teal-dark" />
-              <span className="truncate">{selectedModel?.label ?? "Model"}</span>
+              <span className="truncate">{selectedModelLabel}</span>
               <ChevronDown className="size-4 text-brand-text-light" />
             </button>
             {isModelMenuOpen && (
               <div className="absolute bottom-12 left-0 z-20 max-h-80 w-72 overflow-y-auto rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
-                {models.map((model) => (
-                  <button
-                    key={`${model.providerId}:${model.modelId}`}
-                    type="button"
-                    className={`flex w-full flex-col rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-                      selectedModel?.modelId === model.modelId && selectedModel.providerId === model.providerId
-                        ? "bg-gray-100 text-brand-text-dark"
-                        : "text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark"
-                    }`}
-                    onClick={() => {
-                      onModelChange(model);
-                      setIsModelMenuOpen(false);
-                    }}
-                  >
-                    <span className="font-medium">{model.label}</span>
-                    <span className="text-xs">
-                      {model.providerLabel}
-                      {model.capabilities?.vision === false ? " · no vision" : ""}
-                    </span>
-                  </button>
+                {models.length === 0 && (
+                  <div className="px-3 py-2 text-sm text-brand-text-light">Connect a provider in Settings.</div>
+                )}
+                {modelGroups.map((group) => (
+                  <div key={group.label} className="py-1">
+                    <div className="px-3 pb-1 pt-1 text-[11px] font-semibold uppercase text-brand-text-light">
+                      {group.label}
+                    </div>
+                    {group.models.map((model) => (
+                      <button
+                        key={modelKey(model)}
+                        type="button"
+                        className={`flex w-full flex-col rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                          selectedModel && modelKey(selectedModel) === modelKey(model)
+                            ? "bg-gray-100 text-brand-text-dark"
+                            : "text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark"
+                        }`}
+                        onClick={() => {
+                          onModelChange(model);
+                          setIsModelMenuOpen(false);
+                        }}
+                      >
+                        <span className="font-medium">{model.label}</span>
+                        <span className="text-xs">{model.providerLabel} · {model.capabilities?.vision === false ? "No vision" : "Vision"}</span>
+                      </button>
+                    ))}
+                  </div>
                 ))}
               </div>
             )}
           </div>
 
-          <div className="relative">
+          <div ref={thinkingMenuRef} className="relative">
             <button
               type="button"
               className="inline-flex h-9 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
@@ -264,3 +308,19 @@ export function ChatComposer({
     </form>
   );
 }
+
+const modelKey = (model: Pick<ModelOption, "providerId" | "authMode" | "modelId">): string =>
+  `${model.providerId}:${model.authMode ?? "api_key"}:${model.modelId}`;
+
+const groupModels = (models: ModelOption[]): Array<{ label: string; models: ModelOption[] }> => {
+  const groups: Array<{ label: string; models: ModelOption[] }> = [];
+  for (const model of models) {
+    const existing = groups.find((group) => group.label === model.providerLabel);
+    if (existing) {
+      existing.models.push(model);
+    } else {
+      groups.push({ label: model.providerLabel, models: [model] });
+    }
+  }
+  return groups;
+};

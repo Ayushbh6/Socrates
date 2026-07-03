@@ -1,6 +1,5 @@
 "use client";
 
-import { motion } from "framer-motion";
 import { useRouter } from "next/navigation";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { Button } from "@/components/ui/Button";
@@ -24,12 +23,7 @@ export default function WelcomePage() {
 
   return (
     <main className="min-h-screen bg-background bg-dot-pattern flex flex-col items-center justify-center p-6 text-center font-sans">
-      <motion.div 
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: "easeOut" }}
-        className="max-w-2xl w-full flex flex-col items-center"
-      >
+      <div className="max-w-2xl w-full flex flex-col items-center">
         {/* Eyebrow */}
         <p className="text-[10px] sm:text-xs font-semibold tracking-[0.25em] text-[#2db3ac] uppercase mb-8">
           Your Thinking Workspace
@@ -61,7 +55,7 @@ export default function WelcomePage() {
           {isLoading ? "Checking Workspace" : "Open Workspace"}
           <ArrowRight className="ml-2 size-4 group-hover:translate-x-1 transition-transform duration-200" />
         </Button>
-      </motion.div>
+      </div>
     </main>
   );
 }

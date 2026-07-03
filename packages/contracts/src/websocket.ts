@@ -2,7 +2,7 @@ import { z } from "zod"
 import { apiErrorSchema } from "./api"
 import { conversationSchema, idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
 import { memoryAgentSignalSnapshotSchema } from "./http"
-import { providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
+import { providerAuthModeSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
 import { memoryNoteImportanceSchema, skillScopeSchema, terminalStatusSchema, toolNameSchema } from "./tools"
 
 export const schemaVersionSchema = z.literal(1)
@@ -52,6 +52,7 @@ export const socketEnvelopeSchema = <TType extends string, TPayload extends z.Zo
 export const runtimeConfigSchema = z
   .object({
     providerId: providerIdSchema,
+    authMode: providerAuthModeSchema.optional(),
     modelId: z.string().min(1),
     thinkingEnabled: z.boolean(),
     thinkingEffort: thinkingEffortSchema.optional(),

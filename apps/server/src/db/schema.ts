@@ -163,6 +163,7 @@ export const turnRuntimeConfigs = sqliteTable(
     id: text("id").primaryKey(),
     turnId: text("turn_id").notNull(),
     providerId: text("provider_id").notNull(),
+    authMode: text("auth_mode").notNull().default("api_key"),
     modelId: text("model_id").notNull(),
     thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
     thinkingEffort: text("thinking_effort"),
@@ -766,6 +767,7 @@ export const projectMemoryAgentSettings = sqliteTable(
 export const memoryAgentGlobalSettings = sqliteTable("memory_agent_global_settings", {
   id: text("id").primaryKey(),
   providerId: text("provider_id").notNull(),
+  authMode: text("auth_mode").notNull().default("api_key"),
   modelId: text("model_id").notNull(),
   thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
   thinkingEffort: text("thinking_effort"),
@@ -781,6 +783,7 @@ export const workerModelSettings = sqliteTable(
     id: text("id").primaryKey(),
     workerId: text("worker_id").notNull(),
     providerId: text("provider_id").notNull(),
+    authMode: text("auth_mode").notNull().default("api_key"),
     modelId: text("model_id").notNull(),
     thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
     thinkingEffort: text("thinking_effort"),

@@ -14,4 +14,15 @@ export const envProviderApiKey = (providerId: ProviderId, env: NodeJS.ProcessEnv
 
 export const envProviderCredentialResolver: ProviderCredentialResolver = {
   getApiKey: (providerId) => envProviderApiKey(providerId),
+  resolveAuth: (providerId, authMode = "api_key") => {
+    if (authMode !== "api_key") {
+      return undefined
+    }
+    const apiKey = envProviderApiKey(providerId)
+    return apiKey ? { authMode: "api_key", apiKey } : undefined
+  },
+  availableAuthModes: () =>
+    (["openrouter", "openai", "google"] as const)
+      .filter((providerId) => Boolean(envProviderApiKey(providerId)))
+      .map((providerId) => ({ providerId, authMode: "api_key" as const })),
 }

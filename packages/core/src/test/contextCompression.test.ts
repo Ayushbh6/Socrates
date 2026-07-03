@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest"
 import {
   DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
   buildCompressorUserMessageContent,
+  type CompleteCompactionSnapshotInput,
   precomputeContextSnapshot,
   prepareContextForModelCall,
   type ContextCompactionSummary,
+  type StartCompactionSnapshotInput,
 } from "../index"
 import type { ChatCompaction, MemoryCompaction } from "@socrates/contracts"
 import type { ModelProvider, ModelRequest, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
@@ -258,6 +260,10 @@ describe("context compression", () => {
       compression: {
         enabled: true,
         thresholds: { triggerTokens: 10, recentTailTargetTokens: 1 },
+        compressorFallbacks: [
+          { providerId: "openrouter", authMode: "api_key", modelId: "xiaomi/mimo-v2.5-pro" },
+          { providerId: "openrouter", authMode: "api_key", modelId: "z-ai/glm-5.2" },
+        ],
         completeSnapshot: (input) => {
           completed.push(input.snapshotId)
         },
@@ -303,6 +309,169 @@ describe("context compression", () => {
     expect(JSON.stringify(countedMessages[1])).toContain("socrates_internal_context_compaction")
     expect(prepared.estimatedTokens).toBe(4)
     expect(prepared.tokenCount.inputTokens).toBe(4)
+  })
+
+  it("preserves the full chat compaction surface, anchors, source handles, tail, and active tool state", async () => {
+    const fullSummary = validChat({
+      goal: "Continue the full compressor regression test.",
+      constraints: ["Preserve active context as raw model-visible messages."],
+      done: ["Created the compressor regression fixture."],
+      inProgress: ["Running the focused context compressor verification."],
+      blocked: ["No blocker in the compressed head."],
+      decisions: ["Use a single test to cover fields, anchors, handles, and active tool state."],
+      nextSteps: ["Run the focused Vitest file."],
+      criticalContext: ["The active turn contains tool results that must not be lost."],
+      relevantFiles: ["packages/core/src/context/contextCompression.ts: compaction selection and packing."],
+      toolState: ["Older active-turn tool result digest captured."],
+      anchors: [
+        "Turn 1: inspect the durable user objective.",
+        "Turn 2: inspect the exact failed command and relevant file path.",
+      ],
+    })
+    const provider = structuredProvider({ counts: [170_000, 65_000], outputs: [fullSummary] })
+    const started: StartCompactionSnapshotInput[] = []
+    const completed: CompleteCompactionSnapshotInput[] = []
+    const messages = [
+      {
+        role: "user" as const,
+        content: "HEAD_OBJECTIVE_SENTINEL: user wants the compressor to preserve anchors and all fields.",
+        id: "msg_head_1u",
+        turnId: "turn_head_1",
+      },
+      {
+        role: "assistant" as const,
+        content: "HEAD_REPLY_SENTINEL: acknowledged the compressor objective.",
+        id: "msg_head_1a",
+        turnId: "turn_head_1",
+      },
+      {
+        role: "user" as const,
+        content: "HEAD_FAILURE_SENTINEL: pnpm --filter @socrates/core test failed in packages/core/src/test/contextCompression.test.ts. " + "x".repeat(5000),
+        id: "msg_head_2u",
+        turnId: "turn_head_2",
+      },
+      {
+        role: "assistant" as const,
+        content: "HEAD_FILE_SENTINEL: inspected packages/core/src/context/contextCompression.ts before patching.",
+        id: "msg_head_2a",
+        turnId: "turn_head_2",
+      },
+      {
+        role: "user" as const,
+        content: "TAIL_RAW_SENTINEL: this recent completed turn must stay raw.",
+        id: "msg_tail_3u",
+        turnId: "turn_tail_3",
+      },
+      {
+        role: "assistant" as const,
+        content: "TAIL_ASSISTANT_SENTINEL: recent assistant answer stays raw too.",
+        id: "msg_tail_3a",
+        turnId: "turn_tail_3",
+      },
+      {
+        role: "user" as const,
+        content: "ACTIVE_CONTEXT_SENTINEL: current request should remain raw outside the compressor summary.",
+        id: "msg_active_4u",
+        turnId: "turn_active_4",
+      },
+      {
+        role: "assistant" as const,
+        id: "msg_active_4a",
+        turnId: "turn_active_4",
+        content: Array.from({ length: 7 }, (_, index) => {
+          const number = index + 1
+          return [
+            {
+              type: "tool-call" as const,
+              toolCallId: `active_tool_${number}`,
+              toolName: "read",
+              input: { path: `workspace/old${number}.md` },
+            },
+            {
+              type: "tool-result" as const,
+              toolCallId: `active_tool_${number}`,
+              toolName: "read",
+              output: {
+                path: `workspace/old${number}.md`,
+                content: `${"x".repeat(700)} ACTIVE_TOOL_OMIT_SENTINEL_${number} ACTIVE_TOOL_RAW_SENTINEL_${number}`,
+              },
+            },
+          ]
+        }).flat(),
+      },
+    ]
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages,
+      compression: {
+        enabled: true,
+        thresholds: {
+          triggerTokens: 170_000,
+          recentTailTargetTokens: 500,
+          currentTurnToolTailTargetTokens: 1,
+          currentTurnToolResultFloor: 5,
+        },
+        startSnapshot: (input) => {
+          started.push(input)
+        },
+        completeSnapshot: (input) => {
+          completed.push(input)
+        },
+      },
+    })
+
+    const compressorInput = String(provider.structuredRequests[0]?.messages[0]?.content)
+    expect(compressorInput).toContain("# Old Head Turns To Compress")
+    expect(compressorInput).toContain("HEAD_OBJECTIVE_SENTINEL")
+    expect(compressorInput).toContain("HEAD_FAILURE_SENTINEL")
+    expect(compressorInput).not.toContain("TAIL_RAW_SENTINEL")
+    expect(compressorInput).not.toContain("ACTIVE_CONTEXT_SENTINEL")
+    expect(compressorInput).toContain("# Current Turn Tool Digest")
+    expect(compressorInput).toContain("older tool result read")
+    expect(compressorInput).toContain("workspace/old1.md")
+    expect(compressorInput).toContain("ACTIVE_TOOL_OMIT_SENTINEL_1")
+
+    expect(started[0]?.sourceMessageIds).toEqual(["msg_head_1u", "msg_head_1a", "msg_head_2u", "msg_head_2a"])
+    expect(started[0]?.sourceTurnIds).toEqual(["turn_head_1", "turn_head_2"])
+    expect(completed[0]?.summary).toEqual(fullSummary)
+    expect(Object.keys(completed[0]?.summary ?? {}).sort()).toEqual([
+      "anchors",
+      "blocked",
+      "constraints",
+      "criticalContext",
+      "decisions",
+      "done",
+      "goal",
+      "inProgress",
+      "nextSteps",
+      "relevantFiles",
+      "schemaVersion",
+      "toolState",
+    ].sort())
+    for (const header of ["# Goal", "# Constraints", "# Done", "# In Progress", "# Blocked", "# Decisions", "# Next Steps", "# Critical Context", "# Relevant Files", "# Tool State", "# Anchors"]) {
+      expect(completed[0]?.renderedSummary).toContain(header)
+    }
+    expect(completed[0]?.sourceHandles).toEqual([
+      { turnNo: 1, turnId: "turn_head_1", retrieve: "trace_retrieve({ turnNo: 1 })" },
+      { turnNo: 2, turnId: "turn_head_2", retrieve: "trace_retrieve({ turnNo: 2 })" },
+      { anchor: "Turn 1: inspect the durable user objective." },
+      { anchor: "Turn 2: inspect the exact failed command and relevant file path." },
+    ])
+
+    const packed = JSON.stringify(prepared.messages)
+    expect(packed).toContain("socrates_internal_context_compaction")
+    expect(packed).toContain("TAIL_RAW_SENTINEL")
+    expect(packed).toContain("ACTIVE_CONTEXT_SENTINEL")
+    expect(packed).toContain("contextCompacted")
+    expect(packed).toContain("ACTIVE_TOOL_RAW_SENTINEL_7")
+    expect(packed).toContain("ACTIVE_TOOL_RAW_SENTINEL_3")
+    expect(packed).not.toContain("ACTIVE_TOOL_OMIT_SENTINEL_1")
+    expect(prepared.compactionEvents.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
   })
 
   it("keeps the latest five tool results and compacts older current-turn tool results", async () => {

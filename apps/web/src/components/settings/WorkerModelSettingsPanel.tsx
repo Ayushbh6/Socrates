@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Route, Type } from "lucide-react";
-import type { ModelOption, ModelThinkingOption, WorkerModelRole, WorkerModelSettings } from "@socrates/contracts";
+import type { ModelOption, ModelSettingsResolution, ModelThinkingOption, WorkerModelRole, WorkerModelSettings } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
 
@@ -41,6 +41,7 @@ const workers: Array<{
 export function WorkerModelSettingsPanel() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [settings, setSettings] = useState<WorkerModelSettings[]>([]);
+  const [resolutions, setResolutions] = useState<ModelSettingsResolution[]>([]);
   const [savingWorkerId, setSavingWorkerId] = useState<WorkerModelRole | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
@@ -50,11 +51,17 @@ export function WorkerModelSettingsPanel() {
     () => new Map(settings.map((item) => [item.workerId, item] as const)),
     [settings],
   );
+  const resolutionByWorker = useMemo(
+    () => new Map(settings.map((item, index) => [item.workerId, resolutions[index]] as const).filter((entry): entry is readonly [WorkerModelRole, ModelSettingsResolution] => Boolean(entry[1]))),
+    [resolutions, settings],
+  );
+  const modelGroups = useMemo(() => groupModels(models), [models]);
 
   const load = async () => {
     const [modelList, workerSettings] = await Promise.all([api.listModels(), api.listWorkerModelSettings()]);
     setModels(modelList.models);
     setSettings(workerSettings.settings);
+    setResolutions(workerSettings.resolutions ?? []);
   };
 
   useEffect(() => {
@@ -65,6 +72,7 @@ export function WorkerModelSettingsPanel() {
         if (mounted) {
           setModels(modelList.models);
           setSettings(workerSettings.settings);
+          setResolutions(workerSettings.resolutions ?? []);
           setError(null);
         }
       } catch (err) {
@@ -89,11 +97,13 @@ export function WorkerModelSettingsPanel() {
     try {
       const response = await api.updateWorkerModelSettings(workerId, {
         providerId: model.providerId,
+        authMode: model.authMode,
         modelId: model.modelId,
         thinkingEnabled: thinkingOption.enabled,
         ...(thinkingOption.effort ? { thinkingEffort: thinkingOption.effort } : {}),
       });
       setSettings((current) => current.map((item) => (item.workerId === workerId ? response.settings : item)));
+      await load();
       setMessage(`${labelForWorker(workerId)} model saved.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save worker model setting.");
@@ -136,8 +146,10 @@ export function WorkerModelSettingsPanel() {
       <div className="grid gap-3">
         {workers.map((worker) => {
           const setting = settingsByWorker.get(worker.id);
-          const selectedModel = setting ? findModel(models, setting) : undefined;
-          const selectedThinking = selectedModel && setting ? findThinkingOption(selectedModel, setting) : undefined;
+          const resolution = resolutionByWorker.get(worker.id);
+          const effective = resolution?.effective;
+          const selectedModel = effective ? findModel(models, effective) : setting ? findModel(models, setting) : undefined;
+          const selectedThinking = selectedModel && effective ? findThinkingOption(selectedModel, effective) : selectedModel && setting ? findThinkingOption(selectedModel, setting) : undefined;
           const Icon = worker.icon;
           const disabled = models.length === 0 || !setting || savingWorkerId !== null;
 
@@ -156,7 +168,7 @@ export function WorkerModelSettingsPanel() {
                   </div>
                   <p className="mt-1 text-xs text-brand-text-light">{worker.description}</p>
                   <p className="mt-2 text-xs text-brand-text-light">
-                    {selectedModel ? `${selectedModel.label} (${selectedModel.providerLabel})` : "No model selected."}
+                    {selectedModel ? `${selectedModel.label} (${selectedModel.providerLabel})` : "No available model."}
                   </p>
                 </div>
 
@@ -176,10 +188,14 @@ export function WorkerModelSettingsPanel() {
                       className="mt-2 h-10 w-full rounded-lg border border-gray-200 bg-white px-3 text-sm text-brand-text-dark outline-none transition focus:border-brand-teal-dark focus:ring-2 focus:ring-brand-teal-dark/10 disabled:bg-gray-50 disabled:text-brand-text-light"
                     >
                       {!selectedModel && <option value="">Choose model</option>}
-                      {models.map((model) => (
-                        <option key={modelKey(model)} value={modelKey(model)}>
-                          {model.label} ({model.providerLabel})
-                        </option>
+                      {modelGroups.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.models.map((model) => (
+                            <option key={modelKey(model)} value={modelKey(model)}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                   </label>
@@ -220,10 +236,10 @@ export function WorkerModelSettingsPanel() {
   );
 }
 
-const modelKey = (model: Pick<ModelOption, "providerId" | "modelId">): string => `${model.providerId}:${model.modelId}`;
+const modelKey = (model: Pick<ModelOption, "providerId" | "authMode" | "modelId">): string => `${model.providerId}:${model.authMode ?? "api_key"}:${model.modelId}`;
 
-const findModel = (models: ModelOption[], setting: Pick<WorkerModelSettings, "providerId" | "modelId">): ModelOption | undefined =>
-  models.find((model) => model.providerId === setting.providerId && model.modelId === setting.modelId);
+const findModel = (models: ModelOption[], setting: Pick<WorkerModelSettings, "providerId" | "authMode" | "modelId">): ModelOption | undefined =>
+  models.find((model) => model.providerId === setting.providerId && model.authMode === (setting.authMode ?? "api_key") && model.modelId === setting.modelId);
 
 const defaultThinkingOption = (model: ModelOption): ModelThinkingOption | undefined =>
   model.thinkingOptions.find((option) => option.id === model.defaultThinkingOptionId) ?? model.thinkingOptions[0];
@@ -234,3 +250,16 @@ const findThinkingOption = (model: ModelOption, setting: Pick<WorkerModelSetting
   defaultThinkingOption(model);
 
 const labelForWorker = (workerId: WorkerModelRole): string => workers.find((worker) => worker.id === workerId)?.title ?? "Worker";
+
+const groupModels = (models: ModelOption[]): Array<{ label: string; models: ModelOption[] }> => {
+  const groups: Array<{ label: string; models: ModelOption[] }> = [];
+  for (const model of models) {
+    const existing = groups.find((group) => group.label === model.providerLabel);
+    if (existing) {
+      existing.models.push(model);
+    } else {
+      groups.push({ label: model.providerLabel, models: [model] });
+    }
+  }
+  return groups;
+};

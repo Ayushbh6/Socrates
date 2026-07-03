@@ -41,6 +41,7 @@ import {
   reindexProjectEmbeddingsResponseSchema,
   rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionResponseSchema,
+  startOpenAiChatGptOAuthResponseSchema,
   updateMemoryAgentGlobalSettingsResponseSchema,
   updateMcpServerResponseSchema,
   updateWorkerModelSettingsResponseSchema,
@@ -106,6 +107,7 @@ import {
   type ReindexProjectEmbeddingsResponse,
   type SetProviderCredentialSessionRequest,
   type SetProviderCredentialSessionResponse,
+  type StartOpenAiChatGptOAuthResponse,
   type UpdateMemoryAgentGlobalSettingsRequest,
   type UpdateMemoryAgentGlobalSettingsResponse,
   type UpdateMcpServerRequest,
@@ -303,6 +305,20 @@ export const api = {
       {
         method: "DELETE",
       },
+    ) as Promise<DeleteProviderCredentialResponse>,
+
+  startOpenAiChatGptOAuth: () =>
+    request<typeof startOpenAiChatGptOAuthResponseSchema>(
+      "/api/provider-credentials/openai/chatgpt/oauth/start",
+      startOpenAiChatGptOAuthResponseSchema,
+      { method: "POST" },
+    ) as Promise<StartOpenAiChatGptOAuthResponse>,
+
+  deleteOpenAiChatGptOAuth: () =>
+    request<typeof deleteProviderCredentialResponseSchema>(
+      "/api/provider-credentials/openai/chatgpt",
+      deleteProviderCredentialResponseSchema,
+      { method: "DELETE" },
     ) as Promise<DeleteProviderCredentialResponse>,
 
   getMemoryAgent: () =>

@@ -1,6 +1,7 @@
 import type {
   MemoryAgentGlobalSettings,
   MemoryAgentGlobalState,
+  ProviderAuthMode,
   ProviderId,
   ThinkingEffort,
   UpdateMemoryAgentGlobalSettingsRequest,
@@ -10,6 +11,7 @@ import { eq } from "drizzle-orm"
 import { memoryAgentGlobalSettings, memoryAgentGlobalState } from "../../db/schema"
 import {
   DEFAULT_MEMORY_AGENT_MODEL_ID,
+  DEFAULT_MEMORY_AGENT_AUTH_MODE,
   DEFAULT_MEMORY_AGENT_PROVIDER_ID,
   DEFAULT_MEMORY_AGENT_THINKING_EFFORT,
   DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
@@ -39,6 +41,7 @@ export class MemoryAgentGlobalSettingsStore extends StoreBase {
       .values({
         id: createId("memcfg"),
         providerId: DEFAULT_MEMORY_AGENT_PROVIDER_ID,
+        authMode: DEFAULT_MEMORY_AGENT_AUTH_MODE,
         modelId: DEFAULT_MEMORY_AGENT_MODEL_ID,
         thinkingEnabled: DEFAULT_MEMORY_AGENT_THINKING_ENABLED,
         thinkingEffort: DEFAULT_MEMORY_AGENT_THINKING_EFFORT ?? null,
@@ -68,6 +71,7 @@ export class MemoryAgentGlobalSettingsStore extends StoreBase {
       .update(memoryAgentGlobalSettings)
       .set({
         providerId: input.providerId ?? current.providerId,
+        authMode: input.authMode ?? current.authMode,
         modelId,
         thinkingEnabled,
         thinkingEffort: thinkingEffort ?? null,
@@ -149,6 +153,7 @@ const normalizeThinkingEffort = (thinkingEnabled: boolean, thinkingEffort: Think
 const mapSettings = (row: typeof memoryAgentGlobalSettings.$inferSelect): MemoryAgentGlobalSettings => ({
   id: row.id,
   providerId: row.providerId as ProviderId,
+  authMode: (row.authMode ?? "api_key") as ProviderAuthMode,
   modelId: row.modelId,
   thinkingEnabled: row.thinkingEnabled,
   ...(row.thinkingEffort ? { thinkingEffort: row.thinkingEffort as ThinkingEffort } : {}),

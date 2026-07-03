@@ -7,6 +7,7 @@ import {
   jsonSchema,
   Output,
   smoothStream,
+  streamObject,
   streamText,
   tool,
   type LanguageModel,
@@ -14,7 +15,7 @@ import {
   type JSONSchema7,
   type ModelMessage as AiModelMessage,
 } from "ai"
-import type { ModelToolDefinition, NormalizedToolCall, ProviderMetadata } from "@socrates/contracts"
+import type { ModelToolDefinition, NormalizedToolCall, ProviderAuthMode, ProviderMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import {
   countModelRequestLocally,
@@ -29,6 +30,7 @@ import type {
   ModelRequest,
   ModelUsage,
   ProviderCredentialResolver,
+  ProviderResolvedCredential,
   StructuredModelRequest,
   StructuredModelResult,
 } from "../types"
@@ -36,6 +38,7 @@ import { normalizeProviderUsage } from "../usage"
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 type ProviderOptions = Record<string, Record<string, JsonValue>>
+type StreamObjectOptions = Parameters<typeof streamObject>[0]
 
 export class AiSdkProvider implements ModelProvider {
   constructor(private readonly credentials: ProviderCredentialResolver = envProviderCredentialResolver) {}
@@ -190,7 +193,10 @@ export class AiSdkProvider implements ModelProvider {
           if (part.providerMetadata) {
             latestUsageProviderMetadata = mergeProviderMetadata(latestUsageProviderMetadata, part.providerMetadata)
           }
-          yield { type: "model.usage", usage: mapUsage(request.providerId, request.modelId, part.usage, part.providerMetadata) }
+          yield {
+            type: "model.usage",
+            usage: mapUsage(request.providerId, request.modelId, part.usage, part.providerMetadata, request.runtimeConfig.authMode),
+          }
         }
         if (part.type === "finish") {
           for (const event of flushReasoning()) {
@@ -202,7 +208,13 @@ export class AiSdkProvider implements ModelProvider {
           yield {
             type: "model.completed",
             finishReason: part.finishReason,
-            usage: mapUsage(request.providerId, request.modelId, part.totalUsage, providerPart.providerMetadata ?? latestUsageProviderMetadata),
+            usage: mapUsage(
+              request.providerId,
+              request.modelId,
+              part.totalUsage,
+              providerPart.providerMetadata ?? latestUsageProviderMetadata,
+              request.runtimeConfig.authMode,
+            ),
           }
         }
         if (part.type === "error") {
@@ -219,6 +231,37 @@ export class AiSdkProvider implements ModelProvider {
   async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>): Promise<StructuredModelResult<TOutput>> {
     const streamTimeout = createStreamTimeout(request)
     try {
+      if ((request.runtimeConfig.authMode ?? "api_key") === "chatgpt_subscription") {
+        const result = streamObject({
+          model: this.createModel(request),
+          system: request.system,
+          messages: toAiModelMessages(request.messages, request.providerId),
+          schema: request.schema,
+          providerOptions: this.createProviderOptions(request),
+          abortSignal: streamTimeout.signal,
+        } as StreamObjectOptions)
+        let usageValue: LanguageModelUsage | undefined
+        let providerMetadata: ProviderMetadata | undefined
+        let response: unknown
+        for await (const part of result.fullStream) {
+          if (part.type === "error") {
+            throw normalizeProviderError(part.error)
+          }
+          if (part.type === "finish") {
+            usageValue = part.usage
+            providerMetadata = part.providerMetadata
+            response = part.response
+          }
+        }
+        const [output, warnings] = await Promise.all([result.object, result.warnings])
+        const usage = mapUsage(request.providerId, request.modelId, usageValue, providerMetadata, request.runtimeConfig.authMode)
+        return {
+          output: output as TOutput,
+          ...(Object.keys(usage).length > 0 ? { usage } : {}),
+          raw: { response, warnings },
+        }
+      }
+
       const result = await generateText({
         model: this.createModel(request),
         system: request.system,
@@ -232,6 +275,7 @@ export class AiSdkProvider implements ModelProvider {
         request.modelId,
         generationUsage(result),
         generationProviderMetadata(result),
+        request.runtimeConfig.authMode,
       )
       return {
         output: result.output as TOutput,
@@ -248,27 +292,31 @@ export class AiSdkProvider implements ModelProvider {
   private createModel(request: ModelRequest): LanguageModel {
     switch (request.providerId) {
       case "openai": {
-        const apiKey = this.credentials.getApiKey("openai")
-        if (!apiKey) {
+        const credential = this.resolveProviderAuth(request)
+        if (!credential) {
           throw missingProviderCredential("openai")
         }
-        return createOpenAI({ apiKey }).responses(request.modelId)
+        return createOpenAI(
+          credential.authMode === "chatgpt_subscription"
+            ? { apiKey: credential.apiKey, fetch: credential.fetch }
+            : { apiKey: credential.apiKey },
+        ).responses(request.modelId)
       }
       case "google": {
-        const apiKey = this.credentials.getApiKey("google")
-        if (!apiKey) {
+        const credential = this.resolveProviderAuth(request)
+        if (!credential || credential.authMode !== "api_key") {
           throw missingProviderCredential("google")
         }
-        return createGoogleGenerativeAI({ apiKey })(request.modelId)
+        return createGoogleGenerativeAI({ apiKey: credential.apiKey })(request.modelId)
       }
       case "openrouter": {
-        const apiKey = this.credentials.getApiKey("openrouter")
-        if (!apiKey) {
+        const credential = this.resolveProviderAuth(request)
+        if (!credential || credential.authMode !== "api_key") {
           throw missingProviderCredential("openrouter")
         }
         return (
           createOpenRouter({
-            apiKey,
+            apiKey: credential.apiKey,
             appName: "Socrates",
             appUrl: "http://localhost",
           })
@@ -286,6 +334,18 @@ export class AiSdkProvider implements ModelProvider {
       case "openrouter":
         return createOpenRouterProviderOptions(request)
     }
+  }
+
+  private resolveProviderAuth(request: ModelRequest): ProviderResolvedCredential | undefined {
+    const authMode = request.runtimeConfig.authMode ?? "api_key"
+    if (this.credentials.resolveAuth) {
+      return this.credentials.resolveAuth(request.providerId, authMode)
+    }
+    if (authMode !== "api_key") {
+      return undefined
+    }
+    const apiKey = this.credentials.getApiKey(request.providerId)
+    return apiKey ? { authMode: "api_key", apiKey } : undefined
   }
 }
 
@@ -840,6 +900,7 @@ export const mapUsage = (
   modelId: string,
   usage: LanguageModelUsage | undefined,
   providerMetadata?: ProviderMetadata,
+  authMode?: ProviderAuthMode,
 ): ModelUsage => {
   if (!usage) {
     return providerMetadata ? { providerMetadata } : {}
@@ -849,6 +910,7 @@ export const mapUsage = (
 
   return normalizeProviderUsage({
     providerId,
+    ...(authMode === undefined ? {} : { authMode }),
     modelId,
     usage: {
       ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
@@ -875,10 +937,12 @@ export const mapUsage = (
 const createOpenAiProviderOptions = (request: ModelRequest): ProviderOptions => {
   const effort = normalizeOpenAiReasoningEffort(request.modelId, request.runtimeConfig.thinkingEffort ?? "none")
   const stableCacheKey = providerSafePromptCacheKey(request)
+  const isChatGptSubscription = (request.runtimeConfig.authMode ?? "api_key") === "chatgpt_subscription"
   const openaiOptions: Record<string, JsonValue> = {
     reasoningEffort: effort,
     ...(stableCacheKey ? { promptCacheKey: stableCacheKey } : {}),
-    ...(supportsOpenAiExtendedPromptCacheRetention(request.modelId) ? { promptCacheRetention: "24h" } : {}),
+    ...(supportsOpenAiExtendedPromptCacheRetention(request.modelId) && !isChatGptSubscription ? { promptCacheRetention: "24h" } : {}),
+    ...(isChatGptSubscription ? { store: false } : {}),
   }
 
   if (effort !== "none") {
@@ -970,12 +1034,82 @@ const responseMetadataForStorage = (part: unknown): unknown => {
 }
 
 const normalizeProviderError = (error: unknown): Error => {
+  if (error instanceof SocratesError) {
+    if (error.message.trim()) {
+      return error
+    }
+    return new SocratesError(error.code, "Model provider failed without an error message.", {
+      details: error.details,
+      recoverable: error.recoverable,
+    })
+  }
+
   if (error instanceof Error) {
-    return error
+    return new SocratesError("model_provider_error", providerErrorMessage(error), {
+      details: providerErrorDetails(error),
+      recoverable: true,
+    })
   }
 
   return new SocratesError("model_provider_error", "Model provider failed", {
     details: { error },
     recoverable: true,
   })
+}
+
+const providerErrorMessage = (error: Error): string => {
+  const directMessage = error.message.trim()
+  if (directMessage) {
+    return directMessage
+  }
+
+  const bodyMessage = providerErrorBodyMessage(error)
+  if (bodyMessage) {
+    return `Model provider failed: ${bodyMessage}`
+  }
+
+  return "Model provider failed without an error message."
+}
+
+const providerErrorBodyMessage = (error: Error): string | undefined => {
+  const responseBody = (error as { responseBody?: unknown }).responseBody
+  if (typeof responseBody !== "string" || !responseBody.trim()) {
+    return undefined
+  }
+  try {
+    const parsed = JSON.parse(responseBody) as { detail?: unknown; error?: { message?: unknown } | string; message?: unknown }
+    const nestedError = parsed.error
+    const value =
+      typeof parsed.detail === "string"
+        ? parsed.detail
+        : typeof parsed.message === "string"
+          ? parsed.message
+          : typeof nestedError === "string"
+            ? nestedError
+            : nestedError && typeof nestedError === "object" && typeof nestedError.message === "string"
+              ? nestedError.message
+              : undefined
+    return value?.trim() || undefined
+  } catch {
+    return responseBody.trim()
+  }
+}
+
+const providerErrorDetails = (error: Error): Record<string, unknown> => {
+  const details: Record<string, unknown> = {
+    name: error.name,
+  }
+  const statusCode = (error as { statusCode?: unknown }).statusCode
+  const url = (error as { url?: unknown }).url
+  const responseBody = (error as { responseBody?: unknown }).responseBody
+  if (typeof statusCode === "number") {
+    details.statusCode = statusCode
+  }
+  if (typeof url === "string") {
+    details.url = url
+  }
+  if (typeof responseBody === "string" && responseBody.trim()) {
+    details.responseBody = responseBody
+  }
+  return details
 }

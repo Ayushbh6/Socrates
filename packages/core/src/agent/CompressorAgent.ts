@@ -8,7 +8,7 @@ import {
   type MemoryCompaction,
 } from "@socrates/contracts"
 import type { ModelProvider, ModelUsage, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
-import type { ProviderId, ThinkingEffort } from "@socrates/contracts"
+import type { ProviderAuthMode, ProviderId, ThinkingEffort } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
 import { SOCRATES_ANCHOR_REPAIR_SYSTEM_PROMPT } from "../prompts/socratesCompressorPrompt"
 
@@ -16,6 +16,7 @@ export type CompressorAgentMode = "chat" | "memory"
 
 export type CompressorAgentModel = {
   providerId: ProviderId
+  authMode?: ProviderAuthMode
   modelId: string
   thinkingEnabled?: boolean
   thinkingEffort?: ThinkingEffort
@@ -175,6 +176,7 @@ const schemasForMode = (mode: CompressorAgentMode) =>
 
 const compressorRuntimeConfig = (model: CompressorAgentModel) => ({
   providerId: model.providerId,
+  authMode: model.authMode ?? "api_key",
   modelId: model.modelId,
   thinkingEnabled: model.thinkingEnabled ?? false,
   ...(model.thinkingEffort ? { thinkingEffort: model.thinkingEffort } : model.thinkingEnabled ? {} : { thinkingEffort: "none" as const }),
@@ -233,7 +235,7 @@ const assignSum = (usage: ModelUsage, key: keyof Pick<ModelUsage, "inputTokens" 
 const uniqueByModel = <T extends CompressorAgentModel>(items: T[]): T[] => {
   const seen = new Set<string>()
   return items.filter((item) => {
-    const key = `${item.providerId}:${item.modelId}`
+    const key = `${item.providerId}:${item.authMode ?? "api_key"}:${item.modelId}`
     if (seen.has(key)) {
       return false
     }

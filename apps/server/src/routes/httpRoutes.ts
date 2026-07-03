@@ -35,6 +35,7 @@ import {
   providerIdSchema,
   rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionRequestSchema,
+  startOpenAiChatGptOAuthResponseSchema,
   updateMemoryAgentGlobalSettingsRequestSchema,
   updateWorkerModelSettingsRequestSchema,
   updateWorkerModelSettingsResponseSchema,
@@ -47,7 +48,7 @@ import {
   upsertProjectInstructionsRequestSchema,
   workerModelSettingsParamsSchema,
 } from "@socrates/contracts"
-import { listModels } from "@socrates/core"
+import { listAvailableModels } from "@socrates/providers"
 import type { McpRuntime } from "@socrates/mcp"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
@@ -133,6 +134,13 @@ const handleRouteError = (error: unknown) => {
     api.code === "embedding_check_failed" ||
     api.code === "memory_agent_model_required" ||
     api.code === "memory_agent_cadence_invalid" ||
+    api.code === "model_unavailable" ||
+    api.code === "worker_model_unavailable" ||
+    api.code === "openai_chatgpt_oauth_state_invalid" ||
+    api.code === "openai_chatgpt_oauth_port_in_use" ||
+    api.code === "openai_chatgpt_oauth_server_failed" ||
+    api.code === "openai_chatgpt_token_exchange_failed" ||
+    api.code === "openai_chatgpt_token_refresh_failed" ||
     api.code === "worker_model_required" ||
     api.code === "workspace_env_file_not_allowed"
       ? 400
@@ -162,7 +170,7 @@ export const registerHttpRoutes = async (
 
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
 
-  app.get("/api/models", async () => ok(listModels()))
+  app.get("/api/models", async () => ok(listAvailableModels(credentials.availableAuthModes())))
 
   app.get("/api/worker-model-settings", async (_request, reply) => {
     try {
@@ -307,6 +315,15 @@ export const registerHttpRoutes = async (
 
   app.get("/api/provider-credentials/status", async () => ok(credentials.listStatus()))
 
+  app.post("/api/provider-credentials/openai/chatgpt/oauth/start", async (request, reply) => {
+    try {
+      return ok(startOpenAiChatGptOAuthResponseSchema.parse(await credentials.startOpenAiChatGptOAuth()))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
   app.post("/api/provider-credentials/check", async (request, reply) => {
     try {
       const input = parseBody(checkProviderCredentialRequestSchema, request.body)
@@ -331,6 +348,15 @@ export const registerHttpRoutes = async (
     try {
       const { providerId } = parseParams(providerCredentialParamsSchema, request.params)
       return ok({ status: credentials.deleteSessionCredential(providerId) })
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.delete("/api/provider-credentials/openai/chatgpt", async (_request, reply) => {
+    try {
+      return ok({ status: credentials.deleteOpenAiChatGptOAuth() })
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

@@ -172,6 +172,7 @@ const readAttachmentDataUrl = (attachment: MessageAttachment): string | undefine
 
 type TitleModelSettings = {
   providerId: ProviderId
+  authMode?: RuntimeConfig["authMode"]
   modelId: string
   thinkingEnabled: boolean
   thinkingEffort?: RuntimeConfig["thinkingEffort"]
@@ -181,27 +182,24 @@ const titleModelCandidates = (settings: WorkerModelSettings | undefined): TitleM
   const primary: TitleModelSettings = settings
     ? {
         providerId: settings.providerId,
+        authMode: settings.authMode ?? "api_key",
         modelId: settings.modelId,
         thinkingEnabled: settings.thinkingEnabled,
         ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),
       }
     : {
         providerId: conversationTitleProviderId,
+        authMode: "api_key",
         modelId: conversationTitlePrimaryModelId,
         thinkingEnabled: false,
       }
-  const fallback: TitleModelSettings = {
-    providerId: conversationTitleProviderId,
-    modelId: conversationTitleFallbackModelId,
-    thinkingEnabled: false,
-  }
-  return uniqueTitleModels([primary, fallback])
+  return uniqueTitleModels([primary])
 }
 
 const uniqueTitleModels = (models: TitleModelSettings[]): TitleModelSettings[] => {
   const seen = new Set<string>()
   return models.filter((model) => {
-    const key = `${model.providerId}:${model.modelId}`
+    const key = `${model.providerId}:${model.authMode ?? "api_key"}:${model.modelId}`
     if (seen.has(key)) {
       return false
     }
@@ -212,6 +210,7 @@ const uniqueTitleModels = (models: TitleModelSettings[]): TitleModelSettings[] =
 
 const titleRuntimeConfig = (settings: TitleModelSettings): RuntimeConfig => ({
   providerId: settings.providerId,
+  authMode: settings.authMode ?? "api_key",
   modelId: settings.modelId,
   thinkingEnabled: settings.thinkingEnabled,
   ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),

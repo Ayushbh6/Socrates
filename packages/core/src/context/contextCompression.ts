@@ -1,6 +1,6 @@
 import { chatCompactionSchema, memoryCompactionSchema, type ChatCompaction, type MemoryCompaction } from "@socrates/contracts"
 import { estimateTextTokens, type ModelMessage, type ModelMessagePart, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
-import type { ModelToolDefinition, ProviderId, RuntimeConfig, ThinkingEffort } from "@socrates/contracts"
+import type { ModelToolDefinition, ProviderAuthMode, ProviderId, RuntimeConfig, ThinkingEffort } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
 import { CompressorAgent } from "../agent/CompressorAgent"
 import {
@@ -121,11 +121,20 @@ export type ContextCompressionRuntime = {
   mode?: ContextCompressionMode
   thresholds?: Partial<ContextCompressionThresholds>
   compressorProviderId?: ProviderId
+  compressorAuthMode?: ProviderAuthMode
   compressorModelId?: string
   compressorThinkingEnabled?: boolean
   compressorThinkingEffort?: ThinkingEffort
   compressorFallbackProviderId?: ProviderId
+  compressorFallbackAuthMode?: ProviderAuthMode
   compressorFallbackModelId?: string
+  compressorFallbacks?: Array<{
+    providerId: ProviderId
+    authMode?: ProviderAuthMode
+    modelId: string
+    thinkingEnabled?: boolean
+    thinkingEffort?: ThinkingEffort
+  }>
   getLatestSnapshot?: () => Promise<ContextCompactionSummary | undefined> | ContextCompactionSummary | undefined
   startSnapshot?: (input: StartCompactionSnapshotInput) => Promise<void> | void
   completeSnapshot?: (input: CompleteCompactionSnapshotInput) => Promise<void> | void
@@ -316,6 +325,18 @@ type CompactionSelection = {
   activeTurns: CompressorTurnInput[]
 }
 
+const legacyCompressorFallbacks = (
+  compression: ContextCompressionRuntime,
+  providerId: ProviderId,
+  authMode: ProviderAuthMode,
+  modelId: string,
+): NonNullable<ContextCompressionRuntime["compressorFallbacks"]> => {
+  if (!compression.compressorFallbackProviderId && !compression.compressorFallbackModelId) {
+    return []
+  }
+  return [{ providerId, authMode, modelId }]
+}
+
 const runContextCompaction = async (
   input: PrepareContextInput,
   thresholds: ContextCompressionThresholds,
@@ -326,10 +347,12 @@ const runContextCompaction = async (
   const compression = input.compression as ContextCompressionRuntime
   const snapshotId = createId("ctxcmp")
   const compressorProviderId = compression.compressorProviderId ?? DEFAULT_COMPRESSOR_MODEL.providerId
+  const compressorAuthMode = compression.compressorAuthMode ?? "api_key"
   const compressorModelId = compression.compressorModelId ?? DEFAULT_COMPRESSOR_MODEL.modelId
   const compressorThinkingEnabled = compression.compressorThinkingEnabled ?? false
   const compressorThinkingEffort = compression.compressorThinkingEffort
   const compressorFallbackProviderId = compression.compressorFallbackProviderId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.providerId
+  const compressorFallbackAuthMode = compression.compressorFallbackAuthMode ?? "api_key"
   const compressorFallbackModelId = compression.compressorFallbackModelId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.modelId
   const mode = compression.mode ?? "chat"
   const latestSnapshot = validLatestSnapshot(await compression.getLatestSnapshot?.(), mode)
@@ -372,14 +395,12 @@ const runContextCompaction = async (
       mode,
       primary: {
         providerId: compressorProviderId,
+        authMode: compressorAuthMode,
         modelId: compressorModelId,
         thinkingEnabled: compressorThinkingEnabled,
         ...(compressorThinkingEffort ? { thinkingEffort: compressorThinkingEffort } : {}),
       },
-      fallbacks: [
-        { providerId: compressorFallbackProviderId, modelId: compressorFallbackModelId },
-        DEFAULT_COMPRESSOR_SECOND_FALLBACK_MODEL,
-      ],
+      fallbacks: compression.compressorFallbacks ?? legacyCompressorFallbacks(compression, compressorFallbackProviderId, compressorFallbackAuthMode, compressorFallbackModelId),
       system: compressorSystemPrompt(mode),
       userContent: compressorUserContent(mode, selection, latestSnapshot, toolPlan),
     })
