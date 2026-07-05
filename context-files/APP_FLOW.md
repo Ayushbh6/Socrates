@@ -500,19 +500,22 @@ Offline flow:
    Ollama recommended
    Hugging Face / sentence-transformers advanced later
 2. Check local setup
-   backend checks Ollama server reachability and selected model availability
+   backend checks Ollama server reachability and selected model availability without downloading
 3. Choose local model
-   embeddinggemma recommended initially
-   alternatives: mxbai-embed-large, nomic-embed-text, all-minilm
+   installed embedding models from Ollama are shown first
+   hardware-aware suggestion marks one exact recommended model
+   alternatives: embeddinggemma:latest, qwen3-embedding:0.6b, nomic-embed-text-v2-moe:latest, nomic-embed-text:latest, mxbai-embed-large:latest
 4. Setup guidance
-   show exact commands such as ollama pull embeddinggemma when missing
+   if Ollama is not reachable, detect the local OS and show the official Ollama install link plus a Recheck Ollama action
+   show exact commands such as ollama pull embeddinggemma:latest when missing
+   do not expose in-app model pulls yet; users run commands manually, then click Recheck Ollama
 5. Start local indexing
    save project embedding config and enqueue jobs
 6. Progress
    same status surface as online
 ```
 
-Socrates must not silently install Ollama or download embedding models. The offline setup flow only detects local state and shows explicit commands for the user to run.
+Socrates must not silently install Ollama or download embedding models. The offline setup flow detects local state, recommends one exact model based on coarse local hardware, shows official install/model commands, and waits for the user to install or pull outside Socrates before rechecking.
 
 The project dashboard must not show the full chat composer in V1. The composer belongs on `/projects/:projectId/chats/:conversationId`. The dashboard shows a centered `Start new chat` button/action instead.
 

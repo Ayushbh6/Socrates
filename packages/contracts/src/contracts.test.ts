@@ -52,6 +52,7 @@ import {
   getProjectResponseSchema,
   inspectWorkspaceRequestSchema,
   inspectWorkspaceResponseSchema,
+  listOllamaEmbeddingModelsResponseSchema,
   listNotificationsResponseSchema,
   listMemoryAgentFilesResponseSchema,
   listMemoryAgentRunsResponseSchema,
@@ -88,6 +89,8 @@ import {
   patchProjectResponseSchema,
   pickWorkspaceFolderRequestSchema,
   pickWorkspaceFolderResponseSchema,
+  pullOllamaEmbeddingModelRequestSchema,
+  pullOllamaEmbeddingModelResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
   rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionRequestSchema,
@@ -635,6 +638,66 @@ describe("http contracts", () => {
         serverEnvAvailable: false,
         workspaceEnvCandidates: [{ fileName: ".env.local", hasOpenAiApiKey: true }],
         message: "Checked.",
+      }).success,
+    ).toBe(true)
+    expect(
+      listOllamaEmbeddingModelsResponseSchema.safeParse({
+        reachable: true,
+        baseUrl: "http://127.0.0.1:11434",
+        installedModels: [
+          {
+            modelId: "embeddinggemma:latest",
+            name: "embeddinggemma:latest",
+            installed: true,
+            status: "embedding",
+            embeddingCapable: true,
+            capabilities: ["embedding"],
+          },
+        ],
+        embeddingModels: [
+          {
+            modelId: "embeddinggemma:latest",
+            name: "embeddinggemma:latest",
+            installed: true,
+            status: "embedding",
+            embeddingCapable: true,
+          },
+        ],
+        recommendedModels: [
+          {
+            modelId: "embeddinggemma:latest",
+            name: "EmbeddingGemma",
+            installed: true,
+            status: "embedding",
+            embeddingCapable: true,
+            pullCommand: "ollama pull embeddinggemma:latest",
+            recommendedForThisSystem: true,
+          },
+        ],
+        suggestedModelId: "embeddinggemma:latest",
+        hardware: {
+          platform: "darwin",
+          arch: "arm64",
+          cpuCount: 8,
+          totalMemoryBytes: 16_000_000_000,
+          freeMemoryBytes: 4_000_000_000,
+          memoryTier: "balanced",
+          recommendationReason: "Laptop default.",
+        },
+        message: "Ollama is running.",
+      }).success,
+    ).toBe(true)
+    expect(
+      pullOllamaEmbeddingModelRequestSchema.safeParse({
+        modelId: "embeddinggemma:latest",
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+      }).success,
+    ).toBe(true)
+    expect(
+      pullOllamaEmbeddingModelResponseSchema.safeParse({
+        modelId: "embeddinggemma:latest",
+        ok: true,
+        message: "Pulled exactly embeddinggemma:latest.",
       }).success,
     ).toBe(true)
     expect(

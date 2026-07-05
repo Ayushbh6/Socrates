@@ -136,7 +136,7 @@ const hasToolResultPart = (messages: unknown[]): boolean =>
 const buildTestServer = async (
   dbPath = tempDbPath(),
   agent = createTestAgent(),
-  options: { socratesHome?: string; titleProvider?: ModelProvider | false; memoryProvider?: ModelProvider } = {},
+  options: { socratesHome?: string; titleProvider?: ModelProvider | false; memoryProvider?: ModelProvider; embeddingProvider?: EmbeddingProvider } = {},
 ): Promise<TestServer> => {
   const socratesHome = options.socratesHome ?? path.dirname(dbPath)
   if (dbPath !== ":memory:") {
@@ -5713,6 +5713,149 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("deletes inactive embedding rows when configuring a new index", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Embedding Switch")
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, createTestEmbeddingProvider())
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Switch this project from OpenAI.", "Index with Ollama.", nowIso())
+      store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
+
+      const docs = handle.sqlite.prepare("SELECT id, project_id, content_hash FROM trace_documents WHERE project_id = ?").all(project.id) as Array<{
+        id: string
+        project_id: string
+        content_hash: string
+      }>
+      const now = nowIso()
+      handle.sqlite
+        .prepare(
+          `INSERT INTO project_embedding_configs
+            (id, project_id, provider_id, model_id, dimensions, credential_source, status, active, created_at, updated_at)
+           VALUES (?, ?, 'openai', 'text-embedding-3-small', 1536, 'server_env', 'ready', 1, ?, ?)`,
+        )
+        .run(createId("embcfg"), project.id, now, now)
+      const insertOldEmbedding = handle.sqlite.prepare(
+        `INSERT INTO trace_embeddings
+          (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
+         VALUES (?, ?, ?, 'openai', 'text-embedding-3-small', 1536, ?, '[0,0,1]', 'completed', ?, ?, ?)`,
+      )
+      for (const doc of docs) {
+        insertOldEmbedding.run(createId("temb"), doc.project_id, doc.id, doc.content_hash, now, now, now)
+      }
+
+      expect(
+        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND provider_id = 'openai'").get(project.id) as { count: number })
+          .count,
+      ).toBe(docs.length)
+
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "embeddinggemma",
+        credentialSource: "none",
+      })
+
+      expect(
+        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND provider_id = 'openai'").get(project.id) as { count: number })
+          .count,
+      ).toBe(0)
+
+      const completed = await waitForProjectEmbeddingStatus(
+        store,
+        project.id,
+        (status) => status.providerId === "ollama" && status.totalDocuments > 0 && status.indexedDocuments === status.totalDocuments,
+      )
+      expect(completed.pendingDocuments).toBe(0)
+      expect(
+        (
+          handle.sqlite
+            .prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND provider_id = 'ollama' AND model_id = 'embeddinggemma'")
+            .get(project.id) as { count: number }
+        ).count,
+      ).toBe(docs.length)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("does not write embeddings from a deactivated in-flight index job", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id, "Embedding Switch Race")
+
+    let resolveOldStarted!: () => void
+    let releaseOldBatch!: () => void
+    const oldStarted = new Promise<void>((resolve) => {
+      resolveOldStarted = resolve
+    })
+    const oldBatchReleased = new Promise<void>((resolve) => {
+      releaseOldBatch = resolve
+    })
+    const provider: EmbeddingProvider = {
+      async check() {
+        return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
+      },
+      async embed(request) {
+        return { embeddings: [testEmbeddingVector(request.value)], dimensions: 3 }
+      },
+      async embedMany(request) {
+        if (request.modelId === "old-local") {
+          resolveOldStarted()
+          await oldBatchReleased
+        }
+        return { embeddings: request.values.map(testEmbeddingVector), dimensions: 3 }
+      },
+    }
+
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, provider)
+    try {
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Old batch should not land.", "New index wins.", nowIso())
+      store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
+      const docs = handle.sqlite.prepare("SELECT id FROM trace_documents WHERE project_id = ?").all(project.id) as Array<{ id: string }>
+
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "old-local",
+        credentialSource: "none",
+      })
+      await oldStarted
+
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "new-local",
+        credentialSource: "none",
+      })
+      releaseOldBatch()
+
+      const completed = await waitForProjectEmbeddingStatus(
+        store,
+        project.id,
+        (status) => status.modelId === "new-local" && status.totalDocuments > 0 && status.indexedDocuments === status.totalDocuments,
+      )
+      expect(completed.pendingDocuments).toBe(0)
+      expect(
+        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND model_id = 'old-local'").get(project.id) as { count: number })
+          .count,
+      ).toBe(0)
+      expect(
+        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND model_id = 'new-local'").get(project.id) as { count: number })
+          .count,
+      ).toBe(docs.length)
+    } finally {
+      releaseOldBatch()
+      await store.close()
+    }
+  })
+
   it("checks embedding setup through HTTP without exposing workspace env secrets", async () => {
     const app = await buildTestServer()
     await onboard(app)
@@ -5735,6 +5878,66 @@ describe("WebSocket API", () => {
       expect(body.data.workspaceEnvCandidates).toContainEqual({ fileName: ".env.local", hasOpenAiApiKey: true })
       expect(JSON.stringify(body.data)).not.toContain("sk-secret-test")
     }
+  })
+
+  it("lists Ollama embedding models and recommendations through HTTP without pulling models", async () => {
+    let pullCalled = false
+    const provider: EmbeddingProvider = {
+      async check() {
+        return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
+      },
+      async embed(request) {
+        return { embeddings: [testEmbeddingVector(request.value)], dimensions: 3 }
+      },
+      async embedMany(request) {
+        return { embeddings: request.values.map(testEmbeddingVector), dimensions: 3 }
+      },
+      async listModels() {
+        return {
+          models: [
+            {
+              modelId: "embeddinggemma:latest",
+              name: "embeddinggemma:latest",
+              status: "embedding",
+              embeddingCapable: true,
+              sizeBytes: 623000000,
+              capabilities: ["embedding"],
+            },
+            {
+              modelId: "glm-ocr:latest",
+              name: "glm-ocr:latest",
+              status: "not_embedding",
+              embeddingCapable: false,
+              capabilities: ["completion", "vision", "tools"],
+            },
+          ],
+        }
+      },
+      async pullModel() {
+        pullCalled = true
+        return { ok: true, message: "Pulled." }
+      },
+    }
+
+    const app = await buildTestServer(tempDbPath(), createTestAgent(), { embeddingProvider: provider })
+    const response = await app.inject({ method: "GET", url: "/api/embeddings/ollama/models" })
+    const body = parseResponse<{
+      reachable: boolean
+      embeddingModels: Array<{ modelId: string }>
+      installedModels: Array<{ modelId: string; embeddingCapable: boolean }>
+      recommendedModels: Array<{ modelId: string; installed: boolean; pullCommand?: string }>
+    }>(response.payload)
+
+    expect(body.ok).toBe(true)
+    if (body.ok) {
+      expect(body.data.reachable).toBe(true)
+      expect(body.data.embeddingModels).toContainEqual(expect.objectContaining({ modelId: "embeddinggemma:latest" }))
+      expect(body.data.installedModels).toContainEqual(expect.objectContaining({ modelId: "glm-ocr:latest", embeddingCapable: false }))
+      expect(body.data.recommendedModels).toContainEqual(
+        expect.objectContaining({ modelId: "embeddinggemma:latest", installed: true, pullCommand: "ollama pull embeddinggemma:latest" }),
+      )
+    }
+    expect(pullCalled).toBe(false)
   })
 
   it("clears stale embedding errors after a successful reindex", async () => {

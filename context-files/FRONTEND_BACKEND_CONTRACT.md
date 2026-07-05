@@ -656,7 +656,46 @@ Rules:
 
 - Online checks verify server `OPENAI_API_KEY` and user-triggered workspace `.env*` key presence. The backend returns only filenames and booleans, never key values.
 - Offline checks verify Ollama server reachability and selected model availability through the local Ollama HTTP API.
-- The backend must not install Ollama or pull local models silently. If setup is missing, return explicit commands such as `ollama pull embeddinggemma`.
+- The backend must not install Ollama or pull local models from discovery/check/setup flows. If setup is missing, return explicit install guidance and commands such as `ollama pull embeddinggemma`.
+
+### `GET /api/embeddings/ollama/models`
+
+Discovers the local Ollama runtime and recommended embedding models. This endpoint is read-only: it may call Ollama metadata endpoints such as `/api/tags` and `/api/show`, but it must not pull, install, or delete models.
+
+```ts
+type ListOllamaEmbeddingModelsResponse = {
+  reachable: boolean
+  baseUrl: string
+  installedModels: Array<{
+    modelId: string
+    name: string
+    installed: boolean
+    status: "embedding" | "not_embedding" | "unknown"
+    embeddingCapable: boolean
+    sizeBytes?: number
+    sizeLabel?: string
+    capabilities?: string[]
+    pullCommand?: string
+    recommendedForThisSystem?: boolean
+  }>
+  embeddingModels: OllamaEmbeddingModel[]
+  recommendedModels: OllamaEmbeddingModel[]
+  suggestedModelId?: string
+  hardware: {
+    platform: string
+    arch: string
+    cpuCount: number
+    totalMemoryBytes: number
+    freeMemoryBytes: number
+    memoryTier: "compact" | "balanced" | "large"
+    recommendationReason: string
+  }
+  message: string
+  warnings?: string[]
+}
+```
+
+The backend should prefer explicit Ollama `embedding` capability metadata when available. If capability metadata is missing, the selected model still must pass `embeddings/check` before it can be saved as ready. The frontend should not expose in-app model pulls yet; recommended cards display exact manual commands and instruct the user to recheck Ollama after installing or pulling models outside Socrates.
 
 ### `POST /api/projects/:projectId/embeddings/configure`
 

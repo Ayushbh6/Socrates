@@ -36,6 +36,12 @@ export {
 export type {
   EmbeddingCheckRequest,
   EmbeddingCheckResult,
+  EmbeddingModelInfo,
+  EmbeddingModelListRequest,
+  EmbeddingModelListResult,
+  EmbeddingModelPullRequest,
+  EmbeddingModelPullResult,
+  EmbeddingModelStatus,
   EmbeddingProvider,
   EmbeddingRequest,
   EmbeddingResult,

@@ -171,10 +171,55 @@ export type EmbeddingCheckResult = {
   raw?: unknown
 }
 
+export type EmbeddingModelStatus = "embedding" | "not_embedding" | "unknown"
+
+export type EmbeddingModelInfo = {
+  modelId: string
+  name: string
+  status: EmbeddingModelStatus
+  embeddingCapable: boolean
+  sizeBytes?: number
+  modifiedAt?: string
+  family?: string
+  families?: string[]
+  parameterSize?: string
+  quantizationLevel?: string
+  contextLength?: number
+  embeddingLength?: number
+  capabilities?: string[]
+  raw?: unknown
+}
+
+export type EmbeddingModelListRequest = {
+  providerId: ProjectEmbeddingProvider
+  baseUrl?: string
+  abortSignal?: AbortSignal
+}
+
+export type EmbeddingModelListResult = {
+  models: EmbeddingModelInfo[]
+  raw?: unknown
+}
+
+export type EmbeddingModelPullRequest = {
+  providerId: ProjectEmbeddingProvider
+  modelId: string
+  baseUrl?: string
+  abortSignal?: AbortSignal
+}
+
+export type EmbeddingModelPullResult = {
+  ok: boolean
+  message: string
+  raw?: unknown
+}
+
 export interface EmbeddingProvider {
   check(request: EmbeddingCheckRequest): Promise<EmbeddingCheckResult>
   embedMany(request: EmbeddingRequest): Promise<EmbeddingResult>
   embed(request: EmbeddingCheckRequest & { value: string }): Promise<EmbeddingResult>
+  listModels?(request: EmbeddingModelListRequest): Promise<EmbeddingModelListResult>
+  pullModel?(request: EmbeddingModelPullRequest): Promise<EmbeddingModelPullResult>
 }
 
 export type ProviderThinkingConfig =

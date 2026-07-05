@@ -735,12 +735,12 @@ hosted default:
 
 offline local:
   providerId = ollama
-  modelId = embeddinggemma, mxbai-embed-large, nomic-embed-text, all-minilm, or another configured local embedding model
+  modelId = embeddinggemma:latest, qwen3-embedding:0.6b, nomic-embed-text-v2-moe:latest, nomic-embed-text:latest, mxbai-embed-large:latest, or another exact configured local embedding model
 ```
 
 OpenAI `text-embedding-3-small` is the preferred hosted default because it is inexpensive, stable, and has a known 1536-dimensional default embedding size. It is configurable and not hardcoded into the retrieval algorithm.
 
-The local/offline path is a real supported mode, not a hack. The preferred local backend is Ollama because it can run embedding models behind a local HTTP API and avoids putting Python/Torch setup inside the main Socrates server. Socrates detects whether the local server is reachable and whether the selected embedding model is pulled. It does not silently install or download models; it shows explicit setup guidance such as `ollama pull embeddinggemma` when setup is missing.
+The local/offline path is a real supported mode, not a hack. The preferred local backend is Ollama because it can run embedding models behind a local HTTP API and avoids putting Python/Torch setup inside the main Socrates server. Socrates detects whether the local server is reachable and whether the selected embedding model is pulled. Discovery is read-only: it lists installed models through Ollama metadata endpoints and may suggest one model based on rough system hardware, but it does not silently install or download models. The current UX shows official Ollama install guidance and exact manual model commands; in-app pulls are intentionally deferred.
 
 Hugging Face / sentence-transformers should be an advanced local backend after the Ollama path is stable. Good candidates include `sentence-transformers/all-mpnet-base-v2` for quality and smaller MiniLM-style models for speed. This path should run behind the same `EmbeddingProvider` interface, likely through a local Python helper/service or Hugging Face Text Embeddings Inference, rather than importing Python/Torch concerns into `apps/server`.
 

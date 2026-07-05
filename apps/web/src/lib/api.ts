@@ -27,6 +27,7 @@ import {
   getProviderCredentialsStatusResponseSchema,
   getProjectResponseSchema,
   inspectWorkspaceResponseSchema,
+  listOllamaEmbeddingModelsResponseSchema,
   listNotificationsResponseSchema,
   listMemoryAgentFilesResponseSchema,
   listMemoryAgentRunsResponseSchema,
@@ -91,6 +92,8 @@ import {
   type GetProviderCredentialsStatusResponse,
   type InspectWorkspaceRequest,
   type InspectWorkspaceResponse,
+  type ListOllamaEmbeddingModelsQuery,
+  type ListOllamaEmbeddingModelsResponse,
   type ListNotificationsResponse,
   type ListMemoryAgentFilesResponse,
   type ListMemoryAgentRunsResponse,
@@ -520,6 +523,14 @@ export const api = {
       `/api/projects/${projectId}/embeddings/status`,
       getProjectEmbeddingsStatusResponseSchema,
     ) as Promise<GetProjectEmbeddingsStatusResponse>,
+
+  listOllamaEmbeddingModels: (input: ListOllamaEmbeddingModelsQuery = {}) => {
+    const query = input.ollamaBaseUrl ? `?ollamaBaseUrl=${encodeURIComponent(input.ollamaBaseUrl)}` : "";
+    return request<typeof listOllamaEmbeddingModelsResponseSchema>(
+      `/api/embeddings/ollama/models${query}`,
+      listOllamaEmbeddingModelsResponseSchema,
+    ) as Promise<ListOllamaEmbeddingModelsResponse>;
+  },
 
   checkProjectEmbeddings: (projectId: string, input: CheckProjectEmbeddingsRequest) =>
     request<typeof checkProjectEmbeddingsResponseSchema>(

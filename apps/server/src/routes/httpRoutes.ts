@@ -21,6 +21,7 @@ import {
   inspectWorkspaceRequestSchema,
   listMcpServersQuerySchema,
   listMcpServersResponseSchema,
+  listOllamaEmbeddingModelsQuerySchema,
   getMemoryAgentFileContentResponseSchema,
   getMemoryAgentRunResponseSchema,
   listMemoryAgentFilesResponseSchema,
@@ -541,6 +542,16 @@ export const registerHttpRoutes = async (
       const result = store.updateProjectWorkspace(projectId, input)
       hooks.onProjectWorkspaceSwitch?.(projectId)
       return ok(result)
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/embeddings/ollama/models", async (request, reply) => {
+    try {
+      const input = listOllamaEmbeddingModelsQuerySchema.parse(request.query)
+      return ok(await store.listOllamaEmbeddingModels(input))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

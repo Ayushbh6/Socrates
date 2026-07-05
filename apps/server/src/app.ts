@@ -9,7 +9,7 @@ import { registerWebSocketRoutes } from "./ws/websocket"
 import { ConversationTerminalManager } from "./ws/conversationTerminals"
 import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
 import { McpRuntime } from "@socrates/mcp"
-import { AiSdkProvider, type ModelProvider } from "@socrates/providers"
+import { AiSdkProvider, type EmbeddingProvider, type ModelProvider } from "@socrates/providers"
 import { ProviderCredentialStore } from "./services/providerCredentials"
 
 export type BuildServerOptions = {
@@ -17,6 +17,7 @@ export type BuildServerOptions = {
   logger?: boolean
   databaseHandle?: DatabaseHandle
   agent?: SocratesAgent
+  embeddingProvider?: EmbeddingProvider
   titleProvider?: ModelProvider | false
   memoryProvider?: ModelProvider
   socratesHome?: string
@@ -28,7 +29,7 @@ export const buildServer = async (options: BuildServerOptions) => {
 
   const socratesHome = options.socratesHome ?? (options.dbPath === ":memory:" ? undefined : path.dirname(options.dbPath))
   const credentials = new ProviderCredentialStore(socratesHome ? { socratesHome } : {})
-  const store = new SocratesStore(handle, undefined, credentials, {
+  const store = new SocratesStore(handle, options.embeddingProvider, credentials, {
     ...(socratesHome ? { socratesHome } : {}),
     ...(options.memoryProvider ? { memoryProvider: options.memoryProvider } : {}),
   })

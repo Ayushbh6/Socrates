@@ -673,6 +673,86 @@ export const checkProjectEmbeddingsResponseSchema = z
   .strict()
 export type CheckProjectEmbeddingsResponse = z.infer<typeof checkProjectEmbeddingsResponseSchema>
 
+export const listOllamaEmbeddingModelsQuerySchema = z
+  .object({
+    ollamaBaseUrl: z.string().min(1).optional(),
+  })
+  .strict()
+export type ListOllamaEmbeddingModelsQuery = z.infer<typeof listOllamaEmbeddingModelsQuerySchema>
+
+export const ollamaEmbeddingModelStatusSchema = z.enum(["embedding", "not_embedding", "unknown"])
+export type OllamaEmbeddingModelStatus = z.infer<typeof ollamaEmbeddingModelStatusSchema>
+
+export const ollamaEmbeddingModelSchema = z
+  .object({
+    modelId: z.string().min(1),
+    name: z.string().min(1),
+    installed: z.boolean(),
+    status: ollamaEmbeddingModelStatusSchema,
+    embeddingCapable: z.boolean(),
+    sizeBytes: z.number().int().nonnegative().optional(),
+    sizeLabel: z.string().min(1).optional(),
+    modifiedAt: z.string().min(1).optional(),
+    family: z.string().min(1).optional(),
+    families: z.array(z.string().min(1)).optional(),
+    parameterSize: z.string().min(1).optional(),
+    quantizationLevel: z.string().min(1).optional(),
+    contextLength: z.number().int().positive().optional(),
+    embeddingLength: z.number().int().positive().optional(),
+    capabilities: z.array(z.string().min(1)).optional(),
+    description: z.string().min(1).optional(),
+    pullCommand: z.string().min(1).optional(),
+    recommendationReason: z.string().min(1).optional(),
+    recommendedForThisSystem: z.boolean().optional(),
+  })
+  .strict()
+export type OllamaEmbeddingModel = z.infer<typeof ollamaEmbeddingModelSchema>
+
+export const ollamaRuntimeHardwareSchema = z
+  .object({
+    platform: z.string().min(1),
+    arch: z.string().min(1),
+    cpuCount: z.number().int().positive(),
+    totalMemoryBytes: z.number().int().positive(),
+    freeMemoryBytes: z.number().int().nonnegative(),
+    memoryTier: z.enum(["compact", "balanced", "large"]),
+    recommendationReason: z.string().min(1),
+  })
+  .strict()
+export type OllamaRuntimeHardware = z.infer<typeof ollamaRuntimeHardwareSchema>
+
+export const listOllamaEmbeddingModelsResponseSchema = z
+  .object({
+    reachable: z.boolean(),
+    baseUrl: z.string().min(1),
+    installedModels: z.array(ollamaEmbeddingModelSchema),
+    embeddingModels: z.array(ollamaEmbeddingModelSchema),
+    recommendedModels: z.array(ollamaEmbeddingModelSchema),
+    suggestedModelId: z.string().min(1).optional(),
+    hardware: ollamaRuntimeHardwareSchema,
+    message: z.string().min(1),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type ListOllamaEmbeddingModelsResponse = z.infer<typeof listOllamaEmbeddingModelsResponseSchema>
+
+export const pullOllamaEmbeddingModelRequestSchema = z
+  .object({
+    modelId: z.string().min(1),
+    ollamaBaseUrl: z.string().min(1).optional(),
+  })
+  .strict()
+export type PullOllamaEmbeddingModelRequest = z.infer<typeof pullOllamaEmbeddingModelRequestSchema>
+
+export const pullOllamaEmbeddingModelResponseSchema = z
+  .object({
+    modelId: z.string().min(1),
+    ok: z.boolean(),
+    message: z.string().min(1),
+  })
+  .strict()
+export type PullOllamaEmbeddingModelResponse = z.infer<typeof pullOllamaEmbeddingModelResponseSchema>
+
 export const configureProjectEmbeddingsRequestSchema = z
   .object({
     providerId: projectEmbeddingProviderSchema,

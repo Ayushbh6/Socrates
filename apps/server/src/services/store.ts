@@ -22,6 +22,7 @@ import type {
   CheckProjectEmbeddingsRequest,
   ConfigureProjectEmbeddingsRequest,
   FeedbackSubmitPayload,
+  ListOllamaEmbeddingModelsQuery,
   ListNotificationsResponse,
   MarkAllNotificationsReadResponse,
   MarkNotificationReadResponse,
@@ -922,6 +923,10 @@ export class SocratesStore {
 
   checkProjectEmbeddings(projectId: string, input: CheckProjectEmbeddingsRequest) {
     return this.embeddings.check(projectId, input)
+  }
+
+  listOllamaEmbeddingModels(input: ListOllamaEmbeddingModelsQuery = {}) {
+    return this.embeddings.listOllamaModels(input)
   }
 
   configureProjectEmbeddings(projectId: string, input: ConfigureProjectEmbeddingsRequest) {

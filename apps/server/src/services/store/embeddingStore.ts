@@ -2,20 +2,25 @@ import type {
   CheckProjectEmbeddingsRequest,
   CheckProjectEmbeddingsResponse,
   ConfigureProjectEmbeddingsRequest,
+  ListOllamaEmbeddingModelsQuery,
+  ListOllamaEmbeddingModelsResponse,
+  OllamaEmbeddingModel,
+  OllamaRuntimeHardware,
   ProjectEmbeddingCredentialSource,
   ProjectEmbeddingJobStatus,
   ProjectEmbeddingProvider,
   ProjectEmbeddingStatus,
 } from "@socrates/contracts"
-import { envProviderCredentialResolver, type EmbeddingProvider, type ProviderCredentialResolver } from "@socrates/providers"
+import { envProviderCredentialResolver, type EmbeddingModelInfo, type EmbeddingProvider, type ProviderCredentialResolver } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue } from "@socrates/workspace"
 import { and, desc, eq } from "drizzle-orm"
+import os from "node:os"
 import { projectEmbeddingConfigs, traceDocuments, traceEmbeddings, traceIndexJobs } from "../../db/schema"
 import { StoreBase } from "./shared"
 
 export const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-export const DEFAULT_OLLAMA_EMBEDDING_MODEL = "embeddinggemma"
+export const DEFAULT_OLLAMA_EMBEDDING_MODEL = "embeddinggemma:latest"
 export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
 const EMBEDDING_BATCH_SIZE = 16
@@ -113,6 +118,48 @@ export class EmbeddingStore extends StoreBase {
     }
   }
 
+  async listOllamaModels(input: ListOllamaEmbeddingModelsQuery = {}): Promise<ListOllamaEmbeddingModelsResponse> {
+    const baseUrl = input.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL
+    const hardware = detectOllamaHardware()
+    let installedModels: OllamaEmbeddingModel[] = []
+    let reachable = false
+    let message = `Could not reach Ollama at ${baseUrl}. Start Ollama before choosing a local embedding model.`
+    const warnings: string[] = []
+
+    try {
+      if (!this.provider.listModels) {
+        throw new SocratesError("embedding_model_discovery_not_supported", "The active embedding provider does not support Ollama model discovery.", {
+          recoverable: true,
+        })
+      }
+      const result = await this.provider.listModels({ providerId: "ollama", baseUrl })
+      installedModels = result.models.map(toOllamaModel)
+      reachable = true
+      message =
+        installedModels.length === 0
+          ? "Ollama is running, but no local models are installed yet."
+          : `Ollama is running with ${installedModels.length} installed model${installedModels.length === 1 ? "" : "s"}.`
+    } catch (error) {
+      warnings.push(error instanceof Error ? error.message : String(error))
+    }
+
+    const recommendedModels = recommendedOllamaModels(hardware, installedModels)
+    const suggestedModelId = recommendedModels.find((model) => model.recommendedForThisSystem)?.modelId
+    const embeddingModels = installedModels.filter((model) => model.embeddingCapable)
+
+    return {
+      reachable,
+      baseUrl,
+      installedModels,
+      embeddingModels,
+      recommendedModels,
+      ...(suggestedModelId ? { suggestedModelId } : {}),
+      hardware,
+      message,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    }
+  }
+
   async configure(projectId: string, input: ConfigureProjectEmbeddingsRequest): Promise<ProjectEmbeddingStatus> {
     this.mustGetProjectRow(projectId)
     const providerId = input.providerId
@@ -152,6 +199,7 @@ export class EmbeddingStore extends StoreBase {
       })
       .run()
 
+    this.pruneInactiveEmbeddingRows(projectId, providerId, modelId, check.dimensions)
     this.enqueueProject(projectId, "configure")
     this.processProjectInBackground(projectId)
     return this.buildStatus(projectId)
@@ -315,6 +363,9 @@ export class EmbeddingStore extends StoreBase {
   private async embedMissingDocuments(projectId: string, config: ProjectEmbeddingConfigRow): Promise<number> {
     let embedded = 0
     while (true) {
+      if (!this.isActiveConfig(projectId, config.id)) {
+        return embedded
+      }
       const docs = this.findMissingDocuments(projectId, config)
       if (docs.length === 0) {
         return embedded
@@ -335,8 +386,14 @@ export class EmbeddingStore extends StoreBase {
           recoverable: true,
         })
       }
+      if (!this.isActiveConfig(projectId, config.id)) {
+        return embedded
+      }
       const now = nowIso()
       for (const [index, doc] of docs.entries()) {
+        if (!this.isActiveConfig(projectId, config.id)) {
+          return embedded
+        }
         const embedding = result.embeddings[index]
         if (!embedding) {
           continue
@@ -383,6 +440,31 @@ export class EmbeddingStore extends StoreBase {
          LIMIT ?`,
       )
       .all(config.providerId, config.modelId, config.dimensions, projectId, EMBEDDING_BATCH_SIZE) as TraceDocumentRow[]
+  }
+
+  private pruneInactiveEmbeddingRows(projectId: string, providerId: ProjectEmbeddingProvider, modelId: string, dimensions: number): void {
+    this.handle.sqlite
+      .prepare(
+        `DELETE FROM trace_embeddings
+         WHERE project_id = ?
+           AND (
+             provider_id <> ?
+             OR model_id <> ?
+             OR dimensions <> ?
+             OR NOT EXISTS (
+               SELECT 1
+               FROM trace_documents td
+               WHERE td.id = trace_embeddings.trace_document_id
+                 AND td.project_id = trace_embeddings.project_id
+                 AND td.content_hash = trace_embeddings.content_hash
+             )
+           )`,
+      )
+      .run(projectId, providerId, modelId, dimensions)
+  }
+
+  private isActiveConfig(projectId: string, configId: string): boolean {
+    return this.getActiveConfig(projectId)?.id === configId
   }
 
   private completeJob(jobId: string, embeddedDocuments: number, warning?: string, configId?: string): void {
@@ -527,6 +609,134 @@ export class EmbeddingStore extends StoreBase {
     }
     return {}
   }
+}
+
+const OLLAMA_RECOMMENDATIONS: Array<
+  Pick<OllamaEmbeddingModel, "modelId" | "name" | "description" | "sizeLabel" | "recommendationReason"> & { minMemoryGb: number }
+> = [
+  {
+    modelId: "embeddinggemma:latest",
+    name: "EmbeddingGemma",
+    description: "Small, current, and comfortable for laptop-local semantic search.",
+    sizeLabel: "small",
+    recommendationReason: "Best default for most local Socrates projects.",
+    minMemoryGb: 4,
+  },
+  {
+    modelId: "qwen3-embedding:0.6b",
+    name: "Qwen3 Embedding 0.6B",
+    description: "Balanced multilingual and code retrieval without jumping to a large model.",
+    sizeLabel: "small-medium",
+    recommendationReason: "Good when you want a stronger multilingual/code-oriented model.",
+    minMemoryGb: 8,
+  },
+  {
+    modelId: "nomic-embed-text-v2-moe:latest",
+    name: "Nomic Embed Text v2 MoE",
+    description: "Modern multilingual retrieval model from the Nomic family.",
+    sizeLabel: "medium",
+    recommendationReason: "Useful when multilingual retrieval is the priority.",
+    minMemoryGb: 8,
+  },
+  {
+    modelId: "nomic-embed-text:latest",
+    name: "Nomic Embed Text",
+    description: "Established local embedding model with broad Ollama usage.",
+    sizeLabel: "small",
+    recommendationReason: "Reliable classic fallback for local semantic search.",
+    minMemoryGb: 4,
+  },
+  {
+    modelId: "mxbai-embed-large:latest",
+    name: "MxBai Embed Large",
+    description: "Quality-focused local embedding model; heavier than the default options.",
+    sizeLabel: "medium",
+    recommendationReason: "Consider this when retrieval quality matters more than speed.",
+    minMemoryGb: 12,
+  },
+]
+
+const detectOllamaHardware = (): OllamaRuntimeHardware => {
+  const totalMemoryBytes = os.totalmem()
+  const freeMemoryBytes = os.freemem()
+  const totalMemoryGb = totalMemoryBytes / 1024 / 1024 / 1024
+  const memoryTier: OllamaRuntimeHardware["memoryTier"] = totalMemoryGb >= 24 ? "large" : totalMemoryGb >= 12 ? "balanced" : "compact"
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    cpuCount: Math.max(os.cpus().length, 1),
+    totalMemoryBytes,
+    freeMemoryBytes,
+    memoryTier,
+    recommendationReason:
+      memoryTier === "large"
+        ? "This machine has enough memory for medium local embedding models, but Socrates still recommends pulling one exact model at a time."
+        : memoryTier === "balanced"
+          ? "This machine is a good fit for a compact local embedding model that will not dominate laptop resources."
+          : "This machine should prefer the smallest local embedding models first.",
+  }
+}
+
+const recommendedOllamaModels = (hardware: OllamaRuntimeHardware, installedModels: OllamaEmbeddingModel[]): OllamaEmbeddingModel[] => {
+  const installedByBase = new Map(installedModels.map((model) => [baseModelId(model.modelId), model]))
+  const suggestedModelId = suggestedModelForHardware(hardware)
+  return OLLAMA_RECOMMENDATIONS.map((recommendation) => {
+    const installed = installedByBase.get(baseModelId(recommendation.modelId))
+    return {
+      modelId: installed?.modelId ?? recommendation.modelId,
+      name: installed?.name ?? recommendation.name,
+      installed: Boolean(installed),
+      status: installed?.status ?? "embedding",
+      embeddingCapable: installed?.embeddingCapable ?? true,
+      ...(installed?.sizeBytes ? { sizeBytes: installed.sizeBytes } : {}),
+      ...(installed?.modifiedAt ? { modifiedAt: installed.modifiedAt } : {}),
+      ...(installed?.family ? { family: installed.family } : {}),
+      ...(installed?.families ? { families: installed.families } : {}),
+      ...(installed?.parameterSize ? { parameterSize: installed.parameterSize } : {}),
+      ...(installed?.quantizationLevel ? { quantizationLevel: installed.quantizationLevel } : {}),
+      ...(installed?.contextLength ? { contextLength: installed.contextLength } : {}),
+      ...(installed?.embeddingLength ? { embeddingLength: installed.embeddingLength } : {}),
+      ...(installed?.capabilities ? { capabilities: installed.capabilities } : {}),
+      description: recommendation.description,
+      pullCommand: `ollama pull ${recommendation.modelId}`,
+      sizeLabel: installed?.sizeBytes ? formatBytes(installed.sizeBytes) : recommendation.sizeLabel,
+      recommendationReason: recommendation.recommendationReason,
+      recommendedForThisSystem: recommendation.modelId === suggestedModelId,
+    }
+  }).filter((model) => {
+    const recommendation = OLLAMA_RECOMMENDATIONS.find((item) => item.modelId === model.modelId || baseModelId(item.modelId) === baseModelId(model.modelId))
+    const totalMemoryGb = hardware.totalMemoryBytes / 1024 / 1024 / 1024
+    return !recommendation || recommendation.minMemoryGb <= totalMemoryGb || recommendation.modelId === suggestedModelId
+  })
+}
+
+const suggestedModelForHardware = (hardware: OllamaRuntimeHardware): string =>
+  hardware.memoryTier === "large" ? "qwen3-embedding:0.6b" : "embeddinggemma:latest"
+
+const toOllamaModel = (model: EmbeddingModelInfo): OllamaEmbeddingModel => ({
+  modelId: model.modelId,
+  name: model.name,
+  installed: true,
+  status: model.status,
+  embeddingCapable: model.embeddingCapable,
+  ...(model.sizeBytes ? { sizeBytes: model.sizeBytes, sizeLabel: formatBytes(model.sizeBytes) } : {}),
+  ...(model.modifiedAt ? { modifiedAt: model.modifiedAt } : {}),
+  ...(model.family ? { family: model.family } : {}),
+  ...(model.families ? { families: model.families } : {}),
+  ...(model.parameterSize ? { parameterSize: model.parameterSize } : {}),
+  ...(model.quantizationLevel ? { quantizationLevel: model.quantizationLevel } : {}),
+  ...(model.contextLength ? { contextLength: model.contextLength } : {}),
+  ...(model.embeddingLength ? { embeddingLength: model.embeddingLength } : {}),
+  ...(model.capabilities ? { capabilities: model.capabilities } : {}),
+})
+
+const baseModelId = (modelId: string): string => modelId.replace(/:latest$/, "")
+
+const formatBytes = (bytes: number): string => {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
+  }
+  return `${Math.max(Math.round(bytes / 1024 / 1024), 1)} MB`
 }
 
 const defaultModelId = (providerId: ProjectEmbeddingProvider, modelId: string | undefined): string =>
