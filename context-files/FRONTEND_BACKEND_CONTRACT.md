@@ -1454,6 +1454,7 @@ type ToolCallStartedPayload = {
   toolName:
     | "read"
     | "search"
+    | "url_fetch"
     | "edit"
     | "apply_patch"
     | "bash"
@@ -1753,6 +1754,7 @@ Model-visible V1 tools:
 ```text
 read
 search
+url_fetch
 edit
 apply_patch
 bash
@@ -1770,7 +1772,7 @@ mcp_registry
 
 The main-agent `memory_note` tool uses only `note` and optional `importance` as model-authored input. The backend attaches current-turn lookup refs, source project/workspace metadata, and default project-local skill-scope hint automatically.
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, `webfetch`, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus `memory_note` and dynamic MCP tools returned by `mcp_registry`. `projects`, `edit_files`, `memory_notes`, and `skill_write` are base/specialized contract tools for backend agent workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, broad web-search, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus `memory_note` and dynamic MCP tools returned by `mcp_registry`. `url_fetch` is exact-URL reading only, not search or crawling. `projects`, `edit_files`, `memory_notes`, and `skill_write` are base/specialized contract tools for backend agent workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -1951,6 +1953,46 @@ Rules:
 - Writes outside the active project workspace are denied by default.
 - Sensitive paths such as `.env`, private keys, credentials, and secrets require explicit high-risk approval or are denied by policy.
 
+### `url_fetch`
+
+Fetches one exact HTTP(S) URL as bounded text or metadata. It is not broad web search and does not crawl links, persist remote files, or return binary bodies.
+
+Input:
+
+```ts
+type UrlFetchToolInput = {
+  url: string
+  charLimit?: number
+  timeoutMs?: number
+}
+```
+
+Output:
+
+```ts
+type UrlFetchToolOutput = {
+  url: string
+  finalUrl: string
+  status: number
+  ok: boolean
+  redirected: boolean
+  contentType?: string
+  contentLength?: number
+  sizeBytes: number
+  text?: string
+  title?: string
+  truncation: TruncationMetadata
+  warnings?: string[]
+}
+```
+
+Rules:
+
+- Only `http` and `https` URLs are accepted.
+- Normal remote text fetches are read-only and can be automatic; obvious localhost/private-network URLs require approval.
+- Text output is bounded by character and byte caps. Non-text responses return metadata and a warning instead of a body.
+- Use configured search/MCP/provider capabilities for broad web research.
+
 ### `bash` / Terminal
 
 Runs Terminal commands from the project workspace. The compatibility model-visible tool id remains `bash`; product/UI copy should call this Terminal.
@@ -2037,8 +2079,9 @@ Rules:
 - Windows read-only diagnostics such as `Get-Location`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Command`, `where`, Python version checks, and safe git inspection can be auto-allowed by policy. Package installation, dev servers, Docker, network commands, git mutations, deletes, migrations, and commands with side effects require approval by default.
 - Destructive or credential-exfiltration patterns are denied by default.
 - Safe env template filenames such as `.env.example`, `.env.sample`, `.env.template`, and `.env.local.example` are allowed by sensitive-path policy; real `.env`, private keys, credentials, and secret-like paths remain blocked or high-risk approval-gated.
-- `read`, `search`, and `edit` are preferred for structured file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
+- `read`, `search`, `url_fetch`, and `edit` are preferred for structured local/remote reads and file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
 - Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
+- Terminal may also run bounded one-off scripts when no exact tool exists, such as document rendering/OCR, data parsing, local CLI calls, or hypothesis checks. Installs, broad crawls, large downloads, secret-bearing external requests, and risky mutations remain approval-gated.
 
 Before Python installs/runs, Socrates should read project notes when workspace runtime facts matter. The backend maintains a protected `runtime_context` section in `.socrates/PROJECT_NOTES.md` with compact generated workspace scan facts such as detected stack, package manager, and virtual-environment hints. It refreshes lazily when `project_docs` touches notes and is rewritten only when the generated signature changes. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup. Terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be written into that persisted section.
 

@@ -234,6 +234,7 @@ describe("memory doc parser", () => {
       "terminal.md",
       "tool_docs.md",
       "trace_retrieve.md",
+      "url_fetch.md",
       "user_profile.md",
     ])
 

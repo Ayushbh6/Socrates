@@ -1,0 +1,109 @@
+{
+  "apiBase": "http://127.0.0.1:4000",
+  "projectId": "proj_638aa7f40bd644e3b7db957a2fb923db",
+  "modelId": "gpt-5.5",
+  "thinkingEffort": "medium",
+  "approval": "reject",
+  "results": [
+    {
+      "index": 2,
+      "prompt": "I don’t trust the text extraction from the Austrian form PDF. Can you still figure out what the document is asking for and give me a clean checklist of the fields I would need to fill?",
+      "status": "completed",
+      "durationMs": 171246,
+      "conversationId": "conv_2ef53544fcc04d74af16989740ad4728",
+      "turnId": "turn_e4390f355102406d8f7c781004c53fa6",
+      "toolCalls": [
+        "project_docs",
+        "skills",
+        "list_project_resources",
+        "search",
+        "read",
+        "repo_docs",
+        "bash",
+        "tool_docs"
+      ],
+      "approvals": [
+        {
+          "title": "Approve shell command",
+          "actionKind": "shell_command",
+          "decision": "rejected"
+        },
+        {
+          "title": "Approve shell command",
+          "actionKind": "shell_command",
+          "decision": "rejected"
+        }
+      ],
+      "answerPreview": "Yes. The PDF is an Austrian **“Antrag auf Erteilung eines Aufenthaltstitels”** — application for a residence permit — plus a statistics annex on **school education and occupation**.\n\nI found the structure clearly enough to make a checklist. I would treat this as a **form-filling checklist**, not as legal advice.\n\n## Clean checklist of fields to fill\n\n### 0. Before the numbered fields\n- [ ] Attach/passport-style EU photo: **35 mm x 45 mm**\n- [ ] Handwritten signature where requested\n- [ ] Use date format: **DD.MM.YYYY**\n- [ ] Do **not** fill sections marked **“Nur von der Behörde auszufüllen”**..."
+    },
+    {
+      "index": 4,
+      "prompt": "Can you read the leverage PDF, inspect the existing leverage scripts, and tell me whether the code is modeling the same claim the PDF makes or drifting into a different idea?",
+      "status": "failed",
+      "durationMs": 104512,
+      "conversationId": "conv_0ebd368675ac4f1e829c2cbb5b70e364",
+      "turnId": "turn_79c32e3f0b5d4155914b51002f2f3b9c",
+      "toolCalls": [
+        "project_docs",
+        "repo_docs",
+        "search",
+        "read",
+        "skills",
+        "tool_docs"
+      ],
+      "approvals": [],
+      "answerPreview": "",
+      "error": "Failed after 3 attempts. Last error: The usage limit has been reached"
+    },
+    {
+      "index": 10,
+      "prompt": "Can you figure out what this Test-Workspace was originally used to test in Socrates, using the files and old conversations together?",
+      "status": "failed",
+      "durationMs": 19430,
+      "conversationId": "conv_bc95d3862d0b4a418832dbf38959fd73",
+      "turnId": "turn_0805101a8dcb4f86bfa583466d73cadd",
+      "toolCalls": [],
+      "approvals": [],
+      "answerPreview": "",
+      "error": "Failed after 3 attempts. Last error: The usage limit has been reached"
+    },
+    {
+      "index": 16,
+      "prompt": "Can you read the Ollama embeddings docs and compare them with what we tested in this project, then tell me whether our local-index behavior sounds correct?",
+      "status": "failed",
+      "durationMs": 18287,
+      "conversationId": "conv_9ac7a13018ef453baf19a7d134482ff2",
+      "turnId": "turn_670b224797474fd8b29d0c4adb39e87c",
+      "toolCalls": [],
+      "approvals": [],
+      "answerPreview": "",
+      "error": "Failed after 3 attempts. Last error: The usage limit has been reached"
+    },
+    {
+      "index": 17,
+      "prompt": "Can you inspect the embeddinggemma model page and tell me whether it is a sensible default recommendation for normal laptops?",
+      "status": "failed",
+      "durationMs": 17970,
+      "conversationId": "conv_0a3ee156b5df4ae2ae124398dae32649",
+      "turnId": "turn_04bf8058b0f4483e9757981b82ad47de",
+      "toolCalls": [],
+      "approvals": [],
+      "answerPreview": "",
+      "error": "Failed after 3 attempts. Last error: The usage limit has been reached"
+    },
+    {
+      "index": 20,
+      "prompt": "Can you give me a restart-ready handoff for this workspace: what matters, what’s broken, what has already been tested, and what the next agent should do first?",
+      "status": "failed",
+      "durationMs": 20445,
+      "conversationId": "conv_208a43b33a5f44b38d3557ad1aa3c3e2",
+      "turnId": "turn_3dd0fd86067d46c38077a6bb8da55fee",
+      "toolCalls": [
+        "project_docs"
+      ],
+      "approvals": [],
+      "answerPreview": "",
+      "error": "Failed after 3 attempts. Last error: The usage limit has been reached"
+    }
+  ]
+}

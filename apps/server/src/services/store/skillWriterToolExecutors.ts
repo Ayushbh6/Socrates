@@ -20,6 +20,7 @@ import type {
   SoulToolOutput,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  UrlFetchToolOutput,
   UserProfileToolInput,
   UserProfileToolOutput,
 } from "@socrates/contracts"
@@ -44,6 +45,7 @@ export const createSkillWriterToolExecutors = (tools: SkillWriterToolCallbacks):
   return {
     read: () => unavailable<ReadToolOutput>(),
     search: () => unavailable<SearchToolOutput>(),
+    url_fetch: () => unavailable<UrlFetchToolOutput>(),
     edit: () => unavailable<EditToolOutput>(),
     apply_patch: () => unavailable<ApplyPatchToolOutput>(),
     bash: () => unavailable<BashToolOutput>(),

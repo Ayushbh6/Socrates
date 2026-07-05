@@ -5,6 +5,7 @@ import { memoryDocIndexSchema, memoryDocSectionSchema } from "./memoryDocs"
 export const baseToolNameSchema = z.enum([
   "read",
   "search",
+  "url_fetch",
   "edit",
   "apply_patch",
   "bash",
@@ -151,6 +152,47 @@ export const searchToolOutputSchema = z
   })
   .strict()
 export type SearchToolOutput = z.infer<typeof searchToolOutputSchema>
+
+export const urlFetchToolInputSchema = z
+  .object({
+    url: z
+      .string()
+      .url()
+      .describe("Exact http(s) URL to fetch. This tool does not crawl links, search the web, save files, or download binary bodies."),
+    charLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(80_000)
+      .optional()
+      .describe("Character cap for returned text. The backend also enforces a byte cap before decoding."),
+    timeoutMs: z.number().int().positive().max(30_000).optional().describe("Network timeout in milliseconds. Defaults to 15 seconds."),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (!/^https?:\/\//i.test(input.url)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["url"], message: "url_fetch only supports http and https URLs." })
+    }
+  })
+export type UrlFetchToolInput = z.infer<typeof urlFetchToolInputSchema>
+
+export const urlFetchToolOutputSchema = z
+  .object({
+    url: z.string().min(1),
+    finalUrl: z.string().min(1),
+    status: z.number().int().nonnegative(),
+    ok: z.boolean(),
+    redirected: z.boolean(),
+    contentType: z.string().min(1).optional(),
+    contentLength: z.number().int().nonnegative().optional(),
+    sizeBytes: z.number().int().nonnegative(),
+    text: z.string().optional(),
+    title: z.string().optional(),
+    truncation: truncationMetadataSchema,
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type UrlFetchToolOutput = z.infer<typeof urlFetchToolOutputSchema>
 
 export const soulToolInputSchema = z
   .object({

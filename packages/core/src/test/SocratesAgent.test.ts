@@ -63,6 +63,7 @@ describe("SocratesAgent", () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       "read",
       "search",
+      "url_fetch",
       "edit",
       "apply_patch",
       "bash",
@@ -274,6 +275,16 @@ describe("SocratesAgent", () => {
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 8 },
       }),
       search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      url_fetch: async () => ({
+        url: "https://example.com",
+        finalUrl: "https://example.com",
+        status: 200,
+        ok: true,
+        redirected: false,
+        sizeBytes: 0,
+        text: "",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+      }),
       edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
       bash: async () => bashOk(),
@@ -363,8 +374,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(16)
-    expect(countRequests[1]?.toolCount).toBe(16)
+    expect(countRequests[0]?.toolCount).toBe(17)
+    expect(countRequests[1]?.toolCount).toBe(17)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -925,7 +936,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(16)
+    expect(countRequests[0]?.toolCount).toBe(17)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -1376,7 +1387,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(16)
+    expect(countRequests[0]?.toolCount).toBe(17)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -1445,6 +1456,16 @@ describe("SocratesAgent", () => {
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
       }),
       search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+      url_fetch: async () => ({
+        url: "https://example.com",
+        finalUrl: "https://example.com",
+        status: 200,
+        ok: true,
+        redirected: false,
+        sizeBytes: 0,
+        text: "",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+      }),
       edit: async (input) => {
         editDryRuns.push(input.dryRun === true)
         return {
@@ -2111,6 +2132,16 @@ const emptyToolExecutors = (): ToolExecutors => ({
     truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
   }),
   search: async () => ({ mode: "files", query: "", matches: [], totalMatches: 0, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
+  url_fetch: async () => ({
+    url: "https://example.com",
+    finalUrl: "https://example.com",
+    status: 200,
+    ok: true,
+    redirected: false,
+    sizeBytes: 0,
+    text: "",
+    truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 },
+  }),
   edit: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   apply_patch: async () => ({ changedFiles: [], diff: "", dryRun: false, truncation: { truncated: false, charLimit: 20_000, returnedLength: 0 } }),
   bash: async () => bashOk(),

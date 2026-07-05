@@ -30,6 +30,7 @@ import type { ConversationTerminalManager } from "../conversationTerminals"
 import type { ConversationSubscriptions } from "../conversationSubscriptions"
 import { appendAndEmit, makeEvent, type EventSink } from "../eventSender"
 import { currentRuntimeTime } from "../../services/store/runtimeContext"
+import { fetchUrlForTool } from "../urlFetch"
 
 const requireCommandScope = (command: ClientCommand): { projectId: string; conversationId: string } => {
   if (!command.projectId || !command.conversationId) {
@@ -804,6 +805,7 @@ const createToolExecutors = (
     return readWorkspacePath(input, withFreshness(context))
   },
   search: (input, context) => searchWorkspace(input, context),
+  url_fetch: (input, context) => fetchUrlForTool(input, context.abortSignal),
   edit: (input, context) => editWorkspace(input, withFreshness(context)),
   apply_patch: (input, context) => applyPatchWorkspace(input, withFreshness(context)),
   bash: async (input, context) => {

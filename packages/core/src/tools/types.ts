@@ -41,6 +41,8 @@ import type {
   ToolPermission,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  UrlFetchToolInput,
+  UrlFetchToolOutput,
   UserProfileToolInput,
   UserProfileToolOutput,
 } from "@socrates/contracts"
@@ -67,6 +69,7 @@ export type ToolExecutorContext = {
 export type ToolExecutors = {
   read: (input: ReadToolInput, context: ToolExecutorContext) => Promise<ReadToolOutput>
   search: (input: SearchToolInput, context: ToolExecutorContext) => Promise<SearchToolOutput>
+  url_fetch: (input: UrlFetchToolInput, context: ToolExecutorContext) => Promise<UrlFetchToolOutput>
   edit: (input: EditToolInput, context: ToolExecutorContext) => Promise<EditToolOutput>
   apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>

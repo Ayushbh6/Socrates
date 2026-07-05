@@ -11,7 +11,7 @@ index_tags: [tool_usage]
 <!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
 ## Purpose
 
-Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, local servers, and long-running process supervision.
+Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, local servers, long-running process supervision, and bounded one-off scripts when no exact structured tool exists.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
@@ -20,6 +20,8 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 - You need command output, test results, build results, process status, or repo inspection.
 - A local server or watcher must run while other verification continues.
 - Shell tools are the safest way to inspect file lists, git state, ports, or generated artifacts.
+- A task needs a small temporary capability such as parsing data, converting formats, rendering/OCRing a document with available local tools, calling a local CLI, or verifying a hypothesis.
+- Exact structured tools are missing or insufficient, and a short script can solve the gap without installing packages or creating durable app state.
 - Do not use Terminal to mutate Socrates-owned docs/memory paths when a dedicated tool exists.
 <!-- /socrates:section -->
 
@@ -36,10 +38,12 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 ## Workflow
 
 1. Use targeted commands and avoid noisy chained output.
-2. Check command exit status and the relevant output before claiming success.
-3. Poll long-running sessions until ready, failed, or no longer needed.
-4. Stop servers or watchers that are part of the task before final handoff unless the user needs them running.
-5. For file creation, verify parent paths and current repo state first.
+2. For one-off scripts, prefer existing local runtimes and standard libraries before installing anything.
+3. Keep outputs bounded and observable. Prefer stdout or temporary files near the relevant source, then inspect the result before relying on it.
+4. Check command exit status and the relevant output before claiming success.
+5. Poll long-running sessions until ready, failed, or no longer needed.
+6. Stop servers or watchers that are part of the task before final handoff unless the user needs them running.
+7. For file creation, verify parent paths and current repo state first.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
@@ -49,4 +53,6 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 - If a process awaits input, either provide required input or terminate it before final answer.
 - If a timeout occurs, poll output before deciding whether the process is hung.
 - If protected-path preflight rejects a command, route through the dedicated Socrates docs/memory tool.
+- If a simple one-off script fails because an optional dependency is missing, try a standard-library or already-installed alternative before asking to install packages.
+- Do not keep retrying broad network fetches, crawls, large downloads, or package installs without explicit user approval.
 <!-- /socrates:section -->

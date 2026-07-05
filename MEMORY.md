@@ -69,6 +69,7 @@ Current base tools:
 ```text
 read
 search
+url_fetch
 edit
 apply_patch
 bash
@@ -94,6 +95,7 @@ project_notes
 
 Tool routing:
 
+- `url_fetch` reads one exact HTTP(S) URL as bounded text or metadata. It is for specific docs/pages/JSON/CSV/redirect checks, not broad web search, crawling, saving files, or binary downloads.
 - `trace_retrieve` is for prior conversation text and audit evidence: tool calls, shell output, file operations, patches, errors, decisions.
 - `current_time` is a read-only no-input tool that returns backend-owned current date, ISO timestamp, and time zone. Use it when the answer or a document entry truly needs today's date/time; do not put changing time in the system prompt.
 - `tool_docs` is read/search only for global tool usage guidance.
@@ -112,6 +114,7 @@ Tool routing:
 
 - Main chat no longer injects `<socrates_wake_context>` on the first turn or later turns. Stable recall routing now lives in `packages/core/src/prompts/socratesPrompt.ts`, pointing Socrates to `project_docs`, `repo_docs`, `user_profile`, `soul`, `skills`, and `mcp_registry` when the current task needs them.
 - Main chat now also has a production memory-routing loop around normal model calls. The pre-turn router and post-evidence router use real provider structured output with Zod schemas from `packages/contracts/src/memoryRouting.ts`, not prompted JSON. Keep this contract human-facing and flat: context booleans, one save target, one short save text, and one reason. Pre-turn routes can load project notes/memory/repo docs/user profile and save explicit remember items before work begins; post-evidence routes can save one concise project/global follow-up before the final answer. The router model is configured through the Memory Router worker setting, defaulting to OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
+- Socrates now has explicit CodeAct-style capability-composition guidance in `packages/core/src/prompts/socratesPrompt.ts`: use structured tools first, discover MCPs when appropriate, then use Terminal/code for bounded one-off scripts when no exact tool exists. Terminal remains approval/policy gated for installs, broad network work, large downloads, and risky mutations.
 - First-turn project recall is mandatory for light greetings, "continue", "where were we", and broad project-status openers: Socrates must read `project_docs` notes `active_context` before answering so active project loops can surface naturally.
 - The Socrates system prompt stays cache-friendly: stable instructions first, with no changing current date/time, workspace scan block, skill/MCP counts, or hidden matched skill/MCP ids in the system prompt.
 - Extension discovery is tool-driven, not prompt-matched. Socrates should call `skills({ operation: "list" })` or `mcp_registry({ operation: "list" })`, then use `describe` with an exact listed canonical id/name. The runtime must not grep the user's prompt for skill or MCP names and inject hidden matches.
@@ -239,6 +242,18 @@ pnpm --filter @socrates/server typecheck
 pnpm --filter @socrates/server test -- server.test.ts --runInBand
 browser QA on localhost:3000 with API localhost:4000: Test-Workspace and TU Work switched to ollama / embeddinggemma:latest; semantic trace_retrieve succeeded; stale trace_embeddings rows = 0
 git diff --check
+```
+
+Latest verified for CodeAct capability composition and URL fetch on 2026-07-05:
+
+```text
+pnpm --filter @socrates/contracts test -- contracts.test.ts
+pnpm --filter @socrates/contracts build
+pnpm --filter @socrates/core typecheck
+pnpm --filter @socrates/core test -- SocratesAgent.test.ts
+pnpm --filter @socrates/server typecheck
+pnpm --filter @socrates/server test -- src/ws/urlFetch.test.ts
+pnpm --filter @socrates/server test -- memoryDocParser.test.ts
 ```
 
 Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. That E2E predates the 2026-06-25 removal of main-chat wake-context injection. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.

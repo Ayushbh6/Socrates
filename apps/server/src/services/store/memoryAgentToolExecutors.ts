@@ -20,6 +20,7 @@ import type {
   ToolDocsToolOutput,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  UrlFetchToolOutput,
   UserProfileToolInput,
   UserProfileToolOutput,
 } from "@socrates/contracts"
@@ -45,6 +46,7 @@ export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks):
   return {
     read: () => unavailable<ReadToolOutput>(),
     search: () => unavailable<SearchToolOutput>(),
+    url_fetch: () => unavailable<UrlFetchToolOutput>(),
     edit: () => unavailable<EditToolOutput>(),
     apply_patch: () => unavailable<ApplyPatchToolOutput>(),
     bash: () => unavailable<BashToolOutput>(),

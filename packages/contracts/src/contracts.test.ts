@@ -161,6 +161,8 @@ import {
   readToolInputSchema,
   readToolOutputSchema,
   searchToolInputSchema,
+  urlFetchToolInputSchema,
+  urlFetchToolOutputSchema,
   soulToolInputSchema,
   soulToolOutputSchema,
   userProfileToolInputSchema,
@@ -1480,6 +1482,22 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", terminalId: "term_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
+    expect(urlFetchToolInputSchema.safeParse({ url: "https://example.com/docs", charLimit: 10_000, timeoutMs: 10_000 }).success).toBe(true)
+    expect(urlFetchToolInputSchema.safeParse({ url: "ftp://example.com/file.txt" }).success).toBe(false)
+    expect(
+      urlFetchToolOutputSchema.safeParse({
+        url: "https://example.com/docs",
+        finalUrl: "https://example.com/docs",
+        status: 200,
+        ok: true,
+        redirected: false,
+        contentType: "text/html",
+        sizeBytes: 120,
+        text: "<title>Example</title>",
+        title: "Example",
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 22 },
+      }).success,
+    ).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ query: "README", toolNames: ["read"], turnNo: 2, role: "user" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ turnNo: 2, role: "user", scope: "project" }).success).toBe(true)
     expect(traceRetrieveToolInputSchema.safeParse({ scope: "all_projects", projectTitle: ["Socrates", "AI DPA"], conversationTitle: ["Memory agent", "Trace retrieval"], query: "selector precedence" }).success).toBe(true)

@@ -19,11 +19,13 @@ import { soulTool } from "./soulTool"
 import { toolDocsTool } from "./toolDocsTool"
 import { traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
+import { urlFetchTool } from "./urlFetchTool"
 import { userProfileTool } from "./userProfileTool"
 
 const tools = [
   readTool,
   searchTool,
+  urlFetchTool,
   editTool,
   applyPatchTool,
   bashTool,
