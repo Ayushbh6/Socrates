@@ -656,7 +656,8 @@ Rules:
 
 - Online checks verify server `OPENAI_API_KEY` and user-triggered workspace `.env*` key presence. The backend returns only filenames and booleans, never key values.
 - Offline checks verify Ollama server reachability and selected model availability through the local Ollama HTTP API.
-- The backend must not install Ollama or pull local models from discovery/check/setup flows. If setup is missing, return explicit install guidance and commands such as `ollama pull embeddinggemma`.
+- The backend must not install Ollama or pull local models from discovery/check/setup flows. If setup is missing, return explicit install guidance and commands such as `ollama pull embeddinggemma:latest`.
+- Configuring a project with a new embedding provider/model/dimensions tuple must keep only the active index: mark older configs inactive, prune stale `trace_embeddings` rows for inactive tuples or old content hashes, and enqueue indexing for the active tuple. In-flight jobs for a deactivated config must not write late vectors.
 
 ### `GET /api/embeddings/ollama/models`
 

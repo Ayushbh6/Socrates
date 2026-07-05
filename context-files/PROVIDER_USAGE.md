@@ -763,6 +763,7 @@ Provider boundary rules for embeddings:
 - `apps/server` may enqueue and coordinate embedding jobs, but provider-specific request details should stay inside the provider layer.
 - Embedding rows must store provider id, model id, dimensions, content hash, and raw metadata where useful.
 - Retrieval must never compare vectors from different embedding spaces. Query embeddings and stored `trace_embeddings` rows must match on provider id, model id, and dimensions.
+- V1 keeps only one active embedding index per project. When the active provider/model/dimensions changes, `apps/server` prunes inactive `trace_embeddings` rows and old content-hash rows; deactivated in-flight jobs must not write returned vectors.
 - Unchanged trace documents must not be re-embedded. Use `content_hash`.
 - Failed embedding jobs should degrade gracefully to lexical/exact retrieval.
 

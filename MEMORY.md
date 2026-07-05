@@ -135,6 +135,7 @@ Tool routing:
 - Section indexes persist in SQLite tables `memory_doc_indexes` and `memory_doc_sections`; these are rebuilt from markdown content during ensure/index operations and are lookup aids, not the source of truth.
 - Model identity includes both provider and auth mode. `authMode = "api_key"` covers OpenRouter, OpenAI API, and Google API keys; `authMode = "chatgpt_subscription"` covers the experimental ChatGPT Codex OAuth path for OpenAI subscription models. `/api/models` is credential-aware and returns only models whose provider/auth mode is configured. If OpenRouter is configured, DeepSeek V4 Pro remains the default available chat model; otherwise the backend chooses the first available curated model. If ChatGPT Codex is connected, the main composer prefers ChatGPT Codex models for new/effective chat selection while API-key models remain selectable.
 - OpenAI now has two separate credential statuses: `OpenAI API` and `ChatGPT Codex`. The ChatGPT Codex flow uses PKCE OAuth against `auth.openai.com`, stores Socrates-owned token metadata under local credential storage, refreshes access tokens on demand, and routes subscription requests through the Codex backend auth shim. OpenAI embeddings remain API-key only.
+- Project semantic search supports hosted OpenAI embeddings and local Ollama embeddings. The Ollama path is read-only during setup: detect OS/runtime, list installed models, recommend one exact model such as `embeddinggemma:latest`, show official install/manual pull guidance, and never install Ollama or pull a model without a later explicit user action. When a project changes embedding provider/model/dimensions, Socrates keeps only the active embedding index: stale `trace_embeddings` rows for inactive provider/model/dimension tuples or old content hashes are deleted, and in-flight jobs for a deactivated config must not write late vectors.
 - Global memory-agent settings live behind `/api/memory-agent` and are surfaced on the Settings page. Defaults are OpenRouter `xiaomi/mimo-v2.5-pro`, thinking off, enabled, cadence 10 minutes, but credential-aware resolution prefers ChatGPT Codex `gpt-5.5` with low reasoning when ChatGPT Codex is connected and the saved setting is still the built-in default or unavailable.
 - Worker model settings live behind `/api/worker-model-settings` and are surfaced on the Settings page for Skill Writer, Context Compactor, Title Generator, and Memory Router. Settings persist provider, auth mode, model, and thinking choice. Defaults preserve the current working models, but credential-aware resolution prefers ChatGPT Codex `gpt-5.4-mini` with low reasoning for built-in/default unavailable worker settings when ChatGPT Codex is connected.
 - Memory Router provider usage is recorded as `ai_usage_events.source_kind = "memory_router"` and rolled into the existing turn/conversation cost total. Do not add a separate visible router-cost widget unless the product direction changes.
@@ -171,6 +172,7 @@ Tool routing:
 - `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id or trace handle when available, the supported claim, and the profile section using that claim.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
 - Credential-aware model routing and experimental ChatGPT Codex auth commit `6a29dad Add ChatGPT Codex auth model routing` is pushed to `origin/main`. It adds auth-mode-aware model settings, filtered `/api/models`, ChatGPT Codex OAuth/token refresh, Codex request routing, UI credential status, Codex-preferred defaults for chat/workers/memory-agent, and compressor regression coverage for active context, anchors, full fields, and source handles.
+- Ollama embedding setup commit `21d9fc9 Add Ollama embedding setup` is pushed to `origin/main`. It adds Ollama model discovery/recommendations, offline setup guidance without automatic pulls, project embedding configuration for Ollama, active-index-only cleanup for `trace_embeddings`, in-flight stale job guards, and updated context files/contracts/tests.
 
 ## Next Major Work
 
@@ -227,6 +229,16 @@ git diff --check
 pnpm --filter @socrates/core test
 pnpm --filter @socrates/providers test
 pnpm --filter @socrates/server test
+```
+
+Latest verified for Ollama embedding setup and active-index cleanup on 2026-07-05:
+
+```text
+pnpm --filter web typecheck
+pnpm --filter @socrates/server typecheck
+pnpm --filter @socrates/server test -- server.test.ts --runInBand
+browser QA on localhost:3000 with API localhost:4000: Test-Workspace and TU Work switched to ollama / embeddinggemma:latest; semantic trace_retrieve succeeded; stale trace_embeddings rows = 0
+git diff --check
 ```
 
 Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. That E2E predates the 2026-06-25 removal of main-chat wake-context injection. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.

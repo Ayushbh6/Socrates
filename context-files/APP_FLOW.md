@@ -517,6 +517,8 @@ Offline flow:
 
 Socrates must not silently install Ollama or download embedding models. The offline setup flow detects local state, recommends one exact model based on coarse local hardware, shows official install/model commands, and waits for the user to install or pull outside Socrates before rechecking.
 
+Changing a project's embedding provider/model/dimensions creates one new active embedding config and prunes stale `trace_embeddings` rows for that project. V1 does not retain old OpenAI/Ollama embedding sets side by side; only rows matching the active provider id, model id, dimensions, and current trace document `content_hash` should remain. In-flight jobs for a deactivated config must stop before writing late vectors.
+
 The project dashboard must not show the full chat composer in V1. The composer belongs on `/projects/:projectId/chats/:conversationId`. The dashboard shows a centered `Start new chat` button/action instead.
 
 ## `/projects/:projectId/chats/:conversationId`
@@ -974,7 +976,7 @@ Semantic retrieval is available through two first-class options:
 
 ```text
 hosted default: OpenAI text-embedding-3-small
-offline local: Ollama embeddinggemma by default, with Hugging Face / sentence-transformers as an advanced local backend later
+offline local: Ollama embeddinggemma:latest by default, with Hugging Face / sentence-transformers as an advanced local backend later
 ```
 
 Embedding generation stays asynchronous after trace document creation. It should not block chat turns, and if the selected embedding provider is unavailable Socrates should continue with lexical/exact retrieval plus a warning.

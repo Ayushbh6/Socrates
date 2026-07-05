@@ -518,7 +518,7 @@ OpenAI hosted default
 
 Offline local
   providerId = ollama first
-  modelId = embeddinggemma, mxbai-embed-large, nomic-embed-text, all-minilm, or configured local model
+  modelId = embeddinggemma:latest, qwen3-embedding:0.6b, nomic-embed-text-v2-moe:latest, nomic-embed-text:latest, mxbai-embed-large:latest, or another exact configured local embedding model
 ```
 
 Hugging Face / sentence-transformers can be added as an advanced local backend through the same boundary after the Ollama path is stable. `apps/server` coordinates embedding jobs, but provider-specific HTTP/API/Python details stay out of routes, WebSocket handlers, frontend code, and `packages/core`.
