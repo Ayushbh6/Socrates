@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -54,6 +54,34 @@ const run = (command, args, options = {}) =>
       }
     });
   });
+
+const pnpmMajorVersion = () => {
+  const result = spawnSync(pnpmCommand, ["--version"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    shell: process.platform === "win32" && pnpmCommand.endsWith(".cmd"),
+  });
+  if (result.status !== 0) {
+    return undefined;
+  }
+  const major = Number.parseInt(result.stdout.trim().split(".")[0] ?? "", 10);
+  return Number.isFinite(major) ? major : undefined;
+};
+
+const pnpmDeployArgs = (target) => {
+  const major = pnpmMajorVersion();
+  const modernPnpmDeployArgs =
+    major !== undefined && major >= 10 ? ["--config.dangerouslyAllowAllBuilds=true"] : [];
+  return [
+    ...modernPnpmDeployArgs,
+    "--filter",
+    "@socrates/server",
+    "deploy",
+    ...(major !== undefined && major >= 10 ? ["--legacy"] : []),
+    "--prod",
+    target,
+  ];
+};
 
 const copy = (source, target) => {
   fs.cpSync(source, target, { recursive: true, force: true, dereference: true });
@@ -226,7 +254,7 @@ await run(pnpmCommand, ["--filter", "web", "build"], {
   },
 });
 
-await run(pnpmCommand, ["--filter", "@socrates/server", "deploy", "--prod", path.join(runtimeDir, "server")]);
+await run(pnpmCommand, pnpmDeployArgs(path.join(runtimeDir, "server")));
 removePackagedEnvFiles(path.join(runtimeDir, "server"));
 exposePnpmHoistedDependencies(path.join(runtimeDir, "server"));
 assertPackagedServerDependencies();

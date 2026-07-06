@@ -141,10 +141,7 @@ export const resolveModelSettingsForAvailableModels = (
       model.modelId === savedSelection.modelId,
   )
   const preferred = chatGptCodexPreferredSettings(role, available.models)
-  if (
-    preferred &&
-    (savedSelection.authMode !== "chatgpt_subscription" || !selected || isBuiltInDefaultModelSelection(savedSelection, role))
-  ) {
+  if (preferred && (!selected || isBuiltInDefaultModelSelection(savedSelection, role))) {
     return {
       status: "resolved_fallback",
       reason: `${modelRoleLabel(role)} is using the ChatGPT Codex default (${preferred.modelId}).`,

@@ -30,9 +30,10 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 
 ## Current Project State
 
-- Runtime release milestone: **v0.1.16**.
-- Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.16** for npm publish.
+- Runtime release milestone: **v0.1.17**.
+- Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.17** for npm publish.
 - Runtime availability for macOS (arm64/x64) and Windows x64.
+- Ollama can serve local chat models from the normal model picker when the local Ollama runtime is reachable.
 - Trace retrieval upgraded for broader match windows and exact quote context.
 - Duplicate tool-call handling added to avoid repeated identical retrieval passes in one turn.
 - Context compression now uses a first-class structured `CompressorAgent`.

@@ -349,7 +349,7 @@ OpenRouter is no longer universally required for chat/compression. It is one ava
 Returns the backend-owned credential-filtered provider/model/thinking catalog.
 
 ```ts
-type ProviderId = "openai" | "google" | "openrouter"
+type ProviderId = "openai" | "google" | "openrouter" | "ollama"
 
 type ProviderAuthMode = "api_key" | "chatgpt_subscription"
 
@@ -394,8 +394,11 @@ Frontend rule:
 render model and thinking controls from this response
 do not hardcode selectable model ids in the composer
 group OpenAI API and ChatGPT Codex separately when both are configured
+group discovered local models under Ollama Local when Ollama is reachable
 use capabilities.vision === false to warn users and avoid sending image bytes to non-vision models
 ```
+
+Ollama chat model discovery is backend-owned and read-only. The backend may call local Ollama metadata endpoints such as `/api/tags` and `/api/show`, filters out embedding-only models, adds discovered chat-capable models to the returned catalog, and never pulls, installs, or deletes models from `/api/models`.
 
 ### `GET /api/projects`
 
@@ -2426,14 +2429,14 @@ Rules:
 
 Skill Writer, Context Compactor, Title Generator, and Memory Router model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these workers while preserving the default models already used by the app. Memory Router controls the structured pre-turn and post-evidence routing calls.
 
-All model settings are auth-mode-aware. `authMode = "api_key"` means normal provider API credentials. `authMode = "chatgpt_subscription"` is currently valid only for OpenAI ChatGPT Codex subscription auth. Saved unavailable settings are preserved, and runtime/UI resolution returns an effective fallback without overwriting the saved row.
+All model settings are auth-mode-aware. `authMode = "api_key"` means normal provider API credentials or a local direct provider path such as Ollama. `authMode = "chatgpt_subscription"` is currently valid only for OpenAI ChatGPT Codex subscription auth. Saved unavailable settings are preserved, and runtime/UI resolution returns an effective fallback without overwriting the saved row. Ollama settings are valid when the exact discovered local model is still available; Ollama thinking options are intentionally just Off and On.
 
 ```ts
 type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator" | "memory_router"
 
 type WorkerModelSettings = {
   workerId: WorkerModelRole
-  providerId: "openai" | "google" | "openrouter"
+  providerId: "openai" | "google" | "openrouter" | "ollama"
   authMode?: "api_key" | "chatgpt_subscription"
   modelId: string
   thinkingEnabled: boolean

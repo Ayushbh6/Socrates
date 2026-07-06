@@ -442,6 +442,8 @@ If a provider has unique capabilities, expose only the normalized subset first. 
 
 V1 should use direct AI SDK provider packages behind the Socrates provider abstraction. Do not use Vercel AI Gateway as the default provider path.
 
+Local Ollama chat models are a first-class provider adapter path behind `packages/providers`. Discovery must be read-only, must not pull/install/delete models, and should expose only the normalized Socrates model surface first. Ollama-specific request/response shapes must not escape into core, server routes, or frontend components.
+
 ## 19. Keep Naming Stable And Boring
 
 Use predictable names.

@@ -1,7 +1,7 @@
 import { z } from "zod"
 import { idSchema } from "./entities"
 
-export const providerIdSchema = z.enum(["openai", "google", "openrouter"])
+export const providerIdSchema = z.enum(["openai", "google", "openrouter", "ollama"])
 export const providerAuthModeSchema = z.enum(["api_key", "chatgpt_subscription"])
 export const defaultProviderAuthMode = "api_key" as const
 

@@ -23,7 +23,7 @@ The non-negotiable architecture rule:
 The rest of Socrates must never depend directly on Vercel AI SDK.
 ```
 
-Vercel AI SDK is an implementation detail inside `packages/providers`.
+Vercel AI SDK is an implementation detail inside `packages/providers`. Native local providers such as Ollama also live inside `packages/providers` behind the same Socrates `ModelProvider` interface.
 
 Socrates should use direct provider packages in V1:
 
@@ -32,6 +32,8 @@ Socrates should use direct provider packages in V1:
 @ai-sdk/google
 @openrouter/ai-sdk-provider
 ```
+
+Ollama chat is served by Socrates' native Ollama adapter rather than the AI SDK adapter. Discovery is read-only through the local Ollama HTTP API and never pulls or installs models. The dynamic catalog includes installed chat-capable models, filters out embedding-only models, and exposes only a conservative normalized capability surface first: text streaming, normalized tool calls when the model/provider emits them, structured JSON generation, local usage counts, and Off/On thinking.
 
 Vercel AI Gateway can be added later as an optional provider route, but it should not be the default because Socrates is local-first and should let users bring direct provider keys.
 
@@ -308,7 +310,7 @@ There is an opt-in live cache smoke test for the OpenRouter DeepSeek Flash cache
 SOCRATES_OPENROUTER_CACHE_SMOKE=1 OPENROUTER_API_KEY=... pnpm --filter @socrates/providers test -- openRouterCacheSmoke.live.test.ts
 ```
 
-This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.16` runtime release.
+This cache/cost accounting and provider-routing implementation shipped in the `v0.1.8` runtime line and remains part of the `v0.1.17` runtime release.
 
 ## Provider-Specific Escape Hatch
 
@@ -358,7 +360,7 @@ This lets the core handle common behavior cleanly while the database still captu
 
 Direct-provider pricing snapshots must cover every API-key billed direct model exposed in the picker. The current coverage is OpenAI API `gpt-5`, `gpt-5.4`, `gpt-5.4-mini` and Google `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`. ChatGPT Codex subscription models are not OpenAI Platform API billing and should keep cost source unknown unless a future reliable subscription-usage signal exists. Gemini 3.1 Pro pricing must switch to the documented long-context rates when a provider call has more than 200k prompt/input tokens.
 
-Google/Gemini accepts system instructions only through the top-level provider `system` field. Socrates may still use internal `developer` messages for hidden compaction summaries or backend reminders, but the Google adapter must render those continuation messages as normal user-role text prefixed with `[developer]` instead of AI SDK `system` messages. OpenAI/OpenRouter can continue receiving Socrates `developer` messages as AI SDK system messages when appropriate.
+Google/Gemini accepts system instructions only through the top-level provider `system` field. Socrates may still use internal `developer` messages for hidden compaction summaries or backend reminders, but the Google adapter must render those continuation messages as normal user-role text prefixed with `[developer]` instead of AI SDK `system` messages. OpenAI and OpenRouter should also normalize inline/continuation developer messages as user-role context so later provider calls do not put system messages inside the AI SDK `messages` array. The first system instruction remains the provider-level system prompt.
 
 ## V1 Provider Plan
 

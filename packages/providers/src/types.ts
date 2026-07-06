@@ -226,6 +226,7 @@ export type ProviderThinkingConfig =
   | { providerId: "openai"; effort: ThinkingEffort }
   | { providerId: "google"; effort: Extract<ThinkingEffort, "minimal" | "low" | "medium" | "high"> }
   | { providerId: "openrouter"; enabled: boolean }
+  | { providerId: "ollama"; enabled: boolean }
 
 export type ProviderApiKeyCredential = {
   authMode: "api_key"

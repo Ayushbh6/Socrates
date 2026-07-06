@@ -9,7 +9,7 @@ import { registerWebSocketRoutes } from "./ws/websocket"
 import { ConversationTerminalManager } from "./ws/conversationTerminals"
 import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
 import { McpRuntime } from "@socrates/mcp"
-import { AiSdkProvider, type EmbeddingProvider, type ModelProvider } from "@socrates/providers"
+import { createDefaultModelProvider, type EmbeddingProvider, type ModelProvider } from "@socrates/providers"
 import { ProviderCredentialStore } from "./services/providerCredentials"
 
 export type BuildServerOptions = {
@@ -37,7 +37,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   store.startGlobalMemoryScheduler()
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const titleProvider =
-    options.titleProvider === false ? undefined : options.titleProvider ?? (options.agent ? undefined : new AiSdkProvider(credentials))
+    options.titleProvider === false ? undefined : options.titleProvider ?? (options.agent ? undefined : createDefaultModelProvider(credentials))
   const mcpRuntime = new McpRuntime(socratesHome ? { socratesHome } : {})
   const terminals = new ConversationTerminalManager(store)
   await terminals.reconcilePersistedTerminals()

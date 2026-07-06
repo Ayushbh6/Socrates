@@ -20,6 +20,12 @@ const openAiLegacyGpt5MinimalOption: ModelThinkingOption = {
   effort: "minimal",
 }
 
+const onOption: ModelThinkingOption = {
+  id: "on",
+  label: "On",
+  enabled: true,
+}
+
 const effortOption = (effort: Exclude<ModelThinkingOption["effort"], undefined>): ModelThinkingOption => ({
   id: effort,
   label: effort === "xhigh" ? "Extra High" : effort.charAt(0).toUpperCase() + effort.slice(1),
@@ -38,6 +44,8 @@ const providerLabel = (providerId: ProviderId, authMode: ProviderAuthMode = "api
       return "Google"
     case "openrouter":
       return "OpenRouter"
+    case "ollama":
+      return "Ollama Local"
   }
 }
 
@@ -111,7 +119,7 @@ export const modelCatalog = [
     modelId: "moonshotai/kimi-k2.6",
     label: "Kimi K2.6",
     contextWindowTokens: 262144,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -120,7 +128,7 @@ export const modelCatalog = [
     label: "GLM 5.2",
     contextWindowTokens: 1048576,
     capabilities: { vision: false },
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -128,7 +136,7 @@ export const modelCatalog = [
     modelId: "xiaomi/mimo-v2.5-pro",
     label: "MiMo-V2.5-Pro",
     contextWindowTokens: 1048576,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -136,7 +144,7 @@ export const modelCatalog = [
     modelId: "xiaomi/mimo-v2.5",
     label: "MiMo-V2.5",
     contextWindowTokens: 1048576,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -144,7 +152,7 @@ export const modelCatalog = [
     modelId: "x-ai/grok-build-0.1",
     label: "Grok Build 0.1",
     contextWindowTokens: 256000,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -152,7 +160,7 @@ export const modelCatalog = [
     modelId: "stepfun/step-3.7-flash",
     label: "Step 3.7 Flash",
     contextWindowTokens: 262144,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -161,7 +169,7 @@ export const modelCatalog = [
     label: "DeepSeek V4 Pro",
     contextWindowTokens: 1048576,
     capabilities: { vision: false },
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
     isDefault: true,
   }),
@@ -171,7 +179,7 @@ export const modelCatalog = [
     label: "DeepSeek V4 Flash",
     contextWindowTokens: 1048576,
     capabilities: { vision: false },
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -179,7 +187,7 @@ export const modelCatalog = [
     modelId: "google/gemma-4-31b-it",
     label: "Gemma 4 31B",
     contextWindowTokens: 262144,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -187,7 +195,7 @@ export const modelCatalog = [
     modelId: "meta-llama/llama-4-maverick",
     label: "Llama 4 Maverick",
     contextWindowTokens: 1048576,
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
   makeModel({
@@ -196,7 +204,7 @@ export const modelCatalog = [
     label: "Qwen 3.5 Flash",
     contextWindowTokens: 1048576,
     capabilities: { vision: false },
-    thinkingOptions: [offOption, { id: "on", label: "On", enabled: true }],
+    thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),
 ] satisfies ModelOption[]
@@ -281,6 +289,9 @@ export const catalogForAuthMode = (providerId: ProviderId, authMode: ProviderAut
   if (providerId === "openai" && authMode === "chatgpt_subscription") {
     return chatGptCodexModelCatalog
   }
+  if (providerId === "ollama") {
+    return []
+  }
   if (authMode !== "api_key") {
     return []
   }
@@ -291,3 +302,20 @@ export const findModelOption = (providerId: string, modelId: string, authMode: P
   [...modelCatalog, ...chatGptCodexModelCatalog].find(
     (model) => model.providerId === providerId && model.authMode === authMode && model.modelId === modelId,
   )
+
+export const makeOllamaModelOption = (input: {
+  modelId: string
+  label?: string
+  contextWindowTokens?: number
+  vision?: boolean
+}): ModelOption =>
+  makeModel({
+    providerId: "ollama",
+    authMode: "api_key",
+    modelId: input.modelId,
+    label: input.label ?? input.modelId,
+    contextWindowTokens: input.contextWindowTokens ?? 8192,
+    capabilities: { vision: input.vision ?? false },
+    thinkingOptions: [offOption, onOption],
+    defaultThinkingOptionId: "off",
+  })

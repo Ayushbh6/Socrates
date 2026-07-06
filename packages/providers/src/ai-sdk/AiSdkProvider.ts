@@ -322,6 +322,11 @@ export class AiSdkProvider implements ModelProvider {
           })
         ).chat(request.modelId)
       }
+      case "ollama":
+        throw new SocratesError("provider_not_supported_by_ai_sdk", "Ollama is served by the native Ollama provider, not the AI SDK provider.", {
+          details: { providerId: request.providerId },
+          recoverable: true,
+        })
     }
   }
 
@@ -333,6 +338,11 @@ export class AiSdkProvider implements ModelProvider {
         return createGoogleProviderOptions(request)
       case "openrouter":
         return createOpenRouterProviderOptions(request)
+      case "ollama":
+        throw new SocratesError("provider_not_supported_by_ai_sdk", "Ollama is served by the native Ollama provider, not the AI SDK provider.", {
+          details: { providerId: request.providerId },
+          recoverable: true,
+        })
     }
   }
 
@@ -799,11 +809,11 @@ export const toAiModelMessage = (message: ModelRequest["messages"][number], prov
 }
 
 const toAiModelMessages = (messages: ModelRequest["messages"], providerId?: ModelRequest["providerId"]): AiModelMessage[] =>
-  providerId === "openrouter"
-    ? normalizeOpenRouterMessages(messages).map((message) => toAiModelMessage(message, providerId))
+  providerId === "openrouter" || providerId === "openai"
+    ? normalizeInlineDeveloperMessages(messages).map((message) => toAiModelMessage(message, providerId))
     : messages.map((message) => toAiModelMessage(message, providerId))
 
-const normalizeOpenRouterMessages = (messages: ModelRequest["messages"]): ModelRequest["messages"] => {
+const normalizeInlineDeveloperMessages = (messages: ModelRequest["messages"]): ModelRequest["messages"] => {
   const normalized: ModelRequest["messages"] = []
   for (const message of messages) {
     if (message.role !== "developer") {
@@ -856,24 +866,24 @@ const aiSdkRoleForMessage = (
   if (role !== "developer") {
     return role as AiModelMessage["role"]
   }
-  // Google/Gemini accepts system instructions only through the top-level
-  // system field. Rendering late Socrates developer notes as system messages
-  // makes multi-step tool continuations fail provider-side.
-  return providerId === "google" || providerId === "openrouter" ? "user" : "system"
+  // Late Socrates runtime notes are per-turn guidance, not root system prompts.
+  // Passing them as AI SDK system messages triggers warnings and can break
+  // provider-specific continuation rules, so render them as wrapped user text.
+  return "user"
 }
 
 const textContentForProvider = (
   text: string,
   role: ModelRequest["messages"][number]["role"],
   providerId?: ModelRequest["providerId"],
-): string => (role === "developer" && (providerId === "google" || providerId === "openrouter") ? `[developer]\n${text}` : text)
+): string => (role === "developer" ? `[developer]\n${text}` : text)
 
 const contentPartsForProvider = (
   content: Extract<ModelRequest["messages"][number]["content"], unknown[]>,
   role: ModelRequest["messages"][number]["role"],
   providerId?: ModelRequest["providerId"],
 ): Extract<ModelRequest["messages"][number]["content"], unknown[]> =>
-  role === "developer" && (providerId === "google" || providerId === "openrouter") ? [{ type: "text", text: "[developer]" }, ...content] : content
+  role === "developer" ? [{ type: "text", text: "[developer]" }, ...content] : content
 
 const imageDataContent = (data: string): string => {
   const comma = data.indexOf(",")

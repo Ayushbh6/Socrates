@@ -1177,7 +1177,12 @@ export class MemoryStore extends StoreBase {
       const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })
       return { state, pending: signal, item, skippedReason: reason }
     }
-    if (this.options.credentials && !this.options.credentials.resolveAuth?.(input.settings.providerId, input.settings.authMode ?? "api_key") && !this.options.credentials.getApiKey(input.settings.providerId)) {
+    if (
+      input.settings.providerId !== "ollama" &&
+      this.options.credentials &&
+      !this.options.credentials.resolveAuth?.(input.settings.providerId, input.settings.authMode ?? "api_key") &&
+      !this.options.credentials.getApiKey(input.settings.providerId)
+    ) {
       const reason = `${input.settings.providerId} credential is not configured.`
       const item = this.recordMemoryAgentCheck(input.trigger, "skipped", signal, reason, now)
       const state = input.updateState({ status: "skipped", lastCheckedAt: now, activeJobId: null, error: reason })

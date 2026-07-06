@@ -78,6 +78,7 @@ export const handleChatMessageSend = async (
   titleProvider?: ModelProvider,
 ): Promise<void> => {
   const { projectId, conversationId } = requireCommandScope(command)
+  await store.refreshAvailableModels()
   const runtimeConfig = store.resolveRuntimeConfig(command.payload.runtimeConfig)
   const payload = { ...command.payload, runtimeConfig }
   subscriptions.subscribe(socket, conversationId)
@@ -178,7 +179,9 @@ export const handleChatMessageSend = async (
       .catch(() => undefined)
   }
 
-  const selectedModel = findModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key")
+  const selectedModel =
+    store.findAvailableModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key") ??
+    findModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key")
   const includeImageParts = selectedModel?.capabilities?.vision === true
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
@@ -244,7 +247,9 @@ export const handleChatMessageSend = async (
         })
         modelCallIds.push(modelCallId)
         latestModelCallId = modelCallId
-        const model = findModelOption(modelRequest.providerId, modelRequest.modelId)
+        const model =
+          store.findAvailableModelOption(modelRequest.providerId, modelRequest.modelId, modelRequest.runtimeConfig.authMode ?? "api_key") ??
+          findModelOption(modelRequest.providerId, modelRequest.modelId, modelRequest.runtimeConfig.authMode ?? "api_key")
         if (model?.contextWindowTokens) {
           sendContextUsageSnapshot(emitEvent, store, {
             projectId,

@@ -26,7 +26,9 @@
     "@socrates/contracts": "workspace:*",
     "@socrates/shared": "workspace:*",
     "ai": "^6.0.185",
-    "js-tiktoken": "^1.0.21"
+    "js-tiktoken": "^1.0.21",
+    "zod": "^3.25.76",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
     "@types/node": "^20",

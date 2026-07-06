@@ -406,7 +406,7 @@ This is what allows one conversation/session to freely switch models, thinking m
 | `id` | `TEXT` | yes | Primary key, stable id like `trc_...`. |
 | `turn_id` | `TEXT` | yes | FK to `turns.id`, usually one config per turn. |
 | `provider_id` | `TEXT` | yes | `openai`, `anthropic`, `google`, `openrouter`, `ollama`, `litellm`, etc. |
-| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is the experimental OpenAI ChatGPT Codex mode. |
+| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is the experimental OpenAI ChatGPT Codex mode. Local Ollama chat also uses `api_key` as the direct-provider auth mode but does not require a secret. |
 | `model_id` | `TEXT` | yes | Provider model id. |
 | `thinking_enabled` | `INTEGER` | yes | Boolean as `0` or `1`. |
 | `thinking_effort` | `TEXT` | no | `none`, `low`, `medium`, `high`, `xhigh`, or provider-specific mapped value. |
@@ -785,7 +785,7 @@ Stores the single global Memory Agent model/cadence configuration used by schedu
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key; current runtime uses the singleton id `global`. |
 | `provider_id` | `TEXT` | yes | Provider id from the credential-aware model registry. |
-| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex. |
+| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex. Local Ollama chat uses `api_key` with no stored secret. |
 | `model_id` | `TEXT` | yes | Provider model id. |
 | `thinking_enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
 | `thinking_effort` | `TEXT` | no | Optional thinking effort when enabled/supported. |
@@ -852,7 +852,7 @@ Stores user-configurable model choices for background workers that do not have a
 | `id` | `TEXT` | yes | Primary key, stable id like `wms_...`. |
 | `worker_id` | `TEXT` | yes | Unique worker role: `skill_writer`, `context_compactor`, `title_generator`, or `memory_router`. |
 | `provider_id` | `TEXT` | yes | Provider id from the normal model registry. |
-| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex worker selections. |
+| `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex worker selections. Local Ollama chat uses `api_key` with no stored secret. |
 | `model_id` | `TEXT` | yes | Provider model id from the normal model registry. |
 | `thinking_enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
 | `thinking_effort` | `TEXT` | no | Optional thinking effort when enabled/supported. |

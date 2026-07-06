@@ -49,7 +49,6 @@ import {
   upsertProjectInstructionsRequestSchema,
   workerModelSettingsParamsSchema,
 } from "@socrates/contracts"
-import { listAvailableModels } from "@socrates/providers"
 import type { McpRuntime } from "@socrates/mcp"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
@@ -171,10 +170,18 @@ export const registerHttpRoutes = async (
 
   app.get("/api/me", async () => ok({ user: store.getCurrentUser() }))
 
-  app.get("/api/models", async () => ok(listAvailableModels(credentials.availableAuthModes())))
+  app.get("/api/models", async (_request, reply) => {
+    try {
+      return ok(await store.refreshAvailableModels())
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
 
   app.get("/api/worker-model-settings", async (_request, reply) => {
     try {
+      await store.refreshAvailableModels()
       return ok(listWorkerModelSettingsResponseSchema.parse(store.listWorkerModelSettings()))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
@@ -184,6 +191,7 @@ export const registerHttpRoutes = async (
 
   app.patch("/api/worker-model-settings/:workerId", async (request, reply) => {
     try {
+      await store.refreshAvailableModels()
       const { workerId } = parseParams(workerModelSettingsParamsSchema, request.params)
       const input = parseBody(updateWorkerModelSettingsRequestSchema, request.body)
       return ok(updateWorkerModelSettingsResponseSchema.parse(store.updateWorkerModelSettings(workerId, input)))
@@ -396,6 +404,7 @@ export const registerHttpRoutes = async (
 
   app.get("/api/memory-agent", async (_request, reply) => {
     try {
+      await store.refreshAvailableModels()
       return ok(store.getMemoryAgent())
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
@@ -458,6 +467,7 @@ export const registerHttpRoutes = async (
 
   app.patch("/api/memory-agent/settings", async (request, reply) => {
     try {
+      await store.refreshAvailableModels()
       const input = parseBody(updateMemoryAgentGlobalSettingsRequestSchema, request.body)
       return ok(store.updateMemoryAgentSettings(input))
     } catch (error) {

@@ -23,9 +23,10 @@ const providerLabels: Record<ProviderId, string> = {
   openai: "OpenAI",
   google: "Google",
   openrouter: "OpenRouter",
+  ollama: "Ollama",
 }
 
-const providerEnvVars: Record<ProviderId, string> = {
+const providerEnvVars: Partial<Record<ProviderId, string>> = {
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
@@ -61,6 +62,9 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
   }
 
   resolveAuth(providerId: ProviderId, authMode: ProviderAuthMode = "api_key"): ProviderResolvedCredential | undefined {
+    if (providerId === "ollama") {
+      return undefined
+    }
     if (authMode === "api_key") {
       const apiKey = this.getApiKey(providerId)
       return apiKey ? { authMode: "api_key", apiKey } : undefined
@@ -220,28 +224,34 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
   }
 
   private localFileApiKey(providerId: ProviderId): string | undefined {
+    const envVar = providerEnvVars[providerId]
+    if (!envVar) {
+      return undefined
+    }
     if (!this.localEnvPath || !fs.existsSync(this.localEnvPath)) {
       return undefined
     }
     const values = parseEnvFile(fs.readFileSync(this.localEnvPath, "utf8"))
-    return values.get(providerEnvVars[providerId]) ?? (providerId === "google" ? values.get("GEMINI_API_KEY") : undefined)
+    return values.get(envVar) ?? (providerId === "google" ? values.get("GEMINI_API_KEY") : undefined)
   }
 
   private writeLocalFileCredential(providerId: ProviderId, apiKey: string): void {
-    if (!this.localEnvPath) {
+    const envVar = providerEnvVars[providerId]
+    if (!this.localEnvPath || !envVar) {
       return
     }
     const entries = this.readLocalEnvEntries()
-    entries.set(providerEnvVars[providerId], apiKey)
+    entries.set(envVar, apiKey)
     this.writeLocalEnvEntries(entries)
   }
 
   private deleteLocalFileCredential(providerId: ProviderId): void {
-    if (!this.localEnvPath || !fs.existsSync(this.localEnvPath)) {
+    const envVar = providerEnvVars[providerId]
+    if (!this.localEnvPath || !fs.existsSync(this.localEnvPath) || !envVar) {
       return
     }
     const entries = this.readLocalEnvEntries()
-    entries.delete(providerEnvVars[providerId])
+    entries.delete(envVar)
     if (providerId === "google") {
       entries.delete("GEMINI_API_KEY")
     }

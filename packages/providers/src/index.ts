@@ -1,7 +1,14 @@
 export { AiSdkProvider } from "./ai-sdk/AiSdkProvider"
+export { createDefaultModelProvider } from "./defaultModelProvider"
 export { EmbeddingProviderRouter } from "./EmbeddingProviderRouter"
 export { createDefaultEmbeddingProvider } from "./embeddings/defaultEmbeddingProvider"
 export { OllamaEmbeddingProvider, normalizeBaseUrl } from "./embeddings/OllamaEmbeddingProvider"
+export {
+  DEFAULT_OLLAMA_CHAT_BASE_URL,
+  OllamaChatProvider,
+  listOllamaChatModels,
+  normalizeOllamaBaseUrl,
+} from "./ollama/OllamaChatProvider"
 export { OpenAiEmbeddingProvider } from "./embeddings/OpenAiEmbeddingProvider"
 export { ProviderRouter } from "./ProviderRouter"
 export { envProviderApiKey, envProviderCredentialResolver } from "./credentials"
@@ -21,6 +28,7 @@ export {
   findModelOption,
   listAvailableModels,
   listModels,
+  makeOllamaModelOption,
   modelCatalog,
   type AvailableProviderAuth,
 } from "./modelCatalog/modelCatalog"

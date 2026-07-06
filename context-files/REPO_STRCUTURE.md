@@ -224,7 +224,7 @@ It must not own agent logic, provider logic, workspace operations, persistence, 
 
 The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Runtime asset lookup should prefer direct GitHub Release download URLs and use REST release metadata only as a fallback, because public `npx` installs may hit unauthenticated GitHub API rate limits. Windows extraction should use `tar.exe` first and PowerShell `Expand-Archive` only as a fallback. Runtime zip creation must archive direct root entries such as `launcher.mjs` and `manifest.json`, not `.` or a wrapper directory, so older npm launchers can extract the latest GitHub runtime reliably. Keep installer/extraction optimization inside the CLI/desktop packaging layer, not in agent/workspace packages.
 
-Release/package-manager tooling is pinned to the proven `pnpm@9.15.1` runtime-build path. Runtime release publishing recreates the tag release and uploads each archive explicitly so stale partial drafts are discarded. Runtime archives still bundle Node v20.20.2. GitHub Windows shell/runtime jobs should use `windows-2022`; `windows-latest` currently maps to Windows Server 2025 / VS 2026 and breaks `node-gyp` Visual Studio detection for native dependencies. Shell Tooling keeps Windows install/typecheck plus contracts/workspace/core tests, and runs server PTY/WebSocket tests on Ubuntu only because they assume POSIX bash/PTY behavior.
+Release/package-manager tooling is pinned to the proven `pnpm@9.15.1` runtime-build path. Runtime release publishing recreates the tag release and uploads each archive explicitly so stale partial drafts are discarded. Runtime archives still bundle Node v20.20.2. Local runtime archive builds support pnpm 10+ by adding legacy deploy and native build-script allowance only when the builder detects a newer pnpm major. GitHub Windows shell/runtime jobs should use `windows-2022`; `windows-latest` currently maps to Windows Server 2025 / VS 2026 and breaks `node-gyp` Visual Studio detection for native dependencies. Shell Tooling keeps Windows install/typecheck plus contracts/workspace/core tests, and runs server PTY/WebSocket tests on Ubuntu only because they assume POSIX bash/PTY behavior.
 
 ### `apps/server`
 
@@ -503,12 +503,15 @@ It owns:
 - The internal `ModelProvider` interface.
 - Internal embedding provider interface.
 - Vercel AI SDK adapter.
+- Native Ollama chat adapter and dynamic local model discovery.
 - Provider/model registry, including auth-mode-specific catalog entries.
 - Provider config loading and credential-auth resolution.
 - Provider-aware request token counting with local tokenizer fallback, safety-margin metadata, and provider-exact counting where available.
-- Future LiteLLM, Ollama, OpenRouter, OpenAI, Anthropic, or Gemini direct adapters if needed.
+- Future LiteLLM, Anthropic, or deeper direct wrappers for major providers if needed.
 
-The agent core should call only the internal provider interface. Runtime model identity is `{ providerId, authMode, modelId }`; provider id alone is not enough when a provider supports both API-key billing and subscription-auth request paths.
+The agent core should call only the internal provider interface. Runtime model identity is `{ providerId, authMode, modelId }`; provider id alone is not enough when a provider supports both API-key billing and subscription-auth request paths. Ollama chat models use the same identity shape with `providerId = "ollama"` and `authMode = "api_key"` for the local direct path, but no secret is required.
+
+Ollama chat model discovery is dynamic and server-owned. The backend refreshes `/api/models` from installed local Ollama metadata, filters out embedding-only models, exposes discovered chat-capable models to the composer, worker model settings, title generation, Memory Router, and Global Memory Agent, and never pulls or installs models during discovery.
 
 Embedding generation for trace documents stays behind provider abstractions. Chat turns do not import or call embedding SDKs directly. The semantic phase added a provider-agnostic `EmbeddingProvider` boundary in `packages/providers`, separate from the chat `ModelProvider`.
 

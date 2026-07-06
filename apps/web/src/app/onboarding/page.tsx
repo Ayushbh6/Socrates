@@ -13,7 +13,7 @@ export default function OnboardingPage() {
   const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [openRouterReady, setOpenRouterReady] = useState(false);
+  const [modelSourceReady, setModelSourceReady] = useState(false);
 
   useEffect(() => {
     if (!isLoading && user?.onboardingCompleted) {
@@ -29,8 +29,8 @@ export default function OnboardingPage() {
       setError("Enter your name to continue.");
       return;
     }
-    if (!openRouterReady) {
-      setError("Save an OpenRouter key to continue.");
+    if (!modelSourceReady) {
+      setError("Connect a model provider or start Ollama with at least one chat model to continue.");
       return;
     }
 
@@ -48,6 +48,25 @@ export default function OnboardingPage() {
     }
   };
 
+  useEffect(() => {
+    let mounted = true;
+    void api.listModels().then(
+      (models) => {
+        if (mounted) {
+          setModelSourceReady(models.models.length > 0);
+        }
+      },
+      () => {
+        if (mounted) {
+          setModelSourceReady(false);
+        }
+      },
+    );
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <main className="min-h-screen bg-brand-bg flex items-center justify-center p-6">
       <div className="max-w-3xl w-full">
@@ -62,12 +81,12 @@ export default function OnboardingPage() {
             className="px-5 py-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-brand-teal-dark shadow-sm text-lg transition-colors"
           />
           {error && <p className="text-sm text-red-600">{error}</p>}
-          <Button type="submit" disabled={isSubmitting || isLoading || !openRouterReady} className="w-full py-6 rounded-xl text-base">
+          <Button type="submit" disabled={isSubmitting || isLoading || !modelSourceReady} className="w-full py-6 rounded-xl text-base">
             {isSubmitting ? "Saving" : "Continue"}
           </Button>
         </form>
         <div className="mt-8">
-          <ProviderCredentialsPanel onOpenRouterReadyChange={setOpenRouterReady} />
+          <ProviderCredentialsPanel onConfiguredProviderReadyChange={setModelSourceReady} />
         </div>
       </div>
     </main>

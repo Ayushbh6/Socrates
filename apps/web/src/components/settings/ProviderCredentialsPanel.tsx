@@ -11,10 +11,10 @@ const providerOrder: ProviderId[] = ["openrouter", "openai", "google"];
 
 type ProviderCredentialsPanelProps = {
   showUpdater?: boolean;
-  onOpenRouterReadyChange?: (ready: boolean) => void;
+  onConfiguredProviderReadyChange?: (ready: boolean) => void;
 };
 
-export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterReadyChange }: ProviderCredentialsPanelProps) {
+export function ProviderCredentialsPanel({ showUpdater = false, onConfiguredProviderReadyChange }: ProviderCredentialsPanelProps) {
   const [statuses, setStatuses] = useState<ProviderCredentialStatus[]>([]);
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [envImportPath, setEnvImportPath] = useState("");
@@ -24,8 +24,8 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
   const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus>({ state: "idle" });
   const [desktopMode, setDesktopMode] = useState(false);
 
-  const openRouterReady = useMemo(
-    () => statuses.some((status) => status.providerId === "openrouter" && status.configured),
+  const configuredProviderReady = useMemo(
+    () => statuses.some((status) => status.configured),
     [statuses],
   );
   const chatGptCodexConfigured = useMemo(
@@ -35,8 +35,8 @@ export function ProviderCredentialsPanel({ showUpdater = false, onOpenRouterRead
   const [isChatGptCodexAuthPending, setIsChatGptCodexAuthPending] = useState(false);
 
   useEffect(() => {
-    onOpenRouterReadyChange?.(openRouterReady);
-  }, [onOpenRouterReadyChange, openRouterReady]);
+    onConfiguredProviderReadyChange?.(configuredProviderReady);
+  }, [configuredProviderReady, onConfiguredProviderReadyChange]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDesktopMode(isTauriRuntime()), 0);
@@ -362,6 +362,8 @@ const labelFor = (providerId: ProviderId): string => {
       return "OpenAI";
     case "google":
       return "Google";
+    case "ollama":
+      return "Ollama";
   }
 };
 
@@ -373,6 +375,8 @@ const descriptionFor = (providerId: ProviderId): string => {
       return "Required for hosted semantic embeddings when local Ollama is not used.";
     case "google":
       return "Optional chat provider.";
+    case "ollama":
+      return "Local chat provider detected from installed Ollama models.";
   }
 };
 

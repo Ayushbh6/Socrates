@@ -164,6 +164,69 @@ describe("AI SDK provider request shape", () => {
     expect(options.providerOptions?.openai).not.toHaveProperty("promptCacheRetention")
   })
 
+  it("renders ChatGPT subscription developer messages as wrapped user text", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => undefined,
+      resolveAuth: () => ({
+        authMode: "chatgpt_subscription",
+        apiKey: "dummy-chatgpt-subscription-key",
+        fetch,
+      }),
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openai", "gpt-5.3-codex-spark"),
+      runtimeConfig: {
+        ...runtimeConfig("openai", "gpt-5.3-codex-spark"),
+        authMode: "chatgpt_subscription",
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+      },
+      messages: [
+        { role: "user", content: "What date is today?" },
+        {
+          role: "developer",
+          content: "<runtime_socrates_docs_preflight>\nRead project docs before workspace actions.\n</runtime_socrates_docs_preflight>",
+        },
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "call_1",
+              toolName: "read",
+              input: { path: "README.md" },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call_1",
+              toolName: "read",
+              output: { ok: true, output: "README" },
+            },
+          ],
+        },
+        {
+          role: "developer",
+          content: "Runtime action ledger for this turn:\n- Recent actions: ok read {\"path\":\"README.md\"}.",
+        },
+      ],
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { messages?: Array<{ role?: string; content?: unknown }> }
+    expect(options.messages?.map((message) => message.role)).toEqual(["user", "assistant", "tool", "user"])
+    expect(JSON.stringify(options.messages)).not.toContain('"role":"system"')
+    expect(JSON.stringify(options.messages)).not.toContain('"role":"developer"')
+    expect(String(options.messages?.[0]?.content)).toContain("<runtime_socrates_developer_context>")
+    expect(String(options.messages?.[3]?.content)).toContain("Runtime action ledger")
+  })
+
   it("normalizes blank provider API errors into non-empty model failures", async () => {
     aiMocks.streamText.mockReturnValue({
       fullStream: (async function* () {

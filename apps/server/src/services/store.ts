@@ -80,12 +80,21 @@ import type {
   UpsertProjectInstructionsRequest,
   User,
   ServerEvent,
+  ModelOption,
   ModelSettingsResolution,
   ModelSettingsSelection,
   WorkerModelRole,
   WorkerModelSettings,
 } from "@socrates/contracts"
-import { AiSdkProvider, createDefaultEmbeddingProvider, listAvailableModels, type EmbeddingProvider, type ModelProvider, type ProviderCredentialResolver } from "@socrates/providers"
+import {
+  createDefaultEmbeddingProvider,
+  createDefaultModelProvider,
+  listAvailableModels as listStaticAvailableModels,
+  listOllamaChatModels,
+  type EmbeddingProvider,
+  type ModelProvider,
+  type ProviderCredentialResolver,
+} from "@socrates/providers"
 import { SocratesError } from "@socrates/shared"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
@@ -159,6 +168,8 @@ export class SocratesStore {
   private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
   private readonly contextCompactions: ContextCompactionStore
+  private ollamaChatModels: ModelOption[] = []
+  private ollamaChatModelsCheckedAt = 0
   private memoryAgentScheduler: ReturnType<typeof setInterval> | undefined
 
   constructor(
@@ -193,7 +204,7 @@ export class SocratesStore {
     this.workerModelSettings = new WorkerModelSettingsStore(context)
     const memoryOptions = {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
-      ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: new AiSdkProvider(credentials) } : {}),
+      ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: createDefaultModelProvider(credentials) } : {}),
       ...(credentials ? { credentials } : {}),
       traceRetrieve: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => this.traces.retrieve(projectId, conversationId, input),
       traceRetrieveGlobal: (input: TraceRetrieveToolInput) => this.traces.retrieveGlobal(input),
@@ -391,8 +402,45 @@ export class SocratesStore {
     return { settings: resolution.effective ? { ...settings, ...resolution.effective } : settings }
   }
 
+  async refreshAvailableModels(options: { force?: boolean } = {}): Promise<ListModelsResponse> {
+    if (process.env.NODE_ENV === "test" && process.env.SOCRATES_ENABLE_OLLAMA_CHAT_DISCOVERY !== "true") {
+      return this.listAvailableModels()
+    }
+    const now = Date.now()
+    if (options.force || now - this.ollamaChatModelsCheckedAt > 5_000) {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 1_500)
+      try {
+        const result = await listOllamaChatModels({ abortSignal: controller.signal })
+        this.ollamaChatModels = result.models
+        this.ollamaChatModelsCheckedAt = now
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+    return this.listAvailableModels()
+  }
+
   listAvailableModels(): ListModelsResponse {
-    return listAvailableModels(this.credentials?.availableAuthModes?.() ?? [])
+    const response = listStaticAvailableModels(this.credentials?.availableAuthModes?.() ?? [])
+    const models = mergeModelOptions(response.models, this.ollamaChatModels)
+    const defaultModel =
+      response.defaultModel ??
+      (this.ollamaChatModels[0]
+        ? {
+            providerId: this.ollamaChatModels[0].providerId,
+            authMode: this.ollamaChatModels[0].authMode,
+            modelId: this.ollamaChatModels[0].modelId,
+            thinkingOptionId: this.ollamaChatModels[0].defaultThinkingOptionId,
+          }
+        : null)
+    return { models, defaultModel }
+  }
+
+  findAvailableModelOption(providerId: string, modelId: string, authMode = "api_key"): ModelOption | undefined {
+    return this.listAvailableModels().models.find(
+      (candidate) => candidate.providerId === providerId && candidate.authMode === authMode && candidate.modelId === modelId,
+    )
   }
 
   resolveModelSettings(saved: ModelSettingsSelection, role: "chat" | "memory_agent" | WorkerModelRole): ModelSettingsResolution {
@@ -457,6 +505,7 @@ export class SocratesStore {
   }
 
   async runGlobalMemoryAgent(trigger: "scheduled" | "manual" = "manual"): Promise<TriggerMemoryAgentRunResponse> {
+    await this.refreshAvailableModels()
     const settings = this.memoryAgentSettings.ensureSettings()
     const resolution = this.resolveModelSettings(settings, "memory_agent")
     const effectiveSettings = resolution.effective ? { ...settings, ...resolution.effective } : settings
@@ -956,4 +1005,18 @@ export class SocratesStore {
       return undefined
     }
   }
+}
+
+const mergeModelOptions = (primary: ModelOption[], secondary: ModelOption[]): ModelOption[] => {
+  const seen = new Set<string>()
+  const merged: ModelOption[] = []
+  for (const model of [...primary, ...secondary]) {
+    const key = `${model.providerId}:${model.authMode}:${model.modelId}`
+    if (seen.has(key)) {
+      continue
+    }
+    seen.add(key)
+    merged.push(model)
+  }
+  return merged
 }
