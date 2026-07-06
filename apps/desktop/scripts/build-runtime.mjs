@@ -226,7 +226,7 @@ await run(pnpmCommand, ["--filter", "web", "build"], {
   },
 });
 
-await run(pnpmCommand, ["--filter", "@socrates/server", "deploy", "--legacy", "--prod", path.join(runtimeDir, "server")]);
+await run(pnpmCommand, ["--filter", "@socrates/server", "deploy", "--prod", path.join(runtimeDir, "server")]);
 removePackagedEnvFiles(path.join(runtimeDir, "server"));
 exposePnpmHoistedDependencies(path.join(runtimeDir, "server"));
 assertPackagedServerDependencies();
