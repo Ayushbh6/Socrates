@@ -289,13 +289,14 @@ const searchTextFallback = async (
   const regex = input.regex ? new RegExp(input.query, flags) : null
   const needle = input.caseSensitive ? input.query : input.query.toLowerCase()
   const matches: SearchToolOutput["matches"] = []
+  const scanLimit = maxResults + 1
   for (const file of files) {
-    if (matches.length >= maxResults) {
+    if (matches.length >= scanLimit) {
       break
     }
     const text = await fs.readFile(file, "utf8").catch(() => "")
     const lines = text.split("\n")
-    for (let index = 0; index < lines.length && matches.length < maxResults; index += 1) {
+    for (let index = 0; index < lines.length && matches.length < scanLimit; index += 1) {
       const line = lines[index] ?? ""
       const haystack = input.caseSensitive ? line : line.toLowerCase()
       if (regex ? regex.test(line) : haystack.includes(needle)) {
