@@ -59,10 +59,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" release-artifacts/* \
-              --title "Socrates $GITHUB_REF_NAME" \
-              --notes "Unsigned Socrates npm runtime bundles for macOS and Windows. Install with: npx @socrates-ai/cli"
-          fi
+          set -euo pipefail
+
+          ls -lh release-artifacts
+
+          gh release delete "$GITHUB_REF_NAME" --yes >/dev/null 2>&1 || true
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "Socrates $GITHUB_REF_NAME" \
+            --notes "Unsigned Socrates npm runtime bundles for macOS and Windows. Install with: npx @socrates-ai/cli"
+
+          for asset in \
+            release-artifacts/socrates-runtime-darwin-arm64.zip \
+            release-artifacts/socrates-runtime-darwin-x64.zip \
+            release-artifacts/socrates-runtime-win32-x64.zip \
+            release-artifacts/SHA256SUMS
+          do
+            test -f "$asset"
+            echo "::group::Upload $(basename "$asset")"
+            timeout 20m gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+            echo "::endgroup::"
+          done

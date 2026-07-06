@@ -224,7 +224,7 @@ It must not own agent logic, provider logic, workspace operations, persistence, 
 
 The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Runtime asset lookup should prefer direct GitHub Release download URLs and use REST release metadata only as a fallback, because public `npx` installs may hit unauthenticated GitHub API rate limits. Windows extraction should use `tar.exe` first and PowerShell `Expand-Archive` only as a fallback. Runtime zip creation must archive direct root entries such as `launcher.mjs` and `manifest.json`, not `.` or a wrapper directory, so older npm launchers can extract the latest GitHub runtime reliably. Keep installer/extraction optimization inside the CLI/desktop packaging layer, not in agent/workspace packages.
 
-Release/package-manager tooling is pinned to the proven `pnpm@9.15.1` runtime-build path. Runtime archives still bundle Node v20.20.2.
+Release/package-manager tooling is pinned to the proven `pnpm@9.15.1` runtime-build path. Runtime release publishing recreates the tag release and uploads each archive explicitly so stale partial drafts are discarded. Runtime archives still bundle Node v20.20.2.
 
 ### `apps/server`
 
