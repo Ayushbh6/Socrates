@@ -429,7 +429,9 @@ OpenAI
 
 ChatGPT Codex subscription
   gpt-5.5
+  gpt-5.4
   gpt-5.4-mini
+  gpt-5.3-codex-spark       no vision
 
 Google
   gemini-3.1-pro-preview
@@ -461,8 +463,11 @@ OpenAI API:
   none means non-thinking mode
 
 ChatGPT Codex subscription:
-  low, medium, high, xhigh
-  no non-thinking option is shown for subscription-mode models
+  gpt-5.5 -> low, medium, high, xhigh
+  gpt-5.4 -> none, low, medium, high, xhigh
+  gpt-5.4-mini -> none, low, medium, high, xhigh
+  gpt-5.3-codex-spark -> low, medium, high, xhigh
+  none means non-thinking mode when the selected subscription model exposes it
 
 Google:
   gemini-3.1-pro-preview -> low, medium, high

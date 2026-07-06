@@ -988,10 +988,10 @@ describe("websocket server event contracts", () => {
       envelope("context.usage.snapshot", {
         providerId: "openai",
         modelId: "gpt-5.4",
-        contextWindowTokens: 258000,
+        contextWindowTokens: 1050000,
         contextUsedTokens: 55000,
-        contextLeftTokens: 203000,
-        contextUsedPercent: 21.3,
+        contextLeftTokens: 995000,
+        contextUsedPercent: 5.2,
       }),
     ),
     contextCompactionStartedEventSchema.safeParse(

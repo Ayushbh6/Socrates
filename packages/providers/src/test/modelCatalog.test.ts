@@ -54,25 +54,35 @@ describe("model catalog", () => {
       "OpenAI API:api_key:gpt-5.4",
       "OpenAI API:api_key:gpt-5",
       "ChatGPT Codex:chatgpt_subscription:gpt-5.5",
+      "ChatGPT Codex:chatgpt_subscription:gpt-5.4",
       "ChatGPT Codex:chatgpt_subscription:gpt-5.4-mini",
+      "ChatGPT Codex:chatgpt_subscription:gpt-5.3-codex-spark",
     ])
   })
 
   it("exposes the ChatGPT Codex subscription model set", () => {
     const response = listAvailableModels([{ providerId: "openai", authMode: "chatgpt_subscription" }])
 
-    expect(response.models.map((model) => model.modelId)).toEqual(["gpt-5.5", "gpt-5.4-mini"])
+    expect(response.models.map((model) => model.modelId)).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"])
     expect(response.defaultModel).toMatchObject({
       providerId: "openai",
       authMode: "chatgpt_subscription",
       modelId: "gpt-5.5",
       thinkingOptionId: "xhigh",
     })
-    for (const model of response.models) {
-      expect(model.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high", "xhigh"])
-    }
+    const modelsById = new Map(response.models.map((model) => [model.modelId, model]))
+    expect(modelsById.get("gpt-5.5")?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high", "xhigh"])
+    expect(modelsById.get("gpt-5.4")?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
+    expect(modelsById.get("gpt-5.4-mini")?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
+    expect(modelsById.get("gpt-5.3-codex-spark")?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high", "xhigh"])
     expect(response.models.find((model) => model.modelId === "gpt-5.5")?.defaultThinkingOptionId).toBe("xhigh")
+    expect(response.models.find((model) => model.modelId === "gpt-5.4")?.defaultThinkingOptionId).toBe("none")
     expect(response.models.find((model) => model.modelId === "gpt-5.4-mini")?.defaultThinkingOptionId).toBe("low")
+    expect(response.models.find((model) => model.modelId === "gpt-5.3-codex-spark")?.defaultThinkingOptionId).toBe("low")
+    expect(response.models.find((model) => model.modelId === "gpt-5.4")?.contextWindowTokens).toBe(1050000)
+    expect(response.models.find((model) => model.modelId === "gpt-5.4-mini")?.contextWindowTokens).toBe(400000)
+    expect(response.models.find((model) => model.modelId === "gpt-5.3-codex-spark")?.contextWindowTokens).toBe(128000)
+    expect(response.models.find((model) => model.modelId === "gpt-5.3-codex-spark")?.capabilities?.vision).toBe(false)
   })
 
   it("does not expose non-thinking mode for Gemini 3.1 Pro", () => {
@@ -87,8 +97,10 @@ describe("model catalog", () => {
 
     expect(gpt54Mini?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
     expect(gpt54Mini?.defaultThinkingOptionId).toBe("none")
+    expect(gpt54Mini?.contextWindowTokens).toBe(400000)
     expect(gpt54?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
     expect(gpt54?.defaultThinkingOptionId).toBe("none")
+    expect(gpt54?.contextWindowTokens).toBe(1050000)
     expect(gpt5?.thinkingOptions.map((option) => option.id)).toEqual(["minimal", "low", "medium", "high"])
     expect(gpt5?.defaultThinkingOptionId).toBe("minimal")
   })

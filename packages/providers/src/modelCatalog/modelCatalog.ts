@@ -28,6 +28,7 @@ const effortOption = (effort: Exclude<ModelThinkingOption["effort"], undefined>)
 })
 
 const chatGptCodexThinkingOptions = [effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")]
+const openAiGpt54ThinkingOptions = [openAiNoneOption, ...chatGptCodexThinkingOptions]
 
 const providerLabel = (providerId: ProviderId, authMode: ProviderAuthMode = "api_key"): string => {
   switch (providerId) {
@@ -53,16 +54,16 @@ export const modelCatalog = [
     providerId: "openai",
     modelId: "gpt-5.4-mini",
     label: "GPT-5.4 mini",
-    contextWindowTokens: 258000,
-    thinkingOptions: [openAiNoneOption, effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")],
+    contextWindowTokens: 400000,
+    thinkingOptions: openAiGpt54ThinkingOptions,
     defaultThinkingOptionId: "none",
   }),
   makeModel({
     providerId: "openai",
     modelId: "gpt-5.4",
     label: "GPT-5.4",
-    contextWindowTokens: 258000,
-    thinkingOptions: [openAiNoneOption, effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")],
+    contextWindowTokens: 1050000,
+    thinkingOptions: openAiGpt54ThinkingOptions,
     defaultThinkingOptionId: "none",
   }),
   makeModel({
@@ -216,9 +217,24 @@ export const chatGptCodexModelCatalog = [
     defaultThinkingOptionId: "xhigh",
   }),
   makeChatGptCodexModel({
+    modelId: "gpt-5.4",
+    label: "GPT-5.4",
+    contextWindowTokens: 1050000,
+    thinkingOptions: openAiGpt54ThinkingOptions,
+    defaultThinkingOptionId: "none",
+  }),
+  makeChatGptCodexModel({
     modelId: "gpt-5.4-mini",
     label: "GPT-5.4 mini",
-    contextWindowTokens: 258000,
+    contextWindowTokens: 400000,
+    thinkingOptions: openAiGpt54ThinkingOptions,
+    defaultThinkingOptionId: "low",
+  }),
+  makeChatGptCodexModel({
+    modelId: "gpt-5.3-codex-spark",
+    label: "GPT-5.3 Codex Spark",
+    contextWindowTokens: 128000,
+    capabilities: { vision: false },
     thinkingOptions: chatGptCodexThinkingOptions,
     defaultThinkingOptionId: "low",
   }),
