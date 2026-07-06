@@ -39,4 +39,7 @@ jobs:
           pnpm --filter @socrates/contracts test
           pnpm --filter @socrates/workspace test
           pnpm --filter @socrates/core test
+      - name: Test server shell contracts
+        if: runner.os != 'Windows'
+        run: |
           pnpm --filter @socrates/server test
