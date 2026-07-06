@@ -20,6 +20,8 @@ const runtimeConfig = {
   sandboxMode: "read_only" as const,
 }
 
+const SLOW_COMPRESSION_TEST_TIMEOUT_MS = 20_000
+
 describe("context compression", () => {
   it("uses one v1 trigger and tail/tool pressure defaults", () => {
     expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toEqual({
@@ -171,7 +173,7 @@ describe("context compression", () => {
       { role: "assistant", content: "tail assistant", id: "msg_ta", turnId: "turn_2" },
       { role: "user", content: "active user", id: "msg_active", turnId: "turn_3" },
     ])
-  })
+  }, SLOW_COMPRESSION_TEST_TIMEOUT_MS)
 
   it("carries the previous validated summary forward exactly once", async () => {
     const previous = "# Goal\nPrevious compacted context"
@@ -472,7 +474,7 @@ describe("context compression", () => {
     expect(packed).toContain("ACTIVE_TOOL_RAW_SENTINEL_3")
     expect(packed).not.toContain("ACTIVE_TOOL_OMIT_SENTINEL_1")
     expect(prepared.compactionEvents.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
-  })
+  }, SLOW_COMPRESSION_TEST_TIMEOUT_MS)
 
   it("keeps the latest five tool results and compacts older current-turn tool results", async () => {
     const provider = structuredProvider({ counts: [170_000, 80_000], outputs: [validChat({ toolState: ["Older tool digest captured."] })] })

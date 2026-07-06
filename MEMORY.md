@@ -170,8 +170,9 @@ Tool routing:
 
 ## Release State
 
-- Current GitHub runtime and npm launcher release is `v0.1.15`; npm latest reports `@socrates-ai/cli@0.1.15`, and GitHub latest runtime redirects to `v0.1.15`.
-- `v0.1.15` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13`, the duplicate-section startup recovery from `v0.1.14`, and adds memory-agent evidence-index guidance plus duplicate markdown-heading normalization for primary docs.
+- Current GitHub runtime release target is `v0.1.16`; npm launcher source is prepared as `@socrates-ai/cli@0.1.16` for manual npm publish after the GitHub runtime release completes.
+- `v0.1.16` preserves the Memory Center / identity-user-profile cleanup from `v0.1.13`, the duplicate-section startup recovery from `v0.1.14`, the evidence-index guidance and duplicate markdown-heading normalization from `v0.1.15`, and adds Ollama embedding setup, CodeAct/url_fetch guidance, the expanded ChatGPT Codex subscription model catalog, and pnpm 11 runtime packaging fixes.
+- Local release tooling is validated with `pnpm@11.7.0`. Runtime archive packaging uses `pnpm deploy --legacy` for the server sidecar and commits a narrow `allowBuilds` list for the required native runtime dependencies (`better-sqlite3`, `@homebridge/node-pty-prebuilt-multiarch`) plus the required dev packaging toolchain packages (`esbuild`, `unrs-resolver`).
 - `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id or trace handle when available, the supported claim, and the profile section using that claim.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
 - Credential-aware model routing and experimental ChatGPT Codex auth commit `6a29dad Add ChatGPT Codex auth model routing` is pushed to `origin/main`. It adds auth-mode-aware model settings, filtered `/api/models`, ChatGPT Codex OAuth/token refresh, Codex request routing, UI credential status, Codex-preferred defaults for chat/workers/memory-agent, and compressor regression coverage for active context, anchors, full fields, and source handles.
@@ -254,6 +255,18 @@ pnpm --filter @socrates/core test -- SocratesAgent.test.ts
 pnpm --filter @socrates/server typecheck
 pnpm --filter @socrates/server test -- src/ws/urlFetch.test.ts
 pnpm --filter @socrates/server test -- memoryDocParser.test.ts
+```
+
+Latest verified for release readiness after Ollama embeddings, CodeAct/url_fetch, ChatGPT Codex model catalog, and pnpm 11 packaging fixes on 2026-07-06:
+
+```text
+git diff --check
+PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false CI=true pnpm -r typecheck
+pnpm build
+PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false CI=true pnpm -r --workspace-concurrency=1 test
+pnpm runtime:archive
+live app: http://127.0.0.1:3000/welcome returned 200, http://127.0.0.1:4000/health returned ok
+runtime archive produced release-artifacts/socrates-runtime-darwin-arm64.zip, manifest version 0.1.16, bundled Node v20.20.2
 ```
 
 Live DeepSeek V4 Pro browser E2E on 2026-06-17 used OpenRouter `deepseek/deepseek-v4-pro` with thinking on in `Test-Workspace`. Requests had `NO_STATE_LEDGER`, `NO_LAST_TURN`, and `HAS_STABLE_WAKE`. That E2E predates the 2026-06-25 removal of main-chat wake-context injection. The edit probe confirmed the enforced sequence: `project_docs(area:"notes")`, `repo_docs`, approved `edit`, then `project_docs(area:"memory")` before final. OpenRouter routed to StreamLake; the first two simple chat turns had zero cached input tokens, while same-turn tool continuations produced cache hits.

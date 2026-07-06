@@ -8,6 +8,7 @@ __pycache__/
 node_modules/
 dist/
 build/
+release-artifacts/
 venv/
 backend/.venv/
 backend/.pytest_cache/
@@ -23,6 +24,8 @@ test_material/
 app-data/
 apps/server/app-data/
 socrates-conversation-export.txt
+evals/codeact-rerun-*.json
+evals/codeact-pro-rerun-*.json
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/target/
 apps/desktop/.cache/
