@@ -224,7 +224,7 @@ It must not own agent logic, provider logic, workspace operations, persistence, 
 
 The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Runtime asset lookup should prefer direct GitHub Release download URLs and use REST release metadata only as a fallback, because public `npx` installs may hit unauthenticated GitHub API rate limits. Windows extraction should use `tar.exe` first and PowerShell `Expand-Archive` only as a fallback. Runtime zip creation must archive direct root entries such as `launcher.mjs` and `manifest.json`, not `.` or a wrapper directory, so older npm launchers can extract the latest GitHub runtime reliably. Keep installer/extraction optimization inside the CLI/desktop packaging layer, not in agent/workspace packages.
 
-Release/package-manager tooling is pinned to `pnpm@11.7.0`. GitHub Actions runs pnpm 11 under Node 24, while runtime archives still bundle Node v20.20.2. The runtime builder uses `pnpm deploy --legacy` for the server sidecar and `pnpm-workspace.yaml` allows build scripts only for the known native runtime dependencies (`better-sqlite3`, `@homebridge/node-pty-prebuilt-multiarch`) plus required dev packaging toolchain packages (`esbuild`, `unrs-resolver`).
+Release/package-manager tooling is pinned to `pnpm@11.7.0`. GitHub Actions runs pnpm 11 under Node 24, while runtime archives still bundle Node v20.20.2. The runtime builder uses `pnpm deploy --legacy` for the server sidecar and `pnpm-workspace.yaml` allows build scripts only for known native runtime dependencies (`better-sqlite3`, `@homebridge/node-pty-prebuilt-multiarch`), required dev packaging toolchain packages (`esbuild`, `unrs-resolver`), and dependency setup packages (`msw`, `sharp`).
 
 ### `apps/server`
 
