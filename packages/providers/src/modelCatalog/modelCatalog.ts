@@ -35,6 +35,7 @@ const effortOption = (effort: Exclude<ModelThinkingOption["effort"], undefined>)
 
 const chatGptCodexThinkingOptions = [effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")]
 const openAiGpt54ThinkingOptions = [openAiNoneOption, ...chatGptCodexThinkingOptions]
+const deepSeekThinkingOptions: ModelThinkingOption[] = [offOption, effortOption("high"), { ...effortOption("xhigh"), label: "Max" }]
 
 const providerLabel = (providerId: ProviderId, authMode: ProviderAuthMode = "api_key"): string => {
   switch (providerId) {
@@ -44,6 +45,8 @@ const providerLabel = (providerId: ProviderId, authMode: ProviderAuthMode = "api
       return "Google"
     case "openrouter":
       return "OpenRouter"
+    case "deepseek":
+      return "DeepSeek API"
     case "ollama":
       return "Ollama Local"
   }
@@ -206,6 +209,24 @@ export const modelCatalog = [
     capabilities: { vision: false },
     thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
+  }),
+  makeModel({
+    providerId: "deepseek",
+    modelId: "deepseek-v4-pro",
+    label: "DeepSeek V4 Pro",
+    contextWindowTokens: 1048576,
+    capabilities: { vision: false },
+    thinkingOptions: deepSeekThinkingOptions,
+    defaultThinkingOptionId: "high",
+  }),
+  makeModel({
+    providerId: "deepseek",
+    modelId: "deepseek-v4-flash",
+    label: "DeepSeek V4 Flash",
+    contextWindowTokens: 1048576,
+    capabilities: { vision: false },
+    thinkingOptions: deepSeekThinkingOptions,
+    defaultThinkingOptionId: "high",
   }),
 ] satisfies ModelOption[]
 

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
 import { desktopCredentials, desktopUpdates, isTauriRuntime, type DesktopUpdateStatus } from "@/lib/desktop";
 
-const providerOrder: ProviderId[] = ["openrouter", "openai", "google"];
+const providerOrder: ProviderId[] = ["openrouter", "deepseek", "openai", "google"];
 
 type ProviderCredentialsPanelProps = {
   showUpdater?: boolean;
@@ -358,6 +358,8 @@ const labelFor = (providerId: ProviderId): string => {
   switch (providerId) {
     case "openrouter":
       return "OpenRouter";
+    case "deepseek":
+      return "DeepSeek";
     case "openai":
       return "OpenAI";
     case "google":
@@ -371,6 +373,8 @@ const descriptionFor = (providerId: ProviderId): string => {
   switch (providerId) {
     case "openrouter":
       return "Required for the default chat model and context compression.";
+    case "deepseek":
+      return "Optional direct provider for official DeepSeek V4 models and KV-cache accounting.";
     case "openai":
       return "Required for hosted semantic embeddings when local Ollama is not used.";
     case "google":

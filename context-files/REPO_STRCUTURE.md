@@ -73,6 +73,7 @@ Socrates/
         ProviderRouter.ts
         EmbeddingProviderRouter.ts
         ai-sdk/
+        deepseek/
         embeddings/
         modelCatalog/
         test/

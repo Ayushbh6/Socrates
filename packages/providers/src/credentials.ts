@@ -9,6 +9,8 @@ export const envProviderApiKey = (providerId: ProviderId, env: NodeJS.ProcessEnv
       return env.GOOGLE_GENERATIVE_AI_API_KEY ?? env.GEMINI_API_KEY
     case "openrouter":
       return env.OPENROUTER_API_KEY
+    case "deepseek":
+      return env.DEEPSEEK_API_KEY
     case "ollama":
       return undefined
   }
@@ -24,7 +26,7 @@ export const envProviderCredentialResolver: ProviderCredentialResolver = {
     return apiKey ? { authMode: "api_key", apiKey } : undefined
   },
   availableAuthModes: () =>
-    (["openrouter", "openai", "google"] as const)
+    (["openrouter", "openai", "google", "deepseek"] as const)
       .filter((providerId) => Boolean(envProviderApiKey(providerId)))
       .map((providerId) => ({ providerId, authMode: "api_key" as const })),
 }

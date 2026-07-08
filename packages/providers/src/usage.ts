@@ -123,6 +123,30 @@ const pricingCatalog: Record<string, PricingSnapshot> = {
     longContextOutputUsdPer1M: 18,
     effectiveAt: "2026-06-08",
   },
+  "deepseek:deepseek-v4-flash": {
+    providerId: "deepseek",
+    modelId: "deepseek-v4-flash",
+    source: "DeepSeek API pricing, official V4 Flash rates",
+    sourceUrl: "https://api-docs.deepseek.com/quick_start/pricing",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 0.14,
+    cachedInputUsdPer1M: 0.0028,
+    outputUsdPer1M: 0.28,
+    effectiveAt: "2026-07-08",
+  },
+  "deepseek:deepseek-v4-pro": {
+    providerId: "deepseek",
+    modelId: "deepseek-v4-pro",
+    source: "DeepSeek API pricing, official V4 Pro rates",
+    sourceUrl: "https://api-docs.deepseek.com/quick_start/pricing",
+    currency: "USD",
+    unit: "per_1m_tokens",
+    inputUsdPer1M: 0.435,
+    cachedInputUsdPer1M: 0.003625,
+    outputUsdPer1M: 0.87,
+    effectiveAt: "2026-07-08",
+  },
 }
 
 const openRouterPricingCatalog: Record<string, OpenRouterEndpointPricing[]> = {
@@ -270,6 +294,8 @@ export const normalizeProviderUsage = (input: {
     firstFiniteNumber(
       getPath(providerMetadata, ["openrouter", "usage", "promptTokensDetails", "cachedTokens"]),
       getPath(providerMetadata, ["openrouter", "usage", "prompt_tokens_details", "cached_tokens"]),
+      getPath(input.usage.raw, ["prompt_cache_hit_tokens"]),
+      getPath(input.usage.raw, ["usage", "prompt_cache_hit_tokens"]),
       getPath(input.usage.raw, ["prompt_tokens_details", "cached_tokens"]),
       getPath(input.usage.raw, ["usage", "prompt_tokens_details", "cached_tokens"]),
     )
@@ -281,10 +307,17 @@ export const normalizeProviderUsage = (input: {
       getPath(input.usage.raw, ["prompt_tokens_details", "cache_write_tokens"]),
       getPath(input.usage.raw, ["usage", "prompt_tokens_details", "cache_write_tokens"]),
     )
+  const uncachedInputTokens =
+    input.usage.uncachedInputTokens ??
+    firstFiniteNumber(
+      getPath(input.usage.raw, ["prompt_cache_miss_tokens"]),
+      getPath(input.usage.raw, ["usage", "prompt_cache_miss_tokens"]),
+    )
   const usageWithCache: ModelUsage = {
     ...input.usage,
     ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
     ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(uncachedInputTokens === undefined ? {} : { uncachedInputTokens }),
   }
   const inputTokens = usageWithCache.inputTokens ?? 0
   const normalizedUsage: ModelUsage = {

@@ -432,6 +432,10 @@ Do not add large sets of nullable voice/audio/feedback columns to `messages`. Us
 
 New model providers must be added as adapters in `packages/providers`.
 
+Direct providers that need official API behavior, such as DeepSeek KV-cache and `reasoning_content` tool-loop continuation, should get a small provider folder under `packages/providers/src/<provider>/` and register through `ProviderRouter`. Do not implement them as one-off server route calls or frontend-specific provider branches.
+
+Provider-specific request-shape compatibility belongs inside `packages/providers`, not in core/server/frontend tool logic. For example, official DeepSeek requires every function tool `parameters` schema to be top-level `type: "object"`, so the DeepSeek adapter may normalize model-visible union schemas into object-shaped provider parameters. Core must still validate actual tool calls against the original strict schemas in `packages/contracts`.
+
 They must not leak provider-specific response shapes into:
 
 - `packages/core`

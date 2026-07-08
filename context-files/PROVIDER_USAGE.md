@@ -6,12 +6,15 @@ The short version:
 
 ```text
 V1:
-  Use AI SDK v6 provider packages behind our own provider abstraction.
-  Support OpenAI, Google, and OpenRouter through direct provider packages.
+  Use AI SDK v6 provider packages behind our own provider abstraction for OpenAI, Google, and OpenRouter.
+  Use native provider adapters when direct control is required.
   Do not use Vercel AI Gateway as the default path.
 
 V1.5:
   Add Ollama/local model support.
+
+V1.6:
+  Add official DeepSeek API support through a native adapter, not the AI SDK.
 
 V2:
   Add our own direct wrappers for major providers where we need deeper control.
@@ -23,7 +26,7 @@ The non-negotiable architecture rule:
 The rest of Socrates must never depend directly on Vercel AI SDK.
 ```
 
-Vercel AI SDK is an implementation detail inside `packages/providers`. Native local providers such as Ollama also live inside `packages/providers` behind the same Socrates `ModelProvider` interface.
+Vercel AI SDK is an implementation detail inside `packages/providers`. Native providers such as Ollama and official DeepSeek also live inside `packages/providers` behind the same Socrates `ModelProvider` interface.
 
 Socrates should use direct provider packages in V1:
 
@@ -34,6 +37,8 @@ Socrates should use direct provider packages in V1:
 ```
 
 Ollama chat is served by Socrates' native Ollama adapter rather than the AI SDK adapter. Discovery is read-only through the local Ollama HTTP API and never pulls or installs models. The dynamic catalog includes installed chat-capable models, filters out embedding-only models, and exposes only a conservative normalized capability surface first: text streaming, normalized tool calls when the model/provider emits them, structured JSON generation, local usage counts, and Off/On thinking.
+
+Official DeepSeek chat is served by Socrates' native DeepSeek adapter, not through Vercel AI SDK, so Socrates can preserve DeepSeek's automatic KV-cache behavior, thinking stream shape, same-turn `reasoning_content` tool-loop requirements, and cache hit/miss usage fields without an SDK abstraction hiding them.
 
 Vercel AI Gateway can be added later as an optional provider route, but it should not be the default because Socrates is local-first and should let users bring direct provider keys.
 
@@ -215,6 +220,8 @@ Provider-specific tool-call formats must not leak into `packages/core/tools`, `a
 
 The provider request may include these tools, but the provider layer must treat the tool definitions as data from Socrates. It must not define filesystem, shell, git, patch, or trace behavior itself.
 
+Official DeepSeek rejects function definitions whose `parameters` are top-level unions without `type: "object"`. The DeepSeek adapter must therefore send object-shaped JSON Schema parameters for every Socrates tool. `packages/providers/src/toolJsonSchemas.ts` owns this provider-compatibility normalization for Zod union/preprocess/discriminated-union tools such as `edit`, `trace_retrieve`, `skills`, `project_docs`, `repo_docs`, and `mcp_registry`. This is only a provider request-shape compatibility layer; `packages/core` must continue validating every normalized tool call against the original strict schemas from `packages/contracts`.
+
 `url_fetch` is an exact-URL HTTP(S) read tool. Provider adapters should pass its schema through like any other Socrates function tool; they must not reinterpret it as provider-native web search or crawling.
 
 The `bash` tool id is stable for provider compatibility, but product and prompt copy should call it Terminal. Provider adapters must pass the Socrates tool schema through unchanged; core/server/workspace own POSIX, PowerShell, cmd, and conversation-scoped Terminal behavior. Prompt guidance should tell the model to use PowerShell-compatible commands on Windows, use `operation: "start"` for dev servers/watchers/long commands, inspect existing terminal context before starting duplicates, use `operation: "status"`/`"output"`/`"stop"` with no target when exactly one active Terminal exists or with the human Terminal name when needed, and ask the user when a Terminal awaits input. Terminal is also the bounded one-off code path when no exact structured tool exists. Providers must not invent separate terminal, process, PowerShell, or cmd tools.
@@ -322,6 +329,7 @@ Different providers expose different capabilities:
 - Gemini function calling differs from OpenAI tool calls.
 - OpenRouter behavior can vary based on the underlying model.
 - Local models through Ollama may not support tool calling reliably.
+- DeepSeek thinking tool calls require raw `reasoning_content` to be passed back during same-turn continuations.
 - Usage and token reporting vary by provider.
 
 Because of this, normalized types should include provider-specific escape hatches:
@@ -356,9 +364,9 @@ export type ModelUsage = {
 }
 ```
 
-This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. `routedProvider` is the upstream endpoint that actually served the request: for OpenRouter this is the routed provider such as `DeepInfra` or `GMICloud`, and for direct providers it is the provider id itself. OpenRouter cost/cache fields should use provider-reported usage metadata first. OpenAI and Google may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
+This lets the core handle common behavior cleanly while the database still captures provider-specific metadata for debugging and auditability. `routedProvider` is the upstream endpoint that actually served the request: for OpenRouter this is the routed provider such as `DeepInfra` or `GMICloud`, and for direct providers it is the provider id itself. OpenRouter cost/cache fields should use provider-reported usage metadata first. DeepSeek direct calls must normalize `prompt_cache_hit_tokens` to `cachedInputTokens` and `prompt_cache_miss_tokens` to `uncachedInputTokens`. OpenAI, Google, and direct DeepSeek may compute `costUsd` from a versioned local pricing snapshot when provider cost is absent; those rows must be marked `computed`. Missing cost with known tokens is preserved as `unknown`, not silently dropped.
 
-Direct-provider pricing snapshots must cover every API-key billed direct model exposed in the picker. The current coverage is OpenAI API `gpt-5`, `gpt-5.4`, `gpt-5.4-mini` and Google `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`. ChatGPT Codex subscription models are not OpenAI Platform API billing and should keep cost source unknown unless a future reliable subscription-usage signal exists. Gemini 3.1 Pro pricing must switch to the documented long-context rates when a provider call has more than 200k prompt/input tokens.
+Direct-provider pricing snapshots must cover every API-key billed direct model exposed in the picker. The current coverage is OpenAI API `gpt-5`, `gpt-5.4`, `gpt-5.4-mini`, Google `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite-preview`, and official DeepSeek API `deepseek-v4-pro` / `deepseek-v4-flash`. ChatGPT Codex subscription models are not OpenAI Platform API billing and should keep cost source unknown unless a future reliable subscription-usage signal exists. Gemini 3.1 Pro pricing must switch to the documented long-context rates when a provider call has more than 200k prompt/input tokens.
 
 Google/Gemini accepts system instructions only through the top-level provider `system` field. Socrates may still use internal `developer` messages for hidden compaction summaries or backend reminders, but the Google adapter must render those continuation messages as normal user-role text prefixed with `[developer]` instead of AI SDK `system` messages. OpenAI and OpenRouter should also normalize inline/continuation developer messages as user-role context so later provider calls do not put system messages inside the AI SDK `messages` array. The first system instruction remains the provider-level system prompt.
 
@@ -388,6 +396,8 @@ packages/providers/
     index.ts
     ai-sdk/
       AiSdkProvider.ts
+    deepseek/
+      DeepSeekChatProvider.ts
     modelCatalog/
       modelCatalog.ts
 ```
@@ -398,9 +408,12 @@ The provider router should select an implementation:
 openai     -> AiSdkProvider in V1
 google     -> AiSdkProvider in V1
 openrouter -> AiSdkProvider in V1
+deepseek   -> DeepSeekChatProvider native adapter
 ```
 
 OpenRouter should be supported through the Vercel AI SDK OpenRouter provider package, not through a custom direct wrapper in V1.
+
+Official DeepSeek should bypass Vercel AI SDK and call `https://api.deepseek.com/chat/completions` directly from `packages/providers` because the product goal is maximum compatibility with DeepSeek KV cache, streaming reasoning, tool calls, and official usage fields.
 
 Anthropic is intentionally skipped in the current V1 implementation. It can be added later through the same `packages/providers` boundary.
 
@@ -415,6 +428,7 @@ OpenRouter API key -> exposes OpenRouter chat/worker models; DeepSeek V4 Pro rem
 OpenAI API key     -> exposes OpenAI API chat/worker models; required for hosted OpenAI embeddings when local Ollama embeddings are not selected/available
 ChatGPT Codex      -> experimental OpenAI subscription auth; exposes only ChatGPT Codex subscription models and uses Socrates-owned OAuth token storage
 Google API key     -> exposes Google chat/worker models
+DeepSeek API key   -> exposes official DeepSeek API V4 Pro and V4 Flash chat/worker models with direct KV-cache usage accounting
 ```
 
 Provider APIs, model calls, telemetry, events, and SQLite rows must never persist or return raw provider key values. Credential status APIs may return only provider id, configured boolean, source, required flag, auth-mode status rows, and safe messages. OpenAI status is auth-mode-aware and must distinguish OpenAI API from ChatGPT Codex subscription auth.
@@ -453,9 +467,13 @@ OpenRouter
   google/gemma-4-31b-it
   meta-llama/llama-4-maverick
   qwen/qwen3.5-flash-02-23    no vision
+
+DeepSeek API
+  deepseek-v4-pro              no vision
+  deepseek-v4-flash            no vision
 ```
 
-Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, the DeepSeek V4 models, and Qwen 3.5 Flash, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. MiMo Pro and Llama 4 Maverick are vision-capable and must keep native image paths enabled.
+Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, the DeepSeek V4 models, and Qwen 3.5 Flash, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. Direct DeepSeek API V4 models are also text-only in the Socrates catalog. MiMo Pro and Llama 4 Maverick are vision-capable and must keep native image paths enabled.
 
 Thinking controls are normalized in Socrates contracts and translated inside `AiSdkProvider`:
 
@@ -479,6 +497,11 @@ Google:
 
 OpenRouter:
   off, on
+
+DeepSeek API:
+  off, high, xhigh
+  xhigh maps to DeepSeek reasoning_effort=max
+  low/medium should not be exposed for direct DeepSeek because DeepSeek maps them to high
 ```
 
 Provider mapping:
@@ -489,19 +512,32 @@ ChatGPT Codex subscription -> Codex backend request auth plus reasoning effort m
 Google -> providerOptions.google.thinkingConfig.thinkingLevel
 OpenRouter on -> providerOptions.openrouter.reasoning enabled
 OpenRouter off -> providerOptions.openrouter.reasoning effort none and exclude true
+DeepSeek API on -> thinking { type: "enabled" } plus reasoning_effort high|max
+DeepSeek API off -> thinking { type: "disabled" }
 ```
 
 OpenAI API prompt caching is automatic for supported models when the stable prefix is large enough. Socrates sends `providerOptions.openai.promptCacheKey` from the same project/conversation cache key to improve cache-affinity routing, but does not create explicit OpenAI cache resources. ChatGPT Codex subscription usage is not OpenAI Platform billing; normal token pricing/cost calculations should not pretend to know subscription quota consumption.
 
 Google/Gemini implicit caching is automatic for supported models when prompts meet model thresholds. Socrates does not create explicit Gemini cached-content resources by default; explicit Gemini caches are a separate workflow and should be added only if there is a clear product need.
 
+DeepSeek API context caching is automatic and requires no explicit cache creation. Socrates should keep stable prompt prefixes and not add volatile ids, timestamps, turn ids, or model-call ids to stable prompt sections. The DeepSeek adapter must preserve provider-reported cache telemetry:
+
+```text
+prompt_cache_hit_tokens  -> cachedInputTokens
+prompt_cache_miss_tokens -> uncachedInputTokens
+```
+
+When DeepSeek thinking mode produces a tool call, the adapter must encode the previous assistant `reasoning_content` back into the next DeepSeek request along with `tool_calls`. DeepSeek returns a 400 when that same-turn reasoning content is missing. Socrates core already carries reasoning parts inside active in-memory assistant messages; the DeepSeek adapter owns converting those normalized parts to and from DeepSeek's `reasoning_content` field.
+
+The 2026-07-08 live browser E2E for direct DeepSeek used Test-Workspace chat `conv_02148ef15f534408bb587a92cb7eb71e` with `deepseek-v4-pro`, High thinking, and the `current_time` tool. The UI showed a streamed Thinking part and `Ran 1 tool`; SQLite telemetry persisted two completed `deepseek` model calls and a completed `current_time` call. The second same-turn continuation reported `prompt_cache_hit_tokens: 12544` and `prompt_cache_miss_tokens: 239`, confirming direct DeepSeek KV-cache telemetry reaches Socrates usage accounting.
+
 OpenRouter model requests always include cost-aware routing. `packages/providers/src/openRouterRouting.ts` is the authoritative map. Multi-provider models default to price-first routing with `sort: "price"` and `allow_fallbacks: true`; DeepSeek V4 routes use cheap-compatible ranked provider orders; later continuations in the same turn prefer the actual routed provider reported by OpenRouter. Deliberate pins use OpenRouter provider slugs such as `deepinfra`, `alibaba`, and `xai`, not display labels such as `DeepInfra`. Unknown OpenRouter models fall back to the same price-first routing so no model is sent with empty routing.
 
 OpenRouter streams can arrive in provider-side bursts after a long first-token delay. Socrates applies AI SDK `smoothStream` only on OpenRouter calls to re-chunk bursty text into a steadier word-level stream. This improves perceived streaming once chunks arrive; it does not reduce upstream time-to-first-token.
 
-Provider streams must not hang forever. The AI SDK adapter applies an idle stream timeout with a default of `120000` milliseconds, configurable through `SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS`. If no model event arrives before the timeout, the provider layer aborts the request and emits a structured `model.failed` event with code `model_stream_idle_timeout`, including provider/model/timeout details.
+Provider streams must not hang forever. Streaming adapters apply an idle stream timeout with a default of `120000` milliseconds, configurable through `SOCRATES_MODEL_STREAM_IDLE_TIMEOUT_MS`. If no model event arrives before the timeout, the provider layer aborts the request and emits a structured `model.failed` event with code `model_stream_idle_timeout`, including provider/model/timeout details.
 
-The frontend must render the credential-filtered catalog from the backend response. It must not hardcode model ids or provider option mappings. If both OpenAI API and ChatGPT Codex are configured, the UI should show separate `OpenAI API` and `ChatGPT Codex` groups so auth/billing source is obvious.
+The frontend must render the credential-filtered catalog from the backend response. It must not hardcode model ids or provider option mappings. If both OpenAI API and ChatGPT Codex are configured, the UI should show separate `OpenAI API` and `ChatGPT Codex` groups so auth/billing source is obvious. If both OpenRouter DeepSeek and direct DeepSeek API are configured, the UI should show `OpenRouter` and `DeepSeek API` as separate groups so routing/cache/billing source is obvious.
 
 ## Context Compressor Model Selection
 

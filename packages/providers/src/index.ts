@@ -1,5 +1,6 @@
 export { AiSdkProvider } from "./ai-sdk/AiSdkProvider"
 export { createDefaultModelProvider } from "./defaultModelProvider"
+export { DEFAULT_DEEPSEEK_BASE_URL, DeepSeekChatProvider, normalizeDeepSeekBaseUrl } from "./deepseek/DeepSeekChatProvider"
 export { EmbeddingProviderRouter } from "./EmbeddingProviderRouter"
 export { createDefaultEmbeddingProvider } from "./embeddings/defaultEmbeddingProvider"
 export { OllamaEmbeddingProvider, normalizeBaseUrl } from "./embeddings/OllamaEmbeddingProvider"

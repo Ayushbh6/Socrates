@@ -405,7 +405,7 @@ This is what allows one conversation/session to freely switch models, thinking m
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `trc_...`. |
 | `turn_id` | `TEXT` | yes | FK to `turns.id`, usually one config per turn. |
-| `provider_id` | `TEXT` | yes | `openai`, `anthropic`, `google`, `openrouter`, `ollama`, `litellm`, etc. |
+| `provider_id` | `TEXT` | yes | `openai`, `anthropic`, `google`, `openrouter`, `deepseek`, `ollama`, `litellm`, etc. |
 | `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is the experimental OpenAI ChatGPT Codex mode. Local Ollama chat also uses `api_key` as the direct-provider auth mode but does not require a secret. |
 | `model_id` | `TEXT` | yes | Provider model id. |
 | `thinking_enabled` | `INTEGER` | yes | Boolean as `0` or `1`. |
@@ -536,8 +536,8 @@ Stores token usage and cost for model calls.
 | `cost_source` | `TEXT` | no | `provider_reported`, `computed`, or `unknown`. |
 | `routed_provider` | `TEXT` | no | Upstream endpoint that actually served the request. For OpenRouter this is the routed provider; for direct providers it is the provider id. |
 | `pricing_snapshot_json` | `TEXT` | no | Versioned pricing snapshot for computed costs. |
-| `raw_usage_json` | `TEXT` | no | Raw usage object from provider. |
-| `metadata_json` | `TEXT` | no | Provider usage metadata, for example OpenRouter routed provider and provider usage fields. |
+| `raw_usage_json` | `TEXT` | no | Raw usage object from provider. DeepSeek direct rows preserve official fields such as `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`, and `completion_tokens_details.reasoning_tokens`. |
+| `metadata_json` | `TEXT` | no | Provider usage metadata, for example OpenRouter routed provider, DeepSeek direct response ids/fingerprints, and provider usage fields. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 
 ## `ai_usage_events`

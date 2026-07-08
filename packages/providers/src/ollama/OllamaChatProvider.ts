@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
-import { zodToJsonSchema } from "zod-to-json-schema"
 import type { ModelOption, ModelToolDefinition, NormalizedToolCall } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
+import { schemaToJsonSchema } from "../jsonSchema"
 import { makeOllamaModelOption } from "../modelCatalog/modelCatalog"
 import { countModelRequestLocally, type TokenCountResult } from "../tokenCounting"
 import {
@@ -367,13 +367,6 @@ const toOllamaTool = (definition: ModelToolDefinition) => ({
     parameters: schemaToJsonSchema(definition.inputSchema),
   },
 })
-
-const schemaToJsonSchema = (schema: unknown): unknown => {
-  if (schema && typeof schema === "object" && "_def" in schema) {
-    return zodToJsonSchema(schema as never, { $refStrategy: "none" })
-  }
-  return schema
-}
 
 const normalizeOllamaToolCall = (toolCall: OllamaToolCall, index: number): NormalizedToolCall | undefined => {
   const toolName = toolCall.function?.name

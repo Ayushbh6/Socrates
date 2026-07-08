@@ -77,6 +77,7 @@ export const getProviderCredentialsStatusResponseSchema = z
     openRouterRequired: z.boolean(),
     openAiRequiredForHostedEmbeddings: z.boolean(),
     googleOptional: z.boolean(),
+    deepSeekOptional: z.boolean().optional(),
   })
   .strict()
 export type GetProviderCredentialsStatusResponse = z.infer<typeof getProviderCredentialsStatusResponseSchema>

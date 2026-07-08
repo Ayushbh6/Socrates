@@ -13,6 +13,7 @@ use tauri::{Manager, Url};
 const KEYCHAIN_SERVICE: &str = "Socrates";
 const PROVIDERS: &[(&str, &str)] = &[
     ("openrouter", "OPENROUTER_API_KEY"),
+    ("deepseek", "DEEPSEEK_API_KEY"),
     ("openai", "OPENAI_API_KEY"),
     ("google", "GOOGLE_GENERATIVE_AI_API_KEY"),
 ];

@@ -53,6 +53,7 @@ const providerLabels: Record<ProviderId, string> = {
   openai: "OpenAI",
   google: "Google",
   openrouter: "OpenRouter",
+  deepseek: "DeepSeek API",
   ollama: "Ollama Local",
 };
 

@@ -31,6 +31,8 @@ describe("model catalog", () => {
       "openrouter/google/gemma-4-31b-it",
       "openrouter/meta-llama/llama-4-maverick",
       "openrouter/qwen/qwen3.5-flash-02-23",
+      "deepseek/deepseek-v4-pro",
+      "deepseek/deepseek-v4-flash",
     ])
   })
 
@@ -43,6 +45,18 @@ describe("model catalog", () => {
       providerId: "openrouter",
       authMode: "api_key",
       modelId: "deepseek/deepseek-v4-pro",
+    })
+
+    const deepSeekOnly = listAvailableModels([{ providerId: "deepseek", authMode: "api_key" }])
+    expect(deepSeekOnly.models.map((model) => `${model.providerLabel}:${model.modelId}`)).toEqual([
+      "DeepSeek API:deepseek-v4-pro",
+      "DeepSeek API:deepseek-v4-flash",
+    ])
+    expect(deepSeekOnly.defaultModel).toMatchObject({
+      providerId: "deepseek",
+      authMode: "api_key",
+      modelId: "deepseek-v4-pro",
+      thinkingOptionId: "high",
     })
 
     const openAiModes = listAvailableModels([
@@ -111,7 +125,19 @@ describe("model catalog", () => {
     expect(flash?.thinkingOptions.map((option) => option.id)).toEqual(["minimal", "low", "medium", "high"])
   })
 
-  it("marks only OpenRouter text-only models as non-vision models", () => {
+  it("exposes official DeepSeek models with only supported direct thinking options", () => {
+    const pro = modelCatalog.find((model) => model.providerId === "deepseek" && model.modelId === "deepseek-v4-pro")
+    const flash = modelCatalog.find((model) => model.providerId === "deepseek" && model.modelId === "deepseek-v4-flash")
+
+    expect(pro?.thinkingOptions.map((option) => option.id)).toEqual(["off", "high", "xhigh"])
+    expect(pro?.thinkingOptions.find((option) => option.id === "xhigh")?.label).toBe("Max")
+    expect(pro?.defaultThinkingOptionId).toBe("high")
+    expect(pro?.capabilities?.vision).toBe(false)
+    expect(flash?.thinkingOptions.map((option) => option.id)).toEqual(["off", "high", "xhigh"])
+    expect(flash?.defaultThinkingOptionId).toBe("high")
+  })
+
+  it("marks OpenRouter and direct DeepSeek text-only models as non-vision models", () => {
     const nonVision = modelCatalog
       .filter((model) => model.capabilities?.vision === false)
       .map((model) => model.modelId)
@@ -121,6 +147,8 @@ describe("model catalog", () => {
       "deepseek/deepseek-v4-pro",
       "deepseek/deepseek-v4-flash",
       "qwen/qwen3.5-flash-02-23",
+      "deepseek-v4-pro",
+      "deepseek-v4-flash",
     ])
     expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
   })

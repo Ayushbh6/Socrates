@@ -186,12 +186,55 @@ describe("provider usage normalization", () => {
     expect(usage.pricingSnapshot?.providerId).toBe("google")
   })
 
+  it("computes direct DeepSeek cost from cache hit and miss usage fields", () => {
+    const usage = normalizeProviderUsage({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-pro",
+      usage: {
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cachedInputTokens: 4_000,
+        uncachedInputTokens: 6_000,
+        reasoningTokens: 250,
+      },
+    })
+
+    const expected = (6_000 * 0.435 + 4_000 * 0.003625 + 500 * 0.87) / 1_000_000
+    expect(usage.costSource).toBe("computed")
+    expect(usage.costUsd).toBeCloseTo(expected)
+    expect(usage.routedProvider).toBe("deepseek")
+    expect(usage.pricingSnapshot).toMatchObject({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-pro",
+    })
+  })
+
+  it("derives direct DeepSeek cache hit and miss fields from raw usage when present", () => {
+    const usage = normalizeProviderUsage({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      usage: {
+        inputTokens: 2000,
+        outputTokens: 100,
+        raw: {
+          prompt_cache_hit_tokens: 1200,
+          prompt_cache_miss_tokens: 800,
+        },
+      },
+    })
+
+    expect(usage.cachedInputTokens).toBe(1200)
+    expect(usage.uncachedInputTokens).toBe(800)
+    expect(usage.costSource).toBe("computed")
+  })
+
   it("has local pricing for all direct provider catalog models", () => {
     const missing = modelCatalog
       .filter(
         (model) =>
           (model.providerId === "openai" && (model.authMode ?? "api_key") === "api_key") ||
-          model.providerId === "google",
+          model.providerId === "google" ||
+          model.providerId === "deepseek",
       )
       .filter((model) => pricingSnapshotForModel(model.providerId, model.modelId) === undefined)
       .map((model) => `${model.providerId}:${model.modelId}`)

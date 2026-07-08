@@ -377,9 +377,11 @@ describe("http contracts", () => {
         openRouterRequired: true,
         openAiRequiredForHostedEmbeddings: true,
         googleOptional: true,
+        deepSeekOptional: true,
       }).success,
     ).toBe(true)
     expect(setProviderCredentialSessionRequestSchema.safeParse({ providerId: "openrouter", apiKey: "sk-test", source: "local_file" }).success).toBe(true)
+    expect(setProviderCredentialSessionRequestSchema.safeParse({ providerId: "deepseek", apiKey: "sk-test", source: "local_file" }).success).toBe(true)
     expect(setProviderCredentialSessionResponseSchema.safeParse({ status }).success).toBe(true)
     expect(checkProviderCredentialRequestSchema.safeParse({ providerId: "openrouter" }).success).toBe(true)
     expect(
@@ -398,6 +400,7 @@ describe("http contracts", () => {
         openRouterRequired: true,
         openAiRequiredForHostedEmbeddings: true,
         googleOptional: true,
+        deepSeekOptional: true,
       }).success,
     ).toBe(false)
   })

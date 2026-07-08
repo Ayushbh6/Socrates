@@ -315,7 +315,7 @@ type ProviderAuthCredentialStatus = {
 }
 
 type ProviderCredentialStatus = {
-  providerId: "openai" | "google" | "openrouter"
+  providerId: "openai" | "google" | "openrouter" | "deepseek"
   providerLabel: string
   required: boolean
   configured: boolean
@@ -329,10 +329,11 @@ type GetProviderCredentialsStatusResponse = {
   openRouterRequired: true
   openAiRequiredForHostedEmbeddings: true
   googleOptional: true
+  deepSeekOptional: true
 }
 
 type SetProviderCredentialSessionRequest = {
-  providerId: "openai" | "google" | "openrouter"
+  providerId: "openai" | "google" | "openrouter" | "deepseek"
   apiKey: string
   source?: "keychain" | "local_file" | "manual" | "env_import"
 }
@@ -342,14 +343,14 @@ type SetProviderCredentialSessionRequest = {
 
 `POST /api/provider-credentials/openai/chatgpt/oauth/start` starts the experimental ChatGPT Codex subscription auth flow and returns an authorization URL, state, redirect URI, and expiry. The local callback server completes the PKCE code exchange and stores token metadata under local credential storage. `DELETE /api/provider-credentials/openai/chatgpt` removes the stored ChatGPT Codex token metadata. OpenAI API keys and ChatGPT Codex tokens are separate auth modes.
 
-OpenRouter is no longer universally required for chat/compression. It is one available auth source. OpenAI API is required for hosted embeddings when local Ollama is not used. Google is optional. Chat send and worker saves should be disabled only when no credentialed model is available.
+OpenRouter is no longer universally required for chat/compression. It is one available auth source. OpenAI API is required for hosted embeddings when local Ollama is not used. Google and direct DeepSeek API are optional chat/worker auth sources. Chat send and worker saves should be disabled only when no credentialed model is available.
 
 ### `GET /api/models`
 
 Returns the backend-owned credential-filtered provider/model/thinking catalog.
 
 ```ts
-type ProviderId = "openai" | "google" | "openrouter" | "ollama"
+type ProviderId = "openai" | "google" | "openrouter" | "deepseek" | "ollama"
 
 type ProviderAuthMode = "api_key" | "chatgpt_subscription"
 
@@ -394,6 +395,7 @@ Frontend rule:
 render model and thinking controls from this response
 do not hardcode selectable model ids in the composer
 group OpenAI API and ChatGPT Codex separately when both are configured
+group OpenRouter DeepSeek and direct DeepSeek API separately when both are configured
 group discovered local models under Ollama Local when Ollama is reachable
 use capabilities.vision === false to warn users and avoid sending image bytes to non-vision models
 ```

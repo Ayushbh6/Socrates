@@ -23,6 +23,7 @@ const providerLabels: Record<ProviderId, string> = {
   openai: "OpenAI",
   google: "Google",
   openrouter: "OpenRouter",
+  deepseek: "DeepSeek",
   ollama: "Ollama",
 }
 
@@ -30,9 +31,10 @@ const providerEnvVars: Partial<Record<ProviderId, string>> = {
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
 }
 
-const providers: ProviderId[] = ["openrouter", "openai", "google"]
+const providers: ProviderId[] = ["openrouter", "deepseek", "openai", "google"]
 
 type ProviderCredentialStoreOptions = {
   socratesHome?: string | undefined
@@ -85,6 +87,7 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
       ...(this.getApiKey("openai") ? [{ providerId: "openai" as const, authMode: "api_key" as const }] : []),
       ...(this.readOpenAiChatGptTokens() ? [{ providerId: "openai" as const, authMode: "chatgpt_subscription" as const }] : []),
       ...(this.getApiKey("google") ? [{ providerId: "google" as const, authMode: "api_key" as const }] : []),
+      ...(this.getApiKey("deepseek") ? [{ providerId: "deepseek" as const, authMode: "api_key" as const }] : []),
     ]
   }
 
@@ -93,12 +96,14 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
     openRouterRequired: boolean
     openAiRequiredForHostedEmbeddings: boolean
     googleOptional: boolean
+    deepSeekOptional: boolean
   } {
     return {
       providers: providers.map((providerId) => this.statusFor(providerId)),
       openRouterRequired: true,
       openAiRequiredForHostedEmbeddings: true,
       googleOptional: true,
+      deepSeekOptional: true,
     }
   }
 
@@ -147,7 +152,9 @@ export class ProviderCredentialStore implements ProviderCredentialResolver {
         ? { message: "Required for the default chat model and context compression." }
         : providerId === "openai"
           ? { message: "OpenAI API keys support chat and hosted embeddings. ChatGPT Codex uses subscription auth for chat only." }
-          : { message: "Optional chat provider." }),
+          : providerId === "deepseek"
+            ? { message: "Optional direct chat provider for official DeepSeek V4 models and KV-cache accounting." }
+            : { message: "Optional chat provider." }),
     }
   }
 

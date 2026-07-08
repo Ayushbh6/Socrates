@@ -2257,6 +2257,17 @@ describe("HTTP API", () => {
       authMode: "api_key",
       modelId: "deepseek/deepseek-v4-pro",
     })
+
+    await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/session",
+      payload: { providerId: "deepseek", apiKey: "sk-deepseek-test", source: "manual" },
+    })
+
+    const deepSeekResponse = await app.inject({ method: "GET", url: "/api/models" })
+    const deepSeekBody = parseResponse<ListModelsResponse>(deepSeekResponse.payload)
+    expect(deepSeekBody.ok && deepSeekBody.data.models.some((model) => model.providerId === "deepseek" && model.modelId === "deepseek-v4-pro")).toBe(true)
+    expect(deepSeekBody.ok && deepSeekBody.data.models.some((model) => model.providerId === "deepseek" && model.modelId === "deepseek-v4-flash")).toBe(true)
   })
 
   it("creates, lists, gets, and patches projects", async () => {
