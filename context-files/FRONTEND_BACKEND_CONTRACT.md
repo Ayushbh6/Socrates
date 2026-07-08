@@ -1089,7 +1089,7 @@ refresh local conversation title from conversation.updated or the response
 
 ### Notification Endpoints
 
-Notifications are durable UI state for backend-owned notices such as applied soul updates. They are stored in SQLite, not as transient toasts.
+Notifications are durable UI state for backend-owned notices such as applied soul updates. They are stored in SQLite, not as transient toasts. Routine memory-agent notifications should render as a quiet activity log: concise formatted summaries first, raw diffs or traces only in details. Skill proposals are the main action-needed case because they require an explicit user approve/reject verdict before the Skill Writer Agent writes a final skill.
 
 ```ts
 type ListNotificationsResponse = {
@@ -1122,6 +1122,8 @@ Frontend behavior:
 show a top-right notification center with unread count
 open a detail drawer for notification payloads such as soul-update diffs
 mark individual or all notifications read through these endpoints
+show memory-agent run summaries with changed docs plus memory-note counts and outcomes
+visually distinguish pending skill proposals from routine applied/already-represented/skipped activity
 ```
 
 ## WebSocket Connection
@@ -1651,6 +1653,7 @@ Rules:
 
 - Memory-agent events are audit/runtime events for background synthesis, primary doc updates, memory-note processing, skill-freshness proposals, Skill Writer Agent results, and soul confirmation.
 - Skill proposal notifications should show a concise human summary and default to per-skill manual approval. A future setting may allow auto-approval, but the Skill Writer Agent still receives only approved create/update tasks.
+- Routine memory notifications should summarize what was updated, which primary docs changed, how many memory notes were created/processed, and how many ended as `applied`, `already_represented`, `skipped`, or `proposed_skill`. They should not expose raw agent traces as the default notification body.
 - `memory.soul.confirmation.requested` and `memory.soul.confirmation.resolved` persist the internal yes/no confirmation flow before a soul patch can apply.
 - `notification.created` carries the full notification row. `notification.read` carries the notification id plus updated unread count.
 - The frontend should update the notification badge from `notification.created` and `notification.read`, while HTTP remains the reload/source-of-truth path.
@@ -2328,17 +2331,21 @@ Output:
 ```ts
 type MemoryNoteToolOutput = {
   noteNumber: number
-  status: "open"
+  status: "open" | "processing" | "done"
   attachedSource: "current_user_message"
+  result: "created" | "already_recorded"
 }
 ```
 
 Rules:
 
 - Socrates writes the note in human language and keeps it short.
+- Socrates should prefer one clean note per user-turn and may create at most two. The tool description must make this limit explicit so duplicate facts are consolidated before a tool call.
 - Socrates should not manually include conversation id, message id, or turn id. The backend attaches those refs from the current turn.
 - Socrates should not request a skill, provide a skill name, choose project/global scope, or name the target memory file/section. The Memory Agent owns classification and routing.
 - The note is only a lead. The Memory Agent must use `memory_notes.read` and `trace_retrieve` when exact evidence matters.
+- The backend normalizes and deduplicates before insert. Equivalent normalized notes return the existing note with `result: "already_recorded"`; a third non-duplicate same-turn note should fail with a recoverable `memory_note_turn_limit_reached` tool error rather than creating a row.
+- After a note is accepted, the runtime can expose a compact same-turn save ledger to later continuation calls. This ledger must be appended near the tail of dynamic turn context so the stable system prompt and early prompt prefix remain cache-friendly.
 
 Specialized Memory Agent inbox:
 
@@ -2347,11 +2354,12 @@ type MemoryNotesToolInput = {
   operation: "list" | "read" | "mark_done"
   limit?: number // list only; capped at 10
   noteNumber?: number
+  outcome?: "applied" | "already_represented" | "skipped" | "proposed_skill" // mark_done only
   resolution?: string // mark_done only; one-line closure reason
 }
 ```
 
-`list` returns at most 10 numbered rows with importance, a short note slice, source project/workspace metadata when available, and a default skill-scope hint. `read` returns the full note, source user-message excerpt, and backend lookup refs (`conversationId`, `messageId`, `turnId`) so the Memory Agent can chain into `trace_retrieve`. `mark_done` requires a compact human-readable `resolution` explaining what was applied, proposed, or skipped; skipped/ignored notes must always say why. These refs are backend-produced lookup values, not fields the sending model authored.
+`list` returns at most 10 numbered rows with importance, a short note slice, source project/workspace metadata when available, and a default skill-scope hint. `read` returns the full note, source user-message excerpt, and backend lookup refs (`conversationId`, `messageId`, `turnId`) so the Memory Agent can chain into `trace_retrieve`. `mark_done` requires an `outcome` plus a compact human-readable `resolution`. `already_represented` means the durable memory or skill already covers the evidence; `skipped` means the note is weak, project-local, stale, or not durable. These refs are backend-produced lookup values, not fields the sending model authored.
 
 The Memory Agent must classify each note before acting: durable user facts/preferences and global active user context go to `user_profile.md`, rare identity/behavior updates use the identity confirmation flow, reusable procedures may become skill proposals, and weak leads are skipped. Project-specific active context does not belong in global user profile; the Memory Agent should close those notes with a skip resolution because Socrates owns project notes. Mixed turns must be split strictly: global user facts may be profiled, but project-local implementation order, feature sequencing, workspace todos, and active project reminders stay out of `user_profile`. Profile corrections must update both the content section and evidence anchors so stale evidence does not keep supporting the old claim. Socrates-originated notes default to project-local skill scope; the Memory Agent may keep that scope or upgrade a procedural skill proposal to global when it is clearly reusable across projects.
 

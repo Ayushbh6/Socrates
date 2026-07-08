@@ -129,6 +129,7 @@ export class SocratesAgent {
     const openRouterPreferredProvidersByModel = new Map<string, string>()
     const actionLedger = new TurnActionLedger()
     const docsLedger = new TurnDocsLedger()
+    const memorySaveLedger = new TurnMemorySaveLedger()
     let totalToolCountNudgeSent = false
     let baselineInputTokens: number | undefined
     let currentTurnTokenSoftNudgeSent = false
@@ -147,6 +148,11 @@ export class SocratesAgent {
     }
     if (preTurnMemoryLoop.developerMessage) {
       messages.push({ role: "developer", content: preTurnMemoryLoop.developerMessage })
+    }
+    memorySaveLedger.recordMemoryLoopRecords(preTurnMemoryLoop.records ?? [])
+    const preTurnMemoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
+    if (preTurnMemoryLedgerMessage) {
+      messages.push({ role: "developer", content: preTurnMemoryLedgerMessage })
     }
 
     for (let step = 0; ; step += 1) {
@@ -411,6 +417,11 @@ export class SocratesAgent {
       for (const warning of ledgerUpdate.warnings) {
         messages.push({ role: "developer", content: warning })
       }
+      memorySaveLedger.recordBatch({ toolCalls, results: execution.results })
+      const memoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
+      if (memoryLedgerMessage) {
+        messages.push({ role: "developer", content: memoryLedgerMessage })
+      }
       if (!postEvidenceMemoryLoopSent && shouldRunPostEvidenceMemoryLoop(execution.results)) {
         const postTurnMemoryLoop = await this.runPostEvidenceMemoryLoop(input, messages, docsLedger, {
           ...(preTurnMemoryLoopSummary ? { preflightSummary: preTurnMemoryLoopSummary } : {}),
@@ -423,6 +434,11 @@ export class SocratesAgent {
         }
         if (postTurnMemoryLoop.developerMessage) {
           messages.push({ role: "developer", content: postTurnMemoryLoop.developerMessage })
+        }
+        memorySaveLedger.recordMemoryLoopRecords(postTurnMemoryLoop.records ?? [])
+        const postTurnMemoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
+        if (postTurnMemoryLedgerMessage) {
+          messages.push({ role: "developer", content: postTurnMemoryLedgerMessage })
         }
       }
       if (!docsSyncCheckpointSent) {
@@ -580,6 +596,7 @@ export class SocratesAgent {
       return {
         events,
         summary,
+        records,
         developerMessage: renderMemoryLoopDeveloperMessage("pre_turn", route, records, skipped),
       }
     } catch (error) {
@@ -622,6 +639,7 @@ export class SocratesAgent {
       return {
         events: saveResult.events,
         summary,
+        records: saveResult.records,
         developerMessage: renderMemoryLoopDeveloperMessage("post_evidence", route, saveResult.records, saveResult.skipped),
       }
     } catch (error) {
@@ -1134,6 +1152,7 @@ export class SocratesAgent {
 type MemoryLoopRunResult = {
   events: ToolLifecycleEvent[]
   summary?: string
+  records?: MemoryLoopToolRecord[]
   developerMessage?: string
 }
 
@@ -1493,6 +1512,11 @@ type DocsLedgerBatchInput = {
   results: ToolExecutionResult[]
 }
 
+type MemorySaveLedgerBatchInput = {
+  toolCalls: NormalizedToolCall[]
+  results: ToolExecutionResult[]
+}
+
 class TurnDocsLedger {
   private totalToolCalls = 0
   private evidenceToolCalls = 0
@@ -1660,6 +1684,73 @@ Before final answer, close the Socrates docs loop. This turn used workspace tool
   }
 }
 
+class TurnMemorySaveLedger {
+  private readonly entries: string[] = []
+  private readonly seen = new Set<string>()
+  private renderedEntryCount = 0
+
+  recordBatch(input: MemorySaveLedgerBatchInput): void {
+    const callsById = new Map<string, NormalizedToolCall>()
+    for (const toolCall of input.toolCalls) {
+      callsById.set(toolCall.toolCallId, toolCall)
+      if (toolCall.providerToolCallId) {
+        callsById.set(toolCall.providerToolCallId, toolCall)
+      }
+    }
+    for (const result of input.results) {
+      const toolCall = callsById.get(result.toolCallId) ?? (result.providerToolCallId ? callsById.get(result.providerToolCallId) : undefined)
+      this.recordResult(result, toolCall?.input)
+    }
+  }
+
+  recordMemoryLoopRecords(records: MemoryLoopToolRecord[]): void {
+    for (const record of records) {
+      this.recordResult(record.result, record.input)
+    }
+  }
+
+  flushDeveloperMessage(): string | undefined {
+    if (this.entries.length === this.renderedEntryCount) {
+      return undefined
+    }
+    this.renderedEntryCount = this.entries.length
+    return [
+      "<socrates_memory_save_ledger>",
+      "Memory notes already submitted in this user turn:",
+      ...this.entries.map((entry) => `- ${entry}`),
+      "Rules: prefer no further memory_note calls unless a new candidate is materially different. The backend hard-caps distinct created notes at two per user turn, and normalized repeats return already_recorded.",
+      "</socrates_memory_save_ledger>",
+    ].join("\n")
+  }
+
+  private recordResult(result: ToolExecutionResult, input: unknown): void {
+    if (result.toolName !== "memory_note") {
+      return
+    }
+    const key = `${result.toolCallId}:${result.ok ? "ok" : "failed"}`
+    if (this.seen.has(key)) {
+      return
+    }
+    this.seen.add(key)
+    if (!result.ok) {
+      this.pushEntry(`failed ${result.error?.code ?? "error"}${result.error?.message ? `: ${clipInline(result.error.message, 180)}` : ""}${memoryNoteInputPreview(input)}`)
+      return
+    }
+    const output = result.output && typeof result.output === "object" && !Array.isArray(result.output) ? result.output as Record<string, unknown> : {}
+    const noteNumber = typeof output.noteNumber === "number" ? output.noteNumber : undefined
+    const status = typeof output.status === "string" ? output.status : "open"
+    const saveResult = output.result === "already_recorded" ? "already_recorded" : "created"
+    this.pushEntry(`${noteNumber ? `#${noteNumber}` : "note"} ${saveResult} status=${status}${memoryNoteInputPreview(input)}`)
+  }
+
+  private pushEntry(entry: string): void {
+    this.entries.push(entry)
+    if (this.entries.length > 6) {
+      this.entries.splice(0, this.entries.length - 6)
+    }
+  }
+}
+
 const toolOperation = (toolCall: NormalizedToolCall | undefined): string | undefined => {
   const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
   return typeof input?.operation === "string" ? input.operation : undefined
@@ -1685,6 +1776,11 @@ const commandFor = (toolCall: NormalizedToolCall | undefined, output: unknown): 
   }
   const record = output && typeof output === "object" && !Array.isArray(output) ? output as Record<string, unknown> : undefined
   return typeof record?.command === "string" && record.command.trim() ? clipInline(record.command, 120) : undefined
+}
+
+const memoryNoteInputPreview = (input: unknown): string => {
+  const record = input && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : undefined
+  return typeof record?.note === "string" && record.note.trim() ? `: ${clipInline(record.note, 180)}` : ""
 }
 
 const clipList = (values: string[], limit: number, charLimit: number): string => {

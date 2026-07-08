@@ -14,6 +14,8 @@ index_tags: [tool_usage]
 `memory_note` lets the main Socrates agent send a short lead to the Global Memory Agent.
 
 It is an agent-to-agent notepad entry, not a memory write or routing request. The backend automatically attaches the current user message, source project, conversation id, message id, turn id, and default project-local context.
+
+Prefer one note per user turn. The backend normalizes note text, deduplicates repeated leads, and hard-caps distinct memory notes at two per user turn.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
@@ -29,7 +31,7 @@ It is an agent-to-agent notepad entry, not a memory write or routing request. Th
 <!-- socrates:section id="inputs" kind="schema" tags="tools" -->
 ## Inputs
 
-- `note`: one short human-readable lead for the Memory Agent.
+- `note`: one short human-readable lead for the Memory Agent. Merge related memory candidates into one clean note.
 - `importance`: optional `normal` or `high`.
 - Do not include conversation ids or message ids in the note unless the user explicitly named them; the backend attaches the current source automatically.
 - Do not include target names, skill names, scope choices, or instructions to update a specific memory file.
@@ -40,8 +42,9 @@ It is an agent-to-agent notepad entry, not a memory write or routing request. Th
 
 1. Keep the note concise and specific.
 2. State what seemed important and why the Memory Agent should inspect the current turn.
-3. Use `high` for strong corrections, durable identity/profile facts, explicit allergy/safety/accessibility/dietary boundaries, or highly reusable patterns.
-4. Continue the user's current task; do not wait for the Memory Agent.
+3. Do not send variants of the same lead. If the tool returns `already_recorded`, treat that memory candidate as already queued or handled.
+4. Use `high` for strong corrections, durable identity/profile facts, explicit allergy/safety/accessibility/dietary boundaries, or highly reusable patterns.
+5. Continue the user's current task; do not wait for the Memory Agent.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->

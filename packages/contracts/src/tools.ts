@@ -1127,6 +1127,8 @@ export type SkillsToolOutput = z.infer<typeof skillsToolOutputSchema>
 
 export const memoryNoteImportanceSchema = z.enum(["normal", "high"])
 export type MemoryNoteImportance = z.infer<typeof memoryNoteImportanceSchema>
+export const memoryNoteOutcomeSchema = z.enum(["applied", "already_represented", "skipped", "proposed_skill"])
+export type MemoryNoteOutcome = z.infer<typeof memoryNoteOutcomeSchema>
 
 export const memoryNoteToolInputSchema = z
   .object({
@@ -1139,8 +1141,9 @@ export type MemoryNoteToolInput = z.infer<typeof memoryNoteToolInputSchema>
 export const memoryNoteToolOutputSchema = z
   .object({
     noteNumber: z.number().int().positive(),
-    status: z.literal("open"),
+    status: z.enum(["open", "processing", "done"]),
     attachedSource: z.literal("current_user_message"),
+    result: z.enum(["created", "already_recorded"]).optional(),
   })
   .strict()
 export type MemoryNoteToolOutput = z.infer<typeof memoryNoteToolOutputSchema>
@@ -1150,6 +1153,7 @@ export const memoryNotesToolInputSchema = z
     operation: z.enum(["list", "read", "mark_done"]),
     noteNumber: z.number().int().positive().optional(),
     limit: z.number().int().positive().max(10).optional(),
+    outcome: memoryNoteOutcomeSchema.optional(),
     resolution: z.string().min(1).max(500).optional(),
   })
   .strict()
@@ -1157,8 +1161,14 @@ export const memoryNotesToolInputSchema = z
     if ((input.operation === "read" || input.operation === "mark_done") && !input.noteNumber) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["noteNumber"], message: `${input.operation} requires noteNumber.` })
     }
+    if (input.operation === "mark_done" && !input.outcome) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["outcome"], message: "mark_done requires outcome." })
+    }
     if (input.operation === "mark_done" && !input.resolution?.trim()) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["resolution"], message: "mark_done requires a one-line resolution." })
+    }
+    if (input.operation !== "mark_done" && input.outcome) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["outcome"], message: "outcome is only used with mark_done." })
     }
     if (input.operation !== "mark_done" && input.resolution) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["resolution"], message: "resolution is only used with mark_done." })
@@ -1185,6 +1195,7 @@ export const memoryNotesToolOutputSchema = z
           turnId: z.string().min(1).optional(),
           messageId: z.string().min(1).optional(),
           messageExcerpt: z.string().optional(),
+          outcome: memoryNoteOutcomeSchema.optional(),
           resolution: z.string().optional(),
           createdAt: z.string().min(1),
           completedAt: z.string().min(1).optional(),

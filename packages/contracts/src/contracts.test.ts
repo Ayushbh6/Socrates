@@ -1667,13 +1667,16 @@ describe("tool contracts", () => {
     expect(skillsToolOutputSchema.safeParse({ operation: "list", skills: [skill], totalMatches: 1, truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 } }).success).toBe(true)
     expect(memoryNoteToolInputSchema.safeParse({ note: "User gave a strong testing preference in this turn.", importance: "high" }).success).toBe(true)
     expect(memoryNoteToolInputSchema.safeParse({ note: "User gave a strong testing preference in this turn.", intent: "profile_preference", priority: "high" }).success).toBe(false)
-    expect(memoryNoteToolOutputSchema.safeParse({ noteNumber: 1, status: "open", attachedSource: "current_user_message" }).success).toBe(true)
+    expect(memoryNoteToolOutputSchema.safeParse({ noteNumber: 1, status: "open", attachedSource: "current_user_message", result: "created" }).success).toBe(true)
+    expect(memoryNoteToolOutputSchema.safeParse({ noteNumber: 1, status: "done", attachedSource: "current_user_message", result: "already_recorded" }).success).toBe(true)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "list", limit: 10 }).success).toBe(true)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "list", limit: 11 }).success).toBe(false)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "read", noteNumber: 1 }).success).toBe(true)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done" }).success).toBe(false)
     expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done", noteNumber: 1 }).success).toBe(false)
-    expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done", noteNumber: 1, resolution: "classified to user_profile.active_context" }).success).toBe(true)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done", noteNumber: 1, outcome: "applied" }).success).toBe(false)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "mark_done", noteNumber: 1, outcome: "applied", resolution: "classified to user_profile.active_context" }).success).toBe(true)
+    expect(memoryNotesToolInputSchema.safeParse({ operation: "list", outcome: "skipped" }).success).toBe(false)
     expect(
       memoryNotesToolOutputSchema.safeParse({
         operation: "read",
@@ -1690,6 +1693,7 @@ describe("tool contracts", () => {
             conversationId: conversation.id,
             turnId: "turn_1",
             messageId: "msg_1",
+            outcome: "applied",
             resolution: "classified to user_profile.active_context",
             createdAt: timestamp,
           },

@@ -4772,7 +4772,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("creates human-facing memory notes with backend-attached source refs and a capped inbox", async () => {
+  it("creates human-facing memory notes with source refs, normalized dedupe, per-turn cap, and outcomes", async () => {
     const dbPath = tempDbPath()
     const socratesHome = tempDir()
     const app = await buildTestServer(dbPath)
@@ -4792,25 +4792,47 @@ describe("WebSocket API", () => {
         nowIso(),
       )
 
-      for (let index = 0; index < 12; index += 1) {
+      const first = store.createMemoryNote(
+        project.id,
+        {
+          note: "User mentioned a shellfish allergy and current fan-shopping context in the same natural turn.",
+          importance: "high",
+        },
+        { conversationId: conversation.id, sessionId, turnId: turn.turnId },
+      )
+      expect(first).toMatchObject({ noteNumber: 1, status: "open", result: "created" })
+
+      const duplicate = store.createMemoryNote(
+        project.id,
+        {
+          note: "USER MENTIONED A SHELLFISH ALLERGY AND CURRENT FAN SHOPPING CONTEXT IN THE SAME NATURAL TURN!!!",
+          importance: "high",
+        },
+        { conversationId: conversation.id, sessionId, turnId: turn.turnId },
+      )
+      expect(duplicate).toMatchObject({ noteNumber: 1, status: "open", result: "already_recorded" })
+
+      const second = store.createMemoryNote(
+        project.id,
+        { note: "User also wants apartment fan recommendations to account for quiet operation." },
+        { conversationId: conversation.id, sessionId, turnId: turn.turnId },
+      )
+      expect(second).toMatchObject({ noteNumber: 2, status: "open", result: "created" })
+
+      expect(() =>
         store.createMemoryNote(
           project.id,
-          {
-            note:
-              index === 0
-                ? "User mentioned a shellfish allergy and current fan-shopping context in the same natural turn."
-                : `Follow-up durable-looking note ${index + 1}.`,
-            ...(index === 0 ? { importance: "high" as const } : {}),
-          },
+          { note: "User has a third unrelated durable preference candidate in the same turn." },
           { conversationId: conversation.id, sessionId, turnId: turn.turnId },
-        )
-      }
+        ),
+      ).toThrow(/two distinct memory notes/)
 
       const stored = handle.sqlite
-        .prepare("SELECT priority, intent, message_id AS messageId, message_excerpt AS messageExcerpt, metadata_json AS metadataJson FROM memory_notes WHERE note_number = 1")
-        .get() as { priority: string; intent: string; messageId: string; messageExcerpt: string; metadataJson: string }
+        .prepare("SELECT priority, intent, normalized_note_key AS normalizedNoteKey, message_id AS messageId, message_excerpt AS messageExcerpt, metadata_json AS metadataJson FROM memory_notes WHERE note_number = 1")
+        .get() as { priority: string; intent: string; normalizedNoteKey: string; messageId: string; messageExcerpt: string; metadataJson: string }
       expect(stored.priority).toBe("high")
       expect(stored.intent).toBe("review_current_turn")
+      expect(stored.normalizedNoteKey).toHaveLength(64)
       expect(stored.messageId).toBe(turn.userMessageId)
       expect(stored.messageExcerpt).toContain("allergic to shellfish")
       expect(JSON.parse(stored.metadataJson)).toMatchObject({
@@ -4821,11 +4843,15 @@ describe("WebSocket API", () => {
       })
 
       const createdEvent = handle.sqlite.prepare("SELECT payload_json AS payloadJson FROM events WHERE type = 'memory.note.created' ORDER BY sequence LIMIT 1").get() as { payloadJson: string }
-      expect(JSON.parse(createdEvent.payloadJson)).toMatchObject({ noteNumber: 1, importance: "high", defaultSkillScope: "project" })
+      expect(JSON.parse(createdEvent.payloadJson)).toMatchObject({ noteNumber: 1, importance: "high", defaultSkillScope: "project", normalizedNoteKey: stored.normalizedNoteKey })
+      const deduplicatedEvent = handle.sqlite.prepare("SELECT payload_json AS payloadJson FROM events WHERE type = 'memory.note.deduplicated' ORDER BY sequence LIMIT 1").get() as { payloadJson: string }
+      expect(JSON.parse(deduplicatedEvent.payloadJson)).toMatchObject({ noteNumber: 1, normalizedNoteKey: stored.normalizedNoteKey })
+      const noteCount = handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_notes WHERE turn_id = ?").get(turn.turnId) as { count: number }
+      expect(noteCount.count).toBe(2)
 
       const listed = store.runMemoryNotesTool({ operation: "list", limit: 10 })
-      expect(listed.notes).toHaveLength(10)
-      expect(listed.totalMatches).toBe(12)
+      expect(listed.notes).toHaveLength(2)
+      expect(listed.totalMatches).toBe(2)
       expect(listed.notes[0]).toMatchObject({
         noteNumber: 1,
         status: "open",
@@ -4849,13 +4875,15 @@ describe("WebSocket API", () => {
         messageExcerpt: expect.stringContaining("allergic to shellfish"),
       })
 
-      expect(() => store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1 })).toThrow(/resolution/)
-      const completed = store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1, resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
-      expect(completed.notes[0]).toMatchObject({ noteNumber: 1, status: "done", resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
-      const completedRow = handle.sqlite.prepare("SELECT resolution FROM memory_notes WHERE note_number = 1").get() as { resolution: string }
+      expect(() => store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1 })).toThrow(/outcome/)
+      expect(() => store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1, outcome: "applied" })).toThrow(/resolution/)
+      const completed = store.runMemoryNotesTool({ operation: "mark_done", noteNumber: 1, outcome: "applied", resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
+      expect(completed.notes[0]).toMatchObject({ noteNumber: 1, status: "done", outcome: "applied", resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
+      const completedRow = handle.sqlite.prepare("SELECT outcome, resolution FROM memory_notes WHERE note_number = 1").get() as { outcome: string; resolution: string }
+      expect(completedRow.outcome).toBe("applied")
       expect(completedRow.resolution).toContain("user_profile.active_context")
       const completedEvent = handle.sqlite.prepare("SELECT payload_json AS payloadJson FROM events WHERE type = 'memory.note.completed' ORDER BY sequence DESC LIMIT 1").get() as { payloadJson: string }
-      expect(JSON.parse(completedEvent.payloadJson)).toEqual({ noteNumber: 1, resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
+      expect(JSON.parse(completedEvent.payloadJson)).toEqual({ noteNumber: 1, outcome: "applied", resolution: "classified to user_profile.active_context: shellfish allergy is globally useful" })
     } finally {
       await store.close()
     }

@@ -821,7 +821,7 @@ Stores each backend Global Memory Agent batch. Scheduled and manual runs inspect
 
 ## `memory_notes`
 
-Stores Socrates-to-Memory-Agent notepad leads. The model-facing create contract stays small (`note`, optional `importance`); source refs, source project/workspace metadata, and the default project-local skill-scope hint are backend-attached lookup values so the Memory Agent can chain into `trace_retrieve`.
+Stores Socrates-to-Memory-Agent notepad leads. The model-facing create contract stays small (`note`, optional `importance`); source refs, source project/workspace metadata, and the default project-local skill-scope hint are backend-attached lookup values so the Memory Agent can chain into `trace_retrieve`. Inserts must pass deterministic normalization and a hard deduplication guard before a row is created. Any existing equivalent normalized Socrates note returns the existing row, and a third non-duplicate Socrates-authored note in the same source turn is rejected with a recoverable store/tool error.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -831,17 +831,25 @@ Stores Socrates-to-Memory-Agent notepad leads. The model-facing create contract 
 | `priority` | `TEXT` | yes | Compatibility storage for note importance; runtime uses `normal` or `high`. |
 | `intent` | `TEXT` | yes | Compatibility storage; Socrates no longer authors intent and new rows use a fixed internal review intent. |
 | `note` | `TEXT` | yes | Human note written by Socrates or another sending agent. |
+| `normalized_note_key` | `TEXT` | no | Canonical normalized digest/key used for store-level duplicate detection across the source turn and recent equivalent inbox rows. |
 | `project_id` | `TEXT` | no | Source project when the note came from a project conversation. |
 | `conversation_id` | `TEXT` | no | Backend-attached source conversation id. |
 | `turn_id` | `TEXT` | no | Backend-attached source turn id. |
 | `message_id` | `TEXT` | no | Backend-attached current user message id. |
 | `message_excerpt` | `TEXT` | no | Bounded source user-message excerpt returned by `memory_notes.read`. |
+| `outcome` | `TEXT` | no | Completion outcome recorded by `memory_notes.mark_done`: `applied`, `already_represented`, `skipped`, or `proposed_skill`. Null while open/processing. |
 | `resolution` | `TEXT` | no | One-line Memory Agent closure reason recorded by `memory_notes.mark_done`, such as the profile section updated, skill proposal created, or why the note was skipped. |
 | `created_by_agent` | `TEXT` | yes | Sending agent id, usually `socrates`. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 | `claimed_at` | `TEXT` | no | ISO timestamp when a Memory Agent run starts processing it. |
 | `completed_at` | `TEXT` | no | ISO timestamp when marked done/dismissed. |
 | `metadata_json` | `TEXT` | no | Extra backend refs, `attachedSource`, `defaultSkillScope`, source project name, workspace path, trace lookup hints, and processing notes. |
+
+Recommended indexes/guards:
+
+- Unique or lookup guard on `(turn_id, created_by_agent, normalized_note_key)` for rows with a source turn and normalized key.
+- Count guard on `(turn_id, created_by_agent)` so Socrates cannot create more than two non-duplicate memory notes in one user-turn.
+- Existing-note lookup by `normalized_note_key` so duplicate evidence does not create another inbox row and can close as already represented when the Memory Agent investigates it.
 
 ## `worker_model_settings`
 
@@ -952,7 +960,7 @@ Unique index: `doc_index_id + section_id`. Lookup index: `scope + project_id + d
 
 ## `notifications`
 
-Stores durable top-right notification-center items.
+Stores durable top-right notification-center items. Routine memory-agent notifications should be a quiet activity log with structured summaries, not raw trace/diff dumps. Pending skill proposals are action-needed notifications because the user must approve or reject them before the Skill Writer Agent writes final skill files.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -964,7 +972,7 @@ Stores durable top-right notification-center items.
 | `title` | `TEXT` | yes | Short user-facing title. |
 | `body` | `TEXT` | no | User-facing body text. |
 | `severity` | `TEXT` | yes | `info`, `success`, `warning`, or `error`. |
-| `payload_json` | `TEXT` | no | Structured details such as changed docs, rationale, confirmation decision, and compact diff. |
+| `payload_json` | `TEXT` | no | Structured details such as changed docs, memory-note counts/outcomes, rationale, confirmation decision, compact diff, and skill proposal approval state. |
 | `read_at` | `TEXT` | no | ISO timestamp when read; null means unread. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 

@@ -516,7 +516,7 @@ Agent-to-agent communication should start simple and reusable. The accepted firs
 
 - Socrates creates `memory_note` with only a human `note` and optional `importance`.
 - The backend attaches current-turn lookup refs such as conversation id, message id, turn id, source project, workspace path when available, and a default project-local skill-scope hint.
-- The receiving agent reads at most 10 numbered notes through an inbox-style `memory_notes` interface, classifies each lead before acting, chains into `trace_retrieve` when exact evidence is needed, and marks the note done with a one-line `resolution` after applying, proposing, or deliberately skipping it.
+- The receiving agent reads at most 10 numbered notes through an inbox-style `memory_notes` interface, classifies each lead before acting, chains into `trace_retrieve` when exact evidence is needed, and marks the note done with `outcome` plus a one-line `resolution` after applying, finding the memory already represented, proposing a skill, or deliberately skipping it.
 
 Do not expose backend lookup refs as fields that the sending model has to author. They are storage and retrieval plumbing, not a human-facing contract.
 

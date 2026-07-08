@@ -309,56 +309,104 @@ export class MemoryStore extends StoreBase {
 
   createMemoryNote(input: MemoryNoteToolInput, source: { projectId: string; conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
     this.ensureGlobalKnowledge()
-    const turn = this.handle.db.select().from(turns).where(eq(turns.id, source.turnId)).get()
-    const userMessageId = turn?.userMessageId
-    const userMessage = userMessageId ? this.handle.db.select().from(messages).where(eq(messages.id, userMessageId)).get() : undefined
-    const sourceProject = this.handle.db.select().from(projects).where(eq(projects.id, source.projectId)).limit(1).get()
-    const sourceWorkspace = this.handle.db
-      .select()
-      .from(projectWorkspaces)
-      .where(and(eq(projectWorkspaces.projectId, source.projectId), eq(projectWorkspaces.isPrimary, true)))
-      .limit(1)
-      .get()
+    const note = input.note.trim()
+    const normalizedNoteKey = normalizedMemoryNoteKey(note)
     const defaultSkillScope: SkillScope = "project"
-    const now = nowIso()
-    const nextNumberRow = this.handle.sqlite.prepare("SELECT COALESCE(MAX(note_number), 0) + 1 AS nextNumber FROM memory_notes").get() as { nextNumber: number }
-    const noteNumber = nextNumberRow.nextNumber
-    const importance = input.importance ?? "normal"
-    this.handle.db
-      .insert(memoryNotes)
-      .values({
-        id: createId("memnote"),
-        noteNumber,
-        status: "open",
-        priority: importance,
-        intent: "review_current_turn",
-        note: input.note.trim(),
-        projectId: source.projectId,
-        conversationId: source.conversationId,
-        sessionId: source.sessionId,
-        turnId: source.turnId,
-        messageId: userMessageId,
-        messageExcerpt: userMessage?.content ? truncateInline(userMessage.content, 600) : undefined,
-        createdByAgent: "socrates",
-        createdAt: now,
-        metadataJson: JSON.stringify({
-          attachedSource: "current_user_message",
-          defaultSkillScope,
-          ...(sourceProject?.name ? { projectName: sourceProject.name } : {}),
-          ...(sourceWorkspace?.path ? { workspacePath: sourceWorkspace.path } : {}),
-        }),
-      })
-      .run()
-    this.appendEvent({
-      projectId: source.projectId,
-      conversationId: source.conversationId,
-      sessionId: source.sessionId,
-      turnId: source.turnId,
-      type: "memory.note.created",
-      source: "server",
-      payload: { noteNumber, importance, defaultSkillScope },
-    })
-    return { noteNumber, status: "open", attachedSource: "current_user_message" }
+    const result = this.handle.sqlite.transaction(() => {
+      const duplicate = this.handle.db
+        .select()
+        .from(memoryNotes)
+        .where(and(eq(memoryNotes.createdByAgent, "socrates"), eq(memoryNotes.normalizedNoteKey, normalizedNoteKey)))
+        .orderBy(memoryNotes.noteNumber)
+        .limit(1)
+        .get()
+      if (duplicate) {
+        return {
+          output: {
+            noteNumber: duplicate.noteNumber,
+            status: duplicate.status === "done" ? ("done" as const) : duplicate.status === "processing" ? ("processing" as const) : ("open" as const),
+            attachedSource: "current_user_message" as const,
+            result: "already_recorded" as const,
+          },
+          deduplicatedEvent: {
+            projectId: source.projectId,
+            conversationId: source.conversationId,
+            sessionId: source.sessionId,
+            turnId: source.turnId,
+            type: "memory.note.deduplicated",
+            source: "server",
+            payload: { noteNumber: duplicate.noteNumber, normalizedNoteKey, defaultSkillScope },
+          } as const,
+        }
+      }
+
+      const turnCount = this.memoryNoteCountForTurn(source.turnId)
+      if (turnCount >= MEMORY_NOTES_PER_TURN_LIMIT) {
+        throw new SocratesError("memory_note_turn_limit_reached", "This turn already created two distinct memory notes. Merge new memory candidates into an existing note or skip the weaker candidate.", {
+          recoverable: true,
+          details: { turnId: source.turnId, limit: MEMORY_NOTES_PER_TURN_LIMIT },
+        })
+      }
+
+      const turn = this.handle.db.select().from(turns).where(eq(turns.id, source.turnId)).get()
+      const userMessageId = turn?.userMessageId
+      const userMessage = userMessageId ? this.handle.db.select().from(messages).where(eq(messages.id, userMessageId)).get() : undefined
+      const sourceProject = this.handle.db.select().from(projects).where(eq(projects.id, source.projectId)).limit(1).get()
+      const sourceWorkspace = this.handle.db
+        .select()
+        .from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.projectId, source.projectId), eq(projectWorkspaces.isPrimary, true)))
+        .limit(1)
+        .get()
+      const now = nowIso()
+      const nextNumberRow = this.handle.sqlite.prepare("SELECT COALESCE(MAX(note_number), 0) + 1 AS nextNumber FROM memory_notes").get() as { nextNumber: number }
+      const noteNumber = nextNumberRow.nextNumber
+      const importance = input.importance ?? "normal"
+      this.handle.db
+        .insert(memoryNotes)
+        .values({
+          id: createId("memnote"),
+          noteNumber,
+          status: "open",
+          priority: importance,
+          intent: "review_current_turn",
+          note,
+          normalizedNoteKey,
+          projectId: source.projectId,
+          conversationId: source.conversationId,
+          sessionId: source.sessionId,
+          turnId: source.turnId,
+          messageId: userMessageId,
+          messageExcerpt: userMessage?.content ? truncateInline(userMessage.content, 600) : undefined,
+          createdByAgent: "socrates",
+          createdAt: now,
+          metadataJson: JSON.stringify({
+            attachedSource: "current_user_message",
+            defaultSkillScope,
+            ...(sourceProject?.name ? { projectName: sourceProject.name } : {}),
+            ...(sourceWorkspace?.path ? { workspacePath: sourceWorkspace.path } : {}),
+          }),
+        })
+        .run()
+      return {
+        output: { noteNumber, status: "open" as const, attachedSource: "current_user_message" as const, result: "created" as const },
+        createdEvent: {
+          projectId: source.projectId,
+          conversationId: source.conversationId,
+          sessionId: source.sessionId,
+          turnId: source.turnId,
+          type: "memory.note.created",
+          source: "server",
+          payload: { noteNumber, importance, defaultSkillScope, normalizedNoteKey },
+        } as const,
+      }
+    })()
+    if ("createdEvent" in result) {
+      this.appendEvent(result.createdEvent)
+    } else if ("deduplicatedEvent" in result) {
+      this.appendEvent(result.deduplicatedEvent)
+    }
+    return result.output
   }
 
   runMemoryNotesTool(input: MemoryNotesToolInput): MemoryNotesToolOutput {
@@ -379,6 +427,13 @@ export class MemoryStore extends StoreBase {
       const notes = [this.memoryNoteToolRow(updated, true)]
       return { operation: "read", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
     }
+    const outcome = input.outcome
+    if (!outcome) {
+      throw new SocratesError("memory_note_outcome_required", "memory_notes.mark_done requires outcome.", {
+        recoverable: true,
+        details: { noteNumber: row.noteNumber, allowedOutcomes: MEMORY_NOTE_OUTCOMES },
+      })
+    }
     const resolution = input.resolution?.trim()
     if (!resolution) {
       throw new SocratesError("memory_note_resolution_required", "memory_notes.mark_done requires a one-line resolution.", {
@@ -387,7 +442,7 @@ export class MemoryStore extends StoreBase {
       })
     }
     const completedAt = nowIso()
-    this.handle.db.update(memoryNotes).set({ status: "done", completedAt, resolution }).where(eq(memoryNotes.id, row.id)).run()
+    this.handle.db.update(memoryNotes).set({ status: "done", completedAt, outcome, resolution }).where(eq(memoryNotes.id, row.id)).run()
     const updated = this.mustGetMemoryNote(input.noteNumber as number)
     this.appendEvent({
       ...(updated.projectId ? { projectId: updated.projectId } : {}),
@@ -396,7 +451,7 @@ export class MemoryStore extends StoreBase {
       ...(updated.turnId ? { turnId: updated.turnId } : {}),
       type: "memory.note.completed",
       source: "server",
-      payload: { noteNumber: updated.noteNumber, resolution: updated.resolution },
+      payload: { noteNumber: updated.noteNumber, outcome: updated.outcome, resolution: updated.resolution },
     })
     const notes = [this.memoryNoteToolRow(updated, true)]
     return { operation: "mark_done", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
@@ -1208,6 +1263,8 @@ export class MemoryStore extends StoreBase {
       thinkingEffort: modelSettings.thinkingEffort,
       turnCount: entries.entries.length,
     }
+    const memoryNoteSignalStats = this.memoryNoteSignalStats(entries.sequenceFrom, entries.sequenceTo)
+    const memoryNoteRunStats: MemoryNoteRunStats = emptyMemoryNoteRunStats()
     this.handle.db
       .insert(memoryAgentJobs)
       .values({
@@ -1276,6 +1333,9 @@ export class MemoryStore extends StoreBase {
           if (event.type.startsWith("tool.call") || event.type.startsWith("approval.")) {
             toolEvents.push(slimMemoryToolEvent(event))
           }
+          if (event.type === "tool.call.completed" && event.toolName === "memory_notes") {
+            recordMemoryNotesToolOutput(memoryNoteRunStats, event.output)
+          }
           if (event.type === "tool.call.failed") {
             const details = mergeToolErrorDetails(event.error.details, event.toolName)
             this.appendEvent({
@@ -1321,6 +1381,23 @@ export class MemoryStore extends StoreBase {
         lastJobId: jobId,
         error: null,
       })
+      const memoryActivityStats = { ...memoryNoteSignalStats, ...memoryNoteRunStats }
+      const notification = shouldNotifyMemoryAgentActivity(memoryActivityStats)
+        ? this.options.createNotification?.({
+            type: "memory.agent.completed",
+            title: "Memory run completed",
+            body: memoryAgentActivityBody(memoryActivityStats),
+            severity: "info",
+            payload: {
+              jobId,
+              providerId: modelSettings.providerId,
+              modelId: modelSettings.modelId,
+              sequenceFrom: entries.sequenceFrom,
+              sequenceTo: entries.sequenceTo,
+              ...memoryActivityStats,
+            },
+          })
+        : undefined
       this.appendEvent({
         type: "memory.agent.completed",
         source: "server",
@@ -1331,6 +1408,8 @@ export class MemoryStore extends StoreBase {
           modelId: modelSettings.modelId,
           sequenceFrom: entries.sequenceFrom,
           sequenceTo: entries.sequenceTo,
+          ...(notification?.id ? { notificationId: notification.id } : {}),
+          ...memoryActivityStats,
         },
       })
       return { state, pending: this.getMemoryAgentPending(state), item: this.memoryAgentTimelineItem(this.mustGetMemoryAgentJob(jobId)) }
@@ -1437,6 +1516,19 @@ export class MemoryStore extends StoreBase {
       "Use memory_notes.list/read for full note details and attached trace lookup ids.",
       ...rows.map((row) => `- #${row.noteNumber} [${row.priority}] ${truncateInline(row.note, 250)}`),
     ].join("\n")
+  }
+
+  private memoryNoteSignalStats(sequenceFrom: number, sequenceTo: number): MemoryNoteSignalStats {
+    const created = this.handle.sqlite
+      .prepare("SELECT COUNT(*) AS count FROM events WHERE sequence BETWEEN ? AND ? AND type = 'memory.note.created'")
+      .get(sequenceFrom, sequenceTo) as { count: number }
+    const deduplicated = this.handle.sqlite
+      .prepare("SELECT COUNT(*) AS count FROM events WHERE sequence BETWEEN ? AND ? AND type = 'memory.note.deduplicated'")
+      .get(sequenceFrom, sequenceTo) as { count: number }
+    return {
+      memoryNotesSent: created.count,
+      memoryNotesAlreadyRecorded: deduplicated.count,
+    }
   }
 
   private renderGlobalManifestEntry(entry: GlobalTurnManifestEntry, index: number): string {
@@ -1911,6 +2003,13 @@ export class MemoryStore extends StoreBase {
     return row.count
   }
 
+  private memoryNoteCountForTurn(turnId: string): number {
+    const row = this.handle.sqlite
+      .prepare("SELECT COUNT(*) AS count FROM memory_notes WHERE turn_id = ? AND created_by_agent = 'socrates'")
+      .get(turnId) as { count: number }
+    return row.count
+  }
+
   private openMemoryNoteRows(limit: number): Array<typeof memoryNotes.$inferSelect> {
     return this.handle.db
       .select()
@@ -1939,6 +2038,7 @@ export class MemoryStore extends StoreBase {
       ...(row.turnId ? { turnId: row.turnId } : {}),
       ...(row.messageId ? { messageId: row.messageId } : {}),
       ...(row.messageExcerpt ? { messageExcerpt: row.messageExcerpt } : {}),
+      ...(isMemoryNoteOutcome(row.outcome) ? { outcome: row.outcome } : {}),
       ...(row.resolution ? { resolution: row.resolution } : {}),
       createdAt: row.createdAt,
       ...(row.completedAt ? { completedAt: row.completedAt } : {}),
@@ -2545,12 +2645,28 @@ export class MemoryStore extends StoreBase {
     fs.writeFileSync(targetPath, next)
     const afterHash = hashText(next)
     this.handle.db.update(memoryAgentActions).set({ status: "applied", afterHash, appliedAt: nowIso() }).where(eq(memoryAgentActions.id, action.actionId)).run()
+    const notification = this.options.createNotification?.({
+      projectId,
+      ...(turnId ? { turnId } : {}),
+      type: "memory.user_profile.updated",
+      title: "User profile updated",
+      body: "user_profile was updated by the backend memory agent.",
+      severity: "info",
+      payload: {
+        jobId,
+        actionId: action.actionId,
+        document: "user_profile",
+        path: "primary/user_profile.md",
+        rationale: patch.rationale,
+        diff: simpleDiff(patch.oldText ?? "", patch.newText ?? ""),
+      },
+    })
     this.appendEvent({
       projectId,
       ...(turnId ? { turnId } : {}),
       type: "memory.primary.updated",
       source: "server",
-      payload: { jobId, actionId: action.actionId, path: targetPath, targetKind, rationale: patch.rationale },
+      payload: { jobId, actionId: action.actionId, path: targetPath, targetKind, notificationId: notification?.id ?? createId("note"), rationale: patch.rationale },
     })
     return { applied: true, actionId: action.actionId }
   }
@@ -3413,6 +3529,85 @@ const mergeToolErrorDetails = (details: unknown, toolName?: string): Record<stri
 }
 
 const memoryFileScope = (file: MemoryAgentFileSummary): SkillScope | "" => ("scope" in file && file.scope ? file.scope : "")
+
+const MEMORY_NOTES_PER_TURN_LIMIT = 2
+const MEMORY_NOTE_OUTCOMES = ["applied", "already_represented", "skipped", "proposed_skill"] as const
+const isMemoryNoteOutcome = (value: unknown): value is (typeof MEMORY_NOTE_OUTCOMES)[number] =>
+  typeof value === "string" && (MEMORY_NOTE_OUTCOMES as readonly string[]).includes(value)
+
+type MemoryNoteSignalStats = {
+  memoryNotesSent: number
+  memoryNotesAlreadyRecorded: number
+}
+
+type MemoryNoteRunStats = {
+  memoryNotesProcessed: number
+  applied: number
+  alreadyRepresented: number
+  skipped: number
+  proposedSkill: number
+}
+
+type MemoryAgentActivityStats = MemoryNoteSignalStats & MemoryNoteRunStats
+
+const emptyMemoryNoteRunStats = (): MemoryNoteRunStats => ({
+  memoryNotesProcessed: 0,
+  applied: 0,
+  alreadyRepresented: 0,
+  skipped: 0,
+  proposedSkill: 0,
+})
+
+const recordMemoryNotesToolOutput = (stats: MemoryNoteRunStats, output: unknown): void => {
+  const parsed = output && typeof output === "object" && !Array.isArray(output) ? output as Partial<MemoryNotesToolOutput> : undefined
+  if (parsed?.operation !== "mark_done" || !Array.isArray(parsed.notes)) {
+    return
+  }
+  for (const note of parsed.notes) {
+    stats.memoryNotesProcessed += 1
+    if (note.outcome === "applied") {
+      stats.applied += 1
+    } else if (note.outcome === "already_represented") {
+      stats.alreadyRepresented += 1
+    } else if (note.outcome === "skipped") {
+      stats.skipped += 1
+    } else if (note.outcome === "proposed_skill") {
+      stats.proposedSkill += 1
+    }
+  }
+}
+
+const shouldNotifyMemoryAgentActivity = (stats: MemoryAgentActivityStats): boolean =>
+  stats.memoryNotesSent > 0 ||
+  stats.memoryNotesAlreadyRecorded > 0 ||
+  stats.memoryNotesProcessed > 0 ||
+  stats.applied > 0 ||
+  stats.alreadyRepresented > 0 ||
+  stats.skipped > 0 ||
+  stats.proposedSkill > 0
+
+const memoryAgentActivityBody = (stats: MemoryAgentActivityStats): string => {
+  const parts = [
+    stats.memoryNotesSent > 0 ? `${stats.memoryNotesSent} note${stats.memoryNotesSent === 1 ? "" : "s"} sent` : undefined,
+    stats.memoryNotesAlreadyRecorded > 0 ? `${stats.memoryNotesAlreadyRecorded} duplicate${stats.memoryNotesAlreadyRecorded === 1 ? "" : "s"} already recorded` : undefined,
+    stats.memoryNotesProcessed > 0 ? `${stats.memoryNotesProcessed} note${stats.memoryNotesProcessed === 1 ? "" : "s"} processed` : undefined,
+    stats.applied > 0 ? `${stats.applied} applied` : undefined,
+    stats.alreadyRepresented > 0 ? `${stats.alreadyRepresented} already represented` : undefined,
+    stats.skipped > 0 ? `${stats.skipped} skipped` : undefined,
+    stats.proposedSkill > 0 ? `${stats.proposedSkill} skill proposal${stats.proposedSkill === 1 ? "" : "s"}` : undefined,
+  ].filter((part): part is string => typeof part === "string")
+  return parts.length > 0 ? parts.join(" · ") : "Memory check completed."
+}
+
+const normalizedMemoryNoteKey = (note: string): string => {
+  const normalized = note
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+  return hashText(`memory_note:v1:${normalized || note.trim().toLowerCase()}`)
+}
 
 const humanizeSkillName = (name: string): string =>
   name

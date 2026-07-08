@@ -30,7 +30,8 @@ Each note is a human-readable notepad item. The backend attaches the source turn
 
 - `operation: "list"` returns open and processing notes with previews. Use `limit` 10 or less; the contract caps list output at 10.
 - `operation: "read"` takes `noteNumber`, returns the full note and attached source ids, and marks an open note as processing.
-- `operation: "mark_done"` takes `noteNumber` and a one-line `resolution`, then closes the note after you handled it.
+- `operation: "mark_done"` takes `noteNumber`, `outcome`, and a one-line `resolution`, then closes the note after you handled it.
+- `outcome` must be one of `applied`, `already_represented`, `skipped`, or `proposed_skill`.
 - `limit` controls list size up to 10.
 <!-- /socrates:section -->
 
@@ -42,13 +43,14 @@ Each note is a human-readable notepad item. The backend attaches the source turn
 3. Use the returned project, conversation, turn, or message ids with `trace_retrieve` when the note needs exact evidence.
 4. Classify the note first: user profile, identity, skill proposal, or no durable action.
 5. Make the appropriate identity/profile edit or skill proposal only if evidence supports it.
-6. Mark the note done only after the relevant action is recorded or you decide the note is not durable enough. Always include a compact `resolution` saying what you did or why you skipped it.
+6. Mark the note done only after the relevant action is recorded, you confirm the memory is already represented, or you decide the note is not durable enough. Always include a compact `outcome` plus `resolution` saying what you did, what already covered it, or why you skipped it.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->
 ## Failure Handling
 
 - If a note lacks enough evidence, use the attached ids first; then search trace context by titles or keywords.
-- If the evidence is weak, stale, already represented, or project-specific rather than global, skip the edit/proposal and put that reason in the `mark_done` resolution.
+- If the evidence is weak, stale, or project-specific rather than global, use outcome `skipped` and put that reason in the `mark_done` resolution.
+- If the evidence is already represented in identity/user_profile/skills, use outcome `already_represented` and identify the existing section or skill in the resolution.
 - If `mark_done` fails, mention the note number in `Blocked`.
 <!-- /socrates:section -->

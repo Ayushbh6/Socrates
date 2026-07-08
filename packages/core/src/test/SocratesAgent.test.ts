@@ -382,6 +382,71 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
   })
 
+  it("adds a cache-safe same-turn memory save ledger after memory_note results", async () => {
+    const streamRequests: Array<{ system: string; messages: unknown }> = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        streamRequests.push({ system: request.system, messages: JSON.parse(JSON.stringify(request.messages)) as unknown })
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_memory_note",
+              toolName: "memory_note",
+              input: { note: "User explicitly prefers implementation only after approval.", importance: "high" },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Noted." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.memory_note = async () => ({
+      noteNumber: 1,
+      status: "open",
+      attachedSource: "current_user_message",
+      result: "created",
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      messages: [{ role: "user", content: "Please remember this implementation approval preference." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(streamRequests).toHaveLength(2)
+    expect(streamRequests[1]?.system).toBe(streamRequests[0]?.system)
+    expect(streamRequests[0]?.system).not.toContain("socrates_memory_save_ledger")
+    expect(JSON.stringify(streamRequests[0]?.messages)).not.toContain("socrates_memory_save_ledger")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("socrates_memory_save_ledger")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("#1 created status=open")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("implementation only after approval")
+  })
+
   it("runs a structured pre-turn memory route and saves explicit project-local remembers before answering", async () => {
     const streamRequests: ModelRequestLike[] = []
     const structuredSystems: string[] = []

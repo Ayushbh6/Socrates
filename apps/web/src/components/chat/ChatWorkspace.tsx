@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { Bell, Check, LayoutDashboard, Eye, EyeOff, X } from "lucide-react";
+import { LayoutDashboard, Eye, EyeOff } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientCommand, Conversation, ConversationCostUsage, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent, TurnUsageReport } from "@socrates/contracts";
 import { api } from "@/lib/api";
@@ -12,6 +12,7 @@ import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
 import { TerminalDockPanel, TerminalPanel } from "./TerminalPanel";
 import { type PendingApproval, type ToolTimelineItem } from "./ToolTimelineTypes";
+import { ActivityCenter } from "./ActivityCenter";
 
 interface ChatWorkspaceProps {
   projectId: string;
@@ -1182,7 +1183,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               {costUsage?.hasComputedCost || costUsage?.hasUnknownCost ? "*" : ""}
             </span>
           ) : null}
-          <NotificationCenter
+          <ActivityCenter
             notifications={notifications}
             unreadCount={unreadNotificationCount}
             isOpen={isNotificationCenterOpen}
@@ -1308,186 +1309,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         </div>
       </section>
     </main>
-  );
-}
-
-type SkillProposalStatus = "pending" | "approved" | "rejected" | "deleted" | "missing";
-
-const skillProposalStatusLabel = (status: SkillProposalStatus): string => {
-  switch (status) {
-    case "pending":
-      return "Pending";
-    case "approved":
-      return "Approved";
-    case "rejected":
-      return "Rejected";
-    case "deleted":
-      return "Skill deleted";
-    case "missing":
-      return "Unavailable";
-  }
-};
-
-const skillProposalStatusClass = (status: SkillProposalStatus): string => {
-  switch (status) {
-    case "pending":
-      return "border-amber-200 bg-amber-50 text-amber-700";
-    case "approved":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700";
-    case "rejected":
-      return "border-gray-200 bg-gray-50 text-brand-text-light";
-    case "deleted":
-    case "missing":
-      return "border-rose-200 bg-rose-50 text-rose-700";
-  }
-};
-
-const skillProposalStatusFromPayload = (payload: Record<string, unknown>): SkillProposalStatus => {
-  const status = payload.proposalStatus;
-  return status === "approved" || status === "rejected" || status === "deleted" || status === "missing" ? status : "pending";
-};
-
-function NotificationCenter({
-  notifications,
-  unreadCount,
-  isOpen,
-  onToggle,
-  onClose,
-  onRead,
-  onReadAll,
-  onApproveSkillProposal,
-  onRejectSkillProposal,
-  approvingSkillActionId,
-  rejectingSkillActionId,
-}: {
-  notifications: SocratesNotification[];
-  unreadCount: number;
-  isOpen: boolean;
-  onToggle: () => void;
-  onClose: () => void;
-  onRead: (notificationId: string) => void;
-  onReadAll: () => void;
-  onApproveSkillProposal: (notification: SocratesNotification) => void;
-  onRejectSkillProposal: (notification: SocratesNotification) => void;
-  approvingSkillActionId: string | null;
-  rejectingSkillActionId: string | null;
-}) {
-  return (
-    <div className="relative ml-auto shrink-0">
-      <button
-        type="button"
-        className="relative inline-flex size-9 items-center justify-center rounded-md border border-gray-200 bg-white text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
-        title="Notifications"
-        aria-label="Notifications"
-        onClick={onToggle}
-      >
-        <Bell className="size-4" />
-        {unreadCount > 0 ? (
-          <span className="absolute -right-1 -top-1 min-w-5 rounded-full bg-brand-button px-1.5 py-0.5 text-center text-[10px] font-semibold text-white">
-            {unreadCount}
-          </span>
-        ) : null}
-      </button>
-      {isOpen ? (
-        <div className="absolute right-0 top-11 z-30 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl">
-          <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
-            <div>
-              <p className="text-sm font-semibold text-brand-text-dark">Notifications</p>
-              <p className="text-xs text-brand-text-light">{unreadCount} unread</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button type="button" className="text-xs font-medium text-brand-teal-dark hover:underline" onClick={onReadAll}>
-                Mark all read
-              </button>
-              <button type="button" className="rounded-md p-1 text-brand-text-light hover:bg-gray-50" title="Close" onClick={onClose}>
-                <X className="size-4" />
-              </button>
-            </div>
-          </div>
-          <div className="max-h-96 overflow-auto">
-            {notifications.length === 0 ? (
-              <div className="px-3 py-6 text-center text-sm text-brand-text-light">No notifications yet.</div>
-            ) : (
-              notifications.map((notification) => {
-                const payload = notification.payload && typeof notification.payload === "object" ? (notification.payload as Record<string, unknown>) : {};
-                const diff = typeof payload.diff === "string" ? payload.diff : undefined;
-                const rationale = typeof payload.rationale === "string" ? payload.rationale : undefined;
-                const actionId = typeof payload.actionId === "string" ? payload.actionId : undefined;
-                const isSkillProposal = notification.type === "memory.skill.proposed" && Boolean(actionId);
-                const proposalStatus = isSkillProposal ? skillProposalStatusFromPayload(payload) : undefined;
-                const isPendingSkillProposal = proposalStatus === "pending";
-                const isApproving = Boolean(actionId && approvingSkillActionId === actionId);
-                const isRejecting = Boolean(actionId && rejectingSkillActionId === actionId);
-                return (
-                  <div
-                    key={notification.id}
-                    className={`border-b border-gray-100 px-3 py-3 ${
-                      notification.readAt ? "bg-white" : "bg-teal-50/40"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-brand-text-dark">{notification.title}</p>
-                        {notification.body ? <p className="mt-1 text-xs text-brand-text-light">{notification.body}</p> : null}
-                      </div>
-                      {!notification.readAt ? <span className="mt-1 size-2 shrink-0 rounded-full bg-brand-teal" /> : null}
-                    </div>
-                    {rationale ? <p className="mt-2 text-xs text-brand-text-dark">{rationale}</p> : null}
-                    {diff ? (
-                      <pre className="mt-2 max-h-32 overflow-auto rounded-md border border-gray-100 bg-gray-50 p-2 font-mono text-[11px] leading-4 text-brand-text-dark">
-                        {diff}
-                      </pre>
-                    ) : null}
-                    <div className="mt-3 flex items-center justify-between gap-2">
-                      <p className="font-mono text-[10px] text-brand-text-light">{new Date(notification.createdAt).toLocaleString()}</p>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {isSkillProposal && proposalStatus && !isPendingSkillProposal ? (
-                          <span
-                            className={`inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-medium ${skillProposalStatusClass(proposalStatus)}`}
-                          >
-                            {skillProposalStatusLabel(proposalStatus)}
-                          </span>
-                        ) : null}
-                        {isPendingSkillProposal ? (
-                          <button
-                            type="button"
-                            className="h-8 rounded-md border border-gray-200 px-2.5 text-xs font-medium text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled={isApproving || isRejecting}
-                            onClick={() => onRejectSkillProposal(notification)}
-                          >
-                            {isRejecting ? "Rejecting" : "Reject"}
-                          </button>
-                        ) : null}
-                        {isPendingSkillProposal ? (
-                          <button
-                            type="button"
-                            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-brand-button px-2.5 text-xs font-medium text-white hover:bg-brand-button-hover disabled:cursor-not-allowed disabled:opacity-60"
-                            disabled={isApproving || isRejecting}
-                            onClick={() => onApproveSkillProposal(notification)}
-                          >
-                            <Check className="size-3.5" />
-                            {isApproving ? "Creating" : "Approve"}
-                          </button>
-                        ) : null}
-                        {!notification.readAt ? (
-                          <button
-                            type="button"
-                            className="h-8 rounded-md border border-gray-200 px-2.5 text-xs font-medium text-brand-text-light hover:bg-gray-50 hover:text-brand-text-dark"
-                            onClick={() => onRead(notification.id)}
-                          >
-                            Mark read
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      ) : null}
-    </div>
   );
 }
 
