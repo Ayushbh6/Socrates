@@ -491,6 +491,7 @@ Do not add serious model-driven workflows as bespoke provider calls inside route
 
 Role boundaries:
 
+- Memory Router is a lightweight structured-output decision layer inside the main Socrates turn flow, not a separate full agent. It routes Socrates to all curated authority surfaces (`project_notes`, `project_memory`, `repo_docs`, `user_profile`, `identity`, and skill-candidate flow), may suggest simple doc/section hints, and may split mixed prompts into a small capped list of memory write candidates. It does not author patches or write docs itself.
 - Socrates writes workspace project memory, project notes, and repo docs through `project_docs` and `repo_docs`. It owns project-scoped active context in project notes and may create `memory_note` leads for the Memory Agent, preferably one and never more than two per user-turn. It does not write identity, user profile, or skills.
 - The Global Memory Agent writes global user profile through scoped edits, proposes/applies identity only through the confirmation policy, inspects full skills for freshness, and sends approved skill create/update tasks to the Skill Writer Agent. It should skip project-local active context for global memory and close each memory note with one of `applied`, `already_represented`, `skipped`, or `proposed_skill` plus a one-line resolution.
 - The Skill Writer Agent reads approved task context and existing skill content, then writes the final `SKILL.md` through `skill_write`. It does not decide whether the skill should exist.

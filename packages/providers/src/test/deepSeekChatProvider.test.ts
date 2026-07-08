@@ -120,6 +120,33 @@ describe("DeepSeek chat provider", () => {
     })
   })
 
+  it("serializes stable cache prelude before the latest user message", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      sseResponse([{ id: "ds_resp_cache_prelude", model: "deepseek-v4-pro", choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]),
+    )
+    globalThis.fetch = fetchMock as typeof fetch
+
+    const provider = new DeepSeekChatProvider(credentials())
+    for await (const _event of provider.stream({
+      ...modelRequest(),
+      messages: [
+        {
+          role: "developer",
+          content:
+            "<socrates_stable_cache_prelude>\n<global_always_apply_rules>\n- Slow Mode.\n</global_always_apply_rules>\n</socrates_stable_cache_prelude>",
+        },
+        { role: "user", content: "Now inspect the workspace." },
+      ],
+    })) {
+      // Drain stream.
+    }
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))
+    expect(body.messages.map((message: { role: string }) => message.role)).toEqual(["system", "user", "user"])
+    expect(body.messages[1].content).toContain("socrates_stable_cache_prelude")
+    expect(body.messages[2].content).toBe("Now inspect the workspace.")
+  })
+
   it("passes DeepSeek reasoning_content back for thinking tool-call continuations", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce(sseResponse([{ id: "ds_resp_2", model: "deepseek-v4-pro", choices: [{ delta: { content: "Done" }, finish_reason: "stop" }] }]))
     globalThis.fetch = fetchMock as typeof fetch

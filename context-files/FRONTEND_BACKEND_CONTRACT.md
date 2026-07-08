@@ -1780,7 +1780,7 @@ mcp_registry
 
 The main-agent `memory_note` tool uses only `note` and optional `importance` as model-authored input. The backend attaches current-turn lookup refs, source project/workspace metadata, and default project-local skill-scope hint automatically.
 
-Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, broad web-search, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus `memory_note` and dynamic MCP tools returned by `mcp_registry`. `url_fetch` is exact-URL reading only, not search or crawling. `projects`, `edit_files`, `memory_notes`, and `skill_write` are base/specialized contract tools for backend agent workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
+Do not expose separate `glob`, `grep`, `write`, `git`, `todo`, `question`, broad web-search, or sub-agent/task tools in the initial tooling phase. Internal implementation helpers may be more granular, but the main Socrates model-visible surface should remain the tools above plus `memory_note` and dynamic MCP tools returned by `mcp_registry`. `url_fetch` is exact-URL reading only, not search or crawling. `projects`, `edit_files`, `memory_notes`, and `skill_write` are base/specialized contract tools for backend agent workflows, not normal main-agent tools. Dynamic MCP tools are not included in the system prompt or first provider-call schemas; the MCP runtime may expose `mcp__...` tools only after `mcp_registry` returns them during the same turn. Current date/time is exposed through `current_time`, not through changing system-prompt context. Main chat must not inject per-turn wake-context blocks or hidden skill/MCP matches based on user-query wording. The Memory Router may attach a tiny always-apply rules pack and route Socrates to curated docs, but it must not become raw conversation recall or hidden skill/MCP prompt matching. That always-apply pack is rendered as `<socrates_stable_cache_prelude>` before conversation/user text; dynamic routed docs, tool results, and ledgers stay after the current user message. Patch application is exposed as `apply_patch`, not as a hidden mode inside `edit`.
 
 All tool schemas live in `packages/contracts`. `packages/core/tools` owns the model-visible tool wrappers and registry. `packages/workspace` owns filesystem, document parsing, image extraction, shell, git, patch, and trace implementation details.
 
@@ -2347,7 +2347,7 @@ Rules:
 - Socrates should not request a skill, provide a skill name, choose project/global scope, or name the target memory file/section. The Memory Agent owns classification and routing.
 - The note is only a lead. The Memory Agent must use `memory_notes.read` and `trace_retrieve` when exact evidence matters.
 - The backend normalizes and deduplicates before insert. Equivalent normalized notes return the existing note with `result: "already_recorded"`; a third non-duplicate same-turn note should fail with a recoverable `memory_note_turn_limit_reached` tool error rather than creating a row.
-- After a note is accepted, the runtime can expose a compact same-turn save ledger to later continuation calls. This ledger must be appended near the tail of dynamic turn context so the stable system prompt and early prompt prefix remain cache-friendly.
+- After a note is accepted, the runtime can expose a compact same-turn save ledger to later continuation calls. This ledger must be appended near the tail of dynamic turn context so the stable system prompt, stable always-apply prelude, and early prompt prefix remain cache-friendly.
 
 Specialized Memory Agent inbox:
 
@@ -2464,6 +2464,51 @@ PATCH /api/worker-model-settings/:workerId
 
 The built-in Memory Router default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off. When ChatGPT Codex is connected and the saved router setting is the built-in default or unavailable, the effective runtime default is ChatGPT Codex `gpt-5.4-mini` with low reasoning. Its token/cost usage should be counted in normal turn/conversation totals through `ai_usage_events`; the frontend does not need a separate router-cost display.
 
+Memory Router contract target:
+
+```ts
+type MemoryRouteDocHint =
+  | "project_notes/active_context"
+  | "project_memory/always_apply_rules"
+  | "project_memory/current_state"
+  | "project_memory/durable_decisions"
+  | "project_memory/handoff"
+  | "repo_docs/CORE_IDEA.md"
+  | "repo_docs/REPO_NAVIGATION.md"
+  | "repo_docs/REPO_RULES.md"
+  | "repo_docs/CONTRACTS.md"
+  | "user_profile/global_always_apply_rules"
+  | "user_profile/collaboration_style"
+  | "identity/operating_principles"
+  | "skills/candidate"
+
+type MemoryWriteTarget =
+  | "project_notes"
+  | "project_memory"
+  | "repo_docs"
+  | "global_memory"
+  | "identity"
+  | "skill_candidate"
+
+type MemoryWriteCandidate = {
+  target: MemoryWriteTarget
+  text: string
+  reason: string
+  docHint?: MemoryRouteDocHint
+}
+```
+
+The exact schema may evolve, but the behavior must stay simple and human-facing:
+
+- Pre-turn routing decides which curated docs Socrates should open and may include likely file/section hints.
+- Pre-turn routing always reads the global and project always-apply sections and renders their successful outputs into a provider-agnostic stable cache prelude before conversation/user text. Router-selected docs, save summaries, and same-turn ledgers remain in the later dynamic context tail.
+- Pre-turn routing may return a small capped list of write candidates so mixed prompts can split correctly, for example one user-profile candidate plus one repo-doc contract candidate.
+- The router never authors `oldText`, `newText`, patches, hashes, or hidden backend ids.
+- Socrates opens the hinted docs, checks what is already represented, and uses `project_docs` or `repo_docs` for project/repo writes.
+- `global_memory`, `identity`, and `skill_candidate` candidates go through `memory_note`; the Memory Agent remains the owner of profile/identity edits and skill proposal classification, with the Skill Writer Agent owning approved final skill writes.
+- Post-evidence routing saves only durable outcomes, open loops, corrections, or repo doctrine changes created by completed work.
+- Raw `trace_retrieve` is provenance/debug fallback, not the normal recall corpus.
+
 ### `project_docs`
 
 Constrained read/search/edit access to the active workspace's `.socrates/MEMORY.md` and `.socrates/PROJECT_NOTES.md`.
@@ -2489,6 +2534,7 @@ Every `project_docs` output may include `runtime?: RuntimeTimeMetadata` with bac
 Rules:
 
 - `area: "memory"` is durable cross-conversation project state: goals, decisions, constraints, blockers, durable preferences, changed workflow facts, and handoff facts.
+- Project memory should include a human-readable `Project Always-Apply Rules` section capped at 10 rules. Together with `user_profile`'s `Global Always-Apply Rules`, this forms the centralized always-apply rules list attached to every applicable turn through the stable cache prelude. The project section is for short hard project rules only; fuller repo doctrine still belongs in `repo_docs`.
 - `area: "notes"` is the active assistant notebook: active project context, current todos, checked files, partial progress, next commands, short-term restart points, and a protected backend-owned `runtime_context` section.
 - Runtime docs are structured markdown with YAML frontmatter and `socrates:section` markers. `read_index` returns the parsed section map; `read_section` returns one section; `patch_section` limits an exact oldText/newText replacement to one section.
 - `runtime_context` is system-owned. `project_docs` rejects attempts to patch or change it. It may contain compact workspace scan facts, but must not persist terminal output, live terminal state, dependency dumps, package lists, or root-script inventories.
@@ -2535,6 +2581,8 @@ Rules:
 ### `user_profile`
 
 Read-only access to `~/.Socrates/user_profile.md`, which stores durable cross-project user profile facts and stable user preferences. It supports `read`, `read_index`, and `read_section` with the same focused section output shape, index-first guidance, and char-limit caps as `soul`. The main Socrates agent should call this before answering user-profile/preference questions. Only the backend memory agent can update this file through scoped `edit_files`.
+
+`user_profile` should include a `Global Always-Apply Rules` section capped at 10 rules. This is the global lane of the centralized always-apply rules list and should contain only hard cross-project user preferences or constraints that Socrates must attach every turn through the stable cache prelude. It is not for ordinary profile facts, temporary user-life context, or project-specific workflow instructions.
 
 Primary `identity.md` and `user_profile.md` migrations are special-cased: unlike ordinary structured markdown migrations, they must not preserve a generic `legacy_content` section. Startup normalization routes legacy headings into the canonical primary sections, removes old scaffolding placeholders, strips duplicate inner markdown headings, and compacts obvious duplicate migrated bullets before Memory Center exposes the files. `user_profile.evidence_index` is a compact source-anchor section for important profile claims, using dates, project/conversation titles or ids, turn/message/event ids or trace handles when available, the supported claim, and the profile section using that claim.
 

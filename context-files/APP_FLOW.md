@@ -671,6 +671,7 @@ not yet enabled:
 
 accepted next/refactor direction:
   memory_note for Socrates-to-Memory-Agent leads
+  centralized Memory Router recall/write routing with always-apply rules
   Memory Agent skill freshness suggestions and approved update requests
   Skill Writer Agent as a real specialized agent path, not a one-off provider workflow
 ```
@@ -723,6 +724,10 @@ Workspace runtime scan facts are not injected into the system prompt. The backen
 Current date/time is not injected into the Socrates system prompt. The read-only `current_time({})` tool returns backend-owned `currentDate`, `currentDateTime`, `timeZone`, and `source: "system"`. Socrates should call it for date-sensitive answers, filenames, logs, or document prose that truly needs today's date. It should not derive today's date from older project documents or previous conversations.
 
 Main chat does not inject a per-turn wake-context block. Stable recall guidance belongs in the base prompt, and changing facts stay behind tools: `project_docs` for notes/memory, `repo_docs` for doctrine, `current_time` for date/time, `skills` for reusable workflows, and `mcp_registry` for MCP servers. The runtime must not inject hidden skill or MCP matches based on words in the user's prompt.
+
+The Memory Router keeps recall centered on curated docs instead of raw conversation search. Pre-turn routing decides which authority surfaces Socrates must open for the current query and may include simple human-facing doc/section hints such as `project_notes/active_context`, `project_memory/durable_decisions`, `repo_docs/CONTRACTS.md`, `repo_docs/CORE_IDEA.md`, `repo_docs/REPO_RULES.md`, `repo_docs/REPO_NAVIGATION.md`, `user_profile/global_always_apply_rules`, `identity/operating_principles`, or a skill-candidate lane for reusable procedures. The router points; Socrates reads the docs and decides exact wording/patches.
+
+Always-apply rules are a tiny curated layer, not a new memory store. Treat them as one centralized always-apply rules list with two lanes: `user_profile.md` has a capped `Global Always-Apply Rules` section, and workspace project memory has a capped `Project Always-Apply Rules` section. Each section is limited to 10 human-readable rules and is attached to every applicable turn through a stable cache prelude placed before conversation/user text. Short always-apply project rules may reference fuller repo doctrine, but `.socrates/repo_docs/*` remains the authoritative home for repo contracts, architecture, workflows, navigation, and rules.
 
 `trace_retrieve` retrieves previous conversation memory only when useful. Normal search prevents historical tool dumps from being carried forward or recursively re-retrieved, while explicit `mode = "audit"` keeps full runtime evidence available through SQLite. `mode = "audit"` with `include: ["shell"]` covers foreground shell commands and detached conversation Terminal sessions/chunks through the same investigative shell evidence path; no extra terminal-specific model input parameters are required. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
 
@@ -805,6 +810,23 @@ current_time when truly needed
 It should not receive Terminal, arbitrary filesystem read/write, generic patch tools, identity/profile writes, project/repo docs writes, or raw path mutation tools.
 
 Settings exposes independent worker model selectors for Skill Writer, Context Compactor, Title Generator, and Memory Router. Each selector uses the normal model registry and thinking options, with defaults preserving the current production choices. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
+
+Memory Router strengthening target:
+
+```text
+pre-turn
+  -> attach Global Always-Apply Rules and Project Always-Apply Rules
+  -> route Socrates to the right curated docs for working memory
+  -> split important user input into a small capped list of memory write candidates
+  -> suggest surface/doc/section, not exact patches
+  -> Socrates reads docs and writes project/repo docs directly or creates memory_note for global/identity/profile candidates
+
+post-evidence
+  -> save only durable outcomes, open loops, corrections, or repo doctrine changes produced by the turn
+  -> skip ordinary answers and already-represented facts
+```
+
+Mixed prompts must split cleanly. If one user message contains both a global personal preference and a repo workflow contract, the router should produce one `global_memory` candidate for the Memory Agent and one `repo_docs` candidate with a likely doc such as `CONTRACTS.md` or `REPO_RULES.md`. Socrates then opens the hinted docs, checks whether the fact is already represented, applies the exact project/repo doc edit through the dedicated docs tool, sends global candidates through `memory_note`, and continues the normal task.
 
 `mcp_registry` is the model-visible MCP discovery/inspection tool. The model-facing contract is intentionally just `list` and `describe`: `list` returns compact global plus project-visible servers with canonical ids, names, scopes, descriptions, and the first tool previews; `describe` takes an exact listed `id` or exact listed `name`, loads that single server, and returns docs plus dynamic `mcp__...` tool names. UI/API flows handle configure, check, enable/disable, and delete. The system prompt carries only concise registry-first guidance; it must not dump MCP server tool lists or schemas. The first provider call exposes only the core tools plus `mcp_registry`; dynamic `mcp__...` tool names may be added to later same-turn provider requests only after the registry/runtime reports them available.
 

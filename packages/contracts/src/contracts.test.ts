@@ -1347,8 +1347,22 @@ describe("memory route contracts", () => {
         projectMemory: false,
         repoDocs: true,
         userProfile: false,
-        saveTarget: "project_notes",
-        saveText: "- Remember the local root MEMORY.md is separate from Socrates runtime memory.",
+        identity: false,
+        docHints: ["project_notes/active_context", "repo_docs/REPO_RULES.md"],
+        memoryWrites: [
+          {
+            target: "project_notes",
+            text: "Remember the local root MEMORY.md is separate from Socrates runtime memory.",
+            reason: "The user gave project-local guidance before asking for repo work.",
+            docHint: "project_notes/active_context",
+          },
+          {
+            target: "global_memory",
+            text: "The user wants slow-mode requests discussed before implementation across projects.",
+            reason: "The user gave a stable cross-project collaboration rule.",
+            docHint: "user_profile/global_always_apply_rules",
+          },
+        ],
         reason: "The user gave project-local guidance before asking for repo work.",
       }).success,
     ).toBe(true)
@@ -1358,22 +1372,41 @@ describe("memory route contracts", () => {
         projectMemory: false,
         repoDocs: false,
         userProfile: false,
-        saveTarget: "none",
-        saveText: "do not allow extra save text",
+        identity: false,
+        docHints: [],
+        memoryWrites: [
+          {
+            target: "global_memory",
+            text: "",
+            reason: "Empty text is not a valid write candidate.",
+          },
+        ],
         reason: "No durable item.",
       }).success,
     ).toBe(false)
     expect(
       postTurnMemoryRouteSchema.safeParse({
-        saveTarget: "project_memory",
-        saveText: "- Verified the memory loop uses structured output.",
+        memoryWrites: [
+          {
+            target: "project_memory",
+            text: "Verified the memory loop uses structured output.",
+            reason: "The turn produced a durable implementation fact.",
+            docHint: "project_memory/durable_decisions",
+          },
+        ],
         reason: "The turn produced a durable implementation fact.",
       }).success,
     ).toBe(true)
     expect(
       postTurnMemoryRouteSchema.safeParse({
-        saveTarget: "global_memory",
-        saveText: "",
+        memoryWrites: [
+          {
+            target: "global_memory",
+            text: "This target hint is invalid.",
+            reason: "Schema should reject unsupported hints.",
+            docHint: "user_profile/made_up_section",
+          },
+        ],
         reason: "A non-none route must include a concise saved text.",
       }).success,
     ).toBe(false)

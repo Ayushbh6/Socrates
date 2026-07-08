@@ -3,7 +3,8 @@ import {
   postTurnMemoryRouteSchema,
   preTurnMemoryRouteSchema,
   toolExecutionResultSchema,
-  type MemoryRouteSaveTarget,
+  type MemoryRouteDocHint,
+  type MemoryWriteCandidate,
   type ModelToolDefinition,
   type NormalizedToolCall,
   type PostTurnMemoryRoute,
@@ -145,6 +146,9 @@ export class SocratesAgent {
     preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
     for (const event of preTurnMemoryLoop.events) {
       yield event
+    }
+    if (preTurnMemoryLoop.stableCachePreludeMessage) {
+      insertStableCachePrelude(messages, preTurnMemoryLoop.stableCachePreludeMessage)
     }
     if (preTurnMemoryLoop.developerMessage) {
       messages.push({ role: "developer", content: preTurnMemoryLoop.developerMessage })
@@ -587,17 +591,22 @@ export class SocratesAgent {
         records.push(record)
       }
 
-      const saveResult = await this.executeMemoryLoopSave(input, docsLedger, route.saveTarget, route.saveText, "pre_turn")
+      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, route.memoryWrites, "pre_turn")
       events.push(...saveResult.events)
       records.push(...saveResult.records)
       skipped.push(...saveResult.skipped)
 
       const summary = summarizeMemoryLoop("pre_turn", route, records, skipped)
+      const stableCachePreludeMessage = renderStableCachePrelude(records)
+      const dynamicRecords = records.filter((record) => !isStableCachePreludeRecord(record))
       return {
         events,
         summary,
         records,
-        developerMessage: renderMemoryLoopDeveloperMessage("pre_turn", route, records, skipped),
+        ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
+        developerMessage: renderMemoryLoopDeveloperMessage("pre_turn", route, dynamicRecords, skipped, {
+          stableCachePreludeApplied: Boolean(stableCachePreludeMessage),
+        }),
       }
     } catch (error) {
       const normalized = normalizeError(error)
@@ -634,7 +643,7 @@ export class SocratesAgent {
         return memoryLoopWarning("post_evidence", "Structured post-evidence route did not match the memory-route schema.")
       }
       const route = parsed.data
-      const saveResult = await this.executeMemoryLoopSave(input, docsLedger, route.saveTarget, route.saveText, "post_evidence")
+      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, route.memoryWrites, "post_evidence")
       const summary = summarizeMemoryLoop("post_evidence", route, saveResult.records, saveResult.skipped)
       return {
         events: saveResult.events,
@@ -699,18 +708,35 @@ export class SocratesAgent {
     return generated.output
   }
 
+  private async executeMemoryLoopSaves(
+    input: SocratesAgentTurnInput,
+    docsLedger: TurnDocsLedger,
+    candidates: MemoryWriteCandidate[],
+    phase: MemoryLoopPhase,
+  ): Promise<MemoryLoopSaveResult> {
+    const events: ToolLifecycleEvent[] = []
+    const records: MemoryLoopToolRecord[] = []
+    const skipped: string[] = []
+    for (const candidate of candidates) {
+      const result = await this.executeMemoryLoopSave(input, docsLedger, candidate, phase)
+      events.push(...result.events)
+      records.push(...result.records)
+      skipped.push(...result.skipped)
+    }
+    return { events, records, skipped }
+  }
+
   private async executeMemoryLoopSave(
     input: SocratesAgentTurnInput,
     docsLedger: TurnDocsLedger,
-    target: MemoryRouteSaveTarget,
-    text: string,
+    candidate: MemoryWriteCandidate,
     phase: MemoryLoopPhase,
   ): Promise<MemoryLoopSaveResult> {
-    const saveText = text.trim()
-    if (target === "none" || !saveText) {
+    const saveText = cleanMemoryLoopText(candidate.text)
+    if (!saveText) {
       return emptyMemoryLoopSaveResult()
     }
-    if (target === "project_notes") {
+    if (candidate.target === "project_notes") {
       return this.patchMemoryLoopSection(input, docsLedger, {
         toolName: "project_docs",
         readInput: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
@@ -725,21 +751,32 @@ export class SocratesAgent {
         phase,
       })
     }
-    if (target === "project_memory") {
-      const record = await this.executeMemoryLoopTool(input, docsLedger, {
-        toolName: "project_docs",
-        input: { operation: "edit", area: "memory", editMode: "append", text: memoryLoopEntry(saveText, phase) },
-      })
-      return { events: record.events, records: [record], skipped: [] }
-    }
-    if (target === "repo_docs") {
+    if (candidate.target === "project_memory") {
+      const sectionId = projectMemorySectionIdForHint(candidate.docHint) ?? "durable_decisions"
       return this.patchMemoryLoopSection(input, docsLedger, {
-        toolName: "repo_docs",
-        readInput: { operation: "read_section", path: "REPO_RULES.md", sectionId: "hard_rules", charLimit: 20_000 },
+        toolName: "project_docs",
+        readInput: { operation: "read_section", area: "memory", sectionId, charLimit: 20_000 },
         patchInput: (oldText, newText) => ({
           operation: "patch_section",
-          path: "REPO_RULES.md",
-          sectionId: "hard_rules",
+          area: "memory",
+          sectionId,
+          oldText,
+          newText,
+        }),
+        text: saveText,
+        phase,
+        ...(sectionId === "always_apply_rules" ? { maxBullets: 10 } : {}),
+      })
+    }
+    if (candidate.target === "repo_docs") {
+      const target = repoDocsWriteTargetForHint(candidate.docHint)
+      return this.patchMemoryLoopSection(input, docsLedger, {
+        toolName: "repo_docs",
+        readInput: { operation: "read_section", path: target.path, sectionId: target.sectionId, charLimit: 20_000 },
+        patchInput: (oldText, newText) => ({
+          operation: "patch_section",
+          path: target.path,
+          sectionId: target.sectionId,
           oldText,
           newText,
         }),
@@ -749,7 +786,7 @@ export class SocratesAgent {
     }
     const record = await this.executeMemoryLoopTool(input, docsLedger, {
       toolName: "memory_note",
-      input: { note: saveText, importance: phase === "pre_turn" ? "high" : "normal" },
+      input: { note: memoryNoteTextForCandidate(candidate, saveText), importance: phase === "pre_turn" ? "high" : "normal" },
     })
     return { events: record.events, records: [record], skipped: [] }
   }
@@ -763,6 +800,7 @@ export class SocratesAgent {
       patchInput: (oldText: string, newText: string) => Record<string, unknown>
       text: string
       phase: MemoryLoopPhase
+      maxBullets?: number
     },
   ): Promise<MemoryLoopSaveResult> {
     const readRecord = await this.executeMemoryLoopTool(input, docsLedger, {
@@ -789,9 +827,17 @@ export class SocratesAgent {
         skipped: [`${request.toolName} already contained the selected memory text.`],
       }
     }
+    const newText = appendMemoryLoopEntry(oldText, request.text, request.phase, request.maxBullets ? { maxBullets: request.maxBullets } : undefined)
+    if (!newText) {
+      return {
+        events,
+        records,
+        skipped: [`${request.toolName} section already has ${request.maxBullets} rule bullets, so the memory-loop write was skipped to preserve the cap.`],
+      }
+    }
     const patchRecord = await this.executeMemoryLoopTool(input, docsLedger, {
       toolName: request.toolName,
-      input: request.patchInput(oldText, appendMemoryLoopEntry(oldText, request.text, request.phase)),
+      input: request.patchInput(oldText, newText),
     })
     return { events: [...events, ...patchRecord.events], records: [...records, patchRecord], skipped: [] }
   }
@@ -1153,6 +1199,7 @@ type MemoryLoopRunResult = {
   events: ToolLifecycleEvent[]
   summary?: string
   records?: MemoryLoopToolRecord[]
+  stableCachePreludeMessage?: string
   developerMessage?: string
 }
 
@@ -1171,6 +1218,14 @@ type MemoryLoopToolRecord = {
 
 const emptyMemoryLoopRunResult = (): MemoryLoopRunResult => ({ events: [] })
 const emptyMemoryLoopSaveResult = (): MemoryLoopSaveResult => ({ events: [], records: [], skipped: [] })
+
+const insertStableCachePrelude = (messages: ModelMessage[], content: string): void => {
+  const firstNonSystemIndex = messages.findIndex((message) => message.role !== "system")
+  messages.splice(firstNonSystemIndex === -1 ? messages.length : firstNonSystemIndex, 0, {
+    role: "developer",
+    content,
+  })
+}
 
 const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput): boolean =>
   typeof provider.generateStructured === "function" &&
@@ -1203,19 +1258,61 @@ const memoryRouterRuntimeConfig = (settings: MemoryRouterModelSettings): Runtime
 
 const preTurnRecallRequests = (route: PreTurnMemoryRoute): Array<{ toolName: ToolName; input: unknown }> => {
   const requests: Array<{ toolName: ToolName; input: unknown }> = []
+  const seen = new Set<string>()
+  const push = (request: { toolName: ToolName; input: unknown }) => {
+    const key = `${request.toolName}:${JSON.stringify(request.input)}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      requests.push(request)
+    }
+  }
+  push({ toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: "always_apply_rules", charLimit: 10_000 } })
+  push({ toolName: "user_profile", input: { operation: "read_section", sectionId: "global_always_apply_rules", charLimit: 10_000 } })
   if (route.projectNotes) {
-    requests.push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 } })
+    push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 } })
   }
   if (route.projectMemory) {
-    requests.push({ toolName: "project_docs", input: { operation: "read", area: "memory", charLimit: 20_000 } })
+    push({ toolName: "project_docs", input: { operation: "read", area: "memory", charLimit: 20_000 } })
   }
   if (route.repoDocs) {
-    requests.push({ toolName: "repo_docs", input: { operation: "read_index", charLimit: 20_000 } })
+    push({ toolName: "repo_docs", input: { operation: "read_index", charLimit: 20_000 } })
   }
   if (route.userProfile) {
-    requests.push({ toolName: "user_profile", input: { operation: "read_index", charLimit: 20_000 } })
+    push({ toolName: "user_profile", input: { operation: "read_index", charLimit: 20_000 } })
+  }
+  if (route.identity) {
+    push({ toolName: "soul", input: { operation: "read_index", charLimit: 20_000 } })
+  }
+  for (const hint of route.docHints) {
+    const request = recallRequestForDocHint(hint)
+    if (request) {
+      push(request)
+    }
   }
   return requests
+}
+
+const recallRequestForDocHint = (hint: MemoryRouteDocHint): { toolName: ToolName; input: unknown } | undefined => {
+  const projectMemorySectionId = projectMemorySectionIdForHint(hint)
+  if (hint === "project_notes/active_context") {
+    return { toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 } }
+  }
+  if (projectMemorySectionId) {
+    return { toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: projectMemorySectionId, charLimit: 20_000 } }
+  }
+  if (hint.startsWith("repo_docs/")) {
+    return { toolName: "repo_docs", input: { operation: "read_index", path: hint.slice("repo_docs/".length), charLimit: 20_000 } }
+  }
+  if (hint.startsWith("user_profile/")) {
+    return { toolName: "user_profile", input: { operation: "read_section", sectionId: hint.slice("user_profile/".length), charLimit: 20_000 } }
+  }
+  if (hint.startsWith("identity/")) {
+    return { toolName: "soul", input: { operation: "read_section", sectionId: hint.slice("identity/".length), charLimit: 20_000 } }
+  }
+  if (hint === "skills/candidate") {
+    return { toolName: "skills", input: { operation: "list", scope: "project" } }
+  }
+  return undefined
 }
 
 const shouldRunPostEvidenceMemoryLoop = (results: ToolExecutionResult[]): boolean =>
@@ -1241,11 +1338,51 @@ const memoryLoopSectionContent = (output: unknown): string | undefined => {
   return typeof section?.content === "string" ? section.content : typeof record?.content === "string" ? record.content : undefined
 }
 
-const memoryLoopEntry = (text: string, phase: MemoryLoopPhase): string => `- [${phase === "pre_turn" ? "pre-turn" : "post-evidence"}] ${text.trim()}`
+const cleanMemoryLoopText = (text: string): string => text.trim().replace(/^[-*]\s+/, "").trim()
 
-const appendMemoryLoopEntry = (oldText: string, text: string, phase: MemoryLoopPhase): string => {
+const memoryLoopEntry = (text: string, phase: MemoryLoopPhase): string => `- [${phase === "pre_turn" ? "pre-turn" : "post-evidence"}] ${cleanMemoryLoopText(text)}`
+
+const appendMemoryLoopEntry = (oldText: string, text: string, phase: MemoryLoopPhase, options?: { maxBullets?: number }): string | undefined => {
   const entry = memoryLoopEntry(text, phase)
+  if (isAlwaysApplyPlaceholderText(oldText)) {
+    return entry
+  }
+  if (options?.maxBullets && countMeaningfulBullets(oldText) >= options.maxBullets) {
+    return undefined
+  }
   return oldText.trimEnd().length === 0 ? entry : `${oldText.trimEnd()}\n${entry}`
+}
+
+const countMeaningfulBullets = (text: string): number =>
+  text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^[-*]\s+/.test(line) && !isAlwaysApplyPlaceholderText(line))
+    .length
+
+const isAlwaysApplyPlaceholderText = (text: string): boolean => {
+  const normalized = cleanMemoryLoopText(text).toLowerCase()
+  return normalized.startsWith("add at most 10") && (normalized.includes("hard") || normalized.includes("rule"))
+}
+
+const projectMemorySectionIdForHint = (hint: MemoryRouteDocHint | null | undefined): string | undefined => {
+  if (!hint?.startsWith("project_memory/")) {
+    return undefined
+  }
+  return hint.slice("project_memory/".length)
+}
+
+const repoDocsWriteTargetForHint = (hint: MemoryRouteDocHint | null | undefined): { path: string; sectionId: string } => {
+  if (hint === "repo_docs/CORE_IDEA.md") return { path: "CORE_IDEA.md", sectionId: "current_direction" }
+  if (hint === "repo_docs/REPO_NAVIGATION.md") return { path: "REPO_NAVIGATION.md", sectionId: "navigation_rules" }
+  if (hint === "repo_docs/CONTRACTS.md") return { path: "CONTRACTS.md", sectionId: "tool_contracts" }
+  return { path: "REPO_RULES.md", sectionId: "hard_rules" }
+}
+
+const memoryNoteTextForCandidate = (candidate: MemoryWriteCandidate, saveText: string): string => {
+  const hint = candidate.docHint ? ` (${candidate.docHint})` : ""
+  const target = candidate.target === "global_memory" ? "user_profile" : candidate.target
+  return `Memory router candidate for ${target}${hint}: ${saveText}`
 }
 
 const summarizeToolResultsForMemoryLoop = (results: ToolExecutionResult[]): string => {
@@ -1269,8 +1406,8 @@ const summarizeMemoryLoop = (
 ): string => {
   const routeSummary =
     "projectNotes" in route
-      ? `load projectNotes=${route.projectNotes}, projectMemory=${route.projectMemory}, repoDocs=${route.repoDocs}, userProfile=${route.userProfile}; saveTarget=${route.saveTarget}`
-      : `saveTarget=${route.saveTarget}`
+      ? `load projectNotes=${route.projectNotes}, projectMemory=${route.projectMemory}, repoDocs=${route.repoDocs}, userProfile=${route.userProfile}, identity=${route.identity}; docHints=${route.docHints.length}; memoryWrites=${route.memoryWrites.length}`
+      : `memoryWrites=${route.memoryWrites.length}`
   const actions = records.map((record) => `${record.toolName}:${record.result.ok ? "ok" : record.result.error?.code ?? "failed"}`)
   return [`${phase}: ${routeSummary}`, `reason: ${route.reason}`, actions.length ? `actions: ${actions.join(", ")}` : "actions: none", ...skipped].join("\n")
 }
@@ -1280,11 +1417,15 @@ const renderMemoryLoopDeveloperMessage = (
   route: PreTurnMemoryRoute | PostTurnMemoryRoute,
   records: MemoryLoopToolRecord[],
   skipped: string[],
+  options: { stableCachePreludeApplied?: boolean } = {},
 ): string =>
   [
     `<socrates_memory_loop phase="${phase}">`,
     "Structured memory route was executed by the runtime before the next user-visible answer.",
     `route: ${JSON.stringify(route)}`,
+    options.stableCachePreludeApplied
+      ? "stable_cache_prelude: global/project always-apply rule reads were placed before conversation history for provider prompt-cache locality."
+      : undefined,
     skipped.length ? `skipped: ${skipped.join("; ")}` : undefined,
     records.length > 0 ? "tool_results:" : "tool_results: none",
     ...records.map((record, index) =>
@@ -1299,6 +1440,74 @@ const renderMemoryLoopDeveloperMessage = (
   ]
     .filter((line): line is string => typeof line === "string")
     .join("\n")
+
+const renderStableCachePrelude = (records: MemoryLoopToolRecord[]): string | undefined => {
+  let projectRules: string | undefined
+  let globalRules: string | undefined
+
+  for (const record of records) {
+    if (!record.result.ok || !isStableCachePreludeRecord(record)) {
+      continue
+    }
+    const content = normalizeAlwaysApplyRules(memoryLoopSectionContent(record.result.output))
+    if (isProjectAlwaysApplyRecord(record)) {
+      projectRules = content
+    } else if (isGlobalAlwaysApplyRecord(record)) {
+      globalRules = content
+    }
+  }
+
+  if (projectRules === undefined && globalRules === undefined) {
+    return undefined
+  }
+
+  return [
+    "<socrates_stable_cache_prelude>",
+    "Stable always-apply rules loaded by the runtime before conversation/user text. Treat them as standing instructions for this turn; do not quote these tags to the user.",
+    "<global_always_apply_rules>",
+    globalRules ?? "- No global always-apply rules loaded.",
+    "</global_always_apply_rules>",
+    "<project_always_apply_rules>",
+    projectRules ?? "- No project always-apply rules loaded.",
+    "</project_always_apply_rules>",
+    "</socrates_stable_cache_prelude>",
+  ].join("\n")
+}
+
+const isStableCachePreludeRecord = (record: MemoryLoopToolRecord): boolean => isProjectAlwaysApplyRecord(record) || isGlobalAlwaysApplyRecord(record)
+
+const isProjectAlwaysApplyRecord = (record: MemoryLoopToolRecord): boolean => {
+  if (record.toolName !== "project_docs") {
+    return false
+  }
+  const input = objectRecord(record.input)
+  return (
+    input?.area === "memory" &&
+    input.sectionId === "always_apply_rules" &&
+    (input.operation === "read_section" || input.operation === "patch_section")
+  )
+}
+
+const isGlobalAlwaysApplyRecord = (record: MemoryLoopToolRecord): boolean => {
+  if (record.toolName !== "user_profile") {
+    return false
+  }
+  const input = objectRecord(record.input)
+  return input?.operation === "read_section" && input.sectionId === "global_always_apply_rules"
+}
+
+const objectRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+
+const normalizeAlwaysApplyRules = (content: string | undefined): string => {
+  const rules =
+    content
+      ?.split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim().length > 0)
+      .filter((line) => !isAlwaysApplyPlaceholderText(line)) ?? []
+  return rules.length > 0 ? rules.join("\n") : "- No always-apply rules recorded."
+}
 
 const memoryLoopWarning = (phase: MemoryLoopPhase, warning: string): MemoryLoopRunResult => ({
   events: [],

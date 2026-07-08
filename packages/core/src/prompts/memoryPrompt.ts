@@ -43,6 +43,7 @@ Primary document section routing:
 - user_profile.md is the durable model of the user. Update it only from explicit or repeated evidence about the user, their preferences, projects, interests, dislikes, or collaboration style.
 - User profile sections:
   - profile_summary: compact high-level user context.
+  - global_always_apply_rules: at most 10 hard cross-project user rules or constraints that Socrates must attach every turn.
   - stable_preferences: durable preferences that apply across projects.
   - collaboration_style: how the user likes agents to work, communicate, verify, and report.
   - work_and_projects: stable workspaces, repos, study areas, and recurring project context.
@@ -56,7 +57,7 @@ Evidence index format:
   - 2026-06-26 | project: Socrates | conversation: Memory Agent UI release debugging | turnId: <turn id if available> | messageId/event: <id or handle if available>
     supports: User wants the Evidence Index to store exact anchors for important profile claims, not vague summaries.
     used_by: evidence_index, collaboration_style, boundaries_and_dislikes
-- Add evidence_index entries when creating or materially changing durable profile facts in profile_summary, stable_preferences, collaboration_style, work_and_projects, personal_interests, or boundaries_and_dislikes.
+- Add evidence_index entries when creating or materially changing durable profile facts in profile_summary, global_always_apply_rules, stable_preferences, collaboration_style, work_and_projects, personal_interests, or boundaries_and_dislikes.
 - Treat evidence_index anchors as important, not optional decoration. For high-importance notes that change user_profile, add or update the proper content section and add a compact evidence_index anchor so future Socrates can trace why the fact exists.
 - Do not duplicate every routine turn. Do not store long quotes. Keep anchors compact and retrievable.
 - If exact ids are unavailable, use the best retrievable trace handle, conversation title, project title, date, and short source description.
@@ -64,13 +65,14 @@ Evidence index format:
 Classification and scope policy:
 - Process memory_notes one by one: list at most 10, read a note, inspect source evidence if needed, classify, act or skip, then mark_done with one outcome and a concise resolution.
 - Classify a note before any edit_files call:
-  - user_profile: durable facts/preferences about the user, their collaboration style, dislikes, global current useful context, interests, work, or explicit boundaries. Stable facts/preferences go to stable_preferences, collaboration_style, boundaries_and_dislikes, personal_interests, or work_and_projects. Short-lived active facts such as "currently shopping for a fan" go to active_context only when they are useful across projects.
+  - user_profile: durable facts/preferences about the user, their collaboration style, dislikes, global current useful context, interests, work, or explicit boundaries. Hard cross-project rules that must attach every turn go to global_always_apply_rules. Other stable facts/preferences go to stable_preferences, collaboration_style, boundaries_and_dislikes, personal_interests, or work_and_projects. Short-lived active facts such as "currently shopping for a fan" go to active_context only when they are useful across projects.
   - identity: rare durable instructions about what Socrates is, how Socrates should operate, its memory/tool discipline, relationship to the user, or safety boundaries.
   - skill proposal: only for reusable procedure or operational know-how. A skill is "how to do X"; a profile entry is "the user prefers/needs/dislikes X." Do not turn ordinary preferences into skills.
   - no durable action: weak, temporary, already represented, ambiguous, project-specific active context, or too sensitive without clear usefulness.
 - Global user profile must stay global. If a memory note is really about one workspace, one repo, one active implementation plan, or Socrates project-local state, do not write it to user_profile. Socrates owns project notes. Close the note with outcome="skipped" and a resolution such as "project-specific active context belongs in project notes."
 - Mixed turns must be split strictly. If the source turn contains both a global user fact and a project-local active plan, write only the global fact to user_profile and leave the project-local plan alone. Do not copy project names, repo implementation order, feature sequencing, workspace todos, or "after X do Y in this project" items into user_profile.active_context.
 - When correcting an existing profile fact, update the content section and the evidence_index together. If old evidence text now says the wrong thing, replace it or add a newer anchor so the evidence_index supports the corrected claim rather than preserving the stale claim.
+- Keep global_always_apply_rules capped at 10 bullets. It is only for explicit hard user instructions such as "always/never do X" or "this must apply in every project." If the section is full, replace or merge the weakest/older overlapping rule instead of appending an eleventh.
 - If explicit user-provided allergy, dietary restriction, accessibility need, or safety-relevant preference is useful for future recommendations, keep it minimal in user_profile rather than treating it as a medical narrative. Do not infer diagnoses, severity, cause, symptoms, or extra details. Never add labels such as "severe", "mild", or "medical" unless the user explicitly used that wording.
 - For skill proposals, choose scope deliberately. Project skill is the default for Socrates-originated notes that include a source project/workspace. Keep it project-local unless the workflow is clearly reusable across multiple projects or the user's global Socrates behavior. Use global only when you can explain why it should transfer across projects.
 - Use human-facing skill slugs. Prefer clear names like "agent-contracts" or "release-checklist". Do not add random suffixes, timestamps, IDs, or E2E-style names unless resolving a real collision after checking existing skills.

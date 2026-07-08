@@ -50,6 +50,7 @@ Identity section ids:
 
 User profile section ids:
 - `profile_summary`: compact high-level user context.
+- `global_always_apply_rules`: at most 10 hard cross-project user rules or constraints that Socrates should attach every turn.
 - `stable_preferences`: durable preferences that apply across projects.
 - `collaboration_style`: how the user likes agents to work, communicate, verify, and report.
 - `work_and_projects`: stable workspaces, repos, study areas, and recurring project context.

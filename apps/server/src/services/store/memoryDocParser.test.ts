@@ -33,6 +33,7 @@ describe("memory doc parser", () => {
     expect(index.warnings).toBeUndefined()
     expect(index.sections.map((section) => section.sectionId)).toEqual([
       "current_state",
+      "always_apply_rules",
       "durable_decisions",
       "constraints",
       "project_preferences",

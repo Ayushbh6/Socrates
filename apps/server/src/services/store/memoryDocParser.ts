@@ -38,6 +38,13 @@ const STATE_LEDGER_END = "<!-- socrates-state-ledger:end -->"
 const sectionDefinitions: Record<MemoryDocType, SectionDefinition[]> = {
   project_memory: [
     { id: "current_state", kind: "state", heading: "Current State", tags: ["handoff", "status"], body: "- Current project standing belongs here." },
+    {
+      id: "always_apply_rules",
+      kind: "rules",
+      heading: "Project Always-Apply Rules",
+      tags: ["rules", "recall"],
+      body: "- Add at most 10 short project hard rules here. Fuller repo doctrine belongs in repo_docs.",
+    },
     { id: "durable_decisions", kind: "decisions", heading: "Durable Decisions", tags: ["architecture"], body: "- Stable decisions that should survive across chats belong here." },
     { id: "constraints", kind: "constraints", heading: "Constraints", tags: ["rules"], body: "- Durable project constraints belong here." },
     { id: "project_preferences", kind: "preferences", heading: "Project Preferences", tags: ["user"], body: "- Project-specific user preferences belong here." },
@@ -152,6 +159,13 @@ const sectionDefinitions: Record<MemoryDocType, SectionDefinition[]> = {
   ],
   user_profile: [
     { id: "profile_summary", kind: "profile", heading: "Profile Summary", tags: ["user"], body: "- No stable profile facts captured yet." },
+    {
+      id: "global_always_apply_rules",
+      kind: "rules",
+      heading: "Global Always-Apply Rules",
+      tags: ["user", "rules", "recall"],
+      body: "- Add at most 10 hard cross-project user rules here.",
+    },
     { id: "stable_preferences", kind: "preferences", heading: "Stable Preferences", tags: ["user"], body: "- No durable cross-project preferences captured yet." },
     { id: "collaboration_style", kind: "style", heading: "Collaboration Style", tags: ["user"], body: "- Prefer direct, concrete, technically grounded communication." },
     { id: "work_and_projects", kind: "work", heading: "Work And Projects", tags: ["user", "projects"], body: "- No durable cross-project work context captured yet." },
@@ -581,6 +595,7 @@ const sectionIdForMigratedEntry = (docType: "identity" | "user_profile", id: str
     return "core_identity"
   }
   if (["profile", "stablefacts", "profilesummary", "userprofile"].includes(key)) return "profile_summary"
+  if (["globalalwaysapplyrules", "alwaysapplyrules", "hardrules", "mustfollowrules"].includes(key)) return "global_always_apply_rules"
   if (["stablepreferences", "preferences"].includes(key)) return "stable_preferences"
   if (["collaborationstyle", "style"].includes(key)) return "collaboration_style"
   if (["work", "projects", "workandprojects"].includes(key)) return "work_and_projects"

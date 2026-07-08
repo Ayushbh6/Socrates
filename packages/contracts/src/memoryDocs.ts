@@ -66,14 +66,14 @@ export const memoryDocIndexSchema = z
 export type MemoryDocIndex = z.infer<typeof memoryDocIndexSchema>
 
 export const memoryDocRequiredSections: Record<MemoryDocType, string[]> = {
-  project_memory: ["current_state", "durable_decisions", "constraints", "project_preferences", "blockers", "handoff", "evidence_anchors"],
+  project_memory: ["current_state", "always_apply_rules", "durable_decisions", "constraints", "project_preferences", "blockers", "handoff", "evidence_anchors"],
   project_notes: ["runtime_context", "state_ledger", "active_context", "active_todos", "checked_files", "next_commands", "scratch_notes", "completed_archive"],
   repo_core_idea: ["purpose", "current_direction", "milestones", "update_triggers"],
   repo_navigation: ["ownership_map", "entry_points", "tests", "generated_ignored", "navigation_rules"],
   repo_rules: ["hard_rules", "workflows", "verification", "known_pitfalls", "update_triggers"],
   repo_contracts: ["tool_contracts", "api_contracts", "db_event_contracts", "frontend_backend", "change_log"],
   identity: ["core_identity", "voice_and_presence", "relationship_to_user", "operating_principles", "safety_boundaries", "tool_and_memory_discipline"],
-  user_profile: ["profile_summary", "stable_preferences", "collaboration_style", "work_and_projects", "personal_interests", "boundaries_and_dislikes", "active_context", "evidence_index"],
+  user_profile: ["profile_summary", "global_always_apply_rules", "stable_preferences", "collaboration_style", "work_and_projects", "personal_interests", "boundaries_and_dislikes", "active_context", "evidence_index"],
   tool_doc: ["purpose", "when_to_use", "inputs", "workflow", "failure_handling"],
   skill: ["purpose", "workflow", "examples", "update_policy"],
 }

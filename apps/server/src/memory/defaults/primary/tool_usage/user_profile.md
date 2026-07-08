@@ -31,11 +31,12 @@ Use it for stable user facts, preferences, collaboration style, boundaries, inte
 - `operation: "read"` reads the full user profile as bounded markdown. Use it only when the whole profile is genuinely needed, and pass a tight `charLimit`.
 - `operation: "read_index"` returns the structured section map.
 - `operation: "read_section"` reads one known section by `sectionId`.
-- `sectionId` can be `profile_summary`, `stable_preferences`, `collaboration_style`, `work_and_projects`, `personal_interests`, `boundaries_and_dislikes`, `active_context`, or `evidence_index`.
+- `sectionId` can be `profile_summary`, `global_always_apply_rules`, `stable_preferences`, `collaboration_style`, `work_and_projects`, `personal_interests`, `boundaries_and_dislikes`, `active_context`, or `evidence_index`.
 - `charLimit` can bound output for long documents.
 
 Section meanings:
 - `profile_summary`: compact high-level user context.
+- `global_always_apply_rules`: at most 10 hard cross-project user rules or constraints that Socrates should attach every turn.
 - `stable_preferences`: durable preferences that apply across projects.
 - `collaboration_style`: how the user likes agents to work, communicate, verify, and report.
 - `work_and_projects`: stable workspaces, repos, study areas, and recurring project context.

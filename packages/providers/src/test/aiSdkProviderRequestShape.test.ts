@@ -133,6 +133,31 @@ describe("AI SDK provider request shape", () => {
     expect(options.providerOptions?.openai?.promptCacheRetention).toBe("24h")
   })
 
+  it("keeps stable cache prelude before the latest user message on AI SDK providers", async () => {
+    const provider = new AiSdkProvider({
+      getApiKey: () => "test-key",
+    })
+
+    for await (const _event of provider.stream({
+      ...modelRequest("openai", "gpt-5.4-mini"),
+      messages: [
+        {
+          role: "developer",
+          content:
+            "<socrates_stable_cache_prelude>\n<global_always_apply_rules>\n- Slow Mode.\n</global_always_apply_rules>\n</socrates_stable_cache_prelude>",
+        },
+        { role: "user", content: "Now inspect the workspace." },
+      ],
+    })) {
+      // Drain the mocked stream.
+    }
+
+    const options = aiMocks.streamText.mock.calls[0]?.[0] as { messages?: Array<{ role?: string; content?: unknown }> }
+    expect(options.messages?.map((message) => message.role)).toEqual(["user", "user"])
+    expect(String(options.messages?.[0]?.content)).toContain("socrates_stable_cache_prelude")
+    expect(options.messages?.[1]?.content).toBe("Now inspect the workspace.")
+  })
+
   it("runs ChatGPT subscription OpenAI responses in stateless mode", async () => {
     const provider = new AiSdkProvider({
       getApiKey: () => undefined,

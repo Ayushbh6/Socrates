@@ -200,6 +200,8 @@ When a workspace is created or attached, Socrates creates this project-local sca
 
 The project memory, project notes, and runtime `.socrates/repo_docs/*.md` files are structured markdown documents with Socrates YAML frontmatter and explicit `socrates:section` markers. SQLite stores parsed section indexes for lookup, but markdown remains the durable source of truth. Dedicated docs/memory write paths may stamp optional frontmatter fields `updated_at`, `updated_by`, and `last_edited_section` after successful backend-owned edits. Project notes include active project context and may also include a protected generated `runtime_context` section for compact workspace scan facts; terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be persisted there.
 
+The planned always-apply recall feature should use normal structured markdown sections, not a new DB-owned memory table. `user_profile.md` owns the global lane (`Global Always-Apply Rules`, max 10 rules) and workspace project memory owns the project lane (`Project Always-Apply Rules`, max 10 rules). SQLite may index these sections through `memory_doc_sections`, but the markdown remains the human-readable source of truth.
+
 Socrates should not edit the workspace root `.gitignore` in V1.
 
 For active V1 projects, `path` must be present on the primary workspace row.
