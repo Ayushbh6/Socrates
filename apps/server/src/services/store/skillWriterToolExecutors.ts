@@ -18,8 +18,8 @@ import type {
   SkillsToolOutput,
   SoulToolInput,
   SoulToolOutput,
-  TraceRetrieveToolInput,
-  TraceRetrieveToolOutput,
+  TraceRetrieveGlobalToolInput,
+  TraceRetrieveGlobalToolOutput,
   UrlFetchToolOutput,
   UserProfileToolInput,
   UserProfileToolOutput,
@@ -29,7 +29,7 @@ import { SocratesError } from "@socrates/shared"
 import { currentRuntimeTime } from "./runtimeContext"
 
 export type SkillWriterToolCallbacks = {
-  traceRetrieve: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
+  traceRetrieve: (input: TraceRetrieveGlobalToolInput) => Promise<TraceRetrieveGlobalToolOutput> | TraceRetrieveGlobalToolOutput
   skills: (input: SkillsToolInput) => Promise<SkillsToolOutput> | SkillsToolOutput
   soul: (input: SoulToolInput) => Promise<SoulToolOutput> | SoulToolOutput
   userProfile: (input: UserProfileToolInput) => Promise<UserProfileToolOutput> | UserProfileToolOutput
@@ -50,7 +50,7 @@ export const createSkillWriterToolExecutors = (tools: SkillWriterToolCallbacks):
     apply_patch: () => unavailable<ApplyPatchToolOutput>(),
     bash: () => unavailable<BashToolOutput>(),
     current_time: () => Promise.resolve(currentRuntimeTime()),
-    trace_retrieve: async (input) => tools.traceRetrieve(input),
+    trace_retrieve: async (input) => tools.traceRetrieve(input as TraceRetrieveGlobalToolInput),
     tool_docs: () => unavailable(),
     skills: async (input) => tools.skills(input),
     project_docs: async (input) => tools.projectDocs(input),

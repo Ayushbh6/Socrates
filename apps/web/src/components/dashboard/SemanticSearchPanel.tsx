@@ -31,7 +31,7 @@ export function SemanticSearchPanel({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [isReindexing, setIsReindexing] = useState(false);
-  const shouldPoll = Boolean(status?.activeJob && ["queued", "running"].includes(status.activeJob.status));
+  const shouldPoll = status?.retrieval.status === "rebuilding" || Boolean(status?.activeJob && ["queued", "running"].includes(status.activeJob.status));
 
   useEffect(() => {
     if (!shouldPoll) {
@@ -52,7 +52,7 @@ export function SemanticSearchPanel({
   }, [onStatusChange, projectId, shouldPoll]);
 
   const configuredLabel = status?.configured ? `${status.providerId} / ${status.modelId}` : "Not enabled";
-  const isBusy = status?.activeJob?.status === "queued" || status?.activeJob?.status === "running";
+  const isBusy = status?.retrieval.status === "rebuilding" || status?.activeJob?.status === "queued" || status?.activeJob?.status === "running";
 
   const handleReindex = async () => {
     setIsReindexing(true);
@@ -76,13 +76,17 @@ export function SemanticSearchPanel({
 
       <div className="space-y-2 text-sm text-brand-text-light">
         <p className="truncate">{configuredLabel}</p>
-        {status?.configured && (
-          <p>
-            {status.indexedDocuments}/{status.totalDocuments} indexed
-            {status.pendingDocuments > 0 ? `, ${status.pendingDocuments} pending` : ""}
-            {status.failedDocuments > 0 ? `, ${status.failedDocuments} failed` : ""}
-          </p>
-        )}
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-1">
+          <span>Q&amp;A</span>
+          <span className="tabular-nums text-brand-text-dark">{status?.retrieval.qaParents ?? 0} parents / {status?.retrieval.qaChunks ?? 0} chunks</span>
+          <span>Memory</span>
+          <span className="tabular-nums text-brand-text-dark">{status?.retrieval.memoryParents ?? 0} parents / {status?.retrieval.memoryChunks ?? 0} chunks</span>
+          <span>Lexical</span>
+          <span className={status?.retrieval.lexicalReady ? "text-emerald-700" : "text-brand-text-light"}>{status?.retrieval.lexicalReady ? "Ready" : "Unavailable"}</span>
+          <span>Vector</span>
+          <span className={status?.retrieval.vectorReady ? "text-emerald-700" : "text-brand-text-light"}>{status?.retrieval.vectorReady ? "Ready" : status?.retrieval.status === "rebuilding" ? "Rebuilding" : "Unavailable"}</span>
+        </div>
+        {status?.retrieval.lastError && <p className="text-red-600">{status.retrieval.lastError}</p>}
         {status?.lastError && <p className="text-red-600">{status.lastError}</p>}
       </div>
 

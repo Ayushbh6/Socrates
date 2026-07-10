@@ -419,7 +419,7 @@ Anthropic is intentionally skipped in the current V1 implementation. It can be a
 
 ## Provider Credentials
 
-The npm CLI/browser app stores user provider keys in `~/.Socrates/.env` through the local backend. Packaged Tauri builds store provider keys in the OS keychain through the Tauri shell. The backend receives newly saved keys through a session credential endpoint immediately after save. Development still supports `.env`/server environment fallback.
+The npm CLI/browser app stores user provider keys in `~/.Socrates/.env` through the local backend. The backend receives newly saved keys through a session credential endpoint immediately after save. Development still supports `.env`/server environment fallback. Desktop keychain handling is dormant compatibility code, not the supported distribution path.
 
 Credential policy:
 
@@ -531,6 +531,8 @@ When DeepSeek thinking mode produces a tool call, the adapter must encode the pr
 
 The 2026-07-08 live browser E2E for direct DeepSeek used Test-Workspace chat `conv_02148ef15f534408bb587a92cb7eb71e` with `deepseek-v4-pro`, High thinking, and the `current_time` tool. The UI showed a streamed Thinking part and `Ran 1 tool`; SQLite telemetry persisted two completed `deepseek` model calls and a completed `current_time` call. The second same-turn continuation reported `prompt_cache_hit_tokens: 12544` and `prompt_cache_miss_tokens: 239`, confirming direct DeepSeek KV-cache telemetry reaches Socrates usage accounting.
 
+The 2026-07-10 packaged browser E2E verified the unified global trace contract with direct DeepSeek V4 Pro, High thinking. Memory Agent job `memjob_aa4a85e91c464da0a07bc0d190265957` read memory note #12, called `trace_retrieve` with `{ operation: "inspect", turnId }`, received the clean result preview `Test-Workspace / <conversation> turn 1 (assistant)`, and closed the note as `already_represented` without a profile write. Provider usage recorded 12,101 prompt tokens, 11,392 cached input tokens, 709 uncached input tokens, 214 output tokens, and 10 reasoning tokens, proving the new global tool schema preserves native DeepSeek tool calling and cache telemetry in the packaged NPM runtime.
+
 OpenRouter model requests always include cost-aware routing. `packages/providers/src/openRouterRouting.ts` is the authoritative map. Multi-provider models default to price-first routing with `sort: "price"` and `allow_fallbacks: true`; DeepSeek V4 routes use cheap-compatible ranked provider orders; later continuations in the same turn prefer the actual routed provider reported by OpenRouter. Deliberate pins use OpenRouter provider slugs such as `deepinfra`, `alibaba`, and `xai`, not display labels such as `DeepInfra`. Unknown OpenRouter models fall back to the same price-first routing so no model is sent with empty routing.
 
 OpenRouter streams can arrive in provider-side bursts after a long first-token delay. Socrates applies AI SDK `smoothStream` only on OpenRouter calls to re-chunk bursty text into a steadier word-level stream. This improves perceived streaming once chunks arrive; it does not reduce upstream time-to-first-token.
@@ -569,7 +571,7 @@ The local/release evaluation gate should continue to run compressor candidates o
 
 - Faithfulness to source messages and tool evidence.
 - Preservation of decisions, rules, blockers, and unresolved tasks.
-- Correct inclusion of `trace_retrieve` inspect handles for exact recall.
+- Correct inclusion of `trace_retrieve` turn ids and targeted audit hints for source recall.
 - Concision under a target token budget.
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
@@ -754,23 +756,22 @@ The DB should make those differences visible.
 
 ## Embedding Provider Plan
 
-Trace retrieval should support semantic search through embeddings, but embedding generation must not sit in the user-facing chat latency path.
+Trace and memory retrieval share one embedding boundary. Embedding provider calls remain behind `packages/providers`; indexing and LanceDB ownership live in `apps/server/src/services/retrieval`; provider-neutral chunking, ids, ranking, and result types live in `packages/core/src/retrieval`.
 
-The current trace retrieval and embedding flow:
+The implemented flow is:
 
 ```text
-turn completes or is cancelled
-  -> raw messages, tool calls, events, shell output, patches, errors are persisted
-  -> server creates trace_documents
-  -> server enqueues trace_index_jobs
-  -> trace_retrieve can use lexical search immediately
-  -> trace_retrieve normal search returns slim message-first rows
-  -> trace_retrieve inspect can return exact bounded source by resultNumber, messageId, toolId, or compatible handle
-  -> if semantic search is configured, server enqueues embed_trace_documents
-  -> embedding runner stores trace_embeddings asynchronously
+SQLite visible turns + parsed memory sections
+  -> canonical trace_turn or memory_section parents
+  -> shared Markdown-aware 500-token chunks with 150-token overlap
+  -> provider-neutral embedding request
+  -> active project LanceDB table with vectors and FTS
+  -> lexical, exhaustive vector, or hybrid RRF retrieval
+  -> max eight parent-deduplicated model-facing results
+  -> raw SQLite inspect/audit when exact runtime evidence is required
 ```
 
-The semantic phase adds background embedding jobs and makes `mode = "semantic"` prefer embedding similarity. If semantic search is not configured or the active provider is unavailable, retrieval degrades to lexical/exact behavior with a warning.
+SQLite remains authoritative. LanceDB is reproducible derived state under `${SOCRATES_HOME}/retrieval/lance`. Rebuild state, jobs, runs, and ranked-result diagnostics are persisted in SQLite. Chat remains usable during a rebuild; lexical/vector/router readiness is explicit, and unavailable semantic retrieval returns a recoverable error rather than silently switching modes.
 
 The embedding phase ships with two first-class provider choices:
 
@@ -790,7 +791,7 @@ The local/offline path is a real supported mode, not a hack. The preferred local
 
 Hugging Face / sentence-transformers should be an advanced local backend after the Ollama path is stable. Good candidates include `sentence-transformers/all-mpnet-base-v2` for quality and smaller MiniLM-style models for speed. This path should run behind the same `EmbeddingProvider` interface, likely through a local Python helper/service or Hugging Face Text Embeddings Inference, rather than importing Python/Torch concerns into `apps/server`.
 
-The setup UX belongs on the project dashboard. The Semantic Search panel opens a modal that asks the user to choose Online or Offline, runs backend diagnostics, shows explicit setup guidance, saves project embedding config, and starts indexing. The frontend presents progress and errors from backend status endpoints; it must not call embedding providers directly.
+The setup UX belongs on the project dashboard. The Semantic Search panel asks the user to choose Online or Offline, runs backend diagnostics, saves the project embedding config, starts a clean LanceDB rebuild, and presents separate Q&A, memory, lexical, and vector readiness/counts. The frontend never calls embedding providers directly.
 
 Possible later hosted providers:
 
@@ -807,23 +808,13 @@ Provider boundary rules for embeddings:
 - `apps/web` must never call embedding providers.
 - `packages/core` should not import embedding SDKs.
 - `apps/server` may enqueue and coordinate embedding jobs, but provider-specific request details should stay inside the provider layer.
-- Embedding rows must store provider id, model id, dimensions, content hash, and raw metadata where useful.
-- Retrieval must never compare vectors from different embedding spaces. Query embeddings and stored `trace_embeddings` rows must match on provider id, model id, and dimensions.
-- V1 keeps only one active embedding index per project. When the active provider/model/dimensions changes, `apps/server` prunes inactive `trace_embeddings` rows and old content-hash rows; deactivated in-flight jobs must not write returned vectors.
-- Unchanged trace documents must not be re-embedded. Use `content_hash`.
-- Failed embedding jobs should degrade gracefully to lexical/exact retrieval.
-
-Embedding content should be built from `trace_documents`, not from arbitrary raw event dumps. Good embedding inputs include:
-
-- Message chunks.
-- Turn summaries.
-- Conversation summaries.
-- Verbatim anchors.
-- Tool-call summaries.
-- Shell command outcome summaries.
-- Patch/error summaries.
-
-Do not embed old provider reasoning streams as semantic conversation memory by default. Provider-exposed reasoning can remain available for UI/replay, but it should not become later-turn semantic prompt history unless a future explicit policy changes that.
+- Every chunk carries provider id, model id, dimensions, content hash, and one embedding fingerprint.
+- Retrieval never compares vectors from different embedding spaces.
+- One active project table exists per embedding space. A provider/model/dimension change builds a replacement table and only then retires the previous table.
+- Global profile/identity vectors may be reused only for an exact provider/model/dimension/content-hash fingerprint.
+- Unchanged parents and sections are not re-embedded; deleted parents/sections are removed immediately.
+- The semantic trace corpus contains only visible user text, final assistant text, and visible cancelled assistant partials. It excludes summaries, tool calls, shell output, files, patches, errors, and provider reasoning.
+- Failed/interrupted rebuilds are recoverable and never alter authoritative conversation or memory files.
 
 ## Frontend Implications
 

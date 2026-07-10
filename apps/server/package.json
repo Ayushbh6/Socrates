@@ -17,6 +17,7 @@
     "@fastify/cors": "^11.2.0",
     "@fastify/multipart": "^10.0.0",
     "@fastify/websocket": "^11.2.0",
+    "@lancedb/lancedb": "0.22.3",
     "@socrates/contracts": "workspace:*",
     "@socrates/core": "workspace:^",
     "@socrates/mcp": "workspace:*",

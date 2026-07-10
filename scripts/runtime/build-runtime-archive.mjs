@@ -4,13 +4,14 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const desktopRoot = path.join(repoRoot, "apps", "desktop");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const runtimeScriptsRoot = path.join(repoRoot, "scripts", "runtime");
+const runtimeCacheRoot = path.join(repoRoot, ".runtime-cache");
 const outputDir = path.resolve(process.argv[2] ?? path.join(repoRoot, "release-artifacts"));
 const nodeCommand = process.execPath;
 
 const platformArch = process.env.SOCRATES_RUNTIME_PLATFORM_ARCH ?? `${process.platform}-${process.arch}`;
-const runtimeDir = path.join(desktopRoot, ".cache", "cli-runtime", platformArch);
+const runtimeDir = path.join(runtimeCacheRoot, "cli-runtime", platformArch);
 const archiveName = `socrates-runtime-${platformArch}.zip`;
 const archivePath = path.join(outputDir, archiveName);
 
@@ -64,7 +65,7 @@ const emitGithubError = (output) => {
 fs.rmSync(runtimeDir, { recursive: true, force: true });
 fs.mkdirSync(outputDir, { recursive: true });
 
-await run(nodeCommand, [path.join(desktopRoot, "scripts", "build-runtime.mjs")], {
+await run(nodeCommand, [path.join(runtimeScriptsRoot, "build-runtime.mjs")], {
   env: {
     SOCRATES_RUNTIME_OUTPUT_DIR: runtimeDir,
     SOCRATES_RUNTIME_INCLUDE_NODE: "true",
@@ -72,6 +73,9 @@ await run(nodeCommand, [path.join(desktopRoot, "scripts", "build-runtime.mjs")],
     SOCRATES_RUNTIME_PLATFORM_ARCH: platformArch,
   },
 });
+
+const bundledNode = path.join(runtimeDir, "node", process.platform === "win32" ? "node.exe" : "bin/node");
+await run(bundledNode, [path.join(runtimeScriptsRoot, "lancedb-smoke.mjs"), path.join(runtimeDir, "server")]);
 
 fs.rmSync(archivePath, { force: true });
 

@@ -42,6 +42,8 @@ The local SQLite file defaults to `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME`
 
 The current dev-test path is the browser app, not the desktop/Tauri shell.
 
+The supported packaged-product path is also browser UI plus backend, launched through the NPM CLI and downloaded runtime archive. Tauri is not part of current implementation, release verification, or retrieval work. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and three release targets.
+
 Development launch:
 
 ```text
@@ -56,34 +58,9 @@ open http://127.0.0.1:3000
 
 The server still owns the SQLite path. By default it stores durable data at `~/.Socrates/socrates.sqlite`; browser dev testing must not invent a separate database path.
 
-## Desktop Launch Flow
+## Packaged Browser Launch Flow
 
-The desktop shell lives in `apps/desktop` and wraps the existing web/server app instead of duplicating runtime logic.
-
-Desktop/Tauri launch is not the normal dev-test path. Use it only when specifically working on the future desktop shell or release packaging:
-
-```text
-pnpm desktop:dev
-  -> Tauri starts
-  -> beforeDevCommand runs apps/desktop/scripts/dev-services.mjs
-  -> script starts apps/server on 127.0.0.1:4000 if needed
-  -> script starts apps/web on 127.0.0.1:3000 if needed
-  -> Tauri opens the web UI at http://127.0.0.1:3000
-```
-
-The desktop shell must also use the same server-owned SQLite path and must not invent a separate database path.
-
-Production/internal-tester bundle flow:
-
-```text
-pnpm desktop:bundle
-  -> build server dist
-  -> build Next standalone web runtime
-  -> deploy server production dependencies
-  -> download/copy official Node runtime matching the builder Node version
-  -> copy launcher, server, web, migrations, and Node into apps/desktop/runtime/
-  -> tauri build bundles runtime as native app resources
-```
+The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. `apps/desktop` is dormant compatibility code and must not own release runtime assembly.
 
 npm CLI release flow:
 
@@ -97,7 +74,7 @@ push SemVer tag, for example v0.1.2
   -> CLI starts the backend and web sidecars and opens the browser
 ```
 
-The npm CLI path is the primary distribution path until paid desktop signing is available. The signed Tauri release workflow is manual-only and reserved for a future polished desktop release.
+The NPM CLI path is the supported distribution path.
 
 The CLI fetches the latest GitHub Release runtime by default, so older published launcher packages can still pick up newer runtime zips. Publishing the npm package version is useful for launcher metadata, `--version`, and launcher-only fixes, but runtime rollout is driven by the GitHub Release assets. The CLI should resolve and download assets through direct `github.com/.../releases/.../download/...` URLs first, using REST release metadata only as a fallback, so unauthenticated GitHub API rate limits do not block `npx` installs. Windows runtime extraction should prefer `tar.exe`, with PowerShell `Expand-Archive` only as a fallback, because `Expand-Archive` is slower on the large Windows archive and has been unreliable with `./`-prefixed zip entries. Runtime archive creation must write root entries such as `launcher.mjs` and `manifest.json` directly, without a `./` prefix or wrapper directory.
 
@@ -105,7 +82,7 @@ Release packaging is validated against the proven `pnpm@9.15.1` runtime-build pa
 
 Current runtime release target is GitHub Release `v0.1.17`. It includes the v0.1.8 provider/cache/runtime fixes, the compressor refactor, memory-agent packing fix, proactive investigation harness, repo-docs preflight gate, durable project-memory checkpoint, OpenRouter GLM 5.2 model/pricing update, extension-discovery/context stabilization, Memory Center plus identity/user-profile cleanup, duplicate primary-memory section recovery, evidence-index guidance, duplicate primary-doc heading normalization, Ollama embedding setup, CodeAct/url_fetch guidance, the expanded ChatGPT Codex subscription model catalog, runtime packaging fixes, and local Ollama chat model support across the composer and worker model settings. Current npm launcher source is prepared as `@socrates-ai/cli@0.1.17` for manual npm publish. The launcher prefers direct GitHub Release asset URLs before falling back to REST metadata so rate limits do not block public `npx` installs.
 
-On packaged app startup, Tauri loads the static startup screen, chooses free localhost ports, starts the bundled Node launcher, waits for the web runtime, then navigates the main window to the local Next server. The launcher starts the backend first, waits for `/health`, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, and exits both child services when Tauri exits.
+On packaged startup, the launcher chooses free localhost ports, starts the backend first, waits up to 180 seconds for `/health` so first-run retrieval reconciliation can finish, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, opens the browser, and exits both child services together.
 
 Provider credentials:
 
@@ -114,26 +91,19 @@ CLI/browser app
   -> user saves provider key through onboarding or /settings
   -> backend writes the secret to ~/.Socrates/.env with restricted local file permissions
   -> backend also keeps the key in the current process session
-
-packaged Tauri app
-  -> user saves provider key through onboarding or /settings
-  -> Tauri writes the secret to OS keychain
-  -> Tauri injects configured keys into the sidecar process environment at launch
-  -> frontend also posts the key to the local backend session so the current process can use it immediately
 ```
 
 Model availability is credential-aware and runtime-aware. The backend exposes only models whose provider/auth mode is configured, plus chat-capable models discovered from the local Ollama runtime when it is reachable. The frontend must render that filtered list rather than a static catalog. Provider ids are not enough to identify billing/auth source: model selection also carries `authMode = "api_key"` or `authMode = "chatgpt_subscription"`. OpenRouter API keys expose OpenRouter models and keep DeepSeek V4 Pro as the default available chat model when present. OpenAI API keys expose OpenAI API models and remain required for hosted OpenAI embeddings. ChatGPT Codex subscription auth exposes only the supported Codex subscription models. Google API keys expose Google models. Ollama chat models use `authMode = "api_key"` as the local direct path but do not require a secret; discovery filters out embedding-only models and never pulls or installs models. If no model source is available, chat send and worker saves should be disabled with a connect-provider state instead of failing with credential errors.
 
 OpenAI has two separate credential statuses: OpenAI API key and ChatGPT Codex subscription auth. The ChatGPT Codex flow is experimental. It starts a PKCE OAuth flow against `auth.openai.com`, listens on the local callback server, stores Socrates-owned refresh/access token metadata in local credential storage, refreshes access tokens on demand, and routes subscription-mode OpenAI requests through the Codex backend auth shim. OpenAI API-key behavior and ChatGPT Codex subscription behavior must remain separate; embeddings stay API-key only.
 
-Manual update flow:
+Update flow:
 
 ```text
-/settings
-  -> Check for updates
-  -> Tauri updater reads latest.json from GitHub Releases
-  -> user chooses Install
-  -> updater downloads signed artifact and asks for restart
+npx @socrates-ai/cli
+  -> launcher resolves the latest GitHub runtime release
+  -> verifies the runtime checksum
+  -> reuses or replaces the matching local runtime cache
 ```
 
 ## Returning-User Flow
@@ -486,11 +456,11 @@ Online flow:
 2. Check API key
    backend checks server env and user-triggered workspace .env* key presence
 3. Preview indexing
-   show trace document count / estimated work when available
+   show canonical Q&A and eligible memory-section counts when available
 4. Start indexing
-   save project embedding config and enqueue embed_trace_documents jobs
+   save project embedding config and enqueue a LanceDB project rebuild
 5. Progress
-   queued/running/completed/failed counts, lexical search still available while indexing
+   separate Q&A, memory, lexical, and vector readiness/counts
 ```
 
 The online flow must clearly state that trace document text is sent to OpenAI for embedding generation.
@@ -512,14 +482,14 @@ Offline flow:
    show exact commands such as ollama pull embeddinggemma:latest when missing
    do not expose in-app model pulls yet; users run commands manually, then click Recheck Ollama
 5. Start local indexing
-   save project embedding config and enqueue jobs
+   save project embedding config and enqueue a LanceDB project rebuild
 6. Progress
    same status surface as online
 ```
 
 Socrates must not silently install Ollama or download embedding models. The offline setup flow detects local state, recommends one exact model based on coarse local hardware, shows official install/model commands, and waits for the user to install or pull outside Socrates before rechecking.
 
-Changing a project's embedding provider/model/dimensions creates one new active embedding config and prunes stale `trace_embeddings` rows for that project. V1 does not retain old OpenAI/Ollama embedding sets side by side; only rows matching the active provider id, model id, dimensions, and current trace document `content_hash` should remain. In-flight jobs for a deactivated config must stop before writing late vectors.
+Changing a project's embedding provider/model/dimensions creates a clean LanceDB table for the new embedding fingerprint. The previous table is removed only after the replacement reaches ready state. Interrupted jobs are marked failed on restart and may be rebuilt without touching authoritative SQLite messages or markdown memory files.
 
 The project dashboard must not show the full chat composer in V1. The composer belongs on `/projects/:projectId/chats/:conversationId`. The dashboard shows a centered `Start new chat` button/action instead.
 
@@ -725,11 +695,13 @@ Current date/time is not injected into the Socrates system prompt. The read-only
 
 Main chat does not inject a per-turn wake-context block. Stable recall guidance belongs in the base prompt, and changing facts stay behind tools: `project_docs` for notes/memory, `repo_docs` for doctrine, `current_time` for date/time, `skills` for reusable workflows, and `mcp_registry` for MCP servers. The runtime must not inject hidden skill or MCP matches based on words in the user's prompt.
 
-The Memory Router keeps recall centered on curated docs instead of raw conversation search. Pre-turn routing decides which authority surfaces Socrates must open for the current query and may include simple human-facing doc/section hints such as `project_notes/active_context`, `project_memory/durable_decisions`, `repo_docs/CONTRACTS.md`, `repo_docs/CORE_IDEA.md`, `repo_docs/REPO_RULES.md`, `repo_docs/REPO_NAVIGATION.md`, `user_profile/global_always_apply_rules`, `identity/operating_principles`, or a skill-candidate lane for reusable procedures. The router points; Socrates reads the docs and decides exact wording/patches.
+The Memory Router keeps recall centered on curated docs instead of raw conversation search. Before model routing, the backend chunks the whole user prompt with the shared 500/150 Markdown-aware chunker, hybrid-searches at most 12 segments, and merges at most eight distinct memory sections. `MemoryRouterAgent` may then make at most three targeted `memory_search` calls. Its strict final contract returns exact file/section `readTargets` and document-backed `memoryWrites`. The router points; Socrates reads project/repo docs and decides exact wording/patches, while global profile/identity candidates follow Memory Agent ownership.
 
 Always-apply rules are a tiny curated layer, not a new memory store. Treat them as one centralized always-apply rules list with two lanes: `user_profile.md` has a capped `Global Always-Apply Rules` section, and workspace project memory has a capped `Project Always-Apply Rules` section. Each section is limited to 10 human-readable rules and is attached to every applicable turn through a stable cache prelude placed before conversation/user text. Short always-apply project rules may reference fuller repo doctrine, but `.socrates/repo_docs/*` remains the authoritative home for repo contracts, architecture, workflows, navigation, and rules.
 
-`trace_retrieve` retrieves previous conversation memory only when useful. Normal search prevents historical tool dumps from being carried forward or recursively re-retrieved, while explicit `mode = "audit"` keeps full runtime evidence available through SQLite. `mode = "audit"` with `include: ["shell"]` covers foreground shell commands and detached conversation Terminal sessions/chunks through the same investigative shell evidence path; no extra terminal-specific model input parameters are required. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
+`trace_retrieve` retrieves previous conversation memory only when useful. Main Socrates searches the full active project by default with `lexical`, `semantic`, or `combined`; current/recent conversation narrowing is optional. Results collapse to at most eight distinct Q&A turns. Explicit `mode = "audit"` keeps full tool/shell/file/patch/error evidence available without embedding that noise. Its searchable corpus is limited to visible non-deleted conversations (`active` and `archived`); hard-deleted conversations and orphan trace rows must not be returned.
+
+The Global Memory Agent and Skill Writer use this same retrieval implementation and model-facing behavior. Their only broader capability is cross-project scope: all visible projects by default, optional project/conversation selectors, and `projectTitle` in each otherwise-identical clean result. Global relevance is recomputed across raw per-project scores before the shared parent deduplication and 0.05 recency-band rule, so unrelated per-project winners do not tie merely because each project normalized its own top result.
 
 `tool_docs` is a read/search interface over global Socrates tool-usage guidance. It is the right place to inspect tool behavior before retrying failed tools or using unfamiliar/edge-case tools.
 
@@ -739,7 +711,7 @@ Always-apply rules are a tiny curated layer, not a new memory store. Treat them 
 
 `repo_docs` is the constrained read/search/index/edit interface for durable workspace doctrine under `<workspace>/.socrates/repo_docs/`. Project access creates the four structured template files `CORE_IDEA.md`, `REPO_NAVIGATION.md`, `REPO_RULES.md`, and `CONTRACTS.md` when missing, without overwriting user-edited files. Tool outputs include system runtime date/time metadata, and successful docs mutations stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Socrates should read repo docs before meaningful implementation and update these docs after durable repo behavior, architecture, contracts, data rules, provider usage, workflows, or pitfalls change.
 
-`user_profile` is a read-only model-visible access path for `~/.Socrates/user_profile.md`, which stores durable user profile, stable cross-project preferences, and global active context. It supports `read`, `read_index`, and `read_section`; Socrates should prefer index then section reads, while full reads are reserved for whole-document needs and capped at 8,000 chars. The main agent cannot write it; the backend memory agent updates it through scoped `edit_files`. The `active_context` section is only for currently useful user-life context that is global across projects; project-specific active context belongs in that workspace's project notes. The `evidence_index` section is for compact retrievable anchors behind important profile claims: date, project/conversation title or id, turn/message/event id or trace handle when available, the supported claim, and the profile section using that claim.
+`user_profile` is a read-only model-visible access path for `~/.Socrates/user_profile.md`, which stores durable user profile, stable cross-project preferences, and global active context. It supports `read`, `read_index`, and `read_section`; Socrates should prefer index then section reads, while full reads are reserved for whole-document needs and capped at 8,000 chars. The main agent cannot write it; the backend memory agent updates it through scoped `edit_files`. The `active_context` section is only for currently useful user-life context that is global across projects; project-specific active context belongs in that workspace's project notes. The `evidence_index` section is for compact retrievable anchors behind important profile claims: date, project/conversation title or id, turn/message/event id when available, the supported claim, and the profile section using that claim.
 
 `soul` is the read-only model-visible access path for `~/.Socrates/identity.md`, which now contains core identity, voice/presence, relationship-to-user, operating-principle, safety-boundary, and tool/memory-discipline sections. It supports `read`, `read_index`, and `read_section`; Socrates should prefer index then section reads, while full reads are reserved for whole-document needs and capped at 8,000 chars. It cannot write. Identity edits are backend memory-agent owned: the memory agent proposes exact oldText/newText patches, the backend verifies target text and hashes, then a second internal model call must answer the literal confirmation prompt `You are about to make changes to the soul. Are you sure?` with exact `yes` before the patch is applied. Applied identity updates are audited and create persistent top-right notifications with compact diffs. Standalone `operating_principles.md` is retired and removed during global memory initialization.
 
@@ -830,20 +802,22 @@ Mixed prompts must split cleanly. If one user message contains both a global per
 
 `mcp_registry` is the model-visible MCP discovery/inspection tool. The model-facing contract is intentionally just `list` and `describe`: `list` returns compact global plus project-visible servers with canonical ids, names, scopes, descriptions, and the first tool previews; `describe` takes an exact listed `id` or exact listed `name`, loads that single server, and returns docs plus dynamic `mcp__...` tool names. UI/API flows handle configure, check, enable/disable, and delete. The system prompt carries only concise registry-first guidance; it must not dump MCP server tool lists or schemas. The first provider call exposes only the core tools plus `mcp_registry`; dynamic `mcp__...` tool names may be added to later same-turn provider requests only after the registry/runtime reports them available.
 
-The intended trace retrieval flow is search first, exact inspection second:
+The implemented trace retrieval flow is search first, exact inspection second:
 
 ```text
 agent needs older context
-  -> trace_retrieve search with query, mode, scope, and bounded limits
-  -> backend searches clean conversation memory with exact, semantic, or combined retrieval
-  -> result returns compact numbered message-first evidence rows
-  -> if exact wording matters, agent calls trace_retrieve inspect using resultNumber, messageId, or toolId
-  -> backend returns bounded raw message, summary, or audit evidence
+  -> trace_retrieve search with lexical, semantic, combined, or audit mode
+  -> backend searches the complete active-project corpus by default
+  -> result returns at most eight compact numbered Q&A parents
+  -> if exact wording matters, agent calls trace_retrieve inspect with resultNumber or turnId
+  -> backend resolves the full canonical parent from authoritative SQLite
 ```
 
-Normal `trace_retrieve` uses `mode = "exact"` by default over the last 10 visible conversations and returns top 5 results. Use exact for names, filenames, paths, dates, ids, commands, and quoted wording. Use `mode = "semantic"` for fuzzy conceptual memory and `mode = "combined"` for hybrid recall; both intentionally take only `query`, optional `scope`, and optional `limit`. Use `mode = "audit"` only for tool calls, shell output, file operations, patches, errors, and runtime debugging. If `messageId` is present it returns that exact message; if `mode = "audit"` and `toolId` is present it returns that exact tool call. `conversationTitle` narrows exact/audit search to matching visible conversation titles using normalized, case-insensitive, punctuation/space-tolerant matching; `conversationId` can narrow same-title conversations after search returns it.
+`lexical` searches all supplied text through LanceDB FTS and rejects queries above 128 characters. `semantic` performs vector search across the complete selected project corpus. `combined` fuses lexical and vector ranks. `audit` searches raw tool/shell/file/patch/error evidence without embeddings. No main-agent mode silently truncates or changes a query, and no main-agent input exposes `all_projects`, `projectId`, or `projectTitle`.
 
-Normal search rows are intentionally small: `resultNumber`, `text`, `entryType`, `conversationTitle`, `conversationId`, plus `messageId` and `messageNo` when the row is an exact `user_query` or `assistant_response`. `entryType = "continuation_summary"` is fallback evidence only and must not be treated as original message provenance. The model should not need opaque ids before retrieval; after search, it may use `resultNumber`, `messageId`, or audit `toolId` for exact follow-up inspection.
+Global Memory Agent/Skill Writer search has those same four modes and limits. It defaults to all projects, can narrow to selected project ids/titles and a conversation id/title, and returns at most eight clean Q&A parents with a human `projectTitle`. Legacy `exact`, entry-type filters, trace handles, and hidden query normalization are not model-visible.
+
+Normal search rows are intentionally small: `resultNumber`, `content`, `turnId`, `conversationId`, `conversationTitle`, `turnNumber`, matched role, and visible completion status. Scores, chunk ids, vector ids, and storage ids stay internal. `inspect` resolves a returned result or turn reference to its full parent; audit retains its own exact runtime filters.
 
 Ordinal recall uses a stricter path. If the user asks for one turn such as "the second user message" or "turn 4", Socrates must put the literal integer in `turnNo` and, when relevant, set `role` to `user` or `assistant`; omitting role returns the user and assistant message rows for that turn. `turnNo` is for single-turn lookup and takes precedence over `conversationLimit`; use `conversationLimit` for broad multi-conversation recall. The backend does not parse ordinal phrases out of `query`; this avoids false positives such as matching "turn 2" against "turn 20". Project/recent ordinal searches may return multiple matching visible conversations, so Socrates should inspect the relevant result before making exact claims.
 
@@ -897,14 +871,14 @@ Correct behavior:
 raw messages/events/tools stay in SQLite
 visible chat messages stay visible messages only
 context builder includes hidden summaries when needed
-trace_retrieve can inspect exact source handles
+trace_retrieve can inspect exact source turns by result number or turn id
 ```
 
 The context builder should keep recent visible user/assistant messages exact while older turns are represented by compact hidden summaries. When exact older content matters, summaries should point to inspectable handles.
 
-Context compression must preserve active terminal anchors: human Terminal names, commands, status, awaiting-input state, latest actionable output/prompt, and source handles for exact recovery. It must not stuff full terminal logs or opaque process handles into hidden context.
+Context compression must preserve active terminal anchors: human Terminal names, commands, status, awaiting-input state, latest actionable output/prompt, and enough turn/audit hints for recovery. It must not stuff full terminal logs or opaque process handles into hidden context.
 
-Compression applies to both common long-chat growth and long single-turn work. A conversation such as `Q1/A1 ... Q70/A70` should keep recent Q/A pairs as normal `user` and `assistant` messages while older Q/A pairs move into hidden compacted context. A single large task should use the same mechanism before the next model call: keep the current user request and latest critical evidence exact when possible, but compact older current-turn tool outputs into hidden evidence capsules with exact inspect handles.
+Compression applies to both common long-chat growth and long single-turn work. A conversation such as `Q1/A1 ... Q70/A70` should keep recent Q/A pairs as normal `user` and `assistant` messages while older Q/A pairs move into hidden compacted context. A single large task should use the same mechanism before the next model call: keep the current user request and latest critical evidence exact when possible, but compact older current-turn tool outputs into hidden evidence capsules with turn ids or targeted audit hints.
 
 Compression should run only at safe provider-call boundaries:
 
@@ -969,18 +943,18 @@ compact hidden summaries
 exact retrievable anchors
 ```
 
-`trace_retrieve` is the bridge between compact summaries and raw evidence. Broad search can find likely relevant history; exact inspection can open the one message, turn, tool call, or shell output needed to avoid RAG noise.
+`trace_retrieve` is the bridge between compact summaries and raw evidence. Broad search can find likely relevant history; Q&A inspection can open one full user/assistant parent, while audit search opens raw tool, shell, file, patch, or error evidence when needed.
 
 Current implementation note:
 
 ```text
-trace_retrieve search supports lexical/exact and active project embeddings
-mode = exact is the default lexical search
+trace_retrieve search supports lexical FTS and active project embeddings
+mode = lexical is the default literal search and never drops supplied terms
 mode = combined merges lexical and vector evidence when embeddings are ready
 mode = semantic ranks by vector similarity when embeddings are ready
 mode = audit searches runtime/tool evidence only
 search and inspect results include conversation provenance
-context compaction snapshots are indexed as hidden conversation_summary evidence
+normal semantic indexing contains canonical visible Q&A parents only
 ```
 
 Compressor-model selection:
@@ -1003,7 +977,7 @@ The latest direct DeepSeek browser verification on 2026-07-08 used Test-Workspac
 
 The frontend listens for `context.compaction.started`, `context.compaction.completed`, and `context.compaction.failed`. Blocking active-turn compaction emits `started` before awaiting the compressor model so the UI can show a small `Compacting conversation context...` state during the wait. Background precompute remains silent in the live UI and does not add transcript messages.
 
-When showing or answering from retrieved history, Socrates must use the returned `conversationTitle` and `entryType`. It should report message numbers only when the row has `entryType` of `user_query` or `assistant_response` and includes `messageNo`; `continuation_summary` rows are fallback leads, not exact message provenance.
+When showing or answering from retrieved history, Socrates must use the returned `conversationTitle`, `turnNumber`, and `matchedRole`. Normal retrieval returns canonical Q&A parents only; runtime/tool evidence must be attributed from explicit audit results.
 
 Semantic retrieval is available through two first-class options:
 
@@ -1012,7 +986,7 @@ hosted default: OpenAI text-embedding-3-small
 offline local: Ollama embeddinggemma:latest by default, with Hugging Face / sentence-transformers as an advanced local backend later
 ```
 
-Embedding generation stays asynchronous after trace document creation. It should not block chat turns, and if the selected embedding provider is unavailable Socrates should continue with lexical/exact retrieval plus a warning.
+Embedding generation stays asynchronous after canonical source changes. It should not block chat turns, and if the selected embedding provider is unavailable Socrates should continue with lexical retrieval or raw inspect/audit evidence plus a recoverable warning.
 
 ## Project-Scoped Conversations
 

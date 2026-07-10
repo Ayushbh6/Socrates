@@ -4,6 +4,8 @@ This document is the source of truth for the current Socrates repo structure. So
 
 ## Current Shape
 
+Current product distribution is the NPM CLI launching the packaged web/server runtime. `apps/desktop` is retained as dormant historical/future shell code; runtime packaging is owned by root `scripts/runtime/`, and no current feature depends on Tauri or Rust.
+
 ```text
 Socrates/
   apps/
@@ -198,7 +200,6 @@ It owns:
 - Desktop development launch scripts.
 - Desktop bundling glue.
 - Static placeholder shell assets used by Tauri when the web dev URL is not active.
-- Production runtime assembly scripts for the server sidecar, Next standalone web sidecar, and bundled Node runtime.
 - Release packaging glue for signed DMG/NSIS artifacts, updater metadata, install scripts, and OS keychain commands.
 
 It must not own:
@@ -209,7 +210,7 @@ It must not own:
 - HTTP/WebSocket contract definitions.
 - Independent Socrates persistence.
 
-The desktop shell wraps the existing `apps/web` and `apps/server` runtime. It may start those services for development or bundle/launch them for packaged builds, but durable app data remains server-owned and defaults to `~/.Socrates/socrates.sqlite`. Packaged builds use `apps/desktop/runtime/` as generated bundle input. The same runtime builder also creates unsigned npm CLI runtime archives with a bundled Node runtime so native dependencies such as SQLite use the same ABI they were packaged with. Signed release builds publish macOS DMG and Windows NSIS artifacts only from the manual desktop release workflow. Source logic still belongs in the existing app/packages boundaries.
+The desktop shell is dormant and wraps the existing `apps/web` and `apps/server` runtime only when explicitly reactivated. Durable app data remains server-owned. Current packaged runtime assembly and archives come from root `scripts/runtime/`; the compatibility desktop wrapper delegates there instead of maintaining a second builder.
 
 ### `apps/cli`
 
@@ -442,7 +443,7 @@ The `bash` implementation is the compatibility id for the Terminal tool and rema
 
 `mcp_registry` is the base model-visible MCP discovery tool. The model-facing schema is `list` and `describe`: list returns compact global plus project-visible servers, and describe loads one exact listed server id/name and exposes its dynamic `mcp__...` tool definitions for the same turn. Backend UI/API routes own configure, check, enable/disable, and delete. Dynamic MCP tool names are runtime-provided additions, not separate handwritten core tools.
 
-`trace_retrieve` is also a read-only model-visible tool, but its search corpus and inspect refs belong to the server/store boundary. The model-facing wrapper lives in `packages/core/tools`, while `apps/server/src/services/store/traceStore.ts` owns trace indexing, SQLite FTS search, numbered result refs, natural inspect filters, and exact inspect.
+`trace_retrieve` is also a read-only model-visible tool. The model-facing wrapper lives in `packages/core/tools`; provider-neutral chunking/ranking contracts live in `packages/core/src/retrieval`; and `apps/server/src/services/retrieval` owns LanceDB lifecycle, indexing, lexical/vector/hybrid retrieval, and diagnostics. `TraceStore` retains authoritative/raw conversation and audit resolution but must not own a parallel semantic implementation.
 
 Structured ordinal recall also belongs in `TraceStore`. The model may pass `turnNo` and optional `role` through the same `trace_retrieve` search contract, but the backend resolves that against raw `turns` and `messages` for one precise conversation before any FTS path. Do not create separate model-visible ordinal, trace document, or embedding tools.
 
@@ -459,18 +460,17 @@ raw runtime tables
   errors
   events
 
-internal retrieval index
-  trace_documents
-  trace_embeddings
-  trace_index_jobs
+internal retrieval state
+  SQLite retrieval_index_states / retrieval_jobs
+  SQLite retrieval_runs / retrieval_result_diagnostics
+  LanceDB project tables containing reproducible chunks, vectors, and FTS rows
   project_embedding_configs
-  context_compaction_snapshots
 
 model-visible access
   trace_retrieve
 ```
 
-Trace indexing jobs are server/store work. The current implementation builds deterministic trace documents immediately after turns complete, fail, or are cancelled. When project embeddings are configured, server/store code also enqueues and processes `embed_trace_documents` jobs asynchronously. Completed context compaction snapshots are indexed as hidden `conversation_summary` trace evidence. Rolling conversation summaries outside compaction remain a later phase. `packages/workspace` should not own conversation history indexing, because trace retrieval is over Socrates persistence rather than local filesystem state.
+Retrieval indexing is server/store work. The implementation converts each visible turn into one canonical Q&A parent, chunks user and assistant roles independently, and incrementally upserts changed parents into the active LanceDB project table. Memory sections use the same chunker and index lifecycle. Compaction summaries, tool calls, shell output, patches, files, and errors are excluded from the semantic corpus and remain available through raw inspect/audit. `packages/workspace` does not own conversation-history indexing because retrieval is over Socrates persistence rather than local filesystem state.
 
 Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, `CompressorAgent`, compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `apps/server/src/services/store/modelSettingsResolver.ts` resolves saved worker and memory-agent settings against the credential-filtered model list before runtime use. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression, auth-mode request behavior, or tokenizer behavior must not leak into `apps/web` or route handlers.
 
@@ -491,7 +491,7 @@ Do not add serious model-driven workflows as bespoke provider calls inside route
 
 Role boundaries:
 
-- Memory Router is a lightweight structured-output decision layer inside the main Socrates turn flow, not a separate full agent. It routes Socrates to all curated authority surfaces (`project_notes`, `project_memory`, `repo_docs`, `user_profile`, `identity`, and skill-candidate flow), may suggest simple doc/section hints, and may split mixed prompts into a small capped list of memory write candidates. It does not author patches or write docs itself.
+- Memory Router is a real `MemoryRouterAgent` built through the same prompt -> shared runner -> scoped tool registry/executor -> strict structured validation -> usage/persistence pattern as other model-driven capabilities. It has only `memory_search`, a three-call cap per routing phase, backend automatic prefetch, and exact read/write destination output. It does not author patches or write docs itself.
 - Socrates writes workspace project memory, project notes, and repo docs through `project_docs` and `repo_docs`. It owns project-scoped active context in project notes and may create `memory_note` leads for the Memory Agent, preferably one and never more than two per user-turn. It does not write identity, user profile, or skills.
 - The Global Memory Agent writes global user profile through scoped edits, proposes/applies identity only through the confirmation policy, inspects full skills for freshness, and sends approved skill create/update tasks to the Skill Writer Agent. It should skip project-local active context for global memory and close each memory note with one of `applied`, `already_represented`, `skipped`, or `proposed_skill` plus a one-line resolution.
 - The Skill Writer Agent reads approved task context and existing skill content, then writes the final `SKILL.md` through `skill_write`. It does not decide whether the skill should exist.

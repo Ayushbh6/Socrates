@@ -46,6 +46,10 @@ export type IdPrefix =
   | "wms"
   | "mdoc"
   | "mdsec"
+  | "retstate"
+  | "retjob"
+  | "retrun"
+  | "retres"
   | "note"
 
 export const createId = (prefix: IdPrefix): string => `${prefix}_${randomUUID().replaceAll("-", "")}`

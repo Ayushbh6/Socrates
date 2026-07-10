@@ -32,7 +32,7 @@ import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { buildServer } from "../app"
 import { openDatabase, runMigrations } from "../db/client"
 import { SocratesStore } from "../services/store"
-import { parseMemoryDoc } from "../services/store/memoryDocParser"
+import { buildStructuredMemoryDoc, parseMemoryDoc, patchMemoryDocSection } from "../services/store/memoryDocParser"
 import { ToolDocsStore } from "../services/store/toolDocsStore"
 
 type TestServer = Awaited<ReturnType<typeof buildServer>>
@@ -247,7 +247,7 @@ const waitForProjectEmbeddingStatus = async (
     }
     await delay(20)
   }
-  throw new Error("Timed out waiting for embedding status")
+  throw new Error(`Timed out waiting for embedding status: ${JSON.stringify(store.getProjectEmbeddingStatus(projectId))}`)
 }
 
 const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
@@ -3355,7 +3355,7 @@ describe("WebSocket API", () => {
         }
 
         const semantic = await store.retrieveToolTraces(project.id, conversation.id, { query: "Hello", mode: "semantic", scope: "current_conversation" })
-        expect(semantic.warnings?.join(" ")).toContain("Semantic trace retrieval is not configured")
+        expect(semantic.warnings?.join(" ")).toContain("Legacy trace-document semantic search is retired")
       } finally {
         await store.close()
       }
@@ -3865,7 +3865,7 @@ describe("WebSocket API", () => {
         expect(row.count).toBeGreaterThan(0)
 
         const search = await store.retrieveToolTraces(project.id, conversation.id, {
-          query: "canonical rubric exact assignment rules",
+          query: "Canonical rubric",
           mode: "exact",
           scope: "current_conversation",
           include: ["messages"],
@@ -4289,8 +4289,7 @@ describe("WebSocket API", () => {
       store.indexTurnTraceDocuments(project.id, live.id, liveTargetTurn.id)
 
       const search = await store.retrieveToolTraces(project.id, live.id, {
-        query:
-          "Test B: Partial failure error diagnostics. Now let me apply a 3-hunk patch where hunk 2 has a deliberately wrong anchor. I need to re-read first.",
+        query: "Test B: Partial failure error diagnostics",
         scope: "recent_conversations",
         conversationLimit: 20,
         mode: "exact",
@@ -4310,7 +4309,7 @@ describe("WebSocket API", () => {
       expect(firstSearchResult && "text" in firstSearchResult ? firstSearchResult.text : "").toContain("Test B: Partial failure error diagnostics")
 
       const stalenessSearch = await store.retrieveToolTraces(project.id, live.id, {
-        query: stalenessQuote,
+        query: "staleness guard caught it cold",
         scope: "recent_conversations",
         conversationLimit: 20,
         mode: "exact",
@@ -4346,7 +4345,7 @@ describe("WebSocket API", () => {
       store.indexTurnTraceDocuments(project.id, source.id, target.turnId)
 
       const assistantRoleSearch = await store.retrieveToolTraces(project.id, live.id, {
-        query: "3-hunk patch wrong anchor",
+        query: "hunk 2 has a deliberately wrong anchor",
         scope: "recent_conversations",
         mode: "exact",
         role: "assistant",
@@ -4355,7 +4354,7 @@ describe("WebSocket API", () => {
       expect(assistantRoleSearch.appliedFilters.role).toBe("assistant")
 
       const userRoleSearch = await store.retrieveToolTraces(project.id, live.id, {
-        query: "3-hunk patch wrong anchor",
+        query: "hunk 2 has a deliberately wrong anchor",
         scope: "recent_conversations",
         mode: "exact",
         role: "user",
@@ -4363,7 +4362,7 @@ describe("WebSocket API", () => {
       expect(userRoleSearch.results).toHaveLength(0)
 
       const assistantEntryTypeSearch = await store.retrieveToolTraces(project.id, live.id, {
-        query: "3-hunk patch wrong anchor",
+        query: "hunk 2 has a deliberately wrong anchor",
         scope: "recent_conversations",
         mode: "exact",
         entryType: "assistant_response",
@@ -4540,8 +4539,14 @@ describe("WebSocket API", () => {
 	    const projectDocsToolDoc = expectStructuredToolDoc(socratesHome, "project_docs.md")
 	    expect(projectDocsToolDoc).toContain("`.socrates/MEMORY.md`")
 	    expectStructuredToolDoc(socratesHome, "user_profile.md")
+	    const traceToolDoc = expectStructuredToolDoc(socratesHome, "trace_retrieve.md")
+	    expect(traceToolDoc).toContain('mode: "lexical"')
+	    expect(traceToolDoc).toContain("cross-project selectors are unavailable")
 	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "edit_files.md"))
 	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "user_profile.md"))
+	    const memoryTraceToolDoc = expectStructuredToolDoc(socratesHome, path.join("memory_agent", "trace_retrieve.md"))
+	    expect(memoryTraceToolDoc).toContain("cross-project scope")
+	    expect(memoryTraceToolDoc).toContain("Legacy `exact`")
     expect(fs.existsSync(path.join(socratesHome, "skills"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "useful_patterns"))).toBe(false)
     expect(fs.existsSync(path.join(socratesHome, "projects", project.id))).toBe(false)
@@ -4823,6 +4828,16 @@ describe("WebSocket API", () => {
       )
       expect(duplicate).toMatchObject({ noteNumber: 1, status: "open", result: "already_recorded" })
 
+      const paraphrasedDuplicate = store.createMemoryNote(
+        project.id,
+        {
+          note: "User mentioned current fan-shopping context and a shellfish allergy in this same natural turn.",
+          importance: "high",
+        },
+        { conversationId: conversation.id, sessionId, turnId: turn.turnId },
+      )
+      expect(paraphrasedDuplicate).toMatchObject({ noteNumber: 1, status: "open", result: "already_recorded" })
+
       const second = store.createMemoryNote(
         project.id,
         { note: "User also wants apartment fan recommendations to account for quiet operation." },
@@ -4979,6 +4994,197 @@ describe("WebSocket API", () => {
         projectName: "Project Scoped Skills",
       })
       expect(fs.existsSync(path.join(socratesHome, "skills", "fan-buying-guidance", "SKILL.md"))).toBe(false)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("self-heals a clearly misplaced global rule with one atomic evidence-backed move", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app, "Memory Self Healing")
+    const conversation = await createConversation(app, project.id, "Misplaced Profile Rule")
+    const handle = openDatabase(dbPath)
+    const misplaced = "- **Code Implementation (Hard Rule)**: Discuss and plan before modifying files unless the user explicitly asks for implementation."
+    const canonical = "- **Implementation Approval**: Discuss and plan before modifying files unless the user explicitly asks for implementation."
+    let sourceTurnId = ""
+    let callIndex = 0
+    const modelInputs: string[] = []
+    const memoryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        modelInputs.push(serializedRequestMessages(request))
+        callIndex += 1
+        if (callIndex === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_self_heal_profile_rule",
+              toolName: "edit_files",
+              input: {
+                target: "user_profile",
+                editMode: "move",
+                sourceSectionId: "collaboration_style",
+                destinationSectionId: "global_always_apply_rules",
+                sourceText: misplaced,
+                destinationText: canonical,
+                rationale: "The source says Hard Rule and explicitly governs implementation behavior across projects.",
+                sourceTurnIds: [sourceTurnId],
+              },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield {
+          type: "model.answer.delta",
+          text: "## Investigated\nAudited profile and identity.\n\n## Changed\nMoved the implementation hard rule to global always-apply rules.\n\n## Skipped\nNone.\n\n## Blocked\nNone.",
+        }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
+    try {
+      store.runUserProfileTool(project.id, { operation: "read" })
+      const profilePath = path.join(socratesHome, "user_profile.md")
+      const profile = {
+        docType: "user_profile" as const,
+        ownerTool: "user_profile" as const,
+        scope: "global" as const,
+        path: "user_profile.md",
+        projectId: "global",
+        indexTags: ["profile"],
+      }
+      const before = fs.readFileSync(profilePath, "utf8")
+      const beforeIndex = parseMemoryDoc(before, profile)
+      const collaboration = beforeIndex.sections.find((section) => section.sectionId === "collaboration_style")!
+      const seeded = patchMemoryDocSection(before, profile, "collaboration_style", collaboration.content, `${collaboration.content}\n${misplaced}`)
+      fs.writeFileSync(profilePath, seeded)
+
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      for (let index = 0; index < 4; index += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Implementation preference evidence ${index + 1}`, "The preference is durable.", nowIso())
+        sourceTurnId ||= turn.turnId
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      }
+      const withRule = fs.readFileSync(profilePath, "utf8")
+      const withRuleIndex = parseMemoryDoc(withRule, profile)
+      const evidence = withRuleIndex.sections.find((section) => section.sectionId === "evidence_index")!
+      const evidenceEntry = [
+        `- 2026-07-10 | project: Memory Self Healing | conversation: Misplaced Profile Rule | turnId: ${sourceTurnId}`,
+        "  supports: The user requires explicit approval before implementation.",
+        "  used_by: collaboration_style, stable_preferences",
+      ].join("\n")
+      fs.writeFileSync(profilePath, patchMemoryDocSection(withRule, profile, "evidence_index", evidence.content, `${evidence.content}\n${evidenceEntry}`))
+
+      const result = await store.runGlobalMemoryAgent("manual")
+      expect(result.item?.status).toBe("completed")
+      const after = fs.readFileSync(profilePath, "utf8")
+      const afterIndex = parseMemoryDoc(after, profile)
+      expect(afterIndex.sections.find((section) => section.sectionId === "collaboration_style")?.content).not.toContain(misplaced)
+      expect(afterIndex.sections.find((section) => section.sectionId === "global_always_apply_rules")?.content).toContain(canonical)
+      expect(after.split(canonical).length - 1).toBe(1)
+      expect(afterIndex.sections.find((section) => section.sectionId === "evidence_index")?.content).toContain("used_by: global_always_apply_rules, stable_preferences")
+      expect(afterIndex.sections.find((section) => section.sectionId === "evidence_index")?.content).not.toContain("used_by: collaboration_style, stable_preferences")
+      expect(modelInputs[0]).toContain("Required Global Memory Self-Healing Audit")
+      expect(modelInputs[0]).toContain("Mandatory Audit Queue")
+      expect(modelInputs[0]).toContain("user_profile.md/collaboration_style")
+      expect(modelInputs[0]).toContain("Do not silently leave this queue item unresolved")
+      expect(modelInputs[0]).toContain(misplaced)
+      const action = handle.sqlite.prepare("SELECT status, patch_json AS patchJson, rationale FROM memory_agent_actions WHERE target_kind = 'user_profile' ORDER BY created_at DESC LIMIT 1").get() as {
+        status: string
+        patchJson: string
+        rationale: string
+      }
+      expect(action.status).toBe("applied")
+      expect(action.rationale).toContain("Hard Rule")
+      expect(JSON.parse(action.patchJson).sourceTurnIds).toContain(sourceTurnId)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("leaves ambiguous self-healing entries and cap-blocked moves unchanged", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app, "Memory Self Healing Guardrails")
+    const conversation = await createConversation(app, project.id, "Ambiguous Profile Rules")
+    const handle = openDatabase(dbPath)
+    const duplicate = "Ask before changing files"
+    const capBlocked = "- **Cap Blocked Hard Rule**: Explain implementation before editing."
+    let callIndex = 0
+    const memoryProvider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream() {
+        callIndex += 1
+        if (callIndex === 1) {
+          for (const [toolCallId, sourceText, destinationText] of [
+            ["memory_move_ambiguous", duplicate, "- **Ask Before Editing**: Ask before changing files."],
+            ["memory_move_cap_blocked", capBlocked, "- **Explain Before Editing**: Explain implementation before editing."],
+          ] as const) {
+            yield {
+              type: "model.tool_call.completed",
+              toolCall: {
+                toolCallId,
+                toolName: "edit_files",
+                input: {
+                  target: "user_profile",
+                  editMode: "move",
+                  sourceSectionId: "collaboration_style",
+                  destinationSectionId: "global_always_apply_rules",
+                  sourceText,
+                  destinationText,
+                  rationale: "Guardrail test with existing profile evidence.",
+                },
+              },
+            }
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "## Investigated\nAudited ambiguous and cap-blocked entries.\n\n## Changed\nNone.\n\n## Skipped\nBoth entries were left unchanged.\n\n## Blocked\nOne ambiguous match and one full rule section." }
+        yield { type: "model.completed" }
+      },
+    }
+    const store = new SocratesStore(handle, undefined, undefined, { socratesHome, memoryProvider })
+    try {
+      store.runUserProfileTool(project.id, { operation: "read" })
+      const profilePath = path.join(socratesHome, "user_profile.md")
+      const profile = {
+        docType: "user_profile" as const,
+        ownerTool: "user_profile" as const,
+        scope: "global" as const,
+        path: "user_profile.md",
+        projectId: "global",
+        indexTags: ["profile"],
+      }
+      const original = fs.readFileSync(profilePath, "utf8")
+      const index = parseMemoryDoc(original, profile)
+      const sectionBodies = Object.fromEntries(index.sections.map((section) => [section.sectionId, section.content]))
+      sectionBodies.global_always_apply_rules = Array.from({ length: 10 }, (_, ruleIndex) => `- **Established Rule ${ruleIndex + 1}**: Keep behavior ${ruleIndex + 1}.`).join("\n")
+      sectionBodies.collaboration_style = `${sectionBodies.collaboration_style}\n- **Ambiguous Rule A**: ${duplicate}.\n- **Ambiguous Rule B**: ${duplicate} in every project.\n${capBlocked}`
+      const content = buildStructuredMemoryDoc(profile, { sectionBodies })
+      fs.writeFileSync(profilePath, content)
+
+      const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
+      for (let turnIndex = 0; turnIndex < 4; turnIndex += 1) {
+        const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Guardrail evidence ${turnIndex + 1}`, "Review only clear repairs.", nowIso())
+        insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
+      }
+      await store.runGlobalMemoryAgent("manual")
+
+      const after = fs.readFileSync(profilePath, "utf8")
+      expect(after.split(duplicate).length - 1).toBe(2)
+      expect(after).toContain(capBlocked)
+      const actions = handle.sqlite.prepare("SELECT status, error FROM memory_agent_actions WHERE target_kind = 'user_profile' ORDER BY created_at").all() as Array<{ status: string; error: string }>
+      expect(actions).toHaveLength(2)
+      expect(actions.every((action) => action.status === "rejected")).toBe(true)
+      expect(actions.map((action) => action.error).join(" ")).toContain("ambiguous")
+      expect(actions.map((action) => action.error).join(" ")).toContain("10-rule cap")
     } finally {
       await store.close()
     }
@@ -5642,7 +5848,7 @@ describe("WebSocket API", () => {
       store.indexTurnTraceDocuments(project.id, source.id, recap.turnId)
 
       const search = await store.retrieveToolTraces(project.id, live.id, {
-        query: "Screenshot 2026-05-31 1.16.46 PM.png",
+        query: "Screenshot 2026-05-31",
         scope: "project",
         mode: "exact",
         limit: 10,
@@ -5658,7 +5864,7 @@ describe("WebSocket API", () => {
     }
   })
 
-  it("uses semantic retrieval for active provider rows", async () => {
+  it("uses LanceDB semantic and combined retrieval over canonical Q&A parents", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
@@ -5666,7 +5872,7 @@ describe("WebSocket API", () => {
     const conversation = await createConversation(app, project.id, "Semantic Source")
 
     const handle = openDatabase(dbPath)
-    const store = new SocratesStore(handle, createTestEmbeddingProvider())
+    const store = new SocratesStore(handle, createTestEmbeddingProvider(), undefined, { socratesHome: tempDir() })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const ordinary = insertCompletedTestTurn(
@@ -5685,74 +5891,266 @@ describe("WebSocket API", () => {
         "Remembered.",
         new Date(Date.now() - 1_000).toISOString(),
       )
-      store.indexTurnTraceDocuments(project.id, conversation.id, ordinary.turnId)
-      store.indexTurnTraceDocuments(project.id, conversation.id, target.turnId)
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "embeddinggemma",
+        credentialSource: "none",
+      })
+      const status = await waitForProjectEmbeddingStatus(store, project.id, (candidate) => candidate.retrieval.vectorReady)
+      expect(status.retrieval.qaParents).toBe(2)
+      expect(status.retrieval.qaChunks).toBeGreaterThanOrEqual(4)
+      expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings").get()).toEqual({ count: 0 })
 
-      const now = nowIso()
-      handle.sqlite
-        .prepare(
-          `INSERT INTO project_embedding_configs
-            (id, project_id, provider_id, model_id, dimensions, credential_source, ollama_base_url, status, active, created_at, updated_at)
-           VALUES (?, ?, 'ollama', 'embeddinggemma', 3, 'none', 'http://127.0.0.1:11434', 'ready', 1, ?, ?)`,
-        )
-        .run(createId("embcfg"), project.id, now, now)
-      handle.sqlite
-        .prepare(
-          `INSERT INTO trace_embeddings
-            (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
-           SELECT ?, project_id, id, 'ollama', 'embeddinggemma', 3, content_hash, '[1,0,0]', 'completed', ?, ?, ?
-           FROM trace_documents
-           WHERE source_id = ?
-           LIMIT 1`,
-        )
-        .run(createId("temb"), now, now, now, target.userMessageId)
-      const status = store.getProjectEmbeddingStatus(project.id)
-      expect(status.indexedDocuments).toBeGreaterThan(0)
-
-      const semantic = await store.retrieveToolTraces(project.id, conversation.id, {
+      const semantic = await store.retrieveMainToolTraces(project.id, conversation.id, {
         query: "BLUE-LANTERN-42",
         mode: "semantic",
         scope: "current_conversation",
-        include: ["messages"],
       })
-      expect(semantic.warnings?.join(" ") ?? "").not.toContain("not configured")
-      expect(semantic.results[0]?.entryType).toBe("user_query")
-      expect(semantic.results[0]?.messageId).toBe(target.userMessageId)
+      expect(semantic.results[0]?.turnId).toBe(target.turnId)
+      expect(semantic.results[0]?.matchedRole).toBe("user")
 
-      const combined = await store.retrieveToolTraces(project.id, conversation.id, {
+      const combined = await store.retrieveMainToolTraces(project.id, conversation.id, {
         query: "fuzzy blue memory",
         mode: "combined",
         scope: "current_conversation",
-        include: ["messages"],
       })
-      expect(combined.warnings?.join(" ") ?? "").not.toContain("not configured")
-      expect(combined.appliedFilters.mode).toBe("combined")
-      expect(combined.results[0]?.entryType).toBe("user_query")
-      expect(combined.results[0]?.messageId).toBe(target.userMessageId)
-
-      handle.sqlite
-        .prepare(
-          `INSERT INTO trace_embeddings
-            (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
-           SELECT ?, project_id, id, 'openai', 'text-embedding-3-small', 3, content_hash, '[1,0,0]', 'completed', ?, ?, ?
-           FROM trace_documents
-           WHERE source_id = ?
-           LIMIT 1`,
-        )
-        .run(createId("temb"), nowIso(), nowIso(), nowIso(), ordinary.userMessageId)
-      const stillSemantic = await store.retrieveToolTraces(project.id, conversation.id, {
-        query: "BLUE-LANTERN-42",
-        mode: "semantic",
-        scope: "current_conversation",
-        include: ["messages"],
-      })
-      expect(JSON.stringify(stillSemantic.results[0])).toContain(target.userMessageId)
+      expect(combined.results[0]?.turnId).toBe(target.turnId)
+      const runs = handle.sqlite.prepare("SELECT mode, corpus_kind AS corpusKind, status FROM retrieval_runs ORDER BY created_at").all() as Array<{ mode: string; corpusKind: string; status: string }>
+      expect(runs).toEqual(expect.arrayContaining([
+        expect.objectContaining({ mode: "semantic", corpusKind: "trace_turn", status: "completed" }),
+        expect.objectContaining({ mode: "combined", corpusKind: "trace_turn", status: "completed" }),
+      ]))
     } finally {
       await store.close()
     }
   })
 
-  it("deletes inactive embedding rows when configuring a new index", async () => {
+  it("uses one clean retrieval contract globally with cross-project scope as the only difference", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project: projectA } = await createProject(app, "Global Trace Alpha")
+    const { project: projectB } = await createProject(app, "Global Trace Beta")
+    const conversationA = await createConversation(app, projectA.id, "Alpha Evidence")
+    const conversationB = await createConversation(app, projectB.id, "Beta Evidence")
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, createTestEmbeddingProvider(), undefined, { socratesHome })
+    try {
+      const sessionA = insertTestSession(handle.sqlite, projectA.id, conversationA.id)
+      const sessionB = insertTestSession(handle.sqlite, projectB.id, conversationB.id)
+      const alpha = insertCompletedTestTurn(
+        handle.sqlite,
+        conversationA.id,
+        sessionA,
+        "GLOBALALPHA77 is the blue-lantern-42 retrieval evidence.",
+        "Alpha evidence recorded.",
+        new Date(Date.now() - 2_000).toISOString(),
+      )
+      const beta = insertCompletedTestTurn(
+        handle.sqlite,
+        conversationB.id,
+        sessionB,
+        "GLOBALBETA88 is separate project evidence.",
+        "Beta evidence recorded.",
+        new Date(Date.now() - 1_000).toISOString(),
+      )
+      const now = nowIso()
+      handle.sqlite
+        .prepare(
+          `INSERT INTO tool_calls (
+            id, conversation_id, session_id, turn_id, tool_name, status, arguments_json, result_json,
+            requires_approval, started_at, completed_at
+          ) VALUES (?, ?, ?, ?, 'read', 'completed', ?, ?, 0, ?, ?)`,
+        )
+        .run(
+          createId("tcall"),
+          conversationB.id,
+          sessionB,
+          beta.turnId,
+          JSON.stringify({ path: "GLOBALAUDIT88.txt" }),
+          JSON.stringify({ path: "GLOBALAUDIT88.txt", kind: "file" }),
+          now,
+          now,
+        )
+      store.indexTurnTraceDocuments(projectA.id, conversationA.id, alpha.turnId)
+      store.indexTurnTraceDocuments(projectB.id, conversationB.id, beta.turnId)
+      for (const projectId of [projectA.id, projectB.id]) {
+        await store.configureProjectEmbeddings(projectId, {
+          providerId: "ollama",
+          modelId: "embeddinggemma",
+          credentialSource: "none",
+        })
+        await waitForProjectEmbeddingStatus(store, projectId, (candidate) => candidate.retrieval.vectorReady)
+      }
+
+      const lexical = await store.retrieveGlobalToolTraces({ mode: "lexical", query: "GLOBALALPHA77" })
+      expect(lexical.results).toHaveLength(1)
+      expect(lexical.results[0]).toEqual(expect.objectContaining({
+        projectTitle: "Global Trace Alpha",
+        conversationTitle: "Alpha Evidence",
+        turnId: alpha.turnId,
+        matchedRole: "user",
+      }))
+      expect(lexical.results[0]).not.toHaveProperty("projectId")
+      expect(lexical.results[0]).not.toHaveProperty("entryType")
+      expect(lexical.results[0]).not.toHaveProperty("handle")
+
+      const inspected = await store.retrieveGlobalToolTraces({ operation: "inspect", resultNumber: 1 })
+      expect(inspected.results[0]?.content).toContain("User:\nGLOBALALPHA77")
+      expect(inspected.results[0]?.content).toContain("Assistant:\nAlpha evidence recorded.")
+
+      const isolated = await store.retrieveGlobalToolTraces({
+        mode: "lexical",
+        query: "GLOBALALPHA77",
+        scope: "project",
+        projectId: projectB.id,
+      })
+      expect(isolated.results).toHaveLength(0)
+
+      const semantic = await store.retrieveGlobalToolTraces({ mode: "semantic", query: "fuzzy blue memory" })
+      expect(semantic.results[0]?.turnId).toBe(alpha.turnId)
+      const combined = await store.retrieveGlobalToolTraces({ mode: "combined", query: "GLOBALALPHA77" })
+      expect(combined.results[0]?.turnId).toBe(alpha.turnId)
+
+      const audit = await store.retrieveGlobalToolTraces({ mode: "audit", query: "GLOBALAUDIT88", include: ["tool_calls"] })
+      expect(audit.results[0]).toEqual(expect.objectContaining({ projectTitle: "Global Trace Beta", turnId: beta.turnId }))
+      expect(audit.results[0]?.content).toContain("GLOBALAUDIT88.txt")
+      expect(audit.results).toHaveLength(1)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("recalls turns beyond the former 200-document window while preserving project isolation", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project: projectA } = await createProject(app, "Long Recall A")
+    const { project: projectB } = await createProject(app, "Long Recall B")
+    const conversationA = await createConversation(app, projectA.id, "Long Recall Source")
+    const conversationB = await createConversation(app, projectB.id, "Isolation Source")
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, createTestEmbeddingProvider(), undefined, { socratesHome })
+    try {
+      const sessionA = insertTestSession(handle.sqlite, projectA.id, conversationA.id)
+      const oldest = insertCompletedTestTurn(
+        handle.sqlite,
+        conversationA.id,
+        sessionA,
+        "The oldest durable key is BLUE-LANTERN-42 and must remain fully retrievable.",
+        "Recorded in the first turn.",
+        new Date(Date.now() - 500_000).toISOString(),
+      )
+      for (let index = 0; index < 220; index += 1) {
+        insertCompletedTestTurn(
+          handle.sqlite,
+          conversationA.id,
+          sessionA,
+          `Ordinary later turn ${index + 1}.`,
+          `Ordinary later answer ${index + 1}.`,
+          new Date(Date.now() - 400_000 + index * 1_000).toISOString(),
+        )
+      }
+      const sessionB = insertTestSession(handle.sqlite, projectB.id, conversationB.id)
+      const isolated = insertCompletedTestTurn(
+        handle.sqlite,
+        conversationB.id,
+        sessionB,
+        "BLUE-LANTERN-42 exists in another project too.",
+        "This turn must stay isolated.",
+        nowIso(),
+      )
+
+      await store.configureProjectEmbeddings(projectA.id, { providerId: "ollama", modelId: "embeddinggemma", credentialSource: "none" })
+      await store.waitForRetrievalIdle(projectA.id)
+      const semantic = await store.retrieveMainToolTraces(projectA.id, conversationA.id, { mode: "semantic", query: "BLUE-LANTERN-42", scope: "project", limit: 8 })
+      expect(semantic.results[0]?.turnId).toBe(oldest.turnId)
+      expect(semantic.results.map((result) => result.turnId)).not.toContain(isolated.turnId)
+      expect(semantic.results.length).toBeLessThanOrEqual(8)
+      const status = store.getProjectEmbeddingStatus(projectA.id)
+      expect(status.retrieval.qaParents).toBe(221)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("re-embeds only changed memory sections and removes retired documents from recall", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = tempDir()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app, "Memory Retrieval Index")
+    let embeddedValues = 0
+    const provider: EmbeddingProvider = {
+      async check() {
+        return { ok: true, dimensions: 3, message: "Test embeddings are reachable." }
+      },
+      async embed(request) {
+        return { embeddings: [testEmbeddingVector(request.value)], dimensions: 3 }
+      },
+      async embedMany(request) {
+        embeddedValues += request.values.length
+        return { embeddings: request.values.map(testEmbeddingVector), dimensions: 3 }
+      },
+    }
+    const handle = openDatabase(dbPath)
+    const store = new SocratesStore(handle, provider, undefined, { socratesHome })
+    try {
+      store.ensureProjectMemory(project.id)
+      await store.configureProjectEmbeddings(project.id, { providerId: "ollama", modelId: "embeddinggemma", credentialSource: "none" })
+      await store.waitForRetrievalIdle(project.id)
+      const baselineEmbeddedValues = embeddedValues
+
+      const profilePath = path.join(socratesHome, "user_profile.md")
+      const profile = {
+        docType: "user_profile" as const,
+        ownerTool: "user_profile" as const,
+        scope: "global" as const,
+        path: "user_profile.md",
+        projectId: "global",
+        indexTags: ["profile"],
+      }
+      const before = fs.readFileSync(profilePath, "utf8")
+      const collaboration = parseMemoryDoc(before, profile).sections.find((section) => section.sectionId === "collaboration_style")!
+      fs.writeFileSync(profilePath, patchMemoryDocSection(before, profile, "collaboration_style", collaboration.content, `${collaboration.content}\n- Slow mode means discuss the plan before implementation.`))
+      store.runUserProfileTool(project.id, { operation: "read_section", sectionId: "collaboration_style" })
+      await store.waitForRetrievalIdle(project.id)
+      expect(embeddedValues - baselineEmbeddedValues).toBe(1)
+      const recalled = await store.searchMemory(project.id, { query: "slow mode", mode: "combined", scope: "global", limit: 8 })
+      expect(recalled.results[0]).toMatchObject({ fileName: "user_profile.md", sectionId: "collaboration_style" })
+
+      const now = nowIso()
+      const staleIndexId = createId("mdoc")
+      handle.sqlite.prepare(
+        `INSERT INTO memory_doc_indexes
+          (id, scope, project_id, path, doc_type, owner_tool, schema_version, content_hash, section_count, indexed_at, metadata_json)
+         VALUES (?, 'global', 'global', 'operating_principles.md', 'identity', 'soul', 1, 'stale-hash', 1, ?, '{}')`,
+      ).run(staleIndexId, now)
+      handle.sqlite.prepare(
+        `INSERT INTO memory_doc_sections
+          (id, doc_index_id, scope, project_id, path, doc_type, section_id, kind, tags_json, heading, line_start, line_end, content, content_hash, summary, token_estimate, updated_at, metadata_json)
+         VALUES (?, ?, 'global', 'global', 'operating_principles.md', 'identity', 'operating_principles', 'principles', '[]', 'Operating Principles', 1, 2, 'RETIRED-MEMORY-MARKER', 'stale-section-hash', 'retired marker', 4, ?, '{}')`,
+      ).run(createId("mdsec"), staleIndexId, now)
+      store.reindexProjectEmbeddings(project.id)
+      await store.waitForRetrievalIdle(project.id)
+      expect((await store.searchMemory(project.id, { query: "RETIRED-MEMORY-MARKER", mode: "lexical", scope: "global", limit: 8 })).results.length).toBeGreaterThan(0)
+
+      store.ensureProjectMemory(project.id)
+      await store.waitForRetrievalIdle(project.id)
+      expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_doc_indexes WHERE path = 'operating_principles.md'").get()).toEqual({ count: 0 })
+      const afterRetiredSearch = await store.searchMemory(project.id, { query: "RETIRED-MEMORY-MARKER", mode: "lexical", scope: "global", limit: 8 })
+      expect(
+        afterRetiredSearch.results,
+        JSON.stringify({ status: store.getProjectEmbeddingStatus(project.id), afterRetiredSearch }),
+      ).toHaveLength(0)
+    } finally {
+      await store.close()
+    }
+  })
+
+  it("rebuilds one active LanceDB embedding space when configuration changes", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
@@ -5760,69 +6158,38 @@ describe("WebSocket API", () => {
     const conversation = await createConversation(app, project.id, "Embedding Switch")
 
     const handle = openDatabase(dbPath)
-    const store = new SocratesStore(handle, createTestEmbeddingProvider())
+    const store = new SocratesStore(handle, createTestEmbeddingProvider(), undefined, { socratesHome: tempDir() })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Switch this project from OpenAI.", "Index with Ollama.", nowIso())
       store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
 
-      const docs = handle.sqlite.prepare("SELECT id, project_id, content_hash FROM trace_documents WHERE project_id = ?").all(project.id) as Array<{
-        id: string
-        project_id: string
-        content_hash: string
-      }>
-      const now = nowIso()
-      handle.sqlite
-        .prepare(
-          `INSERT INTO project_embedding_configs
-            (id, project_id, provider_id, model_id, dimensions, credential_source, status, active, created_at, updated_at)
-           VALUES (?, ?, 'openai', 'text-embedding-3-small', 1536, 'server_env', 'ready', 1, ?, ?)`,
-        )
-        .run(createId("embcfg"), project.id, now, now)
-      const insertOldEmbedding = handle.sqlite.prepare(
-        `INSERT INTO trace_embeddings
-          (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, status, created_at, updated_at, embedded_at)
-         VALUES (?, ?, ?, 'openai', 'text-embedding-3-small', 1536, ?, '[0,0,1]', 'completed', ?, ?, ?)`,
-      )
-      for (const doc of docs) {
-        insertOldEmbedding.run(createId("temb"), doc.project_id, doc.id, doc.content_hash, now, now, now)
-      }
-
-      expect(
-        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND provider_id = 'openai'").get(project.id) as { count: number })
-          .count,
-      ).toBe(docs.length)
+      await store.configureProjectEmbeddings(project.id, {
+        providerId: "ollama",
+        modelId: "old-local",
+        credentialSource: "none",
+      })
+      const oldReady = await waitForProjectEmbeddingStatus(store, project.id, (status) => status.modelId === "old-local" && status.retrieval.vectorReady)
+      const oldState = handle.sqlite.prepare("SELECT table_name AS tableName, embedding_fingerprint AS fingerprint FROM retrieval_index_states WHERE project_id = ?").get(project.id) as { tableName: string; fingerprint: string }
+      expect(oldReady.retrieval.qaParents).toBe(1)
 
       await store.configureProjectEmbeddings(project.id, {
         providerId: "ollama",
-        modelId: "embeddinggemma",
+        modelId: "new-local",
         credentialSource: "none",
       })
-
-      expect(
-        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND provider_id = 'openai'").get(project.id) as { count: number })
-          .count,
-      ).toBe(0)
-
-      const completed = await waitForProjectEmbeddingStatus(
-        store,
-        project.id,
-        (status) => status.providerId === "ollama" && status.totalDocuments > 0 && status.indexedDocuments === status.totalDocuments,
-      )
-      expect(completed.pendingDocuments).toBe(0)
-      expect(
-        (
-          handle.sqlite
-            .prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND provider_id = 'ollama' AND model_id = 'embeddinggemma'")
-            .get(project.id) as { count: number }
-        ).count,
-      ).toBe(docs.length)
+      const completed = await waitForProjectEmbeddingStatus(store, project.id, (status) => status.modelId === "new-local" && status.retrieval.vectorReady)
+      const newState = handle.sqlite.prepare("SELECT table_name AS tableName, embedding_fingerprint AS fingerprint FROM retrieval_index_states WHERE project_id = ?").get(project.id) as { tableName: string; fingerprint: string }
+      expect(completed.retrieval.qaParents).toBe(1)
+      expect(newState.fingerprint).not.toBe(oldState.fingerprint)
+      expect(newState.tableName).not.toBe(oldState.tableName)
+      expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings").get()).toEqual({ count: 0 })
     } finally {
       await store.close()
     }
   })
 
-  it("does not write embeddings from a deactivated in-flight index job", async () => {
+  it("does not leave a deactivated in-flight LanceDB generation active", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath)
     await onboard(app)
@@ -5854,13 +6221,11 @@ describe("WebSocket API", () => {
     }
 
     const handle = openDatabase(dbPath)
-    const store = new SocratesStore(handle, provider)
+    const store = new SocratesStore(handle, provider, undefined, { socratesHome: tempDir() })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "Old batch should not land.", "New index wins.", nowIso())
       store.indexTurnTraceDocuments(project.id, conversation.id, turn.turnId)
-      const docs = handle.sqlite.prepare("SELECT id FROM trace_documents WHERE project_id = ?").all(project.id) as Array<{ id: string }>
-
       await store.configureProjectEmbeddings(project.id, {
         providerId: "ollama",
         modelId: "old-local",
@@ -5878,17 +6243,15 @@ describe("WebSocket API", () => {
       const completed = await waitForProjectEmbeddingStatus(
         store,
         project.id,
-        (status) => status.modelId === "new-local" && status.totalDocuments > 0 && status.indexedDocuments === status.totalDocuments,
+        (status) => status.modelId === "new-local" && status.retrieval.vectorReady,
       )
-      expect(completed.pendingDocuments).toBe(0)
-      expect(
-        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND model_id = 'old-local'").get(project.id) as { count: number })
-          .count,
-      ).toBe(0)
-      expect(
-        (handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings WHERE project_id = ? AND model_id = 'new-local'").get(project.id) as { count: number })
-          .count,
-      ).toBe(docs.length)
+      expect(completed.retrieval.qaParents).toBe(1)
+      const activeConfig = handle.sqlite.prepare("SELECT model_id AS modelId FROM project_embedding_configs WHERE project_id = ? AND active = 1").get(project.id) as { modelId: string }
+      expect(activeConfig.modelId).toBe("new-local")
+      const state = handle.sqlite.prepare("SELECT status, table_name AS tableName FROM retrieval_index_states WHERE project_id = ?").get(project.id) as { status: string; tableName: string }
+      expect(state.status).toBe("ready")
+      expect(state.tableName).toMatch(/^project_[a-f0-9]{16}_/)
+      expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM trace_embeddings").get()).toEqual({ count: 0 })
     } finally {
       releaseOldBatch()
       await store.close()
@@ -6004,7 +6367,7 @@ describe("WebSocket API", () => {
     }
 
     const handle = openDatabase(dbPath)
-    const store = new SocratesStore(handle, provider)
+    const store = new SocratesStore(handle, provider, undefined, { socratesHome: tempDir() })
     try {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, "A long source should retry cleanly.", "Indexed.", nowIso())
@@ -6015,20 +6378,20 @@ describe("WebSocket API", () => {
         modelId: "embeddinggemma",
         credentialSource: "none",
       })
-      const failed = await waitForProjectEmbeddingStatus(store, project.id, (status) => Boolean(status.lastError))
-      expect(failed.lastError).toContain("maximum input length")
+      const failed = await waitForProjectEmbeddingStatus(store, project.id, (status) => Boolean(status.retrieval.lastError))
+      expect(failed.retrieval.lastError).toContain("maximum input length")
 
       store.reindexProjectEmbeddings(project.id)
       const completed = await waitForProjectEmbeddingStatus(
         store,
         project.id,
-        (status) => status.totalDocuments > 0 && status.indexedDocuments === status.totalDocuments && !status.lastError,
+        (status) => status.retrieval.vectorReady && !status.retrieval.lastError,
       )
-      expect(completed.pendingDocuments).toBe(0)
-      expect(completed.lastError).toBeUndefined()
+      expect(completed.retrieval.qaParents).toBe(1)
+      expect(completed.retrieval.lastError).toBeUndefined()
 
-      handle.sqlite.prepare("UPDATE project_embedding_configs SET last_error = ? WHERE project_id = ? AND active = 1").run(failed.lastError, project.id)
-      expect(store.getProjectEmbeddingStatus(project.id).lastError).toBeUndefined()
+      handle.sqlite.prepare("UPDATE project_embedding_configs SET last_error = ? WHERE project_id = ? AND active = 1").run(failed.retrieval.lastError, project.id)
+      expect(store.getProjectEmbeddingStatus(project.id)).not.toHaveProperty("lastError")
     } finally {
       await store.close()
     }

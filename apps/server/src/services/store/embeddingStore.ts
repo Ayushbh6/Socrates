@@ -7,7 +7,6 @@ import type {
   OllamaEmbeddingModel,
   OllamaRuntimeHardware,
   ProjectEmbeddingCredentialSource,
-  ProjectEmbeddingJobStatus,
   ProjectEmbeddingProvider,
   ProjectEmbeddingStatus,
 } from "@socrates/contracts"
@@ -16,51 +15,28 @@ import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue } from "@socrates/workspace"
 import { and, desc, eq } from "drizzle-orm"
 import os from "node:os"
-import { projectEmbeddingConfigs, traceDocuments, traceEmbeddings, traceIndexJobs } from "../../db/schema"
+import { projectEmbeddingConfigs } from "../../db/schema"
 import { StoreBase } from "./shared"
 
 export const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 export const DEFAULT_OLLAMA_EMBEDDING_MODEL = "embeddinggemma:latest"
 export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 
-const EMBEDDING_BATCH_SIZE = 16
-const traceDocumentSelect = `td.id AS id,
-  td.project_id AS projectId,
-  td.conversation_id AS conversationId,
-  td.turn_id AS turnId,
-  td.source_kind AS sourceKind,
-  td.source_table AS sourceTable,
-  td.source_id AS sourceId,
-  td.handle AS handle,
-  td.title AS title,
-  td.summary AS summary,
-  td.content AS content,
-  td.content_hash AS contentHash,
-  td.importance AS importance,
-  td.preserve_verbatim AS preserveVerbatim,
-  td.chunk_index AS chunkIndex,
-  td.token_count_estimate AS tokenCountEstimate,
-  td.metadata_json AS metadataJson,
-  td.created_at AS createdAt,
-  td.updated_at AS updatedAt`
-
 type ProjectEmbeddingConfigRow = typeof projectEmbeddingConfigs.$inferSelect
-type TraceDocumentRow = typeof traceDocuments.$inferSelect
 
-export type TraceQueryEmbeddingResult = {
-  ready: boolean
-  providerId?: ProjectEmbeddingProvider
-  modelId?: string
-  dimensions?: number
-  embedding?: number[]
-  warnings?: string[]
+export type ActiveEmbeddingConfiguration = {
+  configId: string
+  providerId: ProjectEmbeddingProvider
+  modelId: string
+  dimensions: number
+  credentialSource: ProjectEmbeddingCredentialSource
+  workspaceEnvFile?: string
+  ollamaBaseUrl?: string
 }
 
-export class EmbeddingStore extends StoreBase {
-  private readonly runningProjects = new Set<string>()
-  private readonly runningTasks = new Set<Promise<void>>()
-  private disposed = false
+export type EmbeddingConfigurationStatus = Omit<ProjectEmbeddingStatus, "retrieval">
 
+export class EmbeddingStore extends StoreBase {
   constructor(
     context: ConstructorParameters<typeof StoreBase>[0],
     private readonly provider: EmbeddingProvider,
@@ -69,15 +45,12 @@ export class EmbeddingStore extends StoreBase {
     super(context)
   }
 
-  getStatus(projectId: string): ProjectEmbeddingStatus {
+  getStatus(projectId: string): EmbeddingConfigurationStatus {
     this.mustGetProjectRow(projectId)
     return this.buildStatus(projectId)
   }
 
-  async dispose(): Promise<void> {
-    this.disposed = true
-    await Promise.allSettled([...this.runningTasks])
-  }
+  async dispose(): Promise<void> {}
 
   async check(projectId: string, input: CheckProjectEmbeddingsRequest): Promise<CheckProjectEmbeddingsResponse> {
     this.mustGetProjectRow(projectId)
@@ -160,7 +133,7 @@ export class EmbeddingStore extends StoreBase {
     }
   }
 
-  async configure(projectId: string, input: ConfigureProjectEmbeddingsRequest): Promise<ProjectEmbeddingStatus> {
+  async configure(projectId: string, input: ConfigureProjectEmbeddingsRequest): Promise<EmbeddingConfigurationStatus> {
     this.mustGetProjectRow(projectId)
     const providerId = input.providerId
     const modelId = defaultModelId(providerId, input.modelId)
@@ -199,298 +172,45 @@ export class EmbeddingStore extends StoreBase {
       })
       .run()
 
-    this.pruneInactiveEmbeddingRows(projectId, providerId, modelId, check.dimensions)
-    this.enqueueProject(projectId, "configure")
-    this.processProjectInBackground(projectId)
     return this.buildStatus(projectId)
   }
 
-  reindex(projectId: string): ProjectEmbeddingStatus {
+  reindex(projectId: string): EmbeddingConfigurationStatus {
     this.mustGetProjectRow(projectId)
-    this.enqueueProject(projectId, "manual_reindex")
-    this.processProjectInBackground(projectId)
     return this.buildStatus(projectId)
   }
 
-  enqueueProject(projectId: string, reason: string): string | undefined {
+  getActiveConfiguration(projectId: string): ActiveEmbeddingConfiguration | undefined {
     const config = this.getActiveConfig(projectId)
-    if (!config || config.status !== "ready") {
-      return undefined
+    if (!config || config.status !== "ready" || !config.dimensions) return undefined
+    return {
+      configId: config.id,
+      providerId: config.providerId as ProjectEmbeddingProvider,
+      modelId: config.modelId,
+      dimensions: config.dimensions,
+      credentialSource: config.credentialSource as ProjectEmbeddingCredentialSource,
+      ...(config.workspaceEnvFile ? { workspaceEnvFile: config.workspaceEnvFile } : {}),
+      ...(config.ollamaBaseUrl ? { ollamaBaseUrl: config.ollamaBaseUrl } : {}),
     }
-    const now = nowIso()
-    const jobId = createId("tjob")
-    this.handle.db
-      .insert(traceIndexJobs)
-      .values({
-        id: jobId,
-        projectId,
-        jobKind: "embed_trace_documents",
-        status: "queued",
-        attempts: 0,
-        createdAt: now,
-        metadataJson: JSON.stringify({ reason, configId: config.id }),
+  }
+
+  async embedValues(projectId: string, values: string[]): Promise<{ embeddings: number[][]; dimensions: number }> {
+    const config = this.getActiveConfiguration(projectId)
+    if (!config) {
+      throw new SocratesError("semantic_retrieval_unavailable", "Semantic retrieval is not configured for this project.", { recoverable: true })
+    }
+    const credentials = this.resolveCredentials(projectId, config.providerId, config.credentialSource, config.workspaceEnvFile)
+    const result = await this.provider.embedMany({
+      ...providerRequest(config.providerId, config.modelId, credentials.apiKey, config.ollamaBaseUrl),
+      values,
+    })
+    if (result.dimensions !== config.dimensions || result.embeddings.length !== values.length) {
+      throw new SocratesError("embedding_dimensions_mismatch", "Embedding provider returned an unexpected embedding shape.", {
+        details: { expectedDimensions: config.dimensions, actualDimensions: result.dimensions },
+        recoverable: true,
       })
-      .run()
-    return jobId
-  }
-
-  enqueueTurn(projectId: string, conversationId: string, turnId: string): string | undefined {
-    const config = this.getActiveConfig(projectId)
-    if (!config || config.status !== "ready") {
-      return undefined
     }
-    const now = nowIso()
-    const jobId = createId("tjob")
-    this.handle.db
-      .insert(traceIndexJobs)
-      .values({
-        id: jobId,
-        projectId,
-        conversationId,
-        turnId,
-        jobKind: "embed_trace_documents",
-        status: "queued",
-        attempts: 0,
-        createdAt: now,
-        metadataJson: JSON.stringify({ reason: "turn_indexed", configId: config.id }),
-      })
-      .run()
-    this.processProjectInBackground(projectId)
-    return jobId
-  }
-
-  async embedTraceQuery(projectId: string, query: string): Promise<TraceQueryEmbeddingResult> {
-    const config = this.getActiveConfig(projectId)
-    if (!config || config.status !== "ready" || !config.dimensions) {
-      return {
-        ready: false,
-        warnings: [`Semantic trace retrieval is not configured for this project. Use the project dashboard to enable semantic search.`],
-      }
-    }
-    try {
-      const credentials = this.resolveCredentials(
-        projectId,
-        config.providerId as ProjectEmbeddingProvider,
-        config.credentialSource as ProjectEmbeddingCredentialSource,
-        config.workspaceEnvFile ?? undefined,
-      )
-      const result = await this.provider.embed({
-        ...providerRequest(config.providerId as ProjectEmbeddingProvider, config.modelId, credentials.apiKey, config.ollamaBaseUrl ?? undefined),
-        value: query,
-      })
-      if (result.dimensions !== config.dimensions || !result.embeddings[0]) {
-        return {
-          ready: false,
-          warnings: [`Semantic trace retrieval returned dimensions that do not match the active project embedding config.`],
-        }
-      }
-      return {
-        ready: true,
-        providerId: config.providerId as ProjectEmbeddingProvider,
-        modelId: config.modelId,
-        dimensions: config.dimensions,
-        embedding: result.embeddings[0],
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      return { ready: false, warnings: [`Semantic trace retrieval failed: ${message}`] }
-    }
-  }
-
-  private processProjectInBackground(projectId: string): void {
-    if (this.disposed) {
-      return
-    }
-    let task: Promise<void>
-    task = this.processProject(projectId)
-      .catch(() => undefined)
-      .finally(() => {
-        this.runningTasks.delete(task)
-      })
-    this.runningTasks.add(task)
-  }
-
-  private async processProject(projectId: string): Promise<void> {
-    if (this.disposed) {
-      return
-    }
-    if (this.runningProjects.has(projectId)) {
-      return
-    }
-    this.runningProjects.add(projectId)
-    try {
-      const job = this.nextQueuedJob(projectId)
-      if (!job) {
-        return
-      }
-      const startedAt = nowIso()
-      this.handle.db
-        .update(traceIndexJobs)
-        .set({ status: "running", startedAt, attempts: job.attempts + 1 })
-        .where(eq(traceIndexJobs.id, job.id))
-        .run()
-
-      const config = this.getActiveConfig(projectId)
-      if (!config || config.status !== "ready" || !config.dimensions) {
-        this.completeJob(job.id, 0, "No active embedding config.")
-        return
-      }
-
-      try {
-        const embedded = await this.embedMissingDocuments(projectId, config)
-        this.completeJob(job.id, embedded, undefined, config.id)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        this.handle.db
-          .update(traceIndexJobs)
-          .set({ status: "failed", completedAt: nowIso(), metadataJson: JSON.stringify({ error: message }) })
-          .where(eq(traceIndexJobs.id, job.id))
-          .run()
-        this.handle.db
-          .update(projectEmbeddingConfigs)
-          .set({ lastError: message, updatedAt: nowIso() })
-          .where(eq(projectEmbeddingConfigs.id, config.id))
-          .run()
-      }
-    } finally {
-      this.runningProjects.delete(projectId)
-      if (!this.disposed && this.nextQueuedJob(projectId)) {
-        this.processProjectInBackground(projectId)
-      }
-    }
-  }
-
-  private async embedMissingDocuments(projectId: string, config: ProjectEmbeddingConfigRow): Promise<number> {
-    let embedded = 0
-    while (true) {
-      if (!this.isActiveConfig(projectId, config.id)) {
-        return embedded
-      }
-      const docs = this.findMissingDocuments(projectId, config)
-      if (docs.length === 0) {
-        return embedded
-      }
-      const credentials = this.resolveCredentials(
-        projectId,
-        config.providerId as ProjectEmbeddingProvider,
-        config.credentialSource as ProjectEmbeddingCredentialSource,
-        config.workspaceEnvFile ?? undefined,
-      )
-      const result = await this.provider.embedMany({
-        ...providerRequest(config.providerId as ProjectEmbeddingProvider, config.modelId, credentials.apiKey, config.ollamaBaseUrl ?? undefined),
-        values: docs.map((doc) => embeddingTextForDocument(doc)),
-      })
-      if (result.dimensions !== config.dimensions || result.embeddings.length !== docs.length) {
-        throw new SocratesError("embedding_dimensions_mismatch", "Embedding provider returned an unexpected embedding shape", {
-          details: { expectedDimensions: config.dimensions, actualDimensions: result.dimensions },
-          recoverable: true,
-        })
-      }
-      if (!this.isActiveConfig(projectId, config.id)) {
-        return embedded
-      }
-      const now = nowIso()
-      for (const [index, doc] of docs.entries()) {
-        if (!this.isActiveConfig(projectId, config.id)) {
-          return embedded
-        }
-        const embedding = result.embeddings[index]
-        if (!embedding) {
-          continue
-        }
-        this.handle.sqlite
-          .prepare(
-            `INSERT OR REPLACE INTO trace_embeddings
-              (id, project_id, trace_document_id, provider_id, model_id, dimensions, content_hash, vector_json, usage_json, status, error_message, created_at, updated_at, embedded_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', NULL, ?, ?, ?)`,
-          )
-          .run(
-            createId("temb"),
-            projectId,
-            doc.id,
-            config.providerId,
-            config.modelId,
-            config.dimensions,
-            doc.contentHash,
-            JSON.stringify(embedding),
-            result.usage ? JSON.stringify(result.usage) : null,
-            now,
-            now,
-            now,
-          )
-        embedded += 1
-      }
-    }
-  }
-
-  private findMissingDocuments(projectId: string, config: ProjectEmbeddingConfigRow): TraceDocumentRow[] {
-    return this.handle.sqlite
-      .prepare(
-        `SELECT ${traceDocumentSelect}
-         FROM trace_documents td
-         LEFT JOIN trace_embeddings te
-           ON te.trace_document_id = td.id
-          AND te.provider_id = ?
-          AND te.model_id = ?
-          AND te.dimensions = ?
-          AND te.content_hash = td.content_hash
-          AND te.status = 'completed'
-         WHERE td.project_id = ? AND te.id IS NULL
-         ORDER BY td.created_at ASC
-         LIMIT ?`,
-      )
-      .all(config.providerId, config.modelId, config.dimensions, projectId, EMBEDDING_BATCH_SIZE) as TraceDocumentRow[]
-  }
-
-  private pruneInactiveEmbeddingRows(projectId: string, providerId: ProjectEmbeddingProvider, modelId: string, dimensions: number): void {
-    this.handle.sqlite
-      .prepare(
-        `DELETE FROM trace_embeddings
-         WHERE project_id = ?
-           AND (
-             provider_id <> ?
-             OR model_id <> ?
-             OR dimensions <> ?
-             OR NOT EXISTS (
-               SELECT 1
-               FROM trace_documents td
-               WHERE td.id = trace_embeddings.trace_document_id
-                 AND td.project_id = trace_embeddings.project_id
-                 AND td.content_hash = trace_embeddings.content_hash
-             )
-           )`,
-      )
-      .run(projectId, providerId, modelId, dimensions)
-  }
-
-  private isActiveConfig(projectId: string, configId: string): boolean {
-    return this.getActiveConfig(projectId)?.id === configId
-  }
-
-  private completeJob(jobId: string, embeddedDocuments: number, warning?: string, configId?: string): void {
-    const now = nowIso()
-    this.handle.db
-      .update(traceIndexJobs)
-      .set({
-        status: "completed",
-        completedAt: now,
-        metadataJson: JSON.stringify({ embeddedDocuments, ...(warning ? { warning } : {}) }),
-      })
-      .where(eq(traceIndexJobs.id, jobId))
-      .run()
-    if (configId && !warning) {
-      this.handle.db.update(projectEmbeddingConfigs).set({ lastError: null, updatedAt: now }).where(eq(projectEmbeddingConfigs.id, configId)).run()
-    }
-  }
-
-  private nextQueuedJob(projectId: string): typeof traceIndexJobs.$inferSelect | undefined {
-    return this.handle.db
-      .select()
-      .from(traceIndexJobs)
-      .where(and(eq(traceIndexJobs.projectId, projectId), eq(traceIndexJobs.jobKind, "embed_trace_documents"), eq(traceIndexJobs.status, "queued")))
-      .orderBy(traceIndexJobs.createdAt)
-      .limit(1)
-      .get()
+    return { embeddings: result.embeddings, dimensions: result.dimensions }
   }
 
   private getActiveConfig(projectId: string): ProjectEmbeddingConfigRow | undefined {
@@ -503,54 +223,19 @@ export class EmbeddingStore extends StoreBase {
       .get()
   }
 
-  private buildStatus(projectId: string): ProjectEmbeddingStatus {
-    const totalDocuments = this.handle.db.select().from(traceDocuments).where(eq(traceDocuments.projectId, projectId)).all().length
+  private buildStatus(projectId: string): EmbeddingConfigurationStatus {
     const config = this.getActiveConfig(projectId)
     if (!config || !config.dimensions) {
       return {
         configured: false,
         ready: false,
-        totalDocuments,
+        totalDocuments: 0,
         indexedDocuments: 0,
-        pendingDocuments: totalDocuments,
+        pendingDocuments: 0,
         failedDocuments: 0,
         warnings: ["Semantic search is not configured for this project."],
       }
     }
-
-    const indexedDocuments = (
-      this.handle.sqlite
-        .prepare(
-          `SELECT COUNT(*) AS count
-           FROM trace_documents td
-           INNER JOIN trace_embeddings te ON te.trace_document_id = td.id
-            AND te.provider_id = ?
-            AND te.model_id = ?
-            AND te.dimensions = ?
-            AND te.content_hash = td.content_hash
-            AND te.status = 'completed'
-           WHERE td.project_id = ?`,
-        )
-        .get(config.providerId, config.modelId, config.dimensions, projectId) as { count: number }
-    ).count
-    const failedDocuments = (
-      this.handle.sqlite
-        .prepare(
-          `SELECT COUNT(*) AS count
-           FROM trace_embeddings
-           WHERE project_id = ? AND provider_id = ? AND model_id = ? AND dimensions = ? AND status = 'failed'`,
-        )
-        .get(projectId, config.providerId, config.modelId, config.dimensions) as { count: number }
-    ).count
-    const activeJob = this.handle.db
-      .select()
-      .from(traceIndexJobs)
-      .where(and(eq(traceIndexJobs.projectId, projectId), eq(traceIndexJobs.jobKind, "embed_trace_documents")))
-      .orderBy(desc(traceIndexJobs.createdAt))
-      .limit(1)
-      .get()
-    const pendingDocuments = Math.max(totalDocuments - indexedDocuments - failedDocuments, 0)
-    const shouldShowLastError = Boolean(config.lastError) && (config.status === "failed" || failedDocuments > 0 || pendingDocuments > 0 || activeJob?.status === "failed")
     return {
       configured: true,
       ready: config.status === "ready",
@@ -562,22 +247,10 @@ export class EmbeddingStore extends StoreBase {
       ...(config.workspaceEnvFile ? { workspaceEnvFile: config.workspaceEnvFile } : {}),
       ...(config.ollamaBaseUrl ? { ollamaBaseUrl: config.ollamaBaseUrl } : {}),
       status: config.status as ProjectEmbeddingStatus["status"],
-      totalDocuments,
-      indexedDocuments,
-      pendingDocuments,
-      failedDocuments,
-      ...(activeJob
-        ? {
-            activeJob: {
-              id: activeJob.id,
-              status: activeJob.status as ProjectEmbeddingJobStatus,
-              createdAt: activeJob.createdAt,
-              ...(activeJob.startedAt ? { startedAt: activeJob.startedAt } : {}),
-              ...(activeJob.completedAt ? { completedAt: activeJob.completedAt } : {}),
-            },
-          }
-        : {}),
-      ...(shouldShowLastError ? { lastError: config.lastError ?? undefined } : {}),
+      totalDocuments: 0,
+      indexedDocuments: 0,
+      pendingDocuments: 0,
+      failedDocuments: 0,
       updatedAt: config.updatedAt,
     }
   }
@@ -748,6 +421,3 @@ const providerRequest = (providerId: ProjectEmbeddingProvider, modelId: string, 
   ...(apiKey ? { apiKey } : {}),
   ...(baseUrl ? { baseUrl } : {}),
 })
-
-const embeddingTextForDocument = (doc: TraceDocumentRow): string =>
-  [`Title: ${doc.title}`, doc.summary ? `Summary: ${doc.summary}` : "", `Content:\n${doc.content}`].filter(Boolean).join("\n")

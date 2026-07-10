@@ -37,8 +37,8 @@ import type {
   SoulToolOutput,
   ToolDocsToolInput,
   ToolDocsToolOutput,
-  TraceRetrieveToolInput,
-  TraceRetrieveToolOutput,
+  TraceRetrieveGlobalToolInput,
+  TraceRetrieveGlobalToolOutput,
   TriggerMemoryAgentRunResponse,
   TruncationMetadata,
   UserProfileToolInput,
@@ -106,6 +106,8 @@ const PRIMARY_MEMORY_INDEX_CHAR_LIMIT = 10_000
 const PRIMARY_MEMORY_SECTION_CHAR_LIMIT = 10_000
 const DEFAULT_SEARCH_LIMIT = 20
 const MEMORY_AGENT_TOKEN_CAP = 60_000
+const MEMORY_AGENT_MANIFEST_TOKEN_CAP = 45_000
+const MEMORY_AGENT_AUDIT_CHAR_LIMIT = 25_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
 const SKILL_CHAR_LIMIT = 20_000
@@ -117,14 +119,16 @@ const REPO_DOC_NAMES = ["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "
 const LEGACY_REPO_DOC_NAMES = ["APP_FLOW.md", "DB_STRUCTURE.md", "FRONTEND_BACKEND_CONTRACT.md", "PROVIDER_USAGE.md", "REPO_STRCUTURE.md"] as const
 const PROJECT_NOTES_RUNTIME_CONTEXT_SECTION = "runtime_context"
 
+type StandardEditFilesInput = Exclude<EditFilesToolInput, { editMode: "move" }>
+
 type MemoryStoreOptions = {
   socratesHome?: string
   provider?: ModelProvider
   credentials?: ProviderCredentialResolver
-  traceRetrieve?: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
-  traceRetrieveGlobal?: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
+  traceRetrieveGlobal?: (input: TraceRetrieveGlobalToolInput) => Promise<TraceRetrieveGlobalToolOutput> | TraceRetrieveGlobalToolOutput
   getMemoryAgentGlobalSettings?: () => MemoryAgentGlobalSettings
   getWorkerModelSettings?: (workerId: WorkerModelRole) => WorkerModelSettings
+  onMemoryDocIndexed?: (index: MemoryDocIndex, changedSectionIds: string[], removedSectionIds: string[]) => void
   createNotification?: (input: {
     projectId?: string
     conversationId?: string
@@ -233,6 +237,11 @@ export class MemoryStore extends StoreBase {
       }
       this.indexMemoryDocFile(projectDocPath(workspacePath, "memory"), projectDocProfile(projectId, "memory"))
       this.indexMemoryDocFile(projectDocPath(workspacePath, "notes"), projectDocProfile(projectId, "notes"))
+      this.reconcileMemoryDocIndexes("workspace", projectId, new Set([
+        projectDocRelativePath("memory"),
+        projectDocRelativePath("notes"),
+        ...REPO_DOC_NAMES.map((name) => `.socrates/repo_docs/${name}`),
+      ]))
     }
   }
 
@@ -285,10 +294,13 @@ export class MemoryStore extends StoreBase {
       ensureStructuredMemoryDoc(path.join(this.socratesHome, profile.path), profile)
       this.indexMemoryDocFile(path.join(this.socratesHome, profile.path), profile)
     }
+    const validPaths = new Set(globalDocs.map((profile) => profile.path))
     for (const filePath of listMarkdownFiles(path.join(this.socratesHome, "tool_usage"))) {
       const relativePath = path.relative(this.socratesHome, filePath).replaceAll(path.sep, "/")
       this.indexMemoryDocFile(filePath, globalToolDocProfile(relativePath))
+      validPaths.add(relativePath)
     }
+    this.reconcileMemoryDocIndexes("global", GLOBAL_MEMORY_AGENT_PROJECT_ID, validPaths)
   }
 
   runToolDocsTool(projectId: string, workspacePath: string | undefined, input: ToolDocsToolInput, audience: "main" | "memory_agent" = "main"): ToolDocsToolOutput {
@@ -313,13 +325,21 @@ export class MemoryStore extends StoreBase {
     const normalizedNoteKey = normalizedMemoryNoteKey(note)
     const defaultSkillScope: SkillScope = "project"
     const result = this.handle.sqlite.transaction(() => {
-      const duplicate = this.handle.db
+      const exactDuplicate = this.handle.db
         .select()
         .from(memoryNotes)
         .where(and(eq(memoryNotes.createdByAgent, "socrates"), eq(memoryNotes.normalizedNoteKey, normalizedNoteKey)))
         .orderBy(memoryNotes.noteNumber)
         .limit(1)
         .get()
+      const turnDuplicate = this.handle.db
+        .select()
+        .from(memoryNotes)
+        .where(and(eq(memoryNotes.createdByAgent, "socrates"), eq(memoryNotes.turnId, source.turnId)))
+        .orderBy(memoryNotes.noteNumber)
+        .all()
+        .find((candidate) => materiallySameMemoryNote(candidate.note, note))
+      const duplicate = exactDuplicate ?? turnDuplicate
       if (duplicate) {
         return {
           output: {
@@ -1253,7 +1273,7 @@ export class MemoryStore extends StoreBase {
     }
     const latest = entries.entries[entries.entries.length - 1]
     const jobId = createId("memjob")
-    const evidence = entries.manifest
+    const evidence = this.withMemorySelfHealingAudit(entries.manifest)
     const evidenceTokensEstimate = estimateTextTokens(evidence).inputTokens
     const startedAt = nowIso()
     const metadataBase = {
@@ -1441,6 +1461,30 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  private withMemorySelfHealingAudit(manifest: string): string {
+    this.ensureGlobalKnowledge()
+    const fullProfile = readIfExists(this.userProfilePath()) ?? ""
+    const fullIdentity = readIfExists(this.soulPath()) ?? ""
+    const profile = truncate(fullProfile, MEMORY_AGENT_AUDIT_CHAR_LIMIT)
+    const identity = truncate(fullIdentity, MEMORY_AGENT_AUDIT_CHAR_LIMIT)
+    const auditQueue = renderProfileSelfHealingAuditQueue(fullProfile)
+    return [
+      manifest,
+      "",
+      "# Required Global Memory Self-Healing Audit",
+      "Audit the complete visible snapshot below during this actual model run. Resolve every mandatory audit-queue item before investigating the newest turns. Repair only clear misplaced or duplicate entries; leave ambiguous entries untouched. Use the read tools before editing and whenever exact current section text is needed.",
+      "",
+      "## Mandatory Audit Queue",
+      auditQueue,
+      `<user_profile_snapshot truncated="${profile.truncated ? "true" : "false"}">`,
+      profile.text,
+      "</user_profile_snapshot>",
+      `<identity_snapshot truncated="${identity.truncated ? "true" : "false"}">`,
+      identity.text,
+      "</identity_snapshot>",
+    ].join("\n")
+  }
+
   private buildGlobalManifest(lastProcessedEventSequence: number): { entries: GlobalTurnManifestEntry[]; manifest: string; sequenceFrom: number; sequenceTo: number } {
     const rows = this.handle.sqlite
       .prepare(
@@ -1475,7 +1519,7 @@ export class MemoryStore extends StoreBase {
       }
       const renderedEntry = this.renderGlobalManifestEntry(entry, entries.length + 1)
       const entryTokensEstimate = estimateTextTokens(`\n${renderedEntry}`).inputTokens
-      if (packedTokensEstimate + entryTokensEstimate > MEMORY_AGENT_TOKEN_CAP) {
+      if (packedTokensEstimate + entryTokensEstimate > MEMORY_AGENT_MANIFEST_TOKEN_CAP) {
         break
       }
       entries.push(entry)
@@ -1495,7 +1539,7 @@ export class MemoryStore extends StoreBase {
       "# Global Memory Agent Manifest",
       `Previous watermark: ${lastProcessedEventSequence}`,
       `Included turn count: ${entries.length}`,
-      `Packing limits: maxTurns=${GLOBAL_MEMORY_AGENT_MAX_TURNS}, maxEstimatedTokens=${MEMORY_AGENT_TOKEN_CAP}`,
+      `Packing limits: maxTurns=${GLOBAL_MEMORY_AGENT_MAX_TURNS}, manifestEstimatedTokens=${MEMORY_AGENT_MANIFEST_TOKEN_CAP}, finalRunEstimatedTokens=${MEMORY_AGENT_TOKEN_CAP}`,
       `Sequence range: ${sequenceFrom}-${sequenceTo}`,
       "",
       "Use trace_retrieve for message/tool evidence. This manifest intentionally omits message bodies.",
@@ -1703,6 +1747,9 @@ export class MemoryStore extends StoreBase {
   ): Promise<EditFilesToolOutput> {
     this.ensureGlobalKnowledge()
     const resolved = this.resolveEditFilesTarget(input, context)
+    if (input.editMode === "move") {
+      return this.moveMemorySectionEntry(input, resolved, context)
+    }
     if (resolved.targetKind === "skills") {
       return this.proposeSkillWrite(input, resolved, context)
     }
@@ -1745,8 +1792,133 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  private async moveMemorySectionEntry(
+    input: Extract<EditFilesToolInput, { editMode: "move" }>,
+    resolved: ResolvedEditFilesTarget,
+    context: { jobId: string; turnId?: string; modelSettings: MemoryAgentModelSettings },
+  ): Promise<EditFilesToolOutput> {
+    if (resolved.targetKind === "skills") {
+      throw new SocratesError("memory_move_target_invalid", "Atomic section moves are limited to user_profile and identity.", { recoverable: true })
+    }
+    const profile = editFilesMemoryDocProfile(resolved, this.socratesHome)
+    const sourceSectionId = canonicalMemoryDocSectionId(profile.docType, input.sourceSectionId)
+    const destinationSectionId = canonicalMemoryDocSectionId(profile.docType, input.destinationSectionId)
+    ensureStructuredMemoryDoc(resolved.path, profile)
+    const current = readIfExists(resolved.path) ?? ""
+    const currentIndex = this.indexMemoryDocFile(resolved.path, profile)
+    const sourceSection = findMemoryDocSection(currentIndex, sourceSectionId)
+    const destinationSection = findMemoryDocSection(currentIndex, destinationSectionId)
+    const sourceOccurrences = countOccurrences(sourceSection.content, input.sourceText)
+    if (sourceOccurrences !== 1) {
+      const reason = sourceOccurrences === 0
+        ? `sourceText was not found in section ${sourceSectionId}.`
+        : `sourceText matched ${sourceOccurrences} times in section ${sourceSectionId}; the move is ambiguous.`
+      return this.rejectedMoveOutput(input, resolved.path, context, reason)
+    }
+
+    const sourceNext = cleanMovedSectionContent(sourceSection.content.replace(input.sourceText, ""))
+    const destinationBase = destinationSectionId === "global_always_apply_rules"
+      ? removeAlwaysApplyPlaceholder(destinationSection.content)
+      : destinationSection.content.trim()
+    const destinationAlreadyContains = countOccurrences(destinationBase, input.destinationText) > 0
+    const destinationNext = destinationAlreadyContains
+      ? destinationBase
+      : [destinationBase, input.destinationText.trim()].filter(Boolean).join("\n")
+    if (destinationSectionId === "global_always_apply_rules" && countMemoryBullets(destinationNext) > 10) {
+      return this.rejectedMoveOutput(input, resolved.path, context, "global_always_apply_rules is already at its 10-rule cap. Merge or replace an overlapping rule before moving this entry.")
+    }
+
+    let next = patchMemoryDocSection(current, profile, sourceSectionId, sourceSection.content, sourceNext)
+    const destinationAfterSource = findMemoryDocSection(parseMemoryDoc(next, profile), destinationSectionId)
+    next = patchMemoryDocSection(next, profile, destinationSectionId, destinationAfterSource.content, destinationNext)
+    const evidenceSection = parseMemoryDoc(next, profile).sections.find((section) => section.sectionId === "evidence_index")
+    if (evidenceSection) {
+      const evidenceNext = retargetEvidenceSectionReferences(evidenceSection.content, sourceSectionId, destinationSectionId)
+      if (evidenceNext !== evidenceSection.content) {
+        next = patchMemoryDocSection(next, profile, "evidence_index", evidenceSection.content, evidenceNext)
+      }
+    }
+    parseMemoryDoc(next, profile)
+    const patch: MemoryPatchProposal = {
+      oldText: current,
+      newText: next,
+      rationale: input.rationale,
+      ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}),
+      ...(resolved.document ? { document: resolved.document } : {}),
+    }
+    const result = resolved.targetKind === "soul"
+      ? await this.applySoulPatch(
+          GLOBAL_MEMORY_AGENT_PROJECT_ID,
+          context.jobId,
+          context.turnId ? { turnId: context.turnId } : undefined,
+          patch,
+          context.modelSettings,
+          `${sourceSectionId}->${destinationSectionId}`,
+        )
+      : this.applyPrimaryPatch(
+          GLOBAL_MEMORY_AGENT_PROJECT_ID,
+          context.jobId,
+          context.turnId,
+          resolved.targetKind,
+          resolved.path,
+          patch,
+          `${sourceSectionId}->${destinationSectionId}`,
+        )
+    if (!result.applied) {
+      return {
+        target: input.target,
+        path: path.relative(this.socratesHome, resolved.path).replaceAll(path.sep, "/"),
+        changed: false,
+        actionId: result.actionId,
+        status: "rejected",
+        warnings: [result.error ?? "Atomic memory move was rejected."],
+        truncation: truncationFor(result.error ?? "", DEFAULT_CHAR_LIMIT),
+      }
+    }
+    try {
+      const index = this.indexMemoryDocFile(resolved.path, profile)
+      const section = findMemoryDocSection(index, destinationSectionId)
+      return {
+        target: input.target,
+        path: path.relative(this.socratesHome, resolved.path).replaceAll(path.sep, "/"),
+        changed: true,
+        actionId: result.actionId,
+        status: "applied",
+        section,
+        diff: simpleDiff(sourceSection.content, `${sourceNext}\n--- moved to ${destinationSectionId} ---\n${destinationNext}`),
+        ...(destinationAlreadyContains ? { warnings: ["Destination already contained the canonical entry; removed only the misplaced duplicate."] } : {}),
+        truncation: truncationFor(input.destinationText, DEFAULT_CHAR_LIMIT),
+      }
+    } catch (error) {
+      fs.writeFileSync(resolved.path, current)
+      this.indexMemoryDocFile(resolved.path, profile)
+      const message = `Atomic memory move was rolled back after validation failed: ${error instanceof Error ? error.message : String(error)}`
+      this.rejectMemoryAction(result.actionId, message)
+      return this.rejectedEditFilesOutput(input, resolved.path, result.actionId, message)
+    }
+  }
+
+  private rejectedMoveOutput(
+    input: Extract<EditFilesToolInput, { editMode: "move" }>,
+    targetPath: string,
+    context: { jobId: string; turnId?: string },
+    error: string,
+  ): EditFilesToolOutput {
+    const action = this.createMemoryAction(
+      GLOBAL_MEMORY_AGENT_PROJECT_ID,
+      context.jobId,
+      context.turnId,
+      input.target === "identity" ? "soul" : "user_profile",
+      targetPath,
+      { oldText: input.sourceText, newText: input.destinationText, rationale: input.rationale, ...(input.sourceTurnIds ? { sourceTurnIds: input.sourceTurnIds } : {}) },
+      false,
+    )
+    this.rejectMemoryAction(action.actionId, error)
+    return this.rejectedEditFilesOutput(input, targetPath, action.actionId, error)
+  }
+
   private proposeSkillWrite(
-    input: EditFilesToolInput,
+    input: StandardEditFilesInput,
     resolved: ResolvedEditFilesTarget,
     context: { jobId: string; turnId?: string },
   ): EditFilesToolOutput {
@@ -1818,7 +1990,7 @@ export class MemoryStore extends StoreBase {
   }
 
   private editFilesPatchForInput(
-    input: EditFilesToolInput,
+    input: StandardEditFilesInput,
     resolved: ResolvedEditFilesTarget,
   ): MemoryPatchProposal {
     if (!input.sectionId) {
@@ -1854,7 +2026,7 @@ export class MemoryStore extends StoreBase {
   }
 
   private createMemoryTarget(
-    input: EditFilesToolInput,
+    input: StandardEditFilesInput,
     resolved: ResolvedEditFilesTarget,
     context: { jobId: string; turnId?: string },
   ): EditFilesToolOutput {
@@ -2302,63 +2474,117 @@ export class MemoryStore extends StoreBase {
 
   private indexMemoryDocFile(filePath: string, profile: MemoryDocProfile): MemoryDocIndex {
     const index = parseMemoryDoc(fs.readFileSync(filePath, "utf8"), profile)
-    return this.replaceMemoryDocIndex(index)
+    const result = this.replaceMemoryDocIndex(index)
+    this.options.onMemoryDocIndexed?.(index, result.changedSectionIds, result.removedSectionIds)
+    return index
   }
 
-  private replaceMemoryDocIndex(index: MemoryDocIndex): MemoryDocIndex {
+  private replaceMemoryDocIndex(index: MemoryDocIndex): { changedSectionIds: string[]; removedSectionIds: string[] } {
     const indexedAt = nowIso()
     const projectKey = index.projectId ?? GLOBAL_MEMORY_AGENT_PROJECT_ID
-    const existingRows = this.handle.db
+    const existingRow = this.handle.db
       .select()
       .from(memoryDocIndexes)
       .where(and(eq(memoryDocIndexes.scope, index.scope), eq(memoryDocIndexes.projectId, projectKey), eq(memoryDocIndexes.path, index.path)))
-      .all()
-    for (const row of existingRows) {
-      this.handle.db.delete(memoryDocSections).where(eq(memoryDocSections.docIndexId, row.id)).run()
-      this.handle.db.delete(memoryDocIndexes).where(eq(memoryDocIndexes.id, row.id)).run()
-    }
-    const docIndexId = createId("mdoc")
-    this.handle.db
-      .insert(memoryDocIndexes)
-      .values({
-        id: docIndexId,
-        scope: index.scope,
-        projectId: projectKey,
-        path: index.path,
-        docType: index.docType,
-        ownerTool: index.ownerTool,
-        schemaVersion: index.schemaVersion,
-        contentHash: index.contentHash,
-        sectionCount: index.sections.length,
-        indexedAt,
-        metadataJson: JSON.stringify({ warnings: index.warnings ?? [] }),
-      })
-      .run()
-    for (const section of index.sections) {
+      .get()
+    const docIndexId = existingRow?.id ?? createId("mdoc")
+    if (existingRow) {
       this.handle.db
-        .insert(memoryDocSections)
+        .update(memoryDocIndexes)
+        .set({
+          docType: index.docType,
+          ownerTool: index.ownerTool,
+          schemaVersion: index.schemaVersion,
+          contentHash: index.contentHash,
+          sectionCount: index.sections.length,
+          indexedAt,
+          metadataJson: JSON.stringify({ warnings: index.warnings ?? [] }),
+        })
+        .where(eq(memoryDocIndexes.id, docIndexId))
+        .run()
+    } else {
+      this.handle.db
+        .insert(memoryDocIndexes)
         .values({
-          id: createId("mdsec"),
-          docIndexId,
+          id: docIndexId,
           scope: index.scope,
           projectId: projectKey,
           path: index.path,
           docType: index.docType,
-          sectionId: section.sectionId,
-          kind: section.kind,
-          tagsJson: JSON.stringify(section.tags),
-          heading: section.heading,
-          lineStart: section.lineStart,
-          lineEnd: section.lineEnd,
-          contentHash: section.contentHash,
-          summary: section.summary,
-          tokenEstimate: section.tokenEstimate,
-          updatedAt: indexedAt,
-          metadataJson: JSON.stringify({}),
+          ownerTool: index.ownerTool,
+          schemaVersion: index.schemaVersion,
+          contentHash: index.contentHash,
+          sectionCount: index.sections.length,
+          indexedAt,
+          metadataJson: JSON.stringify({ warnings: index.warnings ?? [] }),
         })
         .run()
     }
-    return index
+    const existingSections = this.handle.db.select().from(memoryDocSections).where(eq(memoryDocSections.docIndexId, docIndexId)).all()
+    const existingBySectionId = new Map(existingSections.map((section) => [section.sectionId, section]))
+    const nextSectionIds = new Set(index.sections.map((section) => section.sectionId))
+    const removedSectionIds = existingSections.filter((section) => !nextSectionIds.has(section.sectionId)).map((section) => section.sectionId)
+    for (const section of existingSections) {
+      if (!nextSectionIds.has(section.sectionId)) {
+        this.handle.db.delete(memoryDocSections).where(eq(memoryDocSections.id, section.id)).run()
+      }
+    }
+    const changedSectionIds: string[] = []
+    for (const section of index.sections) {
+      const existing = existingBySectionId.get(section.sectionId)
+      const values = {
+        scope: index.scope,
+        projectId: projectKey,
+        path: index.path,
+        docType: index.docType,
+        sectionId: section.sectionId,
+        kind: section.kind,
+        tagsJson: JSON.stringify(section.tags),
+        heading: section.heading,
+        lineStart: section.lineStart,
+        lineEnd: section.lineEnd,
+        content: section.content,
+        contentHash: section.contentHash,
+        summary: section.summary,
+        tokenEstimate: section.tokenEstimate,
+        updatedAt: indexedAt,
+        metadataJson: JSON.stringify({}),
+      }
+      if (!existing) {
+        this.handle.db.insert(memoryDocSections).values({ id: createId("mdsec"), docIndexId, ...values }).run()
+        changedSectionIds.push(section.sectionId)
+      } else if (existing.contentHash !== section.contentHash || existing.heading !== section.heading || existing.content !== section.content) {
+        this.handle.db.update(memoryDocSections).set(values).where(eq(memoryDocSections.id, existing.id)).run()
+        changedSectionIds.push(section.sectionId)
+      }
+    }
+    return { changedSectionIds, removedSectionIds }
+  }
+
+  private reconcileMemoryDocIndexes(scope: "global" | "workspace", projectId: string, validPaths: Set<string>): void {
+    const stale = this.handle.db
+      .select()
+      .from(memoryDocIndexes)
+      .where(and(eq(memoryDocIndexes.scope, scope), eq(memoryDocIndexes.projectId, projectId)))
+      .all()
+      .filter((row) => !validPaths.has(row.path))
+    for (const row of stale) {
+      const removedSectionIds = this.handle.db.select().from(memoryDocSections).where(eq(memoryDocSections.docIndexId, row.id)).all().map((section) => section.sectionId)
+      this.handle.db.delete(memoryDocSections).where(eq(memoryDocSections.docIndexId, row.id)).run()
+      this.handle.db.delete(memoryDocIndexes).where(eq(memoryDocIndexes.id, row.id)).run()
+      if (removedSectionIds.length > 0) {
+        this.options.onMemoryDocIndexed?.({
+          path: row.path,
+          scope: row.scope as MemoryDocIndex["scope"],
+          projectId: row.projectId,
+          docType: row.docType as MemoryDocIndex["docType"],
+          ownerTool: row.ownerTool as MemoryDocIndex["ownerTool"],
+          schemaVersion: row.schemaVersion,
+          contentHash: row.contentHash,
+          sections: [],
+        }, [], removedSectionIds)
+      }
+    }
   }
 
   private skillWriterModelSettingsFor(): SkillWriterModelSettings {
@@ -2451,11 +2677,14 @@ export class MemoryStore extends StoreBase {
         ...(contextCompressorSettings ? { contextCompressorSettings } : {}),
         tools: {
           traceRetrieve: async (toolInput) => {
-            if (input.scope === "project" && input.conversationId && this.options.traceRetrieve) {
-              return this.options.traceRetrieve(input.projectId, input.conversationId, toolInput)
-            }
             if (this.options.traceRetrieveGlobal) {
-              return this.options.traceRetrieveGlobal(toolInput)
+              return this.options.traceRetrieveGlobal(
+                input.scope === "project"
+                  ? toolInput.operation === "inspect"
+                    ? { ...toolInput, projectId: input.projectId }
+                    : { ...toolInput, scope: "project", projectId: input.projectId }
+                  : toolInput,
+              )
             }
             throw new SocratesError("skill_writer_trace_unavailable", "trace_retrieve is not available to this Skill Writer run.", { recoverable: true })
           },
@@ -2885,6 +3114,54 @@ const globalMemoryDocProfile = (_socratesHome: string, target: "identity" | "use
   projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
   indexTags: target === "user_profile" ? ["profile"] : ["soul"],
 })
+
+const PROFILE_HARD_RULE_SIGNAL = /\b(hard rule|non[- ]negotiable|irrefutable|must always|always be|every project|across projects)\b/i
+
+const retargetEvidenceSectionReferences = (content: string, sourceSectionId: string, destinationSectionId: string): string =>
+  content
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = /^(\s*used_by:\s*)(.*?)(\s*)$/.exec(line)
+      if (!match) return line
+      const references = (match[2] ?? "").split(",").map((value) => value.trim()).filter(Boolean)
+      if (!references.includes(sourceSectionId)) return line
+      const updated = [...new Set(references.map((value) => (value === sourceSectionId ? destinationSectionId : value)))]
+      return `${match[1]}${updated.join(", ")}${match[3]}`
+    })
+    .join("\n")
+
+const renderProfileSelfHealingAuditQueue = (content: string): string => {
+  try {
+    const profile = globalMemoryDocProfile("", "user_profile")
+    const index = parseMemoryDoc(content, profile)
+    const destination = index.sections.find((section) => section.sectionId === "global_always_apply_rules")
+    const destinationRuleCount = destination ? countMemoryBullets(destination.content) : 0
+    const candidates = index.sections
+      .filter((section) => !["global_always_apply_rules", "evidence_index", "legacy_content"].includes(section.sectionId))
+      .flatMap((section) =>
+        section.content
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => /^[-*]\s+/.test(line) && PROFILE_HARD_RULE_SIGNAL.test(line))
+          .map((sourceText) => ({ sectionId: section.sectionId, sourceText })),
+      )
+      .slice(0, 10)
+    if (candidates.length === 0) {
+      return `No obvious misplaced hard-rule candidates were detected. global_always_apply_rules currently has ${destinationRuleCount}/10 rules. Still review the snapshots for duplicates or identity/profile misclassification.`
+    }
+    return [
+      `global_always_apply_rules currently has ${destinationRuleCount}/10 rules.`,
+      ...candidates.flatMap((candidate, index) => [
+        `${index + 1}. user_profile.md/${candidate.sectionId}`,
+        `   exact_source_text: ${JSON.stringify(candidate.sourceText)}`,
+        "   signal: The entry explicitly uses hard-rule or cross-project mandatory language outside global_always_apply_rules.",
+        "   required_disposition: Read the source and destination sections, then either use edit_files editMode=move or name the exact ambiguity/cap/evidence blocker in Skipped. Do not silently leave this queue item unresolved.",
+      ]),
+    ].join("\n")
+  } catch (error) {
+    return `Profile audit queue could not be parsed: ${error instanceof Error ? error.message : String(error)}. Read user_profile with the tool and report the parsing blocker explicitly.`
+  }
+}
 
 const editFilesMemoryDocProfile = (
   resolved: { path: string; targetKind: "skills" | "soul" | "user_profile"; document?: "identity" },
@@ -3389,7 +3666,8 @@ const shouldRefreshBundledToolUsageDoc = (name: string, content: string): boolea
   isLegacyToolUsageSeed(name, content) || isOutdatedBundledToolUsageDoc(name, content) || !isStructuredToolUsageDoc(name, content)
 
 const isOutdatedBundledToolUsageDoc = (name: string, content: string): boolean =>
-  ["user_profile.md", path.join("memory_agent", "user_profile.md")].includes(name) && !content.includes("turnId/messageId/event")
+  (["user_profile.md", path.join("memory_agent", "user_profile.md")].includes(name) && (!content.includes("turnId/messageId/event") || content.includes("trace handle"))) ||
+  (["trace_retrieve.md", path.join("memory_agent", "trace_retrieve.md")].includes(name) && !content.includes('mode: "lexical"'))
 
 const isStructuredToolUsageDoc = (name: string, content: string): boolean => {
   try {
@@ -3600,14 +3878,38 @@ const memoryAgentActivityBody = (stats: MemoryAgentActivityStats): string => {
 }
 
 const normalizedMemoryNoteKey = (note: string): string => {
-  const normalized = note
+  const normalized = normalizeMemoryNoteText(note)
+  return hashText(`memory_note:v1:${normalized || note.trim().toLowerCase()}`)
+}
+
+const materiallySameMemoryNote = (left: string, right: string): boolean => {
+  const normalizedLeft = normalizeMemoryNoteText(left)
+  const normalizedRight = normalizeMemoryNoteText(right)
+  if (!normalizedLeft || !normalizedRight) {
+    return false
+  }
+  if (normalizedLeft === normalizedRight || normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)) {
+    return true
+  }
+  const leftTokens = new Set(normalizedLeft.split(" "))
+  const rightTokens = new Set(normalizedRight.split(" "))
+  let intersection = 0
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      intersection += 1
+    }
+  }
+  return (2 * intersection) / (leftTokens.size + rightTokens.size) >= 0.78
+}
+
+const normalizeMemoryNoteText = (note: string): string =>
+  note
     .normalize("NFKC")
     .toLowerCase()
+    .replaceAll("_", " ")
     .replace(/[\p{P}\p{S}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
-  return hashText(`memory_note:v1:${normalized || note.trim().toLowerCase()}`)
-}
 
 const humanizeSkillName = (name: string): string =>
   name
@@ -3655,3 +3957,24 @@ const truncationFor = (text: string, charLimit: number): TruncationMetadata => (
 })
 
 const countOccurrences = (text: string, needle: string): number => text.split(needle).length - 1
+
+const cleanMovedSectionContent = (content: string): string =>
+  content
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
+
+const removeAlwaysApplyPlaceholder = (content: string): string =>
+  content
+    .split(/\r?\n/)
+    .filter((line) => {
+      const normalized = line.trim().replace(/^[-*]\s+/, "").toLowerCase()
+      return !(normalized.startsWith("add at most 10") && (normalized.includes("rule") || normalized.includes("hard")))
+    })
+    .join("\n")
+    .trim()
+
+const countMemoryBullets = (content: string): number =>
+  content.split(/\r?\n/).filter((line) => /^\s*[-*]\s+\S/.test(line)).length

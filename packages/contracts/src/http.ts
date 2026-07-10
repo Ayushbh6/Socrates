@@ -624,6 +624,23 @@ export const projectEmbeddingActiveJobSchema = z
   .strict()
 export type ProjectEmbeddingActiveJob = z.infer<typeof projectEmbeddingActiveJobSchema>
 
+export const projectRetrievalStatusSchema = z
+  .object({
+    status: z.enum(["pending", "rebuilding", "ready", "failed"]),
+    lexicalReady: z.boolean(),
+    vectorReady: z.boolean(),
+    qaParents: z.number().int().nonnegative(),
+    qaChunks: z.number().int().nonnegative(),
+    memoryParents: z.number().int().nonnegative(),
+    memoryChunks: z.number().int().nonnegative(),
+    lastError: z.string().optional(),
+    rebuildStartedAt: z.string().min(1).optional(),
+    rebuildCompletedAt: z.string().min(1).optional(),
+    updatedAt: z.string().min(1).optional(),
+  })
+  .strict()
+export type ProjectRetrievalStatus = z.infer<typeof projectRetrievalStatusSchema>
+
 export const projectEmbeddingStatusSchema = z
   .object({
     configured: z.boolean(),
@@ -641,6 +658,7 @@ export const projectEmbeddingStatusSchema = z
     pendingDocuments: z.number().int().nonnegative(),
     failedDocuments: z.number().int().nonnegative(),
     activeJob: projectEmbeddingActiveJobSchema.optional(),
+    retrieval: projectRetrievalStatusSchema,
     lastError: z.string().optional(),
     updatedAt: z.string().min(1).optional(),
     warnings: z.array(z.string()).optional(),

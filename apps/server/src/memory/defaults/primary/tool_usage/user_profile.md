@@ -43,14 +43,14 @@ Section meanings:
 - `personal_interests`: hobbies or personal interests only when explicit and useful.
 - `boundaries_and_dislikes`: explicit dislikes, boundaries, and strong corrections.
 - `active_context`: short-lived but currently useful user-life context that is global across projects and should be pruned as it ages. It may include a compact source project/conversation label, but not project-local task state.
-- `evidence_index`: traceable source anchors for important profile claims. It records where important profile facts came from: date, project title/id, conversation title/id, turn/message/event ids or trace handles when available, the supported claim, and which profile section uses that claim.
+- `evidence_index`: traceable source anchors for important profile claims. It records where important profile facts came from: date, project title/id, conversation title/id, turn/message/event ids when available, the supported claim, and which profile section uses that claim.
 
 Evidence index entry shape:
-- `YYYY-MM-DD | project: <title/id> | conversation: <title/id> | turnId/messageId/event: <id or trace handle>`
+- `YYYY-MM-DD | project: <title/id> | conversation: <title/id> | turnId/messageId/event: <id when available>`
   `supports: <short claim this evidence supports>`
   `used_by: <profile section ids>`
 
-Use exact ids/handles when they make the source retrievable. If ids are unavailable, use the best project title, conversation title, date, and trace handle. Do not treat vague summaries or routine turns as evidence-index entries.
+Use exact turn/message/event ids when they make the source retrievable. If ids are unavailable, use the best project title, conversation title, date, and source description. Do not treat vague summaries or routine turns as evidence-index entries.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="workflow" kind="workflow" tags="tools" -->

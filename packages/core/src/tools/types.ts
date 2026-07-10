@@ -13,6 +13,8 @@ import type {
   MemoryNoteToolOutput,
   MemoryNotesToolInput,
   MemoryNotesToolOutput,
+  MemorySearchInput,
+  MemorySearchOutput,
   McpRegistryToolInput,
   McpRegistryToolOutput,
   ModelToolDefinition,
@@ -39,6 +41,10 @@ import type {
   ToolDocsToolOutput,
   ToolName,
   ToolPermission,
+  TraceRetrieveGlobalToolInput,
+  TraceRetrieveGlobalToolOutput,
+  TraceRetrieveMainToolInput,
+  TraceRetrieveMainToolOutput,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
   UrlFetchToolInput,
@@ -74,7 +80,10 @@ export type ToolExecutors = {
   apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
   current_time: (input: CurrentTimeToolInput, context: ToolExecutorContext) => Promise<CurrentTimeToolOutput>
-  trace_retrieve: (input: TraceRetrieveToolInput, context: ToolExecutorContext) => Promise<TraceRetrieveToolOutput>
+  trace_retrieve: (
+    input: TraceRetrieveMainToolInput | TraceRetrieveGlobalToolInput | TraceRetrieveToolInput,
+    context: ToolExecutorContext,
+  ) => Promise<TraceRetrieveMainToolOutput | TraceRetrieveGlobalToolOutput | TraceRetrieveToolOutput>
   tool_docs: (input: ToolDocsToolInput, context: ToolExecutorContext) => Promise<ToolDocsToolOutput>
   skills: (input: SkillsToolInput, context: ToolExecutorContext) => Promise<SkillsToolOutput>
   projects?: (input: ProjectsToolInput, context: ToolExecutorContext) => Promise<ProjectsToolOutput>
@@ -89,6 +98,7 @@ export type ToolExecutors = {
   ) => Promise<ListProjectResourcesToolOutput>
   memory_note?: (input: MemoryNoteToolInput, context: ToolExecutorContext) => Promise<MemoryNoteToolOutput>
   memory_notes?: (input: MemoryNotesToolInput, context: ToolExecutorContext) => Promise<MemoryNotesToolOutput>
+  memory_search?: (input: MemorySearchInput, context: ToolExecutorContext) => Promise<MemorySearchOutput>
   skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
   mcp_registry?: (input: McpRegistryToolInput, context: ToolExecutorContext) => Promise<McpRegistryToolOutput>
   mcp_dynamic?: (input: { dynamicName: string; input: unknown }, context: ToolExecutorContext) => Promise<unknown>

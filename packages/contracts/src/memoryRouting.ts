@@ -1,69 +1,166 @@
 import { z } from "zod"
 
-export const memoryRouteSaveTargetSchema = z.enum([
-  "project_notes",
-  "project_memory",
-  "repo_docs",
-  "global_memory",
-  "identity",
-  "skill_candidate",
+export const memoryRetrievalSurfaceSchema = z.enum(["project_notes", "project_memory", "repo_docs", "user_profile", "identity"])
+export type MemoryRetrievalSurface = z.infer<typeof memoryRetrievalSurfaceSchema>
+
+export const memoryRetrievalFileSchema = z.enum([
+  "PROJECT_NOTES.md",
+  "MEMORY.md",
+  "CORE_IDEA.md",
+  "REPO_NAVIGATION.md",
+  "REPO_RULES.md",
+  "CONTRACTS.md",
+  "user_profile.md",
+  "identity.md",
 ])
-export type MemoryRouteSaveTarget = z.infer<typeof memoryRouteSaveTargetSchema>
+export type MemoryRetrievalFile = z.infer<typeof memoryRetrievalFileSchema>
 
-export const memoryRouteDocHintSchema = z.enum([
-  "project_notes/active_context",
-  "project_memory/always_apply_rules",
-  "project_memory/current_state",
-  "project_memory/durable_decisions",
-  "project_memory/constraints",
-  "project_memory/project_preferences",
-  "project_memory/blockers",
-  "project_memory/handoff",
-  "repo_docs/CORE_IDEA.md",
-  "repo_docs/REPO_NAVIGATION.md",
-  "repo_docs/REPO_RULES.md",
-  "repo_docs/CONTRACTS.md",
-  "user_profile/global_always_apply_rules",
-  "user_profile/stable_preferences",
-  "user_profile/collaboration_style",
-  "user_profile/active_context",
-  "identity/operating_principles",
-  "identity/tool_and_memory_discipline",
-  "skills/candidate",
+export const memoryRetrievalSectionSchema = z.enum([
+  "runtime_context",
+  "state_ledger",
+  "active_context",
+  "active_todos",
+  "checked_files",
+  "next_commands",
+  "scratch_notes",
+  "completed_archive",
+  "current_state",
+  "always_apply_rules",
+  "durable_decisions",
+  "constraints",
+  "project_preferences",
+  "blockers",
+  "handoff",
+  "evidence_anchors",
+  "purpose",
+  "current_direction",
+  "milestones",
+  "update_triggers",
+  "ownership_map",
+  "entry_points",
+  "tests",
+  "generated_ignored",
+  "navigation_rules",
+  "hard_rules",
+  "workflows",
+  "verification",
+  "known_pitfalls",
+  "tool_contracts",
+  "api_contracts",
+  "db_event_contracts",
+  "frontend_backend",
+  "change_log",
+  "profile_summary",
+  "global_always_apply_rules",
+  "stable_preferences",
+  "collaboration_style",
+  "work_and_projects",
+  "personal_interests",
+  "boundaries_and_dislikes",
+  "evidence_index",
+  "core_identity",
+  "voice_and_presence",
+  "relationship_to_user",
+  "operating_principles",
+  "safety_boundaries",
+  "tool_and_memory_discipline",
 ])
-export type MemoryRouteDocHint = z.infer<typeof memoryRouteDocHintSchema>
+export type MemoryRetrievalSection = z.infer<typeof memoryRetrievalSectionSchema>
 
-const memoryRouteTextSchema = z.string().min(1).max(1_200)
-const memoryRouteReasonSchema = z.string().min(1).max(500)
+const validSectionsByFile: Record<MemoryRetrievalFile, ReadonlySet<MemoryRetrievalSection>> = {
+  "PROJECT_NOTES.md": new Set(["runtime_context", "state_ledger", "active_context", "active_todos", "checked_files", "next_commands", "scratch_notes", "completed_archive"]),
+  "MEMORY.md": new Set(["current_state", "always_apply_rules", "durable_decisions", "constraints", "project_preferences", "blockers", "handoff", "evidence_anchors"]),
+  "CORE_IDEA.md": new Set(["purpose", "current_direction", "milestones", "update_triggers"]),
+  "REPO_NAVIGATION.md": new Set(["ownership_map", "entry_points", "tests", "generated_ignored", "navigation_rules"]),
+  "REPO_RULES.md": new Set(["hard_rules", "workflows", "verification", "known_pitfalls", "update_triggers"]),
+  "CONTRACTS.md": new Set(["tool_contracts", "api_contracts", "db_event_contracts", "frontend_backend", "change_log"]),
+  "user_profile.md": new Set(["profile_summary", "global_always_apply_rules", "stable_preferences", "collaboration_style", "work_and_projects", "personal_interests", "boundaries_and_dislikes", "active_context", "evidence_index"]),
+  "identity.md": new Set(["core_identity", "voice_and_presence", "relationship_to_user", "operating_principles", "safety_boundaries", "tool_and_memory_discipline"]),
+}
 
-export const memoryWriteCandidateSchema = z
+const validFilesBySurface: Record<MemoryRetrievalSurface, ReadonlySet<MemoryRetrievalFile>> = {
+  project_notes: new Set(["PROJECT_NOTES.md"]),
+  project_memory: new Set(["MEMORY.md"]),
+  repo_docs: new Set(["CORE_IDEA.md", "REPO_NAVIGATION.md", "REPO_RULES.md", "CONTRACTS.md"]),
+  user_profile: new Set(["user_profile.md"]),
+  identity: new Set(["identity.md"]),
+}
+
+const memoryDestinationShape = {
+  surface: memoryRetrievalSurfaceSchema,
+  fileName: memoryRetrievalFileSchema,
+  sectionId: memoryRetrievalSectionSchema,
+}
+
+const validateMemoryDestination = (
+  input: { surface: MemoryRetrievalSurface; fileName: MemoryRetrievalFile; sectionId: MemoryRetrievalSection },
+  context: z.RefinementCtx,
+) => {
+  if (!validFilesBySurface[input.surface].has(input.fileName)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["fileName"], message: `${input.fileName} is not owned by ${input.surface}.` })
+  }
+  if (!validSectionsByFile[input.fileName].has(input.sectionId)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: `${input.sectionId} is not a valid section of ${input.fileName}.` })
+  }
+}
+
+export const memoryReadTargetSchema = z
+  .object({ ...memoryDestinationShape, reason: z.string().min(1).max(500) })
+  .strict()
+  .superRefine(validateMemoryDestination)
+export type MemoryReadTarget = z.infer<typeof memoryReadTargetSchema>
+
+export const routedMemoryWriteSchema = z.union([
+  z
+    .object({ kind: z.literal("document"), ...memoryDestinationShape, text: z.string().min(1).max(1_200), reason: z.string().min(1).max(500) })
+    .strict()
+    .superRefine(validateMemoryDestination),
+  z.object({ kind: z.literal("skill_candidate"), text: z.string().min(1).max(1_200), reason: z.string().min(1).max(500) }).strict(),
+])
+export type RoutedMemoryWrite = z.infer<typeof routedMemoryWriteSchema>
+
+export const memoryRouterPreTurnResultSchema = z
   .object({
-    target: memoryRouteSaveTargetSchema,
-    text: memoryRouteTextSchema,
-    reason: memoryRouteReasonSchema,
-    docHint: memoryRouteDocHintSchema.nullable(),
+    readTargets: z.array(memoryReadTargetSchema).max(8),
+    memoryWrites: z.array(routedMemoryWriteSchema).max(3),
+    reason: z.string().min(1).max(500),
   })
   .strict()
-export type MemoryWriteCandidate = z.infer<typeof memoryWriteCandidateSchema>
+export type MemoryRouterPreTurnResult = z.infer<typeof memoryRouterPreTurnResultSchema>
 
-export const preTurnMemoryRouteSchema = z
+export const memoryRouterPostTurnResultSchema = z
+  .object({ memoryWrites: z.array(routedMemoryWriteSchema).max(3), reason: z.string().min(1).max(500) })
+  .strict()
+export type MemoryRouterPostTurnResult = z.infer<typeof memoryRouterPostTurnResultSchema>
+
+export const memorySearchInputSchema = z
   .object({
-    projectNotes: z.boolean(),
-    projectMemory: z.boolean(),
-    repoDocs: z.boolean(),
-    userProfile: z.boolean(),
-    identity: z.boolean(),
-    docHints: z.array(memoryRouteDocHintSchema).max(8),
-    memoryWrites: z.array(memoryWriteCandidateSchema).max(3),
-    reason: memoryRouteReasonSchema,
+    query: z.string().min(1).max(1_000),
+    mode: z.enum(["lexical", "semantic", "combined"]).default("combined"),
+    scope: z.enum(["global", "project", "all"]).default("all"),
+    limit: z.number().int().positive().max(8).default(8),
   })
   .strict()
-export type PreTurnMemoryRoute = z.infer<typeof preTurnMemoryRouteSchema>
+export type MemorySearchInput = z.infer<typeof memorySearchInputSchema>
 
-export const postTurnMemoryRouteSchema = z
+export const memorySearchResultSchema = z
   .object({
-    memoryWrites: z.array(memoryWriteCandidateSchema).max(3),
-    reason: memoryRouteReasonSchema,
+    resultNumber: z.number().int().positive(),
+    content: z.string(),
+    surface: memoryRetrievalSurfaceSchema,
+    fileName: memoryRetrievalFileSchema,
+    sectionId: memoryRetrievalSectionSchema,
+    sectionHeading: z.string().min(1),
+    scope: z.enum(["global", "project"]),
   })
   .strict()
-export type PostTurnMemoryRoute = z.infer<typeof postTurnMemoryRouteSchema>
+export type MemorySearchResult = z.infer<typeof memorySearchResultSchema>
+
+export const memorySearchOutputSchema = z
+  .object({
+    results: z.array(memorySearchResultSchema).max(8),
+    totalMatches: z.number().int().nonnegative(),
+    warnings: z.array(z.string()).optional(),
+  })
+  .strict()
+export type MemorySearchOutput = z.infer<typeof memorySearchOutputSchema>

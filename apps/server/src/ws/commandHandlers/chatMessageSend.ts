@@ -7,7 +7,7 @@ import {
   type SocratesAgent,
   type ToolExecutors,
 } from "@socrates/core"
-import type { ClientCommand, ProjectResource } from "@socrates/contracts"
+import type { ClientCommand, ProjectResource, TraceRetrieveMainToolInput } from "@socrates/contracts"
 import type { McpRuntime } from "@socrates/mcp"
 import type { ModelProvider, ModelUsage } from "@socrates/providers"
 import { normalizeError, nowIso, SocratesError } from "@socrates/shared"
@@ -217,6 +217,7 @@ export const handleChatMessageSend = async (
       messages: modelHistory,
       promptContext,
       workspacePath,
+      automaticMemorySearch: (input) => store.searchMemory(projectId, input, true),
       toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime, {
         exposeMcpServer: (serverId) => exposedMcpServers.add(serverId),
       }),
@@ -863,7 +864,8 @@ const createToolExecutors = (
     }
   },
   current_time: () => Promise.resolve(currentRuntimeTime()),
-  trace_retrieve: (input, context) => Promise.resolve(store.retrieveToolTraces(projectId, context.conversationId, input)),
+  trace_retrieve: (input, context) => store.retrieveMainToolTraces(projectId, context.conversationId, input as TraceRetrieveMainToolInput).then((result) => result as never),
+  memory_search: (input) => store.searchMemory(projectId, input, false),
   tool_docs: (input) => Promise.resolve(store.runToolDocsTool(projectId, input)),
   skills: (input) => {
     const output = store.runSkillsTool(projectId, input)

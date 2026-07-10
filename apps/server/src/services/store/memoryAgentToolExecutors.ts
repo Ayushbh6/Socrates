@@ -18,8 +18,8 @@ import type {
   SoulToolOutput,
   ToolDocsToolInput,
   ToolDocsToolOutput,
-  TraceRetrieveToolInput,
-  TraceRetrieveToolOutput,
+  TraceRetrieveGlobalToolInput,
+  TraceRetrieveGlobalToolOutput,
   UrlFetchToolOutput,
   UserProfileToolInput,
   UserProfileToolOutput,
@@ -29,7 +29,7 @@ import { SocratesError } from "@socrates/shared"
 import { currentRuntimeTime } from "./runtimeContext"
 
 export type MemoryAgentToolCallbacks = {
-  traceRetrieve: (input: TraceRetrieveToolInput) => Promise<TraceRetrieveToolOutput> | TraceRetrieveToolOutput
+  traceRetrieve: (input: TraceRetrieveGlobalToolInput) => Promise<TraceRetrieveGlobalToolOutput> | TraceRetrieveGlobalToolOutput
   projects: (input: ProjectsToolInput) => Promise<ProjectsToolOutput> | ProjectsToolOutput
   toolDocs: (input: ToolDocsToolInput) => Promise<ToolDocsToolOutput> | ToolDocsToolOutput
   skills: (input: SkillsToolInput) => Promise<SkillsToolOutput> | SkillsToolOutput
@@ -51,7 +51,7 @@ export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks):
     apply_patch: () => unavailable<ApplyPatchToolOutput>(),
     bash: () => unavailable<BashToolOutput>(),
     current_time: () => Promise.resolve(currentRuntimeTime()),
-    trace_retrieve: async (input) => tools.traceRetrieve(input),
+    trace_retrieve: async (input) => tools.traceRetrieve(input as TraceRetrieveGlobalToolInput),
     projects: async (input) => tools.projects(input),
     tool_docs: async (input) => tools.toolDocs(input),
     skills: async (input) => tools.skills(input),

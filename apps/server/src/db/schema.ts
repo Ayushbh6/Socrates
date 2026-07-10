@@ -1163,6 +1163,7 @@ export const memoryDocSections = sqliteTable(
     heading: text("heading").notNull(),
     lineStart: integer("line_start").notNull(),
     lineEnd: integer("line_end").notNull(),
+    content: text("content").notNull().default(""),
     contentHash: text("content_hash").notNull(),
     summary: text("summary").notNull(),
     tokenEstimate: integer("token_estimate").notNull(),
@@ -1172,6 +1173,96 @@ export const memoryDocSections = sqliteTable(
   (table) => ({
     docSectionIdx: uniqueIndex("memory_doc_sections_doc_section_idx").on(table.docIndexId, table.sectionId),
     lookupIdx: index("memory_doc_sections_lookup_idx").on(table.scope, table.projectId, table.docType, table.sectionId),
+  }),
+)
+
+export const retrievalIndexStates = sqliteTable(
+  "retrieval_index_states",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    indexVersion: integer("index_version").notNull(),
+    tableName: text("table_name"),
+    status: text("status").notNull(),
+    embeddingFingerprint: text("embedding_fingerprint"),
+    lexicalReady: integer("lexical_ready", { mode: "boolean" }).notNull(),
+    vectorReady: integer("vector_ready", { mode: "boolean" }).notNull(),
+    traceParents: integer("trace_parents").notNull(),
+    traceChunks: integer("trace_chunks").notNull(),
+    memoryParents: integer("memory_parents").notNull(),
+    memoryChunks: integer("memory_chunks").notNull(),
+    lastError: text("last_error"),
+    rebuildStartedAt: text("rebuild_started_at"),
+    rebuildCompletedAt: text("rebuild_completed_at"),
+    ...timestamps,
+  },
+  (table) => ({
+    projectIdx: uniqueIndex("retrieval_index_states_project_idx").on(table.projectId),
+    statusIdx: index("retrieval_index_states_status_idx").on(table.status),
+  }),
+)
+
+export const retrievalJobs = sqliteTable(
+  "retrieval_jobs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    kind: text("kind").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull(),
+    attempts: integer("attempts").notNull(),
+    error: text("error"),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    createdAt: text("created_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    projectStatusIdx: index("retrieval_jobs_project_status_idx").on(table.projectId, table.status, table.createdAt),
+  }),
+)
+
+export const retrievalRuns = sqliteTable(
+  "retrieval_runs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id"),
+    corpusKind: text("corpus_kind").notNull(),
+    query: text("query").notNull(),
+    mode: text("mode").notNull(),
+    filtersJson: text("filters_json").notNull(),
+    embeddingFingerprint: text("embedding_fingerprint"),
+    status: text("status").notNull(),
+    latencyMs: integer("latency_ms"),
+    warningsJson: text("warnings_json"),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    projectCreatedIdx: index("retrieval_runs_project_created_idx").on(table.projectId, table.createdAt),
+    conversationIdx: index("retrieval_runs_conversation_idx").on(table.conversationId, table.createdAt),
+  }),
+)
+
+export const retrievalResultDiagnostics = sqliteTable(
+  "retrieval_result_diagnostics",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    rank: integer("rank").notNull(),
+    chunkId: text("chunk_id").notNull(),
+    parentId: text("parent_id").notNull(),
+    rawScore: real("raw_score").notNull(),
+    normalizedScore: real("normalized_score").notNull(),
+    recencyReordered: integer("recency_reordered", { mode: "boolean" }).notNull(),
+    selected: integer("selected", { mode: "boolean" }).notNull(),
+    sourceRefJson: text("source_ref_json").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    runRankIdx: uniqueIndex("retrieval_result_diagnostics_run_rank_idx").on(table.runId, table.rank),
+    parentIdx: index("retrieval_result_diagnostics_parent_idx").on(table.parentId),
   }),
 )
 

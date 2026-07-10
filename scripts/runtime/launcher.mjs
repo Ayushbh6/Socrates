@@ -28,7 +28,7 @@ const assertFile = (filePath, label) => {
   }
 };
 
-const waitForHttp = (port, pathname, label, timeoutMs = 60_000) =>
+const waitForHttp = (port, pathname, label, timeoutMs = 180_000) =>
   new Promise((resolve, reject) => {
     const startedAt = Date.now();
     const check = () => {

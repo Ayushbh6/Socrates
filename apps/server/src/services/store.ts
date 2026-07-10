@@ -4,6 +4,7 @@ import type {
   FailCompactionSnapshotInput,
   StartCompactionSnapshotInput,
 } from "@socrates/core"
+import { normalizeScores, rankDistinctParents } from "@socrates/core"
 import type {
   ChatMessageSendPayload,
   CompleteOnboardingRequest,
@@ -54,6 +55,8 @@ import type {
   MemoryAgentFileContentQuery,
   MemoryNoteToolInput,
   MemoryNoteToolOutput,
+  MemoryDocIndex,
+  MemorySearchInput,
   MemoryNotesToolInput,
   MemoryNotesToolOutput,
   ApproveMemorySkillProposalResponse,
@@ -71,7 +74,13 @@ import type {
   SoulToolOutput,
   ToolDocsToolInput,
   ToolDocsToolOutput,
+  TraceRetrieveGlobalResult,
+  TraceRetrieveGlobalSearchInput,
+  TraceRetrieveGlobalToolInput,
+  TraceRetrieveGlobalToolOutput,
   TraceRetrieveToolInput,
+  TraceRetrieveToolOutput,
+  TraceRetrieveMainToolInput,
   UserProfileToolInput,
   UserProfileToolOutput,
   UpdateProjectWorkspaceRequest,
@@ -86,6 +95,7 @@ import type {
   WorkerModelRole,
   WorkerModelSettings,
 } from "@socrates/contracts"
+import { traceRetrieveMainToolInputSchema } from "@socrates/contracts"
 import {
   createDefaultEmbeddingProvider,
   createDefaultModelProvider,
@@ -96,6 +106,8 @@ import {
   type ProviderCredentialResolver,
 } from "@socrates/providers"
 import { SocratesError } from "@socrates/shared"
+import os from "node:os"
+import path from "node:path"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
 import { AttachmentStore } from "./store/attachmentStore"
@@ -132,6 +144,7 @@ import type {
   UploadedResourceInput,
 } from "./store/types"
 import { UserStore } from "./store/userStore"
+import { RetrievalStore } from "./retrieval/retrievalStore"
 
 export type {
   AgentContext,
@@ -167,10 +180,12 @@ export class SocratesStore {
   private readonly workerModelSettings: WorkerModelSettingsStore
   private readonly notifications: NotificationStore
   private readonly embeddings: EmbeddingStore
+  private readonly retrieval: RetrievalStore
   private readonly contextCompactions: ContextCompactionStore
   private ollamaChatModels: ModelOption[] = []
   private ollamaChatModelsCheckedAt = 0
   private memoryAgentScheduler: ReturnType<typeof setInterval> | undefined
+  private globalTraceRefs: Array<{ projectId: string; turnId: string }> = []
 
   constructor(
     private readonly handle: DatabaseHandle,
@@ -198,7 +213,9 @@ export class SocratesStore {
     this.tools = new ToolStore(context)
     this.terminals = new TerminalStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
-    this.traces = new TraceStore(context, this.embeddings)
+    const socratesHome = options.socratesHome ?? path.join(os.homedir(), ".Socrates")
+    this.retrieval = new RetrievalStore(context, this.embeddings, socratesHome)
+    this.traces = new TraceStore(context)
     this.notifications = new NotificationStore(context)
     this.memoryAgentSettings = new MemoryAgentGlobalSettingsStore(context)
     this.workerModelSettings = new WorkerModelSettingsStore(context)
@@ -206,10 +223,11 @@ export class SocratesStore {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
       ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: createDefaultModelProvider(credentials) } : {}),
       ...(credentials ? { credentials } : {}),
-      traceRetrieve: (projectId: string, conversationId: string, input: TraceRetrieveToolInput) => this.traces.retrieve(projectId, conversationId, input),
-      traceRetrieveGlobal: (input: TraceRetrieveToolInput) => this.traces.retrieveGlobal(input),
+      traceRetrieveGlobal: (input: TraceRetrieveGlobalToolInput) => this.retrieveGlobalToolTraces(input),
       getMemoryAgentGlobalSettings: () => this.memoryAgentSettings.ensureSettings(),
       getWorkerModelSettings: (workerId: WorkerModelRole) => this.getWorkerModelSetting(workerId),
+      onMemoryDocIndexed: (index: MemoryDocIndex, changedSectionIds: string[], removedSectionIds: string[]) =>
+        this.retrieval.onMemoryDocIndexed(index, changedSectionIds, removedSectionIds),
       createNotification: (input: Parameters<NotificationStore["createNotification"]>[0]) => this.notifications.createNotification(input),
     }
     this.memory = new MemoryStore(context, memoryOptions)
@@ -221,8 +239,24 @@ export class SocratesStore {
       clearInterval(this.memoryAgentScheduler)
       this.memoryAgentScheduler = undefined
     }
+    await this.retrieval.dispose()
     await this.embeddings.dispose()
     this.handle.close()
+  }
+
+  async initializeRetrieval(): Promise<void> {
+    const projects = this.handle.sqlite
+      .prepare(
+        `SELECT p.id,
+                (SELECT pw.path FROM project_workspaces pw WHERE pw.project_id = p.id AND pw.is_primary = 1 AND pw.status IN ('active','missing') ORDER BY pw.updated_at DESC LIMIT 1) AS workspacePath
+         FROM projects p
+         WHERE p.status <> 'deleted'`,
+      )
+      .all() as Array<{ id: string; workspacePath: string | null }>
+    for (const project of projects) {
+      this.memory.ensureProjectMemory(project.id, project.workspacePath ?? undefined)
+    }
+    await this.retrieval.initialize()
   }
 
   cancelStaleActiveTurns(reason = "Socrates stopped before this response completed."): number {
@@ -270,7 +304,7 @@ export class SocratesStore {
       ...this.projects.getProjectDashboard(projectId),
       resources: this.resources.listResources(projectId),
       skills: this.memory.listProjectSkills(projectId, this.primaryWorkspacePathOrUndefined(projectId)),
-      embeddingStatus: this.embeddings.getStatus(projectId),
+      embeddingStatus: this.getProjectEmbeddingStatus(projectId),
     }
   }
 
@@ -668,7 +702,9 @@ export class SocratesStore {
 
   deleteConversation(projectId: string, conversationId: string): { deletedConversationId: string } {
     this.terminals.stopConversationTerminals(conversationId)
-    return this.conversations.deleteConversation(projectId, conversationId)
+    const deleted = this.conversations.deleteConversation(projectId, conversationId)
+    this.retrieval.deleteConversation(projectId, conversationId)
+    return deleted
   }
 
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
@@ -959,15 +995,159 @@ export class SocratesStore {
 
   indexTurnTraceDocuments(projectId: string, conversationId: string, turnId: string): void {
     this.traces.indexTurn(projectId, conversationId, turnId)
-    this.embeddings.enqueueTurn(projectId, conversationId, turnId)
+    this.retrieval.enqueueTurn(projectId, turnId)
   }
 
   retrieveToolTraces(projectId: string, conversationId: string, input: TraceRetrieveToolInput) {
     return this.traces.retrieve(projectId, conversationId, input)
   }
 
+  async retrieveGlobalToolTraces(input: TraceRetrieveGlobalToolInput): Promise<TraceRetrieveGlobalToolOutput> {
+    if (input.operation === "inspect") {
+      const previous = input.resultNumber ? this.globalTraceRefs[input.resultNumber - 1] : undefined
+      const turnId = input.turnId ?? previous?.turnId
+      const projectId = previous?.projectId ?? input.projectId ?? this.resolveGlobalInspectProjectId(input, turnId)
+      if (!projectId) {
+        throw new SocratesError("trace_result_not_found", "The requested trace result could not be resolved to a visible project.", { recoverable: true })
+      }
+      const inspected = await this.retrieval.retrieveMainTrace(projectId, "", {
+        operation: "inspect",
+        ...(turnId ? { turnId } : {}),
+        ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+        ...(input.turnNo ? { turnNo: input.turnNo } : {}),
+        ...(input.charLimit ? { charLimit: input.charLimit } : {}),
+      })
+      const results = inspected.results.map((result, index) => ({ ...result, resultNumber: index + 1, projectTitle: this.projectTitle(projectId) }))
+      this.globalTraceRefs = results.map((result) => ({ projectId, turnId: result.turnId }))
+      return { results, totalMatches: results.length }
+    }
+
+    const projectIds = this.resolveGlobalRetrievalProjectIds(input)
+    const warnings: string[] = []
+    const limit = Math.min(8, input.limit ?? 8)
+    const query = input.query?.trim()
+    const mode = input.mode ?? "lexical"
+    const collected: Array<{ projectId: string; result: Omit<TraceRetrieveGlobalResult, "resultNumber">; rawScore: number }> = []
+
+    if (mode === "audit" || !query) {
+      for (const projectId of projectIds) {
+        try {
+          const projectResult = await this.retrieval.retrieveMainTrace(
+            projectId,
+            "",
+            toMainTraceSearchInput(input),
+            input.conversationId,
+          )
+          for (const result of projectResult.results) {
+            collected.push({
+              projectId,
+              result: { ...result, projectTitle: this.projectTitle(projectId) },
+              rawScore: 1 / (60 + result.resultNumber),
+            })
+          }
+        } catch (error) {
+          warnings.push(`${this.projectTitle(projectId)}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    } else {
+      for (const projectId of projectIds) {
+        try {
+          const ranked = await this.retrieval.search({
+            projectId,
+            query,
+            mode,
+            filters: {
+              corpusKind: "trace_turn",
+              scope: "project",
+              ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+              ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+              ...(input.role ? { role: input.role } : {}),
+              ...(input.createdAfter ? { createdAfter: input.createdAfter } : {}),
+              ...(input.createdBefore ? { createdBefore: input.createdBefore } : {}),
+            },
+            limit: 8,
+          })
+          for (const result of ranked) {
+            collected.push({
+              projectId,
+              result: {
+                content: result.content,
+                turnId: result.metadata.turnId,
+                projectTitle: this.projectTitle(projectId),
+                conversationTitle: result.metadata.conversationTitle,
+                turnNumber: result.metadata.turnNumber,
+                matchedRole: result.metadata.matchedRole as "user" | "assistant",
+                status: result.metadata.status as TraceRetrieveGlobalResult["status"],
+                occurredAt: result.metadata.occurredAt,
+              },
+              rawScore: result.rawScore,
+            })
+          }
+        } catch (error) {
+          warnings.push(`${this.projectTitle(projectId)}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    }
+
+    const normalized = mode !== "audit" && query
+      ? normalizeScores(collected.map((candidate) => candidate.rawScore), mode === "semantic" ? "lower" : "higher")
+      : collected.map((candidate) => candidate.rawScore)
+    const ranked = rankDistinctParents(
+      collected.map((candidate, index) => ({
+        chunkId: `${candidate.projectId}:${candidate.result.turnId}`,
+        parentId: `${candidate.projectId}:${candidate.result.turnId}`,
+        content: candidate.result.content,
+        rawScore: normalized[index] ?? 0,
+        normalizedScore: normalized[index] ?? 0,
+        occurredAt: candidate.result.occurredAt,
+        metadata: candidate,
+      })),
+      { limit },
+    )
+    const results = ranked.map(({ metadata }, index) => ({ ...metadata.result, resultNumber: index + 1 }))
+    this.globalTraceRefs = ranked.map(({ metadata }) => ({ projectId: metadata.projectId, turnId: metadata.result.turnId }))
+    return { results, totalMatches: results.length, ...(warnings.length ? { warnings } : {}) }
+  }
+
+  retrieveMainToolTraces(projectId: string, conversationId: string, input: TraceRetrieveMainToolInput | TraceRetrieveToolInput) {
+    return this.retrieval.retrieveMainTrace(projectId, conversationId, traceRetrieveMainToolInputSchema.parse(input))
+  }
+
+  searchMemory(projectId: string, input: MemorySearchInput, automaticFallback = false) {
+    return this.retrieval.searchMemory(projectId, input, automaticFallback)
+  }
+
   getProjectEmbeddingStatus(projectId: string) {
-    return this.embeddings.getStatus(projectId)
+    const { activeJob: _retiredLegacyJob, lastError: _retiredLegacyError, ...embedding } = this.embeddings.getStatus(projectId)
+    const retrieval = this.retrieval.status(projectId)
+    return {
+      ...embedding,
+      totalDocuments: (retrieval?.traceParents ?? 0) + (retrieval?.memoryParents ?? 0),
+      indexedDocuments: retrieval?.vectorReady ? (retrieval.traceParents + retrieval.memoryParents) : 0,
+      pendingDocuments: retrieval?.vectorReady ? 0 : (retrieval?.traceParents ?? 0) + (retrieval?.memoryParents ?? 0),
+      failedDocuments: retrieval?.status === "failed" ? (retrieval.traceParents + retrieval.memoryParents) : 0,
+      retrieval: {
+        status: (retrieval?.status ?? "pending") as "pending" | "rebuilding" | "ready" | "failed",
+        lexicalReady: retrieval?.lexicalReady ?? false,
+        vectorReady: retrieval?.vectorReady ?? false,
+        qaParents: retrieval?.traceParents ?? 0,
+        qaChunks: retrieval?.traceChunks ?? 0,
+        memoryParents: retrieval?.memoryParents ?? 0,
+        memoryChunks: retrieval?.memoryChunks ?? 0,
+        ...(retrieval?.lastError ? { lastError: retrieval.lastError } : {}),
+        ...(retrieval?.rebuildStartedAt ? { rebuildStartedAt: retrieval.rebuildStartedAt } : {}),
+        ...(retrieval?.rebuildCompletedAt ? { rebuildCompletedAt: retrieval.rebuildCompletedAt } : {}),
+        ...(retrieval?.updatedAt ? { updatedAt: retrieval.updatedAt } : {}),
+      },
+    }
+  }
+
+  getProjectRetrievalStatus(projectId: string) {
+    return this.retrieval.status(projectId)
+  }
+
+  waitForRetrievalIdle(projectId?: string) {
+    return this.retrieval.waitForIdle(projectId)
   }
 
   checkProjectEmbeddings(projectId: string, input: CheckProjectEmbeddingsRequest) {
@@ -978,12 +1158,48 @@ export class SocratesStore {
     return this.embeddings.listOllamaModels(input)
   }
 
-  configureProjectEmbeddings(projectId: string, input: ConfigureProjectEmbeddingsRequest) {
-    return this.embeddings.configure(projectId, input)
+  async configureProjectEmbeddings(projectId: string, input: ConfigureProjectEmbeddingsRequest) {
+    await this.embeddings.configure(projectId, input)
+    this.retrieval.enqueueRebuild(projectId, "embedding_configuration_changed")
+    return this.getProjectEmbeddingStatus(projectId)
   }
 
   reindexProjectEmbeddings(projectId: string) {
-    return this.embeddings.reindex(projectId)
+    this.embeddings.reindex(projectId)
+    this.retrieval.enqueueRebuild(projectId, "manual_reindex")
+    return this.getProjectEmbeddingStatus(projectId)
+  }
+
+  private resolveGlobalRetrievalProjectIds(input: TraceRetrieveGlobalSearchInput): string[] {
+    const requestedIds = traceSelectorValues(input.projectId)
+    if (requestedIds.length > 0) return requestedIds
+    if (input.conversationId) {
+      const rows = this.handle.sqlite.prepare("SELECT DISTINCT project_id AS projectId FROM conversations WHERE id = ?").all(input.conversationId) as Array<{ projectId: string }>
+      return rows.map((row) => row.projectId)
+    }
+    const titles = traceSelectorValues(input.projectTitle)
+    if (titles.length > 0) {
+      const rows = this.handle.sqlite.prepare(`SELECT id FROM projects WHERE status <> 'deleted' AND LOWER(name) IN (${titles.map(() => "LOWER(?)").join(",")})`).all(...titles) as Array<{ id: string }>
+      return rows.map((row) => row.id)
+    }
+    return (this.handle.sqlite.prepare("SELECT id FROM projects WHERE status <> 'deleted' ORDER BY updated_at DESC").all() as Array<{ id: string }>).map((row) => row.id)
+  }
+
+  private projectTitle(projectId: string): string {
+    return (this.handle.sqlite.prepare("SELECT name FROM projects WHERE id = ?").get(projectId) as { name: string } | undefined)?.name ?? projectId
+  }
+
+  private resolveGlobalInspectProjectId(
+    input: Extract<TraceRetrieveGlobalToolInput, { operation: "inspect" }>,
+    turnId?: string,
+  ): string | undefined {
+    if (turnId) {
+      return (this.handle.sqlite.prepare("SELECT c.project_id AS projectId FROM turns t INNER JOIN conversations c ON c.id = t.conversation_id WHERE t.id = ?").get(turnId) as { projectId: string } | undefined)?.projectId
+    }
+    if (input.projectTitle) {
+      return (this.handle.sqlite.prepare("SELECT id FROM projects WHERE status <> 'deleted' AND LOWER(name) = LOWER(?) ORDER BY updated_at DESC LIMIT 1").get(input.projectTitle) as { id: string } | undefined)?.id
+    }
+    return undefined
   }
 
   submitFeedback(payload: FeedbackSubmitPayload): void {
@@ -1019,4 +1235,41 @@ const mergeModelOptions = (primary: ModelOption[], secondary: ModelOption[]): Mo
     merged.push(model)
   }
   return merged
+}
+
+const traceSelectorValues = (value: string | string[] | undefined): string[] =>
+  (Array.isArray(value) ? value : value ? [value] : []).map((item) => item.trim()).filter(Boolean)
+
+const toMainTraceSearchInput = (
+  input: TraceRetrieveGlobalSearchInput,
+): Exclude<TraceRetrieveMainToolInput, { operation: "inspect" }> => {
+  const common = {
+    operation: "search" as const,
+    scope: "project" as const,
+    ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+    ...(input.role ? { role: input.role } : {}),
+    ...(input.createdAfter ? { createdAfter: input.createdAfter } : {}),
+    ...(input.createdBefore ? { createdBefore: input.createdBefore } : {}),
+    ...(input.limit ? { limit: input.limit } : {}),
+  }
+  if (input.mode === "audit") {
+    return {
+      ...common,
+      mode: "audit",
+      query: input.query,
+      ...(input.include ? { include: input.include } : {}),
+      ...(input.paths ? { paths: input.paths } : {}),
+      ...(input.command ? { command: input.command } : {}),
+      ...(input.toolNames ? { toolNames: input.toolNames } : {}),
+    }
+  }
+  if (input.mode === "semantic" || input.mode === "combined") {
+    return { ...common, mode: input.mode, query: input.query }
+  }
+  return {
+    ...common,
+    mode: "lexical",
+    ...(input.query ? { query: input.query } : {}),
+    ...("turnNo" in input && input.turnNo ? { turnNo: input.turnNo } : {}),
+  }
 }

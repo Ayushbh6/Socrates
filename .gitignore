@@ -9,6 +9,7 @@ node_modules/
 dist/
 build/
 release-artifacts/
+.runtime-cache/
 venv/
 backend/.venv/
 backend/.pytest_cache/

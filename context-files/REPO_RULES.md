@@ -19,6 +19,21 @@ packages/shared   -> generic reusable utilities
 
 Do not place logic in a package just because it is convenient. Put it where it belongs. The desktop shell can launch or bundle the existing web/server runtime, but it must not fork agent logic, provider logic, workspace filesystem logic, or API contracts.
 
+The current supported distribution boundary is the NPM CLI plus packaged backend/frontend runtime archives. New runtime packaging logic belongs in a neutral runtime/release script surface, not `apps/desktop`; Tauri and Rust are dormant and out of scope unless a task explicitly reactivates them.
+
+LanceDB is pinned to `0.22.3` because that release publishes native packages for every supported runtime target (`darwin-arm64`, `darwin-x64`, and `win32-x64-msvc`). Lance SQL predicates over camel-case schema fields must quote identifiers, and server shutdown must close the shared native connection explicitly.
+
+Retrieval has one shared ownership chain:
+
+```text
+packages/core retrieval contracts/chunking/ranking
+  -> apps/server retrieval orchestration and LanceDB adapter
+  -> existing packages/providers EmbeddingProvider boundary
+  -> model-visible tools/agents through strict contracts
+```
+
+Do not build separate semantic pipelines for trace recall and memory routing. They must reuse the same Markdown-aware chunker, embedding fingerprinting, index lifecycle, ranking, diagnostics, and parent-result grouping. SQLite is authoritative application state; LanceDB is a disposable/rebuildable retrieval index.
+
 ## 2. No Duplicate Implementations
 
 There must never be three versions of the same helper scattered across the repo.
@@ -228,13 +243,13 @@ Each model-visible tool must live in its own small TypeScript file under `packag
 
 The `read`, `search`, `trace_retrieve`, `tool_docs`, `skills`, `soul`, `user_profile`, `list_project_resources`, and model-visible `mcp_registry` operations are read-only. They may be auto-allowed when scoped to the project workspace or Socrates-owned memory and bounded by output limits. `skills` model calls are limited to `list` and `describe`; compatibility `search`/`read` stays backend-supported but should not be the prompt-driving path. `mcp_registry` model calls are limited to `list` and `describe`; UI/API flows may configure, check, enable/disable, and delete MCP servers. `project_docs` is read/search/edit constrained to `<workspace>/.socrates/MEMORY.md` and `<workspace>/.socrates/PROJECT_NOTES.md`. `repo_docs` is read/search/edit constrained to the four allowlisted markdown files under `<workspace>/.socrates/repo_docs/`: `CORE_IDEA.md`, `REPO_NAVIGATION.md`, `REPO_RULES.md`, and `CONTRACTS.md`. Generic `edit` and `apply_patch` writes to Socrates docs are rejected; use `project_docs` or `repo_docs`. Before `edit`, `apply_patch`, or approval-required mutation tools can run, Socrates must have read, searched, or edited `repo_docs` in the same turn; missing preflight returns recoverable `repo_docs_preflight_required`.
 
-`trace_retrieve` must stay high-level and intent-based. The model should start with `operation="search"`, choose a retrieval mode, and search by query, scope, and bounded limits. Semantic and combined search stay minimal: `query`, optional `scope`, and optional `limit`. Exact search may use `conversationTitle`, `conversationId`, `conversationLimit`, `turnNo`, and `role`; `conversationTitle` is normalized so case, punctuation, and extra spacing do not make matching brittle. Audit-only filters such as evidence type, path, command, tool name, and `toolId` are for `mode="audit"`. Exact `messageId` and audit `toolId` lookups win over search and return the full source. The model should not be expected to know opaque database ids before retrieval.
+`trace_retrieve` must stay high-level and intent-based. Main Socrates starts with `operation="search"` and uses active-project `lexical`, `semantic`, `combined`, or `audit` retrieval. Full active-project search is the default; current/recent conversation narrowing is optional. The main schema must not expose cross-project selectors. Lexical queries search all supplied terms and are rejected above 128 characters; semantic/combined queries are rejected above 1,000 characters. There is no silent truncation. Audit-only filters are for raw tool/shell/file/patch/error evidence. The Global Memory Agent owns a separate explicit cross-project trace contract.
 
-Normal search output must stay slim and message-first: `resultNumber`, `text`, `entryType`, `conversationTitle`, `conversationId`, and `messageId`/`messageNo` for exact user or assistant message rows. `entryType` must distinguish `user_query`, `assistant_response`, and `continuation_summary`; continuation summaries are fallback evidence only and must not fabricate message ids or message numbers.
+Normal trace search output must stay slim: `resultNumber`, raw matched `content`, `turnId`, `conversationTitle`, human `turnNumber`, `matchedRole`, visible `status`, and `occurredAt`. Memory search output similarly exposes only numbered content plus surface, filename, valid section id/heading, and global/project scope.
 
-`conversationId`, `messageId`, `toolCallId`, terminal ids, process ids, provider ids, and other opaque runtime ids may remain internal for storage, UI events, provider protocol correlation, and backwards compatibility. Returned trace ids may be used for precise follow-up `trace_retrieve` inspection, but they must not be required or recommended as the first step in model-authored investigation. Normal search results should not expose storage/debug fields such as trace handles, source tables, source ids, turn ids, scores, metadata, or inspect argument blobs.
+`conversationId`, `messageId`, `toolCallId`, chunk/vector ids, terminal ids, process ids, provider ids, and other opaque runtime ids may remain internal for storage, UI events, provider protocol correlation, diagnostics, and backwards compatibility. Normal search results must not expose those ids, scores, source tables, metadata, or inspect argument blobs. Numbered results and the human-sized turn/section reference are enough for follow-up inspection.
 
-Trace retrieval is limited to visible non-deleted conversations (`active` and `archived`). Hard-deleted conversations must not be searchable or inspectable through orphan `trace_documents`, and conversation hard delete must remove trace documents, FTS rows, trace embeddings, and trace index jobs for that conversation.
+Trace retrieval is limited to visible non-deleted conversations (`active` and `archived`). Hard-deleted conversations must not be searchable or inspectable; conversation hard delete removes active LanceDB parents and owning retrieval diagnostics, while project delete drops the complete project index.
 
 Search and inspect results must include enough conversation identity to answer correctly. Socrates should use `conversationTitle` as the human-readable location and `conversationId` only to disambiguate same-title conversations.
 
@@ -252,13 +267,11 @@ inspect
   returns raw source text or exact tool evidence
 ```
 
-Trace index internals such as `trace_documents`, `trace_embeddings`, and `trace_index_jobs` must not become separate model-visible tools. They are backend storage/indexing implementation details behind `trace_retrieve`.
+Retrieval internals such as LanceDB tables, chunks, vectors, embedding fingerprints, jobs, scores, and diagnostics must not become separate model-visible tools. They remain backend implementation details behind `trace_retrieve` and `memory_search`.
 
 Embedding providers must follow the same boundary rules as chat providers. OpenAI hosted embeddings and offline local embeddings through Ollama or a future Hugging Face / sentence-transformers backend must live behind `packages/providers`; frontend code, routes, WebSocket handlers, and `packages/core` must not call embedding SDKs or local model runtimes directly. Socrates must not silently install or download offline embedding models; it should detect missing local setup and show explicit setup guidance.
 
-Conversation summaries, turn summaries, and verbatim anchors must preserve provenance back to raw rows. Summaries must not be stored as fake user or assistant messages. The `messages` table is for real visible chat messages only.
-
-Verbatim anchors should preserve exact high-value user source material such as rubrics, canonical examples, "use this throughout" instructions, and pasted source-of-truth text. When exact wording matters, Socrates should inspect the anchor/raw message rather than rely only on semantic retrieval snippets.
+Conversation/compaction summaries must preserve provenance but are not part of the normal semantic trace corpus and must never be stored as fake user or assistant messages. The `messages` table remains the source for real visible chat text; exact historical wording comes from inspecting the canonical turn or raw audit evidence.
 
 `list_project_resources` must use backend project resource records and should be preferred before shell probing when the user asks about uploaded project files under `.socrates/resources/`. Its model-visible input is limited to `kind` and `limit`, and its output must stay to filenames/metadata only.
 
@@ -280,7 +293,7 @@ Generated plotting/data scripts should save charts or artifacts to files and pri
 
 `repo_docs` owns the runtime `.socrates/repo_docs/*.md` doctrine files. They are structured markdown with stable section ids; prefer `read_index`, `read_section`, and `patch_section` for focused doctrine changes. `repo_docs` outputs include system runtime date/time metadata, and successful edits stamp frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`. Root maintainer documentation lives in `context-files/*.md`, not `.socrates/repo_docs/`, so do not confuse it with Socrates runtime-owned docs.
 
-Memory routing must stay centralized and surface-aware. The Memory Router is the small structured decision layer that says which curated memory surfaces Socrates should open and where any important new memory probably belongs. It must be able to route to all authority surfaces: `project_notes`, `project_memory`, `repo_docs`, `user_profile`, `identity`, and skill proposal flow when the evidence is procedural. Router output may include simple doc/section hints such as `repo_docs/CONTRACTS.md`, `repo_docs/CORE_IDEA.md`, `project_notes/active_context`, `project_memory/handoff`, `user_profile/global_always_apply_rules`, or `identity/operating_principles`, but it must not author exact patches. Socrates reads the hinted docs and performs exact `project_docs` or `repo_docs` edits itself; user profile, identity, and skill candidates go through `memory_note` and the Global Memory Agent / Skill Writer ownership path.
+Memory routing must stay centralized and surface-aware. `MemoryRouterAgent` is a provider-neutral structured tool agent with exactly one `memory_search` tool and at most three tool calls in each pre-turn or post-evidence phase. Automatic first-pass hybrid retrieval over the current prompt is backend-owned and does not consume that cap. Final Zod output uses exact `readTargets` and document-backed `memoryWrites` with surface, filename, valid section id, and reason; only `skill_candidate` may omit a file/section. The router points but does not patch. Socrates owns project/repo changes; the Global Memory Agent owns profile/identity curation.
 
 Always-apply rules must be centralized and capped, not scattered through arbitrary docs. The accepted shape is a small global lane in `user_profile.md` named `Global Always-Apply Rules` plus a project lane in workspace project memory named `Project Always-Apply Rules`, each capped at 10 human-readable rules. These rules are attached to every applicable turn through a stable cache prelude before conversation/user text. They are for hard behavior constraints only; larger explanations and repo doctrine remain in `.socrates/repo_docs/*`. Dynamic router-selected docs, tool results, and memory/action ledgers must stay after the current user message so stable prompt prefixes remain reusable across providers.
 
@@ -391,7 +404,7 @@ Only one active turn may run per conversation in V1. This is a per-conversation 
 
 When a turn is cancelled after assistant text has streamed, Socrates must persist that visible text as a cancelled partial assistant message and carry it forward in later semantic chat history. Historical tool calls, tool results, and reasoning from the cancelled turn remain audit/UI data only and are not blindly loaded into later prompts.
 
-Context compression must preserve this same visible-history rule. Recent real user/assistant messages stay real role-typed messages in model context. Hidden summaries, compaction notes, and context briefs must not be stored as fake user or assistant messages. Raw rows stay in SQLite, and compacted context must point back to exact source handles whenever precision matters.
+Context compression must preserve this same visible-history rule. Recent real user/assistant messages stay real role-typed messages in model context. Hidden summaries, compaction notes, and context briefs must not be stored as fake user or assistant messages. Raw rows stay in SQLite, and compacted context must point back to turn ids or targeted audit queries whenever precision matters.
 
 Compression should run at provider-call boundaries. Do not compress by mutating in-flight tool execution state. Persist the tool output first, then compact or summarize only the model-facing context before the next model call.
 

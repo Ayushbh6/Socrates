@@ -38,6 +38,19 @@ events = complete timeline
 other tables = indexed structured views of important entities
 ```
 
+## Semantic Retrieval Storage Contract
+
+SQLite remains authoritative for projects, conversations, messages, tool/audit records, memory-document section metadata, embedding configuration, retrieval jobs/state, and lifecycle-bound retrieval diagnostics. LanceDB under `${SOCRATES_HOME}/retrieval/lance` stores only reproducible lexical/vector/hybrid search rows.
+
+The shared retrieval corpus has two canonical parent kinds:
+
+- `trace_turn`: one visible Q&A turn, with user and assistant child chunks kept role-separated.
+- `memory_section`: one canonical section from user profile, identity, project memory, project notes, or repo docs.
+
+Chunk rows use deterministic content hashes and embedding fingerprints. A changed turn/section replaces only its own rows; conversation/project/file/section deletion removes corresponding rows. Embedding configuration changes rebuild the affected project embedding space. Global profile/identity embeddings may be reused across projects only when provider, model, dimensions, and content hash match.
+
+Retrieval diagnostics persist query, mode, scope/filters, embedding fingerprint, latency, warnings/errors, internal source refs, raw scores, normalized scores, and recency-band decisions. They are backend diagnostics and are deleted with their owning conversation/project; none of those internal fields belong in model-visible results.
+
 ## Entity Hierarchy
 
 ```text
@@ -348,10 +361,10 @@ Conversation deletion should remove rows tied to the conversation, including:
 - `voice_inputs`
 - `audio_outputs`
 - `errors`
-- `trace_documents`
-- `trace_documents_fts`
-- `trace_embeddings`
-- `trace_index_jobs`
+- LanceDB rows whose `conversation_id` matches the deleted conversation
+- `retrieval_runs` owned by the conversation
+- `retrieval_result_diagnostics` owned by those runs
+- legacy `trace_documents`, `trace_documents_fts`, `trace_embeddings`, and `trace_index_jobs` rows when present
 
 Conversation deletion must not delete the owning project, project instructions, project resources, or workspace files outside conversation-scoped artifacts. Chat attachment image files under `.socrates/attachments` remain on disk even when their conversation row is hard-deleted.
 
@@ -1325,14 +1338,34 @@ model_stream_chunks
 model_usage
 ```
 
-The retrieval-only index layer creates trace documents from those source tables:
+Migration history still contains the retired pre-Lance retrieval tables:
 
 ```text
 trace_documents
 trace_index_jobs
 ```
 
-`trace_documents` are not model-visible tools. They are the canonical searchable corpus behind `trace_retrieve`. They contain bounded, provenance-linked chunks such as:
+These tables are compatibility/migration residue and are not the application retrieval path. The active corpus is rebuilt from authoritative messages and structured memory files into LanceDB. Normal semantic content is limited to canonical visible Q&A parents and eligible memory sections; tool/shell/file/patch/error rows stay in raw SQLite for audit.
+
+The active SQLite coordination layer is:
+
+```text
+retrieval_index_states
+retrieval_jobs
+retrieval_runs
+retrieval_result_diagnostics
+project_embedding_configs
+memory_doc_indexes
+memory_doc_sections
+```
+
+- `retrieval_index_states` owns one active LanceDB table name, embedding fingerprint, readiness flags, counts, and rebuild lifecycle per project.
+- `retrieval_jobs` records rebuild attempts and restart-safe failures.
+- `retrieval_runs` records corpus, query, mode, filters, fingerprint, latency, warnings, and errors.
+- `retrieval_result_diagnostics` records internal ranked chunks, scores, parent selection, and recency-band decisions. It is never model-visible.
+- LanceDB project tables store reproducible chunk rows, vectors, and FTS state. Global profile/identity embedding-cache tables are keyed by exact embedding fingerprint and content hash.
+
+The retired trace-document design previously included:
 
 - User message chunks.
 - Assistant response chunks.
@@ -1345,34 +1378,32 @@ trace_index_jobs
 - Context compaction summaries.
 - Verbatim anchors for exact high-value user-provided source text.
 
-Retrieval should be project-scoped by backend code and support natural-language search, current conversation scope, recent conversation scope, project scope, conversation title/hint resolution, tool name, path, command, date/time, error code, source kind, and exact follow-up handles. Search and inspect must join or validate against visible non-deleted conversations (`active` and `archived`) so orphan trace documents from hard-deleted conversations cannot be returned.
+Main Socrates retrieval is project-scoped by backend code and supports lexical, semantic, combined, and audit search plus Q&A-parent inspection. The Global Memory Agent and Skill Writer call the same retrieval service across selected project tables; global aggregation re-normalizes raw scores across projects before shared parent deduplication and recency-band ranking. Search and inspect validate visible non-deleted conversations (`active` and `archived`) so deleted/orphan sources cannot be returned.
 
 Search and inspect outputs include conversation provenance derived from raw `conversations` rows: id, title when available, status, updated time, and whether the source is from the current conversation. This prevents the agent from guessing whether retrieved evidence came from the current chat or an earlier project conversation.
 
-Structured ordinal recall is supported through `trace_retrieve` search fields, not a new table. `turnNo` counts user/Q&A turns in the resolved conversation, and optional `role` selects the user message, assistant message, or both messages for the turn. `turnNo` is an exact ordinal selector, not a search hint. If a model sends both text `query` and `turnNo`, the backend runs the query search, ignores `turnNo`, keeps `role` as a query sub-filter, and returns a warning explaining that exact turn lookup requires `turnNo` without `query`. Query search may also narrow by `role`, `entryType`, `hasAttachment`, `createdAfter`, `createdBefore`, `conversationTitle`, and `conversationId`. The ordinal lookup reads exact raw `turns` and `messages` rows as the source of truth and returns slim message-first rows with `entryType`, `messageId`, `messageNo`, `conversationTitle`, and `conversationId`; it does not backfill trace documents or infer ordinals from query text.
+Structured ordinal recall is supported through queryless lexical search with `turnNo` plus a conversation title, or through inspect with `conversationTitle` plus `turnNo`; it does not require a new table. The lookup reads authoritative `turns` and `messages` rows and returns the same clean Q&A-parent schema as normal retrieval. Legacy entry-type, attachment, message-id, handle, and conversation-bundle selectors are not part of the active model contract.
 
 Current retrieval combines:
 
-- Structured prefiltering by project, conversation, source kind, path, command, tool, and time.
-- Lexical search over titles, summaries, content, paths, commands, and errors.
-- Reranking that boosts exact path/title/command matches, verbatim anchors, recent relevant evidence, and high-importance source docs.
-- Exact `turnNo` lookup before FTS when the model supplies a structured ordinal selector.
-- Optional semantic search over active project embeddings when configured.
-- Provenance marking distinguishes original turns, original attachment-bearing messages, secondary mentions, summaries, and audit evidence so the agent cannot treat later recaps or retained attachment files as deleted-conversation proof.
+- Project-bound LanceDB FTS for lexical mode.
+- Exhaustive LanceDB vector search for semantic mode.
+- Reciprocal-rank fusion for combined mode.
+- Parent deduplication to at most eight Q&A turns or memory sections.
+- Relevance-first ranking with recency reorder only inside a 0.05 normalized-score band.
+- Raw SQLite inspect/audit for exact tool, shell, file, patch, and error evidence.
 
-Large trace outputs must be bounded by `charLimit`, return truncation metadata, and offer enough ids for a follow-up retrieval.
+Trace search returns at most eight clean parents. Inspect accepts a numbered prior result, a turn id, or human project/conversation/turn coordinates and returns one full Q&A parent. Raw tool/shell/file/patch/error lookup belongs to audit mode. Deleted sources return a recoverable not-found result.
 
-Inspecting a `conversationId` returns a bounded ordered conversation bundle paged with `startTurnNo` and `turnLimit`. Inspecting a returned `messageId`, `turnId`, `toolCallId`, or `handle` returns exact bounded source content from trace documents when present, with raw-table fallback for exact visible sources. Inspecting ids from deleted conversations returns no result with a deleted/not-found warning.
+Conversation hard delete removes the conversation's active LanceDB parents plus owning retrieval runs/diagnostics. Project delete drops the project LanceDB table and all retrieval coordination rows. Legacy trace rows are also cleaned for compatibility. Chat attachment files under `.socrates/attachments` are intentionally retained on disk and are not proof of active conversation provenance by themselves.
 
-Conversation hard delete also deletes the conversation's `trace_documents`, `trace_documents_fts` rows, `trace_embeddings`, and `trace_index_jobs`. A cleanup migration removes older orphan trace/index rows that were created before this cascade existed. Chat attachment files under `.socrates/attachments` are intentionally retained on disk and are not proof of active conversation provenance by themselves.
+## Legacy Trace Index Tables
 
-## Trace Index Tables
-
-The implemented schema includes `trace_documents`, `trace_embeddings`, `project_embedding_configs`, and `trace_index_jobs`, plus an internal SQLite FTS table for lexical search.
+The following tables remain in migration history for old installations. New application retrieval must not read vectors, rank candidates, or schedule work through them. `project_embedding_configs` remains active configuration state; all derived searchable rows now live in LanceDB.
 
 ## `trace_documents`
 
-Stores bounded retrieval documents derived from raw Socrates history.
+Retired bounded retrieval documents derived from raw Socrates history.
 
 The source data remains in the original tables. `trace_documents` stores searchable text, summaries, metadata, and provenance so retrieval can be fast and scope-aware without dumping raw event logs into prompts.
 
@@ -1413,11 +1444,11 @@ SQLite FTS should be considered for lexical search over `title`, `summary`, `con
 
 ## `trace_embeddings`
 
-Stores semantic embeddings for `trace_documents`.
+Retired JSON-vector storage. Application retrieval no longer reads or writes these vectors or ranks them in process memory.
 
-Embeddings are generated asynchronously. Chat turns do not wait for embedding jobs to finish. Lexical/exact retrieval works immediately after trace documents are created.
+In the historical implementation, embeddings were generated asynchronously and chat turns did not wait for them.
 
-The implemented embedding phase supports both a hosted default and a fully local option:
+The provider choices remain supported by the new LanceDB path:
 
 ```text
 hosted default: OpenAI text-embedding-3-small
@@ -1426,7 +1457,7 @@ offline local: Ollama embeddinggemma:latest by default, with Hugging Face / sent
 
 Embedding provider choice is independent from the chat model provider. A user may chat with OpenRouter while embedding with OpenAI, or chat with OpenAI while embedding locally through Ollama. Retrieval must only compare vectors generated by the same provider id, model id, and dimensions.
 
-V1 stores only the active embedding index for a project. When a project is configured with a new provider/model/dimensions tuple, backend cleanup deletes `trace_embeddings` rows for inactive tuples and rows whose `content_hash` no longer matches the current `trace_documents` row. This avoids mixed OpenAI/Ollama vector sets and prevents stale content vectors from lingering on disk.
+The retired path deleted inactive JSON-vector rows. The active implementation instead builds one replacement LanceDB table for the new embedding fingerprint and retires the prior table after readiness.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -1489,7 +1520,7 @@ CREATE INDEX project_embedding_configs_provider_model_idx ON project_embedding_c
 
 ## `trace_index_jobs`
 
-Tracks asynchronous indexing and embedding work.
+Retired pre-Lance indexing jobs. Active rebuilds use `retrieval_jobs`.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -1506,7 +1537,7 @@ Tracks asynchronous indexing and embedding work.
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Job parameters, changed source ids, output counts. |
 
-Trace indexing flow:
+Historical pre-Lance indexing flow (do not reintroduce):
 
 ```text
 turn completes or is cancelled
@@ -1541,7 +1572,7 @@ final_answer_2
 
 Current-turn tool results may be passed back to the model until the final answer is reached. After the turn completes, detailed tool traces stay in SQLite and become available through `trace_retrieve`.
 
-Compression should run at provider-call boundaries. A tool can stream and persist large output, but that output only becomes model context when Socrates sends the next provider request. Before each provider request, the context assembler should decide whether to keep evidence exact, compact it, or replace it with a summary plus inspect handles.
+Compression should run at provider-call boundaries. A tool can stream and persist large output, but that output only becomes model context when Socrates sends the next provider request. Before each provider request, the context assembler should decide whether to keep evidence exact, compact it, or replace it with a summary plus turn ids and targeted audit hints.
 
 When context pressure grows, the context builder should keep:
 
@@ -1550,15 +1581,15 @@ When context pressure grows, the context builder should keep:
 - Active task state when task tracking exists.
 - Important decisions.
 - Recent failures and blockers.
-- Relevant conversation summaries and turn summaries from `trace_documents`.
-- Verbatim anchor references for exact source material that must not be summarized away.
+- Relevant hidden conversation/turn summaries from compaction snapshots.
+- Turn-id or audit-query references for source material that must remain recoverable.
 - Retrieved trace evidence only when explicitly relevant.
 
 The V1 compression trigger is 170,000 estimated model-visible input tokens. Before each provider call, Socrates recounts the assembled request; if it is at or above that trigger, it compacts older model-facing context while preserving raw history in the database.
 
-Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to exact source handles so `trace_retrieve` can inspect the raw message, turn, tool result, or verbatim anchor when precision matters.
+Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to a turn id for Q&A inspection or a focused audit query for raw runtime evidence when precision matters.
 
-Recent visible messages must remain represented as real role-typed chat messages in the provider request. Hidden compacted context is an additional runtime context layer for older same-conversation material, bulky current-turn tool evidence, important decisions, and trace handles. Previous conversations should not be automatically inserted into every prompt; they should enter through `trace_retrieve` or explicit project-level summaries when relevant.
+Recent visible messages must remain represented as real role-typed chat messages in the provider request. Hidden compacted context is an additional runtime context layer for older same-conversation material, bulky current-turn tool evidence, important decisions, and retrieval anchors. Previous conversations should not be automatically inserted into every prompt; they should enter through `trace_retrieve` or explicit project-level summaries when relevant.
 
 Compressor model selection:
 
@@ -1664,12 +1695,13 @@ session_state
 schema_migrations
 ```
 
-Implemented trace retrieval schema additions:
+Implemented retrieval schema additions:
 
 ```text
-trace_documents
-trace_index_jobs
-trace_documents_fts
-trace_embeddings
 project_embedding_configs
+retrieval_index_states
+retrieval_jobs
+retrieval_runs
+retrieval_result_diagnostics
+LanceDB project tables under ${SOCRATES_HOME}/retrieval/lance
 ```

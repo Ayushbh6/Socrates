@@ -1,17 +1,15 @@
 import {
   normalizedToolCallSchema,
-  postTurnMemoryRouteSchema,
-  preTurnMemoryRouteSchema,
   toolExecutionResultSchema,
-  type MemoryRouteDocHint,
-  type MemoryWriteCandidate,
+  type MemoryRouterPostTurnResult,
+  type MemoryRouterPreTurnResult,
+  type MemorySearchInput,
+  type MemorySearchOutput,
   type ModelToolDefinition,
   type NormalizedToolCall,
-  type PostTurnMemoryRoute,
-  type PreTurnMemoryRoute,
   type ProviderId,
+  type RoutedMemoryWrite,
   type RuntimeConfig,
-  type ThinkingEffort,
   type ToolExecutionResult,
   type ToolName,
   type WorkerModelSettings,
@@ -26,15 +24,10 @@ import {
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
 } from "../context/contextCompression"
-import {
-  buildPostTurnMemoryRouterUserContent,
-  buildPreTurnMemoryRouterUserContent,
-  POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
-  PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
-} from "../prompts/memoryRoutingPrompt"
 import { buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
+import { MemoryRouterAgent } from "./MemoryRouterAgent"
 
 export type SocratesAgentTurnInput = {
   projectId?: string
@@ -63,6 +56,7 @@ export type SocratesAgentTurnInput = {
   }) => string
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
   recordMemoryRouterUsage?: (input: MemoryRouterUsageRecord) => void | Promise<void>
+  automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
   contextCompression?: ContextCompressionRuntime
   maxToolCallsPerTurn?: number
   maxConfirmedToolErrorsPerTurn?: number
@@ -98,10 +92,14 @@ export type SocratesAgentContextPrecomputeInput = {
 export type SocratesAgentEvent = ModelEvent | ToolLifecycleEvent | ContextCompactionLifecycleEvent
 
 export class SocratesAgent {
+  private readonly memoryRouterAgent: MemoryRouterAgent
+
   constructor(
     private readonly provider: ModelProvider,
     private readonly toolRegistry: ToolRegistry = createDefaultToolRegistry(),
-  ) {}
+  ) {
+    this.memoryRouterAgent = new MemoryRouterAgent(provider)
+  }
 
   async precomputeContext(input: SocratesAgentContextPrecomputeInput): Promise<ContextCompactionLifecycleEvent[]> {
     const system = buildSocratesSystemPrompt(input.promptContext)
@@ -131,6 +129,7 @@ export class SocratesAgent {
     const actionLedger = new TurnActionLedger()
     const docsLedger = new TurnDocsLedger()
     const memorySaveLedger = new TurnMemorySaveLedger()
+    const routedMemoryWriteLedger = new TurnRoutedMemoryWriteLedger()
     let totalToolCountNudgeSent = false
     let baselineInputTokens: number | undefined
     let currentTurnTokenSoftNudgeSent = false
@@ -142,7 +141,7 @@ export class SocratesAgent {
     let postEvidenceMemoryLoopSent = false
     let accumulatedAnswerText = ""
 
-    const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger)
+    const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger, routedMemoryWriteLedger)
     preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
     for (const event of preTurnMemoryLoop.events) {
       yield event
@@ -427,7 +426,7 @@ export class SocratesAgent {
         messages.push({ role: "developer", content: memoryLedgerMessage })
       }
       if (!postEvidenceMemoryLoopSent && shouldRunPostEvidenceMemoryLoop(execution.results)) {
-        const postTurnMemoryLoop = await this.runPostEvidenceMemoryLoop(input, messages, docsLedger, {
+        const postTurnMemoryLoop = await this.runPostEvidenceMemoryLoop(input, messages, docsLedger, routedMemoryWriteLedger, {
           ...(preTurnMemoryLoopSummary ? { preflightSummary: preTurnMemoryLoopSummary } : {}),
           toolSummary: summarizeToolResultsForMemoryLoop(execution.results),
           assistantDraft: accumulatedAnswerText,
@@ -560,27 +559,14 @@ export class SocratesAgent {
     input: SocratesAgentTurnInput,
     messages: ModelMessage[],
     docsLedger: TurnDocsLedger,
+    routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
   ): Promise<MemoryLoopRunResult> {
-    if (!canRunMemoryLoop(this.provider, input)) {
+    if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
     }
 
     try {
-      const generated = await this.generateStructuredMemoryRoute<PreTurnMemoryRoute>(input, "pre_turn", {
-        system: PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
-        userContent: buildPreTurnMemoryRouterUserContent({
-          ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
-          ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
-          userMessage: latestUserText(messages),
-          recentMessages: messages,
-        }),
-        schema: preTurnMemoryRouteSchema,
-      })
-      const parsed = preTurnMemoryRouteSchema.safeParse(generated)
-      if (!parsed.success) {
-        return memoryLoopWarning("pre_turn", "Structured pre-turn route did not match the memory-route schema.")
-      }
-      const route = parsed.data
+      const route = await this.memoryRouterAgent.routePreTurn(memoryRouterBaseInput(input, messages))
       const events: ToolLifecycleEvent[] = []
       const records: MemoryLoopToolRecord[] = []
       const skipped: string[] = []
@@ -591,7 +577,7 @@ export class SocratesAgent {
         records.push(record)
       }
 
-      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, route.memoryWrites, "pre_turn")
+      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, routedMemoryWriteLedger, route.memoryWrites, "pre_turn")
       events.push(...saveResult.events)
       records.push(...saveResult.records)
       skipped.push(...saveResult.skipped)
@@ -618,32 +604,21 @@ export class SocratesAgent {
     input: SocratesAgentTurnInput,
     messages: ModelMessage[],
     docsLedger: TurnDocsLedger,
+    routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
     context: { preflightSummary?: string; toolSummary: string; assistantDraft: string },
   ): Promise<MemoryLoopRunResult> {
-    if (!canRunMemoryLoop(this.provider, input)) {
+    if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
     }
 
     try {
-      const generated = await this.generateStructuredMemoryRoute<PostTurnMemoryRoute>(input, "post_evidence", {
-        system: POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
-        userContent: buildPostTurnMemoryRouterUserContent({
-          ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
-          ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
-          userMessage: latestUserText(messages),
-          recentMessages: messages,
-          ...(context.preflightSummary ? { preflightSummary: context.preflightSummary } : {}),
-          toolSummary: context.toolSummary,
-          assistantDraft: context.assistantDraft,
-        }),
-        schema: postTurnMemoryRouteSchema,
+      const route = await this.memoryRouterAgent.routePostTurn({
+        ...memoryRouterBaseInput(input, messages),
+        ...(context.preflightSummary ? { preflightSummary: context.preflightSummary } : {}),
+        toolSummary: context.toolSummary,
+        assistantDraft: context.assistantDraft,
       })
-      const parsed = postTurnMemoryRouteSchema.safeParse(generated)
-      if (!parsed.success) {
-        return memoryLoopWarning("post_evidence", "Structured post-evidence route did not match the memory-route schema.")
-      }
-      const route = parsed.data
-      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, route.memoryWrites, "post_evidence")
+      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, routedMemoryWriteLedger, route.memoryWrites, "post_evidence")
       const summary = summarizeMemoryLoop("post_evidence", route, saveResult.records, saveResult.skipped)
       return {
         events: saveResult.events,
@@ -657,67 +632,21 @@ export class SocratesAgent {
     }
   }
 
-  private async generateStructuredMemoryRoute<TOutput>(
-    input: SocratesAgentTurnInput,
-    phase: MemoryLoopPhase,
-    request: { system: string; userContent: string; schema: unknown },
-  ): Promise<TOutput> {
-    const method = this.provider.generateStructured
-    if (!method) {
-      throw new SocratesError("memory_route_structured_generation_unavailable", "Memory routing requires provider.generateStructured().", {
-        recoverable: true,
-      })
-    }
-    const bound = method.bind(this.provider) as <T>(structuredRequest: {
-      providerId: ProviderId
-      modelId: string
-      sessionId?: string
-      cacheKey?: string
-      system: string
-      messages: ModelMessage[]
-      runtimeConfig: RuntimeConfig
-      schema: unknown
-      modelCallId?: string
-      abortSignal?: AbortSignal
-    }) => Promise<{ output: T; usage?: ModelUsage }>
-    const routerModel = memoryRouterModelSettingsFor(input)
-    const startedAt = nowIso()
-    const generated = await bound<TOutput>({
-      providerId: routerModel.providerId,
-      modelId: routerModel.modelId,
-      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-      ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:memory-route` } : {}),
-      system: request.system,
-      messages: [{ role: "user", content: request.userContent }],
-      runtimeConfig: memoryRouterRuntimeConfig(routerModel),
-      schema: request.schema,
-      modelCallId: createId("mcall"),
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    })
-    if (generated.usage && input.recordMemoryRouterUsage) {
-      await input.recordMemoryRouterUsage({
-        phase,
-        sourceId: `${input.turnId ?? "turn"}:memory_router:${phase}`,
-        providerId: routerModel.providerId,
-        modelId: routerModel.modelId,
-        usage: generated.usage,
-        startedAt,
-        completedAt: nowIso(),
-      })
-    }
-    return generated.output
-  }
-
   private async executeMemoryLoopSaves(
     input: SocratesAgentTurnInput,
     docsLedger: TurnDocsLedger,
-    candidates: MemoryWriteCandidate[],
+    routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
+    candidates: RoutedMemoryWrite[],
     phase: MemoryLoopPhase,
   ): Promise<MemoryLoopSaveResult> {
     const events: ToolLifecycleEvent[] = []
     const records: MemoryLoopToolRecord[] = []
     const skipped: string[] = []
     for (const candidate of candidates) {
+      if (!routedMemoryWriteLedger.claim(candidate)) {
+        skipped.push(`Equivalent ${memoryWriteTarget(candidate)} write was already attempted during this user turn.`)
+        continue
+      }
       const result = await this.executeMemoryLoopSave(input, docsLedger, candidate, phase)
       events.push(...result.events)
       records.push(...result.records)
@@ -729,21 +658,21 @@ export class SocratesAgent {
   private async executeMemoryLoopSave(
     input: SocratesAgentTurnInput,
     docsLedger: TurnDocsLedger,
-    candidate: MemoryWriteCandidate,
+    candidate: RoutedMemoryWrite,
     phase: MemoryLoopPhase,
   ): Promise<MemoryLoopSaveResult> {
     const saveText = cleanMemoryLoopText(candidate.text)
     if (!saveText) {
       return emptyMemoryLoopSaveResult()
     }
-    if (candidate.target === "project_notes") {
+    if (candidate.kind === "document" && candidate.surface === "project_notes") {
       return this.patchMemoryLoopSection(input, docsLedger, {
         toolName: "project_docs",
-        readInput: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
+        readInput: { operation: "read_section", area: "notes", sectionId: candidate.sectionId, charLimit: 20_000 },
         patchInput: (oldText, newText) => ({
           operation: "patch_section",
           area: "notes",
-          sectionId: "active_context",
+          sectionId: candidate.sectionId,
           oldText,
           newText,
         }),
@@ -751,8 +680,8 @@ export class SocratesAgent {
         phase,
       })
     }
-    if (candidate.target === "project_memory") {
-      const sectionId = projectMemorySectionIdForHint(candidate.docHint) ?? "durable_decisions"
+    if (candidate.kind === "document" && candidate.surface === "project_memory") {
+      const sectionId = candidate.sectionId
       return this.patchMemoryLoopSection(input, docsLedger, {
         toolName: "project_docs",
         readInput: { operation: "read_section", area: "memory", sectionId, charLimit: 20_000 },
@@ -768,15 +697,14 @@ export class SocratesAgent {
         ...(sectionId === "always_apply_rules" ? { maxBullets: 10 } : {}),
       })
     }
-    if (candidate.target === "repo_docs") {
-      const target = repoDocsWriteTargetForHint(candidate.docHint)
+    if (candidate.kind === "document" && candidate.surface === "repo_docs") {
       return this.patchMemoryLoopSection(input, docsLedger, {
         toolName: "repo_docs",
-        readInput: { operation: "read_section", path: target.path, sectionId: target.sectionId, charLimit: 20_000 },
+        readInput: { operation: "read_section", path: candidate.fileName, sectionId: candidate.sectionId, charLimit: 20_000 },
         patchInput: (oldText, newText) => ({
           operation: "patch_section",
-          path: target.path,
-          sectionId: target.sectionId,
+          path: candidate.fileName,
+          sectionId: candidate.sectionId,
           oldText,
           newText,
         }),
@@ -1227,8 +1155,9 @@ const insertStableCachePrelude = (messages: ModelMessage[], content: string): vo
   })
 }
 
-const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput): boolean =>
+const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput, toolRegistry: ToolRegistry): boolean =>
   typeof provider.generateStructured === "function" &&
+  Boolean(toolRegistry.get("memory_note")) &&
   Boolean(input.toolExecutors && input.workspacePath && input.requestApproval && input.projectId && input.conversationId && input.sessionId && input.turnId)
 
 const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRouterModelSettings =>
@@ -1240,23 +1169,30 @@ const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRout
     thinkingEffort: "none",
   }
 
-const memoryRouterRuntimeConfig = (settings: MemoryRouterModelSettings): RuntimeConfig => {
-  const config: RuntimeConfig = {
-    providerId: settings.providerId,
-    authMode: settings.authMode ?? "api_key",
-    modelId: settings.modelId,
-    thinkingEnabled: settings.thinkingEnabled,
-    approvalMode: "read_only_auto",
-    sandboxMode: "read_only",
+const memoryRouterBaseInput = (input: SocratesAgentTurnInput, messages: ModelMessage[]) => {
+  if (!input.projectId || !input.conversationId || !input.sessionId || !input.turnId || !input.workspacePath || !input.toolExecutors) {
+    throw new SocratesError("memory_router_context_unavailable", "Memory Router requires complete active-turn context.", { recoverable: true })
   }
-  const effort: ThinkingEffort | undefined = settings.thinkingEffort ?? (!settings.thinkingEnabled ? "none" : undefined)
-  if (effort) {
-    config.thinkingEffort = effort
+  return {
+    modelSettings: memoryRouterModelSettingsFor(input),
+    projectId: input.projectId,
+    conversationId: input.conversationId,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    workspacePath: input.workspacePath,
+    ...(input.promptContext?.projectName ? { projectName: input.promptContext.projectName } : {}),
+    ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
+    userMessage: latestUserText(messages),
+    recentMessages: messages,
+    toolExecutors: input.toolExecutors,
+    ...(input.automaticMemorySearch ? { automaticMemorySearch: input.automaticMemorySearch } : {}),
+    ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
+    ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+    ...(input.recordMemoryRouterUsage ? { recordUsage: input.recordMemoryRouterUsage } : {}),
   }
-  return config
 }
 
-const preTurnRecallRequests = (route: PreTurnMemoryRoute): Array<{ toolName: ToolName; input: unknown }> => {
+const preTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ toolName: ToolName; input: unknown }> => {
   const requests: Array<{ toolName: ToolName; input: unknown }> = []
   const seen = new Set<string>()
   const push = (request: { toolName: ToolName; input: unknown }) => {
@@ -1268,51 +1204,20 @@ const preTurnRecallRequests = (route: PreTurnMemoryRoute): Array<{ toolName: Too
   }
   push({ toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: "always_apply_rules", charLimit: 10_000 } })
   push({ toolName: "user_profile", input: { operation: "read_section", sectionId: "global_always_apply_rules", charLimit: 10_000 } })
-  if (route.projectNotes) {
-    push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 } })
-  }
-  if (route.projectMemory) {
-    push({ toolName: "project_docs", input: { operation: "read", area: "memory", charLimit: 20_000 } })
-  }
-  if (route.repoDocs) {
-    push({ toolName: "repo_docs", input: { operation: "read_index", charLimit: 20_000 } })
-  }
-  if (route.userProfile) {
-    push({ toolName: "user_profile", input: { operation: "read_index", charLimit: 20_000 } })
-  }
-  if (route.identity) {
-    push({ toolName: "soul", input: { operation: "read_index", charLimit: 20_000 } })
-  }
-  for (const hint of route.docHints) {
-    const request = recallRequestForDocHint(hint)
-    if (request) {
-      push(request)
+  for (const target of route.readTargets) {
+    if (target.surface === "project_notes") {
+      push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: target.sectionId, charLimit: 20_000 } })
+    } else if (target.surface === "project_memory") {
+      push({ toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: target.sectionId, charLimit: 20_000 } })
+    } else if (target.surface === "repo_docs") {
+      push({ toolName: "repo_docs", input: { operation: "read_section", path: target.fileName, sectionId: target.sectionId, charLimit: 20_000 } })
+    } else if (target.surface === "user_profile") {
+      push({ toolName: "user_profile", input: { operation: "read_section", sectionId: target.sectionId, charLimit: 20_000 } })
+    } else if (target.surface === "identity") {
+      push({ toolName: "soul", input: { operation: "read_section", sectionId: target.sectionId, charLimit: 20_000 } })
     }
   }
   return requests
-}
-
-const recallRequestForDocHint = (hint: MemoryRouteDocHint): { toolName: ToolName; input: unknown } | undefined => {
-  const projectMemorySectionId = projectMemorySectionIdForHint(hint)
-  if (hint === "project_notes/active_context") {
-    return { toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 } }
-  }
-  if (projectMemorySectionId) {
-    return { toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: projectMemorySectionId, charLimit: 20_000 } }
-  }
-  if (hint.startsWith("repo_docs/")) {
-    return { toolName: "repo_docs", input: { operation: "read_index", path: hint.slice("repo_docs/".length), charLimit: 20_000 } }
-  }
-  if (hint.startsWith("user_profile/")) {
-    return { toolName: "user_profile", input: { operation: "read_section", sectionId: hint.slice("user_profile/".length), charLimit: 20_000 } }
-  }
-  if (hint.startsWith("identity/")) {
-    return { toolName: "soul", input: { operation: "read_section", sectionId: hint.slice("identity/".length), charLimit: 20_000 } }
-  }
-  if (hint === "skills/candidate") {
-    return { toolName: "skills", input: { operation: "list", scope: "project" } }
-  }
-  return undefined
 }
 
 const shouldRunPostEvidenceMemoryLoop = (results: ToolExecutionResult[]): boolean =>
@@ -1365,24 +1270,9 @@ const isAlwaysApplyPlaceholderText = (text: string): boolean => {
   return normalized.startsWith("add at most 10") && (normalized.includes("hard") || normalized.includes("rule"))
 }
 
-const projectMemorySectionIdForHint = (hint: MemoryRouteDocHint | null | undefined): string | undefined => {
-  if (!hint?.startsWith("project_memory/")) {
-    return undefined
-  }
-  return hint.slice("project_memory/".length)
-}
-
-const repoDocsWriteTargetForHint = (hint: MemoryRouteDocHint | null | undefined): { path: string; sectionId: string } => {
-  if (hint === "repo_docs/CORE_IDEA.md") return { path: "CORE_IDEA.md", sectionId: "current_direction" }
-  if (hint === "repo_docs/REPO_NAVIGATION.md") return { path: "REPO_NAVIGATION.md", sectionId: "navigation_rules" }
-  if (hint === "repo_docs/CONTRACTS.md") return { path: "CONTRACTS.md", sectionId: "tool_contracts" }
-  return { path: "REPO_RULES.md", sectionId: "hard_rules" }
-}
-
-const memoryNoteTextForCandidate = (candidate: MemoryWriteCandidate, saveText: string): string => {
-  const hint = candidate.docHint ? ` (${candidate.docHint})` : ""
-  const target = candidate.target === "global_memory" ? "user_profile" : candidate.target
-  return `Memory router candidate for ${target}${hint}: ${saveText}`
+const memoryNoteTextForCandidate = (candidate: RoutedMemoryWrite, saveText: string): string => {
+  const target = candidate.kind === "skill_candidate" ? "skill_candidate" : `${candidate.surface}/${candidate.fileName}/${candidate.sectionId}`
+  return `Memory router candidate for ${target}: ${saveText}`
 }
 
 const summarizeToolResultsForMemoryLoop = (results: ToolExecutionResult[]): string => {
@@ -1400,13 +1290,13 @@ const summarizeToolResultsForMemoryLoop = (results: ToolExecutionResult[]): stri
 
 const summarizeMemoryLoop = (
   phase: MemoryLoopPhase,
-  route: PreTurnMemoryRoute | PostTurnMemoryRoute,
+  route: MemoryRouterPreTurnResult | MemoryRouterPostTurnResult,
   records: MemoryLoopToolRecord[],
   skipped: string[],
 ): string => {
   const routeSummary =
-    "projectNotes" in route
-      ? `load projectNotes=${route.projectNotes}, projectMemory=${route.projectMemory}, repoDocs=${route.repoDocs}, userProfile=${route.userProfile}, identity=${route.identity}; docHints=${route.docHints.length}; memoryWrites=${route.memoryWrites.length}`
+    "readTargets" in route
+      ? `readTargets=${route.readTargets.length}; memoryWrites=${route.memoryWrites.length}`
       : `memoryWrites=${route.memoryWrites.length}`
   const actions = records.map((record) => `${record.toolName}:${record.result.ok ? "ok" : record.result.error?.code ?? "failed"}`)
   return [`${phase}: ${routeSummary}`, `reason: ${route.reason}`, actions.length ? `actions: ${actions.join(", ")}` : "actions: none", ...skipped].join("\n")
@@ -1414,7 +1304,7 @@ const summarizeMemoryLoop = (
 
 const renderMemoryLoopDeveloperMessage = (
   phase: MemoryLoopPhase,
-  route: PreTurnMemoryRoute | PostTurnMemoryRoute,
+  route: MemoryRouterPreTurnResult | MemoryRouterPostTurnResult,
   records: MemoryLoopToolRecord[],
   skipped: string[],
   options: { stableCachePreludeApplied?: boolean } = {},
@@ -1960,6 +1850,53 @@ class TurnMemorySaveLedger {
   }
 }
 
+class TurnRoutedMemoryWriteLedger {
+  private readonly entries: Array<{ target: string; normalizedText: string; tokens: Set<string> }> = []
+
+  claim(candidate: RoutedMemoryWrite): boolean {
+    const target = memoryWriteTarget(candidate)
+    const normalizedText = normalizeRoutedMemoryWriteText(candidate.text)
+    const tokens = new Set(normalizedText.split(" ").filter(Boolean))
+    const duplicate = this.entries.some(
+      (entry) =>
+        entry.target === target &&
+        (entry.normalizedText === normalizedText || routedMemoryWriteSimilarity(entry.tokens, tokens) >= 0.72),
+    )
+    if (duplicate) {
+      return false
+    }
+    this.entries.push({ target, normalizedText, tokens })
+    return true
+  }
+}
+
+const memoryWriteTarget = (candidate: RoutedMemoryWrite): string =>
+  candidate.kind === "skill_candidate"
+    ? "skill_candidate"
+    : `${candidate.surface}/${candidate.fileName.toLowerCase()}/${candidate.sectionId.toLowerCase()}`
+
+const normalizeRoutedMemoryWriteText = (text: string): string =>
+  text
+    .normalize("NFKC")
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/[\p{P}\p{S}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+
+const routedMemoryWriteSimilarity = (left: Set<string>, right: Set<string>): number => {
+  if (left.size === 0 || right.size === 0) {
+    return 0
+  }
+  let intersection = 0
+  for (const token of left) {
+    if (right.has(token)) {
+      intersection += 1
+    }
+  }
+  return (2 * intersection) / (left.size + right.size)
+}
+
 const toolOperation = (toolCall: NormalizedToolCall | undefined): string | undefined => {
   const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
   return typeof input?.operation === "string" ? input.operation : undefined
@@ -2125,7 +2062,7 @@ const sanitizeModelVisibleValue = (value: unknown, options: { preserveTraceRetri
 }
 
 const isRuntimeOwnedModelKey = (key: string, options: { preserveTraceRetrieveIds?: boolean } = {}): boolean => {
-  if (options.preserveTraceRetrieveIds && (key === "conversationId" || key === "messageId" || key === "toolId")) {
+  if (options.preserveTraceRetrieveIds && (key === "conversationId" || key === "turnId" || key === "messageId" || key === "toolId")) {
     return false
   }
   return (

@@ -295,7 +295,7 @@ type CompleteOnboardingResponse = {
 }
 ```
 
-The onboarding page should require at least one chat-capable provider auth source before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints plus either CLI local-file persistence, Tauri keychain commands, or the ChatGPT Codex OAuth flow.
+The onboarding page should require at least one chat-capable provider auth source before continuing. The name-only HTTP onboarding contract remains unchanged; provider credentials are handled by the provider credential endpoints plus CLI/browser local-file persistence or the ChatGPT Codex OAuth flow.
 
 ### Provider Credential Endpoints
 
@@ -339,7 +339,7 @@ type SetProviderCredentialSessionRequest = {
 }
 ```
 
-`POST /api/provider-credentials/session` stores a secret in the running backend process so newly saved credentials are immediately usable. With `source = "local_file"`, the backend also writes the key to `~/.Socrates/.env`; with `source = "keychain"`, Tauri owns OS keychain persistence. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback.
+`POST /api/provider-credentials/session` stores a secret in the running backend process so newly saved credentials are immediately usable. With `source = "local_file"`, the backend also writes the key to `~/.Socrates/.env`. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback. Keychain source remains compatibility-only while the desktop shell is dormant.
 
 `POST /api/provider-credentials/openai/chatgpt/oauth/start` starts the experimental ChatGPT Codex subscription auth flow and returns an authorization URL, state, redirect URI, and expiry. The local callback server completes the PKCE code exchange and stores token metadata under local credential storage. `DELETE /api/provider-credentials/openai/chatgpt` removes the stored ChatGPT Codex token metadata. OpenAI API keys and ChatGPT Codex tokens are separate auth modes.
 
@@ -662,7 +662,7 @@ Rules:
 - Online checks verify server `OPENAI_API_KEY` and user-triggered workspace `.env*` key presence. The backend returns only filenames and booleans, never key values.
 - Offline checks verify Ollama server reachability and selected model availability through the local Ollama HTTP API.
 - The backend must not install Ollama or pull local models from discovery/check/setup flows. If setup is missing, return explicit install guidance and commands such as `ollama pull embeddinggemma:latest`.
-- Configuring a project with a new embedding provider/model/dimensions tuple must keep only the active index: mark older configs inactive, prune stale `trace_embeddings` rows for inactive tuples or old content hashes, and enqueue indexing for the active tuple. In-flight jobs for a deactivated config must not write late vectors.
+- Configuring a project with a new embedding provider/model/dimensions tuple marks older configs inactive and builds a clean LanceDB replacement table. The previous table is retired only after the replacement is ready; in-flight work for a deactivated fingerprint must not publish late rows.
 
 ### `GET /api/embeddings/ollama/models`
 
@@ -1023,7 +1023,7 @@ Backend behavior:
 ```text
 load conversation within project
 delete conversation-scoped rows in one transaction
-delete trace_documents, trace_documents_fts, trace_embeddings, and trace_index_jobs for the conversation
+delete active LanceDB Q&A parents and conversation-owned retrieval runs/diagnostics; clean legacy trace rows for compatibility
 delete conversations row
 emit conversation.deleted event before the final conversation row delete or as a project-scoped event
 ```
@@ -2124,172 +2124,111 @@ Rules:
 
 ### `trace_retrieve`
 
-Retrieves older Socrates conversation memory and, only in explicit audit mode, execution evidence. Normal search is a conversation-memory tool over visible non-deleted project history, not a raw database id lookup and not a recursive search over prior tool output. Hard-deleted conversations must not appear in search or exact inspect results.
+Accepted replacement contract: main Socrates retrieval is active-project scoped and defaults to the full project. Search modes are `lexical`, `semantic`, `combined`, and `audit`; `exact` and main-agent cross-project selectors are retired. Lexical queries accept at most 128 characters and search all supplied terms. Semantic/combined queries accept at most 1,000 characters. Normal rows return only `resultNumber`, `content`, `turnId`, `conversationTitle`, `turnNumber`, `matchedRole`, `status`, and `occurredAt`; inspect resolves the numbered result to its full parent. Scores and storage/vector/message/chunk ids remain backend-only.
 
-The model-visible interface should stay high-level and flat. Socrates should normally start with `operation="search"`, choose a retrieval `mode`, and provide the smallest useful input. Returned `resultNumber`, `conversationId`, `messageId`, and audit `toolId` may be used for follow-up inspection after search; they must not be required from the model before retrieval.
+Memory retrieval rows return only `resultNumber`, `content`, `surface`, `fileName`, `sectionId`, `sectionHeading`, and `scope`. `MemoryRouterAgent` receives automatic hybrid candidates, may call `memory_search` three times, and must finish with Zod-validated exact `readTargets`/`memoryWrites`.
 
-`trace_retrieve` supports two conceptual operations:
-
-```text
-search
-  broad retrieval over indexed history
-  returns compact numbered message-first evidence rows
-  uses either query text search or turnNo ordinal lookup; mixed query plus turnNo runs query and warns
-
-inspect
-  exact bounded retrieval by returned resultNumber or natural filters
-  returns bounded raw source text or exact tool evidence when precision matters
-```
-
-Input:
+Normal retrieval searches visible active/archived conversation turns in the active project. The main-agent contract never accepts a project selector; the WebSocket executor supplies the active `projectId`. The Global Memory Agent has a separate explicit cross-project contract.
 
 ```ts
 type TraceRetrieveToolInput =
   | {
       operation?: "search"
-      mode?: "exact" | "semantic" | "combined" | "audit"
-      query: string
+      mode?: "lexical"
+      query?: string // max 128 characters
       scope?: "current_conversation" | "recent_conversations" | "project"
       conversationTitle?: string
-      conversationId?: string
-      conversationLimit?: number
       role?: "user" | "assistant" | "any"
-      entryType?: "user_query" | "assistant_response" | "continuation_summary" | "tool_call" | "shell" | "file" | "patch" | "error"
-      hasAttachment?: boolean
-      include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
-      toolNames?: Array<"read" | "search" | "edit" | "bash" | "trace_retrieve" | "list_project_resources">
-      paths?: string[]
-      command?: string
-      messageId?: string
-      toolId?: string
+      createdAfter?: string
+      createdBefore?: string
       limit?: number
-      includeRaw?: boolean
-      charLimit?: number
+      turnNo?: number
     }
   | {
       operation?: "search"
-      mode?: "exact"
-      turnNo: number
-      role?: "user" | "assistant" | "any"
+      mode: "semantic" | "combined"
+      query: string // max 1,000 characters
       scope?: "current_conversation" | "recent_conversations" | "project"
       conversationTitle?: string
-      conversationId?: string
-      conversationLimit?: number
+      role?: "user" | "assistant" | "any"
+      createdAfter?: string
+      createdBefore?: string
       limit?: number
-      includeRaw?: boolean
-      charLimit?: number
+    }
+  | {
+      operation?: "search"
+      mode: "audit"
+      query: string // max 1,000 characters
+      scope?: "current_conversation" | "recent_conversations" | "project"
+      include?: Array<"tool_calls" | "shell" | "files" | "errors">
+      toolNames?: string[]
+      paths?: string[]
+      command?: string
+      conversationTitle?: string
+      limit?: number
     }
   | {
       operation: "inspect"
       resultNumber?: number
-      query?: string
-      turnNo?: number
-      role?: "user" | "assistant" | "any"
-      paths?: string[]
-      command?: string
-      handle?: string
-      conversationId?: string
       turnId?: string
-      messageId?: string
-      toolId?: string
-      toolCallId?: string
-      startTurnNo?: number
-      turnLimit?: number
-      include?: Array<"messages" | "summaries" | "tool_calls" | "shell" | "files" | "errors" | "decisions">
-      includeRaw?: boolean
+      conversationTitle?: string
+      turnNo?: number
       charLimit?: number
     }
-}
-```
 
-The model-facing schema exposes `resultNumber`, natural inspect filters, and exact ids returned by prior retrieval results. The primary workflow remains search first, then inspect by `resultNumber`; id-first lookup is for precise follow-up, not guessing.
-
-Output:
-
-```ts
 type TraceRetrieveToolOutput = {
-  results: Array<
-    | {
-        resultNumber: number
-        text: string
-        entryType:
-          | "user_query"
-          | "assistant_response"
-          | "continuation_summary"
-          | "tool_call"
-          | "shell"
-          | "file"
-          | "patch"
-          | "error"
-        conversationTitle: string
-        conversationId: string
-        messageId?: string
-        toolId?: string
-        messageNo?: number
-        provenanceKind?: "original_turn" | "attachment_origin" | "secondary_mention" | "continuation_summary" | "audit_event"
-        pairedUserMessageNo?: number
-        pairedUserPreview?: string
-      }
-    | {
-        resultNumber?: number
-        content: string
-        entryType:
-          | "user_query"
-          | "assistant_response"
-          | "continuation_summary"
-          | "tool_call"
-          | "shell"
-          | "file"
-          | "patch"
-          | "error"
-        conversationId?: string
-        conversationTitle?: string
-        messageId?: string
-        toolId?: string
-        messageNo?: number
-        provenanceKind?: "original_turn" | "attachment_origin" | "secondary_mention" | "continuation_summary" | "audit_event"
-        pairedUserMessageNo?: number
-        pairedUserPreview?: string
-        truncation?: TruncationMetadata
-      }
-  >
+  results: Array<{
+    resultNumber: number
+    content: string
+    turnId: string
+    conversationTitle: string
+    turnNumber: number
+    matchedRole: "user" | "assistant"
+    status: "complete" | "cancelled_partial" | "failed_user_only" | "cancelled_user_only"
+    occurredAt: string
+  }>
   totalMatches: number
-  truncation: TruncationMetadata
+  warnings?: string[]
+}
+
+type GlobalTraceRetrieveToolInput =
+  | (Omit<Exclude<TraceRetrieveToolInput, { operation: "inspect" }>, "scope"> & {
+      scope?: "project" | "all_projects"
+      projectId?: string | string[]
+      projectTitle?: string | string[]
+      conversationId?: string
+    })
+  | {
+      operation: "inspect"
+      resultNumber?: number
+      turnId?: string
+      projectId?: string
+      projectTitle?: string
+      conversationTitle?: string
+      turnNo?: number
+      charLimit?: number
+    }
+
+type GlobalTraceRetrieveToolOutput = {
+  results: Array<TraceRetrieveToolOutput["results"][number] & { projectTitle: string }>
+  totalMatches: number
   warnings?: string[]
 }
 ```
 
-The current output shape uses `results`. The older `traces` array shape has been removed.
-
-Normal search results are deliberately bounded but investigation-friendly. `text` is a broad verbatim excerpt centered on the best match, with line context around matched wording and a wider minimum window for sparse word queries. When a preserved verbatim anchor matches a message, the displayed excerpt should come from the raw source message so the model sees surrounding context, not only the anchor line. `entryType` tells Socrates whether the evidence is a `user_query`, `assistant_response`, `continuation_summary`, or audit/runtime row. `provenanceKind` separates original turns and original attachment-bearing messages from secondary mentions, summaries, and audit evidence. `messageId` and `messageNo` are present only when the row is an exact user or assistant message. Assistant rows may include `pairedUserMessageNo` and `pairedUserPreview` so Socrates can report `user_query x / assistant_response y` without guessing. `conversationTitle` is the preferred human-readable location; `conversationId` is returned for disambiguating same-title conversations.
-
 Rules:
 
-- Retrieval is project-scoped by backend code, not by model-provided ids, and is limited to `active` plus `archived` conversations. Existing orphan trace docs from deleted conversations must be cleaned up and excluded by query joins even before cleanup runs.
-- The default search mode is `exact`: lexical matching for precise words, names, paths, dates, ids, commands, and quoted text. `mode = "semantic"` uses vector search for fuzzy conceptual recall. `mode = "combined"` merges and dedupes exact plus semantic evidence when either route may help. `mode = "audit"` is required for tool calls, shell output, file operations, patches, and errors.
-- Normal `exact`, `semantic`, and `combined` searches return message-first evidence rows by default, scoped to the last 10 visible conversations and top 5 results unless the model asks for a wider bounded `conversationLimit` or `limit`. Query search can be narrowed with `role`, `entryType`, `hasAttachment`, `createdAfter`, `createdBefore`, `conversationTitle`, and `conversationId` when those filters are known.
-- Normal search excludes previous `trace_retrieve` outputs, read/bash/tool output, shell logs, file operations, patches, and errors. Runtime evidence remains inspectable through `mode = "audit"`.
-- Image provenance may be claimed only from original message attachments or native message image parts. A later file read, shell listing, or assistant recap is secondary evidence and must not be treated as the origin conversation.
-- The embedding implementation supports OpenAI hosted embeddings and offline Ollama embeddings. Embedding configuration is backend-owned; the frontend must not call embedding providers or know provider SDK details.
-- If `messageId` is present, it returns that exact full message with metadata and takes precedence over search fields. If `toolId` is present with `mode = "audit"`, it returns that exact full tool call with metadata and takes precedence over search fields.
-- `conversationTitle` narrows exact/audit search to matching visible conversation titles. Matching is normalized for case, punctuation, diacritics, and repeated/extra spaces.
-- `mode = "exact"` should prefer literal message text, file paths, command strings, titles, and verbatim anchors.
-- `mode = "semantic"` ranks by vector similarity when the project has a ready active embedding config, and otherwise returns a warning while preserving lexical/exact retrieval behavior.
-- `conversationLimit` bounds project-wide or recent-conversation searches; default should be modest.
-- For ordinal recall, Socrates must pass structured `turnNo` and optional `role`, without `query`. `turnNo` counts user/Q&A turns from the start of the resolved conversation; `turnNo: 2, role: "user"` means the user message in the second turn, and omitted role returns both user and assistant messages for that turn.
-- The backend must not infer ordinal intent from query text. If the query says "second user message" but `turnNo` is omitted, the call is a normal lexical/exact search.
-- If the model sends `query` combined with `turnNo`, the backend must run query search, ignore `turnNo`, keep `role` as a query sub-filter, and include a warning telling Socrates to select either query search or one exact turn. `turnNo` remains an ordinal selector, not a text-search hint.
-- `turnNo` with `recent_conversations` or `project` may return multiple visible conversation matches, and it takes precedence over `conversationLimit`. If the turn is out of range, return an empty result with a warning rather than falling back.
-- If search results contain only `secondary_mention`, `continuation_summary`, or `audit_event` provenance, the tool should warn that no visible original source was found. If an image/attachment query lacks `attachment_origin`, Socrates must not invent a deleted conversation title from later recaps or retained files.
-- Search results must include `resultNumber`, `entryType`, `text`, `conversationTitle`, `conversationId`, and exact ids when available so the model can perform follow-up inspection without guessing. Do not expose trace handles, storage source tables, source ids, turn ids, scores, metadata, or inspect argument blobs in normal search output.
-- If the same normalized `trace_retrieve` input is repeated within one agent turn, the agent may return the cached result with a warning instead of re-executing the same retrieval. Socrates should inspect a returned `resultNumber` or change query/filter/scope after that warning.
-- Inspect results must be exact and bounded. They may return raw user messages, assistant messages, shell output, tool arguments/results, patches, errors, or summary documents, depending on `include`.
-- `conversationId` inspect returns a bounded ordered conversation bundle. Use `startTurnNo` and `turnLimit` to page by turns.
-- Large outputs must be paged or truncated with `TruncationMetadata`.
-- Search results are compact snippets only. Exact raw content requires `operation: "inspect"` with a returned `resultNumber` or natural inspect filters.
-- Raw messages, tool calls, model calls, events, shell output, patches, and errors remain the source of truth. Trace index rows are retrieval documents over that source data, not replacements for it.
-- Conversation summaries and verbatim anchors must not be inserted as fake user messages.
-- Verbatim anchors preserve exact high-value source chunks such as rubrics, user-provided rules, "use this throughout" instructions, canonical examples, or source-of-truth pasted text.
+- `lexical` uses LanceDB FTS, searches the entire supplied query, and rejects queries above 128 characters. There is no term-count slicing or silent truncation.
+- `semantic` runs vector search across the complete selected project corpus; it is not bounded to recent candidates.
+- `combined` fuses lexical and vector ranks with reciprocal-rank fusion.
+- `audit` searches authoritative raw runtime evidence without embeddings.
+- User and assistant text are chunked independently under one canonical Q&A parent. Normal semantic indexing excludes summaries, tool calls, shell output, patches, files, errors, and provider reasoning.
+- Ranking returns at most eight distinct parents. Relevance wins; recency may reorder only within a 0.05 normalized-score band.
+- Normal results expose only the clean fields above. Scores, chunk ids, message ids, vector ids, and storage references remain internal diagnostics.
+- Lexical mode may omit `query` only for structured `turnNo` lookup. `inspect` resolves `resultNumber`, `turnId`, or `conversationTitle` plus `turnNo` to the full canonical parent. Audit mode remains the exact path for raw execution evidence.
+- Deleted conversations and projects remove their LanceDB rows and SQLite diagnostics. No project can retrieve another project's turns through the main contract.
+- The Global Memory Agent and Skill Writer use the same modes, limits, LanceDB search, raw audit/inspect paths, parent deduplication, and clean fields. Their only model-facing difference is cross-project selection plus `projectTitle`; `exact`, handles, and old broad trace-document selectors are rejected.
+- Global search re-normalizes raw relevance across selected project tables before applying the shared 0.05 recency band. Per-project normalized winners are never merged as artificial ties.
 
 ### `tool_docs`
 
@@ -2464,50 +2403,42 @@ PATCH /api/worker-model-settings/:workerId
 
 The built-in Memory Router default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off. When ChatGPT Codex is connected and the saved router setting is the built-in default or unavailable, the effective runtime default is ChatGPT Codex `gpt-5.4-mini` with low reasoning. Its token/cost usage should be counted in normal turn/conversation totals through `ai_usage_events`; the frontend does not need a separate router-cost display.
 
-Memory Router contract target:
+Memory Router contract:
 
 ```ts
-type MemoryRouteDocHint =
-  | "project_notes/active_context"
-  | "project_memory/always_apply_rules"
-  | "project_memory/current_state"
-  | "project_memory/durable_decisions"
-  | "project_memory/handoff"
-  | "repo_docs/CORE_IDEA.md"
-  | "repo_docs/REPO_NAVIGATION.md"
-  | "repo_docs/REPO_RULES.md"
-  | "repo_docs/CONTRACTS.md"
-  | "user_profile/global_always_apply_rules"
-  | "user_profile/collaboration_style"
-  | "identity/operating_principles"
-  | "skills/candidate"
-
-type MemoryWriteTarget =
-  | "project_notes"
-  | "project_memory"
-  | "repo_docs"
-  | "global_memory"
-  | "identity"
-  | "skill_candidate"
-
-type MemoryWriteCandidate = {
-  target: MemoryWriteTarget
-  text: string
+type MemoryReadTarget = {
+  surface: "project_notes" | "project_memory" | "repo_docs" | "user_profile" | "identity"
+  fileName: MemoryRetrievalFile
+  sectionId: MemoryRetrievalSection
   reason: string
-  docHint?: MemoryRouteDocHint
+}
+
+type RoutedMemoryWrite =
+  | { kind: "document"; surface: MemorySurface; fileName: MemoryRetrievalFile; sectionId: MemoryRetrievalSection; text: string; reason: string }
+  | { kind: "skill_candidate"; text: string; reason: string }
+
+type MemoryRouterPreTurnResult = {
+  readTargets: MemoryReadTarget[] // max 8
+  memoryWrites: RoutedMemoryWrite[] // max 3
+  reason: string
+}
+
+type MemoryRouterPostTurnResult = {
+  memoryWrites: RoutedMemoryWrite[] // max 3
+  reason: string
 }
 ```
 
-The exact schema may evolve, but the behavior must stay simple and human-facing:
+The behavior stays simple and human-facing:
 
-- Pre-turn routing decides which curated docs Socrates should open and may include likely file/section hints.
+- Pre-turn routing returns exact valid file/section read targets, not boolean surfaces or loose doc hints.
 - Pre-turn routing always reads the global and project always-apply sections and renders their successful outputs into a provider-agnostic stable cache prelude before conversation/user text. Router-selected docs, save summaries, and same-turn ledgers remain in the later dynamic context tail.
-- Pre-turn routing may return a small capped list of write candidates so mixed prompts can split correctly, for example one user-profile candidate plus one repo-doc contract candidate.
+- Before router reasoning, the complete user prompt is shared-chunked and automatically hybrid-prefetched against eligible memory sections. Up to 12 prompt segments are merged into at most eight section parents; this does not consume the router's tool budget.
+- `MemoryRouterAgent` has exactly one `memory_search` tool, at most three calls per pre-turn/post-evidence phase, then tools are disabled and the final response is strict Zod structured output.
 - The router never authors `oldText`, `newText`, patches, hashes, or hidden backend ids.
-- Socrates opens the hinted docs, checks what is already represented, and uses `project_docs` or `repo_docs` for project/repo writes.
-- `global_memory`, `identity`, and `skill_candidate` candidates go through `memory_note`; the Memory Agent remains the owner of profile/identity edits and skill proposal classification, with the Skill Writer Agent owning approved final skill writes.
+- Socrates opens exact targets, checks what is already represented, and uses `project_docs` or `repo_docs` for project/repo writes. User-profile/identity/skill candidates go through `memory_note` to their owning agents.
 - Post-evidence routing saves only durable outcomes, open loops, corrections, or repo doctrine changes created by completed work.
-- Raw `trace_retrieve` is provenance/debug fallback, not the normal recall corpus.
+- Equivalent same-turn pre/post writes are suppressed by the routed-memory ledger; paraphrased same-turn memory notes are also deduplicated by the backend.
 
 ### `project_docs`
 
@@ -2584,7 +2515,7 @@ Read-only access to `~/.Socrates/user_profile.md`, which stores durable cross-pr
 
 `user_profile` should include a `Global Always-Apply Rules` section capped at 10 rules. This is the global lane of the centralized always-apply rules list and should contain only hard cross-project user preferences or constraints that Socrates must attach every turn through the stable cache prelude. It is not for ordinary profile facts, temporary user-life context, or project-specific workflow instructions.
 
-Primary `identity.md` and `user_profile.md` migrations are special-cased: unlike ordinary structured markdown migrations, they must not preserve a generic `legacy_content` section. Startup normalization routes legacy headings into the canonical primary sections, removes old scaffolding placeholders, strips duplicate inner markdown headings, and compacts obvious duplicate migrated bullets before Memory Center exposes the files. `user_profile.evidence_index` is a compact source-anchor section for important profile claims, using dates, project/conversation titles or ids, turn/message/event ids or trace handles when available, the supported claim, and the profile section using that claim.
+Primary `identity.md` and `user_profile.md` migrations are special-cased: unlike ordinary structured markdown migrations, they must not preserve a generic `legacy_content` section. Startup normalization routes legacy headings into the canonical primary sections, removes old scaffolding placeholders, strips duplicate inner markdown headings, and compacts obvious duplicate migrated bullets before Memory Center exposes the files. `user_profile.evidence_index` is a compact source-anchor section for important profile claims, using dates, project/conversation titles or ids, turn/message/event ids when available, the supported claim, and the profile section using that claim.
 
 ### `repo_docs`
 
@@ -2744,11 +2675,11 @@ new user query
 current-turn tool calls only
 ```
 
-When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with `trace_retrieve` inspect handles. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. The compressor model comes from the resolved Context Compactor worker setting; built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
+When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with turn ids and targeted lexical/semantic/audit retrieval hints. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. The compressor model comes from the resolved Context Compactor worker setting; built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
 
 If older conversation memory is needed, the agent should call normal `trace_retrieve` explicitly. If older runtime evidence is needed, it should retry with `mode = "audit"`. Full raw history remains persisted in SQLite for audit and replay.
 
-`trace_retrieve` is also the exact-source fallback for compacted context. Context summaries may point to handles such as a prior message, turn, tool call, or verbatim anchor. When exact wording matters, the agent should inspect the handle before answering.
+`trace_retrieve` is also the source fallback for compacted context. Context summaries should point to a turn id for full Q&A inspection or provide a focused audit query for tool/shell/file/patch/error evidence.
 
 Provider-exposed thinking or reasoning text is stored for UI/replay when exposed, but it is not carried forward as semantic context between later user queries. Reasoning token counts belong in usage and context accounting, not prompt history.
 

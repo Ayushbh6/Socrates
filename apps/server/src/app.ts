@@ -34,6 +34,7 @@ export const buildServer = async (options: BuildServerOptions) => {
     ...(options.memoryProvider ? { memoryProvider: options.memoryProvider } : {}),
   })
   store.cancelStaleActiveTurns()
+  await store.initializeRetrieval()
   store.startGlobalMemoryScheduler()
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
   const titleProvider =

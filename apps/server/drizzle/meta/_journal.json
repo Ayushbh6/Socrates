@@ -148,6 +148,13 @@
       "when": 1783500000000,
       "tag": "0020_memory_note_dedupe_outcome",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1783678381637,
+      "tag": "0021_talented_princess_powerful",
+      "breakpoints": true
     }
   ]
 }

@@ -13,6 +13,17 @@ export {
   type CompressorAgentRunInput,
 } from "./agent/CompressorAgent"
 export {
+  StructuredToolAgentRunner,
+  type StructuredToolAgentRunInput,
+  type StructuredToolAgentRunResult,
+} from "./agent/StructuredToolAgentRunner"
+export {
+  MemoryRouterAgent,
+  type MemoryRouterAgentModelSettings,
+  type MemoryRouterPostTurnInput,
+  type MemoryRouterPreTurnInput,
+} from "./agent/MemoryRouterAgent"
+export {
   DEFAULT_COMPRESSOR_MODEL,
   DEFAULT_COMPRESSOR_FALLBACK_MODEL,
   DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
@@ -46,5 +57,6 @@ export {
   renderMemoryCompactionMarkdown,
   type MemoryAgentCompressorUserPromptInput,
 } from "./prompts/memoryAgentCompressorPrompt"
-export { createDefaultToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, ToolRegistry } from "./tools/registry"
+export { createDefaultToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"
+export * from "./retrieval"

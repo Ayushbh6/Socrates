@@ -34,7 +34,6 @@ import {
   traceIndexJobs,
 } from "../../db/schema"
 import { StoreBase } from "./shared"
-import type { TraceQueryEmbeddingResult } from "./embeddingStore"
 
 const DEFAULT_LIMIT = 5
 const DEFAULT_CHAR_LIMIT = 20_000
@@ -80,10 +79,6 @@ type ConversationProvenance = {
   status?: "active" | "archived" | "deleted"
   updatedAt?: string
   isCurrentConversation: boolean
-}
-
-type TraceEmbeddingQueryProvider = {
-  embedTraceQuery(projectId: string, query: string): Promise<TraceQueryEmbeddingResult>
 }
 
 type MessageOrdinalRow = {
@@ -228,10 +223,7 @@ const GLOBAL_TRACE_SEARCH_CONVERSATION_ID = "__global__"
 export class TraceStore extends StoreBase {
   private readonly recentSearchRefs = new Map<string, TraceRetrieveInspectArgs[]>()
 
-  constructor(
-    context: ConstructorParameters<typeof StoreBase>[0],
-    private readonly embeddingQueryProvider?: TraceEmbeddingQueryProvider,
-  ) {
+  constructor(context: ConstructorParameters<typeof StoreBase>[0]) {
     super(context)
   }
 
@@ -331,6 +323,7 @@ export class TraceStore extends StoreBase {
       throw new SocratesError("trace_retrieve_invalid_input", parsed.error.message, { recoverable: true })
     }
     const normalizedInput = parsed.data
+    assertValidLexicalTraceQuery(normalizedInput)
     if (normalizedInput.operation === "inspect") {
       return this.inspect(projectId, currentConversationId, normalizedInput)
     }
@@ -343,6 +336,7 @@ export class TraceStore extends StoreBase {
       throw new SocratesError("trace_retrieve_invalid_input", parsed.error.message, { recoverable: true })
     }
     const normalizedInput = parsed.data
+    assertValidLexicalTraceQuery(normalizedInput)
     const directScope = this.resolveGlobalDirectScope(normalizedInput)
     if (directScope) {
       const output = await this.retrieve(directScope.projectId, directScope.conversationId, normalizedInput)
@@ -2336,121 +2330,8 @@ export class TraceStore extends StoreBase {
       warnings: string[]
     },
   ): Promise<SearchRow[]> {
-    if (!this.embeddingQueryProvider) {
-      input.warnings.push(`Semantic trace retrieval is not available in this server process; using lexical/exact retrieval instead.`)
-      return []
-    }
-
-    const queryEmbedding = await this.embeddingQueryProvider.embedTraceQuery(projectId, input.query)
-    if (!queryEmbedding.ready || !queryEmbedding.embedding || !queryEmbedding.providerId || !queryEmbedding.modelId || !queryEmbedding.dimensions) {
-      input.warnings.push(...(queryEmbedding.warnings ?? [`Semantic trace retrieval is not ready; using lexical/exact retrieval instead.`]))
-      return []
-    }
-
-    const candidates = this.searchTraceDocumentCandidates(projectId, input, Math.max(input.limit * 25, 200))
-    if (candidates.length === 0) {
-      return []
-    }
-    const ids = candidates.map((candidate) => candidate.id)
-    const embeddingRows = this.handle.sqlite
-      .prepare(
-        `SELECT trace_document_id AS traceDocumentId, content_hash AS contentHash, vector_json AS vectorJson
-         FROM trace_embeddings
-         WHERE provider_id = ?
-           AND model_id = ?
-           AND dimensions = ?
-           AND status = 'completed'
-           AND trace_document_id IN (${ids.map(() => "?").join(", ")})`,
-      )
-      .all(queryEmbedding.providerId, queryEmbedding.modelId, queryEmbedding.dimensions, ...ids) as Array<{
-      traceDocumentId: string
-      contentHash: string
-      vectorJson: string
-    }>
-    const embeddingByDocument = new Map(embeddingRows.map((row) => [row.traceDocumentId, row]))
-    return candidates
-      .flatMap((candidate) => {
-        const embeddingRow = embeddingByDocument.get(candidate.id)
-        if (!embeddingRow || embeddingRow.contentHash !== candidate.contentHash) {
-          return []
-        }
-        const vector = parseNumberVector(embeddingRow.vectorJson)
-        if (!vector || vector.length !== queryEmbedding.embedding?.length) {
-          return []
-        }
-        return [{ ...candidate, score: 1 - cosineSimilarity(queryEmbedding.embedding, vector) }]
-      })
-      .sort((left, right) => scoreTraceRow(left, { query: input.query, command: input.command, paths: input.paths }) - scoreTraceRow(right, { query: input.query, command: input.command, paths: input.paths }))
-      .slice(0, input.limit)
-  }
-
-  private searchTraceDocumentCandidates(
-    projectId: string,
-    input: {
-      conversationIds: string[]
-      sourceKinds?: TraceRetrieveSourceKind[]
-      include: TraceRetrieveInclude[] | undefined
-      toolNames: string[] | undefined
-      paths: string[] | undefined
-      command: string | undefined
-      role: TraceRetrieveRole | undefined
-      entryType: TraceRetrieveEntryType | undefined
-      hasAttachment: boolean | undefined
-      createdAfter: string | undefined
-      createdBefore: string | undefined
-    },
-    limit: number,
-  ): SearchRow[] {
-    if (input.conversationIds.length === 0) {
-      return []
-    }
-    const params: unknown[] = [projectId]
-    const where = ["td.project_id = ?"]
-    if (input.conversationIds.length > 0) {
-      where.push(`td.conversation_id IN (${input.conversationIds.map(() => "?").join(", ")})`)
-      params.push(...input.conversationIds)
-    }
-    const sourceKinds = input.sourceKinds ?? sourceKindsForInclude(input.include)
-    if (sourceKinds.length > 0) {
-      where.push(`td.source_kind IN (${sourceKinds.map(() => "?").join(", ")})`)
-      params.push(...sourceKinds)
-    }
-    appendMessageFacetFilters(where, params, input)
-    if (input.createdAfter) {
-      where.push("td.created_at >= ?")
-      params.push(input.createdAfter)
-    }
-    if (input.createdBefore) {
-      where.push("td.created_at <= ?")
-      params.push(input.createdBefore)
-    }
-    if (input.toolNames && input.toolNames.length > 0) {
-      where.push(`td.metadata_json LIKE ?`)
-      params.push(`%"toolName"%`)
-      where.push(`(${input.toolNames.map(() => "td.metadata_json LIKE ?").join(" OR ")})`)
-      params.push(...input.toolNames.map((toolName) => `%"${toolName}"%`))
-    }
-    if (input.paths && input.paths.length > 0) {
-      where.push(`(${input.paths.map(() => "td.metadata_json LIKE ? OR td.content LIKE ? OR td.title LIKE ?").join(" OR ")})`)
-      for (const path of input.paths) {
-        params.push(`%${path}%`, `%${path}%`, `%${path}%`)
-      }
-    }
-    if (input.command) {
-      where.push("(td.metadata_json LIKE ? OR td.content LIKE ? OR td.title LIKE ?)")
-      params.push(`%${input.command}%`, `%${input.command}%`, `%${input.command}%`)
-    }
-    params.push(limit)
-    return this.handle.sqlite
-      .prepare(
-        `SELECT ${traceDocumentSelect}, NULL AS score
-         FROM trace_documents td
-         ${visibleTraceConversationJoin}
-         WHERE ${where.join(" AND ")}
-         ORDER BY td.preserve_verbatim DESC, td.created_at DESC
-         LIMIT ?`,
-      )
-      .all(...params) as SearchRow[]
+    input.warnings.push("Legacy trace-document semantic search is retired; use the shared LanceDB retrieval service.")
+    return []
   }
 
   private resolveInspectDocuments(
@@ -2862,15 +2743,21 @@ const metadataText = (metadataJson: string | undefined): string => {
 }
 
 const makeFtsQuery = (query: string): string => {
-  const terms = query
-    .toLowerCase()
-    .match(/[a-z0-9_./:-]+/g)
-    ?.filter((term) => term.length > 1)
-    .slice(0, 8)
-  if (!terms || terms.length === 0) {
+  const phrase = query.trim()
+  if (!phrase) {
     return ""
   }
-  return terms.map((term) => `"${term.replaceAll('"', '""')}"`).join(" OR ")
+  return `"${phrase.replaceAll('"', '""')}"`
+}
+
+const assertValidLexicalTraceQuery = (input: TraceRetrieveToolInput): void => {
+  if (input.operation === "inspect" || (input.mode ?? "exact") !== "exact" || !input.query) return
+  if (input.query.length > 128) {
+    throw new SocratesError("trace_lexical_query_too_long", "Lexical trace queries are limited to 128 characters. Retry with a concise literal phrase.", {
+      recoverable: true,
+      details: { queryLength: input.query.length, maxLength: 128 },
+    })
+  }
 }
 
 const makeSnippet = (content: string, query: string | undefined): string => {
@@ -3266,32 +3153,6 @@ const mergeSearchRows = (rows: SearchRow[], limit: number): SearchRow[] => {
       return right.createdAt.localeCompare(left.createdAt)
     })
     .slice(0, limit)
-}
-
-const parseNumberVector = (value: string): number[] | undefined => {
-  try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed) && parsed.every((item) => typeof item === "number") ? parsed : undefined
-  } catch {
-    return undefined
-  }
-}
-
-const cosineSimilarity = (left: number[], right: number[]): number => {
-  let dot = 0
-  let leftNorm = 0
-  let rightNorm = 0
-  for (let index = 0; index < left.length; index += 1) {
-    const a = left[index] ?? 0
-    const b = right[index] ?? 0
-    dot += a * b
-    leftNorm += a * a
-    rightNorm += b * b
-  }
-  if (leftNorm === 0 || rightNorm === 0) {
-    return 0
-  }
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm))
 }
 
 const countBy = (values: string[]): Record<string, number> =>

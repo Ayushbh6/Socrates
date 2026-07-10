@@ -137,8 +137,8 @@ import {
   memoryNoteToolOutputSchema,
   memoryNotesToolInputSchema,
   memoryNotesToolOutputSchema,
-  postTurnMemoryRouteSchema,
-  preTurnMemoryRouteSchema,
+  memoryRouterPreTurnResultSchema,
+  memorySearchOutputSchema,
   mcpRegistryToolInputSchema,
   mcpRegistryToolModelInputSchema,
   mcpRegistryToolOutputSchema,
@@ -171,6 +171,10 @@ import {
   traceRetrieveToolInputSchema,
   traceRetrieveToolModelInputSchema,
   traceRetrieveToolOutputSchema,
+  traceRetrieveGlobalToolInputSchema,
+  traceRetrieveGlobalToolOutputSchema,
+  traceRetrieveMainToolInputSchema,
+  traceRetrieveMainToolOutputSchema,
   triggerMemoryAgentRunResponseSchema,
   listWorkerModelSettingsResponseSchema,
   workerModelSettingsParamsSchema,
@@ -257,6 +261,17 @@ const embeddingStatus = {
     status: "running",
     createdAt: timestamp,
     startedAt: timestamp,
+  },
+  retrieval: {
+    status: "rebuilding",
+    lexicalReady: true,
+    vectorReady: false,
+    qaParents: 6,
+    qaChunks: 8,
+    memoryParents: 2,
+    memoryChunks: 2,
+    rebuildStartedAt: timestamp,
+    updatedAt: timestamp,
   },
   updatedAt: timestamp,
 }
@@ -1339,80 +1354,6 @@ describe("context compaction contracts", () => {
   })
 })
 
-describe("memory route contracts", () => {
-  it("validates simple structured memory routes", () => {
-    expect(
-      preTurnMemoryRouteSchema.safeParse({
-        projectNotes: true,
-        projectMemory: false,
-        repoDocs: true,
-        userProfile: false,
-        identity: false,
-        docHints: ["project_notes/active_context", "repo_docs/REPO_RULES.md"],
-        memoryWrites: [
-          {
-            target: "project_notes",
-            text: "Remember the local root MEMORY.md is separate from Socrates runtime memory.",
-            reason: "The user gave project-local guidance before asking for repo work.",
-            docHint: "project_notes/active_context",
-          },
-          {
-            target: "global_memory",
-            text: "The user wants slow-mode requests discussed before implementation across projects.",
-            reason: "The user gave a stable cross-project collaboration rule.",
-            docHint: "user_profile/global_always_apply_rules",
-          },
-        ],
-        reason: "The user gave project-local guidance before asking for repo work.",
-      }).success,
-    ).toBe(true)
-    expect(
-      preTurnMemoryRouteSchema.safeParse({
-        projectNotes: false,
-        projectMemory: false,
-        repoDocs: false,
-        userProfile: false,
-        identity: false,
-        docHints: [],
-        memoryWrites: [
-          {
-            target: "global_memory",
-            text: "",
-            reason: "Empty text is not a valid write candidate.",
-          },
-        ],
-        reason: "No durable item.",
-      }).success,
-    ).toBe(false)
-    expect(
-      postTurnMemoryRouteSchema.safeParse({
-        memoryWrites: [
-          {
-            target: "project_memory",
-            text: "Verified the memory loop uses structured output.",
-            reason: "The turn produced a durable implementation fact.",
-            docHint: "project_memory/durable_decisions",
-          },
-        ],
-        reason: "The turn produced a durable implementation fact.",
-      }).success,
-    ).toBe(true)
-    expect(
-      postTurnMemoryRouteSchema.safeParse({
-        memoryWrites: [
-          {
-            target: "global_memory",
-            text: "This target hint is invalid.",
-            reason: "Schema should reject unsupported hints.",
-            docHint: "user_profile/made_up_section",
-          },
-        ],
-        reason: "A non-none route must include a concise saved text.",
-      }).success,
-    ).toBe(false)
-  })
-})
-
 describe("tool contracts", () => {
   it("parses the V1 model-visible tool inputs", () => {
     expect(readToolInputSchema.safeParse({ path: "README.md", charLimit: 20_000, tokenLimit: 6_000 }).success).toBe(true)
@@ -1593,6 +1534,29 @@ describe("tool contracts", () => {
     ).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", conversationId: "conv_1", startTurnNo: 2 }).success).toBe(true)
     expect(traceRetrieveToolModelInputSchema.safeParse({ operation: "inspect", startTurnNo: 2 }).success).toBe(false)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "slow mode", mode: "lexical", scope: "all_projects" }).success).toBe(true)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "how does slow mode work", mode: "semantic", projectTitle: ["Socrates", "AI DPA"] }).success).toBe(true)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "slow mode", mode: "combined", projectId: "project_1", conversationId: "conv_1" }).success).toBe(true)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "npm test", mode: "audit", include: ["shell", "errors"] }).success).toBe(true)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ operation: "inspect", resultNumber: 1 }).success).toBe(true)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ operation: "inspect", projectTitle: "Socrates", conversationTitle: "Memory", turnNo: 2 }).success).toBe(true)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "x".repeat(129), mode: "lexical" }).success).toBe(false)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "slow mode", mode: "exact" }).success).toBe(false)
+    expect(traceRetrieveGlobalToolInputSchema.safeParse({ query: "slow mode", handle: "tdoc_1" }).success).toBe(false)
+    expect(traceRetrieveGlobalToolOutputSchema.safeParse({
+      results: [{
+        resultNumber: 1,
+        content: "User:\nUse slow mode.",
+        turnId: "turn_1",
+        projectTitle: "Socrates",
+        conversationTitle: "Memory",
+        turnNumber: 2,
+        matchedRole: "user",
+        status: "complete",
+        occurredAt: timestamp,
+      }],
+      totalMatches: 1,
+    }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "list", n: 15 }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "list", id: "playwright" }).success).toBe(false)
     expect(mcpRegistryToolInputSchema.safeParse({ operation: "list", id: "playwright" }).success).toBe(true)
@@ -1796,6 +1760,28 @@ describe("tool contracts", () => {
     expect(currentTimeToolOutputSchema.safeParse({ currentDate: "2026-06-19", currentDateTime: timestamp, timeZone: "Europe/Vienna", source: "system" }).success).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "user_profile", editMode: "replace", sectionId: "stable_preferences", oldText: "old", newText: "new" }).success).toBe(true)
+    expect(
+      editFilesToolInputSchema.safeParse({
+        target: "user_profile",
+        editMode: "move",
+        sourceSectionId: "collaboration_style",
+        destinationSectionId: "global_always_apply_rules",
+        sourceText: "- Hard rule in the wrong section.",
+        destinationText: "- Hard rule in its canonical section.",
+        rationale: "Explicit cross-project evidence makes the classification clear.",
+      }).success,
+    ).toBe(true)
+    expect(
+      editFilesToolInputSchema.safeParse({
+        target: "user_profile",
+        editMode: "move",
+        sourceSectionId: "collaboration_style",
+        destinationSectionId: "collaboration_style",
+        sourceText: "- Same section.",
+        destinationText: "- Same section.",
+        rationale: "Invalid same-section move.",
+      }).success,
+    ).toBe(false)
     expect(editFilesToolInputSchema.safeParse({ target: "operating_principles", editMode: "replace", oldText: "old", newText: "new" }).success).toBe(false)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read" }).success).toBe(true)
     expect(repoDocsToolInputSchema.safeParse({ operation: "read", path: "REPO_RULES.md" }).success).toBe(true)
@@ -1928,6 +1914,40 @@ describe("tool contracts", () => {
         toolName: "read",
         ok: false,
         error: { code: "tool_failed", message: "Tool failed" },
+      }).success,
+    ).toBe(true)
+  })
+
+  it("validates the clean project trace and exact memory-routing contracts", () => {
+    expect(traceRetrieveMainToolInputSchema.safeParse({ mode: "lexical", query: "slow mode" }).success).toBe(true)
+    expect(traceRetrieveMainToolInputSchema.safeParse({ mode: "lexical", query: "x".repeat(129) }).success).toBe(false)
+    expect(traceRetrieveMainToolInputSchema.safeParse({ mode: "semantic", query: "what we know about slow mode" }).success).toBe(true)
+    expect(traceRetrieveMainToolInputSchema.safeParse({ mode: "semantic", query: "x".repeat(1_001) }).success).toBe(false)
+    expect(traceRetrieveMainToolInputSchema.safeParse({ mode: "lexical", query: "slow mode", projectId: "proj_1" }).success).toBe(false)
+    expect(
+      traceRetrieveMainToolOutputSchema.safeParse({
+        results: [{ resultNumber: 1, content: "Use slow mode.", turnId: "turn_1", conversationTitle: "Planning", turnNumber: 2, matchedRole: "user", status: "complete", occurredAt: timestamp }],
+        totalMatches: 1,
+      }).success,
+    ).toBe(true)
+    expect(
+      memoryRouterPreTurnResultSchema.safeParse({
+        readTargets: [{ surface: "user_profile", fileName: "user_profile.md", sectionId: "collaboration_style", reason: "Slow mode is a collaboration preference." }],
+        memoryWrites: [{ kind: "document", surface: "repo_docs", fileName: "CONTRACTS.md", sectionId: "tool_contracts", text: "Keep retrieval project-scoped.", reason: "Durable tool contract." }],
+        reason: "Read the precise preference and preserve the contract.",
+      }).success,
+    ).toBe(true)
+    expect(
+      memoryRouterPreTurnResultSchema.safeParse({
+        readTargets: [{ surface: "identity", fileName: "user_profile.md", sectionId: "collaboration_style", reason: "wrong owner" }],
+        memoryWrites: [],
+        reason: "invalid",
+      }).success,
+    ).toBe(false)
+    expect(
+      memorySearchOutputSchema.safeParse({
+        results: [{ resultNumber: 1, content: "Slow Mode", surface: "user_profile", fileName: "user_profile.md", sectionId: "collaboration_style", sectionHeading: "Collaboration Style", scope: "global" }],
+        totalMatches: 1,
       }).success,
     ).toBe(true)
   })
