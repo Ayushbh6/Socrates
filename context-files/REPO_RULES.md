@@ -251,9 +251,9 @@ Normal trace search output must stay slim: `resultNumber`, raw matched `content`
 
 Trace retrieval is limited to visible non-deleted conversations (`active` and `archived`). Hard-deleted conversations must not be searchable or inspectable; conversation hard delete removes active LanceDB parents and owning retrieval diagnostics, while project delete drops the complete project index.
 
-Search and inspect results must include enough conversation identity to answer correctly. Socrates should use `conversationTitle` as the human-readable location and `conversationId` only to disambiguate same-title conversations.
+Search and inspect results must include enough conversation identity to answer correctly. Socrates should use `conversationTitle` as the human-readable location and the returned `turnId` only when a precise follow-up inspection or same-title disambiguation is needed.
 
-For ordinal recall, the model must use the structured integer `turnNo` search field and optional `role`. The backend must not silently infer `turnNo` from natural-language query text such as "second user message"; without `turnNo`, the call remains ordinary search. `turnNo` is for a single explicit turn and takes precedence over `conversationLimit`; broad ordinal lookup with `recent_conversations` or `project` can return multiple matching turns across visible conversations; out-of-range ordinal lookups must return warnings instead of falling back.
+For ordinal recall, the model must use a queryless lexical search with the structured integer `turnNo`, preferably narrowed by `conversationTitle`. The backend must not silently infer `turnNo` from natural-language query text such as "second user message"; without `turnNo`, the call remains ordinary search. Project-scoped ordinal lookup can return the same turn number from multiple visible conversations, so the agent must inspect the relevant clean Q&A-parent result rather than assuming one conversation. Out-of-range ordinal lookup returns no result and must not silently fall back.
 
 Trace retrieval is search-then-inspect:
 
