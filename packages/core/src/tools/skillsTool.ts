@@ -4,7 +4,7 @@ import type { SocratesTool } from "./types"
 export const skillsTool: SocratesTool<typeof skillsToolInputSchema._type, typeof skillsToolOutputSchema._type> = {
   name: "skills",
   description:
-    "List or describe Socrates skills from builtin, global, and project skill roots. Call list before answering when a user asks for a saved workflow, named skill, project/global skill, checklist, recurring procedure, or specialized/unfamiliar task that may already have instructions. Use describe with the exact canonical id from list whenever possible; use name only for an exact listed name. Do not copy a display name into id. Do not fake skill results.",
+    "List or describe Socrates skills from builtin, global, and project skill roots. Call list before domain tools for an ordered multi-step workflow, lifecycle phase, verification/review sequence, closure/handoff request, saved workflow, named skill, checklist, recurring procedure, or specialized/unfamiliar task that may already have instructions. Generic knowledge is not a substitute for checking learned user-specific gates. Use describe with the exact canonical id from list whenever possible; use name only for an exact listed name. Do not copy a display name into id. Do not fake skill results.",
   inputSchema: skillsToolInputSchema,
   modelInputSchema: skillsToolModelInputSchema,
   resultSchema: skillsToolOutputSchema,

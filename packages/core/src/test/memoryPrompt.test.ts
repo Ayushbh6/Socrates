@@ -21,8 +21,11 @@ describe("memory agent prompt", () => {
     expect(memoryAgentBasePrompt).toContain("Mixed turns must be split strictly")
     expect(memoryAgentBasePrompt).toContain("update the content section and the evidence_index together")
     expect(memoryAgentBasePrompt).toContain('target="skill"')
-    expect(memoryAgentBasePrompt).toContain("exactly these four flat markdown sections")
-    expect(memoryAgentBasePrompt).toContain("No chatty narration, nested subheaders, JSON, or patch proposals")
+    expect(memoryAgentBasePrompt).toContain("read_memory_journal: read-only access")
+    expect(memoryAgentBasePrompt).toContain("strict structured journal object enforced by the runtime")
+    expect(memoryAgentBasePrompt).toContain("openInvestigations: at most 10")
+    expect(memoryAgentBasePrompt).toContain("Skill maturation is a core responsibility")
+    expect(memoryAgentBasePrompt).toContain('skillsAffected action="already_represented" only after reading the current skill')
     expect(memoryAgentBasePrompt).not.toContain("Deep evidence comes from trace_documents")
   })
 
@@ -43,5 +46,14 @@ describe("memory agent prompt", () => {
     expect(trace?.inputSchema.safeParse({ mode: "lexical", query: "slow mode" }).success).toBe(true)
     expect(trace?.inputSchema.safeParse({ mode: "exact", query: "slow mode" }).success).toBe(false)
     expect(trace?.inputSchema.safeParse({ mode: "semantic", query: "how slow mode works", scope: "all_projects" }).success).toBe(true)
+  })
+
+  it("exposes only bounded read operations for prior journal history", () => {
+    const journal = createMemoryToolRegistry().get("read_memory_journal")
+    expect(journal?.permission).toBe("read")
+    expect(journal?.inputSchema.safeParse({ operation: "list", limit: 10, charLimit: 20_000 }).success).toBe(true)
+    expect(journal?.inputSchema.safeParse({ operation: "list", limit: 11 }).success).toBe(false)
+    expect(journal?.inputSchema.safeParse({ operation: "read", runId: "run-1", charLimit: 20_001 }).success).toBe(false)
+    expect(journal?.inputSchema.safeParse({ operation: "write", runId: "run-1" }).success).toBe(false)
   })
 })

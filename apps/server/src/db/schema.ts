@@ -688,6 +688,31 @@ export const memoryAgentJobs = sqliteTable(
   }),
 )
 
+export const memoryAgentJournal = sqliteTable(
+  "memory_agent_journal",
+  {
+    id: text("id").primaryKey(),
+    jobId: text("job_id").notNull(),
+    summary: text("summary").notNull(),
+    patternsObservedJson: text("patterns_observed_json").notNull(),
+    skillsAffectedJson: text("skills_affected_json").notNull(),
+    decisionsJson: text("decisions_json").notNull(),
+    openInvestigationsJson: text("open_investigations_json").notNull(),
+    nextRunFocusJson: text("next_run_focus_json").notNull(),
+    providerId: text("provider_id").notNull(),
+    modelId: text("model_id").notNull(),
+    thinkingEnabled: integer("thinking_enabled", { mode: "boolean" }).notNull(),
+    thinkingEffort: text("thinking_effort"),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    jobIdx: uniqueIndex("memory_agent_journal_job_idx").on(table.jobId),
+    createdAtIdx: index("memory_agent_journal_created_at_idx").on(table.createdAt),
+  }),
+)
+
 export const memoryNotes = sqliteTable(
   "memory_notes",
   {

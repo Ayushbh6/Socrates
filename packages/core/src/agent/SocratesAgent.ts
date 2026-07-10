@@ -1547,6 +1547,7 @@ const safeJsonPreview = (value: unknown, limit: number): string => {
 
 const DOCS_PREFLIGHT_CHECKPOINT = `<runtime_socrates_docs_preflight>
 This turn has workspace tools. Read-only/chat work does not require project docs. Before any bash, edit, or apply_patch call, first call project_docs with area="notes" and operation read/search, and call repo_docs with operation read/search in this same turn. After any successful bash, edit, or apply_patch call, read/search project_docs area="memory" before final answer; update memory only if there is durable project value. The active state ledger lives in project notes and must be fetched with project_docs, not assumed from the prompt. Use tool_docs before unfamiliar, failed, complex, or edge-case tool use.
+Before an ordered multi-step, verification/review, or closure/handoff workflow, call skills list before project_docs/repo_docs/domain tools and describe the best match; generic tool knowledge does not replace learned user gates.
 </runtime_socrates_docs_preflight>`
 
 const TOOL_DOCS_FAILURE_NUDGE = "Refer to tool_docs for tool usage before retrying this tool or choosing another tool."

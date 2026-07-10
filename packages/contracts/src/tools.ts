@@ -24,6 +24,7 @@ export const baseToolNameSchema = z.enum([
   "memory_note",
   "memory_notes",
   "memory_search",
+  "read_memory_journal",
   "skill_write",
 ])
 export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
@@ -1387,12 +1388,22 @@ export const memoryNotesToolOutputSchema = z
   .strict()
 export type MemoryNotesToolOutput = z.infer<typeof memoryNotesToolOutputSchema>
 
+const skillWriteFileSchema = z
+  .object({
+    path: z.string().min(1).max(240),
+    content: z.string().max(80_000),
+  })
+  .strict()
+
 export const skillWriteToolInputSchema = z
   .object({
     scope: z.enum(["global", "project"]),
     operation: z.enum(["create", "update"]),
     name: z.string().min(1).max(64),
     content: z.string().min(1).max(80_000),
+    changeSummary: z.string().min(1).max(1_000),
+    evidenceTurnIds: z.array(z.string().min(1)).max(12).optional(),
+    files: z.array(skillWriteFileSchema).max(20).optional(),
   })
   .strict()
 export type SkillWriteToolInput = z.infer<typeof skillWriteToolInputSchema>
@@ -1404,6 +1415,7 @@ export const skillWriteToolOutputSchema = z
     name: z.string().min(1),
     path: z.string().min(1),
     changed: z.boolean(),
+    changedFiles: z.array(z.string().min(1)),
     summary: skillSummarySchema,
     truncation: truncationMetadataSchema,
     warnings: z.array(z.string()).optional(),
@@ -1481,12 +1493,18 @@ const editFilesReplaceCreateInputSchema = z
     newText: z.string().min(1),
     replaceAll: z.boolean().optional(),
     rationale: z.string().min(1).optional(),
-    sourceTurnIds: z.array(z.string().min(1)).optional(),
+    sourceTurnIds: z.array(z.string().min(1)).max(12).optional(),
   })
   .strict()
   .superRefine((input, context) => {
     if (input.target === "skill" && !input.name) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "name is required for skill targets." })
+    }
+    if (input.target === "skill" && !input.rationale) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["rationale"], message: "rationale is required for skill targets." })
+    }
+    if (input.target === "skill" && (!input.sourceTurnIds || input.sourceTurnIds.length === 0)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sourceTurnIds"], message: "sourceTurnIds is required for skill targets." })
     }
     if (input.target !== "skill" && input.scope) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "scope is supported only for skill targets." })

@@ -19,6 +19,7 @@ import type {
   ServerEvent,
   ChatCompaction,
   MemoryCompaction,
+  MemoryAgentJournalOutput,
   McpServerStatus,
   ModelSettingsResolution,
   SkillSummary,
@@ -112,6 +113,16 @@ const validServerMemoryCompaction = (overrides: Partial<MemoryCompaction> = {}):
   criticalContext: [],
   toolState: [],
   anchors: ["Turn 1: inspect compacted memory-agent evidence."],
+  ...overrides,
+})
+
+const validMemoryAgentJournal = (overrides: Partial<MemoryAgentJournalOutput> = {}): MemoryAgentJournalOutput => ({
+  summary: "Completed the bounded Memory Agent investigation.",
+  patternsObserved: [],
+  skillsAffected: [],
+  decisions: [],
+  openInvestigations: [],
+  nextRunFocus: [],
   ...overrides,
 })
 
@@ -262,13 +273,20 @@ const fakeCountTokens: ModelProvider["countTokens"] = async (request) => {
   }
 }
 
-const createSkillWriterProvider = (): ModelProvider => {
+const createSkillWriterProvider = (skipFirstApprovedTask = false): ModelProvider => {
   let writeIndex = 0
+  let skippedApprovedTask = false
   return {
     countTokens: fakeCountTokens,
     async *stream(request) {
       const hasSkillWrite = request.tools?.some((tool) => tool.name === "skill_write") ?? false
       const serialized = serializedRequestMessages(request)
+      if (hasSkillWrite && skipFirstApprovedTask && !skippedApprovedTask && !serialized.includes('"tool-result"')) {
+        skippedApprovedTask = true
+        yield { type: "model.answer.delta", text: "Drafted the skill but failed to call the required write tool." }
+        yield { type: "model.completed" }
+        return
+      }
       if (hasSkillWrite && !serialized.includes('"tool-result"')) {
         writeIndex += 1
         const taskText = plainRequestText(request)
@@ -284,6 +302,8 @@ const createSkillWriterProvider = (): ModelProvider => {
               scope,
               operation,
               name,
+              changeSummary: `Create the approved ${name} workflow.`,
+              evidenceTurnIds: [],
               content: [
                 "---",
                 `name: ${name}`,
@@ -2936,7 +2956,7 @@ describe("HTTP API", () => {
   })
 
   it("builds project skills from the dashboard flow", async () => {
-    const app = await buildTestServer(undefined, createTestAgent(), { memoryProvider: createSkillWriterProvider() })
+    const app = await buildTestServer(undefined, createTestAgent(), { memoryProvider: createSkillWriterProvider(true) })
     await onboard(app)
     const { project, primaryWorkspace } = await createProject(app)
 
@@ -4927,6 +4947,9 @@ describe("WebSocket API", () => {
     let callIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal({ skillsAffected: [{ action: "proposed_create", note: "Proposed a project skill." }] }) as TOutput }
+      },
       async *stream() {
         callIndex += 1
         if (callIndex === 1) {
@@ -5014,6 +5037,9 @@ describe("WebSocket API", () => {
     const modelInputs: string[] = []
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal({ decisions: ["Moved the misplaced hard rule."] }) as TOutput }
+      },
       async *stream(request) {
         modelInputs.push(serializedRequestMessages(request))
         callIndex += 1
@@ -5119,6 +5145,9 @@ describe("WebSocket API", () => {
     let callIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal({ decisions: ["Left ambiguous and cap-blocked entries unchanged."] }) as TOutput }
+      },
       async *stream() {
         callIndex += 1
         if (callIndex === 1) {
@@ -5199,10 +5228,14 @@ describe("WebSocket API", () => {
     const conversation = await createConversation(app, project.id, "Memory Source")
     const handle = openDatabase(dbPath)
     const modelRequests: Array<{ providerId: string; modelId: string; thinkingEnabled: boolean; thinkingEffort?: string }> = []
+    const evidenceTurnIds: string[] = []
     let memoryCallIndex = 0
     let skillWriteIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal() as TOutput }
+      },
       async *stream(request) {
         modelRequests.push({
           providerId: request.providerId,
@@ -5212,19 +5245,33 @@ describe("WebSocket API", () => {
         })
         const hasSkillWrite = request.tools?.some((tool) => tool.name === "skill_write") ?? false
         const serialized = serializedRequestMessages(request)
-        if (hasSkillWrite && !serialized.includes('"tool-result"')) {
+        if (hasSkillWrite && evidenceTurnIds.length > 0 && !serialized.includes("memory_skill_writer_trace")) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "memory_skill_writer_trace",
+              toolName: "trace_retrieve",
+              input: { operation: "inspect", turnId: evidenceTurnIds[0] },
+            },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (hasSkillWrite && !serialized.includes("memory_skill_writer_write")) {
           skillWriteIndex += 1
           yield {
             type: "model.tool_call.completed",
             toolCall: {
-              toolCallId: `memory_skill_writer_${skillWriteIndex}`,
+              toolCallId: `memory_skill_writer_write_${skillWriteIndex}`,
               toolName: "skill_write",
               input: {
                 scope: "global",
                 operation: "create",
                 name: "general",
+                changeSummary: "Create the approved configured memory worker workflow.",
+                evidenceTurnIds: evidenceTurnIds.slice(0, 1),
                 content:
-                  "---\nname: general\ndescription: Use when preserving configured memory worker workflow guidance.\n---\n\n# General\n\nConfigured memory worker approved this global skill.\n",
+                  "---\nname: general\ndescription: Use when preserving configured memory worker workflow guidance.\n---\n\n# General\n\nConfigured memory worker approved this global skill for repeatable evidence-based work.\n\n## Workflow\n\n- Inspect the exact source context before acting.\n- Apply only the approved reusable guidance.\n- Verify the result with a focused check and report the evidence.\n",
               },
             },
           }
@@ -5250,6 +5297,7 @@ describe("WebSocket API", () => {
                 editMode: "create",
                 newText: "Create a global skill named general for preserving configured memory worker workflow guidance.",
                 rationale: "Test skill creation.",
+                sourceTurnIds: evidenceTurnIds.slice(0, 1),
               },
             },
           }
@@ -5305,6 +5353,7 @@ describe("WebSocket API", () => {
       const sessionId = insertTestSession(handle.sqlite, project.id, conversation.id)
       for (let index = 0; index < 4; index += 1) {
         const turn = insertCompletedTestTurn(handle.sqlite, conversation.id, sessionId, `Memory user message ${index + 1}`, "Memory assistant answer", nowIso())
+        evidenceTurnIds.push(turn.turnId)
         insertTurnCompletedEvent(handle.sqlite, { projectId: project.id, conversationId: conversation.id, sessionId, turnId: turn.turnId })
       }
       await store.runGlobalMemoryAgent("manual")
@@ -5483,6 +5532,9 @@ describe("WebSocket API", () => {
     let callIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal() as TOutput }
+      },
       async *stream(request) {
         requests.push({
           providerId: request.providerId,
@@ -5598,6 +5650,9 @@ describe("WebSocket API", () => {
       },
       async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>): Promise<StructuredModelResult<TOutput>> {
         structuredSystems.push(request.system)
+        if (!request.system.includes("Socrates Memory Agent Compressor")) {
+          return { output: validMemoryAgentJournal() as TOutput }
+        }
         return {
           output: validServerMemoryCompaction({
             manifestScope: ["Covered memory-agent context after trace retrieval."],
@@ -5674,6 +5729,9 @@ describe("WebSocket API", () => {
     const evidencePrompts: string[] = []
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal() as TOutput }
+      },
       async *stream(request) {
         evidencePrompts.push(String(request.messages[0]?.content ?? ""))
         yield {
@@ -5714,6 +5772,9 @@ describe("WebSocket API", () => {
     const evidencePrompts: string[] = []
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal() as TOutput }
+      },
       async *stream(request) {
         evidencePrompts.push(String(request.messages[0]?.content ?? ""))
         yield {
@@ -5762,6 +5823,9 @@ describe("WebSocket API", () => {
     let callIndex = 0
     const memoryProvider: ModelProvider = {
       countTokens: fakeCountTokens,
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return { output: validMemoryAgentJournal({ decisions: ["Applied the confirmed identity update."] }) as TOutput }
+      },
       async *stream(request) {
         seenPrompts.push(`${request.system}\n\n${request.messages.map((message) => message.content).join("\n")}`)
         callIndex += 1
@@ -5818,7 +5882,7 @@ describe("WebSocket API", () => {
       expect(notifications.unreadCount).toBe(1)
       expect(notifications.notifications[0]?.type).toBe("memory.soul.updated")
       expect(JSON.stringify(notifications.notifications[0]?.payload)).toContain("evidence-backed memory")
-      expect(seenPrompts[0]).toContain("No chatty narration, nested subheaders, JSON, or patch proposals")
+      expect(seenPrompts[0]).toContain("strict structured journal object enforced by the runtime")
       expect(seenPrompts[1]).toContain("You are about to make changes to the soul. Are you sure?")
     } finally {
       await store.close()

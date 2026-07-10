@@ -65,6 +65,16 @@ export const parseSkillMarkdown = (content: string, skillFile: string): { name: 
   return { name, description }
 }
 
+export const validateSkillWriteMarkdown = (content: string, skillFile: string): { name: string; description: string } | undefined => {
+  const parsed = parseSkillMarkdown(content, skillFile)
+  if (!parsed) return undefined
+  const body = stripFrontmatter(content).trim()
+  if (body.length < 120 || !/^#{1,3}\s+\S+/m.test(body) || !/^(?:\s*[-*]\s+|\s*\d+[.)]\s+)\S+/m.test(body)) {
+    return undefined
+  }
+  return parsed
+}
+
 export const stripFrontmatter = (content: string): string => content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "")
 
 export const slugSkillName = (input: string): string => {
@@ -90,7 +100,7 @@ export const uniqueSkillName = (root: string, desiredName: string): string => {
 }
 
 export const skillSummary = (skill: SkillInfo): SkillSummary => ({
-  id: skill.name,
+  id: `${skill.scope}:${skill.name}`,
   name: skill.name,
   description: skill.description,
   scope: skill.scope,

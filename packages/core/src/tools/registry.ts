@@ -12,6 +12,7 @@ import { mcpRegistryTool } from "./mcpRegistryTool"
 import { projectDocsTool } from "./projectDocsTool"
 import { projectsTool } from "./projectsTool"
 import { readTool } from "./readTool"
+import { readMemoryJournalTool } from "./readMemoryJournalTool"
 import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
 import { skillsTool } from "./skillsTool"
@@ -73,7 +74,7 @@ export class ToolRegistry {
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
 
-const memoryTools = [globalTraceRetrieveTool, projectsTool, toolDocsTool, skillsTool, memoryNotesTool, soulTool, userProfileTool, editFilesTool] as const
+const memoryTools = [currentTimeTool, globalTraceRetrieveTool, projectsTool, toolDocsTool, skillsTool, memoryNotesTool, readMemoryJournalTool, soulTool, userProfileTool, editFilesTool] as const
 
 export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)
 

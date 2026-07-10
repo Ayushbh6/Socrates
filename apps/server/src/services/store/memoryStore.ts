@@ -9,6 +9,7 @@ import type {
   EditFilesToolOutput,
   MemoryAgentGlobalSettings,
   MemoryAgentGlobalState,
+  MemoryAgentJournalOutput,
   MemoryAgentFileContentQuery,
   MemoryAgentFileSummary,
   MemoryAgentRunDetail,
@@ -18,6 +19,8 @@ import type {
   MemoryNoteToolOutput,
   MemoryNotesToolInput,
   MemoryNotesToolOutput,
+  ReadMemoryJournalToolInput,
+  ReadMemoryJournalToolOutput,
   MemoryDocIndex,
   MemoryDocSection,
   ProjectDocsArea,
@@ -47,7 +50,7 @@ import type {
   WorkerModelSettings,
 } from "@socrates/contracts"
 import { memoryDocRequiredSections } from "@socrates/contracts"
-import type { ModelProvider, ProviderCredentialResolver } from "@socrates/providers"
+import type { ModelProvider, ModelUsage, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { and, desc, eq, or } from "drizzle-orm"
@@ -61,6 +64,7 @@ import {
   memoryDocIndexes,
   memoryDocSections,
   memoryAgentJobs,
+  memoryAgentJournal,
   memoryNotes,
   messages,
   projectResources,
@@ -73,7 +77,13 @@ import { hashText, simpleDiff, validateMemoryPatch, type MemoryPatchProposal } f
 import { runMemoryAgentTurn, type MemoryAgentModelSettings } from "./memoryAgentRunner"
 import { runSkillWriterTurn, type SkillWriterModelSettings } from "./skillWriterAgentRunner"
 import { emptyMemoryAgentSignal, scoreMemoryAgentSignal } from "./memoryAgentSignals"
-import { emptyMemoryAgentSummary, parseMemoryAgentSummarySections } from "./memoryAgentSummary"
+import { emptyMemoryAgentSummary } from "./memoryAgentSummary"
+import {
+  journalOutputFromRow,
+  journalOutputToDisplaySummary,
+  normalizeMemoryJournalOutput,
+  renderMemoryAgentLedger,
+} from "./memoryAgentJournal"
 import {
   discoverSkills,
   fallbackSkillMarkdown,
@@ -83,6 +93,7 @@ import {
   slugSkillName,
   isValidSkillName,
   uniqueSkillName,
+  validateSkillWriteMarkdown,
   type SkillInfo,
 } from "./memorySkills"
 import {
@@ -107,6 +118,11 @@ const PRIMARY_MEMORY_SECTION_CHAR_LIMIT = 10_000
 const DEFAULT_SEARCH_LIMIT = 20
 const MEMORY_AGENT_TOKEN_CAP = 60_000
 const MEMORY_AGENT_MANIFEST_TOKEN_CAP = 45_000
+const MEMORY_JOURNAL_LIST_DEFAULT = 5
+const MEMORY_JOURNAL_LIST_MAX = 10
+const MEMORY_JOURNAL_LIST_CHAR_DEFAULT = 8_000
+const MEMORY_JOURNAL_READ_CHAR_DEFAULT = 12_000
+const MEMORY_JOURNAL_CHAR_MAX = 20_000
 const MEMORY_AGENT_AUDIT_CHAR_LIMIT = 25_000
 const GLOBAL_MEMORY_AGENT_PROJECT_ID = "global"
 const GLOBAL_MEMORY_AGENT_MAX_TURNS = 80
@@ -202,6 +218,7 @@ type ApprovedSkillWriterTask = {
   conversationId?: string
   sessionId?: string
   turnId?: string
+  sourceTurnIds?: string[]
   sourceKind: "dashboard" | "memory_agent_action"
   sourceId?: string
 }
@@ -254,6 +271,7 @@ export class MemoryStore extends StoreBase {
     this.ensureAndIndexGlobalDocs()
     fs.mkdirSync(path.join(this.socratesHome, "skills"), { recursive: true })
     migrateUsefulPatternsToSkills(this.socratesHome)
+    this.ensureMemoryAgentLedger()
   }
 
   private migrateLegacyProjectMemory(projectId: string, workspacePath: string): void {
@@ -496,6 +514,11 @@ export class MemoryStore extends StoreBase {
     const operation = metadata.operation === "update" ? "update" : "create"
     const name = typeof metadata.skillName === "string" ? metadata.skillName : path.basename(path.dirname(action.targetPath))
     const request = typeof patch.newText === "string" ? patch.newText : action.rationale ?? ""
+    const sourceTurnIds = Array.isArray(patch.sourceTurnIds)
+      ? patch.sourceTurnIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : action.turnId
+        ? [action.turnId]
+        : []
     const sourceTurn = action.turnId ? this.handle.db.select().from(turns).where(eq(turns.id, action.turnId)).limit(1).get() : undefined
     const workspacePath = typeof metadata.workspacePath === "string" ? metadata.workspacePath : undefined
     const skill = await this.runApprovedSkillWriterTask({
@@ -508,6 +531,7 @@ export class MemoryStore extends StoreBase {
       ...(sourceTurn?.conversationId ? { conversationId: sourceTurn.conversationId } : {}),
       ...(sourceTurn?.sessionId ? { sessionId: sourceTurn.sessionId } : {}),
       ...(action.turnId ? { turnId: action.turnId } : {}),
+      sourceTurnIds,
       sourceKind: "memory_agent_action",
       sourceId: actionId,
     })
@@ -1060,6 +1084,12 @@ export class MemoryStore extends StoreBase {
         description: "Stable user facts, preferences, and collaboration style.",
         absolutePath: this.userProfilePath(),
       },
+      {
+        kind: "journal" as const,
+        name: "Memory Agent Ledger",
+        description: "Runtime-generated cross-run Memory Agent briefing; the database journal is authoritative.",
+        absolutePath: this.memoryAgentLedgerPath(),
+      },
     ]).flatMap((file) => {
       const absolutePath = file.absolutePath
       if (!fs.existsSync(absolutePath)) {
@@ -1273,7 +1303,7 @@ export class MemoryStore extends StoreBase {
     }
     const latest = entries.entries[entries.entries.length - 1]
     const jobId = createId("memjob")
-    const evidence = this.withMemorySelfHealingAudit(entries.manifest)
+    const evidence = `${this.buildMemoryAgentBriefing()}\n\n${this.withMemorySelfHealingAudit(entries.manifest)}`
     const evidenceTokensEstimate = estimateTextTokens(evidence).inputTokens
     const startedAt = nowIso()
     const metadataBase = {
@@ -1315,7 +1345,7 @@ export class MemoryStore extends StoreBase {
     let latestUsage: unknown
     try {
       const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
-      const output = await runMemoryAgentTurn({
+      const runResult = await runMemoryAgentTurn({
         provider: this.options.provider,
         modelSettings,
         evidence,
@@ -1336,6 +1366,7 @@ export class MemoryStore extends StoreBase {
           toolDocs: async (toolInput) => this.runToolDocsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput, "memory_agent"),
           skills: async (toolInput) => this.runSkillsTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           memoryNotes: async (toolInput) => this.runMemoryNotesTool(toolInput),
+          readMemoryJournal: async (toolInput) => this.runReadMemoryJournalTool(toolInput),
           soul: async (toolInput) => this.runSoulTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           userProfile: async (toolInput) => this.runUserProfileTool(GLOBAL_MEMORY_AGENT_PROJECT_ID, undefined, toolInput),
           editFiles: async (toolInput) =>
@@ -1346,18 +1377,21 @@ export class MemoryStore extends StoreBase {
               ...(latest?.turnId ? { turnId: latest.turnId } : {}),
             }),
         },
-        onEvent: (event) => {
-          if ((event.type === "model.usage" || event.type === "model.completed") && "usage" in event && event.usage) {
-            latestUsage = event.usage
-          }
-          if (event.type.startsWith("tool.call") || event.type.startsWith("approval.")) {
-            toolEvents.push(slimMemoryToolEvent(event))
-          }
-          if (event.type === "tool.call.completed" && event.toolName === "memory_notes") {
-            recordMemoryNotesToolOutput(memoryNoteRunStats, event.output)
-          }
-          if (event.type === "tool.call.failed") {
-            const details = mergeToolErrorDetails(event.error.details, event.toolName)
+        onModelEvent: (event) => {
+          if ((event.type === "model.usage" || event.type === "model.completed") && "usage" in event && event.usage) latestUsage = event.usage
+        },
+        onToolResult: (result) => {
+          const toolError = result.output && typeof result.output === "object" && "error" in result.output
+            ? (result.output as { error?: unknown }).error
+            : undefined
+          const errorRecord = toolError && typeof toolError === "object" ? toolError as Record<string, unknown> : undefined
+          toolEvents.push({
+            type: errorRecord ? "tool.call.failed" : "tool.call.completed",
+            toolName: result.toolName,
+            argsPreview: truncateInline(JSON.stringify(result.input), 500),
+            resultPreview: truncateInline(JSON.stringify(result.output), 500),
+          })
+          if (errorRecord) {
             this.appendEvent({
               ...(latest?.projectId ? { projectId: latest.projectId } : {}),
               ...(latest?.conversationId ? { conversationId: latest.conversationId } : {}),
@@ -1366,32 +1400,69 @@ export class MemoryStore extends StoreBase {
               type: "tool.call.failed",
               source: "tool",
               payload: {
-                toolCallId: event.toolCallId,
-                ...(event.providerToolCallId ? { providerToolCallId: event.providerToolCallId } : {}),
+                toolCallId: result.toolCallId,
                 error: {
-                  code: event.error.code,
-                  message: event.error.message,
-                  ...(Object.keys(details).length > 0 ? { details } : {}),
-                  ...(typeof event.error.recoverable === "boolean" ? { recoverable: event.error.recoverable } : {}),
+                  code: typeof errorRecord.code === "string" ? errorRecord.code : "tool_failed",
+                  message: typeof errorRecord.message === "string" ? errorRecord.message : "Memory Agent tool call failed.",
+                  recoverable: true,
+                  details: { toolName: result.toolName },
                 },
-                ...(event.modelCallId ? { modelCallId: event.modelCallId } : {}),
-                ...(typeof event.stepIndex === "number" ? { stepIndex: event.stepIndex } : {}),
               },
             })
           }
+          if (result.toolName === "memory_notes") recordMemoryNotesToolOutput(memoryNoteRunStats, result.output)
         },
       })
       const completedAt = nowIso()
-      this.handle.db
-        .update(memoryAgentJobs)
-        .set({
+      latestUsage = aggregateModelUsages(runResult.usages)
+      const previousOutput = this.latestMemoryJournalRows(1)[0]?.output
+      const output = normalizeMemoryJournalOutput(runResult.output, previousOutput)
+      const journalId = createId("memjournal")
+      const recordedActions = this.handle.db.select().from(memoryAgentActions).where(eq(memoryAgentActions.jobId, jobId)).orderBy(memoryAgentActions.createdAt).all()
+      this.handle.db.transaction((tx) => {
+        tx.insert(memoryAgentJournal).values({
+          id: journalId,
+          jobId,
+          summary: output.summary,
+          patternsObservedJson: JSON.stringify(output.patternsObserved),
+          skillsAffectedJson: JSON.stringify(output.skillsAffected),
+          decisionsJson: JSON.stringify(output.decisions),
+          openInvestigationsJson: JSON.stringify(output.openInvestigations),
+          nextRunFocusJson: JSON.stringify(output.nextRunFocus),
+          providerId: modelSettings.providerId,
+          modelId: modelSettings.modelId,
+          thinkingEnabled: modelSettings.thinkingEnabled,
+          thinkingEffort: modelSettings.thinkingEffort,
           status: "completed",
-          outputJson: JSON.stringify({ summary: parseMemoryAgentSummarySections(output.trim()) }),
-          completedAt,
-          metadataJson: JSON.stringify({ ...metadataBase, signal, toolEvents, usage: latestUsage }),
-        })
-        .where(eq(memoryAgentJobs.id, jobId))
-        .run()
+          createdAt: completedAt,
+          metadataJson: JSON.stringify({
+            trigger: input.trigger,
+            startedAt,
+            completedAt,
+            usage: latestUsage,
+            toolCalls: runResult.toolCalls,
+            evidenceTurnIds: entries.entries.map((entry) => entry.turnId),
+            actions: recordedActions.map((action) => ({ id: action.id, targetKind: action.targetKind, status: action.status, targetPath: action.targetPath })),
+          }),
+        }).run()
+        tx.update(memoryAgentJobs)
+          .set({
+            status: "completed",
+            outputJson: JSON.stringify({ summary: journalOutputToDisplaySummary(output), journalId }),
+            completedAt,
+            metadataJson: JSON.stringify({ ...metadataBase, signal, toolEvents, usage: latestUsage }),
+          })
+          .where(eq(memoryAgentJobs.id, jobId))
+          .run()
+      })
+      try {
+        this.writeMemoryAgentLedger()
+      } catch (ledgerError) {
+        const ledgerWarning = ledgerError instanceof Error ? ledgerError.message : String(ledgerError)
+        this.handle.db.update(memoryAgentJobs).set({
+          metadataJson: JSON.stringify({ ...metadataBase, signal, toolEvents, usage: latestUsage, ledgerWarning }),
+        }).where(eq(memoryAgentJobs.id, jobId)).run()
+      }
       const state = input.updateState({
         lastProcessedEventSequence: entries.sequenceTo,
         lastCheckedAt: completedAt,
@@ -1560,6 +1631,169 @@ export class MemoryStore extends StoreBase {
       "Use memory_notes.list/read for full note details and attached trace lookup ids.",
       ...rows.map((row) => `- #${row.noteNumber} [${row.priority}] ${truncateInline(row.note, 250)}`),
     ].join("\n")
+  }
+
+  runReadMemoryJournalTool(input: ReadMemoryJournalToolInput): ReadMemoryJournalToolOutput {
+    const charLimit = Math.min(input.charLimit ?? (input.operation === "list" ? MEMORY_JOURNAL_LIST_CHAR_DEFAULT : MEMORY_JOURNAL_READ_CHAR_DEFAULT), MEMORY_JOURNAL_CHAR_MAX)
+    const totalMatches = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_journal WHERE status = 'completed'").get() as { count: number }).count
+    if (input.operation === "list") {
+      const limit = Math.min(input.limit ?? MEMORY_JOURNAL_LIST_DEFAULT, MEMORY_JOURNAL_LIST_MAX)
+      const offset = input.offset ?? 0
+      const rows = this.handle.db.select().from(memoryAgentJournal).where(eq(memoryAgentJournal.status, "completed")).orderBy(desc(memoryAgentJournal.createdAt)).limit(limit).offset(offset).all()
+      const allPreviews = rows.map((row) => this.memoryJournalPreview(row, 400))
+      const runs = [...allPreviews]
+      while (runs.length > 0 && JSON.stringify(runs).length > charLimit) runs.pop()
+      const originalLength = JSON.stringify(allPreviews).length
+      const returnedLength = JSON.stringify(runs).length
+      return {
+        operation: "list",
+        runs,
+        totalMatches,
+        truncation: {
+          truncated: runs.length < allPreviews.length || offset + runs.length < totalMatches,
+          charLimit,
+          originalLength,
+          returnedLength,
+          ...(offset + runs.length < totalMatches ? { nextOffset: offset + runs.length } : {}),
+        },
+        ...(runs.length < allPreviews.length ? { warnings: ["Character limit reduced the number of returned journal previews."] } : {}),
+      }
+    }
+
+    const row = this.handle.db.select().from(memoryAgentJournal).where(eq(memoryAgentJournal.jobId, input.runId)).limit(1).get()
+      ?? this.handle.db.select().from(memoryAgentJournal).where(eq(memoryAgentJournal.id, input.runId)).limit(1).get()
+    if (!row) {
+      throw new SocratesError("memory_journal_run_not_found", "Memory journal run was not found.", { recoverable: true, details: { runId: input.runId } })
+    }
+    const serialized = JSON.stringify(journalOutputFromRow(row), null, 2)
+    const content = serialized.slice(0, charLimit)
+    return {
+      operation: "read",
+      runs: [this.memoryJournalPreview(row, 400)],
+      content,
+      totalMatches,
+      truncation: {
+        truncated: content.length < serialized.length,
+        charLimit,
+        originalLength: serialized.length,
+        returnedLength: content.length,
+      },
+      ...(content.length < serialized.length ? { warnings: ["Journal output was truncated at the requested character limit."] } : {}),
+    }
+  }
+
+  private memoryJournalPreview(row: typeof memoryAgentJournal.$inferSelect, summaryLimit: number): ReadMemoryJournalToolOutput["runs"][number] {
+    const output = journalOutputFromRow(row)
+    return {
+      runId: row.jobId,
+      summary: output.summary.length > summaryLimit ? `${output.summary.slice(0, summaryLimit - 1)}…` : output.summary,
+      patternCount: output.patternsObserved.length,
+      skillActionCount: output.skillsAffected.length,
+      openInvestigationCount: output.openInvestigations.length,
+      createdAt: row.createdAt,
+    }
+  }
+
+  private latestMemoryJournalRows(limit = 3): Array<{ row: typeof memoryAgentJournal.$inferSelect; output: MemoryAgentJournalOutput }> {
+    return this.handle.db
+      .select()
+      .from(memoryAgentJournal)
+      .where(eq(memoryAgentJournal.status, "completed"))
+      .orderBy(desc(memoryAgentJournal.createdAt))
+      .limit(limit)
+      .all()
+      .map((row) => ({ row, output: journalOutputFromRow(row) }))
+  }
+
+  private buildMemoryAgentBriefing(): string {
+    const latestRuns = this.latestMemoryJournalRows(3)
+    const totalRuns = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_journal WHERE status = 'completed'").get() as { count: number }).count
+    const openNotes = this.openMemoryNoteCount()
+    const skillProposals = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_actions WHERE target_kind IN ('skill', 'skill_request')").get() as { count: number }).count
+    const completedWriters = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM skill_writer_jobs WHERE status = 'completed'").get() as { count: number }).count
+    const createdSkills = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM skill_writer_jobs WHERE status = 'completed' AND operation = 'create'").get() as { count: number }).count
+    const updatedSkills = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM skill_writer_jobs WHERE status = 'completed' AND operation = 'update'").get() as { count: number }).count
+    const recentSkillOutcomes = this.recentMemorySkillOutcomes()
+    const latest = latestRuns[0]?.output
+    return [
+      "# Memory Agent Cross-Run Briefing",
+      "This is a bounded runtime briefing. The database journal is authoritative; do not edit the generated ledger file.",
+      "",
+      "## Automatic State",
+      `- Completed journal runs: ${totalRuns}`,
+      `- Open memory notes: ${openNotes}`,
+      `- Skill proposals recorded: ${skillProposals}`,
+      `- Completed Skill Writer jobs: ${completedWriters}`,
+      `- Skills created by Skill Writer: ${createdSkills}`,
+      `- Skills updated by Skill Writer: ${updatedSkills}`,
+      "",
+      "## Recent Skill Proposal and Writer Outcomes",
+      ...(recentSkillOutcomes.length ? recentSkillOutcomes.map((item) => `- ${item}`) : ["None."]),
+      "",
+      "## Previous Handoff",
+      latest?.summary ?? "No prior structured journal run.",
+      "",
+      "## Unresolved Investigations",
+      ...(latest?.openInvestigations.length
+        ? latest.openInvestigations.map((item) => `- ${item.investigationId}: ${item.title} — ${item.currentUnderstanding} Next: ${item.nextStep}`)
+        : ["None."]),
+      "",
+      "## Previous Next-Run Focus",
+      ...(latest?.nextRunFocus.length ? latest.nextRunFocus.map((item) => `- ${item}`) : ["None."]),
+      "",
+      "## Last Three Run Summaries",
+      ...(latestRuns.length ? latestRuns.map(({ row, output }) => `- ${row.createdAt} | ${row.jobId}: ${output.summary}`) : ["None."]),
+    ].join("\n")
+  }
+
+  private memoryAgentLedgerPath(): string {
+    return path.join(this.socratesHome, "memory_agent", "MEMORY_AGENT_LEDGER.md")
+  }
+
+  private ensureMemoryAgentLedger(): void {
+    if (!fs.existsSync(this.memoryAgentLedgerPath())) this.writeMemoryAgentLedger()
+  }
+
+  private writeMemoryAgentLedger(): void {
+    const latestRuns = this.latestMemoryJournalRows(3)
+    const totalRuns = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_journal WHERE status = 'completed'").get() as { count: number }).count
+    const totalSkillProposals = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM memory_agent_actions WHERE target_kind IN ('skill', 'skill_request')").get() as { count: number }).count
+    const completedSkillWriterJobs = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM skill_writer_jobs WHERE status = 'completed'").get() as { count: number }).count
+    const createdSkills = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM skill_writer_jobs WHERE status = 'completed' AND operation = 'create'").get() as { count: number }).count
+    const updatedSkills = (this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM skill_writer_jobs WHERE status = 'completed' AND operation = 'update'").get() as { count: number }).count
+    const target = this.memoryAgentLedgerPath()
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    const temporary = `${target}.tmp-${process.pid}`
+    fs.writeFileSync(temporary, renderMemoryAgentLedger({
+      generatedAt: nowIso(),
+      totalRuns,
+      totalSkillProposals,
+      completedSkillWriterJobs,
+      createdSkills,
+      updatedSkills,
+      recentSkillOutcomes: this.recentMemorySkillOutcomes(),
+      latestRuns,
+    }), "utf8")
+    fs.renameSync(temporary, target)
+  }
+
+  private recentMemorySkillOutcomes(): string[] {
+    const proposals = this.handle.sqlite.prepare(
+      "SELECT status, target_path AS targetPath, metadata_json AS metadataJson FROM memory_agent_actions WHERE target_kind IN ('skill', 'skill_request') ORDER BY created_at DESC LIMIT 5",
+    ).all() as Array<{ status: string; targetPath: string; metadataJson: string | null }>
+    const writers = this.handle.sqlite.prepare(
+      "SELECT operation, skill_name AS skillName, scope, status FROM skill_writer_jobs ORDER BY started_at DESC LIMIT 5",
+    ).all() as Array<{ operation: string; skillName: string; scope: string; status: string }>
+    return [
+      ...proposals.map((proposal) => {
+        const metadata = parseJsonObject(proposal.metadataJson)
+        const skillName = typeof metadata.skillName === "string" ? metadata.skillName : path.basename(path.dirname(proposal.targetPath))
+        const operation = typeof metadata.operation === "string" ? metadata.operation : "proposal"
+        const scope = typeof metadata.scope === "string" ? metadata.scope : "unknown"
+        return `Memory proposal ${operation} ${scope}:${skillName} — ${proposal.status}`
+      }),
+      ...writers.map((writer) => `Skill Writer ${writer.operation} ${writer.scope}:${writer.skillName} — ${writer.status}`),
+    ].slice(0, 8)
   }
 
   private memoryNoteSignalStats(sequenceFrom: number, sequenceTo: number): MemoryNoteSignalStats {
@@ -1925,7 +2159,10 @@ export class MemoryStore extends StoreBase {
     const targetPath = resolved.path
     const name = path.basename(path.dirname(targetPath))
     const scope = resolved.scope ?? "global"
-    const operation = input.editMode === "create" ? "create" : "update"
+    // Skill proposals are implementation briefs, not direct patches. The backend
+    // knows whether the canonical target exists and must own create/update identity
+    // instead of trusting a model-selected edit verb.
+    const operation = fs.existsSync(targetPath) ? "update" : "create"
     const patch: MemoryPatchProposal = {
       oldText: input.editMode === "create" ? "" : input.oldText ?? "",
       newText: input.newText,
@@ -2369,7 +2606,7 @@ export class MemoryStore extends StoreBase {
     if (!skill) {
       const available = this.skillInfos(workspacePath, input.scope)
         .slice(0, 15)
-        .map((item) => ({ id: item.name, name: item.name, scope: item.scope, description: item.description }))
+        .map((item) => ({ id: `${item.scope}:${item.name}`, name: item.name, scope: item.scope, description: item.description }))
       throw new SocratesError("skill_not_found", "Skill was not found. Call skills({ operation: \"list\" }) to see exact skill ids and names, then retry describe with one of those exact handles.", {
         recoverable: true,
         details: { id: input.id, name: input.name, scope: input.scope, available },
@@ -2411,7 +2648,8 @@ export class MemoryStore extends StoreBase {
     const skills = this.skillInfos(workspacePath, scope)
     const id = input.id?.trim()
     if (id) {
-      const byId = skills.find((skill) => skill.name === id)
+      const normalizedId = id.startsWith("skill:") ? id.slice("skill:".length) : id
+      const byId = skills.find((skill) => `${skill.scope}:${skill.name}` === normalizedId || skill.name === normalizedId)
       if (byId) return byId
     }
     const name = input.name?.trim()
@@ -2627,6 +2865,7 @@ export class MemoryStore extends StoreBase {
       sourceId: input.sourceId,
       thinkingEnabled: modelSettings.thinkingEnabled,
       thinkingEffort: modelSettings.thinkingEffort,
+      sourceTurnIds: input.sourceTurnIds ?? [],
     }
     this.handle.db
       .insert(skillWriterJobs)
@@ -2659,36 +2898,56 @@ export class MemoryStore extends StoreBase {
     const toolEvents: unknown[] = []
     let latestUsage: unknown
     let written: SkillWriteToolOutput | undefined
+    const inspectedTurnIds = new Set<string>()
+    let existingSkillRead = input.operation === "create"
     try {
       const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
-      const answer = await runSkillWriterTurn({
+      let answer = ""
+      let attemptCount = 0
+      for (; attemptCount < 2 && !written; attemptCount += 1) {
+        answer = await runSkillWriterTurn({
         provider: this.options.provider,
         modelSettings,
         scope: input.scope,
         operation: input.operation,
         name: input.name,
-        request: input.request,
+        request: attemptCount === 0
+          ? input.request
+          : `${input.request}\n\nREQUIRED REPAIR ATTEMPT: The previous attempt ended without calling skill_write. Final prose is not completion. Inspect any still-required evidence and call skill_write with the complete validated result.`,
         projectId: input.projectId,
         conversationId: input.conversationId ?? "",
         sessionId: input.sessionId ?? "",
         turnId: input.turnId ?? "",
+        sourceTurnIds: input.sourceTurnIds ?? [],
         ...(input.workspacePath ? { workspacePath: input.workspacePath } : {}),
         socratesHome: this.socratesHome,
         ...(contextCompressorSettings ? { contextCompressorSettings } : {}),
         tools: {
           traceRetrieve: async (toolInput) => {
             if (this.options.traceRetrieveGlobal) {
-              return this.options.traceRetrieveGlobal(
+              const output = await this.options.traceRetrieveGlobal(
                 input.scope === "project"
                   ? toolInput.operation === "inspect"
                     ? { ...toolInput, projectId: input.projectId }
                     : { ...toolInput, scope: "project", projectId: input.projectId }
                   : toolInput,
               )
+              if (toolInput.operation === "inspect" && toolInput.turnId) inspectedTurnIds.add(toolInput.turnId)
+              return output
             }
             throw new SocratesError("skill_writer_trace_unavailable", "trace_retrieve is not available to this Skill Writer run.", { recoverable: true })
           },
-          skills: async (toolInput) => this.runSkillsTool(input.projectId, input.workspacePath, toolInput),
+          skills: async (toolInput) => {
+            const output = this.runSkillsTool(input.projectId, input.workspacePath, toolInput)
+            if (
+              input.operation === "update" &&
+              (toolInput.operation === "describe" || toolInput.operation === "read") &&
+              output.skills.some((skill) => skill.scope === input.scope && skill.name === input.name)
+            ) {
+              existingSkillRead = true
+            }
+            return output
+          },
           soul: async (toolInput) => this.runSoulTool(input.projectId, input.workspacePath, toolInput),
           userProfile: async (toolInput) => this.runUserProfileTool(input.projectId, input.workspacePath, toolInput),
           projectDocs: async (toolInput) => {
@@ -2709,6 +2968,24 @@ export class MemoryStore extends StoreBase {
             if (written) {
               throw new SocratesError("skill_write_already_completed", "Skill Writer already wrote the skill for this run.", { recoverable: true })
             }
+            const expectedEvidence = input.sourceTurnIds ?? []
+            const receivedEvidence = toolInput.evidenceTurnIds ?? []
+            const missingInspections = expectedEvidence.filter((turnId) => !inspectedTurnIds.has(turnId))
+            const evidenceMismatch =
+              expectedEvidence.length !== receivedEvidence.length ||
+              expectedEvidence.some((turnId) => !receivedEvidence.includes(turnId))
+            if (missingInspections.length > 0 || evidenceMismatch) {
+              throw new SocratesError("skill_writer_evidence_not_verified", "Skill Writer must inspect and cite every approved source turn before writing.", {
+                recoverable: true,
+                details: { expectedEvidence, receivedEvidence, missingInspections },
+              })
+            }
+            if (!existingSkillRead) {
+              throw new SocratesError("skill_writer_existing_skill_not_read", "Skill Writer must read the exact existing scoped skill before updating it.", {
+                recoverable: true,
+                details: { scope: input.scope, name: input.name },
+              })
+            }
             written = this.runSkillWriteTool(toolInput, {
               expectedScope: input.scope,
               expectedOperation: input.operation,
@@ -2726,7 +3003,8 @@ export class MemoryStore extends StoreBase {
             toolEvents.push(slimMemoryToolEvent(event))
           }
         },
-      })
+        })
+      }
       if (!written) {
         throw new SocratesError("skill_writer_no_write", "Skill Writer finished without calling skill_write.", { recoverable: true })
       }
@@ -2737,7 +3015,7 @@ export class MemoryStore extends StoreBase {
           status: "completed",
           outputJson: JSON.stringify({ skill: written.summary, answer: answer.trim() }),
           completedAt,
-          metadataJson: JSON.stringify({ ...metadataBase, toolEvents, usage: latestUsage }),
+          metadataJson: JSON.stringify({ ...metadataBase, attemptCount, toolEvents, usage: latestUsage }),
         })
         .where(eq(skillWriterJobs.id, jobId))
         .run()
@@ -2809,17 +3087,76 @@ export class MemoryStore extends StoreBase {
     if (input.operation === "update" && !existed) {
       throw new SocratesError("skill_not_found", "Cannot update a skill that does not exist.", { recoverable: true, details: { name: input.name, scope: input.scope } })
     }
-    const parsed = parseSkillMarkdown(input.content, skillFile)
+    const parsed = validateSkillWriteMarkdown(input.content, skillFile)
     if (!parsed || parsed.name !== input.name) {
-      throw new SocratesError("skill_write_invalid_markdown", "skill_write content must be a valid SKILL.md with matching frontmatter name.", {
+      throw new SocratesError("skill_write_invalid_markdown", "skill_write content must be a substantive procedural SKILL.md with matching frontmatter name, a heading, and actionable steps.", {
         recoverable: true,
         details: { name: input.name, scope: input.scope },
       })
     }
+    const skillDir = path.dirname(skillFile)
+    const auxiliaryFiles = (input.files ?? []).map((file) => {
+      const relativePath = file.path.replaceAll("\\", "/")
+      const normalizedPath = path.posix.normalize(relativePath)
+      const rootSegment = normalizedPath.split("/")[0]
+      if (
+        normalizedPath !== relativePath ||
+        normalizedPath === "." ||
+        normalizedPath.startsWith("../") ||
+        path.posix.isAbsolute(normalizedPath) ||
+        !["references", "scripts", "assets"].includes(rootSegment ?? "")
+      ) {
+        throw new SocratesError("skill_write_file_path_invalid", "Supporting skill files must use normalized relative paths under references/, scripts/, or assets/.", {
+          recoverable: true,
+          details: { path: file.path },
+        })
+      }
+      return { ...file, relativePath: normalizedPath, absolutePath: safeJoin(skillDir, normalizedPath) }
+    })
+    if (new Set(auxiliaryFiles.map((file) => file.relativePath)).size !== auxiliaryFiles.length) {
+      throw new SocratesError("skill_write_file_path_duplicate", "Supporting skill file paths must be unique.", { recoverable: true })
+    }
+    const plannedPaths = new Set(["SKILL.md", ...auxiliaryFiles.map((file) => file.relativePath)])
+    const markdownLink = /\]\(([^)]+)\)/g
+    for (const document of [{ relativePath: "SKILL.md", content: input.content }, ...auxiliaryFiles.filter((file) => file.relativePath.endsWith(".md"))]) {
+      let match: RegExpExecArray | null
+      while ((match = markdownLink.exec(document.content))) {
+        const rawTarget = match[1]?.trim().replace(/^<|>$/g, "").split(/\s+["']/)[0] ?? ""
+        const linkTarget = rawTarget.split("#")[0]
+        if (!linkTarget || /^(?:[a-z]+:|\/)/i.test(linkTarget)) continue
+        let decodedTarget: string
+        try {
+          decodedTarget = decodeURIComponent(linkTarget)
+        } catch {
+          throw new SocratesError("skill_write_link_invalid", "Relative links in skill markdown must use valid URL encoding.", {
+            recoverable: true,
+            details: { document: document.relativePath, link: linkTarget },
+          })
+        }
+        const resolvedRelative = path.posix.normalize(path.posix.join(path.posix.dirname(document.relativePath), decodedTarget))
+        if (resolvedRelative.startsWith("../") || (!plannedPaths.has(resolvedRelative) && !fs.existsSync(safeJoin(skillDir, resolvedRelative)))) {
+          throw new SocratesError("skill_write_link_invalid", "Relative links in skill markdown must resolve to an existing or supplied skill file.", {
+            recoverable: true,
+            details: { document: document.relativePath, link: linkTarget },
+          })
+        }
+      }
+    }
     const before = readIfExists(skillFile)
-    fs.mkdirSync(path.dirname(skillFile), { recursive: true })
-    if (before !== input.content) {
-      fs.writeFileSync(skillFile, input.content)
+    const changedFiles = [
+      ...(before !== input.content ? [{ absolutePath: skillFile, relativePath: "SKILL.md", content: input.content }] : []),
+      ...auxiliaryFiles.filter((file) => readIfExists(file.absolutePath) !== file.content),
+    ]
+    if (input.operation === "update" && changedFiles.length === 0) {
+      throw new SocratesError("skill_write_noop_update", "Skill updates must make a meaningful file change; unchanged content is not a successful update.", {
+        recoverable: true,
+        details: { name: input.name, scope: input.scope, changeSummary: input.changeSummary },
+      })
+    }
+    fs.mkdirSync(skillDir, { recursive: true })
+    for (const file of changedFiles) {
+      fs.mkdirSync(path.dirname(file.absolutePath), { recursive: true })
+      fs.writeFileSync(file.absolutePath, file.content)
     }
     const info = readSkillInfo(input.scope, root, skillFile)
     if (!info) {
@@ -2831,7 +3168,8 @@ export class MemoryStore extends StoreBase {
       operation: input.operation,
       name: input.name,
       path: path.relative(displayRoot, skillFile).replaceAll(path.sep, "/"),
-      changed: before !== input.content,
+      changed: changedFiles.length > 0,
+      changedFiles: changedFiles.map((file) => path.relative(displayRoot, file.absolutePath).replaceAll(path.sep, "/")),
       summary: skillSummary(info),
       truncation: truncationFor(input.content, DEFAULT_CHAR_LIMIT),
     }
@@ -3786,6 +4124,27 @@ const usageFromMetadata = (metadata: Record<string, unknown>): { totalTokens?: n
   return {
     ...(typeof record.totalTokens === "number" ? { totalTokens: Math.max(0, Math.floor(record.totalTokens)) } : {}),
     ...(typeof record.costUsd === "number" ? { costUsd: Math.max(0, record.costUsd) } : {}),
+  }
+}
+
+const aggregateModelUsages = (usages: ModelUsage[]): ModelUsage => {
+  const sum = (key: keyof Pick<ModelUsage, "inputTokens" | "outputTokens" | "reasoningTokens" | "cachedInputTokens" | "totalTokens" | "costUsd">): number | undefined => {
+    const values = usages.map((usage) => usage[key]).filter((value): value is number => typeof value === "number")
+    return values.length > 0 ? values.reduce((total, value) => total + value, 0) : undefined
+  }
+  const inputTokens = sum("inputTokens")
+  const outputTokens = sum("outputTokens")
+  const reasoningTokens = sum("reasoningTokens")
+  const cachedInputTokens = sum("cachedInputTokens")
+  const totalTokens = sum("totalTokens")
+  const costUsd = sum("costUsd")
+  return {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(costUsd !== undefined ? { costUsd } : {}),
   }
 }
 

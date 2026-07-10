@@ -834,6 +834,27 @@ Stores each backend Global Memory Agent batch. Scheduled and manual runs inspect
 | `completed_at` | `TEXT` | no | ISO timestamp. |
 | `metadata_json` | `TEXT` | no | Batch metadata, model attempts, and truncation notes. |
 
+## `memory_agent_journal`
+
+Append-only structured handoff rows for successful Global Memory Agent runs. One row belongs to one unique `memory_agent_jobs.id`; SQLite is authoritative and the generated Markdown ledger is only a bounded readable snapshot. The journal is not embedded in V1.
+
+| Column | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `id` | `TEXT` | yes | Primary key, stable `memjournal_...` id. |
+| `job_id` | `TEXT` | yes | Unique originating Memory Agent job id. |
+| `summary` | `TEXT` | yes | Strict bounded run handoff summary. |
+| `patterns_observed_json` | `TEXT` | yes | At most 8 structured pattern findings with bounded evidence turn ids. |
+| `skills_affected_json` | `TEXT` | yes | At most 8 inspected/proposed/already-represented skill outcomes. |
+| `decisions_json` | `TEXT` | yes | At most 8 bounded decisions. |
+| `open_investigations_json` | `TEXT` | yes | At most 10 unresolved items; backend assigns/reuses stable investigation ids. |
+| `next_run_focus_json` | `TEXT` | yes | At most 5 bounded next-run priorities. |
+| `provider_id`, `model_id` | `TEXT` | yes | Model identity for this journal-producing run. |
+| `thinking_enabled` | `INTEGER` | yes | Boolean stored as 0/1. |
+| `thinking_effort` | `TEXT` | no | Optional configured effort. |
+| `status` | `TEXT` | yes | `completed` for persisted successful handoffs. |
+| `created_at` | `TEXT` | yes | Completion timestamp. |
+| `metadata_json` | `TEXT` | no | Trigger, start/completion times, usage, tool count, evidence ids, and mechanical action outcomes. |
+
 ## `memory_notes`
 
 Stores Socrates-to-Memory-Agent notepad leads. The model-facing create contract stays small (`note`, optional `importance`); source refs, source project/workspace metadata, and the default project-local skill-scope hint are backend-attached lookup values so the Memory Agent can chain into `trace_retrieve`. Inserts must pass deterministic normalization and a hard deduplication guard before a row is created. Any existing equivalent normalized Socrates note returns the existing row, and a third non-duplicate Socrates-authored note in the same source turn is rejected with a recoverable store/tool error.

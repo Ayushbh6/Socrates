@@ -1,11 +1,13 @@
-import type {
-  ProviderId,
-  RuntimeConfig,
-  ThinkingEffort,
-  WorkerModelSettings,
+import {
+  memoryAgentJournalOutputSchema,
+  type MemoryAgentJournalOutput,
+  type ProviderId,
+  type RuntimeConfig,
+  type ThinkingEffort,
+  type WorkerModelSettings,
 } from "@socrates/contracts"
-import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, SocratesAgent, type SocratesAgentEvent } from "@socrates/core"
-import type { ModelProvider } from "@socrates/providers"
+import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, StructuredToolAgentRunner } from "@socrates/core"
+import type { ModelEvent, ModelProvider, ModelUsage } from "@socrates/providers"
 import { createMemoryAgentToolExecutors, type MemoryAgentToolCallbacks } from "./memoryAgentToolExecutors"
 
 const MEMORY_AGENT_RUNTIME_CONFIG = (input: MemoryAgentModelSettings): RuntimeConfig => ({
@@ -38,35 +40,34 @@ export type MemoryAgentRunInput = {
   socratesHome: string
   tools: MemoryAgentToolCallbacks
   contextCompressorSettings?: WorkerModelSettings
-  onEvent?: (event: SocratesAgentEvent) => void
+  onModelEvent?: (event: ModelEvent) => void
+  onToolResult?: (result: { toolCallId: string; toolName: string; input: unknown; output: unknown }) => void
 }
 
-export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<string> => {
-  const agent = new SocratesAgent(input.provider, createMemoryToolRegistry())
+export type MemoryAgentRunResult = {
+  output: MemoryAgentJournalOutput
+  toolCalls: number
+  usages: ModelUsage[]
+}
+
+export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<MemoryAgentRunResult> => {
   const runtimeConfig = MEMORY_AGENT_RUNTIME_CONFIG(input.modelSettings)
-  const systemPrompt = buildMemoryAgentSystemPrompt({
-    socratesHome: input.socratesHome,
-  })
-  let text = ""
-  for await (const event of agent.streamTurn({
+  return new StructuredToolAgentRunner().run({
+    provider: input.provider,
+    providerId: input.modelSettings.providerId,
+    modelId: input.modelSettings.modelId,
+    runtimeConfig,
+    system: buildMemoryAgentSystemPrompt({ socratesHome: input.socratesHome }),
+    userContent: input.evidence,
+    schema: memoryAgentJournalOutputSchema,
+    toolRegistry: createMemoryToolRegistry(),
+    toolExecutors: createMemoryAgentToolExecutors(input.tools),
+    maxToolCalls: 60,
     projectId: input.projectId,
     conversationId: input.conversationId,
     sessionId: input.sessionId,
     turnId: input.turnId,
-    providerId: input.modelSettings.providerId,
-    modelId: input.modelSettings.modelId,
-    runtimeConfig,
-    messages: [{ role: "user", content: input.evidence }],
-    systemPromptOverride: systemPrompt,
     workspacePath: input.workspacePath ?? input.socratesHome,
-    toolExecutors: createMemoryAgentToolExecutors(input.tools),
-    requestApproval: async () => ({
-      decision: "rejected",
-      reason: "Backend memory agent writes only through scoped edit_files, which does not require external approval.",
-    }),
-    maxToolCallsPerTurn: 60,
-    maxParallelToolCalls: 4,
-    maxConfirmedToolErrorsPerTurn: 8,
     contextCompression: {
       enabled: true,
       mode: "memory",
@@ -76,18 +77,13 @@ export const runMemoryAgentTurn = async (input: MemoryAgentRunInput): Promise<st
             compressorAuthMode: input.contextCompressorSettings.authMode ?? "api_key",
             compressorModelId: input.contextCompressorSettings.modelId,
             compressorThinkingEnabled: input.contextCompressorSettings.thinkingEnabled,
-            ...(input.contextCompressorSettings.thinkingEffort ? { compressorThinkingEffort: input.contextCompressorSettings.thinkingEffort } : {}),
+            ...(input.contextCompressorSettings.thinkingEffort
+              ? { compressorThinkingEffort: input.contextCompressorSettings.thinkingEffort }
+              : {}),
           }
         : {}),
     },
-  })) {
-    input.onEvent?.(event)
-    if (event.type === "model.answer.delta") {
-      text += event.text
-    }
-    if (event.type === "model.failed") {
-      throw event.error
-    }
-  }
-  return text
+    ...(input.onModelEvent ? { onModelEvent: input.onModelEvent } : {}),
+    ...(input.onToolResult ? { onToolResult: input.onToolResult } : {}),
+  })
 }

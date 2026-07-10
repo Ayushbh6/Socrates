@@ -15,6 +15,8 @@ import type {
   MemoryNotesToolOutput,
   MemorySearchInput,
   MemorySearchOutput,
+  ReadMemoryJournalToolInput,
+  ReadMemoryJournalToolOutput,
   McpRegistryToolInput,
   McpRegistryToolOutput,
   ModelToolDefinition,
@@ -99,6 +101,7 @@ export type ToolExecutors = {
   memory_note?: (input: MemoryNoteToolInput, context: ToolExecutorContext) => Promise<MemoryNoteToolOutput>
   memory_notes?: (input: MemoryNotesToolInput, context: ToolExecutorContext) => Promise<MemoryNotesToolOutput>
   memory_search?: (input: MemorySearchInput, context: ToolExecutorContext) => Promise<MemorySearchOutput>
+  read_memory_journal?: (input: ReadMemoryJournalToolInput, context: ToolExecutorContext) => Promise<ReadMemoryJournalToolOutput>
   skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
   mcp_registry?: (input: McpRegistryToolInput, context: ToolExecutorContext) => Promise<McpRegistryToolOutput>
   mcp_dynamic?: (input: { dynamicName: string; input: unknown }, context: ToolExecutorContext) => Promise<unknown>

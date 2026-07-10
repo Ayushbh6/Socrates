@@ -1727,6 +1727,7 @@ describe("tool contracts", () => {
         operation: "create",
         name: "memory-review",
         content: "---\nname: memory-review\ndescription: Use when reviewing memory.\n---\n\n# Memory Review\n",
+        changeSummary: "Create the approved memory review workflow.",
       }).success,
     ).toBe(true)
     expect(skillWriteToolInputSchema.safeParse({ scope: "builtin", operation: "create", name: "memory-review", content: "# bad" }).success).toBe(false)
@@ -1737,6 +1738,7 @@ describe("tool contracts", () => {
         name: "memory-review",
         path: "skills/memory-review/SKILL.md",
         changed: true,
+        changedFiles: ["skills/memory-review/SKILL.md"],
         summary: skill,
         truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 },
       }).success,
@@ -1860,6 +1862,8 @@ describe("tool contracts", () => {
         name: "general",
         editMode: "create",
         newText: "---\nname: general\ndescription: Useful global Socrates patterns.\n---\n# General\n",
+        rationale: "Repeated workflow across two inspected turns.",
+        sourceTurnIds: ["turn-1"],
       }).success,
     ).toBe(true)
     expect(editFilesToolInputSchema.safeParse({ target: "skill", editMode: "create", newText: "# Missing name\n" }).success).toBe(false)

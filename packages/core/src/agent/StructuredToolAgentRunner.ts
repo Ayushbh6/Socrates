@@ -1,6 +1,7 @@
 import type { RuntimeConfig } from "@socrates/contracts"
-import type { ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
+import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
 import { createId, SocratesError } from "@socrates/shared"
+import { prepareContextForModelCall, type ContextCompressionRuntime } from "../context/contextCompression"
 import type { ToolExecutors } from "../tools/types"
 import { ToolRegistry } from "../tools/registry"
 
@@ -22,6 +23,9 @@ export type StructuredToolAgentRunInput<TOutput> = {
   workspacePath: string
   cacheKey?: string
   abortSignal?: AbortSignal
+  contextCompression?: ContextCompressionRuntime
+  onModelEvent?: (event: ModelEvent) => void
+  onToolResult?: (result: { toolCallId: string; toolName: string; input: unknown; output: unknown }) => void
 }
 
 type StructuredOutputSchema<TOutput> = {
@@ -41,7 +45,7 @@ export class StructuredToolAgentRunner {
     if (!input.provider.generateStructured) {
       throw new SocratesError("structured_generation_unavailable", "This agent requires provider structured generation.", { recoverable: true })
     }
-    const messages: ModelMessage[] = [{ role: "user", content: input.userContent }]
+    let messages: ModelMessage[] = [{ role: "user", content: input.userContent }]
     const usages: ModelUsage[] = []
     let usedToolCalls = 0
 
@@ -49,17 +53,30 @@ export class StructuredToolAgentRunner {
       const assistantParts: ModelMessagePart[] = []
       const toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown; providerMetadata?: Record<string, Record<string, unknown>> }> = []
       let answerText = ""
+      const tools = input.toolRegistry.modelDefinitions()
+      const prepared = await prepareContextForModelCall({
+        provider: input.provider,
+        providerId: input.providerId,
+        modelId: input.modelId,
+        runtimeConfig: input.runtimeConfig,
+        system: input.system,
+        messages,
+        tools,
+        ...(input.contextCompression ? { compression: input.contextCompression } : {}),
+      })
+      messages = prepared.messages
       for await (const event of input.provider.stream({
         providerId: input.providerId,
         modelId: input.modelId,
         system: input.system,
         messages,
         runtimeConfig: input.runtimeConfig,
-        tools: input.toolRegistry.modelDefinitions(),
+        tools,
         modelCallId: createId("mcall"),
         ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       })) {
+        input.onModelEvent?.(event)
         if (event.type === "model.answer.delta") answerText += event.text
         if (event.type === "model.tool_call.completed") {
           toolCalls.push({
@@ -86,7 +103,9 @@ export class StructuredToolAgentRunner {
       )
       const results = []
       for (const toolCall of allowed) {
-        results.push(await executeTool(input, toolCall))
+        const result = await executeTool(input, toolCall)
+        results.push(result)
+        input.onToolResult?.({ ...result, input: toolCall.input })
         usedToolCalls += 1
       }
       messages.push({ role: "assistant", content: assistantParts })
@@ -97,11 +116,20 @@ export class StructuredToolAgentRunner {
     }
 
     messages.push({ role: "developer", content: "Finish now. Return only the strict structured result requested by the system contract. Do not call tools." })
+    const finalPrepared = await prepareContextForModelCall({
+      provider: input.provider,
+      providerId: input.providerId,
+      modelId: input.modelId,
+      runtimeConfig: input.runtimeConfig,
+      system: input.system,
+      messages,
+      ...(input.contextCompression ? { compression: input.contextCompression } : {}),
+    })
     const generated = await input.provider.generateStructured<TOutput>({
       providerId: input.providerId,
       modelId: input.modelId,
       system: input.system,
-      messages,
+      messages: finalPrepared.messages,
       runtimeConfig: input.runtimeConfig,
       schema: input.schema,
       modelCallId: createId("mcall"),
@@ -141,7 +169,7 @@ const executeTool = async <TOutput>(
       workspacePath: input.workspacePath,
       runtimeConfig: input.runtimeConfig,
       executors: input.toolExecutors,
-      requestApproval: async () => ({ decision: "rejected", reason: "Structured routing agents are read-only." }),
+      requestApproval: async () => ({ decision: "rejected", reason: "This backend agent may only use its explicitly scoped automatic tools." }),
       onOutput: () => undefined,
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     })

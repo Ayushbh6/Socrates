@@ -2350,7 +2350,7 @@ Rules:
 - Do not copy a display name into `id`, and do not pass both `id` and `name` unless both values come from the same listed skill row.
 - The runtime must not inject hidden matched skill ids/descriptions by grepping the user prompt.
 - The main Socrates agent cannot create, edit, or delete skills through this tool. Global/project skill create/delete flows and Memory Agent skill-freshness proposals route approved work to the Skill Writer Agent.
-- The Memory Agent and Skill Writer Agent must be able to inspect full existing `SKILL.md` content before making or applying exact updates. If output is truncated, they should request the full content before deciding the edit.
+- The Memory Agent and Skill Writer Agent must be able to inspect full existing `SKILL.md` content before making or applying exact updates. If output is truncated, they should request the full content before deciding the edit. The backend classifies the proposal as `update` whenever the canonical scoped target exists, even if the model supplied a create-style edit verb.
 - Global skills are visible to every project. Project skills are visible only in that project's active workspace.
 - Memory Agent skill proposal notifications include `scope` and, for project skills, the project id/name. Skill names should be human-facing slugs, not random ids or test suffixes.
 
@@ -2364,13 +2364,19 @@ type SkillWriteInput = {
   operation: "create" | "update"
   name: string
   content: string
+  changeSummary: string
+  evidenceTurnIds?: string[] // max 12; exact approved evidence
+  files?: Array<{ path: string; content: string }> // references/, scripts/, assets/ only
 }
 ```
 
 Rules:
 
-- `skill_write` validates and saves the final `SKILL.md`; it does not interpret product intent.
+- `skill_write` validates and saves a substantive procedural `SKILL.md`; it does not interpret product intent. Supporting files are optional and confined to normalized relative paths under `references/`, `scripts/`, or `assets/`; traversal, duplicates, and unresolved relative Markdown links are rejected.
+- Memory-originated jobs must inspect every approved source turn and cite the exact ids in `evidenceTurnIds`. Updates must read the exact canonical `<scope>:<name>` skill first. No-op updates are rejected.
+- Skill summaries use canonical scoped ids (`builtin:<name>`, `global:<name>`, or `project:<name>`). Exact-name lookup remains backward compatible, but callers should use listed canonical ids to avoid cross-scope collisions.
 - The Skill Writer Agent should always perform approved tasks unless validation, read, or write tooling fails.
+- If an approved attempt ends without calling `skill_write`, the job runner performs one bounded repair attempt with the same enforcement. It never generates fallback skill content in backend code.
 - It should have narrow read tools only: `trace_retrieve`, `skills`, read-only `user_profile`, read-only `soul`, and read-only project/repo docs for project skills.
 - It must not receive Terminal, arbitrary filesystem writes, identity/profile writes, project/repo docs writes, or raw path mutation tools.
 
@@ -2435,6 +2441,8 @@ The behavior stays simple and human-facing:
 - Pre-turn routing always reads the global and project always-apply sections and renders their successful outputs into a provider-agnostic stable cache prelude before conversation/user text. Router-selected docs, save summaries, and same-turn ledgers remain in the later dynamic context tail.
 - Before router reasoning, the complete user prompt is shared-chunked and automatically hybrid-prefetched against eligible memory sections. Up to 12 prompt segments are merged into at most eight section parents; this does not consume the router's tool budget.
 - `MemoryRouterAgent` has exactly one `memory_search` tool, at most three calls per pre-turn/post-evidence phase, then tools are disabled and the final response is strict Zod structured output.
+- The Global Memory Agent follows the same tool-loop then structured-final pattern. Its final Zod journal has bounded `summary`, `patternsObserved`, `skillsAffected`, `decisions`, `openInvestigations`, and `nextRunFocus`; scoped file/proposal work remains normal internal tool calls. A valid successful run creates one `memory_agent_journal` row and refreshes the generated Memory Agent Ledger file exposed by Memory Center.
+- The Memory Agent-only `read_memory_journal` tool is read-only. `list` defaults to 5 and caps at 10 compact previews; `read` accepts one run id. Character limits default to 8,000 for list serialization and 12,000 for a run, with a 20,000 hard maximum and explicit truncation metadata. It cannot write, delete, search, or embed journal history.
 - The router never authors `oldText`, `newText`, patches, hashes, or hidden backend ids.
 - Socrates opens exact targets, checks what is already represented, and uses `project_docs` or `repo_docs` for project/repo writes. User-profile/identity/skill candidates go through `memory_note` to their owning agents.
 - Post-evidence routing saves only durable outcomes, open loops, corrections, or repo doctrine changes created by completed work.

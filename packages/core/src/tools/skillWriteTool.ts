@@ -5,7 +5,7 @@ import type { SocratesTool } from "./types"
 export const skillWriteTool: SocratesTool<typeof skillWriteToolInputSchema._type, typeof skillWriteToolOutputSchema._type> = {
   name: "skill_write",
   description:
-    "Save the final SKILL.md for an already-approved skill create/update task. This tool only validates and writes the supplied skill content; it does not decide whether the skill should exist.",
+    "Save the final SKILL.md and optional supporting files for an already-approved skill create/update task. Cite exact evidence turns and summarize the meaningful change. The tool validates content and paths; it does not decide whether the skill should exist.",
   inputSchema: skillWriteToolInputSchema,
   resultSchema: skillWriteToolOutputSchema,
   permission: "mutate",
@@ -20,5 +20,5 @@ export const skillWriteTool: SocratesTool<typeof skillWriteToolInputSchema._type
   },
   summary: (output) => `${output.operation === "create" ? "Created" : "Updated"} ${output.scope} skill ${output.name}.`,
   resultPreview: (output) => `${output.scope}:${output.name}\n${output.path}\n${output.summary.description}`,
-  metrics: () => ({ filesEdited: 1 }),
+  metrics: (output) => ({ filesEdited: output.changedFiles.length }),
 }

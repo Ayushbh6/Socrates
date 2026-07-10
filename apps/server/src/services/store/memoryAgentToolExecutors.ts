@@ -11,6 +11,8 @@ import type {
   ProjectsToolInput,
   ProjectsToolOutput,
   ReadToolOutput,
+  ReadMemoryJournalToolInput,
+  ReadMemoryJournalToolOutput,
   SearchToolOutput,
   SkillsToolInput,
   SkillsToolOutput,
@@ -36,6 +38,7 @@ export type MemoryAgentToolCallbacks = {
   soul: (input: SoulToolInput) => Promise<SoulToolOutput> | SoulToolOutput
   userProfile: (input: UserProfileToolInput) => Promise<UserProfileToolOutput> | UserProfileToolOutput
   memoryNotes: (input: MemoryNotesToolInput) => Promise<MemoryNotesToolOutput> | MemoryNotesToolOutput
+  readMemoryJournal: (input: ReadMemoryJournalToolInput) => Promise<ReadMemoryJournalToolOutput> | ReadMemoryJournalToolOutput
   editFiles: (input: EditFilesToolInput) => Promise<EditFilesToolOutput> | EditFilesToolOutput
 }
 
@@ -56,6 +59,7 @@ export const createMemoryAgentToolExecutors = (tools: MemoryAgentToolCallbacks):
     tool_docs: async (input) => tools.toolDocs(input),
     skills: async (input) => tools.skills(input),
     memory_notes: async (input) => tools.memoryNotes(input),
+    read_memory_journal: async (input) => tools.readMemoryJournal(input),
     project_docs: () => unavailable(),
     repo_docs: () => unavailable(),
     soul: async (input) => tools.soul(input),

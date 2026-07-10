@@ -155,6 +155,13 @@
       "when": 1783678381637,
       "tag": "0021_talented_princess_powerful",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1783720620876,
+      "tag": "0022_friendly_sentinels",
+      "breakpoints": true
     }
   ]
 }

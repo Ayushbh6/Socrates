@@ -42,6 +42,8 @@ export type IdPrefix =
   | "memchk"
   | "memnote"
   | "memconf"
+  | "meminv"
+  | "memjournal"
   | "skjob"
   | "wms"
   | "mdoc"

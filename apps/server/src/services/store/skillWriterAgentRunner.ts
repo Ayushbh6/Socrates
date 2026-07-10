@@ -38,6 +38,7 @@ export type SkillWriterRunInput = {
   conversationId: string
   sessionId: string
   turnId: string
+  sourceTurnIds: string[]
   workspacePath?: string
   socratesHome: string
   tools: SkillWriterToolCallbacks
@@ -57,11 +58,15 @@ export const runSkillWriterTurn = async (input: SkillWriterRunInput): Promise<st
     `scope: ${input.scope}`,
     `operation: ${input.operation}`,
     `skill_name: ${input.name}`,
+    `canonical_skill_id: ${input.scope}:${input.name}`,
+    `source_turn_ids: ${input.sourceTurnIds.length > 0 ? input.sourceTurnIds.join(", ") : "none (dashboard request)"}`,
     "",
     "Approved request:",
     input.request.trim(),
     "",
-    "You must call skill_write with the complete final SKILL.md.",
+    "For every listed source turn, call trace_retrieve inspect with that exact turnId before writing.",
+    "For an update, read the exact canonical scoped skill before writing.",
+    "You must call skill_write with the complete final SKILL.md, a concrete changeSummary, and the exact evidenceTurnIds above.",
   ].join("\n")
 
   let text = ""

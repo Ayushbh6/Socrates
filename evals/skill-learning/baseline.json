@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-10T17:50:00+02:00",
+  "preEnhancement": {
+    "gitCommit": "8aca256c90e66b8706c031f3f373a4b1f8b4be50",
+    "promptHashesSha256": {
+      "memoryAgent": "da4e106a7fbe84d80027f473c03077bff34c31d71482b437a76e3efd942de477",
+      "skillWriter": "9c08545b092efecd170e66eb0955816dd52c86a3311c64d2f7b693fb152b995f",
+      "socrates": "efad614642456475fb6684b3fbe758e9fec0db601e246092565895fab8637556"
+    },
+    "focusedTest": {
+      "command": "CI=true pnpm --filter @socrates/server test -- src/test/server.test.ts -t 'builds project skills|builds and deletes global skills|defaults Memory Agent skill proposals|rejects scheduled skill and tool-doc writes|rejects pending memory skill proposals'",
+      "result": "5 passed, 96 skipped"
+    },
+    "observedGaps": [
+      "Proposal sourceTurnIds were persisted but omitted from the approved Skill Writer task.",
+      "Skill writes accepted frontmatter-only bodies and no-op updates.",
+      "Skill ids were unscoped names and could collide across roots.",
+      "skill_write could only write SKILL.md.",
+      "No test demonstrated later discovery, downstream value, and meaningful maturation.",
+      "Memory Agent prompt described current_time but its registry omitted the tool."
+    ]
+  },
+  "evaluation": {
+    "provider": "deepseek",
+    "api": "official DeepSeek chat completions",
+    "models": ["deepseek-v4-flash", "deepseek-v4-pro"],
+    "thinkingModes": ["off", "high", "max"],
+    "hardCostCapUsd": 0.60,
+    "strategy": "Screen role-specific configurations cheaply, then run only promoted pairings through the full create-use-update-use loop."
+  },
+  "improvedBaseline": {
+    "capturedAt": "2026-07-10T19:00:00+02:00",
+    "promptHashesSha256": {
+      "memoryAgent": "50b94914696e6885b48659b5ed4030c091cd164ceb001e06108827591d35aad2",
+      "skillWriter": "4b23c452d2c03fc51b0f50bd13f92d6b352e0face433c35c10e64e12203af430",
+      "socrates": "efad614642456475fb6684b3fbe758e9fec0db601e246092565895fab8637556",
+      "memoryStore": "0672b4712dd743e384b82d2110df395054db722a64028052d4a1d68eb57acce4",
+      "toolContracts": "f177b4404f1a803a0b994adbff2cdfb1401c4fe0fb74f8c93494359ce6781ac8",
+      "memoryToolRegistry": "a5840d0653b0f46b971df13df5c55216ed15da665c83b72a3c9671ddafd62412"
+    },
+    "dataset": { "selectedTasks": 15, "naturalTurns": 40, "syntheticHeldouts": 2, "creationProjectGroups": 3 },
+    "verification": {
+      "focusedOriginalScenarios": "5 passed, 96 skipped",
+      "newSkillQualityScenarios": "2 passed",
+      "contracts": "21 passed",
+      "serverTypecheck": "passed",
+      "coreTypecheck": "passed"
+    },
+    "paidEvaluation": {
+      "actualCostUsd": 0.454788651,
+      "providerCalls": 354,
+      "inputTokens": 8612612,
+      "cachedInputTokens": 6978688,
+      "outputTokens": 186987,
+      "completeLoopPassed": false,
+      "primaryFailure": "Memory Agent proposal recall remained unstable across fresh isolated replays."
+    }
+  },
+  "journalBaseline": {
+    "capturedAt": "2026-07-11T01:15:00+02:00",
+    "architecture": {
+      "sourceOfTruth": "memory_agent_journal",
+      "structuredFinal": true,
+      "generatedLedger": "~/.Socrates/memory_agent/MEMORY_AGENT_LEDGER.md",
+      "recentRunSummaries": 3,
+      "journalListDefault": 5,
+      "journalListMax": 10,
+      "journalReadDefaultChars": 12000,
+      "journalHardMaxChars": 20000,
+      "embedded": false
+    },
+    "hashesSha256": {
+      "memoryPrompt": "81ef2debaf89f69b7b6283204eb7cee20892e701844e703970c30b099494b606",
+      "skillWriterPrompt": "4b23c452d2c03fc51b0f50bd13f92d6b352e0face433c35c10e64e12203af430",
+      "socratesPrompt": "5bdbaaa360ccddef94f8494988f6a172e7094dc6f60537248460e244cae99d92",
+      "memoryStore": "72ea490ccfb8bdf20d58bbc37af7514f4375a458c9b1fc7d58cb49df54eb3645",
+      "journalContracts": "02f620421d96adeda48ebca2d25ea65a394a14c20b81bcde36c37967b8583319",
+      "journalTool": "44027eb37161010eb8a11d7768bc26b0de08b14b4be99e382cefca68b507c746",
+      "structuredRunner": "09554cdfbd51c9ec9f28972fc366038f16acc3d392e8f9118f423f1e687b59cc",
+      "evalHarness": "f94b6b059c61c8a967b3d5c86c9f0bc5f24a21a91f360bd2b99418ee6858ea12"
+    },
+    "verification": {
+      "typecheck": "passed",
+      "repoTests": "403 passed, 1 skipped"
+    },
+    "paidEvaluation": {
+      "pair": "pro-high+flash-off",
+      "finalRunCostUsd": 0.0271750516,
+      "postScreenshotContinuationCostUsd": 0.1746489642,
+      "cumulativeHarnessCostUsd": 0.7127984778,
+      "dashboardStartUsd": 0.69,
+      "estimatedDashboardTotalUsd": 0.8646489642,
+      "accountMaximumUsd": 1,
+      "providerCalls": 22,
+      "inputTokens": 310906,
+      "cachedInputTokens": 240640,
+      "outputTokens": 12210,
+      "completeLoopPassed": true,
+      "proofMode": "Earlier isolated full run proved create and v1 use; deterministic seeded continuation proved update, Writer v2, and v2 use.",
+      "finalStage": "complete",
+      "heldoutSkillOperations": ["list", "describe"],
+      "heldoutBehaviorSignals": "6/6 after deterministic concept-alias rescore; literal substring score was 4/6."
+    }
+  }
+}

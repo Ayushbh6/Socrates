@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Socrates skill-learning golden dataset",
+  "type": "object",
+  "required": ["schemaVersion", "cases"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "evidence", "expected"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "enum": ["create", "update", "negative", "heldout_use"] },
+          "evidence": { "type": "array" },
+          "expected": { "type": "object" }
+        }
+      }
+    }
+  }
+}
