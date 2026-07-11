@@ -1,4 +1,4 @@
-import { chatCompactionSchema, memoryCompactionSchema, type ChatCompaction, type MemoryCompaction } from "@socrates/contracts"
+import { MAX_COMPACTION_SUMMARY_CHARS, chatCompactionSchema, memoryCompactionSchema, type ChatCompaction, type MemoryCompaction } from "@socrates/contracts"
 import { estimateTextTokens, type ModelMessage, type ModelMessagePart, type ModelProvider, type ModelUsage, type TokenCountResult } from "@socrates/providers"
 import type { ModelToolDefinition, ProviderAuthMode, ProviderId, RuntimeConfig, ThinkingEffort } from "@socrates/contracts"
 import { createId, SocratesError } from "@socrates/shared"
@@ -19,6 +19,8 @@ export type ContextCompressionMode = "chat" | "memory"
 
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
   triggerTokens: 170_000,
+  excellentTargetTokens: 60_000,
+  preferredTargetTokens: 80_000,
   postCompactionTargetTokens: 120_000,
   hardLimitTokens: 180_000,
   minimumReductionTokens: 20_000,
@@ -29,6 +31,8 @@ export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
 
 export type ContextCompressionThresholds = {
   triggerTokens: number
+  excellentTargetTokens: number
+  preferredTargetTokens: number
   postCompactionTargetTokens: number
   hardLimitTokens: number
   minimumReductionTokens: number
@@ -77,6 +81,7 @@ export type ContextCompactionCompletedEvent = {
   inputTokensEstimate: number
   outputTokensEstimate: number
   contextUsedTokensEstimate: number
+  sizeClass: "excellent" | "preferred" | "acceptable"
 }
 
 export type ContextCompactionFailedEvent = {
@@ -279,6 +284,7 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
         inputTokensEstimate: initialTokens,
         outputTokensEstimate: result.outputTokensEstimate,
         contextUsedTokensEstimate: finalTokens,
+        sizeClass: compactionSizeClass(finalTokens, thresholds),
       },
     ],
   }
@@ -337,6 +343,7 @@ export const precomputeContextSnapshot = async (input: PrepareContextInput): Pro
       inputTokensEstimate: initialTokens,
       outputTokensEstimate: result.outputTokensEstimate,
       contextUsedTokensEstimate: projectedTokens,
+      sizeClass: compactionSizeClass(projectedTokens, thresholds),
     },
   ]
 }
@@ -400,7 +407,13 @@ const runContextCompaction = async (
   const previouslyCompactedTurnIds = new Set(
     latestSnapshot?.sourceHandles.map((handle) => handle.turnId).filter(isString) ?? [],
   )
-  const selection = selectCompactionWindow(input.messages, thresholds, mode, previouslyCompactedTurnIds)
+  const selection = selectCompactionWindow(
+    input.messages,
+    thresholds,
+    mode,
+    previouslyCompactedTurnIds,
+    estimateCompactionFixedTokens(input),
+  )
   const keptRawMessages = [...selection.tailTurns, ...selection.activeTurns].flatMap((turn) => turn.messages)
   const toolPlan = buildToolCompactionPlan(keptRawMessages, thresholds)
   const sourceMessageIds = unique(selection.headTurns.flatMap((turn) => turn.messages.map((message) => message.id).filter(isString)))
@@ -410,14 +423,14 @@ const runContextCompaction = async (
     snapshotId,
     reason,
     contextUsedTokensEstimate: initialTokens,
-    targetTokens: Math.min(thresholds.postCompactionTargetTokens, thresholds.triggerTokens),
+    targetTokens: preferredCompactionTarget(thresholds),
   }
 
   await compression.startSnapshot?.({
     snapshotId,
     reason,
     contextTokensEstimate: initialTokens,
-    targetTokens: Math.min(thresholds.postCompactionTargetTokens, thresholds.triggerTokens),
+    targetTokens: preferredCompactionTarget(thresholds),
     compressorProviderId,
     compressorModelId,
     sourceMessageIds,
@@ -568,6 +581,7 @@ const selectCompactionWindow = (
   thresholds: ContextCompressionThresholds,
   mode: ContextCompressionMode = "chat",
   previouslyCompactedTurnIds: ReadonlySet<string> = new Set(),
+  fixedTokens = 0,
 ): CompactionSelection => {
   const turns = groupMessagesByTurn(messages.filter((message) => !isInternalCompactionMessage(message)))
     .filter((turn) => !turn.turnId || !previouslyCompactedTurnIds.has(turn.turnId))
@@ -575,11 +589,14 @@ const selectCompactionWindow = (
   const completedTurns = turns.slice(0, -1)
   const tailTurns: CompressorTurnInput[] = []
   let tailTokens = 0
+  const activeTokens = activeTurns.reduce((total, turn) => total + estimateTurnTokens(turn), 0)
+  const preferredTailBudget = Math.max(0, preferredCompactionTarget(thresholds) - fixedTokens - activeTokens)
+  const recentTailBudget = Math.min(thresholds.recentTailTargetTokens, preferredTailBudget)
 
   for (let index = completedTurns.length - 1; index >= 0; index -= 1) {
     const turn = completedTurns[index]!
     const turnTokens = estimateTurnTokens(turn)
-    if (tailTokens + turnTokens > thresholds.recentTailTargetTokens) {
+    if (tailTokens + turnTokens > recentTailBudget) {
       break
     }
     tailTurns.unshift(turn)
@@ -620,6 +637,23 @@ const groupMessagesByTurn = (messages: ModelMessage[]): CompressorTurnInput[] =>
 }
 
 const estimateTurnTokens = (turn: CompressorTurnInput): number => estimateTextTokens(JSON.stringify(turn.messages.map(messageForTokenEstimate))).inputTokens
+
+const preferredCompactionTarget = (thresholds: ContextCompressionThresholds): number =>
+  Math.min(thresholds.preferredTargetTokens, thresholds.postCompactionTargetTokens)
+
+const compactionSizeClass = (
+  tokens: number,
+  thresholds: ContextCompressionThresholds,
+): ContextCompactionCompletedEvent["sizeClass"] => {
+  const excellentTarget = Math.min(thresholds.excellentTargetTokens, preferredCompactionTarget(thresholds))
+  if (tokens <= excellentTarget) return "excellent"
+  if (tokens <= preferredCompactionTarget(thresholds)) return "preferred"
+  return "acceptable"
+}
+
+const estimateCompactionFixedTokens = (input: PrepareContextInput): number =>
+  estimateTextTokens([input.system, input.tools ? safeStringify(input.tools) : ""].join("\n")).inputTokens +
+  Math.ceil(MAX_COMPACTION_SUMMARY_CHARS / 4)
 
 const messageForTokenEstimate = (message: ModelMessage): ModelMessage => {
   if (typeof message.content === "string") {

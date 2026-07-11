@@ -895,7 +895,9 @@ Current implementation thresholds:
 
 ```text
 trigger at 170k estimated input tokens
-successful post-compaction target at or below 120k
+excellent post-compaction result at or below 60k
+preferred soft target at or below 80k
+maximum accepted post-compaction result at or below 120k
 hard provider-input stop at 180k
 minimum normal reduction 20k tokens
 recent completed-turn raw tail target around 50k tokens
@@ -903,7 +905,7 @@ current-turn tool-result raw tail target around 50k tokens
 keep at least the latest 5 current-turn tool results when possible
 ```
 
-There is one V1 trigger: before each provider call, Socrates counts the assembled model-visible input. If it is below 170k, the request proceeds. If it is at or above 170k, compaction runs before sending the next provider call. A compaction is accepted only when the rebuilt request is at or below 120k and achieves the minimum reduction; requests above 180k fail before provider dispatch when compression cannot safely reduce them. Recent completed Q/A turns stay raw by whole-turn boundary, never cut mid-turn. Older head context is summarized into hidden markdown. Bounded deterministic carryover protects exact attachment paths, shell commands, and explicit unresolved/do-not-complete instructions across repeated rounds. For long active turns, older bulky tool results are converted into lightweight progress statements while preserving the newest whole tool results. Global Memory Agent calls use the same trigger with memory-mode compression, so the memory compressor prompt and structured memory schema are used instead of the chat compressor prompt/schema. Completed snapshots are applied before later token counts, and represented raw turns are removed from the model request while remaining authoritative in SQLite.
+There is one V1 trigger: before each provider call, Socrates counts the assembled model-visible input. If it is below 170k, the request proceeds. If it is at or above 170k, compaction runs before sending the next provider call. Tail selection budgets recent whole turns against an 80k preferred rebuilt total after reserving the fixed system/tool prefix, current active turn, and maximum structured-summary allowance. Results at or below 60k are classified `excellent`, results through 80k are `preferred`, and results from 80k through the 120k acceptance ceiling are `acceptable`; no second compressor call is made merely to improve the class. A result is accepted only when it is at or below 120k and achieves the minimum reduction. Requests above 180k fail before provider dispatch when compression cannot safely reduce them. Older head context is summarized into hidden markdown. Bounded deterministic carryover protects exact attachment paths, shell commands, and explicit unresolved/do-not-complete instructions across repeated rounds. For long active turns, older bulky tool results are converted into lightweight progress statements while preserving the newest whole tool results. Global Memory Agent calls use the same trigger with memory-mode compression, so the memory compressor prompt and structured memory schema are used instead of the chat compressor prompt/schema. Completed snapshots are applied before later token counts, and represented raw turns are removed from the model request while remaining authoritative in SQLite.
 
 The estimate is provider-aware. Before each model call, Socrates counts the assembled next provider request through `packages/providers`, including the system prompt, visible messages, hidden compaction summaries, active tool calls/results, and tool definitions/schemas. Completed earlier turns still contribute only visible user query plus final assistant answer.
 

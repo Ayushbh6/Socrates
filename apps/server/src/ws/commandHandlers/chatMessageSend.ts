@@ -956,6 +956,7 @@ const sendContextCompactionEvent = (
           inputTokensEstimate: agentEvent.inputTokensEstimate,
           outputTokensEstimate: agentEvent.outputTokensEstimate,
           contextUsedTokensEstimate: agentEvent.contextUsedTokensEstimate,
+          sizeClass: agentEvent.sizeClass,
         },
         {
           ...context,

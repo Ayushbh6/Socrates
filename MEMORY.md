@@ -183,8 +183,8 @@ Tool routing:
 ## Context Compression
 
 - Compression is triggered at 170k estimated model-visible input tokens for both normal Socrates chat calls and backend Global Memory Agent calls.
-- The provider hard limit is 180k and successful compaction must land at or below 120k while removing at least 20k tokens (or the proportional small-fixture equivalent in tests). Oversized compressor input and disabled-compression requests above 180k fail before a provider call.
-- Recent completed Q/A tail is kept raw up to about 50k tokens without cutting mid-turn.
+- Compaction treats at most 60k total rebuilt context as `excellent`, aims for at most 80k as the preferred soft target, accepts 80-120k as `acceptable`, and rejects results above the 120k post-compaction safety ceiling. The provider hard limit remains 180k, and a successful compaction must remove at least 20k tokens (or the proportional small-fixture equivalent in tests).
+- Recent completed Q/A tail is kept raw by whole-turn boundary up to the smaller of its 50k cap or the remaining 80k preferred-total budget after reserving the system/tool prefix, current active turn, and maximum structured summary allowance.
 - Current active-turn tool pressure keeps the latest tool results by whole tool-call boundary, targeting about 50k tokens and keeping at least the latest five results when possible.
 - Older head context is compacted through `CompressorAgent`, not streamed prompted JSON.
 - Chat and memory compaction schemas live in `packages/contracts/src/contextCompression.ts`; chat uses `chatCompactionSchema`, and memory-agent context uses `memoryCompactionSchema`.
@@ -212,6 +212,7 @@ Tool routing:
 - Credential-aware model routing and experimental ChatGPT Codex auth commit `6a29dad Add ChatGPT Codex auth model routing` is pushed to `origin/main`. It adds auth-mode-aware model settings, filtered `/api/models`, ChatGPT Codex OAuth/token refresh, Codex request routing, UI credential status, Codex-preferred defaults for chat/workers/memory-agent, and compressor regression coverage for active context, anchors, and full structured fields.
 - Ollama embedding setup commit `21d9fc9 Add Ollama embedding setup` is pushed to `origin/main`. It adds Ollama model discovery/recommendations, offline setup guidance without automatic pulls, project embedding configuration for Ollama, active-index-only cleanup for `trace_embeddings`, in-flight stale job guards, and updated context files/contracts/tests.
 - Memory-front hardening commit `df82d0b feat: harden Socrates memory front` is pushed to `origin/main`. It adds the code-owned nine-surface registry, byte-stable identity/rules/surface prelude, large-paste text attachments and bounded image/text submissions, hardened snapshot reuse and compaction gates, HY3/GLM/Luna catalog updates, and the reproducible `evals/memory-harness/` baseline/report/runner. GPT-5.6 Luna remains declared but the connected July 2026 Socrates OAuth account returned `Model not found gpt-5.6-luna`.
+- Context compaction now uses a single-pass soft sizing policy: 60k or less is `excellent`, 80k or less is `preferred`, 80-120k is `acceptable`, and results above 120k are rejected while the 170k trigger and 180k hard provider ceiling remain unchanged. Recent whole-turn history is dynamically fitted into the remaining 80k budget after fixed prompt/tool context, the active turn, and the maximum summary allowance are reserved; this does not add a second compressor call.
 
 ## Next Major Work
 
@@ -222,15 +223,19 @@ Tool routing:
 
 ## Verification
 
-Latest verified for memory-front hardening on 2026-07-11 at implementation commit `df82d0b`:
+Latest verified for soft-target compaction budgeting and memory-front hardening on 2026-07-11:
 
 ```text
 pnpm typecheck
 pnpm test
-  -> CLI 9, contracts 24, MCP 9, providers 89 (+1 intentionally skipped), workspace 102, core 61, server 121; 415 passed total
+  -> CLI 9, contracts 24, MCP 9, providers 89 (+1 intentionally skipped), workspace 102, core 63, server 121; 417 passed total
 pnpm build
 git diff --check
 tracked-change sensitive-data scan
+focused compaction regression
+  -> adaptive recent-tail budgeting against the 80k preferred total
+  -> 60k excellent and 80-120k acceptable size classification
+  -> 120k rejection ceiling remains enforced without a second compressor call
 evals/memory-harness final official DeepSeek V4 Flash/Off run
   -> five sequential compactions, 8/8 canaries
   -> trace_retrieve exact Turn 5 recovery

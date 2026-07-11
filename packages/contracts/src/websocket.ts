@@ -344,6 +344,8 @@ export const contextCompactionCompletedPayloadSchema = z
     inputTokensEstimate: z.number().int().nonnegative(),
     outputTokensEstimate: z.number().int().nonnegative(),
     contextUsedTokensEstimate: z.number().int().nonnegative(),
+    // Optional only for replay compatibility with snapshots created before size classes existed.
+    sizeClass: z.enum(["excellent", "preferred", "acceptable"]).optional(),
   })
   .strict()
 

@@ -1606,7 +1606,7 @@ When context pressure grows, the context builder should keep:
 - Turn-id or audit-query references for source material that must remain recoverable.
 - Retrieved trace evidence only when explicitly relevant.
 
-The V1 compression trigger is 170,000 estimated model-visible input tokens. Before each provider call, Socrates recounts the assembled request; if it is at or above that trigger, it compacts older model-facing context while preserving raw history in the database.
+The V1 compression trigger is 170,000 estimated model-visible input tokens. Before each provider call, Socrates recounts the assembled request; if it is at or above that trigger, it compacts older model-facing context while preserving raw history in the database. The rebuilt request aims for at most 80k total (`excellent` at or below 60k), may be accepted through 120k, and is never padded or recompressed solely to improve that soft size class.
 
 Compaction summaries are hidden runtime context, not fake user messages. The `messages` table must remain a record of real visible conversation messages. Context summaries should point back to a turn id for Q&A inspection or a focused audit query for raw runtime evidence when precision matters.
 

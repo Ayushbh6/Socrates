@@ -26,6 +26,8 @@ describe("context compression", () => {
   it("uses one v1 trigger and tail/tool pressure defaults", () => {
     expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toEqual({
       triggerTokens: 170_000,
+      excellentTargetTokens: 60_000,
+      preferredTargetTokens: 80_000,
       postCompactionTargetTokens: 120_000,
       hardLimitTokens: 180_000,
       minimumReductionTokens: 20_000,
@@ -83,8 +85,9 @@ describe("context compression", () => {
       "context.compaction.started",
       "context.compaction.completed",
     ])
-    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 120_000 })
-    expect(startedTargets).toEqual([120_000])
+    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 80_000 })
+    expect(prepared.compactionEvents[1]).toMatchObject({ sizeClass: "excellent" })
+    expect(startedTargets).toEqual([80_000])
     expect(String(prepared.messages[0]?.content)).toContain("<socrates_internal_context_compaction>")
     expect(String(prepared.messages[0]?.content)).toContain("# Anchors")
     expect(prepared.estimatedTokens).toBe(60_000)
@@ -176,6 +179,38 @@ describe("context compression", () => {
       { role: "assistant", content: "tail assistant", id: "msg_ta", turnId: "turn_2" },
       { role: "user", content: "active user", id: "msg_active", turnId: "turn_3" },
     ])
+  }, SLOW_COMPRESSION_TEST_TIMEOUT_MS)
+
+  it("shrinks the raw recent tail when fixed context would exceed the preferred total", async () => {
+    const provider = structuredProvider({ counts: [10, 5], outputs: [validChat()] })
+    const messages = [
+      { role: "user" as const, content: "old head", id: "msg_head", turnId: "turn_1" },
+      { role: "user" as const, content: "recent tail", id: "msg_tail", turnId: "turn_2" },
+      { role: "user" as const, content: "active turn", id: "msg_active", turnId: "turn_3" },
+    ]
+
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "large fixed prefix " + "system ".repeat(1_000),
+      messages,
+      compression: {
+        enabled: true,
+        thresholds: {
+          triggerTokens: 10,
+          preferredTargetTokens: 6_100,
+          recentTailTargetTokens: 50_000,
+        },
+      },
+    })
+
+    const compressorInput = String(provider.structuredRequests[0]?.messages[0]?.content)
+    expect(compressorInput).toContain("old head")
+    expect(compressorInput).toContain("recent tail")
+    expect(JSON.stringify(prepared.messages)).toContain("active turn")
+    expect(JSON.stringify(prepared.messages)).not.toContain("recent tail")
   }, SLOW_COMPRESSION_TEST_TIMEOUT_MS)
 
   it("carries the previous validated summary forward exactly once", async () => {
@@ -556,7 +591,7 @@ describe("context compression", () => {
     })
 
     expect(events.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
-    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 120_000 })
+    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 80_000 })
     expect(completed).toEqual([expect.stringMatching(/^ctxcmp_/)])
   })
 
@@ -701,6 +736,21 @@ describe("context compression", () => {
       messages: threeTurnMessages(),
       compression: { enabled: true, thresholds: { recentTailTargetTokens: 1 } },
     })).rejects.toMatchObject({ code: "context_compaction_target_not_met" })
+  })
+
+  it("accepts an above-preferred result below 120k and labels it acceptable", async () => {
+    const provider = structuredProvider({ counts: [170_000, 100_000], outputs: [validChat()] })
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: { enabled: true, thresholds: { recentTailTargetTokens: 1 } },
+    })
+
+    expect(prepared.compactionEvents[1]).toMatchObject({ sizeClass: "acceptable" })
   })
 })
 

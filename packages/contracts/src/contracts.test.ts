@@ -1055,6 +1055,7 @@ describe("websocket server event contracts", () => {
         inputTokensEstimate: 161000,
         outputTokensEstimate: 1800,
         contextUsedTokensEstimate: 116000,
+        sizeClass: "acceptable",
       }),
     ),
     contextCompactionFailedEventSchema.safeParse(
