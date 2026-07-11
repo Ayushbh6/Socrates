@@ -91,7 +91,7 @@ export function ChatComposer({
   const uploadFiles = async (fileList: File[] | FileList) => {
     const availableSlots = Math.max(0, MAX_MESSAGE_ATTACHMENTS - attachments.length);
     const files = Array.from(fileList)
-      .filter((file) => file.type.startsWith("image/") || file.type === "text/plain")
+      .filter((file) => file.type.startsWith("image/") || file.type === "text/plain" || file.type === "application/zip" || file.name.toLowerCase().endsWith(".zip"))
       .slice(0, availableSlots);
     if (files.length === 0 || isUploading) {
       return;
@@ -217,7 +217,7 @@ export function ChatComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,text/plain,.txt"
+            accept="image/*,text/plain,.txt,.zip,application/zip"
             multiple
             className="hidden"
             onChange={(event) => {
@@ -231,8 +231,8 @@ export function ChatComposer({
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-full border border-gray-200 bg-gray-50 text-brand-text-light transition-colors hover:bg-gray-100 hover:text-brand-text-dark disabled:opacity-60"
             disabled={isSending || isUploading}
-            aria-label="Attach image or text file"
-            title="Attach image or text file"
+            aria-label="Attach image, text file, or Agent Skill ZIP"
+            title="Attach image, text file, or Agent Skill ZIP"
             onClick={() => fileInputRef.current?.click()}
           >
             <ImagePlus className="size-4" />

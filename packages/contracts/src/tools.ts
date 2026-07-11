@@ -124,7 +124,7 @@ export const searchToolInputSchema = z
   .object({
     mode: z.enum(["files", "text"]),
     query: z.string().min(1),
-    path: z.string().min(1).optional(),
+    path: z.string().min(1).max(240).optional(),
     regex: z.boolean().optional(),
     caseSensitive: z.boolean().optional(),
     includeHidden: z.boolean().optional(),
@@ -1312,13 +1312,33 @@ export const skillSummarySchema = z
     scope: skillScopeSchema,
     path: z.string().min(1),
     updatedAt: z.string().min(1).optional(),
+    enabled: z.boolean().optional(),
+    source: z.enum(["builtin", "generated", "imported"]).optional(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    installedAt: z.string().min(1).optional(),
+    sourceLabel: z.string().min(1).max(240).optional(),
   })
   .strict()
 export type SkillSummary = z.infer<typeof skillSummarySchema>
 
+export const skillImportToolScopeSchema = z.enum(["global", "project"])
+export type SkillImportToolScope = z.infer<typeof skillImportToolScopeSchema>
+
+const skillImportPreviewIdSchema = z.string().min(1).max(80).regex(/^skillimp_[a-f0-9]{32}$/)
+const skillImportUrlSchema = z
+  .string()
+  .url()
+  .max(2_048)
+  .refine((value) => value.startsWith("https://"), "Skill import requires a public HTTPS URL.")
+const skillImportAttachmentPathSchema = z
+  .string()
+  .min(1)
+  .max(240)
+  .regex(/^\.socrates\/attachments\/[^/]+\.zip$/i, "Use the exact attached ZIP path shown in the current user message.")
+
 export const skillsToolInputSchema = z
   .object({
-    operation: z.enum(["list", "describe", "search", "read"]),
+    operation: z.enum(["list", "describe", "search", "read", "preview_import", "commit_import"]),
     scope: skillScopeSchema.optional(),
     id: z.string().min(1).optional().describe("Canonical skill id copied from skills list. Prefer this for describe."),
     name: z.string().min(1).optional().describe("Exact listed display/name handle. Use only when matching by name; do not copy a name into id."),
@@ -1328,6 +1348,10 @@ export const skillsToolInputSchema = z
     limit: z.number().int().positive().max(50).optional(),
     offset: z.number().int().nonnegative().optional(),
     charLimit: z.number().int().positive().max(80_000).optional(),
+    url: skillImportUrlSchema.optional(),
+    attachmentPath: skillImportAttachmentPathSchema.optional(),
+    previewId: skillImportPreviewIdSchema.optional(),
+    conflictStrategy: z.enum(["reject", "replace"]).optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -1337,19 +1361,26 @@ export const skillsToolInputSchema = z
     if ((input.operation === "read" || input.operation === "describe") && !input.id && !input.name) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: `${input.operation} requires id or name.` })
     }
+    if (input.operation === "preview_import") {
+      if (Boolean(input.url) === Boolean(input.attachmentPath)) context.addIssue({ code: z.ZodIssueCode.custom, message: "preview_import requires exactly one URL or current-message attachmentPath." })
+      if (input.scope === "builtin") context.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "Skills cannot be imported into builtin scope." })
+    }
+    if (input.operation === "commit_import") {
+      if (!input.previewId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["previewId"], message: "commit_import requires previewId." })
+      if (input.scope === "builtin") context.addIssue({ code: z.ZodIssueCode.custom, path: ["scope"], message: "Skills cannot be imported into builtin scope." })
+    }
   })
 export type SkillsToolInput = z.infer<typeof skillsToolInputSchema>
 
-export const skillsToolModelInputSchema = z.discriminatedUnion("operation", [
-  z
+const skillsListModelInputSchema = z
     .object({
       operation: z.literal("list"),
       scope: skillScopeSchema.optional(),
       n: z.number().int().positive().max(35).optional(),
       charLimit: z.number().int().positive().max(80_000).optional(),
     })
-    .strict(),
-  z
+    .strict()
+const skillsDescribeModelInputSchema = z
     .object({
       operation: z.literal("describe"),
       scope: skillScopeSchema.optional(),
@@ -1358,17 +1389,113 @@ export const skillsToolModelInputSchema = z.discriminatedUnion("operation", [
       n: z.number().int().positive().max(35).optional(),
       charLimit: z.number().int().positive().max(80_000).optional(),
     })
-    .strict(),
+    .strict()
+const skillsReadModelInputSchema = z
+    .object({
+      operation: z.literal("read"),
+      scope: skillScopeSchema.optional(),
+      id: z.string().min(1).optional().describe("Canonical skill id copied from skills list."),
+      name: z.string().min(1).optional().describe("Exact listed skill name."),
+      path: z.string().min(1).max(240).describe("Relative supporting file path from the skill directory, such as references/checklist.md."),
+      charLimit: z.number().int().positive().max(80_000).optional(),
+    })
+    .strict()
+const skillsSearchModelInputSchema = z
+    .object({
+      operation: z.literal("search"),
+      scope: skillScopeSchema.optional(),
+      query: z.string().min(1),
+      n: z.number().int().positive().max(35).optional(),
+      charLimit: z.number().int().positive().max(80_000).optional(),
+    })
+    .strict()
+const skillsPreviewImportModelInputSchema = z
+    .object({
+      operation: z.literal("preview_import"),
+      scope: skillImportToolScopeSchema.default("project"),
+      url: skillImportUrlSchema.optional().describe("Exact public HTTPS URL of one Agent Skill ZIP. This is not web search."),
+      attachmentPath: skillImportAttachmentPathSchema.optional().describe("Exact .socrates/attachments/*.zip path shown in the current user message."),
+    })
+    .strict()
+const skillsCommitImportModelInputSchema = z
+    .object({
+      operation: z.literal("commit_import"),
+      scope: skillImportToolScopeSchema.default("project"),
+      previewId: skillImportPreviewIdSchema.describe("Exact previewId returned by preview_import."),
+      conflictStrategy: z.enum(["reject", "replace"]).default("reject"),
+    })
+    .strict()
+
+const refineSkillModelInput = (
+  input: { operation?: unknown; id?: unknown; name?: unknown; url?: unknown; attachmentPath?: unknown },
+  context: z.RefinementCtx,
+): void => {
+  if ((input.operation === "describe" || input.operation === "read") && typeof input.id !== "string" && typeof input.name !== "string") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: `${input.operation} requires id or name.` })
+  }
+  if (input.operation === "preview_import" && (typeof input.url === "string") === (typeof input.attachmentPath === "string")) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Provide exactly one URL or attachmentPath." })
+  }
+}
+
+export const skillsToolReadModelInputSchema = z
+  .discriminatedUnion("operation", [skillsListModelInputSchema, skillsDescribeModelInputSchema, skillsReadModelInputSchema, skillsSearchModelInputSchema])
+  .superRefine(refineSkillModelInput)
+export type SkillsToolReadModelInput = z.infer<typeof skillsToolReadModelInputSchema>
+
+export const skillsToolModelInputSchema = z.discriminatedUnion("operation", [
+  skillsListModelInputSchema,
+  skillsDescribeModelInputSchema,
+  skillsReadModelInputSchema,
+  skillsPreviewImportModelInputSchema,
+  skillsCommitImportModelInputSchema,
 ])
-  .superRefine((input, context) => {
-    if (input.operation === "describe" && !input.id && !input.name) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["id"], message: "describe requires id or name." })
-    }
+  .superRefine(refineSkillModelInput)
+
+export const skillImportToolWarningSchema = z
+  .object({
+    code: z.string().min(1).max(80),
+    severity: z.enum(["info", "warning"]),
+    message: z.string().min(1).max(500),
+    path: z.string().min(1).max(240).optional(),
   })
+  .strict()
+
+export const skillImportToolPreviewSchema = z
+  .object({
+    previewId: skillImportPreviewIdSchema,
+    scope: skillImportToolScopeSchema,
+    skill: skillSummarySchema,
+    package: z
+      .object({
+        filename: z.string().min(1).max(240),
+        fileCount: z.number().int().positive().max(200),
+        totalBytes: z.number().int().positive().max(30 * 1024 * 1024),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        files: z.array(z.string().min(1).max(240)).max(40),
+        filesTruncated: z.boolean(),
+      })
+      .strict(),
+    metadata: z
+      .object({
+        license: z.string().min(1).max(500).optional(),
+        compatibility: z.string().min(1).max(500).optional(),
+        author: z.string().min(1).max(200).optional(),
+        version: z.string().min(1).max(100).optional(),
+        allowedTools: z.string().min(1).max(1_000).optional(),
+      })
+      .strict(),
+    conflict: z.object({ exists: z.boolean(), existing: skillSummarySchema.optional() }).strict(),
+    warnings: z.array(skillImportToolWarningSchema).max(20),
+    warningsTruncated: z.boolean(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict()
+export type SkillImportToolPreview = z.infer<typeof skillImportToolPreviewSchema>
 
 export const skillsToolOutputSchema = z
   .object({
-    operation: z.enum(["list", "describe", "search", "read"]),
+    operation: z.enum(["list", "describe", "search", "read", "preview_import", "commit_import"]),
     skills: z.array(skillSummarySchema),
     content: z.string().optional(),
     path: z.string().min(1).optional(),
@@ -1376,6 +1503,8 @@ export const skillsToolOutputSchema = z
     truncation: truncationMetadataSchema,
     usageHint: z.string().optional(),
     warnings: z.array(z.string()).optional(),
+    importPreview: skillImportToolPreviewSchema.optional(),
+    replaced: z.boolean().optional(),
   })
   .strict()
 export type SkillsToolOutput = z.infer<typeof skillsToolOutputSchema>

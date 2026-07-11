@@ -218,6 +218,7 @@ describe("memory doc parser", () => {
     expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([
       "current_time.md",
       "edit_apply_patch.md",
+      "mcp_registry.md",
       "memory_agent/edit_files.md",
       "memory_agent/memory_notes.md",
       "memory_agent/projects.md",

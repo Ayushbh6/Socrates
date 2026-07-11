@@ -246,7 +246,7 @@ describe("DeepSeek chat provider", () => {
             type: "object",
             required: ["operation"],
             properties: expect.objectContaining({
-              operation: expect.objectContaining({ enum: ["list", "describe"] }),
+              operation: expect.objectContaining({ enum: expect.arrayContaining(["list", "describe", "read", "preview_import", "commit_import"]) }),
             }),
           }),
         }),
@@ -282,7 +282,7 @@ describe("DeepSeek chat provider", () => {
             type: "object",
             required: ["operation"],
             properties: expect.objectContaining({
-              operation: expect.objectContaining({ enum: ["list", "describe"] }),
+              operation: expect.objectContaining({ enum: expect.arrayContaining(["list", "describe", "check", "configure", "delete"]) }),
             }),
           }),
         }),

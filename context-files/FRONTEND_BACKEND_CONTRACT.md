@@ -2077,8 +2077,9 @@ Rules:
 - `start` launches a conversation-scoped PTY Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
 - Foreground mutating `run` commands are serialized per workspace across concurrent conversations using the same queue as file mutations. This covers Git branch changes/commits/pushes, package installs, migrations, and file-generating scripts. Read-only commands and background Terminals such as dev servers/watchers must not hold the mutation queue forever.
 - Every raw shell `run` shares the same foreground-to-background path. It returns a normal result when it finishes inside `SOCRATES_TERMINAL_AUTO_DETACH_MS` (default 15 seconds), otherwise returns the same still-running PTY as a named conversation Terminal.
-- Healthy running Terminals are not stopped merely because two hours elapsed. Cleanup is explicit stop, conversation deletion, workspace switch, app shutdown, confirmed process loss, or completed-output retention. A Terminal referenced by a durable waiting task remains alive.
-- Long-running Terminals are independent conversation runtime state so the agent can continue working and poll/stop them later.
+- Healthy running Terminals are not stopped merely because two hours elapsed or the main server restarts. Normal server close leaves active sessions owned by the independent Terminal supervisor; startup reconciles them and resumes polling. Cleanup is explicit stop, conversation deletion, workspace switch, confirmed process loss, completed-output retention, or explicit supervisor shutdown. A Terminal referenced by a durable waiting task remains alive.
+- Long-running Terminals are independent conversation runtime state so the agent can continue working and inspect/stop them later. If a claimed continuation is interrupted by server shutdown, startup requeues the same durable task and the atomic continuation claim allows one retry.
+- Terminal supervisors are isolated per Socrates home and expose an internal health handshake. A single request timeout must not replace or kill a potentially healthy supervisor. Runtime polling tolerates two consecutive transport failures and marks the Terminal `missing` on the third; startup distinguishes a missing process from an unavailable supervisor. Either unrecoverable state wakes a matching durable wait as `failed` with bounded persisted recovery evidence.
 - `wait` is a separate model tool, not a terminal polling parameter. It accepts one to eight unique human Terminal names, one to three unique events from `completed`, `failed`, and `input_required`, and a required reason limited to 7 words and 64 characters. On success it persists the task dependencies and ends the current model execution without a final assistant message. The coordinator resumes the same task on a requested event with bounded new output; no elapsed timer wakes the model.
 - Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; xterm sends raw data, quick-key compatibility remains accepted, and raw stdin is redacted from persistence and model context. `awaiting_input` is a hard human-handoff state: the model must stop and wait for the user, and model-authored `stop` is rejected until the user has interacted or cancelled from the Terminal shell.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific for `run`. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
@@ -2312,18 +2313,23 @@ The Memory Agent must classify each note before acting: durable user facts/prefe
 
 ### `skills`
 
-Read-only discovery and inspection access to reusable workflows from builtin, global, and project skill roots. The preferred model-facing path is `list` then `describe`; backend compatibility may still support `search`/`read`, but prompts should not make those the default route.
+Discovery, inspection, and approval-backed exact-URL installation for reusable workflows from builtin, global, and project skill roots. The normal usage path is `list` then `describe`; `read` opens referenced supporting files. Chat import uses `preview_import` then `commit_import` and shares the dashboard's secure staging and atomic installer.
 
 Input:
 
 ```ts
 type SkillsToolInput = {
-  operation: "list" | "describe"
+  operation: "list" | "describe" | "read" | "preview_import" | "commit_import"
   scope?: "builtin" | "global" | "project"
   id?: string
   name?: string
+  path?: string
   n?: number
   charLimit?: number
+  url?: string // preview_import; exact public HTTPS ZIP, max 2,048 chars; mutually exclusive with attachmentPath
+  attachmentPath?: string // preview_import; exact current-message .socrates/attachments/*.zip path
+  previewId?: string // commit_import; exact staged id
+  conflictStrategy?: "reject" | "replace" // commit_import; defaults reject
 }
 ```
 
@@ -2331,7 +2337,7 @@ Output:
 
 ```ts
 type SkillsToolOutput = {
-  operation: "list" | "describe"
+  operation: "list" | "describe" | "read" | "preview_import" | "commit_import"
   skills: Array<{
     id?: string
     name: string
@@ -2346,6 +2352,18 @@ type SkillsToolOutput = {
   truncation: TruncationMetadata
   usageHint?: string
   warnings?: string[]
+  importPreview?: {
+    previewId: string
+    scope: "global" | "project"
+    skill: SkillSummary
+    package: { filename: string; fileCount: number; totalBytes: number; sha256: string; files: string[]; filesTruncated: boolean }
+    metadata: { license?: string; compatibility?: string; author?: string; version?: string; allowedTools?: string }
+    conflict: { exists: boolean; existing?: SkillSummary }
+    warnings: Array<{ code: string; severity: "info" | "warning"; message: string; path?: string }>
+    warningsTruncated: boolean
+    expiresAt: string
+  }
+  replaced?: boolean
 }
 ```
 
@@ -2355,9 +2373,12 @@ Rules:
 - `describe` requires either an exact `id` copied from `list` or an exact listed `name`. Prefer canonical `id`.
 - Do not copy a display name into `id`, and do not pass both `id` and `name` unless both values come from the same listed skill row.
 - The runtime must not inject hidden matched skill ids/descriptions by grepping the user prompt.
-- The main Socrates agent cannot create, edit, or delete skills through this tool. Global/project skill create/delete flows and Memory Agent skill-freshness proposals route approved work to the Skill Writer Agent.
+- The main Socrates agent cannot author, edit, or delete skills through this tool. It may install a pre-authored package only through `preview_import` followed by approval-required `commit_import`; authored skills and Memory Agent proposals still route through the Skill Writer Agent.
+- `read` requires an exact listed skill id/name plus a normalized relative supporting-file path. The backend resolves it inside that skill directory and never exposes the internal `.socrates-skill.json` provenance file.
 - The Memory Agent and Skill Writer Agent must be able to inspect full existing `SKILL.md` content before making or applying exact updates. If output is truncated, they should request the full content before deciding the edit. The backend classifies the proposal as `update` whenever the canonical scoped target exists, even if the model supplied a create-style edit verb.
 - Global skills are visible to every project. Project skills are visible only in that project's active workspace.
+- `preview_import` accepts exactly one exact user-supplied public HTTPS ZIP URL or exact current-message `.socrates/attachments/*.zip` path. It is not web search. URL downloads have a 30-second timeout, five-redirect limit, 30 MB cap, and public-address validation on every hop. Attached skill ZIPs are allowed by the chat attachment pipeline up to the 20 MB per-message cap and must be attached to the current conversation turn. Both use the existing no-execution ZIP inspection. Model output exposes at most 30 file paths and 10 warnings with explicit truncation flags.
+- `commit_import` defaults to project scope and reject-on-conflict, requires normal approval, and can install only its exact unexpired scope/project/workspace-bound preview. `replace` is valid only when the user explicitly requested replacement. Socrates must verify with list/describe before claiming success.
 - Memory Agent skill proposal notifications include `scope` and, for project skills, the project id/name. Skill names should be human-facing slugs, not random ids or test suffixes.
 
 ### Skill Writer Agent Internal Write Path
@@ -2365,6 +2386,8 @@ Rules:
 The Skill Writer Agent is a specialized agent, not a UI helper and not a hidden fourth model behind a tool. It receives approved create/update tasks from the user flow or Memory Agent, reads the relevant context, authors the final markdown, and calls `skill_write`.
 
 Both direct dashboard creation flows use this same production path. Project `Skills +` resolves the project's primary workspace and writes only to `<workspace>/.socrates/skills/<name>/SKILL.md`; Memory Center `Skills +` writes only to `~/.Socrates/skills/<name>/SKILL.md`. Neither flow may bypass the configured `skill_writer` worker model with a one-off provider stream or hand-authored backend fallback.
+
+The same `Skills +` dialogs expose `Import ZIP`, which deliberately bypasses the Skill Writer because it preserves a pre-authored portable package rather than generating instructions. Preview endpoints accept one multipart ZIP and return `SkillImportPreview`; commit endpoints accept `{ previewId, conflictStrategy: "reject" | "replace" }`. Global routes are `/api/memory-agent/skills/import/preview|commit`; project routes are `/api/projects/:projectId/skills/import/preview|commit`. State routes PATCH `.../skills/:skillName/state` with `{ enabled }`. Preview ids are destination-bound, expire after 24 hours, and cannot be committed into another scope/project/workspace. The UI must show conflicts, package metadata, bounded file inventory, and every security warning before install.
 
 ```ts
 type SkillWriteInput = {

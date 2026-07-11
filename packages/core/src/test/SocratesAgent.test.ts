@@ -5,6 +5,7 @@ import path from "node:path"
 import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
 import type { ModelEvent, ModelMessage, ModelProvider } from "@socrates/providers"
 import { bashTool } from "../tools/bashTool"
+import { skillsTool } from "../tools/skillsTool"
 
 describe("SocratesAgent", () => {
   it("streams through the provider with Socrates prompt and history", async () => {
@@ -194,6 +195,7 @@ describe("SocratesAgent", () => {
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("saved workflow")
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("closure/handoff request")
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("canonical id")
+    expect(tools.find((tool) => tool.name === "skills")?.description).toContain("preview_import")
     expect(tools.find((tool) => tool.name === "memory_note")?.description).toContain("Memory Agent")
     expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(
@@ -2509,6 +2511,8 @@ describe("SocratesAgent", () => {
     expect(request.system).not.toContain("Semantic retrieval status:")
     expect(request.system).toContain("Playwright is bundled by default")
     expect(request.system).toContain('mcp_registry({operation:"list"|"describe"')
+    expect(request.system).toContain("preview_import")
+    expect(request.system).toContain("This is not web search")
     expect(request.system).toContain("Do not simulate extensions")
     expect(request.system).toContain("ask the echo helper")
     expect(request.system).toContain("Do not simulate skills")
@@ -2518,6 +2522,18 @@ describe("SocratesAgent", () => {
     expect(request.system).toContain("Cross-project selectors are not available to the main agent")
     expect(request.system).toContain("Do not begin with guessed absolute cd paths")
     expect(request.system).toContain("Terminal commands start in the active workspace")
+  })
+
+  it("requires approval only for committing a reviewed skill import", async () => {
+    const context = {} as Parameters<typeof skillsTool.decidePolicy>[1]
+    expect(await skillsTool.decidePolicy({ operation: "list" }, context)).toEqual({ type: "auto" })
+    expect(await skillsTool.decidePolicy({ operation: "preview_import", scope: "project", url: "https://example.com/review.zip" }, context)).toEqual({ type: "auto" })
+    expect(
+      await skillsTool.decidePolicy(
+        { operation: "commit_import", scope: "global", previewId: `skillimp_${"a".repeat(32)}`, conflictStrategy: "replace" },
+        context,
+      ),
+    ).toMatchObject({ type: "approval_required", request: { risk: "medium" } })
   })
 })
 

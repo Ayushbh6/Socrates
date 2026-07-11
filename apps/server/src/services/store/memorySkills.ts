@@ -1,6 +1,18 @@
 import fs from "node:fs"
 import path from "node:path"
+import crypto from "node:crypto"
+import YAML from "yaml"
 import type { SkillScope, SkillSummary } from "@socrates/contracts"
+
+export const SKILL_PROVENANCE_FILE = ".socrates-skill.json"
+
+export type SkillProvenance = {
+  source: "generated" | "imported"
+  enabled: boolean
+  installedAt?: string
+  sourceLabel?: string
+  contentHash?: string
+}
 
 export type SkillInfo = SkillSummary & {
   root: string
@@ -34,6 +46,8 @@ export const readSkillInfo = (scope: SkillScope, root: string, skillFile: string
   }
   const skillDir = path.dirname(skillFile)
   const stats = fs.statSync(skillFile)
+  const provenance = readSkillProvenance(skillDir)
+  const contentHash = provenance?.contentHash ?? crypto.createHash("sha256").update(content).digest("hex")
   return {
     name: parsed.name,
     description: parsed.description,
@@ -44,25 +58,64 @@ export const readSkillInfo = (scope: SkillScope, root: string, skillFile: string
     skillDir,
     skillFile,
     content,
+    enabled: provenance?.enabled ?? true,
+    source: scope === "builtin" ? "builtin" : provenance?.source ?? "generated",
+    contentHash,
+    ...(provenance?.installedAt ? { installedAt: provenance.installedAt } : {}),
+    ...(provenance?.sourceLabel ? { sourceLabel: provenance.sourceLabel } : {}),
   }
 }
 
-export const parseSkillMarkdown = (content: string, skillFile: string): { name: string; description: string } | undefined => {
+export type ParsedSkillMarkdown = {
+  name: string
+  description: string
+  license?: string
+  compatibility?: string
+  metadata?: Record<string, string>
+  allowedTools?: string
+}
+
+export const parseSkillMarkdown = (content: string, skillFile: string): ParsedSkillMarkdown | undefined => {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(content)
   if (!match?.[1]) {
     return undefined
   }
-  const frontmatter = match[1]
-  const name = frontmatter.match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim()
-  const description = frontmatter.match(/^description:\s*["']?([^"'\n]+)["']?\s*$/m)?.[1]?.trim()
-  if (!name || !description || !isValidSkillName(name)) {
+  let frontmatter: unknown
+  try {
+    frontmatter = YAML.parse(match[1])
+  } catch {
+    return undefined
+  }
+  if (!frontmatter || typeof frontmatter !== "object" || Array.isArray(frontmatter)) return undefined
+  const fields = frontmatter as Record<string, unknown>
+  const name = typeof fields.name === "string" ? fields.name.trim() : ""
+  const description = typeof fields.description === "string" ? fields.description.trim() : ""
+  if (!name || !description || description.length > 1_024 || !isValidSkillName(name)) {
     return undefined
   }
   const directoryName = path.basename(path.dirname(skillFile))
   if (directoryName !== name) {
     return undefined
   }
-  return { name, description }
+  const license = optionalBoundedString(fields.license, 500)
+  const compatibility = optionalBoundedString(fields.compatibility, 500)
+  const allowedTools = optionalBoundedString(fields["allowed-tools"], 1_000)
+  const metadata =
+    fields.metadata && typeof fields.metadata === "object" && !Array.isArray(fields.metadata)
+      ? Object.fromEntries(
+          Object.entries(fields.metadata as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+            .slice(0, 40),
+        )
+      : undefined
+  return {
+    name,
+    description,
+    ...(license ? { license } : {}),
+    ...(compatibility ? { compatibility } : {}),
+    ...(allowedTools ? { allowedTools } : {}),
+    ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
+  }
 }
 
 export const validateSkillWriteMarkdown = (content: string, skillFile: string): { name: string; description: string } | undefined => {
@@ -106,6 +159,11 @@ export const skillSummary = (skill: SkillInfo): SkillSummary => ({
   scope: skill.scope,
   path: skill.path,
   ...(skill.updatedAt ? { updatedAt: skill.updatedAt } : {}),
+  ...(skill.enabled === undefined ? {} : { enabled: skill.enabled }),
+  ...(skill.source ? { source: skill.source } : {}),
+  ...(skill.contentHash ? { contentHash: skill.contentHash } : {}),
+  ...(skill.installedAt ? { installedAt: skill.installedAt } : {}),
+  ...(skill.sourceLabel ? { sourceLabel: skill.sourceLabel } : {}),
 })
 
 export const fallbackSkillDescription = (request: string): string => {
@@ -150,3 +208,31 @@ export const fallbackSkillMarkdown = (name: string, descriptionOrBody: string): 
 }
 
 export const isValidSkillName = (name: string): boolean => /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(name) && !name.includes("--")
+
+export const readSkillProvenance = (skillDir: string): SkillProvenance | undefined => {
+  const filePath = path.join(skillDir, SKILL_PROVENANCE_FILE)
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) return undefined
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<SkillProvenance>
+    if ((value.source !== "generated" && value.source !== "imported") || typeof value.enabled !== "boolean") return undefined
+    return {
+      source: value.source,
+      enabled: value.enabled,
+      ...(typeof value.installedAt === "string" ? { installedAt: value.installedAt } : {}),
+      ...(typeof value.sourceLabel === "string" ? { sourceLabel: value.sourceLabel } : {}),
+      ...(typeof value.contentHash === "string" && /^[a-f0-9]{64}$/.test(value.contentHash) ? { contentHash: value.contentHash } : {}),
+    }
+  } catch {
+    return undefined
+  }
+}
+
+export const writeSkillProvenance = (skillDir: string, provenance: SkillProvenance): void => {
+  fs.writeFileSync(path.join(skillDir, SKILL_PROVENANCE_FILE), `${JSON.stringify(provenance, null, 2)}\n`, { mode: 0o600 })
+}
+
+const optionalBoundedString = (value: unknown, max: number): string | undefined => {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed && trimmed.length <= max ? trimmed : undefined
+}

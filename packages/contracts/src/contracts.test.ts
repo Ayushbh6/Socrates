@@ -21,6 +21,10 @@ import {
   buildGlobalSkillResponseSchema,
   buildProjectSkillRequestSchema,
   buildProjectSkillResponseSchema,
+  skillImportPreviewSchema,
+  commitSkillImportRequestSchema,
+  commitSkillImportResponseSchema,
+  updateSkillStateRequestSchema,
   configureProjectEmbeddingsRequestSchema,
   configureProjectEmbeddingsResponseSchema,
   connectionReadyEventSchema,
@@ -635,6 +639,20 @@ describe("http contracts", () => {
     expect(buildGlobalSkillRequestSchema.safeParse({ name: "global-review", request: "Build a global review skill" }).success).toBe(true)
     expect(buildGlobalSkillRequestSchema.safeParse({ name: "global--review", request: "Build a global review skill" }).success).toBe(false)
     expect(buildGlobalSkillResponseSchema.safeParse({ skill }).success).toBe(true)
+    const importPreview = {
+      previewId: "skillimp_1",
+      scope: "global",
+      skill: { ...skill, scope: "global", source: "imported", enabled: true, contentHash: "a".repeat(64), installedAt: "2026-07-11T00:00:00.000Z" },
+      package: { filename: "review.zip", fileCount: 2, totalBytes: 500, sha256: "a".repeat(64), files: ["review/SKILL.md", "review/references/checklist.md"] },
+      metadata: { license: "Apache-2.0" },
+      conflict: { exists: false },
+      warnings: [],
+      expiresAt: "2026-07-12T00:00:00.000Z",
+    }
+    expect(skillImportPreviewSchema.safeParse(importPreview).success).toBe(true)
+    expect(commitSkillImportRequestSchema.parse({ previewId: "skillimp_1" })).toMatchObject({ conflictStrategy: "reject" })
+    expect(commitSkillImportResponseSchema.safeParse({ skill: importPreview.skill, replaced: false, warnings: [] }).success).toBe(true)
+    expect(updateSkillStateRequestSchema.safeParse({ enabled: false }).success).toBe(true)
     expect(approveMemorySkillProposalResponseSchema.safeParse({ actionId: "memact_1", skill }).success).toBe(true)
     expect(rejectMemorySkillProposalResponseSchema.safeParse({ actionId: "memact_1", status: "rejected" }).success).toBe(true)
     expect(triggerMemoryAgentRunResponseSchema.safeParse({ state, pending, item }).success).toBe(true)
@@ -1708,9 +1726,37 @@ describe("tool contracts", () => {
     expect(skillsToolModelInputSchema.safeParse({ operation: "list", n: 15 }).success).toBe(true)
     expect(skillsToolModelInputSchema.safeParse({ operation: "list", id: "memory-review" }).success).toBe(false)
     expect(skillsToolModelInputSchema.safeParse({ operation: "describe", id: "memory-review" }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "read", id: "global:memory-review", path: "references/checklist.md" }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "read", id: "global:memory-review" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "preview_import", url: "https://example.com/memory-review.zip" }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "preview_import", attachmentPath: ".socrates/attachments/memory-review.zip" }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "preview_import", url: "https://example.com/memory-review.zip", attachmentPath: ".socrates/attachments/memory-review.zip" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "preview_import", url: "http://example.com/memory-review.zip" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "preview_import", scope: "builtin", url: "https://example.com/memory-review.zip" }).success).toBe(false)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "commit_import", scope: "global", previewId: `skillimp_${"a".repeat(32)}` }).success).toBe(true)
+    expect(skillsToolModelInputSchema.safeParse({ operation: "commit_import", previewId: "skillimp_short" }).success).toBe(false)
     expect(skillsToolModelInputSchema.safeParse({ operation: "search", query: "memory" }).success).toBe(false)
     expect(skillsToolModelInputSchema.safeParse({ operation: "describe" }).success).toBe(false)
     expect(skillsToolOutputSchema.safeParse({ operation: "list", skills: [skill], totalMatches: 1, truncation: { truncated: false, charLimit: 20_000, returnedLength: 200 } }).success).toBe(true)
+    expect(
+      skillsToolOutputSchema.safeParse({
+        operation: "preview_import",
+        skills: [{ ...skill, scope: "project", source: "imported" }],
+        importPreview: {
+          previewId: `skillimp_${"a".repeat(32)}`,
+          scope: "project",
+          skill: { ...skill, scope: "project", source: "imported" },
+          package: { filename: "memory-review.zip", fileCount: 1, totalBytes: 500, sha256: "b".repeat(64), files: ["memory-review/SKILL.md"], filesTruncated: false },
+          metadata: {},
+          conflict: { exists: false },
+          warnings: [],
+          warningsTruncated: false,
+          expiresAt: timestamp,
+        },
+        totalMatches: 1,
+        truncation: { truncated: false, charLimit: 20_000, returnedLength: 500 },
+      }).success,
+    ).toBe(true)
     expect(memoryNoteToolInputSchema.safeParse({ note: "User gave a strong testing preference in this turn.", importance: "high" }).success).toBe(true)
     expect(memoryNoteToolInputSchema.safeParse({ note: "User gave a strong testing preference in this turn.", intent: "profile_preference", priority: "high" }).success).toBe(false)
     expect(memoryNoteToolOutputSchema.safeParse({ noteNumber: 1, status: "open", attachedSource: "current_user_message", result: "created" }).success).toBe(true)

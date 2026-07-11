@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, memoryAgentBasePrompt } from "../index"
+import { buildMemoryAgentSystemPrompt, createMemoryToolRegistry, createSkillWriterToolRegistry, memoryAgentBasePrompt } from "../index"
 
 describe("memory agent prompt", () => {
   it("defines the backend memory-agent operating contract", () => {
@@ -55,5 +55,14 @@ describe("memory agent prompt", () => {
     expect(journal?.inputSchema.safeParse({ operation: "list", limit: 11 }).success).toBe(false)
     expect(journal?.inputSchema.safeParse({ operation: "read", runId: "run-1", charLimit: 20_001 }).success).toBe(false)
     expect(journal?.inputSchema.safeParse({ operation: "write", runId: "run-1" }).success).toBe(false)
+  })
+
+  it("keeps skill installation exclusive to main Socrates", () => {
+    const skills = createMemoryToolRegistry().get("skills")
+    expect(skills?.permission).toBe("read")
+    expect(skills?.inputSchema.safeParse({ operation: "search", query: "review" }).success).toBe(true)
+    expect(skills?.inputSchema.safeParse({ operation: "preview_import", url: "https://example.com/review.zip" }).success).toBe(false)
+    expect(skills?.inputSchema.safeParse({ operation: "commit_import", previewId: `skillimp_${"a".repeat(32)}` }).success).toBe(false)
+    expect(createSkillWriterToolRegistry().get("skills")?.inputSchema.safeParse({ operation: "preview_import", url: "https://example.com/review.zip" }).success).toBe(false)
   })
 })

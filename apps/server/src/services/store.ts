@@ -68,6 +68,8 @@ import type {
   BuildGlobalSkillRequest,
   BuildGlobalSkillResponse,
   DeleteSkillResponse,
+  SkillImportPreview,
+  CommitSkillImportResponse,
   SkillsToolInput,
   SkillsToolOutput,
   SoulToolInput,
@@ -366,6 +368,28 @@ export class SocratesStore {
     return this.memory.runSkillsTool(projectId, this.primaryWorkspacePathOrUndefined(projectId), input)
   }
 
+  runSkillsImportTool(
+    projectId: string,
+    input: SkillsToolInput,
+    source: { conversationId: string; turnId: string; signal?: AbortSignal },
+  ): Promise<SkillsToolOutput> {
+    const attachedArchive = input.operation === "preview_import" && input.attachmentPath
+      ? this.attachments.readCurrentTurnSkillZip({
+          projectId,
+          conversationId: source.conversationId,
+          turnId: source.turnId,
+          attachmentPath: input.attachmentPath,
+        })
+      : undefined
+    return this.memory.runSkillsImportTool(
+      projectId,
+      this.primaryWorkspacePathOrUndefined(projectId),
+      input,
+      source.signal,
+      attachedArchive,
+    )
+  }
+
   createMemoryNote(projectId: string, input: MemoryNoteToolInput, source: { conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
     return this.memory.createMemoryNote(input, { projectId, ...source })
   }
@@ -383,8 +407,32 @@ export class SocratesStore {
     return { deletedSkillName: deleted.name, scope: deleted.scope }
   }
 
+  previewProjectSkillImport(projectId: string, filename: string, data: Buffer): Promise<SkillImportPreview> {
+    return this.memory.previewProjectSkillImport(projectId, this.getPrimaryWorkspacePath(projectId), filename, data)
+  }
+
+  commitProjectSkillImport(projectId: string, previewId: string, conflictStrategy: "reject" | "replace"): CommitSkillImportResponse {
+    return this.memory.commitProjectSkillImport(projectId, this.getPrimaryWorkspacePath(projectId), previewId, conflictStrategy)
+  }
+
+  setProjectSkillEnabled(projectId: string, skillName: string, enabled: boolean) {
+    return this.memory.setProjectSkillEnabled(projectId, this.getPrimaryWorkspacePath(projectId), skillName, enabled)
+  }
+
   async buildGlobalSkill(input: BuildGlobalSkillRequest): Promise<BuildGlobalSkillResponse> {
     return { skill: await this.memory.buildGlobalSkill(input.request, input.name) }
+  }
+
+  previewGlobalSkillImport(filename: string, data: Buffer): Promise<SkillImportPreview> {
+    return this.memory.previewGlobalSkillImport(filename, data)
+  }
+
+  commitGlobalSkillImport(previewId: string, conflictStrategy: "reject" | "replace"): CommitSkillImportResponse {
+    return this.memory.commitGlobalSkillImport(previewId, conflictStrategy)
+  }
+
+  setGlobalSkillEnabled(skillName: string, enabled: boolean) {
+    return this.memory.setGlobalSkillEnabled(skillName, enabled)
   }
 
   async approveMemorySkillProposal(actionId: string): Promise<ApproveMemorySkillProposalResponse> {
@@ -728,6 +776,10 @@ export class SocratesStore {
 
   listReadyTerminalTasks(): ReadyTerminalTask[] {
     return this.agentTasks.listReadyTasks()
+  }
+
+  requeueInterruptedTerminalTasks(): number {
+    return this.agentTasks.requeueInterruptedContinuations()
   }
 
   completeTerminalTaskForTurn(turnId: string, status: "completed" | "failed" | "cancelled"): void {

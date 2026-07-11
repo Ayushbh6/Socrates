@@ -246,6 +246,36 @@ export class AgentTaskStore extends StoreBase {
     })
   }
 
+  requeueInterruptedContinuations(): number {
+    const now = nowIso()
+    const rows = this.handle.db
+      .select({ taskId: agentTasks.id, currentTurnId: agentTasks.currentTurnId, turnStatus: turns.status })
+      .from(agentTasks)
+      .innerJoin(turns, eq(agentTasks.currentTurnId, turns.id))
+      .where(eq(agentTasks.status, "running"))
+      .all()
+    let requeued = 0
+    this.handle.sqlite.transaction(() => {
+      for (const row of rows) {
+        if (row.turnStatus === "completed" || row.turnStatus === "failed") {
+          this.handle.db
+            .update(agentTasks)
+            .set({ status: row.turnStatus, completedAt: now, updatedAt: now })
+            .where(and(eq(agentTasks.id, row.taskId), eq(agentTasks.status, "running"), eq(agentTasks.currentTurnId, row.currentTurnId)))
+            .run()
+          continue
+        }
+        if (row.turnStatus !== "cancelled") continue
+        requeued += this.handle.db
+          .update(agentTasks)
+          .set({ status: "ready", updatedAt: now })
+          .where(and(eq(agentTasks.id, row.taskId), eq(agentTasks.status, "running"), eq(agentTasks.currentTurnId, row.currentTurnId)))
+          .run().changes
+      }
+    })()
+    return requeued
+  }
+
   completeTaskForTurn(turnId: string, status: "completed" | "failed" | "cancelled"): void {
     const now = nowIso()
     this.handle.db

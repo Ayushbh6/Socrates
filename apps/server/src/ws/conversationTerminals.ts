@@ -6,7 +6,7 @@ import type { SocratesStore } from "../services/store"
 import type { ActiveTurns } from "./activeTurns"
 import type { ConversationSubscriptions } from "./conversationSubscriptions"
 import { makeEvent } from "./eventSender"
-import { TerminalSupervisorClient } from "./terminalSupervisorClient"
+import { TerminalSupervisorClient, type TerminalSupervisorHealth } from "./terminalSupervisorClient"
 
 type RuntimeTerminal = {
   terminalId: string
@@ -21,10 +21,12 @@ type RuntimeTerminal = {
   awaitingInput: boolean
   supervisorOutputSequence: number
   drainPromise?: Promise<BashToolOutput>
+  consecutivePollFailures: number
 }
 
 type TerminalManagerOptions = {
   autoDetachMs?: number
+  supervisorScope?: string
 }
 
 type ShellOutput = { stream: "stdout" | "stderr" | "log" | "result" | "pty"; text?: string; data?: unknown }
@@ -36,11 +38,12 @@ const maxModelTerminalListRows = 12
 const maxTerminalListTextChars = 12_000
 const terminalInitialOutputDrainMs = 500
 const terminalInitialOutputPollMs = 50
+const maxConsecutiveSupervisorPollFailures = 3
 const terminalAwaitingUserInputStopMessage = "Terminal is waiting for user input. Leave it running and ask the user to type in the Terminal panel."
 
 export class ConversationTerminalManager {
   private readonly terminals = new Map<string, RuntimeTerminal>()
-  private readonly supervisor = new TerminalSupervisorClient()
+  private readonly supervisor: TerminalSupervisorClient
   private readonly autoDetachMs: number
   private onTaskReady: ((task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number]) => void) | undefined
 
@@ -50,6 +53,7 @@ export class ConversationTerminalManager {
     options: TerminalManagerOptions = {},
   ) {
     this.autoDetachMs = options.autoDetachMs ?? defaultAutoDetachMs
+    this.supervisor = new TerminalSupervisorClient(options.supervisorScope)
   }
 
   setTaskWakeHandler(handler: (task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number]) => void): void {
@@ -57,13 +61,22 @@ export class ConversationTerminalManager {
   }
 
   async reconcilePersistedTerminals(): Promise<void> {
+    const health = await this.supervisor.inspectHealth()
     for (const terminal of this.store.listActiveTerminals()) {
-      const owned = await this.supervisor.has(terminal.terminalId).catch(() => false)
+      const owned = health ? await this.supervisor.has(terminal.terminalId).catch(() => false) : false
       if (!owned) {
+        const checkedAt = nowIso()
         this.store.updateTerminal(terminal.terminalId, {
           status: terminal.processId ? "detached" : "missing",
           awaitingInput: false,
-          completedAt: nowIso(),
+          completedAt: checkedAt,
+          metadata: {
+            supervisorRecovery: {
+              state: health ? "process_missing" : "supervisor_unavailable",
+              checkedAt,
+              ...(health ? supervisorHealthMetadata(health) : {}),
+            },
+          },
         })
         const snapshot = this.store.listConversationTerminals(terminal.conversationId).find((item) => item.terminalId === terminal.terminalId)
         if (snapshot) {
@@ -74,17 +87,29 @@ export class ConversationTerminalManager {
       }
       const runtime = this.runtimeFromSnapshot(terminal)
       this.terminals.set(terminal.terminalId, runtime)
-      this.startPolling(runtime)
+      this.store.updateTerminal(terminal.terminalId, {
+        metadata: { supervisorRecovery: { state: "reconnected", checkedAt: nowIso(), ...supervisorHealthMetadata(health as TerminalSupervisorHealth) } },
+      })
+      await this.pollTerminal(runtime).catch((error) => this.handleSupervisorPollFailure(runtime, error))
+      if (this.terminals.has(runtime.terminalId)) this.startPolling(runtime)
     }
   }
 
-  async dispose(): Promise<void> {
-    // Shutdown can make waits ready, but it must never launch a fresh model call while
-    // the server is closing. Ready tasks are resumed by startup reconciliation instead.
+  async dispose(options: { preserveRunning?: boolean } = {}): Promise<void> {
+    // A main-server restart must not own the lifetime of independently supervised
+    // Terminals. Explicit conversation/project/user stops still terminate them.
     this.onTaskReady = undefined
-    await Promise.allSettled([...this.terminals.values()].map((terminal) => this.stopRuntimeTerminal(terminal, "Server shutdown.")))
+    if (options.preserveRunning) {
+      await Promise.allSettled([...this.terminals.values()].map((terminal) => this.waitForPendingDrain(terminal)))
+      for (const terminal of this.terminals.values()) {
+        clearInterval(terminal.pollTimer)
+      }
+      await this.supervisor.shutdownIfIdle()
+    } else {
+      await Promise.allSettled([...this.terminals.values()].map((terminal) => this.stopRuntimeTerminal(terminal, "Server shutdown.")))
+      await this.supervisor.shutdown()
+    }
     this.terminals.clear()
-    await this.supervisor.shutdown()
   }
 
   stopConversation(conversationId: string, reason?: string): void {
@@ -262,6 +287,7 @@ export class ConversationTerminalManager {
       this.store.updateTerminal(terminalId, { status: "missing", awaitingInput: false, completedAt: nowIso() })
       throw new SocratesError("terminal_start_failed", "Terminal process did not return a process id.", { recoverable: true })
     }
+    const supervisorHealth = await this.supervisor.health().catch(() => undefined)
     const runtime: RuntimeTerminal = {
       terminalId,
       projectId: context.projectId,
@@ -273,6 +299,7 @@ export class ConversationTerminalManager {
       status: "running",
       awaitingInput: false,
       supervisorOutputSequence: output.process?.nextOutputSequence ?? 0,
+      consecutivePollFailures: 0,
     }
     this.terminals.set(terminalId, runtime)
     this.store.updateTerminal(terminalId, {
@@ -283,7 +310,14 @@ export class ConversationTerminalManager {
       processId,
       status: "running",
       autoDetached,
-      metadata: { toolCallId: context.toolCallId, startToolCallId: context.toolCallId, lastToolCallId: context.toolCallId, lastTurnId: context.turnId, systemPid: output.process?.systemPid },
+      metadata: {
+        toolCallId: context.toolCallId,
+        startToolCallId: context.toolCallId,
+        lastToolCallId: context.toolCallId,
+        lastTurnId: context.turnId,
+        systemPid: output.process?.systemPid,
+        ...(supervisorHealth ? { supervisor: supervisorHealthMetadata(supervisorHealth) } : {}),
+      },
     })
     this.appendOutputSnapshot(terminalId, context, output)
     if (!hasShellOutput(output)) {
@@ -486,12 +520,12 @@ export class ConversationTerminalManager {
 
   private startPolling(terminal: RuntimeTerminal): void {
     terminal.pollTimer = setInterval(() => {
-      void this.pollTerminal(terminal).catch((error) => this.markRuntimeTerminalMissing(terminal, error))
+      void this.pollTerminal(terminal).catch((error) => this.handleSupervisorPollFailure(terminal, error))
     }, 500)
     terminal.pollTimer.unref?.()
     setTimeout(() => {
       if (this.terminals.get(terminal.terminalId) === terminal) {
-        void this.pollTerminal(terminal).catch((error) => this.markRuntimeTerminalMissing(terminal, error))
+        void this.pollTerminal(terminal).catch((error) => this.handleSupervisorPollFailure(terminal, error))
       }
     }, 100).unref?.()
   }
@@ -514,6 +548,12 @@ export class ConversationTerminalManager {
       })
       this.appendOutputSnapshot(terminal.terminalId, context, output)
       this.updateFromOutput(terminal, output)
+      if (terminal.consecutivePollFailures > 0 && this.terminals.has(terminal.terminalId)) {
+        terminal.consecutivePollFailures = 0
+        this.store.updateTerminal(terminal.terminalId, {
+          metadata: { supervisorHealth: { state: "healthy", recoveredAt: nowIso() } },
+        })
+      }
       return output
     })()
     const trackedDrain = drain.finally(() => {
@@ -617,6 +657,25 @@ export class ConversationTerminalManager {
     this.wakeWaitingTasks(terminal.terminalId, "failed")
   }
 
+  private handleSupervisorPollFailure(terminal: RuntimeTerminal, error: unknown): void {
+    if (!this.terminals.has(terminal.terminalId)) return
+    terminal.consecutivePollFailures += 1
+    const normalized = normalizeError(error)
+    this.store.updateTerminal(terminal.terminalId, {
+      metadata: {
+        supervisorHealth: {
+          state: "degraded",
+          failures: terminal.consecutivePollFailures,
+          checkedAt: nowIso(),
+          error: { code: normalized.code, message: normalized.message },
+        },
+      },
+    })
+    if (terminal.consecutivePollFailures >= maxConsecutiveSupervisorPollFailures) {
+      this.markRuntimeTerminalMissing(terminal, error)
+    }
+  }
+
   private markRuntimeTerminalDetached(terminal: RuntimeTerminal, error: { code: string; message: string; details?: unknown }): void {
     if (!this.terminals.has(terminal.terminalId)) {
       return
@@ -652,6 +711,7 @@ export class ConversationTerminalManager {
       status: terminal.status,
       awaitingInput: terminal.awaitingInput,
       supervisorOutputSequence: terminal.output.nextOutputSequence,
+      consecutivePollFailures: 0,
     }
   }
 
@@ -1007,5 +1067,11 @@ const isSecretPrompt = (prompt: string): boolean => /(password|token|api\s*key|s
 const stripAnsi = (text: string): string => text.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
 const normalizePtyForModel = (text: string): string => stripAnsi(text).replaceAll("\r\n", "\n").replaceAll(/\r(?!\n)/g, "\n")
 const clipText = (value: string, limit: number): string => (value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`)
+
+const supervisorHealthMetadata = (health: TerminalSupervisorHealth) => ({
+  instanceId: health.instanceId,
+  processId: health.processId,
+  startedAt: health.startedAt,
+})
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

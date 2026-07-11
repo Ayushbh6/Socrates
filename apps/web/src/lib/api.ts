@@ -5,6 +5,9 @@ import {
   approveMemorySkillProposalResponseSchema,
   buildGlobalSkillResponseSchema,
   buildProjectSkillResponseSchema,
+  skillImportPreviewSchema,
+  commitSkillImportResponseSchema,
+  updateSkillStateResponseSchema,
   checkProjectEmbeddingsResponseSchema,
   checkProviderCredentialResponseSchema,
   checkMcpServerResponseSchema,
@@ -63,6 +66,10 @@ import {
   type BuildGlobalSkillResponse,
   type BuildProjectSkillRequest,
   type BuildProjectSkillResponse,
+  type CommitSkillImportRequest,
+  type CommitSkillImportResponse,
+  type SkillImportPreview,
+  type UpdateSkillStateResponse,
   type CheckProjectEmbeddingsRequest,
   type CheckProjectEmbeddingsResponse,
   type CheckMcpServerRequest,
@@ -418,6 +425,24 @@ export const api = {
       },
     ) as Promise<BuildGlobalSkillResponse>,
 
+  previewGlobalSkillImport: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return uploadRequest("/api/memory-agent/skills/import/preview", skillImportPreviewSchema, body) as Promise<SkillImportPreview>;
+  },
+
+  commitGlobalSkillImport: (input: CommitSkillImportRequest) =>
+    request("/api/memory-agent/skills/import/commit", commitSkillImportResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }) as Promise<CommitSkillImportResponse>,
+
+  updateGlobalSkillState: (skillName: string, enabled: boolean) =>
+    request(`/api/memory-agent/skills/${encodeURIComponent(skillName)}/state`, updateSkillStateResponseSchema, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }) as Promise<UpdateSkillStateResponse>,
+
   deleteGlobalSkill: (skillName: string) =>
     request<typeof deleteSkillResponseSchema>(
       `/api/memory-agent/skills/${encodeURIComponent(skillName)}`,
@@ -669,6 +694,24 @@ export const api = {
         body: JSON.stringify(input),
       },
     ) as Promise<BuildProjectSkillResponse>,
+
+  previewProjectSkillImport: (projectId: string, file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return uploadRequest(`/api/projects/${projectId}/skills/import/preview`, skillImportPreviewSchema, body) as Promise<SkillImportPreview>;
+  },
+
+  commitProjectSkillImport: (projectId: string, input: CommitSkillImportRequest) =>
+    request(`/api/projects/${projectId}/skills/import/commit`, commitSkillImportResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }) as Promise<CommitSkillImportResponse>,
+
+  updateProjectSkillState: (projectId: string, skillName: string, enabled: boolean) =>
+    request(`/api/projects/${projectId}/skills/${encodeURIComponent(skillName)}/state`, updateSkillStateResponseSchema, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }) as Promise<UpdateSkillStateResponse>,
 
   deleteProjectSkill: (projectId: string, skillName: string) =>
     request<typeof deleteSkillResponseSchema>(

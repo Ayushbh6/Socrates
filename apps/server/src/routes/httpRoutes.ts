@@ -9,6 +9,11 @@ import {
   approveMemorySkillProposalResponseSchema,
   buildGlobalSkillRequestSchema,
   buildProjectSkillRequestSchema,
+  skillImportPreviewSchema,
+  commitSkillImportRequestSchema,
+  commitSkillImportResponseSchema,
+  updateSkillStateRequestSchema,
+  updateSkillStateResponseSchema,
   checkProjectEmbeddingsRequestSchema,
   checkMcpServerRequestSchema,
   checkMcpServerResponseSchema,
@@ -551,6 +556,39 @@ export const registerHttpRoutes = async (
     }
   })
 
+  app.post("/api/memory-agent/skills/import/preview", async (request, reply) => {
+    try {
+      const upload = await request.file()
+      if (!upload) throw new SocratesError("skill_import_file_required", "Upload a skill ZIP package.", { recoverable: true })
+      const preview = await store.previewGlobalSkillImport(upload.filename, await upload.toBuffer())
+      return ok(skillImportPreviewSchema.parse(preview))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/memory-agent/skills/import/commit", async (request, reply) => {
+    try {
+      const input = parseBody(commitSkillImportRequestSchema, request.body)
+      return ok(commitSkillImportResponseSchema.parse(store.commitGlobalSkillImport(input.previewId, input.conflictStrategy ?? "reject")))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/memory-agent/skills/:skillName/state", async (request, reply) => {
+    try {
+      const { skillName } = parseParams(skillParamsSchema, request.params)
+      const input = parseBody(updateSkillStateRequestSchema, request.body)
+      return ok(updateSkillStateResponseSchema.parse({ skill: store.setGlobalSkillEnabled(skillName, input.enabled) }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
   app.delete("/api/memory-agent/skills/:skillName", async (request, reply) => {
     try {
       const { skillName } = parseParams(skillParamsSchema, request.params)
@@ -742,6 +780,41 @@ export const registerHttpRoutes = async (
       const { projectId } = parseParams(projectParamsSchema, request.params)
       const input = parseBody(buildProjectSkillRequestSchema, request.body)
       return ok(await store.buildProjectSkill(projectId, input))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/skills/import/preview", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const upload = await request.file()
+      if (!upload) throw new SocratesError("skill_import_file_required", "Upload a skill ZIP package.", { recoverable: true })
+      const preview = await store.previewProjectSkillImport(projectId, upload.filename, await upload.toBuffer())
+      return ok(skillImportPreviewSchema.parse(preview))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/projects/:projectId/skills/import/commit", async (request, reply) => {
+    try {
+      const { projectId } = parseParams(projectParamsSchema, request.params)
+      const input = parseBody(commitSkillImportRequestSchema, request.body)
+      return ok(commitSkillImportResponseSchema.parse(store.commitProjectSkillImport(projectId, input.previewId, input.conflictStrategy ?? "reject")))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.patch("/api/projects/:projectId/skills/:skillName/state", async (request, reply) => {
+    try {
+      const { projectId, skillName } = parseParams(projectSkillParamsSchema, request.params)
+      const input = parseBody(updateSkillStateRequestSchema, request.body)
+      return ok(updateSkillStateResponseSchema.parse({ skill: store.setProjectSkillEnabled(projectId, skillName, input.enabled) }))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

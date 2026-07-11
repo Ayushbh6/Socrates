@@ -48,6 +48,8 @@ import type {
   UserProfileToolOutput,
   WorkerModelRole,
   WorkerModelSettings,
+  SkillImportPreview,
+  CommitSkillImportResponse,
 } from "@socrates/contracts"
 import { memoryDocRequiredSections } from "@socrates/contracts"
 import type { ModelProvider, ModelUsage, ProviderCredentialResolver } from "@socrates/providers"
@@ -110,6 +112,7 @@ import { firstMarkdownLine, ToolDocsStore } from "./toolDocsStore"
 import type { FailedToolEventForLedger } from "./eventStore"
 import { inspectWorkspaceEnvironment } from "@socrates/workspace"
 import { currentRuntimeTime } from "./runtimeContext"
+import { commitSkillImport, previewSkillArchive, previewSkillArchiveFromUrl, setSkillEnabled } from "./skillImportStore"
 
 const DEFAULT_CHAR_LIMIT = 20_000
 const PRIMARY_MEMORY_FULL_READ_CHAR_LIMIT = 8_000
@@ -328,6 +331,9 @@ export class MemoryStore extends StoreBase {
 
   runSkillsTool(projectId: string, workspacePath: string | undefined, input: SkillsToolInput): SkillsToolOutput {
     this.ensureProjectMemory(projectId, workspacePath)
+    if (input.operation === "preview_import" || input.operation === "commit_import") {
+      throw new SocratesError("skill_import_async_required", "Skill imports are only available through the main Socrates chat runtime.", { recoverable: true })
+    }
     if (input.operation === "read" || input.operation === "describe") {
       return this.readSkill(input, workspacePath)
     }
@@ -335,6 +341,91 @@ export class MemoryStore extends StoreBase {
       return this.searchSkills(input, workspacePath)
     }
     return this.listSkillsOutput(input, workspacePath)
+  }
+
+  async runSkillsImportTool(
+    projectId: string,
+    workspacePath: string | undefined,
+    input: SkillsToolInput,
+    signal?: AbortSignal,
+    attachedArchive?: { filename: string; data: Buffer },
+  ): Promise<SkillsToolOutput> {
+    this.ensureProjectMemory(projectId, workspacePath)
+    const scope: "global" | "project" = input.scope === "global" ? "global" : "project"
+    if (scope === "project" && !workspacePath) {
+      throw new SocratesError("skill_import_project_unavailable", "Project skill import requires an active project workspace.", { recoverable: true })
+    }
+    const target = scope === "global"
+      ? { scope: "global" as const, root: path.join(this.socratesHome, "skills") }
+      : { scope: "project" as const, projectId, root: path.join(workspacePath!, ".socrates", "skills") }
+
+    if (input.operation === "preview_import") {
+      const preview = attachedArchive
+        ? await previewSkillArchive({ socratesHome: this.socratesHome, target, filename: attachedArchive.filename, data: attachedArchive.data })
+        : input.url
+          ? await previewSkillArchiveFromUrl({
+              socratesHome: this.socratesHome,
+              target,
+              url: input.url,
+              options: signal ? { signal } : {},
+            })
+          : (() => {
+              throw new SocratesError("skill_import_source_required", "preview_import requires an exact public HTTPS ZIP URL or current-message ZIP attachment.", { recoverable: true })
+            })()
+      const files = preview.package.files.slice(0, 30)
+      const warnings = preview.warnings.slice(0, 10)
+      const importPreview = {
+        previewId: preview.previewId,
+        scope,
+        skill: preview.skill,
+        package: {
+          filename: preview.package.filename,
+          fileCount: preview.package.fileCount,
+          totalBytes: preview.package.totalBytes,
+          sha256: preview.package.sha256,
+          files,
+          filesTruncated: files.length < preview.package.files.length,
+        },
+        metadata: preview.metadata,
+        conflict: preview.conflict,
+        warnings,
+        warningsTruncated: warnings.length < preview.warnings.length,
+        expiresAt: preview.expiresAt,
+      }
+      const originalLength = JSON.stringify(preview).length
+      const returnedLength = JSON.stringify(importPreview).length
+      return {
+        operation: "preview_import",
+        skills: [preview.skill],
+        importPreview,
+        totalMatches: 1,
+        truncation: { truncated: originalLength > returnedLength, charLimit: SKILL_CHAR_LIMIT, originalLength, returnedLength },
+        usageHint: "Report the skill name, scope, package size/file count, conflict status, and every returned warning. Use commit_import with this exact previewId only when the user wants this reviewed package installed; replacement requires conflictStrategy replace.",
+      }
+    }
+
+    if (input.operation === "commit_import") {
+      if (!input.previewId) throw new SocratesError("skill_import_preview_required", "commit_import requires the exact previewId returned by preview_import.", { recoverable: true })
+      const committed = commitSkillImport({
+        socratesHome: this.socratesHome,
+        target,
+        previewId: input.previewId,
+        conflictStrategy: input.conflictStrategy ?? "reject",
+      })
+      const warnings = committed.warnings.slice(0, 20).map((warning) => `${warning.code}: ${warning.message}${warning.path ? ` (${warning.path})` : ""}`)
+      const returned = { skill: committed.skill, replaced: committed.replaced, warnings }
+      return {
+        operation: "commit_import",
+        skills: [committed.skill],
+        replaced: committed.replaced,
+        totalMatches: 1,
+        truncation: { truncated: committed.warnings.length > warnings.length, charLimit: SKILL_CHAR_LIMIT, originalLength: JSON.stringify(committed).length, returnedLength: JSON.stringify(returned).length },
+        usageHint: "The skill is installed and enabled. Verify it with skills list or describe before claiming it is ready.",
+        ...(warnings.length > 0 ? { warnings } : {}),
+      }
+    }
+
+    throw new SocratesError("skill_import_operation_invalid", "Expected preview_import or commit_import.", { recoverable: true })
   }
 
   createMemoryNote(input: MemoryNoteToolInput, source: { projectId: string; conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
@@ -588,7 +679,32 @@ export class MemoryStore extends StoreBase {
 
   listProjectSkills(projectId: string, workspacePath: string | undefined): SkillSummary[] {
     this.ensureProjectMemory(projectId, workspacePath)
-    return this.skillInfos(workspacePath, "project").map(skillSummary)
+    return this.skillInfos(workspacePath, "project", true).map(skillSummary)
+  }
+
+  previewProjectSkillImport(projectId: string, workspacePath: string, filename: string, data: Buffer): Promise<SkillImportPreview> {
+    this.ensureProjectMemory(projectId, workspacePath)
+    return previewSkillArchive({
+      socratesHome: this.socratesHome,
+      target: { scope: "project", projectId, root: path.join(workspacePath, ".socrates", "skills") },
+      filename,
+      data,
+    })
+  }
+
+  commitProjectSkillImport(projectId: string, workspacePath: string, previewId: string, conflictStrategy: "reject" | "replace"): CommitSkillImportResponse {
+    this.ensureProjectMemory(projectId, workspacePath)
+    return commitSkillImport({
+      socratesHome: this.socratesHome,
+      target: { scope: "project", projectId, root: path.join(workspacePath, ".socrates", "skills") },
+      previewId,
+      conflictStrategy,
+    })
+  }
+
+  setProjectSkillEnabled(projectId: string, workspacePath: string, name: string, enabled: boolean): SkillSummary {
+    this.ensureProjectMemory(projectId, workspacePath)
+    return setSkillEnabled({ target: { scope: "project", projectId, root: path.join(workspacePath, ".socrates", "skills") }, name, enabled })
   }
 
   async buildProjectSkill(projectId: string, workspacePath: string, request: string, explicitName?: string): Promise<SkillSummary> {
@@ -1117,7 +1233,7 @@ export class MemoryStore extends StoreBase {
       absolutePath: file.absolutePath,
       updatedAt: file.modifiedAt,
     }))
-    const skills = this.skillInfos(undefined, undefined)
+    const skills = this.skillInfos(undefined, undefined, true)
       .filter((skill) => skill.scope === "builtin" || skill.scope === "global")
       .map((skill) => ({
         id: `skill:${skill.scope}:${skill.name}`,
@@ -1128,6 +1244,11 @@ export class MemoryStore extends StoreBase {
         path: skill.path,
         absolutePath: skill.skillFile,
         updatedAt: skill.updatedAt,
+        enabled: skill.enabled,
+        source: skill.source,
+        contentHash: skill.contentHash,
+        ...(skill.installedAt ? { installedAt: skill.installedAt } : {}),
+        ...(skill.sourceLabel ? { sourceLabel: skill.sourceLabel } : {}),
       }))
     return [...coreMemoryFiles, ...toolDocs, ...skills].sort((left, right) => `${left.kind}:${memoryFileScope(left)}:${left.name}`.localeCompare(`${right.kind}:${memoryFileScope(right)}:${right.name}`))
   }
@@ -1157,6 +1278,31 @@ export class MemoryStore extends StoreBase {
       projectId: GLOBAL_MEMORY_AGENT_PROJECT_ID,
       sourceKind: "dashboard",
     })
+  }
+
+  previewGlobalSkillImport(filename: string, data: Buffer): Promise<SkillImportPreview> {
+    this.ensureGlobalKnowledge()
+    return previewSkillArchive({
+      socratesHome: this.socratesHome,
+      target: { scope: "global", root: path.join(this.socratesHome, "skills") },
+      filename,
+      data,
+    })
+  }
+
+  commitGlobalSkillImport(previewId: string, conflictStrategy: "reject" | "replace"): CommitSkillImportResponse {
+    this.ensureGlobalKnowledge()
+    return commitSkillImport({
+      socratesHome: this.socratesHome,
+      target: { scope: "global", root: path.join(this.socratesHome, "skills") },
+      previewId,
+      conflictStrategy,
+    })
+  }
+
+  setGlobalSkillEnabled(name: string, enabled: boolean): SkillSummary {
+    this.ensureGlobalKnowledge()
+    return setSkillEnabled({ target: { scope: "global", root: path.join(this.socratesHome, "skills") }, name, enabled })
   }
 
   deleteGlobalSkill(name: string): SkillSummary {
@@ -2613,6 +2759,9 @@ export class MemoryStore extends StoreBase {
       })
     }
     const relativePath = input.path?.replaceAll("\\", "/").replace(/^\/+/, "") || "SKILL.md"
+    if (relativePath === ".socrates-skill.json") {
+      throw new SocratesError("skill_file_not_found", "Skill file was not found.", { recoverable: true, details: { name: skill.name, path: input.path } })
+    }
     const targetPath = relativePath === "SKILL.md" ? skill.skillFile : safeJoin(skill.skillDir, relativePath)
     if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
       throw new SocratesError("skill_file_not_found", "Skill file was not found.", { recoverable: true, details: { name: skill.name, path: input.path } })
@@ -2631,7 +2780,7 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private skillInfos(workspacePath: string | undefined, scope?: SkillScope): SkillInfo[] {
+  private skillInfos(workspacePath: string | undefined, scope?: SkillScope, includeDisabled = false): SkillInfo[] {
     const groups: Array<{ scope: SkillScope; root: string }> = [
       { scope: "builtin", root: bundledSkillsDir() },
       { scope: "global", root: path.join(this.socratesHome, "skills") },
@@ -2641,6 +2790,7 @@ export class MemoryStore extends StoreBase {
       .filter((group) => (scope ? group.scope === scope : true))
       .flatMap((group) => discoverSkills(group.scope, group.root))
       .filter((skill) => !(skill.scope === "builtin" && INTERNAL_BUILTIN_SKILL_NAMES.has(skill.name)))
+      .filter((skill) => includeDisabled || skill.enabled !== false)
       .sort((left, right) => `${left.scope}:${left.name}`.localeCompare(`${right.scope}:${right.name}`))
   }
 

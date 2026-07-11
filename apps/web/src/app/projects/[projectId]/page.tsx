@@ -11,7 +11,7 @@ import { WorkspacePanel } from "@/components/dashboard/WorkspacePanel";
 import { McpServersPanel } from "@/components/mcp/McpServersPanel";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
-import type { GetProjectResponse } from "@socrates/contracts";
+import type { CommitSkillImportResponse, GetProjectResponse, SkillImportPreview } from "@socrates/contracts";
 import type { BuildSkillInput } from "@/components/dashboard/BuildSkillDialog";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
@@ -167,6 +167,34 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     }
   };
 
+  const handlePreviewSkillImport = (file: File): Promise<SkillImportPreview> => api.previewProjectSkillImport(projectId, file);
+
+  const handleCommitSkillImport = async (preview: SkillImportPreview, replace: boolean): Promise<CommitSkillImportResponse> => {
+    setUploadError(null);
+    try {
+      const response = await api.commitProjectSkillImport(projectId, {
+        previewId: preview.previewId,
+        conflictStrategy: replace ? "replace" : "reject",
+      });
+      setData((current) => current ? { ...current, skills: [response.skill, ...current.skills.filter((skill) => skill.name !== response.skill.name)] } : current);
+      return response;
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Could not import skill.");
+      throw err;
+    }
+  };
+
+  const handleToggleSkill = async (skillName: string, enabled: boolean) => {
+    setUploadError(null);
+    try {
+      const response = await api.updateProjectSkillState(projectId, skillName, enabled);
+      setData((current) => current ? { ...current, skills: current.skills.map((skill) => skill.name === skillName ? response.skill : skill) } : current);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Could not update skill.");
+      throw err;
+    }
+  };
+
   const handleEmbeddingStatusChange = (embeddingStatus: NonNullable<GetProjectResponse["embeddingStatus"]>) => {
     setData((current) =>
       current
@@ -301,6 +329,9 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               deletingSkillName={deletingSkillName}
               onBuild={handleBuildSkill}
               onDelete={handleDeleteSkill}
+              onPreviewImport={handlePreviewSkillImport}
+              onCommitImport={handleCommitSkillImport}
+              onToggle={handleToggleSkill}
             />
             <McpServersPanel
               scope="project"

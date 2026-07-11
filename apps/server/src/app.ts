@@ -22,6 +22,7 @@ export type BuildServerOptions = {
   titleProvider?: ModelProvider | false
   memoryProvider?: ModelProvider
   socratesHome?: string
+  preserveTerminalsOnClose?: boolean
 }
 
 export const buildServer = async (options: BuildServerOptions) => {
@@ -35,6 +36,7 @@ export const buildServer = async (options: BuildServerOptions) => {
     ...(options.memoryProvider ? { memoryProvider: options.memoryProvider } : {}),
   })
   store.cancelStaleActiveTurns()
+  store.requeueInterruptedTerminalTasks()
   await store.initializeRetrieval()
   store.startGlobalMemoryScheduler()
   const agent = options.agent ?? createDefaultSocratesAgent(credentials)
@@ -42,12 +44,12 @@ export const buildServer = async (options: BuildServerOptions) => {
     options.titleProvider === false ? undefined : options.titleProvider ?? (options.agent ? undefined : createDefaultModelProvider(credentials))
   const mcpRuntime = new McpRuntime(socratesHome ? { socratesHome } : {})
   const subscriptions = new ConversationSubscriptions()
-  const terminals = new ConversationTerminalManager(store, subscriptions)
+  const terminals = new ConversationTerminalManager(store, subscriptions, { supervisorScope: socratesHome ?? path.dirname(options.dbPath) })
   await terminals.reconcilePersistedTerminals()
   const app = Fastify({ logger: options.logger ?? false })
 
   app.addHook("onClose", async () => {
-    await terminals.dispose()
+    await terminals.dispose({ preserveRunning: options.preserveTerminalsOnClose ?? true })
     await store.close()
   })
 

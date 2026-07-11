@@ -17,6 +17,7 @@ import {
   Loader2,
   Play,
   Plus,
+  Power,
   RefreshCw,
   Settings2,
   Sparkles,
@@ -33,6 +34,8 @@ import type {
   ModelThinkingOption,
   ProviderId,
   UpdateMemoryAgentGlobalSettingsRequest,
+  SkillImportPreview,
+  CommitSkillImportResponse,
 } from "@socrates/contracts";
 import { BuildSkillDialog } from "@/components/dashboard/BuildSkillDialog";
 import { MemoryFileViewer } from "@/components/memory/MemoryFileViewer";
@@ -210,6 +213,36 @@ export function MemoryCenterPage() {
       setError(err instanceof Error ? err.message : "Could not delete global skill.");
     } finally {
       setDeletingSkillName(null);
+    }
+  };
+
+  const previewGlobalSkillImport = (file: File): Promise<SkillImportPreview> => api.previewGlobalSkillImport(file);
+
+  const commitGlobalSkillImport = async (preview: SkillImportPreview, replace: boolean): Promise<CommitSkillImportResponse> => {
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await api.commitGlobalSkillImport({ previewId: preview.previewId, conflictStrategy: replace ? "replace" : "reject" });
+      await loadData();
+      setShowSkillDialog(false);
+      setMessage(`${response.replaced ? "Replaced" : "Imported"} global skill: ${response.skill.name}`);
+      return response;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not import global skill.");
+      throw err;
+    }
+  };
+
+  const toggleGlobalSkill = async (file: MemoryAgentFileSummary) => {
+    if (file.kind !== "skill" || file.scope !== "global") return;
+    setMessage(null);
+    setError(null);
+    try {
+      const response = await api.updateGlobalSkillState(file.name, file.enabled === false);
+      setFiles((current) => current.map((item) => item.kind === "skill" && item.scope === "global" && item.name === file.name ? { ...item, ...response.skill } : item));
+      setMessage(`${response.skill.enabled === false ? "Disabled" : "Enabled"} global skill: ${response.skill.name}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update global skill.");
     }
   };
 
@@ -496,7 +529,16 @@ export function MemoryCenterPage() {
                             </span>
                           </button>
                           {file.kind === "skill" && file.scope === "global" && (
-                            <Button
+                            <div className="flex shrink-0 items-center gap-1"><Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => void toggleGlobalSkill(file)}
+                              className={file.enabled === false ? "h-8 rounded-lg px-2 text-slate-400 hover:bg-slate-100" : "h-8 rounded-lg px-2 text-teal-700 hover:bg-teal-50"}
+                              aria-label={`${file.enabled === false ? "Enable" : "Disable"} ${file.name}`}
+                            >
+                              <Power className="size-4" />
+                            </Button><Button
                               type="button"
                               variant="ghost"
                               size="sm"
@@ -506,7 +548,7 @@ export function MemoryCenterPage() {
                               aria-label={`Delete ${file.name}`}
                             >
                               {deletingSkillName === file.name ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                            </Button>
+                            </Button></div>
                           )}
                         </div>
                       ))}
@@ -546,6 +588,8 @@ export function MemoryCenterPage() {
           isBuilding={isBuildingSkill}
           onCancel={() => setShowSkillDialog(false)}
           onBuild={buildGlobalSkill}
+          onPreviewImport={previewGlobalSkillImport}
+          onCommitImport={commitGlobalSkillImport}
         />
       )}
     </main>

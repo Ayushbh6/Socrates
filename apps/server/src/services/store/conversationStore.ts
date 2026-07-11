@@ -577,7 +577,7 @@ const buildModelMessageContent = (
 
 const formatAttachmentReference = (attachments: MessageAttachment[]): string =>
   [
-    "Conversation attachments are stored in the workspace. Before answering from an attached text file, inspect the relevant content with read or search instead of guessing:",
+    "Conversation attachments are stored in the workspace. Before answering from an attached text file, inspect it with read or search instead of guessing. For an Agent Skill ZIP, use skills preview_import with the exact attachmentPath below; do not read or unzip it with generic tools:",
     ...attachments.map(
       (attachment) =>
         `- ${attachment.kind} ${attachment.fileName}: ${attachmentReferencePath(attachment.uri)} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,

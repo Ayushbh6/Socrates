@@ -734,6 +734,8 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `completed_at` | `TEXT` | no | ISO timestamp for exited, stopped, detached, missing, or legacy stale completion. |
 | `metadata_json` | `TEXT` | no | Extra terminal metadata such as linked tool call id or stop reason. |
 
+Supervisor metadata is bounded operational state. New sessions record the owning supervisor instance/process/start time. Startup reconciliation merges `supervisorRecovery` with `reconnected`, `process_missing`, or `supervisor_unavailable` plus the check time; live transport degradation records a bounded failure count and normalized error. These fields explain recovery decisions but do not replace `terminal_sessions.status` as the lifecycle authority.
+
 ## `terminal_output_chunks`
 
 Stores full Terminal output, including raw PTY replay chunks, and redacted user-input markers independently from per-tool shell command output.
@@ -750,7 +752,7 @@ Stores full Terminal output, including raw PTY replay chunks, and redacted user-
 
 ## `agent_tasks` and `agent_task_waits`
 
-These tables are the durable non-LLM task supervisor. `agent_tasks` stores the original/current turn, resolved runtime configuration, and lifecycle (`waiting`, `ready`, `running`, `completed`, `failed`, or `cancelled`). `agent_task_waits` stores one named Terminal dependency per task with bounded requested wake events and a compact reason. Registration rechecks terminal state after persistence so an event racing with `wait` cannot strand a task. A claimed event wakes at most one continuation of the task; it does not poll or run an LLM while no requested event exists.
+These tables are the durable non-LLM task supervisor. `agent_tasks` stores the original/current turn, resolved runtime configuration, and lifecycle (`waiting`, `ready`, `running`, `completed`, `failed`, or `cancelled`). `agent_task_waits` stores one named Terminal dependency per task with bounded requested wake events and a compact reason. Registration rechecks terminal state after persistence so an event racing with `wait` cannot strand a task. A claimed event wakes at most one continuation of the task; it does not poll or run an LLM while no requested event exists. On startup, stale active turns are cancelled and a task whose continuation turn is now `cancelled` is atomically returned to `ready`; tasks whose continuation turn already committed `completed` or `failed` are finalized instead of retried. The next `ready` to `running` claim still succeeds only once.
 
 ## `file_operations`
 

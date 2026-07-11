@@ -4,6 +4,7 @@ import {
   MAX_IMAGE_ATTACHMENT_BYTES,
   MAX_MESSAGE_ATTACHMENT_BYTES,
   MAX_MESSAGE_ATTACHMENTS,
+  MAX_SKILL_ZIP_ATTACHMENT_BYTES,
   MAX_TEXT_ATTACHMENT_BYTES,
   type MessageAttachment,
 } from "@socrates/contracts"
@@ -17,12 +18,13 @@ import type { UploadedAttachmentInput } from "./types"
 
 const imageMimeTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "image/svg+xml"])
 const textMimeTypes = new Set(["text/plain"])
+const skillZipMimeTypes = new Set(["application/zip", "application/x-zip-compressed"])
 
 export class AttachmentStore extends StoreBase {
   createDraftAttachments(projectId: string, conversationId: string, inputs: UploadedAttachmentInput[]): MessageAttachment[] {
     this.mustGetConversationRow(projectId, conversationId)
     if (inputs.length === 0) {
-      throw new SocratesError("attachment_file_required", "Upload an image or text file to attach it to the message", { recoverable: true })
+      throw new SocratesError("attachment_file_required", "Upload an image, text file, or Agent Skill ZIP to attach it to the message", { recoverable: true })
     }
     if (inputs.length > MAX_MESSAGE_ATTACHMENTS) {
       throw new SocratesError("attachment_upload_limit_exceeded", `Attach up to ${MAX_MESSAGE_ATTACHMENTS} files to one message`, {
@@ -49,16 +51,18 @@ export class AttachmentStore extends StoreBase {
     const attachmentIds: string[] = []
     for (const input of inputs) {
       const mimeType = normalizeMimeType(input.mimeType, input.originalName)
-      const kind = imageMimeTypes.has(mimeType) ? "image" : textMimeTypes.has(mimeType) ? "text" : undefined
+      const kind = imageMimeTypes.has(mimeType) ? "image" : textMimeTypes.has(mimeType) ? "text" : skillZipMimeTypes.has(mimeType) ? "skill_zip" : undefined
       if (!kind) {
-        throw new SocratesError("attachment_type_not_supported", "Chat attachments support images and plain-text files only.", {
+        throw new SocratesError("attachment_type_not_supported", "Chat attachments support images, plain-text files, and Agent Skill ZIPs only.", {
           details: { fileName: input.originalName, mimeType },
           recoverable: true,
         })
       }
-      const maxBytes = kind === "image" ? MAX_IMAGE_ATTACHMENT_BYTES : MAX_TEXT_ATTACHMENT_BYTES
+      const maxBytes = kind === "image" ? MAX_IMAGE_ATTACHMENT_BYTES : kind === "skill_zip" ? MAX_SKILL_ZIP_ATTACHMENT_BYTES : MAX_TEXT_ATTACHMENT_BYTES
       if (input.data.byteLength > maxBytes) {
-        throw new SocratesError("attachment_too_large", `${kind === "image" ? "Image" : "Text"} attachments must be 5 MB or smaller.`, {
+        const label = kind === "image" ? "Image" : kind === "skill_zip" ? "Agent Skill ZIP" : "Text"
+        const maxMb = Math.floor(maxBytes / (1024 * 1024))
+        throw new SocratesError("attachment_too_large", `${label} attachments must be ${maxMb} MB or smaller.`, {
           details: { fileName: input.originalName, sizeBytes: input.data.byteLength, maxAttachmentBytes: maxBytes },
           recoverable: true,
         })
@@ -210,6 +214,37 @@ export class AttachmentStore extends StoreBase {
     return mapMessageAttachment(row)
   }
 
+  readCurrentTurnSkillZip(input: {
+    projectId: string
+    conversationId: string
+    turnId: string
+    attachmentPath: string
+  }): { filename: string; data: Buffer } {
+    const requested = normalizeAttachmentReference(input.attachmentPath)
+    const rows = this.handle.db
+      .select()
+      .from(messageAttachments)
+      .where(
+        and(
+          eq(messageAttachments.projectId, input.projectId),
+          eq(messageAttachments.conversationId, input.conversationId),
+          eq(messageAttachments.turnId, input.turnId),
+          eq(messageAttachments.status, "attached"),
+          eq(messageAttachments.kind, "skill_zip"),
+        ),
+      )
+      .all()
+    const row = rows.find((candidate) => normalizeAttachmentReference(candidate.uri) === requested)
+    if (!row) {
+      throw new SocratesError("skill_import_attachment_not_found", "The Agent Skill ZIP was not attached to the current user message.", { recoverable: true })
+    }
+    const data = fs.readFileSync(row.uri)
+    if (data.length > MAX_SKILL_ZIP_ATTACHMENT_BYTES) {
+      throw new SocratesError("attachment_too_large", "Agent Skill ZIP attachments must be 20 MB or smaller.", { recoverable: true })
+    }
+    return { filename: row.fileName, data }
+  }
+
   private getAttachmentsByIds(projectId: string, conversationId: string, attachmentIds: string[]): MessageAttachment[] {
     return this.getAttachmentRowsByIds(projectId, conversationId, attachmentIds).map(mapMessageAttachment)
   }
@@ -239,5 +274,13 @@ const normalizeMimeType = (mimeType: string | undefined, fileName: string): stri
   if (lower.endsWith(".heic")) return "image/heic"
   if (lower.endsWith(".svg")) return "image/svg+xml"
   if (lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".log")) return "text/plain"
+  if (lower.endsWith(".zip")) return "application/zip"
   return mimeType?.toLowerCase() ?? "application/octet-stream"
+}
+
+const normalizeAttachmentReference = (value: string): string => {
+  const normalized = value.replaceAll("\\", "/")
+  const marker = "/.socrates/attachments/"
+  const markerIndex = normalized.indexOf(marker)
+  return markerIndex >= 0 ? normalized.slice(markerIndex + 1) : normalized.replace(/^\/+/, "")
 }

@@ -15,7 +15,7 @@ import { readTool } from "./readTool"
 import { readMemoryJournalTool } from "./readMemoryJournalTool"
 import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
-import { skillsTool } from "./skillsTool"
+import { skillsReadOnlyTool, skillsTool } from "./skillsTool"
 import { skillWriteTool } from "./skillWriteTool"
 import { soulTool } from "./soulTool"
 import { toolDocsTool } from "./toolDocsTool"
@@ -76,12 +76,12 @@ export class ToolRegistry {
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
 
-const memoryTools = [currentTimeTool, globalTraceRetrieveTool, projectsTool, toolDocsTool, skillsTool, memoryNotesTool, readMemoryJournalTool, soulTool, userProfileTool, editFilesTool] as const
+const memoryTools = [currentTimeTool, globalTraceRetrieveTool, projectsTool, toolDocsTool, skillsReadOnlyTool, memoryNotesTool, readMemoryJournalTool, soulTool, userProfileTool, editFilesTool] as const
 
 export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)
 
 export const createMemoryRouterToolRegistry = (): ToolRegistry => new ToolRegistry([memorySearchTool])
 
-const skillWriterTools = [currentTimeTool, globalTraceRetrieveTool, skillsTool, userProfileTool, soulTool, projectDocsTool, repoDocsTool, skillWriteTool] as const
+const skillWriterTools = [currentTimeTool, globalTraceRetrieveTool, skillsReadOnlyTool, userProfileTool, soulTool, projectDocsTool, repoDocsTool, skillWriteTool] as const
 
 export const createSkillWriterToolRegistry = (): ToolRegistry => new ToolRegistry(skillWriterTools)

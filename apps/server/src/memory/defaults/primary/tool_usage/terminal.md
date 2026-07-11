@@ -34,6 +34,8 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 - Commands should be concrete and non-interactive unless an ongoing terminal session is intended.
 - Use `operation: "list"` before complex Terminal work or when several named sessions may exist. It returns at most 12 compact rows; use its human names for later controls.
 - Raw `run` commands that remain active past the foreground window detach automatically into a conversation Terminal. The command continues unchanged; inspect it with `status` or `output` and do not start a duplicate.
+- Active Terminals survive a normal Socrates server restart. After reconnect, use `list` or `status`; do not start a replacement merely because the chat or server was restarted.
+- If the supervisor or PTY is genuinely lost, the Terminal becomes `missing` or `detached` and a matching wait wakes as failed. Read the bounded recovery evidence and decide whether restarting the command is safe; do not assume the old process is controllable.
 - `charLimit` is capped at 16,000 characters and Terminal list output is capped at 12,000 characters. Request only the evidence needed; full logs remain in the UI/audit store.
 - Protected-path preflight rejects obvious mentions of Socrates-owned docs/memory/tool paths before execution; this is not a process sandbox.
 <!-- /socrates:section -->

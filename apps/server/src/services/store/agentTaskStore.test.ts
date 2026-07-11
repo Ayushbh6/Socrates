@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { RuntimeConfig } from "@socrates/contracts"
 import { eq } from "drizzle-orm"
 import { openDatabase, runMigrations, type DatabaseHandle } from "../../db/client"
-import { terminalSessions, turns } from "../../db/schema"
+import { agentTasks, terminalSessions, turns } from "../../db/schema"
 import { AgentTaskStore } from "./agentTaskStore"
 
 const handles: DatabaseHandle[] = []
@@ -61,6 +61,13 @@ describe("AgentTaskStore", () => {
     const continued = tasks.beginContinuation(ready[0]!)
     expect(continued).toMatchObject({ taskId: ready[0]?.taskId, runtimeConfig })
     expect(tasks.beginContinuation(ready[0]!)).toBeUndefined()
+    handle.db.update(turns).set({ status: "cancelled" }).where(eq(turns.id, continued?.turnId ?? "missing")).run()
+    expect(tasks.requeueInterruptedContinuations()).toBe(1)
+    const recovered = tasks.listReadyTasks()
+    expect(recovered).toHaveLength(1)
+    const recoveredContinuation = tasks.beginContinuation(recovered[0]!)
+    expect(recoveredContinuation).toMatchObject({ taskId: ready[0]?.taskId, runtimeConfig })
+    expect(tasks.beginContinuation(recovered[0]!)).toBeUndefined()
 
     handle.db.insert(terminalSessions).values({
       id: "term_second",
@@ -81,14 +88,20 @@ describe("AgentTaskStore", () => {
         projectId: "proj_1",
         conversationId: "conv_1",
         sessionId: "sess_1",
-        turnId: continued?.turnId ?? "missing",
+        turnId: recoveredContinuation?.turnId ?? "missing",
         runtimeConfig,
         wait: { terminalNames: ["second-tests"], wakeOn: ["completed"], reason: "Waiting for second test results" },
       }),
     ).toMatchObject({ status: "waiting" })
     handle.db.update(terminalSessions).set({ status: "exited", exitCode: 0 }).where(eq(terminalSessions.id, "term_second")).run()
     const secondReady = tasks.claimWakeForTerminal("term_second", "completed")
-    expect(secondReady[0]?.taskId).toBe(continued?.taskId)
-    expect(tasks.beginContinuation(secondReady[0]!)).toMatchObject({ taskId: continued?.taskId })
+    expect(secondReady[0]?.taskId).toBe(recoveredContinuation?.taskId)
+    const finalContinuation = tasks.beginContinuation(secondReady[0]!)
+    expect(finalContinuation).toMatchObject({ taskId: recoveredContinuation?.taskId })
+    handle.db.update(turns).set({ status: "completed" }).where(eq(turns.id, finalContinuation?.turnId ?? "missing")).run()
+    expect(tasks.requeueInterruptedContinuations()).toBe(0)
+    expect(handle.db.select({ status: agentTasks.status }).from(agentTasks).where(eq(agentTasks.id, finalContinuation?.taskId ?? "missing")).get()).toEqual({
+      status: "completed",
+    })
   })
 })

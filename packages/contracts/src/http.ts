@@ -337,6 +337,11 @@ export const memoryAgentFileSummarySchema = z
     path: z.string().min(1),
     absolutePath: z.string().min(1),
     updatedAt: z.string().min(1).optional(),
+    enabled: z.boolean().optional(),
+    source: z.enum(["builtin", "generated", "imported"]).optional(),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    installedAt: z.string().min(1).optional(),
+    sourceLabel: z.string().min(1).max(240).optional(),
   })
   .strict()
 export type MemoryAgentFileSummary = z.infer<typeof memoryAgentFileSummarySchema>
@@ -405,6 +410,78 @@ export const buildGlobalSkillResponseSchema = z
   })
   .strict()
 export type BuildGlobalSkillResponse = z.infer<typeof buildGlobalSkillResponseSchema>
+
+export const skillImportScopeSchema = z.enum(["global", "project"])
+export type SkillImportScope = z.infer<typeof skillImportScopeSchema>
+
+export const skillImportWarningSchema = z
+  .object({
+    code: z.string().min(1).max(80),
+    severity: z.enum(["info", "warning"]),
+    message: z.string().min(1).max(500),
+    path: z.string().min(1).max(240).optional(),
+  })
+  .strict()
+export type SkillImportWarning = z.infer<typeof skillImportWarningSchema>
+
+export const skillImportPreviewSchema = z
+  .object({
+    previewId: idSchema,
+    scope: skillImportScopeSchema,
+    projectId: idSchema.optional(),
+    skill: skillSummarySchema,
+    package: z
+      .object({
+        filename: z.string().min(1).max(240),
+        fileCount: z.number().int().positive().max(200),
+        totalBytes: z.number().int().positive().max(30 * 1024 * 1024),
+        sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        files: z.array(z.string().min(1).max(240)).max(200),
+      })
+      .strict(),
+    metadata: z
+      .object({
+        license: z.string().min(1).max(500).optional(),
+        compatibility: z.string().min(1).max(500).optional(),
+        author: z.string().min(1).max(200).optional(),
+        version: z.string().min(1).max(100).optional(),
+        allowedTools: z.string().min(1).max(1_000).optional(),
+      })
+      .strict(),
+    conflict: z
+      .object({
+        exists: z.boolean(),
+        existing: skillSummarySchema.optional(),
+      })
+      .strict(),
+    warnings: z.array(skillImportWarningSchema).max(50),
+    expiresAt: z.string().datetime(),
+  })
+  .strict()
+export type SkillImportPreview = z.infer<typeof skillImportPreviewSchema>
+
+export const commitSkillImportRequestSchema = z
+  .object({
+    previewId: idSchema,
+    conflictStrategy: z.enum(["reject", "replace"]).default("reject"),
+  })
+  .strict()
+export type CommitSkillImportRequest = z.infer<typeof commitSkillImportRequestSchema>
+
+export const commitSkillImportResponseSchema = z
+  .object({
+    skill: skillSummarySchema,
+    replaced: z.boolean(),
+    warnings: z.array(skillImportWarningSchema).max(50),
+  })
+  .strict()
+export type CommitSkillImportResponse = z.infer<typeof commitSkillImportResponseSchema>
+
+export const updateSkillStateRequestSchema = z.object({ enabled: z.boolean() }).strict()
+export type UpdateSkillStateRequest = z.infer<typeof updateSkillStateRequestSchema>
+
+export const updateSkillStateResponseSchema = z.object({ skill: skillSummarySchema }).strict()
+export type UpdateSkillStateResponse = z.infer<typeof updateSkillStateResponseSchema>
 
 export const approveMemorySkillProposalResponseSchema = z
   .object({

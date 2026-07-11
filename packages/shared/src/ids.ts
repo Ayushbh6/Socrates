@@ -47,6 +47,7 @@ export type IdPrefix =
   | "meminv"
   | "memjournal"
   | "skjob"
+  | "skillimp"
   | "wms"
   | "mdoc"
   | "mdsec"

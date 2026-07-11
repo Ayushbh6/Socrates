@@ -1,6 +1,7 @@
 import net from "node:net"
 import os from "node:os"
 import fs from "node:fs"
+import crypto from "node:crypto"
 import { createWorkspaceShellSession, type WorkspaceShellSession } from "@socrates/workspace"
 import { normalizeError } from "@socrates/shared"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
@@ -18,16 +19,19 @@ type SupervisorRequest =
   | { id: string; method: "input"; terminalId: string; processId?: string; text: string }
   | { id: string; method: "resize"; terminalId: string; processId?: string; cols: number; rows: number }
   | { id: string; method: "has"; terminalId: string }
+  | { id: string; method: "health" }
   | { id: string; method: "shutdown" }
   | { id: string; method: "shutdown-if-idle" }
 
 type SupervisorResponse =
-  | { id: string; ok: true; output?: BashToolOutput; has?: boolean }
+  | { id: string; ok: true; output?: BashToolOutput; has?: boolean; health?: { instanceId: string; processId: number; startedAt: string; terminalCount: number } }
   | { id: string; ok: false; error: { code: string; message: string; details?: unknown } }
 
 const terminals = new Map<string, SupervisorTerminal>()
 const socketPath = process.argv[2]
 const supervisorIdleShutdownMs = Number.parseInt(process.env.SOCRATES_TERMINAL_SUPERVISOR_IDLE_SHUTDOWN_MS ?? "2000", 10)
+const supervisorInstanceId = crypto.randomUUID()
+const supervisorStartedAt = new Date().toISOString()
 let idleShutdownTimer: NodeJS.Timeout | undefined
 
 if (!socketPath) {
@@ -103,6 +107,14 @@ const handleRequest = async (request: SupervisorRequest): Promise<SupervisorResp
 
   if (request.method === "has") {
     return { id: request.id, ok: true, has: terminals.has(request.terminalId) }
+  }
+
+  if (request.method === "health") {
+    return {
+      id: request.id,
+      ok: true,
+      health: { instanceId: supervisorInstanceId, processId: process.pid, startedAt: supervisorStartedAt, terminalCount: terminals.size },
+    }
   }
 
   if (request.method === "start") {

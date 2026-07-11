@@ -4,6 +4,7 @@ import path from "node:path"
 import Database from "better-sqlite3"
 import { afterEach, describe, expect, it } from "vitest"
 import WebSocket from "ws"
+import yazl from "yazl"
 import type {
   ApiResponse,
   Conversation,
@@ -63,6 +64,17 @@ const multipartFiles = (
   ]),
   Buffer.from(`--${boundary}--\r\n`),
 ])
+
+const zipFiles = (files: Record<string, string>): Promise<Buffer> =>
+  new Promise((resolve, reject) => {
+    const zip = new yazl.ZipFile()
+    const chunks: Buffer[] = []
+    zip.outputStream.on("data", (chunk: Buffer) => chunks.push(chunk))
+    zip.outputStream.once("error", reject)
+    zip.outputStream.once("end", () => resolve(Buffer.concat(chunks)))
+    for (const [filePath, content] of Object.entries(files)) zip.addBuffer(Buffer.from(content), filePath)
+    zip.end()
+  })
 
 const writeTestChatGptCodexTokens = (socratesHome: string): void => {
   const credentialDir = path.join(socratesHome, ".credentials")
@@ -160,7 +172,13 @@ const hasToolResultPart = (messages: unknown[]): boolean =>
 const buildTestServer = async (
   dbPath = tempDbPath(),
   agent = createTestAgent(),
-  options: { socratesHome?: string; titleProvider?: ModelProvider | false; memoryProvider?: ModelProvider; embeddingProvider?: EmbeddingProvider } = {},
+  options: {
+    socratesHome?: string
+    titleProvider?: ModelProvider | false
+    memoryProvider?: ModelProvider
+    embeddingProvider?: EmbeddingProvider
+    preserveTerminalsOnClose?: boolean
+  } = {},
 ): Promise<TestServer> => {
   const socratesHome = options.socratesHome ?? path.dirname(dbPath)
   if (dbPath !== ":memory:") {
@@ -170,7 +188,7 @@ const buildTestServer = async (
       fs.writeFileSync(envPath, "OPENAI_API_KEY=\"sk-test-openai\"\n", { mode: 0o600 })
     }
   }
-  const app = await buildServer({ dbPath, agent, ...options, socratesHome })
+  const app = await buildServer({ dbPath, agent, preserveTerminalsOnClose: false, ...options, socratesHome })
   servers.push(app)
   return app
 }
@@ -1268,12 +1286,12 @@ const createTerminalOutputAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
-const createTerminalWaitResumeAgent = (): SocratesAgent => {
+const createTerminalWaitResumeAgent = (completionDelayMs = 2500): SocratesAgent => {
   const command = nodeCommand(`
 setTimeout(() => {
   process.stdout.write("wait-resume-complete\\n")
   process.exit(0)
-}, 2500)
+}, ${completionDelayMs})
 `)
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
     countTokens: fakeCountTokens,
@@ -3080,6 +3098,64 @@ describe("HTTP API", () => {
     }
   })
 
+  it("previews, imports, disables, and replaces portable global and project skill ZIPs", async () => {
+    const dbPath = tempDbPath()
+    const app = await buildTestServer(dbPath)
+    await onboard(app)
+    const { project } = await createProject(app)
+    const archive = await zipFiles({
+      "portable-review/SKILL.md": "---\nname: portable-review\ndescription: Use when the user asks for a portable review checklist.\nlicense: Apache-2.0\nmetadata:\n  version: '1.0'\n---\n\n# Portable Review\n\n1. Inspect the requested evidence.\n2. Return the phrase portable-review-complete.\n",
+      "portable-review/references/checklist.md": "# Checklist\n\n- Verify the current evidence.\n",
+    })
+    const boundary = "----socrates-skill-import"
+    const payload = multipartFiles(boundary, [{ name: "portable-review.zip", mimeType: "application/zip", data: archive }])
+
+    const globalPreviewResponse = await app.inject({
+      method: "POST",
+      url: "/api/memory-agent/skills/import/preview",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const globalPreview = parseResponse<{ previewId: string; skill: SkillSummary; conflict: { exists: boolean }; package: { fileCount: number } }>(globalPreviewResponse.payload)
+    expect(globalPreview.ok, globalPreviewResponse.payload).toBe(true)
+    if (!globalPreview.ok) return
+    expect(globalPreview.data).toMatchObject({ skill: { name: "portable-review", scope: "global", source: "imported" }, conflict: { exists: false }, package: { fileCount: 2 } })
+
+    const globalCommitResponse = await app.inject({
+      method: "POST",
+      url: "/api/memory-agent/skills/import/commit",
+      payload: { previewId: globalPreview.data.previewId, conflictStrategy: "reject" },
+    })
+    const globalCommit = parseResponse<{ skill: SkillSummary; replaced: boolean }>(globalCommitResponse.payload)
+    expect(globalCommit.ok, globalCommitResponse.payload).toBe(true)
+    if (!globalCommit.ok) return
+    expect(globalCommit.data).toMatchObject({ skill: { name: "portable-review", enabled: true, source: "imported" }, replaced: false })
+
+    const disabledResponse = await app.inject({ method: "PATCH", url: "/api/memory-agent/skills/portable-review/state", payload: { enabled: false } })
+    const disabled = parseResponse<{ skill: SkillSummary }>(disabledResponse.payload)
+    expect(disabled.ok, disabledResponse.payload).toBe(true)
+    if (disabled.ok) expect(disabled.data.skill.enabled).toBe(false)
+
+    const projectPreviewResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/skills/import/preview`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const projectPreview = parseResponse<{ previewId: string; skill: SkillSummary }>(projectPreviewResponse.payload)
+    expect(projectPreview.ok, projectPreviewResponse.payload).toBe(true)
+    if (!projectPreview.ok) return
+    expect(projectPreview.data.skill.scope).toBe("project")
+    const projectCommitResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/skills/import/commit`,
+      payload: { previewId: projectPreview.data.previewId, conflictStrategy: "reject" },
+    })
+    const projectCommit = parseResponse<{ skill: SkillSummary; replaced: boolean }>(projectCommitResponse.payload)
+    expect(projectCommit.ok, projectCommitResponse.payload).toBe(true)
+    if (projectCommit.ok) expect(projectCommit.data.skill).toMatchObject({ name: "portable-review", scope: "project", source: "imported" })
+  })
+
   it("manages global and project MCP servers through the API", async () => {
     const app = await buildTestServer()
     await onboard(app)
@@ -3654,6 +3730,28 @@ describe("WebSocket API", () => {
       }))),
     })
     expect(parseResponse(combinedResponse.payload)).toMatchObject({ ok: false, error: { code: "attachment_total_too_large" } })
+  })
+
+  it("accepts a bounded Agent Skill ZIP as a chat attachment", async () => {
+    const app = await buildTestServer(tempDbPath())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const archive = await zipFiles({
+      "attached-review/SKILL.md": "---\nname: attached-review\ndescription: Use when reviewing an attached Agent Skill package.\n---\n\n# Attached Review\n\n1. Review the attached package safely.\n",
+    })
+    const boundary = "----socrates-skill-zip-attachment"
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/attachments/upload`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload: multipartFiles(boundary, [{ name: "attached-review.zip", mimeType: "application/zip", data: archive }]),
+    })
+    const body = parseResponse<{ attachments: MessageAttachment[] }>(response.payload)
+    expect(body.ok).toBe(true)
+    if (!body.ok) throw new Error("Expected skill ZIP attachment upload success")
+    expect(body.data.attachments[0]).toMatchObject({ kind: "skill_zip", mimeType: "application/zip" })
+    expect(body.data.attachments[0]?.uri).toContain(path.join(".socrates", "attachments"))
   })
 
   it("omits chat image bytes for non-vision models", async () => {
@@ -4716,6 +4814,7 @@ describe("WebSocket API", () => {
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "project_docs.md"))).toBe(true)
     expect(fs.existsSync(path.join(socratesHome, "tool_usage", "repo_docs.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "skills.md"))).toBe(true)
+	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "mcp_registry.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "soul.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "user_profile.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "tool_docs.md"))).toBe(true)
@@ -7053,6 +7152,139 @@ describe("WebSocket API", () => {
       socket.close()
     }
   }, 10_000)
+
+  it("keeps a waited Terminal alive across a main-server restart and resumes exactly once", async () => {
+    const dbPath = tempDbPath()
+    const agent = createTerminalWaitResumeAgent()
+    const firstApp = await buildTestServer(dbPath, agent, { preserveTerminalsOnClose: true })
+    await onboard(firstApp)
+    const { project } = await createProject(firstApp)
+    const conversation = await createConversation(firstApp, project.id)
+    const firstSocket = await connectWebSocket(firstApp)
+    let systemPid: number | undefined
+    try {
+      await waitForEvent(firstSocket, "connection.ready")
+      sendCommand(firstSocket, chatMessageCommandWithRuntime(project.id, conversation.id, "Wait for terminal completion", { approvalMode: "approve_all" }))
+      const started = await waitForEvent(firstSocket, "terminal.started", 6_000)
+      await waitForEvent(firstSocket, "turn.waiting", 6_000)
+
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db.prepare("SELECT metadata_json FROM terminal_sessions WHERE id = ?").get(started.payload.terminalId) as
+          | { metadata_json?: string }
+          | undefined
+        const metadata = JSON.parse(row?.metadata_json ?? "{}") as { systemPid?: unknown }
+        expect(typeof metadata.systemPid).toBe("number")
+        systemPid = metadata.systemPid as number
+      } finally {
+        db.close()
+      }
+    } finally {
+      firstSocket.close()
+      await closeTestServer(firstApp)
+    }
+
+    expect(systemPid).toBeDefined()
+    expect(processExists(systemPid as number)).toBe(true)
+
+    const secondApp = await buildTestServer(dbPath, agent)
+    const deadline = Date.now() + 8_000
+    let matchingMessages: Array<{ content: string }> = []
+    while (Date.now() < deadline) {
+      const response = await secondApp.inject({ method: "GET", url: `/api/projects/${project.id}/conversations/${conversation.id}` })
+      const body = parseResponse<{ messages: Array<{ content: string }> }>(response.payload)
+      if (body.ok) {
+        matchingMessages = body.data.messages.filter((message) => message.content === "Background terminal result verified.")
+        if (matchingMessages.length > 0) break
+      }
+      await delay(50)
+    }
+    expect(matchingMessages).toHaveLength(1)
+
+    const db = new Database(dbPath, { readonly: true })
+    try {
+      const task = db.prepare("SELECT status FROM agent_tasks").get() as { status: string } | undefined
+      const continuationCount = db
+        .prepare("SELECT COUNT(*) AS count FROM turns WHERE conversation_id = ?")
+        .get(conversation.id) as { count: number }
+      expect(task?.status).toBe("completed")
+      expect(continuationCount.count).toBe(2)
+    } finally {
+      db.close()
+    }
+  }, 15_000)
+
+  it("reconciles a lost supervisor on startup and wakes the waiting task as failed", async () => {
+    const dbPath = tempDbPath()
+    const agent = createTerminalWaitResumeAgent(5_000)
+    const firstApp = await buildTestServer(dbPath, agent, { preserveTerminalsOnClose: true })
+    await onboard(firstApp)
+    const { project } = await createProject(firstApp)
+    const conversation = await createConversation(firstApp, project.id)
+    const firstSocket = await connectWebSocket(firstApp)
+    let supervisorPid: number | undefined
+    let terminalSystemPid: number | undefined
+    try {
+      await waitForEvent(firstSocket, "connection.ready")
+      sendCommand(firstSocket, chatMessageCommandWithRuntime(project.id, conversation.id, "Wait for terminal completion", { approvalMode: "approve_all" }))
+      const started = await waitForEvent(firstSocket, "terminal.started", 6_000)
+      await waitForEvent(firstSocket, "turn.waiting", 6_000)
+
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        const row = db.prepare("SELECT metadata_json FROM terminal_sessions WHERE id = ?").get(started.payload.terminalId) as
+          | { metadata_json?: string }
+          | undefined
+        const metadata = JSON.parse(row?.metadata_json ?? "{}") as {
+          systemPid?: unknown
+          supervisor?: { processId?: unknown }
+        }
+        expect(typeof metadata.supervisor?.processId).toBe("number")
+        supervisorPid = metadata.supervisor?.processId as number
+        terminalSystemPid = typeof metadata.systemPid === "number" ? metadata.systemPid : undefined
+      } finally {
+        db.close()
+      }
+    } finally {
+      firstSocket.close()
+      await closeTestServer(firstApp)
+    }
+
+    expect(supervisorPid).toBeDefined()
+    process.kill(supervisorPid as number, "SIGKILL")
+    await waitForProcessExit(supervisorPid as number)
+
+    const secondApp = await buildTestServer(dbPath, agent)
+    const deadline = Date.now() + 8_000
+    let matchingMessages: Array<{ content: string }> = []
+    while (Date.now() < deadline) {
+      const response = await secondApp.inject({ method: "GET", url: `/api/projects/${project.id}/conversations/${conversation.id}` })
+      const body = parseResponse<{ messages: Array<{ content: string }> }>(response.payload)
+      if (body.ok) {
+        matchingMessages = body.data.messages.filter((message) => message.content === "Background terminal result verified.")
+        if (matchingMessages.length > 0) break
+      }
+      await delay(50)
+    }
+    expect(matchingMessages).toHaveLength(1)
+
+    const db = new Database(dbPath, { readonly: true })
+    try {
+      const terminal = db.prepare("SELECT status, metadata_json FROM terminal_sessions").get() as { status: string; metadata_json: string | null }
+      const task = db.prepare("SELECT status, metadata_json FROM agent_tasks").get() as { status: string; metadata_json: string | null }
+      const terminalMetadata = JSON.parse(terminal.metadata_json ?? "{}") as { supervisorRecovery?: { state?: unknown } }
+      const taskMetadata = JSON.parse(task.metadata_json ?? "{}") as { wakeEvent?: unknown }
+      expect(terminal.status).toBe("detached")
+      expect(terminalMetadata.supervisorRecovery?.state).toBe("supervisor_unavailable")
+      expect(task.status).toBe("completed")
+      expect(taskMetadata.wakeEvent).toBe("failed")
+    } finally {
+      db.close()
+      if (terminalSystemPid && processExists(terminalSystemPid)) {
+        process.kill(terminalSystemPid, "SIGTERM")
+      }
+    }
+  }, 15_000)
 
   it("returns persisted terminal output after background polling has drained supervisor output", async () => {
     const app = await buildTestServer(tempDbPath(), createTerminalOutputAgent())

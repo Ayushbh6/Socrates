@@ -28,7 +28,7 @@ export const SOCRATES_SURFACES = [
   { id: "project_notes", path: ".socrates/PROJECT_NOTES.md", purpose: "Active project state and open loops", durability: "working", readTool: "project_docs", writeOwner: "socrates", loadPolicy: "router", cacheClass: "dynamic", mutation: "dedicated_tool_only" },
   { id: "repo_docs", path: ".socrates/repo_docs/", purpose: "Durable repository doctrine and contracts", durability: "durable", readTool: "repo_docs", writeOwner: "socrates", loadPolicy: "router", cacheClass: "dynamic", mutation: "dedicated_tool_only" },
   { id: "project_resources", path: ".socrates/resources/", purpose: "User-managed project source material", durability: "source_artifact", readTool: "list_project_resources", writeOwner: "user", loadPolicy: "on_demand", cacheClass: "dynamic", mutation: "user_managed" },
-  { id: "conversation_attachments", path: ".socrates/attachments/", purpose: "Conversation images and pasted-text sources", durability: "source_artifact", readTool: "read", writeOwner: "backend", loadPolicy: "on_demand", cacheClass: "dynamic", mutation: "backend_only" },
+  { id: "conversation_attachments", path: ".socrates/attachments/", purpose: "Conversation images, text sources, and Agent Skill ZIPs", durability: "source_artifact", readTool: "read", writeOwner: "backend", loadPolicy: "on_demand", cacheClass: "dynamic", mutation: "backend_only" },
   { id: "project_skills", path: ".socrates/skills/", aliases: [".socrates/skill/"], purpose: "Reusable project procedures", durability: "durable", readTool: "skills", writeOwner: "skill_writer", loadPolicy: "on_demand", cacheClass: "dynamic", mutation: "read_only_main_agent" },
 ] as const satisfies readonly SocratesSurface[]
 

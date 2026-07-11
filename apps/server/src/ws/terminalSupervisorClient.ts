@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process"
+import { spawn } from "node:child_process"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import net from "node:net"
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 import { SocratesError, type ErrorDetails } from "@socrates/shared"
 
-type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has" | "shutdown-if-idle" | "shutdown"
+type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has" | "health" | "shutdown-if-idle" | "shutdown"
 type SupervisorRequest = {
   id: string
   method: SupervisorMethod
@@ -25,7 +25,15 @@ type SupervisorResponse = {
   ok: boolean
   output?: BashToolOutput
   has?: boolean
+  health?: TerminalSupervisorHealth
   error?: { code: string; message: string; details?: unknown }
+}
+
+export type TerminalSupervisorHealth = {
+  instanceId: string
+  processId: number
+  startedAt: string
+  terminalCount: number
 }
 
 const terminalSupervisorProtocolVersion = "pty-v3-20260607-text-input"
@@ -73,6 +81,23 @@ export class TerminalSupervisorClient {
     return response.has === true
   }
 
+  async inspectHealth(): Promise<TerminalSupervisorHealth | undefined> {
+    if (!(await this.canConnect())) return undefined
+    const response = await this.send({ method: "health" }).catch(() => undefined)
+    if (!response) return undefined
+    // Supervisors started by the immediately previous protocol remain usable until
+    // their last Terminal exits, even though they do not expose health metadata.
+    return response.health ?? { instanceId: "legacy", processId: 0, startedAt: "unknown", terminalCount: -1 }
+  }
+
+  async health(): Promise<TerminalSupervisorHealth> {
+    const response = await this.request({ method: "health" })
+    if (!response.health) {
+      throw new SocratesError("terminal_supervisor_missing_health", "Terminal supervisor did not return health information.", { recoverable: true })
+    }
+    return response.health
+  }
+
   async shutdownIfIdle(): Promise<void> {
     if (!(await this.canConnect())) {
       return
@@ -92,26 +117,46 @@ export class TerminalSupervisorClient {
     await this.ensureRunning()
     try {
       return await this.send(input)
-    } catch (error) {
-      await this.ensureRunning(true)
-      return await this.send(input)
+    } catch (firstError) {
+      if (firstError instanceof SocratesError && firstError.code !== "terminal_supervisor_timeout") {
+        throw firstError
+      }
+      // A request timeout is not proof that the supervisor is dead. Never replace a
+      // potentially healthy supervisor (and its PTYs) from an ordinary operation.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await wait(100 * (attempt + 1))
+        if (await this.canConnect()) {
+          try {
+            return await this.send(input)
+          } catch {
+            // Retry only after another reachability probe; never replace in-place.
+          }
+        }
+      }
+      throw new SocratesError("terminal_supervisor_unavailable", "Terminal supervisor is not reachable after bounded retries.", {
+        details: { cause: firstError instanceof Error ? firstError.message : String(firstError) },
+        recoverable: true,
+      })
     }
   }
 
-  private async ensureRunning(force = false): Promise<void> {
-    if (!force && (await this.canConnect())) {
+  private async ensureRunning(): Promise<void> {
+    if (await this.canConnect()) {
       return
     }
-    if (this.spawnPromise && !force) {
+    if (this.spawnPromise) {
       return this.spawnPromise
     }
-    this.spawnPromise = this.spawnSupervisor()
-    await this.spawnPromise
-    this.spawnPromise = undefined
+    const spawnPromise = this.spawnSupervisor()
+    this.spawnPromise = spawnPromise
+    try {
+      await spawnPromise
+    } finally {
+      if (this.spawnPromise === spawnPromise) this.spawnPromise = undefined
+    }
   }
 
   private async spawnSupervisor(): Promise<void> {
-    reapStaleSupervisorProcesses(this.socketPath)
     if (process.platform !== "win32" && fs.existsSync(this.socketPath)) {
       fs.unlinkSync(this.socketPath)
     }
@@ -208,30 +253,5 @@ const requireOutput = (response: SupervisorResponse): BashToolOutput => {
   }
   return response.output
 }
-
-const reapStaleSupervisorProcesses = (socketPath: string): void => {
-  if (process.platform === "win32") {
-    return
-  }
-  const pattern = `terminalSupervisorProcess\\.(ts|js).*${escapeRegExp(socketPath)}`
-  let output = ""
-  try {
-    output = execFileSync("pgrep", ["-f", pattern], { encoding: "utf8", timeout: 300, stdio: ["ignore", "pipe", "ignore"] })
-  } catch {
-    return
-  }
-  for (const pid of output
-    .split(/\s+/)
-    .map((value) => Number.parseInt(value, 10))
-    .filter((value) => Number.isInteger(value) && value > 0 && value !== process.pid)) {
-    try {
-      process.kill(pid, "SIGTERM")
-    } catch {
-      // The process already exited.
-    }
-  }
-}
-
-const escapeRegExp = (value: string): string => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

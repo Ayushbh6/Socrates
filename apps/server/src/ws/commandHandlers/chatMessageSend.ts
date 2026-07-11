@@ -1018,12 +1018,18 @@ const createToolExecutors = (
   trace_retrieve: (input, context) => store.retrieveMainToolTraces(projectId, context.conversationId, input as TraceRetrieveMainToolInput).then((result) => result as never),
   memory_search: (input) => store.searchMemory(projectId, input, false),
   tool_docs: (input) => Promise.resolve(store.runToolDocsTool(projectId, input)),
-  skills: (input) => {
-    const output = store.runSkillsTool(projectId, input)
+  skills: async (input, context) => {
+    const output = input.operation === "preview_import" || input.operation === "commit_import"
+      ? await store.runSkillsImportTool(projectId, input, {
+          conversationId: context.conversationId,
+          turnId: context.turnId,
+          ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+        })
+      : store.runSkillsTool(projectId, input)
     if (input.operation === "list" || input.operation === "describe" || input.operation === "search" || input.operation === "read") {
       skillsDiscoverySeen = true
     }
-    return Promise.resolve(output)
+    return output
   },
   memory_note: (input, context) =>
     Promise.resolve(store.createMemoryNote(projectId, input, {
