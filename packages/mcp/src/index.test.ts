@@ -2,11 +2,24 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { describe, expect, it } from "vitest"
-import { McpRuntime } from "./index"
+import { McpRuntime, parseMcpConfig } from "./index"
 
 const tempHome = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-test-"))
 
 describe("McpRuntime", () => {
+  it("parses common JSON and Codex TOML MCP configuration safely", () => {
+    const json = parseMcpConfig(JSON.stringify({ mcpServers: { "Duck Search": { command: "npx", args: ["-y", "duck-mcp"], env: { MODE: "local", API_KEY: "secret" } } } }))
+    expect(json.servers[0]).toMatchObject({ id: "duck-search", command: "npx", env: { MODE: "local" }, secretEnv: { API_KEY: "secret" }, enabled: false })
+    expect(json.warnings[0]).toContain("Normalized")
+
+    const toml = parseMcpConfig('[mcp_servers.time]\ncommand = "uvx"\nargs = ["mcp-server-time"]\n')
+    expect(toml).toMatchObject({ format: "toml", servers: [{ id: "time", command: "uvx", args: ["mcp-server-time"], enabled: false }] })
+  })
+
+  it("rejects remote transports with a clear error", () => {
+    expect(() => parseMcpConfig(JSON.stringify({ mcpServers: { remote: { url: "https://example.com/mcp" } } }))).toThrow(/stdio MCP servers only/)
+  })
+
   it("ensures the bundled Playwright server without secrets", async () => {
     const home = tempHome()
     const runtime = new McpRuntime({ socratesHome: home })
@@ -102,6 +115,7 @@ describe("McpRuntime", () => {
         id: "projectfake",
         command: process.execPath,
         args: [path.join(home, "fake-mcp.cjs")],
+        enabled: true,
       },
       { workspacePath: workspace },
     )
@@ -113,6 +127,51 @@ describe("McpRuntime", () => {
     expect(fs.existsSync(path.join(workspace, ".socrates", "mcp.json"))).toBe(true)
     expect(runtime.getDynamicToolDefinitions("projectfake", { workspacePath: workspace })[0]?.name).toBe("mcp__projectfake__noop")
     expect(runtime.getDynamicToolDefinitions("projectfake")).toEqual([])
+  })
+
+  it("stores secrets outside mcp.json, checks in the workspace cwd, persists status, and cleans owned secrets", async () => {
+    const home = tempHome()
+    const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-secure-")))
+    const runtime = new McpRuntime({ socratesHome: home })
+    const scriptPath = writeFakeMcpScript(workspace)
+    runtime.upsertManagedServer("project", { id: "secure", command: process.execPath, args: [path.basename(scriptPath)], secretEnv: { TEST_TOKEN: "private-value" } }, { workspacePath: workspace })
+
+    const configText = fs.readFileSync(path.join(workspace, ".socrates", "mcp.json"), "utf8")
+    expect(configText).toContain("TEST_TOKEN")
+    expect(configText).not.toContain("private-value")
+    expect(fs.readFileSync(path.join(workspace, ".socrates", ".env"), "utf8")).toContain("TEST_TOKEN=private-value")
+
+    const checked = await runtime.checkManagedServer("secure", { scope: "project", workspacePath: workspace, enableOnSuccess: true })
+    expect(checked.server).toMatchObject({ status: "available", enabled: true, toolCount: 2 })
+    expect(runtime.listManagedServers({ workspacePath: workspace }).find((server) => server.id === "secure")).toMatchObject({ status: "available", toolCount: 2 })
+    const called = await runtime.callDynamicTool("mcp__secure__record", {}, { cwd: workspace, workspacePath: workspace, sessionKey: "secure" }) as { cwd: string }
+    expect(called.cwd).toBe(workspace)
+
+    runtime.deleteManagedServer("project", "secure", { workspacePath: workspace })
+    expect(fs.readFileSync(path.join(workspace, ".socrates", ".env"), "utf8")).not.toContain("TEST_TOKEN")
+    runtime.close()
+  })
+
+  it("supports approved project configure, check, and delete through the registry tool", async () => {
+    const home = tempHome()
+    const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-chat-")))
+    const runtime = new McpRuntime({ socratesHome: home })
+    const scriptPath = writeFakeMcpScript(workspace)
+    const configured = await runtime.handleRegistryTool({ operation: "configure", confirmed: true, scope: "project", server: { id: "chatfake", command: process.execPath, args: [path.basename(scriptPath)], enabled: true } }, { workspacePath: workspace })
+    expect(configured.server).toMatchObject({ id: "chatfake", status: "available", enabled: true, scope: "project" })
+    expect(configured.tools).toHaveLength(2)
+    const checked = await runtime.handleRegistryTool({ operation: "check", id: "chatfake" }, { workspacePath: workspace })
+    expect(checked.server).toMatchObject({ status: "available", enabled: true })
+    expect(runtime.getDynamicToolDefinitions("chatfake", { workspacePath: workspace })).toHaveLength(2)
+    const deleted = await runtime.handleRegistryTool({ operation: "delete", confirmed: true, scope: "project", id: "chatfake" }, { workspacePath: workspace })
+    expect(deleted.summary).toContain("Deleted project MCP server chatfake")
+    expect(runtime.listManagedServers({ workspacePath: workspace }).some((server) => server.id === "chatfake")).toBe(false)
+
+    const globalConfigured = await runtime.handleRegistryTool({ operation: "configure", confirmed: true, scope: "global", server: { id: "globalfake", command: process.execPath, args: [scriptPath] } }, { workspacePath: workspace })
+    expect(globalConfigured.server).toMatchObject({ status: "available", enabled: true, scope: "global" })
+    expect(runtime.listManagedServers({ workspacePath: workspace }).some((server) => server.id === "globalfake" && server.scope === "global")).toBe(true)
+    await runtime.handleRegistryTool({ operation: "delete", confirmed: true, scope: "global", id: "globalfake" }, { workspacePath: workspace })
+    expect(runtime.listManagedServers({ workspacePath: workspace }).some((server) => server.id === "globalfake")).toBe(false)
   })
 
   it("resolves human MCP labels to canonical project server ids", async () => {
@@ -128,6 +187,7 @@ describe("McpRuntime", () => {
         label: "Project Fake MCP",
         command: process.execPath,
         args: [scriptPath],
+        enabled: true,
       },
       { workspacePath: workspace },
     )

@@ -2605,7 +2605,7 @@ Rules:
 
 ### `mcp_registry`
 
-Read-only model-facing discovery and inspection for MCP servers available to Socrates. UI/API routes own MCP configure/check/enable/disable/delete; the main model sees only `list` and `describe`.
+Model-facing discovery, validation, and approval-backed lifecycle management for MCP servers available to Socrates. `list`/`describe`/`check` are automatic; `configure`/`delete` require user approval. The UI/API also owns JSON/TOML parsing, manual setup, edit, enable/disable, persistent status, config-file open, and delete.
 
 Input:
 
@@ -2621,6 +2621,20 @@ type McpRegistryToolInput =
       name?: string
       n?: number
     }
+  | { operation: "check"; id: string; enableOnSuccess?: boolean }
+  | {
+      operation: "configure"
+      scope?: "project" | "global"
+      server: {
+        id: string
+        label?: string
+        command: string
+        args?: string[]
+        env?: Record<string, string>
+        secretEnv?: Record<string, string>
+      }
+    }
+  | { operation: "delete"; scope?: "project" | "global"; id: string }
 ```
 
 Output:
@@ -2638,13 +2652,15 @@ type McpRegistryServer = {
   requiresSecrets: boolean
   status: "available" | "missing" | "failed" | "unknown"
   toolCount?: number
+  lastCheckedAt?: string
+  lastError?: string
   toolPreview?: string[]
   moreToolsAvailable?: boolean
   warnings?: string[]
 }
 
 type McpRegistryToolOutput = {
-  operation: "list" | "describe"
+  operation: "list" | "describe" | "check" | "configure" | "delete"
   configPath: string
   envPath: string
   servers?: McpRegistryServer[]
@@ -2668,6 +2684,11 @@ Rules:
 - `describe` requires an exact listed `id` or exact listed `name`; prefer canonical `id`.
 - If both `id` and `name` are provided, they must resolve to the same listed server. Otherwise the tool returns a constructive recoverable error.
 - Describing a server loads only that server's docs and exposes its dynamic `mcp__...` tool definitions for later provider calls in the same turn.
+- Configure/delete always use the mutation lane and normal approval surface. Configure accepts only exact user-supplied or trusted stdio commands, forces the initial save disabled, performs initialize plus tools/list inside the approved call, enables only on success, and redacts `secretEnv` from approval previews.
+- Check launches project servers from the project workspace and persists health/tool-count metadata without changing enablement. The HTTP dashboard flow may explicitly request enable-on-success after its own user-initiated save.
+- UI import accepts common JSON `mcpServers`/`servers` and Codex TOML `mcp_servers`; remote HTTP/SSE entries receive a clear unsupported-transport error until those transports are implemented.
+- Secret values are written with private permissions to the scope's `.env`; `mcp.json` stores only `secretKeys`. Deleting a server removes only secret keys not referenced by another server.
+- `GET /api/mcp` returns the selected scope's config/env paths. The panel provides copy/open actions, manual editing with immutable ids, and add/check/enable/delete controls.
 - MCP server tool lists and schemas must not be dumped into the system prompt or first provider-call schemas.
 - Global MCP servers are inherited by all projects. Project MCP servers are visible only in that workspace. Bundled Playwright is protected from deletion and should be discoverable for browser/web/page/screenshot tasks.
 

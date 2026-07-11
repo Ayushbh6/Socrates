@@ -1592,6 +1592,10 @@ describe("tool contracts", () => {
     expect(mcpRegistryToolInputSchema.safeParse({ operation: "list", id: "playwright" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "describe", id: "playwright" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(false)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", id: "playwright" }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "configure", scope: "project", server: { id: "time", command: "uvx", args: ["mcp-server-time"] } }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "configure", server: { id: "time" } }).success).toBe(false)
+    expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "delete", scope: "global", id: "time" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "describe" }).success).toBe(false)
     expect(
       mcpRegistryToolOutputSchema.safeParse({

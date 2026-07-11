@@ -3044,6 +3044,17 @@ describe("HTTP API", () => {
     if (!initialBody.ok) return
     expect(initialBody.data.servers.some((server) => server.id === "playwright" && server.scope === "global")).toBe(true)
 
+    const configParseResponse = await app.inject({
+      method: "POST",
+      url: "/api/mcp/parse",
+      payload: { content: JSON.stringify({ mcpServers: { free_search: { command: "npx", args: ["-y", "free-search"], env: { API_TOKEN: "private" } } } }), format: "auto" },
+    })
+    const parsedBody = parseResponse<{ format: string; servers: Array<{ id: string; secretEnv?: Record<string, string> }> }>(configParseResponse.payload)
+    expect(parsedBody.ok, configParseResponse.payload).toBe(true)
+    if (parsedBody.ok) {
+      expect(parsedBody.data).toMatchObject({ format: "json", servers: [{ id: "free_search", secretEnv: { API_TOKEN: "private" } }] })
+    }
+
     const upsertResponse = await app.inject({
       method: "POST",
       url: "/api/mcp/servers",
@@ -3061,7 +3072,7 @@ describe("HTTP API", () => {
     const upsertBody = parseResponse<{ server: McpServerStatus }>(upsertResponse.payload)
     expect(upsertBody.ok).toBe(true)
     if (!upsertBody.ok) return
-    expect(upsertBody.data.server).toMatchObject({ id: "projectfake", scope: "project", enabled: true })
+    expect(upsertBody.data.server).toMatchObject({ id: "projectfake", scope: "project", enabled: false })
     expect(fs.existsSync(path.join(primaryWorkspace.path as string, ".socrates", "mcp.json"))).toBe(true)
 
     const disableResponse = await app.inject({

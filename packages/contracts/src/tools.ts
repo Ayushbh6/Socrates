@@ -1863,7 +1863,7 @@ export type ListProjectResourcesToolOutput = z.infer<typeof listProjectResources
 export const mcpServerScopeSchema = z.enum(["global", "project"])
 export type McpServerScope = z.infer<typeof mcpServerScopeSchema>
 
-export const mcpRegistryOperationSchema = z.enum(["list", "describe", "check", "configure"])
+export const mcpRegistryOperationSchema = z.enum(["list", "describe", "check", "configure", "delete"])
 export type McpRegistryOperation = z.infer<typeof mcpRegistryOperationSchema>
 
 export const mcpRegistryToolInputSchema = z
@@ -1875,6 +1875,21 @@ export const mcpRegistryToolInputSchema = z
     serverId: z.string().min(1).optional(),
     serverName: z.string().min(1).optional(),
     preset: z.enum(["playwright"]).optional(),
+    scope: mcpServerScopeSchema.optional(),
+    server: z
+      .object({
+        id: z.string().min(1).max(64).regex(/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/),
+        label: z.string().min(1).max(120).optional(),
+        command: z.string().min(1),
+        args: z.array(z.string()).max(40).optional(),
+        env: z.record(z.string(), z.string()).optional(),
+        secretEnv: z.record(z.string(), z.string()).optional(),
+        enabled: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    confirmed: z.boolean().optional(),
+    enableOnSuccess: z.boolean().optional(),
   })
   .strict()
 export type McpRegistryToolInput = z.infer<typeof mcpRegistryToolInputSchema>
@@ -1892,6 +1907,35 @@ export const mcpRegistryToolModelInputSchema = z.discriminatedUnion("operation",
       id: z.string().min(1).optional().describe("Canonical MCP id copied from mcp_registry list. Prefer this for describe."),
       name: z.string().min(1).optional().describe("Exact listed MCP display name. Use only when matching by name; do not copy a name into id."),
       n: z.number().int().positive().max(35).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("check"),
+      id: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("configure"),
+      scope: mcpServerScopeSchema.default("project"),
+      server: z
+        .object({
+          id: z.string().min(1).max(64).regex(/^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/),
+          label: z.string().min(1).max(120).optional(),
+          command: z.string().min(1),
+          args: z.array(z.string()).max(40).optional(),
+          env: z.record(z.string(), z.string()).optional().describe("Non-secret environment values only."),
+          secretEnv: z.record(z.string(), z.string()).optional().describe("Secret values stored in the project .socrates/.env file, never mcp.json."),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal("delete"),
+      scope: mcpServerScopeSchema.default("project"),
+      id: z.string().min(1),
     })
     .strict(),
 ])
@@ -1914,6 +1958,8 @@ export const mcpRegistryServerSchema = z
     requiresSecrets: z.boolean(),
     status: z.enum(["available", "missing", "failed", "unknown"]),
     toolCount: z.number().int().nonnegative().optional(),
+    lastCheckedAt: z.string().min(1).optional(),
+    lastError: z.string().min(1).optional(),
     toolPreview: z.array(z.string()).optional(),
     moreToolsAvailable: z.boolean().optional(),
     configPath: z.string().min(1).optional(),

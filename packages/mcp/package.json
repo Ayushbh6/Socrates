@@ -23,6 +23,7 @@
     "@playwright/mcp": "0.0.75",
     "@socrates/contracts": "workspace:*",
     "@socrates/shared": "workspace:*",
+    "smol-toml": "^1.7.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

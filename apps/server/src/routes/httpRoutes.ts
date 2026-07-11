@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify"
 import fs from "node:fs"
+import { spawn } from "node:child_process"
+import path from "node:path"
 import { z } from "zod"
 import {
   MAX_MESSAGE_ATTACHMENTS,
@@ -22,9 +24,12 @@ import {
   inspectWorkspaceRequestSchema,
   listMcpServersQuerySchema,
   listMcpServersResponseSchema,
+  parseMcpConfigRequestSchema,
+  parseMcpConfigResponseSchema,
   listOllamaEmbeddingModelsQuerySchema,
   getMemoryAgentFileContentResponseSchema,
   getMemoryAgentRunResponseSchema,
+  getMcpServerConfigResponseSchema,
   listMemoryAgentFilesResponseSchema,
   listMemoryAgentRunsResponseSchema,
   listWorkerModelSettingsResponseSchema,
@@ -32,6 +37,8 @@ import {
   listNotificationsResponseSchema,
   markAllNotificationsReadResponseSchema,
   markNotificationReadResponseSchema,
+  openMcpConfigRequestSchema,
+  openMcpConfigResponseSchema,
   patchProjectRequestSchema,
   pickWorkspaceFolderRequestSchema,
   providerIdSchema,
@@ -50,7 +57,7 @@ import {
   upsertProjectInstructionsRequestSchema,
   workerModelSettingsParamsSchema,
 } from "@socrates/contracts"
-import type { McpRuntime } from "@socrates/mcp"
+import { parseMcpConfig, type McpRuntime } from "@socrates/mcp"
 import { SocratesError } from "@socrates/shared"
 import { apiError, fail, ok, toApiError } from "../http"
 import type { SocratesStore, UploadedResourceInput } from "../services/store"
@@ -210,7 +217,41 @@ export const registerHttpRoutes = async (
       const query = parseBody(listMcpServersQuerySchema, request.query)
       const workspacePath = query.projectId ? store.getPrimaryWorkspacePath(query.projectId) : undefined
       const servers = mcpRuntime.listManagedServers({ workspacePath })
-      return ok(listMcpServersResponseSchema.parse({ servers: query.scope ? servers.filter((server) => server.scope === query.scope) : servers }))
+      const scope = query.scope ?? (query.projectId ? "project" : "global")
+      return ok(listMcpServersResponseSchema.parse({
+        servers: query.scope ? servers.filter((server) => server.scope === query.scope) : servers,
+        paths: mcpRuntime.getManagedPaths(scope, { workspacePath }),
+      }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/mcp/parse", async (request, reply) => {
+    try {
+      const input = parseBody(parseMcpConfigRequestSchema, request.body)
+      return ok(parseMcpConfigResponseSchema.parse(parseMcpConfig(input.content, input.format)))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.post("/api/mcp/open", async (request, reply) => {
+    try {
+      if (!mcpRuntime) throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      const input = parseBody(openMcpConfigRequestSchema, request.body)
+      const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : undefined
+      const paths = mcpRuntime.getManagedPaths(input.scope, { workspacePath })
+      const targetPath = input.target === "config" ? paths.configPath : paths.envPath
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true })
+      if (!fs.existsSync(targetPath)) fs.writeFileSync(targetPath, input.target === "config" ? "{\n  \"servers\": {}\n}\n" : "# Socrates MCP secrets.\n", { mode: input.target === "secrets" ? 0o600 : 0o644 })
+      const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open"
+      const args = process.platform === "win32" ? ["/c", "start", "", targetPath] : [targetPath]
+      const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true })
+      child.unref()
+      return ok(openMcpConfigResponseSchema.parse({ path: targetPath }))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
@@ -225,6 +266,20 @@ export const registerHttpRoutes = async (
       const input = parseBody(upsertMcpServerRequestSchema, request.body)
       const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : undefined
       return ok(upsertMcpServerResponseSchema.parse({ server: mcpRuntime.upsertManagedServer(input.scope, input.server, { workspacePath }) }))
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/mcp/servers/:serverId/config", async (request, reply) => {
+    try {
+      if (!mcpRuntime) throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
+      const { serverId } = parseParams(mcpServerParamsSchema, request.params)
+      const query = parseBody(listMcpServersQuerySchema, request.query)
+      const scope = query.scope ?? "project"
+      const workspacePath = scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(query.projectId)) : undefined
+      return ok(getMcpServerConfigResponseSchema.parse({ server: mcpRuntime.getManagedServerConfig(scope, serverId, { workspacePath }) }))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)
@@ -270,7 +325,7 @@ export const registerHttpRoutes = async (
       const { serverId } = parseParams(mcpServerParamsSchema, request.params)
       const input = parseBody(checkMcpServerRequestSchema, request.body)
       const workspacePath = input.scope === "project" ? store.getPrimaryWorkspacePath(requiredProjectId(input.projectId)) : input.projectId ? store.getPrimaryWorkspacePath(input.projectId) : undefined
-      return ok(checkMcpServerResponseSchema.parse(await mcpRuntime.checkManagedServer(serverId, { scope: input.scope, workspacePath })))
+      return ok(checkMcpServerResponseSchema.parse(await mcpRuntime.checkManagedServer(serverId, { scope: input.scope, workspacePath, enableOnSuccess: input.enableOnSuccess })))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

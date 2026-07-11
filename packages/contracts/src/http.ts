@@ -441,11 +441,47 @@ export const mcpServerConfigInputSchema = z
     command: z.string().min(1),
     args: z.array(z.string()).max(40).optional(),
     env: z.record(z.string(), z.string()).optional(),
+    secretEnv: z.record(z.string(), z.string()).optional(),
     enabled: z.boolean().optional(),
     requiresSecrets: z.boolean().optional(),
   })
   .strict()
 export type McpServerConfigInput = z.infer<typeof mcpServerConfigInputSchema>
+
+export const getMcpServerConfigResponseSchema = z.object({ server: mcpServerConfigInputSchema }).strict()
+export type GetMcpServerConfigResponse = z.infer<typeof getMcpServerConfigResponseSchema>
+
+export const mcpConfigFormatSchema = z.enum(["auto", "json", "toml"])
+export type McpConfigFormat = z.infer<typeof mcpConfigFormatSchema>
+
+export const parseMcpConfigRequestSchema = z
+  .object({
+    content: z.string().min(1).max(50_000),
+    format: mcpConfigFormatSchema.default("auto"),
+  })
+  .strict()
+export type ParseMcpConfigRequest = z.infer<typeof parseMcpConfigRequestSchema>
+
+export const parseMcpConfigResponseSchema = z
+  .object({
+    format: z.enum(["json", "toml"]),
+    servers: z.array(mcpServerConfigInputSchema).min(1).max(20),
+    warnings: z.array(z.string()),
+  })
+  .strict()
+export type ParseMcpConfigResponse = z.infer<typeof parseMcpConfigResponseSchema>
+
+export const openMcpConfigRequestSchema = z
+  .object({
+    scope: mcpServerScopeSchema,
+    projectId: z.string().min(1).optional(),
+    target: z.enum(["config", "secrets"]),
+  })
+  .strict()
+export type OpenMcpConfigRequest = z.infer<typeof openMcpConfigRequestSchema>
+
+export const openMcpConfigResponseSchema = z.object({ path: z.string().min(1) }).strict()
+export type OpenMcpConfigResponse = z.infer<typeof openMcpConfigResponseSchema>
 
 export const mcpServerStatusSchema = mcpRegistryServerSchema.extend({
   scope: mcpServerScopeSchema,
@@ -463,6 +499,13 @@ export type ListMcpServersQuery = z.infer<typeof listMcpServersQuerySchema>
 export const listMcpServersResponseSchema = z
   .object({
     servers: z.array(mcpServerStatusSchema),
+    paths: z
+      .object({
+        scope: mcpServerScopeSchema,
+        configPath: z.string().min(1),
+        envPath: z.string().min(1),
+      })
+      .strict(),
   })
   .strict()
 export type ListMcpServersResponse = z.infer<typeof listMcpServersResponseSchema>
@@ -519,6 +562,7 @@ export const checkMcpServerRequestSchema = z
   .object({
     scope: mcpServerScopeSchema.optional(),
     projectId: z.string().min(1).optional(),
+    enableOnSuccess: z.boolean().optional(),
   })
   .strict()
 export type CheckMcpServerRequest = z.infer<typeof checkMcpServerRequestSchema>

@@ -20,6 +20,7 @@ import {
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
   getConversationResponseSchema,
+  getMcpServerConfigResponseSchema,
   getMemoryAgentFileContentResponseSchema,
   getMemoryAgentResponseSchema,
   getMemoryAgentRunResponseSchema,
@@ -38,7 +39,9 @@ import {
   listWorkerModelSettingsResponseSchema,
   markAllNotificationsReadResponseSchema,
   markNotificationReadResponseSchema,
+  openMcpConfigResponseSchema,
   pickWorkspaceFolderResponseSchema,
+  parseMcpConfigResponseSchema,
   reindexProjectEmbeddingsResponseSchema,
   rejectMemorySkillProposalResponseSchema,
   setProviderCredentialSessionResponseSchema,
@@ -83,6 +86,7 @@ import {
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
+  type GetMcpServerConfigResponse,
   type GetMemoryAgentFileContentResponse,
   type GetMemoryAgentResponse,
   type GetMemoryAgentRunResponse,
@@ -101,11 +105,15 @@ import {
   type ListProjectsResponse,
   type MarkAllNotificationsReadResponse,
   type MarkNotificationReadResponse,
+  type OpenMcpConfigRequest,
+  type OpenMcpConfigResponse,
   type ListModelsHttpResponse,
   type ListProjectConversationsResponse,
   type ListWorkerModelSettingsResponse,
   type PickWorkspaceFolderRequest,
   type PickWorkspaceFolderResponse,
+  type ParseMcpConfigRequest,
+  type ParseMcpConfigResponse,
   type RejectMemorySkillProposalResponse,
   type ReindexProjectEmbeddingsResponse,
   type SetProviderCredentialSessionRequest,
@@ -439,6 +447,24 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input),
     }) as Promise<UpsertMcpServerResponse>,
+
+  parseMcpConfig: (input: ParseMcpConfigRequest) =>
+    request<typeof parseMcpConfigResponseSchema>("/api/mcp/parse", parseMcpConfigResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }) as Promise<ParseMcpConfigResponse>,
+
+  openMcpConfig: (input: OpenMcpConfigRequest) =>
+    request<typeof openMcpConfigResponseSchema>("/api/mcp/open", openMcpConfigResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+    }) as Promise<OpenMcpConfigResponse>,
+
+  getMcpServerConfig: (serverId: string, input: { projectId?: string; scope: "global" | "project" }) => {
+    const params = new URLSearchParams({ scope: input.scope });
+    if (input.projectId) params.set("projectId", input.projectId);
+    return request<typeof getMcpServerConfigResponseSchema>(`/api/mcp/servers/${encodeURIComponent(serverId)}/config?${params}`, getMcpServerConfigResponseSchema) as Promise<GetMcpServerConfigResponse>;
+  },
 
   updateMcpServer: (serverId: string, input: UpdateMcpServerRequest) =>
     request<typeof updateMcpServerResponseSchema>(
