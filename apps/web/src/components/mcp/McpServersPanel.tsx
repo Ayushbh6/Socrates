@@ -603,7 +603,7 @@ function StatusPill({ server }: { server: McpServerStatus }) {
       </span>
     );
   }
-  return <span className="rounded-full bg-slate-100 px-2 py-0.5 font-semibold text-slate-600">{server.status}</span>;
+  return null;
 }
 
 function PathLine({ label, value, onOpen }: { label: string; value: string; onOpen: () => void }) {

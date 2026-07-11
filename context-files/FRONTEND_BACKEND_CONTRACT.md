@@ -2359,6 +2359,8 @@ Rules:
 
 The Skill Writer Agent is a specialized agent, not a UI helper and not a hidden fourth model behind a tool. It receives approved create/update tasks from the user flow or Memory Agent, reads the relevant context, authors the final markdown, and calls `skill_write`.
 
+Both direct dashboard creation flows use this same production path. Project `Skills +` resolves the project's primary workspace and writes only to `<workspace>/.socrates/skills/<name>/SKILL.md`; Memory Center `Skills +` writes only to `~/.Socrates/skills/<name>/SKILL.md`. Neither flow may bypass the configured `skill_writer` worker model with a one-off provider stream or hand-authored backend fallback.
+
 ```ts
 type SkillWriteInput = {
   scope: "global" | "project"
@@ -2677,6 +2679,8 @@ type McpRegistryToolOutput = {
   warnings?: string[]
 }
 ```
+
+`unknown` is a valid backend state meaning that no persistent health-check result exists yet; it does not imply that a server or its cached tools are broken. The MCP panel intentionally renders no badge for `unknown`. It renders badges only for `available`, `failed`, or `missing`, while independently showing a known `toolCount`.
 
 Rules:
 
