@@ -24,7 +24,8 @@ import {
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
 } from "../context/contextCompression"
-import { buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
+import { buildSocratesDynamicContext, buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
+import { renderSocratesSurfaceMap } from "@socrates/contracts"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
 import { MemoryRouterAgent } from "./MemoryRouterAgent"
@@ -102,20 +103,22 @@ export class SocratesAgent {
   }
 
   async precomputeContext(input: SocratesAgentContextPrecomputeInput): Promise<ContextCompactionLifecycleEvent[]> {
-    const system = buildSocratesSystemPrompt(input.promptContext)
+    const system = buildSocratesSystemPrompt()
+    const messages = [...input.messages]
+    insertDynamicPromptContext(messages, input.promptContext)
     return precomputeContextSnapshot({
       provider: this.provider,
       providerId: input.providerId,
       modelId: input.modelId,
       runtimeConfig: input.runtimeConfig,
       system,
-      messages: input.messages,
+      messages,
       compression: input.contextCompression,
     })
   }
 
   async *streamTurn(input: SocratesAgentTurnInput): AsyncIterable<SocratesAgentEvent> {
-    const system = input.systemPromptOverride ?? buildSocratesSystemPrompt(input.promptContext)
+    const system = input.systemPromptOverride ?? buildSocratesSystemPrompt()
     const messages: ModelMessage[] = [...input.messages]
     const maxToolCallsPerTurn = input.maxToolCallsPerTurn ?? 80
     const maxConfirmedToolErrorsPerTurn = input.maxConfirmedToolErrorsPerTurn ?? 10
@@ -149,6 +152,7 @@ export class SocratesAgent {
     if (preTurnMemoryLoop.stableCachePreludeMessage) {
       insertStableCachePrelude(messages, preTurnMemoryLoop.stableCachePreludeMessage)
     }
+    insertDynamicPromptContext(messages, input.promptContext)
     if (preTurnMemoryLoop.developerMessage) {
       messages.push({ role: "developer", content: preTurnMemoryLoop.developerMessage })
     }
@@ -561,17 +565,32 @@ export class SocratesAgent {
     docsLedger: TurnDocsLedger,
     routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
   ): Promise<MemoryLoopRunResult> {
-    if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
+    if (!canLoadStableCachePrelude(input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
+    }
+
+    const events: ToolLifecycleEvent[] = []
+    const records: MemoryLoopToolRecord[] = []
+    for (const request of stablePreludeRecallRequests()) {
+      const record = await this.executeMemoryLoopTool(input, docsLedger, request)
+      events.push(...record.events)
+      records.push(record)
+    }
+    const stableCachePreludeMessage = renderStableCachePrelude(records)
+
+    if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
+      return {
+        events: [],
+        records,
+        ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
+      }
     }
 
     try {
       const route = await this.memoryRouterAgent.routePreTurn(memoryRouterBaseInput(input, messages))
-      const events: ToolLifecycleEvent[] = []
-      const records: MemoryLoopToolRecord[] = []
       const skipped: string[] = []
 
-      for (const request of preTurnRecallRequests(route)) {
+      for (const request of routedPreTurnRecallRequests(route)) {
         const record = await this.executeMemoryLoopTool(input, docsLedger, request)
         events.push(...record.events)
         records.push(record)
@@ -583,7 +602,6 @@ export class SocratesAgent {
       skipped.push(...saveResult.skipped)
 
       const summary = summarizeMemoryLoop("pre_turn", route, records, skipped)
-      const stableCachePreludeMessage = renderStableCachePrelude(records)
       const dynamicRecords = records.filter((record) => !isStableCachePreludeRecord(record))
       return {
         events,
@@ -596,7 +614,13 @@ export class SocratesAgent {
       }
     } catch (error) {
       const normalized = normalizeError(error)
-      return memoryLoopWarning("pre_turn", `${normalized.code}: ${normalized.message}`)
+      const warning = memoryLoopWarning("pre_turn", `${normalized.code}: ${normalized.message}`)
+      return {
+        ...warning,
+        events: [...events, ...warning.events],
+        records,
+        ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
+      }
     }
   }
 
@@ -1155,10 +1179,35 @@ const insertStableCachePrelude = (messages: ModelMessage[], content: string): vo
   })
 }
 
+const insertDynamicPromptContext = (messages: ModelMessage[], context?: SocratesPromptContext): void => {
+  const content = buildSocratesDynamicContext(context)
+  if (!content) return
+  const stableIndex = messages.findIndex(
+    (message) => message.role === "developer" && typeof message.content === "string" && message.content.includes("<socrates_stable_cache_prelude>"),
+  )
+  const firstNonSystemIndex = messages.findIndex((message) => message.role !== "system")
+  const insertIndex = stableIndex >= 0 ? stableIndex + 1 : firstNonSystemIndex === -1 ? messages.length : firstNonSystemIndex
+  messages.splice(insertIndex, 0, { role: "developer", content })
+}
+
 const canRunMemoryLoop = (provider: ModelProvider, input: SocratesAgentTurnInput, toolRegistry: ToolRegistry): boolean =>
   typeof provider.generateStructured === "function" &&
   Boolean(toolRegistry.get("memory_note")) &&
   Boolean(input.toolExecutors && input.workspacePath && input.requestApproval && input.projectId && input.conversationId && input.sessionId && input.turnId)
+
+const canLoadStableCachePrelude = (input: SocratesAgentTurnInput, toolRegistry: ToolRegistry): boolean =>
+  Boolean(
+    input.toolExecutors &&
+      input.workspacePath &&
+      input.requestApproval &&
+      input.projectId &&
+      input.conversationId &&
+      input.sessionId &&
+      input.turnId &&
+      toolRegistry.get("project_docs") &&
+      toolRegistry.get("user_profile") &&
+      toolRegistry.get("soul"),
+  )
 
 const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRouterModelSettings =>
   input.memoryRouterModelSettings ?? {
@@ -1192,7 +1241,15 @@ const memoryRouterBaseInput = (input: SocratesAgentTurnInput, messages: ModelMes
   }
 }
 
-const preTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ toolName: ToolName; input: unknown }> => {
+const stablePreludeRecallRequests = (): Array<{ toolName: ToolName; input: unknown }> => [
+  { toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: "always_apply_rules", charLimit: 10_000 } },
+  { toolName: "user_profile", input: { operation: "read_section", sectionId: "global_always_apply_rules", charLimit: 10_000 } },
+  { toolName: "soul", input: { operation: "read_section", sectionId: "core_identity", charLimit: 4_000 } },
+  { toolName: "soul", input: { operation: "read_section", sectionId: "voice_and_presence", charLimit: 4_000 } },
+  { toolName: "soul", input: { operation: "read_section", sectionId: "relationship_to_user", charLimit: 4_000 } },
+]
+
+const routedPreTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ toolName: ToolName; input: unknown }> => {
   const requests: Array<{ toolName: ToolName; input: unknown }> = []
   const seen = new Set<string>()
   const push = (request: { toolName: ToolName; input: unknown }) => {
@@ -1202,8 +1259,6 @@ const preTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ toolNa
       requests.push(request)
     }
   }
-  push({ toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: "always_apply_rules", charLimit: 10_000 } })
-  push({ toolName: "user_profile", input: { operation: "read_section", sectionId: "global_always_apply_rules", charLimit: 10_000 } })
   for (const target of route.readTargets) {
     if (target.surface === "project_notes") {
       push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: target.sectionId, charLimit: 20_000 } })
@@ -1334,6 +1389,7 @@ const renderMemoryLoopDeveloperMessage = (
 const renderStableCachePrelude = (records: MemoryLoopToolRecord[]): string | undefined => {
   let projectRules: string | undefined
   let globalRules: string | undefined
+  const identitySections = new Map<string, string>()
 
   for (const record of records) {
     if (!record.result.ok || !isStableCachePreludeRecord(record)) {
@@ -1344,27 +1400,43 @@ const renderStableCachePrelude = (records: MemoryLoopToolRecord[]): string | und
       projectRules = content
     } else if (isGlobalAlwaysApplyRecord(record)) {
       globalRules = content
+    } else if (isStableIdentityRecord(record)) {
+      const sectionId = objectRecord(record.input)?.sectionId
+      if (typeof sectionId === "string") identitySections.set(sectionId, content)
     }
   }
 
-  if (projectRules === undefined && globalRules === undefined) {
+  if (projectRules === undefined && globalRules === undefined && identitySections.size === 0) {
     return undefined
   }
 
   return [
     "<socrates_stable_cache_prelude>",
     "Stable always-apply rules loaded by the runtime before conversation/user text. Treat them as standing instructions for this turn; do not quote these tags to the user.",
+    "<identity_core>",
+    ...["core_identity", "voice_and_presence", "relationship_to_user"].map(
+      (sectionId) => `<${sectionId}>\n${identitySections.get(sectionId) ?? "- No identity content loaded."}\n</${sectionId}>`,
+    ),
+    "</identity_core>",
     "<global_always_apply_rules>",
     globalRules ?? "- No global always-apply rules loaded.",
     "</global_always_apply_rules>",
     "<project_always_apply_rules>",
     projectRules ?? "- No project always-apply rules loaded.",
     "</project_always_apply_rules>",
+    renderSocratesSurfaceMap(),
     "</socrates_stable_cache_prelude>",
   ].join("\n")
 }
 
-const isStableCachePreludeRecord = (record: MemoryLoopToolRecord): boolean => isProjectAlwaysApplyRecord(record) || isGlobalAlwaysApplyRecord(record)
+const isStableCachePreludeRecord = (record: MemoryLoopToolRecord): boolean =>
+  isProjectAlwaysApplyRecord(record) || isGlobalAlwaysApplyRecord(record) || isStableIdentityRecord(record)
+
+const isStableIdentityRecord = (record: MemoryLoopToolRecord): boolean => {
+  if (record.toolName !== "soul") return false
+  const input = objectRecord(record.input)
+  return input?.operation === "read_section" && ["core_identity", "voice_and_presence", "relationship_to_user"].includes(String(input.sectionId))
+}
 
 const isProjectAlwaysApplyRecord = (record: MemoryLoopToolRecord): boolean => {
   if (record.toolName !== "project_docs") {

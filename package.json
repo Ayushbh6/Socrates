@@ -21,6 +21,8 @@
     "eval:skill-learning:export": "node scripts/export-skill-learning-dataset.mjs",
     "eval:skill-learning:curate": "node scripts/curate-skill-learning-dataset.mjs",
     "eval:skill-learning": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && pnpm --filter @socrates/server exec tsx ../../scripts/run-skill-learning-eval.ts",
+    "eval:memory-harness:export": "node scripts/export-memory-harness-dataset.mjs",
+    "eval:memory-harness": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/core build && pnpm --filter @socrates/server exec tsx ../../scripts/run-memory-harness-eval.ts",
     "trace:e2e": "pnpm --filter @socrates/server exec tsx ../../scripts/trace-retrieve-e2e.ts",
     "test": "pnpm -r --workspace-concurrency=1 test",
     "typecheck": "pnpm -r typecheck"

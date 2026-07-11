@@ -186,16 +186,17 @@ export type SocratesPromptContext = {
 }
 
 export const buildSocratesSystemPrompt = (context?: SocratesPromptContext): string => {
-  if (!context) {
-    return socratesBasePrompt
-  }
+  void context
+  return socratesBasePrompt
+}
 
+export const buildSocratesDynamicContext = (context?: SocratesPromptContext): string | undefined => {
+  if (!context) return undefined
   const projectDescription =
     context.projectDescription === undefined || context.projectDescription.length === 0 ? "Not provided." : context.projectDescription
   const projectInstructions =
     context.projectInstructions === undefined || context.projectInstructions.length === 0 ? "Not provided." : context.projectInstructions
-  return `${socratesBasePrompt}
-
+  return `<socrates_dynamic_project_context>
 Current user:
 - Name: ${context.userDisplayName}
 
@@ -206,5 +207,6 @@ Current project:
 Project instructions:
 <project_instructions>
 ${projectInstructions}
-</project_instructions>`
+</project_instructions>
+</socrates_dynamic_project_context>`
 }

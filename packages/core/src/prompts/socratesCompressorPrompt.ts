@@ -33,7 +33,7 @@ verbatim after this summary.
 
 <priority_order>
 1. User instructions, repo rules, safety constraints, and explicit preferences.
-2. Open tasks, active implementation state, blockers, failing commands, and unresolved decisions.
+2. Open tasks, active implementation state, blockers, failing commands, unresolved decisions, and source attachment paths that future work must inspect.
 3. Completed work, files changed/read, command results, provider/model/runtime details, and test evidence.
 4. Background context that is useful only if it changes future behavior.
 </priority_order>
@@ -73,6 +73,7 @@ Field meaning:
 - Use concise operational lines, not paragraphs.
 - Prefer concrete nouns, paths, command names, error names, and exact user wording when important.
 - Preserve exact file paths, commands, model IDs, thresholds, dates, numbers, and error text when available.
+- Preserve \`.socrates/attachments/...\` paths when a future answer or task depends on the attached source. Put the path and read/search requirement in criticalContext or relevantFiles; do not replace it with a vague note that an attachment existed.
 - If previous summary conflicts with newer turns, prefer the newer turns and note the correction if it matters.
 - Keep done, inProgress, and blocked mutually exclusive. The same work item must not appear as both completed and failed.
 - If a deliverable was attempted but the turn failed before delivery, put it in inProgress or blocked, not done.
@@ -148,6 +149,7 @@ Before finalizing, verify mentally:
 - There are no contradictions across done, inProgress, blocked, decisions, and nextSteps.
 - Empty sections are arrays with zero items, not filler text.
 - Anchors cover every genuinely anchor-worthy fact without padding, duplicates, or vague "inspect everything" phrasing.
+- Any source attachment needed by future work remains named by exact path with its read/search requirement.
 - Old or possibly stale facts are labeled as historical/source-scoped.
 - constraints and decisions do not contain unverified historical code-state claims as current truth.
 - Mixed-project facts remain separated and do not leak into the wrong project's next steps.

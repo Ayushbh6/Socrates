@@ -21,6 +21,7 @@ describe("model catalog", () => {
       "google/gemini-3-flash-preview",
       "google/gemini-3.1-flash-lite-preview",
       "openrouter/moonshotai/kimi-k2.6",
+      "openrouter/tencent/hy3",
       "openrouter/z-ai/glm-5.2",
       "openrouter/xiaomi/mimo-v2.5-pro",
       "openrouter/xiaomi/mimo-v2.5",
@@ -67,6 +68,7 @@ describe("model catalog", () => {
       "OpenAI API:api_key:gpt-5.4-mini",
       "OpenAI API:api_key:gpt-5.4",
       "OpenAI API:api_key:gpt-5",
+      "ChatGPT Codex:chatgpt_subscription:gpt-5.6-luna",
       "ChatGPT Codex:chatgpt_subscription:gpt-5.5",
       "ChatGPT Codex:chatgpt_subscription:gpt-5.4",
       "ChatGPT Codex:chatgpt_subscription:gpt-5.4-mini",
@@ -77,7 +79,7 @@ describe("model catalog", () => {
   it("exposes the ChatGPT Codex subscription model set", () => {
     const response = listAvailableModels([{ providerId: "openai", authMode: "chatgpt_subscription" }])
 
-    expect(response.models.map((model) => model.modelId)).toEqual(["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"])
+    expect(response.models.map((model) => model.modelId)).toEqual(["gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"])
     expect(response.defaultModel).toMatchObject({
       providerId: "openai",
       authMode: "chatgpt_subscription",
@@ -85,6 +87,9 @@ describe("model catalog", () => {
       thinkingOptionId: "xhigh",
     })
     const modelsById = new Map(response.models.map((model) => [model.modelId, model]))
+    expect(modelsById.get("gpt-5.6-luna")?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high", "xhigh"])
+    expect(modelsById.get("gpt-5.6-luna")?.defaultThinkingOptionId).toBe("medium")
+    expect(modelsById.get("gpt-5.6-luna")?.contextWindowTokens).toBe(372000)
     expect(modelsById.get("gpt-5.5")?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high", "xhigh"])
     expect(modelsById.get("gpt-5.4")?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
     expect(modelsById.get("gpt-5.4-mini")?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "medium", "high", "xhigh"])
@@ -143,6 +148,7 @@ describe("model catalog", () => {
       .map((model) => model.modelId)
 
     expect(nonVision).toEqual([
+      "tencent/hy3",
       "z-ai/glm-5.2",
       "deepseek/deepseek-v4-pro",
       "deepseek/deepseek-v4-flash",
@@ -151,5 +157,14 @@ describe("model catalog", () => {
       "deepseek-v4-flash",
     ])
     expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
+  })
+
+  it("matches the live OpenRouter reasoning controls for HY 3 and GLM 5.2", () => {
+    const hy3 = modelCatalog.find((model) => model.modelId === "tencent/hy3")
+    const glm = modelCatalog.find((model) => model.modelId === "z-ai/glm-5.2")
+    expect(hy3?.thinkingOptions.map((option) => option.id)).toEqual(["none", "low", "high"])
+    expect(hy3?.defaultThinkingOptionId).toBe("high")
+    expect(glm?.thinkingOptions.map((option) => option.id)).toEqual(["high", "xhigh"])
+    expect(glm?.defaultThinkingOptionId).toBe("high")
   })
 })

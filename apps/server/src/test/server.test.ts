@@ -27,6 +27,7 @@ import type {
   WorkerModelSettings,
 } from "@socrates/contracts"
 import { clientCommandSchema, memoryDocRequiredSections, serverEventSchema } from "@socrates/contracts"
+import { MAX_IMAGE_ATTACHMENT_BYTES, MAX_MESSAGE_ATTACHMENT_BYTES, MAX_MESSAGE_ATTACHMENTS } from "@socrates/contracts"
 import { SocratesAgent } from "@socrates/core"
 import type { EmbeddingProvider, ModelProvider, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
@@ -50,6 +51,18 @@ const tempDbPath = (): string => {
 }
 
 const tempDir = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "socrates-server-workspace-test-"))
+
+const multipartFiles = (
+  boundary: string,
+  files: Array<{ name: string; mimeType: string; data: Buffer }>,
+): Buffer => Buffer.concat([
+  ...files.flatMap((file) => [
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="${file.name}"\r\nContent-Type: ${file.mimeType}\r\n\r\n`),
+    file.data,
+    Buffer.from("\r\n"),
+  ]),
+  Buffer.from(`--${boundary}--\r\n`),
+])
 
 const writeTestChatGptCodexTokens = (socratesHome: string): void => {
   const credentialDir = path.join(socratesHome, ".credentials")
@@ -3543,6 +3556,48 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("enforces attachment count, per-image bytes, and combined submission bytes at the backend", async () => {
+    const app = await buildTestServer(tempDbPath())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const url = `/api/projects/${project.id}/conversations/${conversation.id}/attachments/upload`
+
+    const tooManyBoundary = "----socrates-too-many-attachments"
+    const tooManyResponse = await app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": `multipart/form-data; boundary=${tooManyBoundary}` },
+      payload: multipartFiles(tooManyBoundary, Array.from({ length: MAX_MESSAGE_ATTACHMENTS + 1 }, (_, index) => ({
+        name: `image-${index}.png`, mimeType: "image/png", data: Buffer.from([index]),
+      }))),
+    })
+    expect(parseResponse(tooManyResponse.payload)).toMatchObject({ ok: false, error: { code: "attachment_upload_limit_exceeded" } })
+
+    const oversizedBoundary = "----socrates-oversized-image"
+    const oversizedResponse = await app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": `multipart/form-data; boundary=${oversizedBoundary}` },
+      payload: multipartFiles(oversizedBoundary, [{
+        name: "oversized.png", mimeType: "image/png", data: Buffer.alloc(MAX_IMAGE_ATTACHMENT_BYTES + 1),
+      }]),
+    })
+    expect(parseResponse(oversizedResponse.payload)).toMatchObject({ ok: false, error: { code: "attachment_too_large" } })
+
+    const combinedBoundary = "----socrates-combined-attachments"
+    const combinedChunkBytes = Math.floor(MAX_MESSAGE_ATTACHMENT_BYTES / 5) + 1
+    const combinedResponse = await app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": `multipart/form-data; boundary=${combinedBoundary}` },
+      payload: multipartFiles(combinedBoundary, Array.from({ length: 5 }, (_, index) => ({
+        name: `combined-${index}.png`, mimeType: "image/png", data: Buffer.alloc(combinedChunkBytes),
+      }))),
+    })
+    expect(parseResponse(combinedResponse.payload)).toMatchObject({ ok: false, error: { code: "attachment_total_too_large" } })
+  })
+
   it("omits chat image bytes for non-vision models", async () => {
     const requests: unknown[] = []
     const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
@@ -3606,7 +3661,66 @@ describe("WebSocket API", () => {
 
     const serialized = JSON.stringify(requests[0])
     expect(serialized).not.toContain("\"type\":\"image\"")
-    expect(serialized).toContain("image attachment omitted because the selected model does not support vision")
+    expect(serialized).toContain("image attachment retained in chat but pixels were not sent because the selected model does not support vision")
+  })
+
+  it("stores large pasted text as a source attachment and sends only a compact manifest", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
+    await onboard(app)
+    await app.inject({
+      method: "POST",
+      url: "/api/provider-credentials/session",
+      payload: { providerId: "openrouter", apiKey: "sk-openrouter-test", source: "manual" },
+    })
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const boundary = "----socrates-text-attachment-boundary"
+    const sourceText = `PASTE_CANARY_START\n${"large pasted source ".repeat(700)}\nPASTE_CANARY_END`
+    const payload = Buffer.from(
+      [
+        `--${boundary}`,
+        'Content-Disposition: form-data; name="files"; filename="pasted-text-eval.txt"',
+        "Content-Type: text/plain",
+        "",
+        sourceText,
+        `--${boundary}--`,
+        "",
+      ].join("\r\n"),
+    )
+    const uploadResponse = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/conversations/${conversation.id}/attachments/upload`,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      payload,
+    })
+    const uploadBody = parseResponse<{ attachments: MessageAttachment[] }>(uploadResponse.payload)
+    expect(uploadBody.ok).toBe(true)
+    if (!uploadBody.ok || !uploadBody.data.attachments[0]) throw new Error("Expected text attachment upload success")
+    const attachment = uploadBody.data.attachments[0]
+    expect(attachment.kind).toBe("text")
+    expect(attachment.uri).toContain(path.join(".socrates", "attachments"))
+
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      const command = chatMessageCommandWithRuntime(project.id, conversation.id, "Use the attached source to answer.", {
+        providerId: "openrouter",
+        modelId: "deepseek/deepseek-v4-pro",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+      })
+      sendCommand(socket, { ...command, payload: { ...command.payload, attachmentIds: [attachment.id] } })
+      await waitForEvent(socket, "message.completed")
+      await waitForEvent(socket, "turn.completed")
+    } finally {
+      socket.close()
+    }
+
+    const serialized = JSON.stringify(requests[0])
+    expect(serialized).toContain("pasted-text-eval.txt")
+    expect(serialized).toContain("Before answering from an attached text file")
+    expect(serialized).not.toContain("PASTE_CANARY_START")
   })
 
   it("returns contextUsage from snapshots rather than cumulative tokenUsage", async () => {
@@ -6479,10 +6593,15 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "message.completed")
 
       const request = requests[0] as { system: string; messages: Array<{ role?: string; content?: string }> }
-      expect(request.system).toContain("Name: Context User")
-      expect(request.system).toContain("Name: Context Project")
-      expect(request.system).toContain("A test project")
-      expect(request.system).toContain("Always answer from the project instructions.")
+      const dynamicContext = request.messages.find(
+        (message) => message.role === "developer" && message.content?.includes("<socrates_dynamic_project_context>"),
+      )?.content
+      expect(request.system).not.toContain("Name: Context User")
+      expect(request.system).not.toContain("Name: Context Project")
+      expect(dynamicContext).toContain("Name: Context User")
+      expect(dynamicContext).toContain("Name: Context Project")
+      expect(dynamicContext).toContain("A test project")
+      expect(dynamicContext).toContain("Always answer from the project instructions.")
       expect(request.system).not.toContain("Workspace Terminal commands run with a sanitized user-workspace environment.")
       expect(request.system).not.toContain("Semantic retrieval: not configured.")
       expect(request.system).not.toContain("Current date:")

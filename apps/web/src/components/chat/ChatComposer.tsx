@@ -1,8 +1,14 @@
 "use client";
 
-import { ArrowUp, Brain, ChevronDown, EyeOff, ImagePlus, Square, Sparkles, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, EyeOff, FileText, ImagePlus, Square, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { MessageAttachment, ModelOption, ModelThinkingOption } from "@socrates/contracts";
+import {
+  MAX_INLINE_MESSAGE_CHARS,
+  MAX_MESSAGE_ATTACHMENTS,
+  type MessageAttachment,
+  type ModelOption,
+  type ModelThinkingOption,
+} from "@socrates/contracts";
 import { socratesApiBaseUrl } from "@/lib/api";
 
 interface ChatComposerProps {
@@ -83,14 +89,17 @@ export function ChatComposer({
   }, [isModelMenuOpen, isThinkingMenuOpen]);
 
   const uploadFiles = async (fileList: File[] | FileList) => {
-    const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
+    const availableSlots = Math.max(0, MAX_MESSAGE_ATTACHMENTS - attachments.length);
+    const files = Array.from(fileList)
+      .filter((file) => file.type.startsWith("image/") || file.type === "text/plain")
+      .slice(0, availableSlots);
     if (files.length === 0 || isUploading) {
       return;
     }
     setIsUploading(true);
     try {
       const uploaded = await onUploadAttachments(files);
-      setAttachments((current) => [...current, ...uploaded].slice(0, 12));
+      setAttachments((current) => [...current, ...uploaded].slice(0, MAX_MESSAGE_ATTACHMENTS));
     } finally {
       setIsUploading(false);
     }
@@ -150,12 +159,19 @@ export function ChatComposer({
         {attachments.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-4 pt-3">
             {attachments.map((attachment) => (
-              <div key={attachment.id} className="relative h-16 w-20 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
-                <img
-                  src={attachment.url ? `${socratesApiBaseUrl()}${attachment.url}` : attachment.uri}
-                  alt={attachment.fileName}
-                  className="h-full w-full object-cover"
-                />
+              <div key={attachment.id} className="relative h-16 w-24 shrink-0 overflow-hidden rounded-lg border border-gray-200 bg-gray-50">
+                {attachment.kind === "image" ? (
+                  <img
+                    src={attachment.url ? `${socratesApiBaseUrl()}${attachment.url}` : attachment.uri}
+                    alt={attachment.fileName}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full flex-col items-center justify-center gap-1 px-2 text-gray-600">
+                    <FileText className="size-5" />
+                    <span className="w-full truncate text-center text-[10px]">{attachment.fileName}</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   aria-label={`Remove ${attachment.fileName}`}
@@ -177,6 +193,17 @@ export function ChatComposer({
             const imageFiles = Array.from(event.clipboardData.files).filter((file) => file.type.startsWith("image/"));
             if (imageFiles.length > 0) {
               void uploadFiles(imageFiles);
+              return;
+            }
+            const pastedText = event.clipboardData.getData("text/plain");
+            if (pastedText.length > MAX_INLINE_MESSAGE_CHARS) {
+              event.preventDefault();
+              const file = new File(
+                [pastedText],
+                `pasted-text-${crypto.randomUUID().slice(0, 8)}.txt`,
+                { type: "text/plain" },
+              );
+              void uploadFiles([file]);
             }
           }}
           onKeyDown={(event) => {
@@ -190,7 +217,7 @@ export function ChatComposer({
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*"
+            accept="image/*,text/plain,.txt"
             multiple
             className="hidden"
             onChange={(event) => {
@@ -204,8 +231,8 @@ export function ChatComposer({
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-full border border-gray-200 bg-gray-50 text-brand-text-light transition-colors hover:bg-gray-100 hover:text-brand-text-dark disabled:opacity-60"
             disabled={isSending || isUploading}
-            aria-label="Attach image"
-            title="Attach image"
+            aria-label="Attach image or text file"
+            title="Attach image or text file"
             onClick={() => fileInputRef.current?.click()}
           >
             <ImagePlus className="size-4" />

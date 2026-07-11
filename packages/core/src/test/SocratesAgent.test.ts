@@ -3,7 +3,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
-import type { ModelEvent, ModelProvider } from "@socrates/providers"
+import type { ModelEvent, ModelMessage, ModelProvider } from "@socrates/providers"
 import { bashTool } from "../tools/bashTool"
 
 describe("SocratesAgent", () => {
@@ -57,6 +57,113 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("Explicit user-stated allergies")
     expect(requestJson).toContain("compare stack trace lines to current files")
     expect(requestJson).toContain("distinguish config/credential issues from service availability")
+  })
+
+  it("loads the stable Socrates prelude even when structured memory routing is unavailable", async () => {
+    const requests: Array<{ messages: ModelMessage[] }> = []
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        requests.push(request)
+        yield { type: "model.answer.delta", text: "Ready." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.soul = async (input) => ({
+      operation: input.operation,
+      path: "identity.md",
+      content: input.sectionId === "core_identity" ? "Calm, exact, and collaborative." : "Warm and direct.",
+      section: memoryDocSection(input.sectionId ?? "core_identity", input.sectionId === "core_identity" ? "Calm, exact, and collaborative." : "Warm and direct."),
+      truncation: { truncated: false, charLimit: 4_000, returnedLength: 30 },
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Hi" }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    const firstMessages = requests[0]?.messages ?? []
+    expect(firstMessages[0]).toMatchObject({ role: "developer" })
+    expect(String(firstMessages[0]?.content)).toContain("socrates_stable_cache_prelude")
+    expect(String(firstMessages[0]?.content)).toContain("Calm, exact, and collaborative.")
+    expect(String(firstMessages[0]?.content)).toContain("socrates_surface_map")
+    expect(firstMessages[1]).toMatchObject({ role: "user", content: "Hi" })
+  })
+
+  it("keeps the full stable prelude byte-identical across dynamic context changes and changes it with identity", async () => {
+    let identityCore = "Identity version one."
+    const capturePrelude = async (userName: string, projectName: string): Promise<string> => {
+      const requests: Array<{ messages: ModelMessage[] }> = []
+      const provider: ModelProvider = {
+        countTokens: fakeCountTokens,
+        async *stream(request) {
+          requests.push(request)
+          yield { type: "model.answer.delta", text: "Ready." }
+          yield { type: "model.completed" }
+        },
+      }
+      const executors = emptyToolExecutors()
+      executors.soul = async (input) => ({
+        operation: input.operation,
+        path: "identity.md",
+        content: input.sectionId === "core_identity" ? identityCore : "Stable voice section.",
+        section: memoryDocSection(input.sectionId ?? "core_identity", input.sectionId === "core_identity" ? identityCore : "Stable voice section."),
+        truncation: { truncated: false, charLimit: 4_000, returnedLength: identityCore.length },
+      })
+      const agent = new SocratesAgent(provider)
+      for await (const _event of agent.streamTurn({
+        projectId: "proj_1",
+        conversationId: "conv_1",
+        sessionId: "sess_1",
+        turnId: "turn_1",
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        runtimeConfig: {
+          providerId: "openai",
+          modelId: "gpt-5.4-mini",
+          thinkingEnabled: false,
+          thinkingEffort: "none",
+          approvalMode: "manual",
+          sandboxMode: "read_only",
+        },
+        promptContext: { userDisplayName: userName, projectName, projectDescription: `Dynamic ${projectName}` },
+        messages: [{ role: "user", content: `Dynamic request for ${projectName}` }],
+        workspacePath: "/tmp",
+        toolExecutors: executors,
+        requestApproval: async () => ({ decision: "approved" }),
+      })) {
+        // Drain the turn.
+      }
+      return String(requests[0]?.messages.find((message) => message.role === "developer" && String(message.content).includes("socrates_stable_cache_prelude"))?.content)
+    }
+
+    const first = await capturePrelude("Ayush", "Alpha")
+    const dynamicChange = await capturePrelude("Different User", "Beta")
+    expect(dynamicChange).toBe(first)
+    identityCore = "Identity version two."
+    const identityChange = await capturePrelude("Different User", "Beta")
+    expect(identityChange).not.toBe(first)
+    expect(identityChange).toContain("Identity version two.")
   })
 
   it("exposes the base tool set", () => {
@@ -644,13 +751,15 @@ describe("SocratesAgent", () => {
       },
     ])
     const toolNames = streamed.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)
-    expect(toolNames).toEqual(["project_docs", "user_profile", "project_docs", "repo_docs", "user_profile", "project_docs", "project_docs", "memory_note"])
+    expect(toolNames).toEqual(["project_docs", "user_profile", "soul", "soul", "soul", "project_docs", "repo_docs", "user_profile", "project_docs", "project_docs", "memory_note"])
     const firstRequestMessages = streamRequests[0]?.messages ?? []
     const firstRequestJson = JSON.stringify(firstRequestMessages)
     const firstRequestText = stringMessageContents(firstRequestMessages).join("\n")
     expect(firstRequestMessages[0]).toMatchObject({ role: "developer" })
     expect(String(firstRequestMessages[0]?.content)).toContain("socrates_stable_cache_prelude")
     expect(String(firstRequestMessages[0]?.content)).toContain("Existing global rule")
+    expect(String(firstRequestMessages[0]?.content)).toContain("identity_core")
+    expect(String(firstRequestMessages[0]?.content)).toContain("socrates_surface_map")
     expect(String(firstRequestMessages[0]?.content)).toContain("No always-apply rules recorded.")
     expect(firstRequestMessages[1]).toMatchObject({ role: "user", content: "Remember this project boundary, then inspect the repo." })
     expect(firstRequestText.indexOf("socrates_stable_cache_prelude")).toBeLessThan(
@@ -801,7 +910,7 @@ describe("SocratesAgent", () => {
       },
     ])
     const toolNames = streamed.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)
-    expect(toolNames).toEqual(["project_docs", "user_profile", "read", "project_docs", "project_docs"])
+    expect(toolNames).toEqual(["project_docs", "user_profile", "soul", "soul", "soul", "read", "project_docs", "project_docs"])
     expect(streamRequests).toHaveLength(2)
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Verified README mentions the Socrates memory loop")
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("socrates_memory_loop")
@@ -1074,7 +1183,10 @@ describe("SocratesAgent", () => {
       streamed.push(event)
     }
 
-    const started = streamed.filter((event): event is Extract<SocratesAgentEvent, { type: "tool.call.started" }> => event.type === "tool.call.started")
+    const started = streamed.filter(
+      (event): event is Extract<SocratesAgentEvent, { type: "tool.call.started" }> =>
+        event.type === "tool.call.started" && event.providerToolCallId === "functions.read:0",
+    )
     expect(started).toHaveLength(2)
     expect(started.map((event) => event.providerToolCallId)).toEqual(["functions.read:0", "functions.read:0"])
     expect(new Set(started.map((event) => event.toolCallId)).size).toBe(2)
@@ -1154,7 +1266,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(traceExecutions).toBe(1)
-    expect(streamed.filter((event) => event.type === "tool.call.completed")).toHaveLength(2)
+    expect(streamed.filter((event) => event.type === "tool.call.completed" && event.toolName === "trace_retrieve")).toHaveLength(2)
     const finalRequest = JSON.stringify(seenMessages.at(-1))
     expect(finalRequest).toContain("turn_source_3")
     expect(finalRequest).not.toContain("conv_source")
@@ -2324,11 +2436,13 @@ describe("SocratesAgent", () => {
       // Exhaust the stream.
     }
 
-    const request = seen[0] as { system: string }
-    expect(request.system).toContain("Name: Ayush")
-    expect(request.system).toContain("Name: Socrates")
-    expect(request.system).toContain("Local-first AI workspace.")
-    expect(request.system).toContain("Read repo_docs before answering.")
+    const request = seen[0] as { system: string; messages: ModelMessage[] }
+    const dynamicContext = JSON.stringify(request.messages)
+    expect(request.system).not.toContain("Name: Ayush")
+    expect(dynamicContext).toContain("Name: Ayush")
+    expect(dynamicContext).toContain("Name: Socrates")
+    expect(dynamicContext).toContain("Local-first AI workspace.")
+    expect(dynamicContext).toContain("Read repo_docs before answering.")
     expect(request.system).toContain("If the current date or exact time matters, call current_time")
     expect(request.system).toContain("Mandatory first-turn active recall")
     expect(request.system).toContain('operation="read_section", area="notes", sectionId="active_context"')

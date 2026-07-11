@@ -34,6 +34,7 @@ const effortOption = (effort: Exclude<ModelThinkingOption["effort"], undefined>)
 })
 
 const chatGptCodexThinkingOptions = [effortOption("low"), effortOption("medium"), effortOption("high"), effortOption("xhigh")]
+const lunaThinkingOptions = chatGptCodexThinkingOptions
 const openAiGpt54ThinkingOptions = [openAiNoneOption, ...chatGptCodexThinkingOptions]
 const deepSeekThinkingOptions: ModelThinkingOption[] = [offOption, effortOption("high"), { ...effortOption("xhigh"), label: "Max" }]
 
@@ -127,12 +128,21 @@ export const modelCatalog = [
   }),
   makeModel({
     providerId: "openrouter",
+    modelId: "tencent/hy3",
+    label: "Tencent HY 3",
+    contextWindowTokens: 262144,
+    capabilities: { vision: false },
+    thinkingOptions: [openAiNoneOption, effortOption("low"), effortOption("high")],
+    defaultThinkingOptionId: "high",
+  }),
+  makeModel({
+    providerId: "openrouter",
     modelId: "z-ai/glm-5.2",
     label: "GLM 5.2",
     contextWindowTokens: 1048576,
     capabilities: { vision: false },
-    thinkingOptions: [offOption, onOption],
-    defaultThinkingOptionId: "off",
+    thinkingOptions: [effortOption("high"), effortOption("xhigh")],
+    defaultThinkingOptionId: "high",
   }),
   makeModel({
     providerId: "openrouter",
@@ -239,11 +249,19 @@ const makeChatGptCodexModel = (input: Omit<Parameters<typeof makeModel>[0], "pro
 
 export const chatGptCodexModelCatalog = [
   makeChatGptCodexModel({
+    modelId: "gpt-5.6-luna",
+    label: "GPT-5.6 Luna",
+    contextWindowTokens: 372000,
+    thinkingOptions: lunaThinkingOptions,
+    defaultThinkingOptionId: "medium",
+  }),
+  makeChatGptCodexModel({
     modelId: "gpt-5.5",
     label: "GPT-5.5",
     contextWindowTokens: 400000,
     thinkingOptions: chatGptCodexThinkingOptions,
     defaultThinkingOptionId: "xhigh",
+    isDefault: true,
   }),
   makeChatGptCodexModel({
     modelId: "gpt-5.4",

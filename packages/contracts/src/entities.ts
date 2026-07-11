@@ -105,7 +105,7 @@ export const conversationSchema = z
 export const messageRoleSchema = z.enum(["user", "assistant", "system", "tool", "developer"])
 export const messageStatusSchema = z.enum(["streaming", "completed", "failed", "cancelled"])
 
-export const messageAttachmentKindSchema = z.enum(["image"])
+export const messageAttachmentKindSchema = z.enum(["image", "text"])
 export const messageAttachmentStatusSchema = z.enum(["draft", "attached", "deleted"])
 
 export const messageAttachmentSchema = z

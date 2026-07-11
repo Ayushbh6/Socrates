@@ -30,6 +30,7 @@ export type CompressorAgentRunInput = {
   fallbacks?: CompressorAgentModel[]
   system: string
   userContent: string
+  allowedTurnNumbers?: number[]
 }
 
 export type CompressorAgentResult =
@@ -101,9 +102,11 @@ export class CompressorAgent {
 
     const strict = schemas.strict.safeParse(generated.output)
     if (strict.success) {
+      assertAnchorTurnsAllowed(strict.data as { anchors: string[] }, input.allowedTurnNumbers)
+      const output = enforceDeterministicCarryover(input.mode, strict.data, input.userContent, schemas.strict)
       return {
         mode: input.mode,
-        output: strict.data as never,
+        output: output as never,
         providerId: model.providerId,
         modelId: model.modelId,
         ...(generated.usage ? { usage: generated.usage } : {}),
@@ -148,16 +151,88 @@ export class CompressorAgent {
         recoverable: true,
       })
     }
+    assertAnchorTurnsAllowed(repairedStrict.data as { anchors: string[] }, input.allowedTurnNumbers)
+    const output = enforceDeterministicCarryover(input.mode, repairedStrict.data, input.userContent, schemas.strict)
 
     return {
       mode: input.mode,
-      output: repairedStrict.data as never,
+      output: output as never,
       providerId: model.providerId,
       modelId: model.modelId,
       usage: mergeUsage(generated.usage, repaired.usage),
       repairedAnchors: true,
       attempts: attemptNumber,
     } as CompressorAgentResult
+  }
+}
+
+const enforceDeterministicCarryover = <TOutput>(
+  mode: CompressorAgentMode,
+  output: TOutput,
+  userContent: string,
+  schema: { safeParse: (value: unknown) => { success: boolean; data?: unknown; error?: { flatten: () => unknown } } },
+): TOutput => {
+  if (mode !== "chat" || !output || typeof output !== "object" || !("relevantFiles" in output) || !("toolState" in output) || !("blocked" in output)) return output
+  const record = output as TOutput & { relevantFiles: string[]; toolState: string[]; blocked: string[] }
+  const paths = Array.from(userContent.matchAll(/\.socrates\/attachments\/[A-Za-z0-9._/-]+/g))
+    .map((match) => match[0].replace(/[.,;:]+$/, ""))
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .slice(0, 8)
+  const missing = paths.filter((attachmentPath) => !record.relevantFiles.some((line) => line.includes(attachmentPath)))
+  const carriedCommands = Array.from(userContent.matchAll(/Exact historical command:\s*((?:pnpm|npm|yarn|bun|git)\s+[^\n`]{1,300})/g))
+    .map((match) => match[1]?.trim())
+    .filter((value): value is string => Boolean(value))
+  const detectedCommands = Array.from(userContent.matchAll(/\b(?:pnpm|npm|yarn|bun|git)\s+[^\n`]{1,300}?(?=\s+and the file\b|[.;](?:\s|$)|\r?\n|$)/g))
+    .map((match) => match[0].trim())
+  const commands = [...carriedCommands, ...detectedCommands]
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .slice(0, 8)
+  const missingCommands = commands.filter((command) => !record.toolState.some((line) => line.includes(command)))
+  const unresolvedInstructions = userContent
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^User:\s*/i, "").trim())
+    .filter((line) => /\bunresolved task\b|\bdo not mark (?:it )?completed\b/i.test(line))
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .slice(0, 8)
+  const missingUnresolved = unresolvedInstructions.filter((instruction) => !record.blocked.some((line) => line.includes(instruction)))
+  if (missing.length === 0 && missingCommands.length === 0 && missingUnresolved.length === 0) return output
+  const candidate = {
+    ...record,
+    relevantFiles: [
+      ...record.relevantFiles,
+      ...missing.map((attachmentPath) => `${attachmentPath}: conversation source attachment; inspect with read or search before relying on it.`),
+    ],
+    toolState: [
+      ...record.toolState,
+      ...missingCommands.map((command) => `Exact historical command: ${command}`),
+    ],
+    blocked: [
+      ...record.blocked,
+      ...missingUnresolved.map((instruction) => `Explicit unresolved user instruction: ${instruction}`),
+    ],
+  }
+  const parsed = schema.safeParse(candidate)
+  if (!parsed.success) {
+    throw new SocratesError("compressor_deterministic_carryover_failed", "Required exact source artifacts could not fit the compaction schema.", {
+      details: { validation: parsed.error?.flatten() },
+      recoverable: true,
+    })
+  }
+  return parsed.data as TOutput
+}
+
+const assertAnchorTurnsAllowed = (output: { anchors: string[] }, allowedTurnNumbers?: number[]): void => {
+  if (!allowedTurnNumbers) return
+  const allowed = new Set(allowedTurnNumbers)
+  const invalid = output.anchors.filter((anchor) => {
+    const match = /^Turn (\d+):/.exec(anchor)
+    return !match || !allowed.has(Number(match[1]))
+  })
+  if (invalid.length > 0) {
+    throw new SocratesError("compressor_anchor_turn_not_in_input", "Compressor anchors referenced turns that were not present in its input.", {
+      details: { invalid, allowedTurnNumbers },
+      recoverable: true,
+    })
   }
 }
 

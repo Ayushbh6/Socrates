@@ -554,15 +554,19 @@ const buildModelMessageContent = (
     return content
   }
   const attachmentReference = formatAttachmentReference(attachments)
-  if (!options.includeImageParts) {
-    const omitted = `[${attachments.length} image attachment${attachments.length === 1 ? "" : "s"} omitted because the selected model does not support vision.]\n${attachmentReference}`
-    return content.trim() ? `${content}\n\n${omitted}` : omitted
+  const images = attachments.filter((attachment) => attachment.kind === "image")
+  if (!options.includeImageParts || images.length === 0) {
+    const omitted = images.length > 0 && !options.includeImageParts
+      ? `[${images.length} image attachment${images.length === 1 ? "" : "s"} retained in chat but pixels were not sent because the selected model does not support vision.]\n`
+      : ""
+    const manifest = `${omitted}${attachmentReference}`
+    return content.trim() ? `${content}\n\n${manifest}` : manifest
   }
 
   const parts: ConversationModelMessage["content"] = []
   const text = [content.trim(), attachmentReference].filter(Boolean).join("\n\n")
   parts.push({ type: "text", text })
-  for (const attachment of attachments) {
+  for (const attachment of images) {
     const data = options.readAttachmentDataUrl?.(attachment)
     if (data) {
       parts.push({ type: "image", mediaType: attachment.mimeType, data, fileName: attachment.fileName })
@@ -573,10 +577,10 @@ const buildModelMessageContent = (
 
 const formatAttachmentReference = (attachments: MessageAttachment[]): string =>
   [
-    "Attached image files are stored in the workspace and can be reopened with the read tool:",
+    "Conversation attachments are stored in the workspace. Before answering from an attached text file, inspect the relevant content with read or search instead of guessing:",
     ...attachments.map(
       (attachment) =>
-        `- ${attachment.fileName}: ${attachmentReferencePath(attachment.uri)} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+        `- ${attachment.kind} ${attachment.fileName}: ${attachmentReferencePath(attachment.uri)} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
     ),
   ].join("\n")
 

@@ -26,6 +26,9 @@ describe("context compression", () => {
   it("uses one v1 trigger and tail/tool pressure defaults", () => {
     expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toEqual({
       triggerTokens: 170_000,
+      postCompactionTargetTokens: 120_000,
+      hardLimitTokens: 180_000,
+      minimumReductionTokens: 20_000,
       recentTailTargetTokens: 50_000,
       currentTurnToolTailTargetTokens: 50_000,
       currentTurnToolResultFloor: 5,
@@ -80,8 +83,8 @@ describe("context compression", () => {
       "context.compaction.started",
       "context.compaction.completed",
     ])
-    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 170_000 })
-    expect(startedTargets).toEqual([170_000])
+    expect(prepared.compactionEvents[0]).toMatchObject({ targetTokens: 120_000 })
+    expect(startedTargets).toEqual([120_000])
     expect(String(prepared.messages[0]?.content)).toContain("<socrates_internal_context_compaction>")
     expect(String(prepared.messages[0]?.content)).toContain("# Anchors")
     expect(prepared.estimatedTokens).toBe(60_000)
@@ -324,7 +327,10 @@ describe("context compression", () => {
       nextSteps: ["Run the focused Vitest file."],
       criticalContext: ["The active turn contains tool results that must not be lost."],
       relevantFiles: ["packages/core/src/context/contextCompression.ts: compaction selection and packing."],
-      toolState: ["Older active-turn tool result digest captured."],
+      toolState: [
+        "Older active-turn tool result digest captured.",
+        "Exact historical command: pnpm --filter @socrates/core test failed in packages/core/src/test/contextCompression.test.ts",
+      ],
       anchors: [
         "Turn 1: inspect the durable user objective.",
         "Turn 2: inspect the exact failed command and relevant file path.",
@@ -461,8 +467,8 @@ describe("context compression", () => {
     expect(completed[0]?.sourceHandles).toEqual([
       { turnNo: 1, turnId: "turn_head_1", retrieve: "trace_retrieve({ turnNo: 1 })" },
       { turnNo: 2, turnId: "turn_head_2", retrieve: "trace_retrieve({ turnNo: 2 })" },
-      { anchor: "Turn 1: inspect the durable user objective." },
-      { anchor: "Turn 2: inspect the exact failed command and relevant file path." },
+      { anchor: "Turn 1: inspect the durable user objective.", turnNo: 1, turnId: "turn_head_1" },
+      { anchor: "Turn 2: inspect the exact failed command and relevant file path.", turnNo: 2, turnId: "turn_head_2" },
     ])
 
     const packed = JSON.stringify(prepared.messages)
@@ -477,7 +483,7 @@ describe("context compression", () => {
   }, SLOW_COMPRESSION_TEST_TIMEOUT_MS)
 
   it("keeps the latest five tool results and compacts older current-turn tool results", async () => {
-    const provider = structuredProvider({ counts: [170_000, 80_000], outputs: [validChat({ toolState: ["Older tool digest captured."] })] })
+    const provider = structuredProvider({ counts: [170_000, 80_000], outputs: [validChat({ toolState: ["Older tool digest captured."], anchors: [] })] })
     const messages = [
       {
         role: "user" as const,
@@ -550,7 +556,7 @@ describe("context compression", () => {
     })
 
     expect(events.map((event) => event.type)).toEqual(["context.compaction.started", "context.compaction.completed"])
-    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 170_000 })
+    expect(events[0]).toMatchObject({ reason: "precompute", targetTokens: 120_000 })
     expect(completed).toEqual([expect.stringMatching(/^ctxcmp_/)])
   })
 
@@ -575,6 +581,126 @@ describe("context compression", () => {
     expect(content).toContain("screenshot.png")
     expect(content).toContain("image:")
     expect(content).not.toContain("a".repeat(500))
+  })
+
+  it("applies an active snapshot without re-sending already compacted raw turns", async () => {
+    const provider = structuredProvider({ counts: [50] })
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: {
+        enabled: true,
+        thresholds: { triggerTokens: 1_000 },
+        getLatestSnapshot: () => ({
+          snapshotId: "ctxcmp_existing",
+          summary: validChat({ goal: "EXISTING_SUMMARY_SENTINEL" }),
+          renderedSummary: "# Goal\nEXISTING_SUMMARY_SENTINEL",
+          sourceHandles: [{ turnNo: 1, turnId: "turn_1" }],
+          outputTokensEstimate: 20,
+        }),
+      },
+    })
+
+    const packed = JSON.stringify(prepared.messages)
+    expect(packed).toContain("EXISTING_SUMMARY_SENTINEL")
+    expect(packed).not.toContain("old user")
+    expect(packed).toContain("middle user")
+    expect(packed).toContain("current user")
+    expect(provider.structuredRequests).toHaveLength(0)
+  })
+
+  it("rejects anchors whose turns are absent from compressor input", async () => {
+    const provider = structuredProvider({
+      counts: [170_000],
+      outputs: [validChat({ anchors: ["Turn 99: invented anchor."] }), validChat({ anchors: ["Turn 99: still invented."] })],
+    })
+    const prepared = await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: { enabled: true, thresholds: { recentTailTargetTokens: 1 } },
+    })
+
+    expect(prepared.compactionEvents[0]).toMatchObject({
+      type: "context.compaction.failed",
+      error: { code: "compressor_anchor_turn_not_in_input" },
+    })
+  })
+
+  it("deterministically carries exact source attachment paths when the model omits them", async () => {
+    const provider = structuredProvider({ counts: [170_000, 60_000], outputs: [validChat({ relevantFiles: [] })] })
+    const completed: ContextCompactionSummary[] = []
+    const attachmentPath = ".socrates/attachments/pasted-text-eval.txt"
+    const exactCommand = "pnpm --filter @socrates/core test -- contextCompression.test.ts"
+    const unresolvedInstruction = "The unresolved task is to prove exact trace recovery. Do not mark it completed until the original evidence is retrieved."
+
+    await prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: [
+        { role: "user", content: `Read ${attachmentPath} before answering. The failing command is ${exactCommand} and the file is packages/core/src/context/contextCompression.ts. ${unresolvedInstruction}`, id: "msg_1u", turnId: "turn_1" },
+        { role: "assistant", content: "I will inspect the source attachment.", id: "msg_1a", turnId: "turn_1" },
+        { role: "user", content: "current user", id: "msg_2u", turnId: "turn_2" },
+      ],
+      compression: {
+        enabled: true,
+        thresholds: { recentTailTargetTokens: 1 },
+        completeSnapshot: (input) => {
+          completed.push({
+            snapshotId: input.snapshotId,
+            summary: input.summary,
+            renderedSummary: input.renderedSummary,
+            sourceHandles: input.sourceHandles,
+            outputTokensEstimate: input.outputTokensEstimate,
+          })
+        },
+      },
+    })
+
+    expect(completed[0]?.summary).toMatchObject({
+      relevantFiles: [expect.stringContaining(attachmentPath)],
+    })
+    expect(completed[0]?.renderedSummary).toContain(attachmentPath)
+    expect(completed[0]?.summary).toMatchObject({ toolState: [expect.stringContaining(exactCommand)] })
+    expect(completed[0]?.renderedSummary).toContain(exactCommand)
+    expect(completed[0]?.summary).toMatchObject({ blocked: [expect.stringContaining(unresolvedInstruction)] })
+    expect(completed[0]?.renderedSummary).toContain(unresolvedInstruction)
+  })
+
+  it("refuses provider context above the hard limit when compaction is disabled", async () => {
+    const provider = structuredProvider({ counts: [180_001] })
+    await expect(prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: { enabled: false },
+    })).rejects.toMatchObject({ code: "context_hard_limit_exceeded" })
+  })
+
+  it("rejects a compaction that remains above the 120k target", async () => {
+    const provider = structuredProvider({ counts: [170_000, 130_000], outputs: [validChat()] })
+    await expect(prepareContextForModelCall({
+      provider,
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig,
+      system: "system",
+      messages: threeTurnMessages(),
+      compression: { enabled: true, thresholds: { recentTailTargetTokens: 1 } },
+    })).rejects.toMatchObject({ code: "context_compaction_target_not_met" })
   })
 })
 

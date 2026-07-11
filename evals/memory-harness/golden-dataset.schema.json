@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "source", "turns", "checks"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "source": {
+      "type": "object",
+      "required": ["threadId", "sanitized"],
+      "properties": {
+        "threadId": { "type": "string" },
+        "sanitized": { "const": true }
+      }
+    },
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["turnNo", "turnId", "user", "assistant", "source"],
+        "properties": {
+          "turnNo": { "type": "integer", "minimum": 1 },
+          "turnId": { "type": "string" },
+          "user": { "type": "string" },
+          "assistant": { "type": "string" },
+          "source": { "enum": ["codex_session", "synthetic_canary"] }
+        }
+      }
+    },
+    "checks": { "type": "array" }
+  }
+}

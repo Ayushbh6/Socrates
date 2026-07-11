@@ -2,7 +2,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { SocratesError } from "@socrates/shared"
-import type { TruncationMetadata } from "@socrates/contracts"
+import { socratesSurface, type TruncationMetadata } from "@socrates/contracts"
 
 export const DEFAULT_CHAR_LIMIT = 20_000
 export const MAX_CHAR_LIMIT = 80_000
@@ -85,10 +85,12 @@ export const isSensitivePath = (targetPath: string): boolean => {
 
 export const assertNotProjectNotesMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
   const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
-  if (relativePath !== ".socrates/project_notes.md" && relativePath !== ".socrates/memory.md") {
+  const memoryPath = socratesSurface("project_memory").path.toLowerCase()
+  const notesPath = socratesSurface("project_notes").path.toLowerCase()
+  if (relativePath !== notesPath && relativePath !== memoryPath) {
     return
   }
-  const area = relativePath.endsWith("memory.md") ? "memory" : "notes"
+  const area = relativePath === memoryPath ? "memory" : "notes"
   throw new SocratesError(
     "project_docs_dedicated_tool_required",
     ".socrates/MEMORY.md and PROJECT_NOTES.md can only be edited through the project_docs tool. Retry with project_docs operation=\"edit\" and the correct area; normal read/search may still inspect them.",
@@ -101,7 +103,7 @@ export const assertNotProjectNotesMutation = (workspacePath: string, targetPath:
 
 export const assertNotRepoDocsMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
   const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
-  if (!relativePath.startsWith(".socrates/repo_docs/") || !relativePath.endsWith(".md")) {
+  if (!relativePath.startsWith(socratesSurface("repo_docs").path.toLowerCase()) || !relativePath.endsWith(".md")) {
     return
   }
   throw new SocratesError(
@@ -116,7 +118,7 @@ export const assertNotRepoDocsMutation = (workspacePath: string, targetPath: str
 
 export const assertNotProjectSkillsMutation = (workspacePath: string, targetPath: string, requestedPath?: string): void => {
   const relativePath = toWorkspaceRelativePath(workspacePath, targetPath).replaceAll(path.sep, "/").toLowerCase()
-  if (!relativePath.startsWith(".socrates/skills/")) {
+  if (!relativePath.startsWith(socratesSurface("project_skills").path.toLowerCase())) {
     return
   }
   throw new SocratesError(
@@ -194,20 +196,28 @@ const protectedSocratesPathPatterns = (homeDir: string): ProtectedSocratesPathMe
   ].filter((item): item is string => item.length > 0)
 
   return [
-    { targetKind: "project_docs", pattern: ".socrates/memory.md" },
-    { targetKind: "project_docs", pattern: ".socrates/project_notes.md" },
-    { targetKind: "repo_docs", pattern: ".socrates/repo_docs" },
-    { targetKind: "project_skills", pattern: ".socrates/skills" },
-    { targetKind: "project_skills", pattern: ".socrates/skill" },
+    { targetKind: "project_docs", pattern: socratesSurface("project_memory").path.toLowerCase() },
+    { targetKind: "project_docs", pattern: socratesSurface("project_notes").path.toLowerCase() },
+    { targetKind: "repo_docs", pattern: socratesSurface("repo_docs").path.toLowerCase().replace(/\/$/, "") },
+    ...[socratesSurface("project_skills").path, ...(socratesSurface("project_skills").aliases ?? [])].map((pattern) => ({
+      targetKind: "project_skills" as const,
+      pattern: pattern.toLowerCase().replace(/\/$/, ""),
+    })),
     ...globalRoots.flatMap((root) => [
-      { targetKind: "global_skills" as const, pattern: `${root}/skills` },
-      { targetKind: "global_skills" as const, pattern: `${root}/skill` },
+      { targetKind: "global_skills" as const, pattern: `${root}/${globalSurfaceSuffix("global_skills")}` },
+      ...globalSurfaceAliasSuffixes("global_skills").map((suffix) => ({ targetKind: "global_skills" as const, pattern: `${root}/${suffix}` })),
       { targetKind: "tool_usage" as const, pattern: `${root}/tool_usage` },
-      { targetKind: "soul" as const, pattern: `${root}/identity.md` },
-      { targetKind: "user_profile" as const, pattern: `${root}/user_profile.md` },
+      { targetKind: "soul" as const, pattern: `${root}/${globalSurfaceSuffix("global_identity")}` },
+      { targetKind: "user_profile" as const, pattern: `${root}/${globalSurfaceSuffix("global_user_profile")}` },
     ]),
   ]
 }
+
+const globalSurfaceSuffix = (id: "global_skills" | "global_identity" | "global_user_profile"): string =>
+  socratesSurface(id).path.replace(/^~\/\.Socrates\//i, "").replace(/\/$/, "").toLowerCase()
+
+const globalSurfaceAliasSuffixes = (id: "global_skills"): string[] =>
+  (socratesSurface(id).aliases ?? []).map((alias) => alias.replace(/^~\/\.Socrates\//i, "").replace(/\/$/, "").toLowerCase())
 
 const normalizeCommandPathText = (value: string): string =>
   value.replaceAll("\\", "/").replaceAll(/\/+/g, "/").toLowerCase()

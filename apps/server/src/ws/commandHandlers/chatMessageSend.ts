@@ -39,7 +39,7 @@ const requireCommandScope = (command: ClientCommand): { projectId: string; conve
   return { projectId: command.projectId, conversationId: command.conversationId }
 }
 
-const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.triggerTokens
+const contextBudgetTokens = DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS.hardLimitTokens
 const docsMutationOperations = new Set(["edit", "patch_section"])
 
 const withLateDeveloperContext = (
@@ -1051,6 +1051,8 @@ const createContextCompressionRuntime = (
   const fallback = contextCompressorFallback(store, compressor)
   return {
     enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
+    projectId,
+    conversationId,
     compressorProviderId: compressor.providerId,
     compressorAuthMode: compressor.authMode ?? "api_key",
     compressorModelId: compressor.modelId,

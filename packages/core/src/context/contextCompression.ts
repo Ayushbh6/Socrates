@@ -19,6 +19,9 @@ export type ContextCompressionMode = "chat" | "memory"
 
 export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
   triggerTokens: 170_000,
+  postCompactionTargetTokens: 120_000,
+  hardLimitTokens: 180_000,
+  minimumReductionTokens: 20_000,
   recentTailTargetTokens: 50_000,
   currentTurnToolTailTargetTokens: 50_000,
   currentTurnToolResultFloor: 5,
@@ -26,6 +29,9 @@ export const DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS = {
 
 export type ContextCompressionThresholds = {
   triggerTokens: number
+  postCompactionTargetTokens: number
+  hardLimitTokens: number
+  minimumReductionTokens: number
   recentTailTargetTokens: number
   currentTurnToolTailTargetTokens: number
   currentTurnToolResultFloor: number
@@ -119,6 +125,8 @@ export type FailCompactionSnapshotInput = {
 export type ContextCompressionRuntime = {
   enabled: boolean
   mode?: ContextCompressionMode
+  projectId?: string
+  conversationId?: string
   thresholds?: Partial<ContextCompressionThresholds>
   compressorProviderId?: ProviderId
   compressorAuthMode?: ProviderAuthMode
@@ -161,15 +169,44 @@ export type PreparedContext = {
   compactionEvents: ContextCompactionLifecycleEvent[]
 }
 
+const withLatestSnapshotApplied = async (input: PrepareContextInput): Promise<PrepareContextInput> => {
+  if (!input.compression?.enabled || !input.compression.getLatestSnapshot) return input
+  const mode = input.compression.mode ?? "chat"
+  const latest = validLatestSnapshot(await input.compression.getLatestSnapshot(), mode)
+  if (!latest) return input
+  const compactedTurnIds = new Set(latest.sourceHandles.map((handle) => handle.turnId).filter(isString))
+  const rawMessages = input.messages.filter((message) => !isInternalCompactionMessage(message))
+  const retainedMessages = rawMessages.filter((message) => !message.turnId || !compactedTurnIds.has(message.turnId))
+  return {
+    ...input,
+    messages: [compactionContextMessage(latest.renderedSummary, mode), ...retainedMessages],
+    compression: { ...input.compression, getLatestSnapshot: () => latest },
+  }
+}
+
 export const prepareContextForModelCall = async (input: PrepareContextInput): Promise<PreparedContext> => {
   const thresholds = { ...DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, ...input.compression?.thresholds }
-  const initialTokenCount = await countPreparedContext(input, thresholds)
+  const effectiveInput = await withLatestSnapshotApplied(input)
+  const initialTokenCount = await countPreparedContext(effectiveInput, thresholds)
   const initialTokens = initialTokenCount.inputTokens
 
-  if (!input.compression?.enabled || initialTokens < thresholds.triggerTokens) {
+  if (!input.compression?.enabled) {
+    if (initialTokens > thresholds.hardLimitTokens) {
+      throw contextHardLimitError(initialTokens, thresholds)
+    }
     return {
-      system: input.system,
-      messages: input.messages,
+      system: effectiveInput.system,
+      messages: effectiveInput.messages,
+      estimatedTokens: initialTokens,
+      tokenCount: initialTokenCount,
+      compactionEvents: [],
+    }
+  }
+
+  if (initialTokens < thresholds.triggerTokens) {
+    return {
+      system: effectiveInput.system,
+      messages: effectiveInput.messages,
       estimatedTokens: initialTokens,
       tokenCount: initialTokenCount,
       compactionEvents: [],
@@ -177,7 +214,7 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
   }
 
   let startedEmitted = false
-  const result = await runContextCompaction(input, thresholds, initialTokens, "threshold", async (event) => {
+  const result = await runContextCompaction(effectiveInput, thresholds, initialTokens, "threshold", async (event) => {
     if (!input.onCompactionStarted) {
       return
     }
@@ -185,20 +222,26 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
     await input.onCompactionStarted(event)
   })
   if (!result.ok) {
+    if (initialTokens > thresholds.hardLimitTokens) {
+      throw contextHardLimitError(initialTokens, thresholds, result.failed.error)
+    }
     return {
-      system: input.system,
-      messages: input.messages,
+      system: effectiveInput.system,
+      messages: effectiveInput.messages,
       estimatedTokens: initialTokens,
       tokenCount: initialTokenCount,
       compactionEvents: [result.failed],
     }
   }
 
-  const finalTokenCount = await countPreparedContext({ ...input, messages: result.messages }, thresholds)
+  const finalTokenCount = await countPreparedContext({ ...effectiveInput, messages: result.messages }, thresholds)
   const finalTokens = finalTokenCount.inputTokens
-  if (finalTokens >= initialTokens) {
-    const error = new SocratesError("context_compaction_not_reduced", "Compacted context was not smaller than the original context.", {
-      details: { initialTokens, finalTokens },
+  const reduction = initialTokens - finalTokens
+  const minimumReduction = Math.min(thresholds.minimumReductionTokens, Math.max(1, Math.floor(initialTokens * 0.1)))
+  const targetTokens = Math.min(thresholds.postCompactionTargetTokens, thresholds.triggerTokens)
+  if (finalTokens > targetTokens || reduction < minimumReduction) {
+    const error = new SocratesError("context_compaction_target_not_met", "Compacted context did not reach the required size target.", {
+      details: { initialTokens, finalTokens, targetTokens, reduction, minimumReduction },
       recoverable: true,
     })
     await input.compression.failSnapshot?.({
@@ -207,13 +250,7 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
       message: error.message,
       details: error.details,
     })
-    return {
-      system: input.system,
-      messages: input.messages,
-      estimatedTokens: initialTokens,
-      tokenCount: initialTokenCount,
-      compactionEvents: [{ type: "context.compaction.failed", snapshotId: result.snapshotId, error }],
-    }
+    throw error
   }
 
   await input.compression.completeSnapshot?.({
@@ -249,21 +286,25 @@ export const prepareContextForModelCall = async (input: PrepareContextInput): Pr
 
 export const precomputeContextSnapshot = async (input: PrepareContextInput): Promise<ContextCompactionLifecycleEvent[]> => {
   const thresholds = { ...DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, ...input.compression?.thresholds }
-  const initialTokens = (await countPreparedContext(input, thresholds)).inputTokens
+  const effectiveInput = await withLatestSnapshotApplied(input)
+  const initialTokens = (await countPreparedContext(effectiveInput, thresholds)).inputTokens
   if (!input.compression?.enabled || initialTokens < thresholds.triggerTokens) {
     return []
   }
 
-  const result = await runContextCompaction(input, thresholds, initialTokens, "precompute")
+  const result = await runContextCompaction(effectiveInput, thresholds, initialTokens, "precompute")
   if (!result.ok) {
     return [result.failed]
   }
 
-  const projectedTokenCount = await countPreparedContext({ ...input, messages: result.messages }, thresholds)
+  const projectedTokenCount = await countPreparedContext({ ...effectiveInput, messages: result.messages }, thresholds)
   const projectedTokens = projectedTokenCount.inputTokens
-  if (projectedTokens >= initialTokens) {
-    const error = new SocratesError("context_compaction_not_reduced", "Precomputed compaction was not smaller than the original context.", {
-      details: { initialTokens, projectedTokens },
+  const projectedReduction = initialTokens - projectedTokens
+  const minimumReduction = Math.min(thresholds.minimumReductionTokens, Math.max(1, Math.floor(initialTokens * 0.1)))
+  const targetTokens = Math.min(thresholds.postCompactionTargetTokens, thresholds.triggerTokens)
+  if (projectedTokens > targetTokens || projectedReduction < minimumReduction) {
+    const error = new SocratesError("context_compaction_target_not_met", "Precomputed compaction did not reach the required size target.", {
+      details: { initialTokens, projectedTokens, targetTokens, projectedReduction, minimumReduction },
       recoverable: true,
     })
     await input.compression.failSnapshot?.({
@@ -272,7 +313,7 @@ export const precomputeContextSnapshot = async (input: PrepareContextInput): Pro
       message: error.message,
       details: error.details,
     })
-    return [{ type: "context.compaction.failed", snapshotId: result.snapshotId, error }]
+    throw error
   }
 
   await input.compression.completeSnapshot?.({
@@ -356,7 +397,10 @@ const runContextCompaction = async (
   const compressorFallbackModelId = compression.compressorFallbackModelId ?? DEFAULT_COMPRESSOR_FALLBACK_MODEL.modelId
   const mode = compression.mode ?? "chat"
   const latestSnapshot = validLatestSnapshot(await compression.getLatestSnapshot?.(), mode)
-  const selection = selectCompactionWindow(input.messages, thresholds, mode)
+  const previouslyCompactedTurnIds = new Set(
+    latestSnapshot?.sourceHandles.map((handle) => handle.turnId).filter(isString) ?? [],
+  )
+  const selection = selectCompactionWindow(input.messages, thresholds, mode, previouslyCompactedTurnIds)
   const keptRawMessages = [...selection.tailTurns, ...selection.activeTurns].flatMap((turn) => turn.messages)
   const toolPlan = buildToolCompactionPlan(keptRawMessages, thresholds)
   const sourceMessageIds = unique(selection.headTurns.flatMap((turn) => turn.messages.map((message) => message.id).filter(isString)))
@@ -366,14 +410,14 @@ const runContextCompaction = async (
     snapshotId,
     reason,
     contextUsedTokensEstimate: initialTokens,
-    targetTokens: thresholds.triggerTokens,
+    targetTokens: Math.min(thresholds.postCompactionTargetTokens, thresholds.triggerTokens),
   }
 
   await compression.startSnapshot?.({
     snapshotId,
     reason,
     contextTokensEstimate: initialTokens,
-    targetTokens: thresholds.triggerTokens,
+    targetTokens: Math.min(thresholds.postCompactionTargetTokens, thresholds.triggerTokens),
     compressorProviderId,
     compressorModelId,
     sourceMessageIds,
@@ -383,12 +427,20 @@ const runContextCompaction = async (
   await onStarted?.(started)
 
   try {
-    if (selection.headTurns.length === 0 && toolPlan.digests.length === 0) {
+    if (selection.headTurns.length === 0 && toolPlan.digests.length === 0 && !latestSnapshot?.renderedSummary) {
       throw new SocratesError("context_compaction_no_safe_head", "Context is over the trigger but has no completed head turns or old tool results to compact safely.", {
         recoverable: true,
       })
     }
 
+    const userContent = compressorUserContent(mode, selection, latestSnapshot, toolPlan)
+    const compressorInputTokens = estimateTextTokens(userContent, { providerId: compressorProviderId, modelId: compressorModelId }).inputTokens
+    if (compressorInputTokens > thresholds.hardLimitTokens) {
+      throw new SocratesError("compressor_input_hard_limit_exceeded", "Compressor input exceeds the Socrates hard input limit.", {
+        details: { compressorInputTokens, hardLimitTokens: thresholds.hardLimitTokens },
+        recoverable: true,
+      })
+    }
     const compressor = new CompressorAgent()
     const compressorResult = await compressor.run({
       provider: input.provider,
@@ -402,7 +454,8 @@ const runContextCompaction = async (
       },
       fallbacks: compression.compressorFallbacks ?? legacyCompressorFallbacks(compression, compressorFallbackProviderId, compressorFallbackAuthMode, compressorFallbackModelId),
       system: compressorSystemPrompt(mode),
-      userContent: compressorUserContent(mode, selection, latestSnapshot, toolPlan),
+      userContent,
+      allowedTurnNumbers: allowedAnchorTurnNumbers(selection.headTurns, latestSnapshot?.renderedSummary),
     })
     if (compressorResult.mode !== mode) {
       throw new SocratesError("context_compaction_wrong_mode", "Compressor returned the wrong output mode.", { recoverable: true })
@@ -414,7 +467,13 @@ const runContextCompaction = async (
       snapshotId,
       summary: compressorResult.output,
       renderedSummary,
-      sourceHandles: buildSourceHandles(selection.headTurns, compressorResult.output),
+      sourceHandles: buildSourceHandles(
+        selection.headTurns,
+        compressorResult.output,
+        compression.projectId,
+        compression.conversationId,
+        latestSnapshot?.sourceHandles,
+      ),
       outputTokensEstimate: estimateTextTokens(renderedSummary, {
         providerId: compressorResult.providerId,
         modelId: compressorResult.modelId,
@@ -504,8 +563,14 @@ const compressorUserContent = (
 const renderCompactionMarkdown = (summary: ChatCompaction | MemoryCompaction): string =>
   "manifestScope" in summary ? renderMemoryCompactionMarkdown(summary) : renderChatCompactionMarkdown(summary)
 
-const selectCompactionWindow = (messages: ModelMessage[], thresholds: ContextCompressionThresholds, mode: ContextCompressionMode = "chat"): CompactionSelection => {
-  const turns = groupMessagesByTurn(messages)
+const selectCompactionWindow = (
+  messages: ModelMessage[],
+  thresholds: ContextCompressionThresholds,
+  mode: ContextCompressionMode = "chat",
+  previouslyCompactedTurnIds: ReadonlySet<string> = new Set(),
+): CompactionSelection => {
+  const turns = groupMessagesByTurn(messages.filter((message) => !isInternalCompactionMessage(message)))
+    .filter((turn) => !turn.turnId || !previouslyCompactedTurnIds.has(turn.turnId))
   const activeTurns = turns.length > 0 ? [turns[turns.length - 1]!] : []
   const completedTurns = turns.slice(0, -1)
   const tailTurns: CompressorTurnInput[] = []
@@ -648,17 +713,7 @@ const packMessagesWithCompaction = (
   toolPlan: ToolCompactionPlan,
   mode: ContextCompressionMode,
 ): ModelMessage[] => [
-  {
-    role: "developer",
-    content: [
-      mode === "memory" ? "<socrates_internal_memory_context_compaction>" : "<socrates_internal_context_compaction>",
-      mode === "memory"
-        ? "This is model-visible internal context for the Global Memory Agent, not transcript-visible user content."
-        : "This is model-visible internal context, not transcript-visible user content.",
-      renderedSummary,
-      mode === "memory" ? "</socrates_internal_memory_context_compaction>" : "</socrates_internal_context_compaction>",
-    ].join("\n"),
-  },
+  compactionContextMessage(renderedSummary, mode),
   ...compactToolResults([...selection.tailTurns, ...selection.activeTurns].flatMap((turn) => turn.messages), toolPlan),
   ...(mode === "memory" && selection.tailTurns.length === 0 && selection.activeTurns.length === 0
     ? [
@@ -670,6 +725,24 @@ const packMessagesWithCompaction = (
       ]
     : []),
 ]
+
+const compactionContextMessage = (renderedSummary: string, mode: ContextCompressionMode): ModelMessage => ({
+  role: "developer",
+  content: [
+    mode === "memory" ? "<socrates_internal_memory_context_compaction>" : "<socrates_internal_context_compaction>",
+    mode === "memory"
+      ? "This is model-visible internal context for the Global Memory Agent, not transcript-visible user content."
+      : "This is model-visible internal context, not transcript-visible user content.",
+    renderedSummary,
+    mode === "memory" ? "</socrates_internal_memory_context_compaction>" : "</socrates_internal_context_compaction>",
+  ].join("\n"),
+})
+
+const isInternalCompactionMessage = (message: ModelMessage): boolean =>
+  message.role === "developer" &&
+  typeof message.content === "string" &&
+  (message.content.includes("<socrates_internal_context_compaction>") ||
+    message.content.includes("<socrates_internal_memory_context_compaction>"))
 
 const compactToolResults = (messages: ModelMessage[], plan: ToolCompactionPlan): ModelMessage[] => {
   if (plan.digests.length === 0) {
@@ -759,14 +832,58 @@ const renderMemoryAgentManifestPart = (part: ModelMessagePart): string => {
   return `[tool-result ${part.toolName} ${part.toolCallId}] output=${truncateWithNotice(safeStringify(part.output), 12_000, "tool output")}`
 }
 
-const buildSourceHandles = (headTurns: CompressorTurnInput[], summary: ChatCompaction | MemoryCompaction): Array<Record<string, unknown>> => {
+const buildSourceHandles = (
+  headTurns: CompressorTurnInput[],
+  summary: ChatCompaction | MemoryCompaction,
+  projectId?: string,
+  conversationId?: string,
+  previousSourceHandles: Array<Record<string, unknown>> = [],
+): Array<Record<string, unknown>> => {
   const handles = headTurns.map((turn) => ({
     turnNo: turn.turnNo,
     ...(turn.turnId ? { turnId: turn.turnId } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(conversationId ? { conversationId } : {}),
     retrieve: `trace_retrieve({ turnNo: ${turn.turnNo} })`,
   }))
-  return [...handles, ...summary.anchors.map((anchor) => ({ anchor }))]
+  const anchors = summary.anchors.map((anchor: string) => {
+    const turnNo = Number(/^Turn (\d+):/.exec(anchor)?.[1])
+    const turn = headTurns.find((candidate) => candidate.turnNo === turnNo)
+    return {
+      anchor,
+      turnNo,
+      ...(turn?.turnId ? { turnId: turn.turnId } : {}),
+      ...(projectId ? { projectId } : {}),
+      ...(conversationId ? { conversationId } : {}),
+    }
+  })
+  return dedupeSourceHandles([...previousSourceHandles, ...handles, ...anchors])
 }
+
+const dedupeSourceHandles = (handles: Array<Record<string, unknown>>): Array<Record<string, unknown>> => {
+  const seen = new Set<string>()
+  return handles.filter((handle) => {
+    const key = JSON.stringify(handle)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+const allowedAnchorTurnNumbers = (headTurns: CompressorTurnInput[], previousSummary?: string): number[] => {
+  const priorTurns = Array.from(previousSummary?.matchAll(/\bTurn (\d+):/g) ?? []).map((match) => Number(match[1]))
+  return unique([...headTurns.map((turn) => turn.turnNo), ...priorTurns])
+}
+
+const contextHardLimitError = (
+  inputTokens: number,
+  thresholds: ContextCompressionThresholds,
+  cause?: SocratesError,
+): SocratesError =>
+  new SocratesError("context_hard_limit_exceeded", "Socrates refused to send a provider request above its hard input limit.", {
+    details: { inputTokens, hardLimitTokens: thresholds.hardLimitTokens, ...(cause ? { compactionError: cause.code } : {}) },
+    recoverable: true,
+  })
 
 const validLatestSnapshot = (snapshot: ContextCompactionSummary | undefined, mode: ContextCompressionMode): ContextCompactionSummary | undefined => {
   if (!snapshot) {
@@ -821,7 +938,8 @@ export const buildCompressorUserMessageContent = (input: {
   thresholds?: Partial<ContextCompressionThresholds>
 }): string => {
   const thresholds = { ...DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, ...input.thresholds }
-  const selection = selectCompactionWindow(input.messages, thresholds)
+  const summarizedTurnIds = new Set(input.latestSnapshot?.sourceHandles.map((handle) => handle.turnId).filter(isString) ?? [])
+  const selection = selectCompactionWindow(input.messages, thresholds, "chat", summarizedTurnIds)
   return buildSocratesCompressorUserContent({
     headTurns: selection.headTurns,
     ...(input.latestSnapshot?.renderedSummary ? { previousSummary: input.latestSnapshot.renderedSummary } : {}),

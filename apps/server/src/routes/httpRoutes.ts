@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify"
 import fs from "node:fs"
 import { z } from "zod"
 import {
+  MAX_MESSAGE_ATTACHMENTS,
   completeOnboardingRequestSchema,
   approveMemorySkillProposalResponseSchema,
   buildGlobalSkillRequestSchema,
@@ -738,9 +739,9 @@ export const registerHttpRoutes = async (
       const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
       const uploads: UploadedResourceInput[] = []
       for await (const upload of request.files()) {
-        if (uploads.length >= 12) {
-          throw new SocratesError("attachment_upload_limit_exceeded", "Attach up to 12 images to one message", {
-            details: { maxFiles: 12 },
+        if (uploads.length >= MAX_MESSAGE_ATTACHMENTS) {
+          throw new SocratesError("attachment_upload_limit_exceeded", `Attach up to ${MAX_MESSAGE_ATTACHMENTS} files to one message`, {
+            details: { maxFiles: MAX_MESSAGE_ATTACHMENTS },
             recoverable: true,
           })
         }

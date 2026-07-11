@@ -1,6 +1,12 @@
 import crypto from "node:crypto"
 import fs from "node:fs"
-import type { MessageAttachment } from "@socrates/contracts"
+import {
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENT_BYTES,
+  MAX_MESSAGE_ATTACHMENTS,
+  MAX_TEXT_ATTACHMENT_BYTES,
+  type MessageAttachment,
+} from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { storeAttachmentFile } from "@socrates/workspace"
 import { and, eq, inArray } from "drizzle-orm"
@@ -10,17 +16,24 @@ import { StoreBase } from "./shared"
 import type { UploadedAttachmentInput } from "./types"
 
 const imageMimeTypes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/heic", "image/svg+xml"])
-const maxAttachmentBytes = 15 * 1024 * 1024
+const textMimeTypes = new Set(["text/plain"])
 
 export class AttachmentStore extends StoreBase {
   createDraftAttachments(projectId: string, conversationId: string, inputs: UploadedAttachmentInput[]): MessageAttachment[] {
     this.mustGetConversationRow(projectId, conversationId)
     if (inputs.length === 0) {
-      throw new SocratesError("attachment_file_required", "Upload an image to attach it to the message", { recoverable: true })
+      throw new SocratesError("attachment_file_required", "Upload an image or text file to attach it to the message", { recoverable: true })
     }
-    if (inputs.length > 12) {
-      throw new SocratesError("attachment_upload_limit_exceeded", "Attach up to 12 images to one message", {
-        details: { maxFiles: 12, receivedFiles: inputs.length },
+    if (inputs.length > MAX_MESSAGE_ATTACHMENTS) {
+      throw new SocratesError("attachment_upload_limit_exceeded", `Attach up to ${MAX_MESSAGE_ATTACHMENTS} files to one message`, {
+        details: { maxFiles: MAX_MESSAGE_ATTACHMENTS, receivedFiles: inputs.length },
+        recoverable: true,
+      })
+    }
+    const totalBytes = inputs.reduce((sum, input) => sum + input.data.byteLength, 0)
+    if (totalBytes > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      throw new SocratesError("attachment_total_too_large", "Attachments for one message must be 20 MB or smaller in total.", {
+        details: { sizeBytes: totalBytes, maxAttachmentBytes: MAX_MESSAGE_ATTACHMENT_BYTES },
         recoverable: true,
       })
     }
@@ -36,15 +49,17 @@ export class AttachmentStore extends StoreBase {
     const attachmentIds: string[] = []
     for (const input of inputs) {
       const mimeType = normalizeMimeType(input.mimeType, input.originalName)
-      if (!imageMimeTypes.has(mimeType)) {
-        throw new SocratesError("attachment_type_not_supported", "Only image attachments are supported in chat.", {
+      const kind = imageMimeTypes.has(mimeType) ? "image" : textMimeTypes.has(mimeType) ? "text" : undefined
+      if (!kind) {
+        throw new SocratesError("attachment_type_not_supported", "Chat attachments support images and plain-text files only.", {
           details: { fileName: input.originalName, mimeType },
           recoverable: true,
         })
       }
-      if (input.data.byteLength > maxAttachmentBytes) {
-        throw new SocratesError("attachment_too_large", "Image attachments must be 15 MB or smaller.", {
-          details: { fileName: input.originalName, sizeBytes: input.data.byteLength, maxAttachmentBytes },
+      const maxBytes = kind === "image" ? MAX_IMAGE_ATTACHMENT_BYTES : MAX_TEXT_ATTACHMENT_BYTES
+      if (input.data.byteLength > maxBytes) {
+        throw new SocratesError("attachment_too_large", `${kind === "image" ? "Image" : "Text"} attachments must be 5 MB or smaller.`, {
+          details: { fileName: input.originalName, sizeBytes: input.data.byteLength, maxAttachmentBytes: maxBytes },
           recoverable: true,
         })
       }
@@ -75,7 +90,7 @@ export class AttachmentStore extends StoreBase {
           projectId,
           conversationId,
           artifactId,
-          kind: "image",
+          kind,
           fileName: stored.fileName,
           mimeType,
           sizeBytes: input.data.byteLength,
@@ -102,9 +117,9 @@ export class AttachmentStore extends StoreBase {
     if (input.attachmentIds.length === 0) {
       return []
     }
-    if (input.attachmentIds.length > 12) {
-      throw new SocratesError("attachment_upload_limit_exceeded", "Attach up to 12 images to one message", {
-        details: { maxFiles: 12, receivedFiles: input.attachmentIds.length },
+    if (input.attachmentIds.length > MAX_MESSAGE_ATTACHMENTS) {
+      throw new SocratesError("attachment_upload_limit_exceeded", `Attach up to ${MAX_MESSAGE_ATTACHMENTS} files to one message`, {
+        details: { maxFiles: MAX_MESSAGE_ATTACHMENTS, receivedFiles: input.attachmentIds.length },
         recoverable: true,
       })
     }
@@ -117,6 +132,13 @@ export class AttachmentStore extends StoreBase {
     if (invalid) {
       throw new SocratesError("attachment_not_attachable", "One or more attachments are no longer attachable.", {
         details: { attachmentId: invalid.id, status: invalid.status },
+        recoverable: true,
+      })
+    }
+    const totalBytes = rows.reduce((sum, row) => sum + row.sizeBytes, 0)
+    if (totalBytes > MAX_MESSAGE_ATTACHMENT_BYTES) {
+      throw new SocratesError("attachment_total_too_large", "Attachments for one message must be 20 MB or smaller in total.", {
+        details: { sizeBytes: totalBytes, maxAttachmentBytes: MAX_MESSAGE_ATTACHMENT_BYTES },
         recoverable: true,
       })
     }
@@ -216,5 +238,6 @@ const normalizeMimeType = (mimeType: string | undefined, fileName: string): stri
   if (lower.endsWith(".webp")) return "image/webp"
   if (lower.endsWith(".heic")) return "image/heic"
   if (lower.endsWith(".svg")) return "image/svg+xml"
+  if (lower.endsWith(".txt") || lower.endsWith(".md") || lower.endsWith(".log")) return "text/plain"
   return mimeType?.toLowerCase() ?? "application/octet-stream"
 }

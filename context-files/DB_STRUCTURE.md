@@ -366,7 +366,7 @@ Conversation deletion should remove rows tied to the conversation, including:
 - `retrieval_result_diagnostics` owned by those runs
 - legacy `trace_documents`, `trace_documents_fts`, `trace_embeddings`, and `trace_index_jobs` rows when present
 
-Conversation deletion must not delete the owning project, project instructions, project resources, or workspace files outside conversation-scoped artifacts. Chat attachment image files under `.socrates/attachments` remain on disk even when their conversation row is hard-deleted.
+Conversation deletion must not delete the owning project, project instructions, project resources, or workspace files outside conversation-scoped artifacts. Chat attachment image/text source files under `.socrates/attachments` remain on disk even when their conversation row is hard-deleted.
 
 ## `sessions`
 
@@ -1416,7 +1416,7 @@ Current retrieval combines:
 
 Trace search returns at most eight clean parents. Inspect accepts a numbered prior result, a turn id, or human project/conversation/turn coordinates and returns one full Q&A parent. Raw tool/shell/file/patch/error lookup belongs to audit mode. Deleted sources return a recoverable not-found result.
 
-Conversation hard delete removes the conversation's active LanceDB parents plus owning retrieval runs/diagnostics. Project delete drops the project LanceDB table and all retrieval coordination rows. Legacy trace rows are also cleaned for compatibility. Chat attachment files under `.socrates/attachments` are intentionally retained on disk and are not proof of active conversation provenance by themselves.
+Conversation hard delete removes the conversation's active LanceDB parents plus owning retrieval runs/diagnostics. Project delete drops the project LanceDB table and all retrieval coordination rows. Legacy trace rows are also cleaned for compatibility. Chat attachment image/text source files under `.socrates/attachments` are intentionally retained on disk and are not proof of active conversation provenance by themselves.
 
 ## Legacy Trace Index Tables
 

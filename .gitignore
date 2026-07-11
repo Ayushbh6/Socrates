@@ -29,6 +29,8 @@ evals/codeact-rerun-*.json
 evals/codeact-pro-rerun-*.json
 evals/skill-learning/private/
 evals/skill-learning/results/*.json
+evals/memory-harness/private/
+evals/memory-harness/results/*.json
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/target/
 apps/desktop/.cache/

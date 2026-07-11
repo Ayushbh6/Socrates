@@ -4,6 +4,7 @@ import { conversationSchema, idSchema, messageSchema, notificationSchema, timest
 import { memoryAgentSignalSnapshotSchema } from "./http"
 import { providerAuthModeSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
 import { memoryNoteImportanceSchema, skillScopeSchema, terminalStatusSchema, toolNameSchema } from "./tools"
+import { MAX_INLINE_MESSAGE_CHARS, MAX_MESSAGE_ATTACHMENTS } from "./attachments"
 
 export const schemaVersionSchema = z.literal(1)
 
@@ -64,8 +65,8 @@ export const runtimeConfigSchema = z
 export const chatMessageSendPayloadSchema = z
   .object({
     clientMessageId: idSchema,
-    content: z.string(),
-    attachmentIds: z.array(idSchema).max(12).optional(),
+    content: z.string().max(MAX_INLINE_MESSAGE_CHARS),
+    attachmentIds: z.array(idSchema).max(MAX_MESSAGE_ATTACHMENTS).optional(),
     runtimeConfig: runtimeConfigSchema,
   })
   .strict()

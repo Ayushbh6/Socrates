@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 import { SocratesError } from "@socrates/shared"
+import { socratesSurface } from "@socrates/contracts"
 export { createWorkspaceShellSession, isInteractiveShellCommand, isShellSessionResetError, runWorkspaceBash, WorkspaceShellSession } from "./tools/bashTool"
 export { applyPatchWorkspace } from "./tools/patchHelpers"
 export { FileFreshnessTracker } from "./tools/fileFreshness"
@@ -224,8 +225,8 @@ export const ensureWorkspaceScaffold = (input: {
       })
     }
 
-    const socratesPath = path.join(workspacePath, ".socrates")
-    const resourcesPath = path.join(socratesPath, "resources")
+    const socratesPath = path.join(workspacePath, path.dirname(socratesSurface("project_memory").path))
+    const resourcesPath = path.join(workspacePath, socratesSurface("project_resources").path)
     const hasSocratesDir = isDirectory(socratesPath)
 
     if (hasSocratesDir && input.requireActionForExistingSocrates && !input.scaffoldAction) {
@@ -280,8 +281,8 @@ export const inspectWorkspacePath = (input: { workspacePath: string }): Workspac
   const workspacePath = path.resolve(input.workspacePath)
   const exists = fs.existsSync(workspacePath)
   const isDirectoryPath = exists && isDirectory(workspacePath)
-  const socratesPath = path.join(workspacePath, ".socrates")
-  const resourcesPath = path.join(socratesPath, "resources")
+  const socratesPath = path.join(workspacePath, path.dirname(socratesSurface("project_memory").path))
+  const resourcesPath = path.join(workspacePath, socratesSurface("project_resources").path)
 
   return {
     workspacePath,
@@ -355,7 +356,7 @@ export const storeAttachmentFile = (input: StoreAttachmentFileInput): StoredAtta
     mode: "existing_folder",
     scaffoldAction: "use_existing",
   })
-  const attachmentsPath = path.join(scaffold.socratesPath, "attachments")
+  const attachmentsPath = path.join(input.workspacePath, socratesSurface("conversation_attachments").path)
   fs.mkdirSync(attachmentsPath, { recursive: true })
   const safeName = sanitizeFileName(input.originalName)
   const target = nextAvailablePath(attachmentsPath, safeName)
@@ -405,7 +406,7 @@ export const deleteStoredResourceFile = (input: DeleteStoredResourceFileInput): 
     })
   }
 
-  const resourcesPath = path.resolve(input.workspacePath, ".socrates", "resources")
+  const resourcesPath = path.resolve(input.workspacePath, socratesSurface("project_resources").path)
   const resourcePath = path.resolve(input.resourcePath)
   if (!isPathInsideDirectory(resourcesPath, resourcePath)) {
     return { deleted: false, skippedReason: "outside_resources" }

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-07-11T02:15:50+02:00",
+  "gitCommit": "16e3ff5",
+  "existingFocusedVerification": {
+    "contextCompression": "14 passed",
+    "modelCatalog": "8 passed",
+    "contracts": "24 passed"
+  },
+  "observedGaps": [
+    "No code-owned Socrates surface registry or generated surface map existed.",
+    "Identity core was not guaranteed in the stable cache prelude.",
+    "User and project metadata were embedded in the system string, invalidating the stable prefix across projects.",
+    "Chat attachments were image-only, capped at 12, and allowed 15 MB per image without a combined submission cap.",
+    "Inline chat content had no 10,000-character backend cap or automatic large-paste attachment path.",
+    "Compaction accepted anchors that matched syntax without proving the referenced turn was in compressor input.",
+    "Any token reduction was accepted; no 100-120k post-compaction target or 180k provider hard stop was enforced.",
+    "Existing active snapshots did not remove their already-compacted raw turns before later model calls.",
+    "GPT-5.6 Luna and Tencent HY 3 were absent from the model catalog; GLM 5.2 thinking controls were stale."
+  ],
+  "modelEvaluation": {
+    "deepseekAccountStartUsd": 0.86,
+    "deepseekAbsoluteCapUsd": 1.05,
+    "openrouterAccountStartUsd": 0,
+    "openrouterAbsoluteCapUsd": 1.5,
+    "codexModel": "gpt-5.6-luna",
+    "codexThinking": "medium"
+  }
+}

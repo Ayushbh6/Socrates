@@ -937,6 +937,35 @@ describe("websocket client command contracts", () => {
         }),
       ).success,
     ).toBe(false)
+    expect(
+      clientCommandSchema.safeParse(
+        envelope("chat.message.send", {
+          clientMessageId: "client_msg_long",
+          content: "x".repeat(10_001),
+          runtimeConfig,
+        }),
+      ).success,
+    ).toBe(false)
+    expect(
+      clientCommandSchema.safeParse(
+        envelope("chat.message.send", {
+          clientMessageId: "client_msg_attachments",
+          content: "source files",
+          attachmentIds: Array.from({ length: 15 }, (_, index) => `att_${index}`),
+          runtimeConfig,
+        }),
+      ).success,
+    ).toBe(true)
+    expect(
+      clientCommandSchema.safeParse(
+        envelope("chat.message.send", {
+          clientMessageId: "client_msg_too_many_attachments",
+          content: "source files",
+          attachmentIds: Array.from({ length: 16 }, (_, index) => `att_${index}`),
+          runtimeConfig,
+        }),
+      ).success,
+    ).toBe(false)
   })
 })
 

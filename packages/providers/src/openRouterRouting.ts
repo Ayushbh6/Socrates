@@ -119,6 +119,7 @@ const deepseekV4FlashTextRouting = orderedFallbackRouting(["baidu", ...deepseekV
 
 export const openRouterProviderRoutingByModelId: Record<string, OpenRouterProviderRouting> = {
   "moonshotai/kimi-k2.6": priceFirstCacheRouting(),
+  "tencent/hy3": priceFirstCacheRouting(),
   "z-ai/glm-5.2": priceFirstCacheRouting(),
   "xiaomi/mimo-v2.5-pro": priceFirstCacheRouting(),
   "xiaomi/mimo-v2.5": strictRouting(["xiaomi"]),

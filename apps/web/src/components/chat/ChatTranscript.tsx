@@ -347,7 +347,11 @@ function AttachmentGrid({ attachments }: { attachments: MessageAttachment[] }) {
           rel="noreferrer"
           className="block overflow-hidden rounded-lg border border-white/30 bg-white/10"
         >
-          <img src={attachmentUrl(attachment)} alt={attachment.fileName} className="max-h-56 w-full object-cover" />
+          {attachment.kind === "image" ? (
+            <img src={attachmentUrl(attachment)} alt={attachment.fileName} className="max-h-56 w-full object-cover" />
+          ) : (
+            <span className="flex min-h-16 items-center px-3 py-2 text-xs text-white">{attachment.fileName}</span>
+          )}
         </a>
       ))}
     </div>

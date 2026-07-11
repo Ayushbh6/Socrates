@@ -3177,10 +3177,10 @@ const appendMessageAttachmentReferences = (content: string, attachments: Message
     return content
   }
   const reference = [
-    "Attached image files are stored in the workspace and can be reopened with the read tool:",
+    "Conversation attachments are stored in the workspace and can be reopened with read or search:",
     ...attachments.map(
       (attachment) =>
-        `- ${attachment.fileName}: ${attachmentReferencePath(attachment.uri)} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+        `- ${attachment.kind} ${attachment.fileName}: ${attachmentReferencePath(attachment.uri)} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
     ),
   ].join("\n")
   return content.trim() ? `${content}\n\n${reference}` : reference
