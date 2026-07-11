@@ -748,6 +748,10 @@ Stores full Terminal output, including raw PTY replay chunks, and redacted user-
 | `redacted` | `INTEGER` | yes | Boolean as `0` or `1`; true for user-only stdin markers or other redacted terminal entries. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 
+## `agent_tasks` and `agent_task_waits`
+
+These tables are the durable non-LLM task supervisor. `agent_tasks` stores the original/current turn, resolved runtime configuration, and lifecycle (`waiting`, `ready`, `running`, `completed`, `failed`, or `cancelled`). `agent_task_waits` stores one named Terminal dependency per task with bounded requested wake events and a compact reason. Registration rechecks terminal state after persistence so an event racing with `wait` cannot strand a task. A claimed event wakes at most one continuation of the task; it does not poll or run an LLM while no requested event exists.
+
 ## `file_operations`
 
 Stores file reads, writes, deletes, moves, and patch-related file operations.

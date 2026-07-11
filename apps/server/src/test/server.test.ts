@@ -1268,6 +1268,53 @@ const createTerminalOutputAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
+const createTerminalWaitResumeAgent = (): SocratesAgent => {
+  const command = nodeCommand(`
+setTimeout(() => {
+  process.stdout.write("wait-resume-complete\\n")
+  process.exit(0)
+}, 2500)
+`)
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream(request) {
+      const serialized = JSON.stringify(request.messages)
+      const latestUser = String(latestUserContent(request.messages) ?? "")
+      if (serialized.includes("terminal_wake_context")) {
+        yield { type: "model.answer.delta", text: "Background terminal result verified." }
+        yield { type: "model.completed" }
+        return
+      }
+      if (!latestUser.includes("Wait for terminal completion")) return
+      if (!requestHasToolResult(request, "tcall_wait_start")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_wait_start")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_wait_start")
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: { toolCallId: "tcall_wait_start", toolName: "bash", input: { operation: "start", command, name: "wait-resume-tests" } },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_wait_start")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_wait_start")
+        yield { type: "model.completed" }
+        return
+      }
+      yield {
+        type: "model.tool_call.completed",
+        toolCall: {
+          toolCallId: "tcall_wait_until_complete",
+          toolName: "wait",
+          input: { terminalNames: ["wait-resume-tests"], wakeOn: ["completed", "failed"], reason: "Waiting for terminal test completion" },
+        },
+      }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
 const createTerminalStopDedupAgent = (): SocratesAgent => {
   const command = `for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo "tick-$i"; sleep 0.1; done`
   const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
@@ -6980,6 +7027,32 @@ describe("WebSocket API", () => {
       socket.close()
     }
   })
+
+  it("suspends and resumes the same task when a waited Terminal completes", async () => {
+    const app = await buildTestServer(tempDbPath(), createTerminalWaitResumeAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Wait for terminal completion", { approvalMode: "approve_all" }))
+      const waiting = await waitForEvent(socket, "turn.waiting", 6_000)
+      expect(waiting.payload).toMatchObject({ terminalNames: ["wait-resume-tests"], wakeOn: ["completed", "failed"] })
+      const resumed = await waitForEvent(socket, "turn.resumed", 6_000)
+      expect(resumed.payload).toMatchObject({ terminalName: "wait-resume-tests", wakeEvent: "completed" })
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({ method: "GET", url: `/api/projects/${project.id}/conversations/${conversation.id}` })
+      const body = parseResponse<{ messages: Array<{ content: string }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        expect(body.data.messages.some((message) => message.content === "Background terminal result verified.")).toBe(true)
+      }
+    } finally {
+      socket.close()
+    }
+  }, 10_000)
 
   it("returns persisted terminal output after background polling has drained supervisor output", async () => {
     const app = await buildTestServer(tempDbPath(), createTerminalOutputAgent())

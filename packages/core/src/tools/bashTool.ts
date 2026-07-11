@@ -9,7 +9,7 @@ const decideBashPolicy: SocratesTool<typeof bashToolInputSchema._type, typeof ba
   context,
 ): ToolPolicyDecision => {
   const operation = input.operation ?? "run"
-  if (operation === "status" || operation === "output" || operation === "stop") {
+  if (operation === "status" || operation === "output" || operation === "stop" || operation === "list") {
     return { type: "auto" }
   }
 
@@ -141,7 +141,7 @@ const isNoopTerminalCommand = (command: string): boolean => {
 export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bashToolOutputSchema._type> = {
   name: "bash",
   description:
-    "Terminal command execution tool. The compatibility tool id is bash, but product copy should call it Terminal. Behavior is platform-native: POSIX on macOS/Linux and PowerShell/cmd on Windows. For a small no-shell diagnostic allowlist, prefer argv such as [\"git\", \"status\", \"--short\"] or [\"pwd\"]; argv runs a literal executable with literal arguments and cannot use shell operators. Use command for a real shell command, script, test, build, local server, REPL, or bounded one-off script; raw shell commands require approval outside full-access mode. Runs from the active project workspace with bounded output and a sanitized user-workspace environment that does not inherit Socrates runtime variables, provider secrets, NODE_ENV, package-manager production/omit flags, or CI. Supports run plus conversation-scoped start/status/output/stop operations. Prefer read/search/edit/url_fetch for exact structured reads, but use Terminal when a real command, test, build, local server, CLI, or bounded one-off script is needed. Keep one-off scripts small and observable; do not install packages, crawl broadly, download large files, or send secrets externally without explicit approval. For subfolder work, pass cwd instead of prefixing commands with cd. Before commands create files or directories, verify the intended parent directory and use an explicit relative path or cwd so outputs do not accidentally land in the workspace root. For status/output/stop, omit the target when there is exactly one active Terminal, or use the Terminal name shown in context.",
+    "Terminal command execution tool. The compatibility tool id is bash, but product copy should call it Terminal. Behavior is platform-native: POSIX on macOS/Linux and PowerShell/cmd on Windows. Use operation=list first when several conversation Terminals may exist; it returns a compact bounded inventory. For a small no-shell diagnostic allowlist, prefer argv such as [\"git\", \"status\", \"--short\"] or [\"pwd\"]; argv runs a literal executable with literal arguments and cannot use shell operators. Use command for a real shell command, script, test, build, local server, REPL, or bounded one-off script; raw shell commands require approval outside full-access mode. Foreground raw runs complete normally when quick, otherwise automatically become a named background Terminal after the configured foreground window without being killed or restarted. Supports run plus conversation-scoped start/status/output/stop/list operations. Returned output and list rows are bounded; charLimit is at most 16000 and list limit is at most 12. Prefer read/search/edit/url_fetch for exact structured reads, but use Terminal when a real command, test, build, local server, CLI, or bounded one-off script is needed. For status/output/stop, omit the target when there is exactly one active Terminal, or use the Terminal name shown in context.",
   inputSchema: bashToolInputSchema,
   modelInputSchema: bashToolModelInputSchema,
   resultSchema: bashToolOutputSchema,
@@ -160,6 +160,9 @@ export const bashTool: SocratesTool<typeof bashToolInputSchema._type, typeof bas
     }
     if ((operation === "status" || operation === "output" || operation === "stop") && output.process) {
       return `Terminal ${output.terminal?.name ?? "session"} is ${output.process.status}.`
+    }
+    if (operation === "list") {
+      return `${output.totalMatches ?? output.terminals?.length ?? 0} Terminal(s) listed.`
     }
     return `Command exited ${output.exitCode === null ? "without an exit code" : `with code ${output.exitCode}`}.`
   },

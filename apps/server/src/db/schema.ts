@@ -592,6 +592,47 @@ export const terminalOutputChunks = sqliteTable(
   }),
 )
 
+export const agentTasks = sqliteTable(
+  "agent_tasks",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    rootTurnId: text("root_turn_id").notNull(),
+    currentTurnId: text("current_turn_id").notNull(),
+    status: text("status").notNull(),
+    runtimeConfigJson: text("runtime_config_json").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    completedAt: text("completed_at"),
+    metadataJson: text("metadata_json"),
+  },
+  (table) => ({
+    conversationStatusIdx: index("agent_tasks_conversation_status_idx").on(table.conversationId, table.status),
+    currentTurnIdx: index("agent_tasks_current_turn_idx").on(table.currentTurnId),
+  }),
+)
+
+export const agentTaskWaits = sqliteTable(
+  "agent_task_waits",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    terminalId: text("terminal_id").notNull(),
+    wakeOnJson: text("wake_on_json").notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull(),
+    wokenAt: text("woken_at"),
+    wakeEvent: text("wake_event"),
+  },
+  (table) => ({
+    terminalStatusIdx: index("agent_task_waits_terminal_status_idx").on(table.terminalId, table.status),
+    taskStatusIdx: index("agent_task_waits_task_status_idx").on(table.taskId, table.status),
+  }),
+)
+
 export const fileOperations = sqliteTable(
   "file_operations",
   {

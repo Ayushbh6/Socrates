@@ -1014,7 +1014,7 @@ export const conversationToolRunSchema = z
         command: z.string(),
         cwd: z.string(),
         status: z.string(),
-        operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+        operation: z.enum(["run", "start", "status", "output", "stop", "list"]).optional(),
         platform: z.string().optional(),
         shellKind: z.enum(["posix", "powershell", "cmd"]).optional(),
         shellExecutable: z.string().optional(),

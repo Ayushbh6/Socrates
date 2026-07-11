@@ -365,6 +365,27 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "turn.waiting") {
+        activeTurnIdRef.current = null;
+        setActiveTurnId(null);
+        setIsSending(false);
+        setApprovals([]);
+        setIsCompacting(false);
+        void refreshConversation();
+        return;
+      }
+
+      if (event.type === "turn.resumed") {
+        activeTurnIdRef.current = event.payload.turnId;
+        liveStepsRef.current = [];
+        setActiveTurnId(event.payload.turnId);
+        setIsSending(true);
+        setIsCompacting(false);
+        setLiveSteps([]);
+        setApprovals([]);
+        return;
+      }
+
       if (event.type === "context.usage.snapshot") {
         setConversationData((current) => (current ? { ...current, contextUsage: event.payload } : current));
         return;

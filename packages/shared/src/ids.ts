@@ -22,6 +22,8 @@ export type IdPrefix =
   | "sh"
   | "shout"
   | "term"
+  | "task"
+  | "twait"
   | "tout"
   | "fop"
   | "patch"

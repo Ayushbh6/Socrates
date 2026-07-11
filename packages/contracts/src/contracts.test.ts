@@ -123,6 +123,7 @@ import {
   agentThinkingDeltaEventSchema,
   bashToolInputSchema,
   bashToolModelInputSchema,
+  waitToolInputSchema,
   currentTimeToolInputSchema,
   currentTimeToolOutputSchema,
   applyPatchToolInputSchema,
@@ -1485,6 +1486,9 @@ describe("tool contracts", () => {
     expect(bashToolInputSchema.safeParse({ operation: "status", terminalId: "term_1" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "stop" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "list", limit: 12, charLimit: 12_000 }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "list", limit: 13 }).success).toBe(false)
+    expect(bashToolInputSchema.safeParse({ operation: "list", charLimit: 16_001 }).success).toBe(false)
     expect(bashToolInputSchema.safeParse({ operation: "status", name: "dev-server" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output", target: "frontend" }).success).toBe(true)
     expect(bashToolModelInputSchema.safeParse({ operation: "stop" }).success).toBe(true)
@@ -1494,6 +1498,9 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", terminalId: "term_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
+    expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed", "failed"], reason: "Waiting for integration test results" }).success).toBe(true)
+    expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed"], reason: "one two three four five six seven eight" }).success).toBe(false)
+    expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed"], reason: "x".repeat(65) }).success).toBe(false)
     expect(urlFetchToolInputSchema.safeParse({ url: "https://example.com/docs", charLimit: 10_000, timeoutMs: 10_000 }).success).toBe(true)
     expect(urlFetchToolInputSchema.safeParse({ url: "ftp://example.com/file.txt" }).success).toBe(false)
     expect(

@@ -1,7 +1,7 @@
 import type { BashToolInput, BashToolOutput, ClientCommand, TerminalStatus } from "@socrates/contracts"
 import { createId, normalizeError, nowIso, SocratesError } from "@socrates/shared"
 import type { ToolExecutorContext } from "@socrates/core"
-import { isInteractiveShellCommand, runWorkspaceArgv } from "@socrates/workspace"
+import { runWorkspaceArgv } from "@socrates/workspace"
 import type { SocratesStore } from "../services/store"
 import type { ActiveTurns } from "./activeTurns"
 import type { ConversationSubscriptions } from "./conversationSubscriptions"
@@ -25,14 +25,15 @@ type RuntimeTerminal = {
 
 type TerminalManagerOptions = {
   autoDetachMs?: number
-  idleTtlMs?: number
 }
 
 type ShellOutput = { stream: "stdout" | "stderr" | "log" | "result" | "pty"; text?: string; data?: unknown }
 type TerminalSnapshot = ReturnType<SocratesStore["listConversationTerminals"]>[number]
 
 const defaultAutoDetachMs = Number.parseInt(process.env.SOCRATES_TERMINAL_AUTO_DETACH_MS ?? "15000", 10)
-const defaultIdleTtlMs = Number.parseInt(process.env.SOCRATES_TERMINAL_IDLE_TTL_MS ?? "7200000", 10)
+const maxModelTerminalOutputChars = 16_000
+const maxModelTerminalListRows = 12
+const maxTerminalListTextChars = 12_000
 const terminalInitialOutputDrainMs = 500
 const terminalInitialOutputPollMs = 50
 const terminalAwaitingUserInputStopMessage = "Terminal is waiting for user input. Leave it running and ask the user to type in the Terminal panel."
@@ -41,7 +42,7 @@ export class ConversationTerminalManager {
   private readonly terminals = new Map<string, RuntimeTerminal>()
   private readonly supervisor = new TerminalSupervisorClient()
   private readonly autoDetachMs: number
-  private readonly idleTtlMs: number
+  private onTaskReady: ((task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number]) => void) | undefined
 
   constructor(
     private readonly store: SocratesStore,
@@ -49,7 +50,10 @@ export class ConversationTerminalManager {
     options: TerminalManagerOptions = {},
   ) {
     this.autoDetachMs = options.autoDetachMs ?? defaultAutoDetachMs
-    this.idleTtlMs = options.idleTtlMs ?? defaultIdleTtlMs
+  }
+
+  setTaskWakeHandler(handler: (task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number]) => void): void {
+    this.onTaskReady = handler
   }
 
   async reconcilePersistedTerminals(): Promise<void> {
@@ -65,6 +69,7 @@ export class ConversationTerminalManager {
         if (snapshot) {
           this.emitTerminalEvent("terminal.status", snapshot)
         }
+        this.wakeWaitingTasks(terminal.terminalId, "failed")
         continue
       }
       const runtime = this.runtimeFromSnapshot(terminal)
@@ -74,6 +79,9 @@ export class ConversationTerminalManager {
   }
 
   async dispose(): Promise<void> {
+    // Shutdown can make waits ready, but it must never launch a fresh model call while
+    // the server is closing. Ready tasks are resumed by startup reconciliation instead.
+    this.onTaskReady = undefined
     await Promise.allSettled([...this.terminals.values()].map((terminal) => this.stopRuntimeTerminal(terminal, "Server shutdown.")))
     this.terminals.clear()
     await this.supervisor.shutdown()
@@ -114,7 +122,10 @@ export class ConversationTerminalManager {
     if (operation === "stop") {
       return this.terminalStop(input, context)
     }
-    if (shouldAutoDetachRun(input.command ?? "")) {
+    if (operation === "list") {
+      return this.terminalList(input, context)
+    }
+    if (input.command) {
       return this.runWithAutoDetach(input, context)
     }
     return activeTurns.getShellSession(context.turnId, context.workspacePath).run(input, context)
@@ -299,10 +310,15 @@ export class ConversationTerminalManager {
     for (;;) {
       const runtime = this.terminals.get(terminalId)
       if (!runtime || runtime.status !== "running") {
-        return this.terminalOutput({ operation: "output", terminalId, processId }, context)
+        const completed = await this.terminalOutput({ operation: "output", terminalId, processId }, context)
+        return { ...completed, operation: "run" }
       }
       if (Date.now() >= deadline) {
-        return started
+        return {
+          ...started,
+          operation: "run",
+          message: `Command continues in background Terminal \"${started.terminal?.name ?? "terminal"}\" after the foreground window.`,
+        }
       }
       await wait(Math.min(100, deadline - Date.now()))
     }
@@ -319,6 +335,50 @@ export class ConversationTerminalManager {
       return terminal ? storedTerminalOutput(this.store, "status", terminal, { charLimit: input.charLimit }) : withTerminalMetadata(output, terminal)
     }
     return storedTerminalOutput(this.store, "status", runtime, { charLimit: input.charLimit })
+  }
+
+  private async terminalList(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
+    const all = this.store.listConversationTerminals(context.conversationId)
+    const requestedLimit = Math.min(input.limit ?? 8, maxModelTerminalListRows)
+    const rows = all.slice(0, requestedLimit)
+    const terminals = rows.map((terminal) => ({
+      name: clipText(terminal.name, 96),
+      command: clipText(terminal.command, 320),
+      cwd: clipText(terminal.cwd, 320),
+      status: terminal.status,
+      awaitingInput: terminal.awaitingInput,
+      autoDetached: terminal.autoDetached,
+      ...(terminal.startedAt ? { startedAt: terminal.startedAt } : {}),
+      ...(terminal.updatedAt ? { updatedAt: terminal.updatedAt } : {}),
+      ...(terminal.completedAt ? { completedAt: terminal.completedAt } : {}),
+      ...(terminal.exitCode === undefined ? {} : { exitCode: terminal.exitCode }),
+      ...(terminal.signal ? { signal: clipText(terminal.signal, 80) } : {}),
+      hasNewOutput: terminal.output.nextOutputSequence > this.store.getModelVisibleTerminalOutputSequence(terminal.terminalId),
+    }))
+    const full = terminals
+      .map((terminal) => `${terminal.name}: ${terminal.status}${terminal.awaitingInput ? " (awaiting user input)" : ""}\n  command: ${terminal.command}\n  cwd: ${terminal.cwd}`)
+      .join("\n")
+    const charLimit = Math.min(input.charLimit ?? maxTerminalListTextChars, maxTerminalListTextChars)
+    const stdout = clipText(full, charLimit)
+    return {
+      operation: "list",
+      cwd: context.workspacePath,
+      exitCode: null,
+      stdout,
+      stderr: "",
+      ...(rows.length === 0 ? { message: "No conversation Terminals exist." } : {}),
+      durationMs: 0,
+      timedOut: false,
+      truncation: {
+        truncated: stdout.length < full.length,
+        charLimit,
+        originalLength: full.length,
+        returnedLength: stdout.length,
+      },
+      shell: { platform: process.platform, kind: process.platform === "win32" ? "powershell" : "posix", executable: "terminal-manager" },
+      terminals,
+      totalMatches: all.length,
+    }
   }
 
   private async terminalOutput(input: BashToolInput, context: ToolExecutorContext): Promise<BashToolOutput> {
@@ -419,6 +479,7 @@ export class ConversationTerminalManager {
       const prompted = conversationId ? this.store.listConversationTerminals(conversationId).find((item) => item.terminalId === terminalId) : undefined
       if (prompted) {
         this.emitTerminalEvent("terminal.input.requested", prompted, { prompt, secret: isSecretPrompt(prompt) })
+        this.wakeWaitingTasks(terminalId, "input_required")
       }
     }
   }
@@ -433,11 +494,6 @@ export class ConversationTerminalManager {
         void this.pollTerminal(terminal).catch((error) => this.markRuntimeTerminalMissing(terminal, error))
       }
     }, 100).unref?.()
-    setTimeout(() => {
-      if (this.terminals.get(terminal.terminalId) === terminal && terminal.status === "running") {
-        this.stopRuntimeTerminal(terminal, "Terminal idle TTL expired.")
-      }
-    }, this.idleTtlMs).unref?.()
   }
 
   private async pollTerminal(terminal: RuntimeTerminal): Promise<void> {
@@ -509,6 +565,7 @@ export class ConversationTerminalManager {
     if (status === "exited" || status === "stopped") {
       this.clearRuntimeTerminal(terminal)
       this.emitTerminalStatus(terminal, status === "stopped" ? "terminal.stopped" : "terminal.completed")
+      this.wakeWaitingTasks(terminal.terminalId, status === "exited" && output.exitCode === 0 ? "completed" : "failed")
     } else {
       this.emitTerminalStatus(terminal)
     }
@@ -540,6 +597,7 @@ export class ConversationTerminalManager {
     })
     this.clearRuntimeTerminal(terminal)
     this.emitTerminalStatus(terminal, "terminal.stopped")
+    this.wakeWaitingTasks(terminal.terminalId, "failed")
   }
 
   private markRuntimeTerminalMissing(terminal: RuntimeTerminal, error: unknown): void {
@@ -556,6 +614,7 @@ export class ConversationTerminalManager {
     })
     this.clearRuntimeTerminal(terminal)
     this.emitTerminalStatus(terminal)
+    this.wakeWaitingTasks(terminal.terminalId, "failed")
   }
 
   private markRuntimeTerminalDetached(terminal: RuntimeTerminal, error: { code: string; message: string; details?: unknown }): void {
@@ -571,6 +630,7 @@ export class ConversationTerminalManager {
     })
     this.clearRuntimeTerminal(terminal)
     this.emitTerminalStatus(terminal)
+    this.wakeWaitingTasks(terminal.terminalId, "failed")
   }
 
   private clearRuntimeTerminal(terminal: RuntimeTerminal): void {
@@ -708,6 +768,13 @@ export class ConversationTerminalManager {
     })
     this.subscriptions.emit(event)
   }
+
+  private wakeWaitingTasks(terminalId: string, event: "completed" | "failed" | "input_required"): void {
+    const tasks = this.store.claimTerminalTaskWake(terminalId, event)
+    for (const task of tasks) {
+      this.onTaskReady?.(task)
+    }
+  }
 }
 
 const terminalCommandScope = (command: Pick<ClientCommand, "projectId" | "conversationId">): { projectId: string; conversationId: string } => {
@@ -757,14 +824,14 @@ const storedTerminalFromRow = (store: SocratesStore, conversationId: string, ter
 
 const storedTerminalOutput = (
   store: SocratesStore,
-  operation: "start" | "status" | "output" | "stop",
+  operation: "run" | "start" | "status" | "output" | "stop",
   terminal: ReturnType<typeof storedTerminalFromRow>,
   options: { message?: string; reusedTerminal?: boolean; autoDetached?: boolean; charLimit?: number | undefined } = {},
 ): BashToolOutput => {
   const fromSequence = store.getModelVisibleTerminalOutputSequence(terminal.terminalId)
-  const charLimit = Math.min(options.charLimit ?? 80_000, 80_000)
+  const charLimit = Math.min(options.charLimit ?? maxModelTerminalOutputChars, maxModelTerminalOutputChars)
   const output = store.terminalOutputSnapshot(terminal.terminalId, fromSequence, charLimit)
-  store.setModelVisibleTerminalOutputSequence(terminal.terminalId, output.nextOutputSequence)
+  store.setModelVisibleTerminalOutputSequence(terminal.terminalId, output.modelVisibleNextSequence)
   const message =
     options.message ??
     (fromSequence > 0 && output.returnedLength === 0
@@ -871,12 +938,6 @@ const processStatusToTerminalStatus = (status: string | undefined): TerminalStat
   return "exited"
 }
 
-const shouldAutoDetachRun = (command: string): boolean =>
-  isInteractiveShellCommand(command) ||
-  /\b(pnpm|npm|yarn|bun)\s+(dev|start|serve)\b|\b(next|vite|astro|webpack|turbo)\s+dev\b|\b(uvicorn|fastapi|flask|django-admin)\b|\b(npx|pnpm\s+dlx|yarn\s+dlx|bunx)\b/i.test(
-    command,
-  )
-
 const inferTerminalName = (command: string): string => {
   if (/\b(test|vitest|jest|watch)\b/i.test(command)) {
     return "test-watch"
@@ -945,5 +1006,6 @@ const detectPrompt = (text: string): string | undefined => {
 const isSecretPrompt = (prompt: string): boolean => /(password|token|api\s*key|secret|passphrase)/i.test(prompt)
 const stripAnsi = (text: string): string => text.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
 const normalizePtyForModel = (text: string): string => stripAnsi(text).replaceAll("\r\n", "\n").replaceAll(/\r(?!\n)/g, "\n")
+const clipText = (value: string, limit: number): string => (value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`)
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))

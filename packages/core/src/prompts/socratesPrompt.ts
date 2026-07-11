@@ -158,7 +158,9 @@ Terminal discipline:
 - Terminal commands start in the active workspace. Do not begin with guessed absolute cd paths; use cwd for subfolders.
 - Before commands create files/directories, verify the parent or use explicit relative paths/cwd so output does not land accidentally in the root.
 - For missing capabilities, Terminal may run small one-off scripts to parse, transform, render, inspect, or verify data. Keep them narrow and inspect their output before relying on them.
-- Long-running/interactive commands should be started as named Terminals and polled by status/output. Avoid duplicate dev servers/watchers.
+- Use bash operation="list" before complex Terminal work or when more than one Terminal may exist. It returns a compact bounded inventory; use human Terminal names, never opaque ids.
+- Raw bash run commands finish normally when quick and automatically detach into a named Terminal after the foreground window when still running. Continue independent work after detachment; do not restart the command or create duplicates. Use start when you already know a command should begin in the background.
+- When all remaining work depends on named background Terminals, call wait with those names and wakeOn events. Use wait only after independent work is complete. It ends this model execution without a final answer and resumes the same task on completed, failed, or input_required; never use a polling interval or wait merely to pause arbitrarily.
 - For a small safe foreground diagnostic, prefer bash argv (for example ["git", "status", "--short"] or ["pwd"]); it executes literal arguments without a shell. Use raw command for shell syntax, scripts, tests, builds, servers, or REPLs, and expect approval outside full-access mode.
 - If a Terminal is awaiting user input, tell the user what input is needed and stop. Do not declare success until user input and follow-up output confirm it.
 

@@ -175,6 +175,7 @@ describe("SocratesAgent", () => {
       "edit",
       "apply_patch",
       "bash",
+      "wait",
       "current_time",
       "trace_retrieve",
       "tool_docs",
@@ -200,6 +201,53 @@ describe("SocratesAgent", () => {
         .find((tool) => tool.name === "edit")
         ?.inputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success,
     ).toBe(false)
+  })
+
+  it("ends the model turn immediately when wait registers a durable suspension", async () => {
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream() {
+        calls += 1
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_wait",
+            toolName: "wait",
+            input: { terminalNames: ["integration-tests"], wakeOn: ["completed", "failed"], reason: "Waiting for integration test results" },
+          },
+        }
+        yield { type: "model.completed", finishReason: "tool-calls" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.wait = async (input) => ({
+      status: "waiting",
+      terminalNames: input.terminalNames,
+      wakeOn: input.wakeOn,
+      reason: input.reason,
+      message: "Task suspended until a requested Terminal event occurs.",
+    })
+    const agent = new SocratesAgent(provider)
+    const events: SocratesAgentEvent[] = []
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: { providerId: "openai", modelId: "gpt-5.4-mini", thinkingEnabled: false, thinkingEffort: "none", approvalMode: "manual", sandboxMode: "workspace_write" },
+      messages: [{ role: "user", content: "Run the tests." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      events.push(event)
+    }
+    expect(calls).toBe(1)
+    expect(events.some((event) => event.type === "agent.suspended")).toBe(true)
+    expect(events.some((event) => event.type === "model.answer.delta")).toBe(false)
   })
 
   it("keeps OpenRouter routed-provider affinity for later calls in the same turn", async () => {
@@ -483,8 +531,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(17)
-    expect(countRequests[1]?.toolCount).toBe(17)
+    expect(countRequests[0]?.toolCount).toBe(18)
+    expect(countRequests[1]?.toolCount).toBe(18)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -1362,7 +1410,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(17)
+    expect(countRequests[0]?.toolCount).toBe(18)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -1813,7 +1861,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(17)
+    expect(countRequests[0]?.toolCount).toBe(18)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -2485,6 +2533,7 @@ describe("bash tool policy", () => {
     expect(await bashTool.decidePolicy({ command: "cat package.json > copied.json" }, context)).toMatchObject({ type: "approval_required" })
     expect(await bashTool.decidePolicy({ argv: ["pnpm", "test"] }, context)).toMatchObject({ type: "approval_required" })
     expect(await bashTool.decidePolicy({ operation: "output", processId: "proc_1" }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ operation: "list" }, context)).toEqual({ type: "auto" })
 
     const dockerPolicy = await bashTool.decidePolicy({ command: "docker compose up -d" }, context)
     expect(dockerPolicy.type).toBe("approval_required")

@@ -21,6 +21,7 @@ export const handleTurnCancel = (
     activeTurns.delete(command.payload.turnId)
   }
   const cancelled = store.cancelTurn(command.payload.turnId, command.payload.reason)
+  store.completeTerminalTaskForTurn(cancelled.turnId, "cancelled")
   store.indexTurnTraceDocuments(cancelled.projectId, cancelled.conversationId, cancelled.turnId)
   store.recordProjectStateLedgerTurn(cancelled.projectId, cancelled.conversationId, cancelled.turnId, "cancelled", cancelled.partialAssistantMessage?.content)
 

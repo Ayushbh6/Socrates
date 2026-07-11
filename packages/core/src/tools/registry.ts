@@ -23,6 +23,7 @@ import { globalTraceRetrieveTool, traceRetrieveTool } from "./traceRetrieveTool"
 import type { SocratesTool } from "./types"
 import { urlFetchTool } from "./urlFetchTool"
 import { userProfileTool } from "./userProfileTool"
+import { waitTool } from "./waitTool"
 
 const tools = [
   readTool,
@@ -31,6 +32,7 @@ const tools = [
   editTool,
   applyPatchTool,
   bashTool,
+  waitTool,
   currentTimeTool,
   traceRetrieveTool,
   toolDocsTool,

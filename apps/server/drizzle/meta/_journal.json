@@ -162,6 +162,13 @@
       "when": 1783720620876,
       "tag": "0022_friendly_sentinels",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1783850400000,
+      "tag": "0023_terminal_task_supervisor",
+      "breakpoints": true
     }
   ]
 }

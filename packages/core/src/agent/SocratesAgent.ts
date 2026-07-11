@@ -1,6 +1,7 @@
 import {
   normalizedToolCallSchema,
   toolExecutionResultSchema,
+  waitToolOutputSchema,
   type MemoryRouterPostTurnResult,
   type MemoryRouterPreTurnResult,
   type MemorySearchInput,
@@ -12,6 +13,7 @@ import {
   type RuntimeConfig,
   type ToolExecutionResult,
   type ToolName,
+  type WaitToolOutput,
   type WorkerModelSettings,
 } from "@socrates/contracts"
 import fs from "node:fs"
@@ -90,7 +92,7 @@ export type SocratesAgentContextPrecomputeInput = {
   contextCompression: ContextCompressionRuntime
 }
 
-export type SocratesAgentEvent = ModelEvent | ToolLifecycleEvent | ContextCompactionLifecycleEvent
+export type SocratesAgentEvent = ModelEvent | ToolLifecycleEvent | ContextCompactionLifecycleEvent | { type: "agent.suspended"; wait: WaitToolOutput }
 
 export class SocratesAgent {
   private readonly memoryRouterAgent: MemoryRouterAgent
@@ -393,6 +395,14 @@ export class SocratesAgent {
       }
 
       const execution = await batch.done
+      const waitResult = execution.results.find(
+        (result): result is ToolExecutionResult & { ok: true; output: WaitToolOutput } =>
+          result.ok === true && result.toolName === "wait" && waitToolOutputSchema.safeParse(result.output).success,
+      )
+      if (waitResult?.output.status === "waiting") {
+        yield { type: "agent.suspended", wait: waitResult.output }
+        return
+      }
       const nextUsedToolCalls = usedToolCalls + execution.countedToolCalls
       if (nextUsedToolCalls >= 10) {
         compactPriorToolHistoryForModel(messages)

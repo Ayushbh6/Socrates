@@ -385,8 +385,8 @@ const parseJson = (text: string | null): unknown => {
 const asRecord = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
 
-const isShellOperation = (value: unknown): value is "run" | "start" | "status" | "output" | "stop" =>
-  value === "run" || value === "start" || value === "status" || value === "output" || value === "stop"
+const isShellOperation = (value: unknown): value is "run" | "start" | "status" | "output" | "stop" | "list" =>
+  value === "run" || value === "start" || value === "status" || value === "output" || value === "stop" || value === "list"
 
 const isShellKind = (value: unknown): value is "posix" | "powershell" | "cmd" =>
   value === "posix" || value === "powershell" || value === "cmd"

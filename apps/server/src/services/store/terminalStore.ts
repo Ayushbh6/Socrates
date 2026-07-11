@@ -53,6 +53,7 @@ type TerminalOutputSnapshot = ConversationTerminal["output"] & {
   originalLength: number
   returnedLength: number
   truncated: boolean
+  modelVisibleNextSequence: number
 }
 
 export class TerminalStore extends StoreBase {
@@ -154,6 +155,9 @@ export class TerminalStore extends StoreBase {
       originalLength: full.stdout.length + full.stderr.length,
       returnedLength: bounded.stdout.length + bounded.stderr.length,
       truncated: bounded.stdout.length < full.stdout.length || bounded.stderr.length < full.stderr.length,
+      // Never advance the model cursor across content we did not return. Repeating a bounded
+      // page is preferable to silently losing terminal evidence.
+      modelVisibleNextSequence: bounded.stdout.length < full.stdout.length || bounded.stderr.length < full.stderr.length ? fromSequence : nextOutputSequence,
     }
   }
 
@@ -216,26 +220,27 @@ export class TerminalStore extends StoreBase {
     if (terminals.length === 0) {
       return undefined
     }
-    return [
+    const context = [
       "Active Terminal Context",
-      "These terminals are current conversation state. Check them before starting duplicate dev servers. Use bash status/output/stop with the terminal name, or omit the target when exactly one Terminal is active. If a Terminal is awaiting user input, tell the user what prompt is waiting and stop your response; do not stop it or claim success until user input and follow-up output are observed.",
+      "These are bounded current-state anchors. Use bash list before complex Terminal work. If a Terminal awaits user input, tell the user what prompt is waiting and stop; do not claim success until follow-up output confirms it.",
       ...terminals.map((terminal) => {
-        const tail = [terminal.output.stdout, terminal.output.stderr].filter(Boolean).join("\n").slice(-2_000)
+        const tail = [terminal.output.stdout, terminal.output.stderr].filter(Boolean).join("\n").slice(-900)
         return [
-          `- name: ${terminal.name}`,
+          `- name: ${clipText(terminal.name, 96)}`,
           `  status: ${terminal.status}${terminal.awaitingInput ? " awaiting user input" : ""}`,
-          `  command: ${terminal.command}`,
-          `  cwd: ${terminal.cwd}`,
-          `  shell: ${[terminal.platform, terminal.shellKind, terminal.shellExecutable].filter(Boolean).join(" / ") || "unknown"}`,
+          `  command: ${clipText(terminal.command, 320)}`,
+          `  cwd: ${clipText(terminal.cwd, 240)}`,
+          `  shell: ${clipText([terminal.platform, terminal.shellKind, terminal.shellExecutable].filter(Boolean).join(" / ") || "unknown", 160)}`,
           `  started: ${terminal.startedAt}; updated: ${terminal.updatedAt}`,
           terminal.exitCode !== undefined || terminal.signal ? `  exit: ${terminal.exitCode ?? "none"}${terminal.signal ? ` signal ${terminal.signal}` : ""}` : undefined,
-          terminal.lastPrompt ? `  prompt: ${terminal.lastPrompt}` : undefined,
+          terminal.lastPrompt ? `  prompt: ${clipText(terminal.lastPrompt, 300)}` : undefined,
           tail ? `  recent output:\n${indent(tail, "    ")}` : undefined,
         ]
           .filter(Boolean)
           .join("\n")
       }),
     ].join("\n")
+    return clipText(context, 10_000)
   }
 
   markRunningDetached(): ConversationTerminal[] {
@@ -363,3 +368,5 @@ const indent = (text: string, prefix: string): string =>
     .split("\n")
     .map((line) => `${prefix}${line}`)
     .join("\n")
+
+const clipText = (value: string, limit: number): string => (value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 1))}…`)

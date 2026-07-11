@@ -199,6 +199,24 @@ export const turnStartedPayloadSchema = z
   })
   .strict()
 
+export const turnWaitingPayloadSchema = z
+  .object({
+    turnId: idSchema,
+    terminalNames: z.array(z.string().min(1).max(96)).min(1).max(8),
+    wakeOn: z.array(z.enum(["completed", "failed", "input_required"])).min(1).max(3),
+    reason: z.string().min(1).max(64),
+  })
+  .strict()
+
+export const turnResumedPayloadSchema = z
+  .object({
+    turnId: idSchema,
+    resumedFromTurnId: idSchema,
+    terminalName: z.string().min(1).max(96),
+    wakeEvent: z.enum(["completed", "failed", "input_required"]),
+  })
+  .strict()
+
 export const conversationUpdatedPayloadSchema = z
   .object({
     conversation: conversationSchema,
@@ -610,6 +628,8 @@ export const terminalInputRequestedPayloadSchema = terminalEventPayloadBaseSchem
 
 export const connectionReadyEventSchema = socketEnvelopeSchema("connection.ready", connectionReadyPayloadSchema)
 export const turnStartedEventSchema = socketEnvelopeSchema("turn.started", turnStartedPayloadSchema)
+export const turnWaitingEventSchema = socketEnvelopeSchema("turn.waiting", turnWaitingPayloadSchema)
+export const turnResumedEventSchema = socketEnvelopeSchema("turn.resumed", turnResumedPayloadSchema)
 export const conversationUpdatedEventSchema = socketEnvelopeSchema("conversation.updated", conversationUpdatedPayloadSchema)
 export const agentThinkingDeltaEventSchema = socketEnvelopeSchema("agent.thinking.delta", agentThinkingDeltaPayloadSchema)
 export const agentAnswerDeltaEventSchema = socketEnvelopeSchema("agent.answer.delta", agentAnswerDeltaPayloadSchema)
@@ -676,6 +696,8 @@ export const terminalStaleEventSchema = socketEnvelopeSchema("terminal.stale", t
 export const serverEventSchema = z.discriminatedUnion("type", [
   connectionReadyEventSchema,
   turnStartedEventSchema,
+  turnWaitingEventSchema,
+  turnResumedEventSchema,
   conversationUpdatedEventSchema,
   agentThinkingDeltaEventSchema,
   agentAnswerDeltaEventSchema,

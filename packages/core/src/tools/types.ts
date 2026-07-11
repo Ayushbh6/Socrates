@@ -51,6 +51,8 @@ import type {
   TraceRetrieveToolOutput,
   UrlFetchToolInput,
   UrlFetchToolOutput,
+  WaitToolInput,
+  WaitToolOutput,
   UserProfileToolInput,
   UserProfileToolOutput,
 } from "@socrates/contracts"
@@ -81,6 +83,7 @@ export type ToolExecutors = {
   edit: (input: EditToolInput, context: ToolExecutorContext) => Promise<EditToolOutput>
   apply_patch: (input: ApplyPatchToolInput, context: ToolExecutorContext) => Promise<ApplyPatchToolOutput>
   bash: (input: BashToolInput, context: ToolExecutorContext) => Promise<BashToolOutput>
+  wait?: (input: WaitToolInput, context: ToolExecutorContext) => Promise<WaitToolOutput>
   current_time: (input: CurrentTimeToolInput, context: ToolExecutorContext) => Promise<CurrentTimeToolOutput>
   trace_retrieve: (
     input: TraceRetrieveMainToolInput | TraceRetrieveGlobalToolInput | TraceRetrieveToolInput,

@@ -5,9 +5,10 @@ import {
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
   type SocratesAgent,
+  type SocratesAgentEvent,
   type ToolExecutors,
 } from "@socrates/core"
-import type { ClientCommand, ProjectResource, TraceRetrieveMainToolInput } from "@socrates/contracts"
+import type { ClientCommand, ProjectResource, RuntimeConfig, TraceRetrieveMainToolInput } from "@socrates/contracts"
 import type { McpRuntime } from "@socrates/mcp"
 import type { ModelProvider, ModelUsage } from "@socrates/providers"
 import { normalizeError, nowIso, SocratesError } from "@socrates/shared"
@@ -45,10 +46,14 @@ const docsMutationOperations = new Set(["edit", "patch_section"])
 const withLateDeveloperContext = (
   history: ReturnType<SocratesStore["getConversationModelMessages"]>,
   terminalContext: string | undefined,
+  wakeContext?: string,
 ): ReturnType<SocratesStore["getConversationModelMessages"]> => {
   const sections = terminalContext?.trim()
     ? [`<terminal_context>\n${terminalContext.trim()}\n</terminal_context>`]
     : []
+  if (wakeContext?.trim()) {
+    sections.push(`<terminal_wake_context>\n${wakeContext.trim()}\n</terminal_wake_context>`)
+  }
   if (sections.length === 0) {
     return history
   }
@@ -66,42 +71,69 @@ const withLateDeveloperContext = (
   return [...history.slice(0, insertIndex), message, ...history.slice(insertIndex)]
 }
 
+type TerminalTaskContinuation = {
+  projectId: string
+  conversationId: string
+  sessionId: string
+  turnId: string
+  runtimeConfigId: string
+  runtimeConfig: RuntimeConfig
+  wakeContext: string
+}
+
 export const handleChatMessageSend = async (
-  socket: WebSocket,
+  socket: WebSocket | undefined,
   store: SocratesStore,
   agent: SocratesAgent,
   activeTurns: ActiveTurns,
   terminals: ConversationTerminalManager,
   subscriptions: ConversationSubscriptions,
-  command: Extract<ClientCommand, { type: "chat.message.send" }>,
+  command: Extract<ClientCommand, { type: "chat.message.send" }> | undefined,
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
+  continuation?: TerminalTaskContinuation,
 ): Promise<void> => {
-  const { projectId, conversationId } = requireCommandScope(command)
+  if (!command && !continuation) {
+    throw new SocratesError("missing_chat_command", "A chat message or continuation is required.")
+  }
+  const { projectId, conversationId } = continuation ?? requireCommandScope(command as Extract<ClientCommand, { type: "chat.message.send" }>)
   await store.refreshAvailableModels()
-  const runtimeConfig = store.resolveRuntimeConfig(command.payload.runtimeConfig)
-  const payload = { ...command.payload, runtimeConfig }
-  subscriptions.subscribe(socket, conversationId)
+  const runtimeConfig = continuation?.runtimeConfig ?? store.resolveRuntimeConfig((command as Extract<ClientCommand, { type: "chat.message.send" }>).payload.runtimeConfig)
+  const payload = command ? { ...command.payload, runtimeConfig } : undefined
+  if (socket) {
+    subscriptions.subscribe(socket, conversationId)
+  }
   const emitEvent: EventSink = (event) => subscriptions.emit(event, socket)
-  const created = store.createTurnFromUserMessage(projectId, conversationId, payload)
+  const created = continuation
+    ? {
+        sessionId: continuation.sessionId,
+        turnId: continuation.turnId,
+        runtimeConfigId: continuation.runtimeConfigId,
+        userMessage: undefined,
+        shouldGenerateTitle: false,
+        fallbackTitle: "",
+      }
+    : store.createTurnFromUserMessage(projectId, conversationId, payload as NonNullable<typeof payload>)
   const abortController = activeTurns.create(created.turnId)
 
-  emitEvent(
-    makeEvent(
-      "turn.started",
-      {
-        turnId: created.turnId,
-        userMessage: created.userMessage,
-      },
-      {
-        projectId,
-        conversationId,
-        sessionId: created.sessionId,
-        turnId: created.turnId,
-        actor: { type: "main_agent" },
-      },
-    ),
-  )
+  if (!continuation && created.userMessage) {
+    emitEvent(
+      makeEvent(
+        "turn.started",
+        {
+          turnId: created.turnId,
+          userMessage: created.userMessage,
+        },
+        {
+          projectId,
+          conversationId,
+          sessionId: created.sessionId,
+          turnId: created.turnId,
+          actor: { type: "main_agent" },
+        },
+      ),
+    )
+  }
 
   if (created.shouldGenerateTitle) {
     const placeholderConversation = store.getConversation(projectId, conversationId).conversation
@@ -123,7 +155,7 @@ export const handleChatMessageSend = async (
     )
   }
 
-  if (created.shouldGenerateTitle && titleProvider) {
+  if (created.shouldGenerateTitle && titleProvider && created.userMessage) {
     const titleUsageSourceId = `title_${created.turnId}`
     const titleStartedAt = nowIso()
     void generateConversationTitle({
@@ -187,7 +219,7 @@ export const handleChatMessageSend = async (
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
   store.ensureProjectMemory(projectId)
   const terminalContext = store.terminalContextBrief(conversationId)
-  const modelHistory = withLateDeveloperContext(history, terminalContext)
+  const modelHistory = withLateDeveloperContext(history, terminalContext, continuation?.wakeContext)
   const promptContext = {
     ...store.getAgentContext(projectId),
   }
@@ -201,6 +233,8 @@ export const handleChatMessageSend = async (
   let latestUsage: ModelUsage | undefined
   let lastAnswerModelCallId: string | undefined
   let sawToolActivity = false
+  let suspended = false
+  let suspendedWait: Extract<SocratesAgentEvent, { type: "agent.suspended" }>["wait"] | undefined
   const exposedMcpServers = new Set<string>()
 
   try {
@@ -321,6 +355,11 @@ export const handleChatMessageSend = async (
       },
       abortSignal: abortController.signal,
     })) {
+      if (agentEvent.type === "agent.suspended") {
+        suspended = true
+        suspendedWait = agentEvent.wait
+        break
+      }
       if (
         agentEvent.type === "context.compaction.started" ||
         agentEvent.type === "context.compaction.completed" ||
@@ -653,6 +692,43 @@ export const handleChatMessageSend = async (
       return
     }
 
+    if (suspended) {
+      for (const modelCallId of modelCallIds) {
+        store.completeModelCall({
+          modelCallId,
+          response: { finish: "waiting" },
+          ...(responseMetadataByModelCallId.has(modelCallId)
+            ? { providerResponse: responseMetadataByModelCallId.get(modelCallId) }
+            : {}),
+          ...(latestUsageByModelCallId.get(modelCallId) ? { usage: toStoredUsage(latestUsageByModelCallId.get(modelCallId) as ModelUsage) } : {}),
+        })
+      }
+      if (suspendedWait) {
+        appendAndEmit(
+          emitEvent,
+          store,
+          makeEvent(
+            "turn.waiting",
+            {
+              turnId: created.turnId,
+              terminalNames: suspendedWait.terminalNames,
+              wakeOn: suspendedWait.wakeOn,
+              reason: suspendedWait.reason,
+            },
+            {
+              projectId,
+              conversationId,
+              sessionId: created.sessionId,
+              turnId: created.turnId,
+              actor: { type: "main_agent" },
+            },
+          ),
+          "core",
+        )
+      }
+      return
+    }
+
     if (!answerText.trim() && !sawToolActivity) {
       throw new SocratesError("model_empty_response", "Model provider completed without returning any assistant text.", {
         details: {
@@ -718,6 +794,7 @@ export const handleChatMessageSend = async (
     appendAndEmit(emitEvent, store, turnCompleted, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
     store.recordProjectStateLedgerTurn(projectId, conversationId, created.turnId, "completed", answerText)
+    store.completeTerminalTaskForTurn(created.turnId, "completed")
 
     const postTurnHistory = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
     await agent.precomputeContext({
@@ -761,9 +838,66 @@ export const handleChatMessageSend = async (
     appendAndEmit(emitEvent, store, failed, "core")
     store.indexTurnTraceDocuments(projectId, conversationId, created.turnId)
     store.recordProjectStateLedgerTurn(projectId, conversationId, created.turnId, "failed", answerText)
+    store.completeTerminalTaskForTurn(created.turnId, "failed")
   } finally {
     activeTurns.delete(created.turnId)
   }
+}
+
+export const resumeTerminalTask = async (
+  store: SocratesStore,
+  agent: SocratesAgent,
+  activeTurns: ActiveTurns,
+  terminals: ConversationTerminalManager,
+  subscriptions: ConversationSubscriptions,
+  task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number],
+  mcpRuntime?: McpRuntime,
+  titleProvider?: ModelProvider,
+): Promise<void> => {
+  const continued = store.beginTerminalTaskContinuation(task)
+  if (!continued) {
+    return
+  }
+  appendAndEmit(
+    (event) => subscriptions.emit(event),
+    store,
+    makeEvent(
+      "turn.resumed",
+      {
+        turnId: continued.turnId,
+        resumedFromTurnId: continued.currentTurnId,
+        terminalName: continued.terminalName,
+        wakeEvent: continued.wakeEvent,
+      },
+      {
+        projectId: continued.projectId,
+        conversationId: continued.conversationId,
+        sessionId: continued.sessionId,
+        turnId: continued.turnId,
+        actor: { type: "main_agent" },
+      },
+    ),
+    "core",
+  )
+  const fromSequence = store.getModelVisibleTerminalOutputSequence(continued.terminalId)
+  const output = store.terminalOutputSnapshot(continued.terminalId, fromSequence, 8_000)
+  store.setModelVisibleTerminalOutputSequence(continued.terminalId, output.modelVisibleNextSequence)
+  const wakeContext = [
+    `You were waiting for Terminal \"${continued.terminalName}\".`,
+    `Wake reason: ${continued.wakeEvent}.`,
+    `Terminal status: ${continued.terminalStatus}${continued.exitCode === null ? "" : `; exit code ${continued.exitCode}`}.`,
+    `Wait reason: ${continued.reason}.`,
+    output.stdout || output.stderr ? `New terminal output:\n${[output.stdout, output.stderr].filter(Boolean).join("\n")}` : "No new terminal output was captured.",
+  ].join("\n")
+  await handleChatMessageSend(undefined, store, agent, activeTurns, terminals, subscriptions, undefined, mcpRuntime, titleProvider, {
+    projectId: continued.projectId,
+    conversationId: continued.conversationId,
+    sessionId: continued.sessionId,
+    turnId: continued.turnId,
+    runtimeConfigId: continued.runtimeConfigId,
+    runtimeConfig: continued.runtimeConfig,
+    wakeContext,
+  })
 }
 
 const createToolExecutors = (
@@ -862,6 +996,23 @@ const createToolExecutors = (
       store.failShellCommand(toolCallId)
       throw error
     }
+  },
+  wait: (input, context) => {
+    const registered = store.registerTerminalWait({
+      projectId,
+      conversationId: context.conversationId,
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      runtimeConfig: context.runtimeConfig,
+      wait: input,
+    })
+    return Promise.resolve({
+      status: registered.status,
+      terminalNames: input.terminalNames,
+      wakeOn: input.wakeOn,
+      reason: input.reason,
+      message: registered.message,
+    })
   },
   current_time: () => Promise.resolve(currentRuntimeTime()),
   trace_retrieve: (input, context) => store.retrieveMainToolTraces(projectId, context.conversationId, input as TraceRetrieveMainToolInput).then((result) => result as never),

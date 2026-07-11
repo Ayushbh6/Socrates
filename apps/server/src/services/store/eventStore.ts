@@ -43,7 +43,7 @@ export class EventStore {
          FROM events e
          INNER JOIN turns t ON t.id = e.turn_id
          WHERE t.conversation_id = ?
-           AND t.status IN ('queued', 'running', 'awaiting_approval')
+           AND t.status IN ('queued', 'running', 'awaiting_approval', 'waiting')
            AND e.project_id = ?
            AND e.conversation_id = ?
          ORDER BY e.sequence`,

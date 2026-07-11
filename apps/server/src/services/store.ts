@@ -111,6 +111,7 @@ import path from "node:path"
 import type { DatabaseHandle } from "../db/client"
 import { ApprovalStore } from "./store/approvalStore"
 import { AttachmentStore } from "./store/attachmentStore"
+import { AgentTaskStore, type ContinuedTerminalTask, type ReadyTerminalTask } from "./store/agentTaskStore"
 import { ContextCompactionStore } from "./store/contextCompactionStore"
 import { ConversationStore } from "./store/conversationStore"
 import { ErrorStore, type RecordErrorInput } from "./store/errorStore"
@@ -174,6 +175,7 @@ export class SocratesStore {
   private readonly feedback: FeedbackStore
   private readonly tools: ToolStore
   private readonly terminals: TerminalStore
+  private readonly agentTasks: AgentTaskStore
   private readonly traces: TraceStore
   private readonly memory: MemoryStore
   private readonly memoryAgentSettings: MemoryAgentGlobalSettingsStore
@@ -212,6 +214,7 @@ export class SocratesStore {
     this.feedback = new FeedbackStore(context)
     this.tools = new ToolStore(context)
     this.terminals = new TerminalStore(context)
+    this.agentTasks = new AgentTaskStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     const socratesHome = options.socratesHome ?? path.join(os.homedir(), ".Socrates")
     this.retrieval = new RetrievalStore(context, this.embeddings, socratesHome)
@@ -709,6 +712,30 @@ export class SocratesStore {
 
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
     return this.turns.createTurnFromUserMessage(projectId, conversationId, payload)
+  }
+
+  registerTerminalWait(input: Parameters<AgentTaskStore["registerTerminalWait"]>[0]) {
+    return this.agentTasks.registerTerminalWait(input)
+  }
+
+  claimTerminalTaskWake(terminalId: string, wakeEvent: "completed" | "failed" | "input_required"): ReadyTerminalTask[] {
+    return this.agentTasks.claimWakeForTerminal(terminalId, wakeEvent)
+  }
+
+  beginTerminalTaskContinuation(task: ReadyTerminalTask): ContinuedTerminalTask | undefined {
+    return this.agentTasks.beginContinuation(task)
+  }
+
+  listReadyTerminalTasks(): ReadyTerminalTask[] {
+    return this.agentTasks.listReadyTasks()
+  }
+
+  completeTerminalTaskForTurn(turnId: string, status: "completed" | "failed" | "cancelled"): void {
+    this.agentTasks.completeTaskForTurn(turnId, status)
+  }
+
+  hasWaitingTerminalTask(terminalId: string): boolean {
+    return this.agentTasks.hasWaitingTerminalTask(terminalId)
   }
 
   getConversationModelMessages(

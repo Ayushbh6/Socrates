@@ -9,6 +9,7 @@ import { ActiveTurns } from "./activeTurns"
 import type { ConversationTerminalManager } from "./conversationTerminals"
 import { ConversationSubscriptions } from "./conversationSubscriptions"
 import { handleInboundMessage } from "./commandDispatcher"
+import { resumeTerminalTask } from "./commandHandlers/chatMessageSend"
 import { makeEvent, sendEvent } from "./eventSender"
 
 export const registerWebSocketRoutes = async (
@@ -23,6 +24,14 @@ export const registerWebSocketRoutes = async (
   await app.register(websocket)
 
   const activeTurns = new ActiveTurns()
+  terminals.setTaskWakeHandler((task) => {
+    void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider).catch(() => {
+      // The durable task remains available for a later reconciliation if a continuation cannot start.
+    })
+  })
+  for (const task of store.listReadyTerminalTasks()) {
+    void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider).catch(() => undefined)
+  }
   app.addHook("onClose", async () => {
     activeTurns.abortAll()
   })

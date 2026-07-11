@@ -7,7 +7,7 @@ import { artifacts, conversations, messages, projectResources, projectWorkspaces
 import { mapProjectResource, mapProjectWorkspace, mapUser } from "../../db/mappers"
 import type { StoreEventInput } from "./types"
 
-export const activeTurnStatuses = ["queued", "running", "awaiting_approval"]
+export const activeTurnStatuses = ["queued", "running", "awaiting_approval", "waiting"]
 export const defaultConversationTitle = "New conversation"
 
 export const deriveConversationTitle = (content: string): string => {

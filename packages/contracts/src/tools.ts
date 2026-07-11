@@ -9,6 +9,7 @@ export const baseToolNameSchema = z.enum([
   "edit",
   "apply_patch",
   "bash",
+  "wait",
   "current_time",
   "trace_retrieve",
   "tool_docs",
@@ -409,7 +410,7 @@ export type BashTerminalMetadata = z.infer<typeof bashTerminalMetadataSchema>
 
 export const bashToolInputSchema = z
   .object({
-    operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+    operation: z.enum(["run", "start", "status", "output", "stop", "list"]).optional(),
     command: z.string().min(1).optional().describe(terminalCommandDescription),
     argv: z.array(z.string().min(1)).min(1).max(32).optional().describe(terminalArgvDescription),
     processId: z.string().min(1).optional(),
@@ -419,7 +420,8 @@ export const bashToolInputSchema = z
     outputSequence: z.number().int().nonnegative().optional(),
     cwd: z.string().min(1).optional().describe(terminalCwdDescription),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
-    charLimit: z.number().int().positive().max(80_000).optional(),
+    charLimit: z.number().int().positive().max(16_000).optional(),
+    limit: z.number().int().positive().max(12).optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -442,14 +444,15 @@ export type BashToolInput = z.infer<typeof bashToolInputSchema>
 
 export const bashToolModelInputSchema = z
   .object({
-    operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+    operation: z.enum(["run", "start", "status", "output", "stop", "list"]).optional(),
     command: z.string().min(1).optional().describe(terminalCommandDescription),
     argv: z.array(z.string().min(1)).min(1).max(32).optional().describe(terminalArgvDescription),
     name: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
     cwd: z.string().min(1).optional().describe(terminalCwdDescription),
     timeoutMs: z.number().int().positive().max(600_000).optional(),
-    charLimit: z.number().int().positive().max(80_000).optional(),
+    charLimit: z.number().int().positive().max(16_000).optional(),
+    limit: z.number().int().positive().max(12).optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -471,7 +474,7 @@ export const bashToolModelInputSchema = z
 
 export const bashToolOutputSchema = z
   .object({
-    operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
+    operation: z.enum(["run", "start", "status", "output", "stop", "list"]).optional(),
     command: z.string().min(1).optional(),
     cwd: z.string().min(1),
     exitCode: z.number().int().nullable(),
@@ -504,9 +507,66 @@ export const bashToolOutputSchema = z
       .strict()
       .optional(),
     terminal: bashTerminalMetadataSchema.optional(),
+    terminals: z
+      .array(
+        z
+          .object({
+            name: z.string().min(1).max(96),
+            command: z.string().min(1).max(320),
+            cwd: z.string().min(1).max(320),
+            status: terminalStatusSchema,
+            awaitingInput: z.boolean(),
+            autoDetached: z.boolean(),
+            startedAt: z.string().optional(),
+            updatedAt: z.string().optional(),
+            completedAt: z.string().optional(),
+            exitCode: z.number().int().nullable().optional(),
+            signal: z.string().max(80).optional(),
+            hasNewOutput: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(12)
+      .optional(),
+    totalMatches: z.number().int().nonnegative().optional(),
   })
   .strict()
 export type BashToolOutput = z.infer<typeof bashToolOutputSchema>
+
+export const terminalWaitWakeOnSchema = z.enum(["completed", "failed", "input_required"])
+export type TerminalWaitWakeOn = z.infer<typeof terminalWaitWakeOnSchema>
+
+export const waitToolInputSchema = z
+  .object({
+    terminalNames: z.array(z.string().trim().min(1).max(96)).min(1).max(8),
+    wakeOn: z.array(terminalWaitWakeOnSchema).min(1).max(3),
+    reason: z.string().trim().min(1).max(64),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (new Set(input.terminalNames).size !== input.terminalNames.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["terminalNames"], message: "Terminal names must be unique." })
+    }
+    if (new Set(input.wakeOn).size !== input.wakeOn.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["wakeOn"], message: "Wake conditions must be unique." })
+    }
+    const words = input.reason.split(/\s+/).filter(Boolean)
+    if (words.length > 7) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["reason"], message: "reason must contain at most 7 words." })
+    }
+  })
+export type WaitToolInput = z.infer<typeof waitToolInputSchema>
+
+export const waitToolOutputSchema = z
+  .object({
+    status: z.enum(["waiting", "already_ready"]),
+    terminalNames: z.array(z.string().min(1).max(96)).min(1).max(8),
+    wakeOn: z.array(terminalWaitWakeOnSchema).min(1).max(3),
+    reason: z.string().min(1).max(64),
+    message: z.string().min(1).max(240),
+  })
+  .strict()
+export type WaitToolOutput = z.infer<typeof waitToolOutputSchema>
 
 export const traceRetrieveScopeSchema = z.enum(["current_conversation", "recent_conversations", "current_project", "project", "all_projects"])
 export type TraceRetrieveScope = z.infer<typeof traceRetrieveScopeSchema>
