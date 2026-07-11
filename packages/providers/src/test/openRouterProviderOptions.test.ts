@@ -70,6 +70,11 @@ describe("OpenRouter provider options", () => {
       allow_fallbacks: false,
       require_parameters: true,
     })
+    expect(openRouterProviderRoutingForModel("x-ai/grok-4.5")).toEqual({
+      order: ["xai"],
+      allow_fallbacks: false,
+      require_parameters: true,
+    })
     expect(openRouterProviderRoutingForModel("stepfun/step-3.7-flash")).toEqual({
       order: ["stepfun"],
       allow_fallbacks: false,

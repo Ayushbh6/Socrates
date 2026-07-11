@@ -759,7 +759,7 @@ const normalizeOpenAiReasoningEffort = (modelId: string, effort: string): string
     if (effort === "none") {
       return "minimal"
     }
-    if (effort === "xhigh") {
+    if (effort === "xhigh" && !normalizedModelId.startsWith("gpt-5.6")) {
       return "high"
     }
   }

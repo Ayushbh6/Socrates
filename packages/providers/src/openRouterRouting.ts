@@ -124,6 +124,7 @@ export const openRouterProviderRoutingByModelId: Record<string, OpenRouterProvid
   "xiaomi/mimo-v2.5-pro": priceFirstCacheRouting(),
   "xiaomi/mimo-v2.5": strictRouting(["xiaomi"]),
   "x-ai/grok-build-0.1": strictRouting(["xai"]),
+  "x-ai/grok-4.5": strictRouting(["xai"]),
   "stepfun/step-3.7-flash": strictRouting(["stepfun"]),
   "deepseek/deepseek-v4-pro": deepseekV4ProToolRouting,
   "deepseek/deepseek-v4-flash": deepseekV4FlashToolRouting,

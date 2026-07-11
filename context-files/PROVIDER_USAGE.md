@@ -298,6 +298,7 @@ Single-provider or deliberately pinned routes still use OpenRouter provider slug
 ```text
 xiaomi/mimo-v2.5 -> xiaomi
 x-ai/grok-build-0.1 -> xai
+x-ai/grok-4.5 -> xai
 stepfun/step-3.7-flash -> stepfun
 meta-llama/llama-4-maverick title generation -> price-first OpenRouter route
 qwen/qwen3.5-flash-02-23 title fallback -> price-first OpenRouter route
@@ -446,9 +447,8 @@ OpenAI
   gpt-5
 
 ChatGPT Codex subscription
-  gpt-5.6-luna              declared; account availability/capabilities unverified
+  gpt-5.6-terra             verified through the connected Socrates OAuth path
   gpt-5.5
-  gpt-5.4
   gpt-5.4-mini
   gpt-5.3-codex-spark       no vision
 
@@ -465,6 +465,7 @@ OpenRouter
   xiaomi/mimo-v2.5-pro
   xiaomi/mimo-v2.5
   x-ai/grok-build-0.1
+  x-ai/grok-4.5
   stepfun/step-3.7-flash
   deepseek/deepseek-v4-pro   default
   deepseek/deepseek-v4-flash    no vision
@@ -489,9 +490,8 @@ OpenAI API:
   none means non-thinking mode
 
 ChatGPT Codex subscription:
-  gpt-5.6-luna -> low, medium, high, xhigh; medium default
+  gpt-5.6-terra -> low, medium, high, xhigh; medium default
   gpt-5.5 -> low, medium, high, xhigh
-  gpt-5.4 -> none, low, medium, high, xhigh
   gpt-5.4-mini -> none, low, medium, high, xhigh
   gpt-5.3-codex-spark -> low, medium, high, xhigh
   none means non-thinking mode when the selected subscription model exposes it
@@ -525,7 +525,9 @@ DeepSeek API off -> thinking { type: "disabled" }
 
 OpenAI API prompt caching is automatic for supported models when the stable prefix is large enough. Socrates sends `providerOptions.openai.promptCacheKey` from the same project/conversation cache key to improve cache-affinity routing, but does not create explicit OpenAI cache resources. ChatGPT Codex subscription usage is not OpenAI Platform billing; normal token pricing/cost calculations should not pretend to know subscription quota consumption.
 
-`gpt-5.6-luna` is declared in the ChatGPT Codex subscription catalog with a 372k context window and Medium default reasoning, but it remains credential/account gated. The connected Socrates OAuth account used for the 2026-07-11 memory-front evaluation returned `Model not found gpt-5.6-luna`; keep the row for accounts that expose it, but do not claim live availability until `/api/models` plus a real request succeeds for that account.
+`gpt-5.6-terra` replaces `gpt-5.4` in the ChatGPT Codex subscription catalog. It has a 1.05M-token context window and Medium default reasoning, and a real request through the connected Socrates OAuth path completed successfully. `gpt-5.6-luna` is intentionally not listed: the same Socrates OAuth path returned `Model not found`, even though the same ChatGPT account can use Luna in the official Codex CLI.
+
+OpenRouter `x-ai/grok-4.5` is vision-capable and exposes Socrates' standard Off/On thinking selector. It uses the current xAI route, a 500k-token context window, and OpenRouter's published $2/M input, $0.50/M cached-input, and $6/M output fallback pricing.
 
 Google/Gemini implicit caching is automatic for supported models when prompts meet model thresholds. Socrates does not create explicit Gemini cached-content resources by default; explicit Gemini caches are a separate workflow and should be added only if there is a clear product need.
 

@@ -65,6 +65,31 @@ describe("provider usage normalization", () => {
     })
   })
 
+  it("computes Grok 4.5 fallback cost from the xAI OpenRouter endpoint pricing", () => {
+    const usage = normalizeProviderUsage({
+      providerId: "openrouter",
+      modelId: "x-ai/grok-4.5",
+      usage: {
+        inputTokens: 10_000,
+        outputTokens: 500,
+        cachedInputTokens: 4_000,
+        providerMetadata: {
+          openrouter: {
+            provider: "xAI",
+          },
+        },
+      },
+    })
+
+    expect(usage.costSource).toBe("computed")
+    expect(usage.costUsd).toBeCloseTo((6_000 * 2 + 4_000 * 0.5 + 500 * 6) / 1_000_000)
+    expect(usage.pricingSnapshot).toMatchObject({
+      providerId: "openrouter",
+      modelId: "x-ai/grok-4.5",
+      routedProvider: "xAI",
+    })
+  })
+
   it("computes OpenAI cost from the local pricing snapshot when provider cost is absent", () => {
     const usage = normalizeProviderUsage({
       providerId: "openai",

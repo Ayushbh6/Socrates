@@ -82,6 +82,7 @@ describe("AI SDK provider request shape", () => {
 
   it.each([
     ["openrouter", "x-ai/grok-build-0.1"],
+    ["openrouter", "x-ai/grok-4.5"],
     ["openai", "gpt-5.4-mini"],
     ["google", "gemini-3-flash-preview"],
   ] satisfies Array<[ProviderId, string]>)("passes native image parts and tools together for %s", async (providerId, modelId) => {
@@ -302,6 +303,7 @@ describe("AI SDK provider request shape", () => {
   it.each([
     ["gpt-5", "none", "minimal"],
     ["gpt-5", "xhigh", "high"],
+    ["gpt-5.6-terra", "xhigh", "xhigh"],
     ["gpt-5.4", "minimal", "low"],
     ["gpt-5.4-mini", "none", "none"],
     ["gpt-5.4-mini", "xhigh", "xhigh"],

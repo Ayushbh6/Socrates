@@ -179,6 +179,9 @@ const openRouterPricingCatalog: Record<string, OpenRouterEndpointPricing[]> = {
   "x-ai/grok-build-0.1": [
     { provider: "xAI", promptUsdPerToken: 0.000001, completionUsdPerToken: 0.000002, inputCacheReadUsdPerToken: 0.0000002 },
   ],
+  "x-ai/grok-4.5": [
+    { provider: "xAI", promptUsdPerToken: 0.000002, completionUsdPerToken: 0.000006, inputCacheReadUsdPerToken: 0.0000005 },
+  ],
   "stepfun/step-3.7-flash": [
     { provider: "StepFun", promptUsdPerToken: 0.0000002, completionUsdPerToken: 0.00000115, inputCacheReadUsdPerToken: 0.00000004 },
   ],
