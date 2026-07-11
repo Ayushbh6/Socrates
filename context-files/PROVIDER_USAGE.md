@@ -446,6 +446,7 @@ OpenAI
   gpt-5
 
 ChatGPT Codex subscription
+  gpt-5.6-luna              declared; account availability/capabilities unverified
   gpt-5.5
   gpt-5.4
   gpt-5.4-mini
@@ -488,6 +489,7 @@ OpenAI API:
   none means non-thinking mode
 
 ChatGPT Codex subscription:
+  gpt-5.6-luna -> low, medium, high, xhigh; medium default
   gpt-5.5 -> low, medium, high, xhigh
   gpt-5.4 -> none, low, medium, high, xhigh
   gpt-5.4-mini -> none, low, medium, high, xhigh
@@ -522,6 +524,8 @@ DeepSeek API off -> thinking { type: "disabled" }
 ```
 
 OpenAI API prompt caching is automatic for supported models when the stable prefix is large enough. Socrates sends `providerOptions.openai.promptCacheKey` from the same project/conversation cache key to improve cache-affinity routing, but does not create explicit OpenAI cache resources. ChatGPT Codex subscription usage is not OpenAI Platform billing; normal token pricing/cost calculations should not pretend to know subscription quota consumption.
+
+`gpt-5.6-luna` is declared in the ChatGPT Codex subscription catalog with a 372k context window and Medium default reasoning, but it remains credential/account gated. The connected Socrates OAuth account used for the 2026-07-11 memory-front evaluation returned `Model not found gpt-5.6-luna`; keep the row for accounts that expose it, but do not claim live availability until `/api/models` plus a real request succeeds for that account.
 
 Google/Gemini implicit caching is automatic for supported models when prompts meet model thresholds. Socrates does not create explicit Gemini cached-content resources by default; explicit Gemini caches are a separate workflow and should be added only if there is a clear product need.
 

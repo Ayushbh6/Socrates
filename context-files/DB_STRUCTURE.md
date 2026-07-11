@@ -254,7 +254,7 @@ Direct files manually copied into `<primary_workspace>/.socrates/resources/` are
 
 The `uri` column should point to the stored resource path or linked source, depending on `source`.
 
-Chat composer image attachments are separate from project resources. They live under `<primary_workspace>/.socrates/attachments/` and are tracked by `message_attachments`, not `project_resources`, so screenshots sent in chat do not appear in the dashboard Resources panel.
+Chat composer image and pasted-text source attachments are separate from project resources. They live under `<primary_workspace>/.socrates/attachments/` and are tracked by `message_attachments`, not `project_resources`, so chat sources do not appear in the dashboard Resources panel. `kind` is `image` or `text`; artifacts preserve conversation/message/turn provenance, MIME type, size, and content hash. One message accepts at most 15 attachments, each image/text source is capped at 5 MB, and the combined payload is capped at 20 MB. Text bodies are not injected into provider context; the model receives a compact manifest until `read`/`search` opens the source.
 
 When the primary workspace changes, active uploaded resources whose `uri` points inside the old primary workspace `.socrates/resources/` directory should be copied into the new primary workspace `.socrates/resources/`, with `project_resources.uri` and the artifact path updated to the copied file. Linked or external resource paths are not copied or rewritten.
 

@@ -474,6 +474,8 @@ Retrieval indexing is server/store work. The implementation converts each visibl
 
 Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, `CompressorAgent`, compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `apps/server/src/services/store/modelSettingsResolver.ts` resolves saved worker and memory-agent settings against the credential-filtered model list before runtime use. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression, auth-mode request behavior, or tokenizer behavior must not leak into `apps/web` or route handlers.
 
+`packages/contracts/src/socratesSurfaces.ts` is the single code-owned `.socrates` surface registry. `packages/workspace` derives protected paths and storage roots from it, and `packages/core` renders its bounded model-facing surface map. `packages/contracts/src/attachments.ts` owns inline/count/per-file/combined attachment limits. `apps/web/src/components/chat/ChatComposer.tsx` converts pasted text over 10,000 characters into `pasted-text-<id>.txt`; `apps/server/src/services/store/attachmentStore.ts` validates and persists image/text source attachments with provenance, while `conversationStore.ts` sends compact manifests and includes image bytes only for vision-capable models. These responsibilities must not be duplicated as frontend-only constants or handwritten prompt path maps.
+
 ### Specialized Agent Ownership
 
 Socrates, the Global Memory Agent, and the Skill Writer Agent should share one production-grade agent pattern:
@@ -554,6 +556,9 @@ It owns schemas and types that cross package boundaries:
 - Project schemas.
 - Project resource schemas.
 - Project instruction schemas.
+- Chat attachment kinds and shared inline/count/byte limits.
+- The code-owned Socrates surface registry and generated-map metadata.
+- Chat/memory compaction schemas and hard summary bounds.
 - Tool call schemas.
 - Tool result schemas.
 - Approval request/decision schemas.
