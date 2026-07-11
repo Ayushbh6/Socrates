@@ -3,7 +3,7 @@ import type { SocratesAgent } from "@socrates/core"
 import type { McpRuntime } from "@socrates/mcp"
 import type { ModelProvider } from "@socrates/providers"
 import { clientCommandSchema } from "@socrates/contracts"
-import { normalizeError } from "@socrates/shared"
+import { normalizeError, SocratesError } from "@socrates/shared"
 import { apiError } from "../http"
 import type { SocratesStore } from "../services/store"
 import type { ActiveTurns } from "./activeTurns"
@@ -52,15 +52,10 @@ export const handleInboundMessage = async (
   try {
     switch (command.type) {
       case "chat.conversation.subscribe":
-        if (!command.projectId || !command.conversationId) {
-          emitError(socket, store, apiError("missing_command_scope", "projectId and conversationId are required for this command"), {
-            recoverable: true,
-          })
-          return
-        }
-        subscriptions.subscribe(socket, command.conversationId)
+        const subscriptionScope = requireConversationScope(store, command)
+        subscriptions.subscribe(socket, subscriptionScope.conversationId)
         if (command.payload.replayActiveTurn !== false) {
-          for (const event of store.listActiveTurnServerEvents(command.projectId, command.conversationId)) {
+          for (const event of store.listActiveTurnServerEvents(subscriptionScope.projectId, subscriptionScope.conversationId)) {
             subscriptions.send(socket, event)
           }
         }
@@ -73,9 +68,8 @@ export const handleInboundMessage = async (
         }
         return
       case "chat.message.send":
-        if (command.conversationId) {
-          subscriptions.subscribe(socket, command.conversationId)
-        }
+        const messageScope = requireConversationScope(store, command)
+        subscriptions.subscribe(socket, messageScope.conversationId)
         void handleChatMessageSend(socket, store, agent, activeTurns, terminals, subscriptions, command, mcpRuntime, titleProvider).catch((error) => {
           const normalized = normalizeError(error)
           emitNormalizedError(socket, store, normalized, idsFromCommand(command))
@@ -88,6 +82,7 @@ export const handleInboundMessage = async (
         handleApprovalDecide(store, activeTurns, command)
         return
       case "terminal.stop":
+        requireSubscribedConversationScope(socket, store, subscriptions, command)
         void terminals.handleStop(command).catch((error) => {
           if (socket.readyState !== 1) {
             return
@@ -97,12 +92,15 @@ export const handleInboundMessage = async (
         })
         return
       case "terminal.input":
+        requireSubscribedConversationScope(socket, store, subscriptions, command)
         await terminals.handleInput(command)
         return
       case "terminal.resize":
+        requireSubscribedConversationScope(socket, store, subscriptions, command)
         await terminals.handleResize(command)
         return
       case "terminal.rename":
+        requireSubscribedConversationScope(socket, store, subscriptions, command)
         terminals.handleRename(command)
         return
       case "feedback.submit":
@@ -113,4 +111,30 @@ export const handleInboundMessage = async (
     const normalized = normalizeError(error)
     emitNormalizedError(socket, store, normalized, idsFromCommand(command))
   }
+}
+
+const requireConversationScope = (
+  store: SocratesStore,
+  command: { projectId?: string | undefined; conversationId?: string | undefined },
+): { projectId: string; conversationId: string } => {
+  if (!command.projectId || !command.conversationId) {
+    throw new SocratesError("missing_command_scope", "projectId and conversationId are required for this command", { recoverable: true })
+  }
+  store.getConversation(command.projectId, command.conversationId)
+  return { projectId: command.projectId, conversationId: command.conversationId }
+}
+
+const requireSubscribedConversationScope = (
+  socket: WebSocket,
+  store: SocratesStore,
+  subscriptions: ConversationSubscriptions,
+  command: { projectId?: string | undefined; conversationId?: string | undefined },
+): { projectId: string; conversationId: string } => {
+  const scope = requireConversationScope(store, command)
+  if (!subscriptions.isSubscribed(socket, scope.conversationId)) {
+    throw new SocratesError("terminal_conversation_not_subscribed", "Subscribe to the Terminal conversation before sending Terminal controls.", {
+      recoverable: true,
+    })
+  }
+  return scope
 }

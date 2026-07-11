@@ -2474,13 +2474,16 @@ describe("SocratesAgent", () => {
 })
 
 describe("bash tool policy", () => {
-  it("auto-allows Windows read-only diagnostics and gates high-risk commands", async () => {
+  it("auto-allows only the structured safe diagnostic lane and gates raw shell text", async () => {
     const context = {
       runtimeConfig: { sandboxMode: "workspace_write", approvalMode: "manual" },
     } as Parameters<typeof bashTool.decidePolicy>[1]
 
-    expect(await bashTool.decidePolicy({ command: "Get-Content package.json" }, context)).toEqual({ type: "auto" })
-    expect(await bashTool.decidePolicy({ command: "where python" }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ argv: ["git", "status", "--short"] }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ argv: ["pwd"] }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ command: "Get-Content package.json" }, context)).toMatchObject({ type: "approval_required" })
+    expect(await bashTool.decidePolicy({ command: "cat package.json > copied.json" }, context)).toMatchObject({ type: "approval_required" })
+    expect(await bashTool.decidePolicy({ argv: ["pnpm", "test"] }, context)).toMatchObject({ type: "approval_required" })
     expect(await bashTool.decidePolicy({ operation: "output", processId: "proc_1" }, context)).toEqual({ type: "auto" })
 
     const dockerPolicy = await bashTool.decidePolicy({ command: "docker compose up -d" }, context)
@@ -2488,6 +2491,16 @@ describe("bash tool policy", () => {
     if (dockerPolicy.type === "approval_required") {
       expect(dockerPolicy.request.risk).toBe("high")
     }
+  })
+
+  it("allows safe argv but denies raw shell text in read-only mode", async () => {
+    const context = {
+      runtimeConfig: { sandboxMode: "read_only", approvalMode: "read_only_auto" },
+    } as Parameters<typeof bashTool.decidePolicy>[1]
+
+    expect(await bashTool.decidePolicy({ argv: ["git", "diff", "--stat"] }, context)).toEqual({ type: "auto" })
+    expect(await bashTool.decidePolicy({ command: "git diff --stat" }, context)).toMatchObject({ type: "denied" })
+    expect(await bashTool.decidePolicy({ argv: ["pnpm", "test"] }, context)).toMatchObject({ type: "denied" })
   })
 
   it("rejects empty or comment-only Terminal commands before approval", async () => {

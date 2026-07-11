@@ -2012,6 +2012,7 @@ Input:
 type BashToolInput = {
   operation?: "run" | "start" | "status" | "output" | "stop"
   command?: string
+  argv?: string[]
   name?: string
   target?: string
   cwd?: string
@@ -2040,7 +2041,7 @@ type BashToolOutput = {
   truncation: TruncationMetadata
   shell: {
     platform: string
-    kind: "posix" | "powershell" | "cmd"
+    kind: "posix" | "powershell" | "cmd" | "direct"
     executable: string
   }
   process?: {
@@ -2069,6 +2070,8 @@ type BashToolOutput = {
 Rules:
 
 - Default timeout is 120,000 milliseconds.
+- `argv` is a foreground `run`-only direct-exec lane: its first item is the executable and the remaining items are literal arguments. It does not invoke a shell, so redirects, pipes, substitutions, environment assignment, and other shell syntax are unavailable. A deliberately small diagnostic allowlist—such as `pwd`, tightly constrained Git inspection, ripgrep discovery, and version checks—can be auto-allowed. Any other argv command remains approval-gated outside full-access mode.
+- Raw `command` remains the full Terminal capability for shell syntax, scripts, tests, builds, package commands, servers, REPLs, and TUI work. It is approval-gated outside full-access mode rather than classified as read-only by a prefix regex. Package scripts and builds are never assumed read-only.
 - The model-visible compatibility tool id remains `bash`, but execution is PTY-backed and platform-native: POSIX on macOS/Linux; on Windows, ConPTY uses `powershell.exe` first, then `pwsh`, then `cmd.exe` as fallback. User-facing copy should say Terminal.
 - `run` executes a fresh PTY command and returns a lightly normalized terminal transcript in `stdout` plus exit/status metadata. Separate `run` calls do not preserve exported environment or cwd; combine dependent shell state into one command or use `start` for durable interactive state.
 - `start` launches a conversation-scoped PTY Terminal and returns quickly with shell metadata, status, and any early persisted output such as dev-server URLs. If a matching human Terminal name is already running, `start` reuses that Terminal and returns its status/output with `reusedTerminal: true` instead of spawning a duplicate. `status`, `output`, and `stop` inspect or terminate a Terminal without rerunning the command. `status` and `output` return recent DB-backed Terminal output after draining supervisor output internally, so model-visible output is not tied to process cursors. Terminals are scoped by `projectId + conversationId + workspacePath` and can be accessed by later turns in the same conversation. If more than one active Terminal exists and no natural target is supplied, the backend returns `terminal_ambiguous` with readable candidate names, statuses, commands, and cwd values.
@@ -2084,13 +2087,14 @@ Rules:
 - Long-running Terminal output streams through `terminal.data` so the xterm-backed Terminal shell updates even when the chat turn is idle or another turn is active. `terminal.output` is legacy-compatible event language.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
-- Read-only commands can be auto-allowed by policy.
+- Only structured allowlisted argv diagnostics can be auto-allowed by policy; raw shell text is approval-gated outside full-access mode.
 - Windows read-only diagnostics such as `Get-Location`, `Get-ChildItem`, `Get-Content`, `Select-String`, `Get-Command`, `where`, Python version checks, and safe git inspection can be auto-allowed by policy. Package installation, dev servers, Docker, network commands, git mutations, deletes, migrations, and commands with side effects require approval by default.
 - Destructive or credential-exfiltration patterns are denied by default.
 - Safe env template filenames such as `.env.example`, `.env.sample`, `.env.template`, and `.env.local.example` are allowed by sensitive-path policy; real `.env`, private keys, credentials, and secret-like paths remain blocked or high-risk approval-gated.
 - `read`, `search`, `url_fetch`, and `edit` are preferred for structured local/remote reads and file work, but `bash` is allowed as an approved fallback when those tools fail or are insufficient.
 - Commands such as `cat`, `find`, `grep`, `pdftotext`, or other local extractors should not be denied solely because an equivalent Socrates tool exists. The backend should rely on approval, workspace scoping, timeout, command policy, and output truncation to keep them controlled.
 - Terminal may also run bounded one-off scripts when no exact tool exists, such as document rendering/OCR, data parsing, local CLI calls, or hypothesis checks. Installs, broad crawls, large downloads, secret-bearing external requests, and risky mutations remain approval-gated.
+- Terminal lifecycle events are emitted only to sockets subscribed to the validated owning conversation. User terminal controls must carry that same project/conversation scope and are rejected from an unsubscribed socket.
 
 Before Python installs/runs, Socrates should read project notes when workspace runtime facts matter. The backend maintains a protected `runtime_context` section in `.socrates/PROJECT_NOTES.md` with compact generated workspace scan facts such as detected stack, package manager, and virtual-environment hints. It refreshes lazily when `project_docs` touches notes and is rewritten only when the generated signature changes. Existing project-local venvs and package managers should be preferred; if none are detected and dependencies are needed, Socrates should ask before creating an environment unless the user already requested setup. Terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be written into that persisted section.
 

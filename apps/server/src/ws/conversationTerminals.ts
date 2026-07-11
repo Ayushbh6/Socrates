@@ -1,11 +1,11 @@
-import type { WebSocket } from "ws"
 import type { BashToolInput, BashToolOutput, ClientCommand, TerminalStatus } from "@socrates/contracts"
 import { createId, normalizeError, nowIso, SocratesError } from "@socrates/shared"
 import type { ToolExecutorContext } from "@socrates/core"
-import { isInteractiveShellCommand } from "@socrates/workspace"
+import { isInteractiveShellCommand, runWorkspaceArgv } from "@socrates/workspace"
 import type { SocratesStore } from "../services/store"
 import type { ActiveTurns } from "./activeTurns"
-import { makeEvent, sendEvent } from "./eventSender"
+import type { ConversationSubscriptions } from "./conversationSubscriptions"
+import { makeEvent } from "./eventSender"
 import { TerminalSupervisorClient } from "./terminalSupervisorClient"
 
 type RuntimeTerminal = {
@@ -39,22 +39,17 @@ const terminalAwaitingUserInputStopMessage = "Terminal is waiting for user input
 
 export class ConversationTerminalManager {
   private readonly terminals = new Map<string, RuntimeTerminal>()
-  private readonly sockets = new Set<WebSocket>()
   private readonly supervisor = new TerminalSupervisorClient()
   private readonly autoDetachMs: number
   private readonly idleTtlMs: number
 
   constructor(
     private readonly store: SocratesStore,
+    private readonly subscriptions: ConversationSubscriptions,
     options: TerminalManagerOptions = {},
   ) {
     this.autoDetachMs = options.autoDetachMs ?? defaultAutoDetachMs
     this.idleTtlMs = options.idleTtlMs ?? defaultIdleTtlMs
-  }
-
-  subscribe(socket: WebSocket): void {
-    this.sockets.add(socket)
-    socket.on("close", () => this.sockets.delete(socket))
   }
 
   async reconcilePersistedTerminals(): Promise<void> {
@@ -104,6 +99,9 @@ export class ConversationTerminalManager {
 
   async executeBash(input: BashToolInput, context: ToolExecutorContext, activeTurns: ActiveTurns): Promise<BashToolOutput> {
     const operation = input.operation ?? "run"
+    if (input.argv) {
+      return runWorkspaceArgv(input, context)
+    }
     if (operation === "start") {
       return this.startTerminal(input, context, false)
     }
@@ -123,8 +121,10 @@ export class ConversationTerminalManager {
   }
 
   async handleStop(command: Extract<ClientCommand, { type: "terminal.stop" }>): Promise<void> {
+    const scope = terminalCommandScope(command)
     const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
     if (terminal) {
+      assertTerminalScope(terminal, scope)
       await this.stopRuntimeTerminal(terminal, command.payload.reason)
       return
     }
@@ -132,6 +132,7 @@ export class ConversationTerminalManager {
     if (!row) {
       throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { terminalId: command.payload.terminalId }, recoverable: true })
     }
+    assertTerminalScope(row, scope)
     this.store.updateTerminal(row.id, { status: "stopped", awaitingInput: false, signal: "SIGTERM", completedAt: nowIso() })
     const terminalSnapshot = this.store.listConversationTerminals(row.conversationId).find((item) => item.terminalId === row.id)
     if (terminalSnapshot) {
@@ -140,6 +141,7 @@ export class ConversationTerminalManager {
   }
 
   async handleInput(command: Extract<ClientCommand, { type: "terminal.input" }>): Promise<void> {
+    const scope = terminalCommandScope(command)
     const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
     if (!terminal) {
       throw new SocratesError("terminal_not_running", "Terminal input can only be sent to a running terminal.", {
@@ -147,6 +149,7 @@ export class ConversationTerminalManager {
         recoverable: true,
       })
     }
+    assertTerminalScope(terminal, scope)
     const row = this.store.findTerminal(terminal.conversationId, terminal.terminalId)
     if (!row || (row.status !== "awaiting_input" && row.status !== "running")) {
       throw new SocratesError("terminal_not_accepting_input", "Terminal is not currently accepting user input.", {
@@ -169,6 +172,7 @@ export class ConversationTerminalManager {
   }
 
   async handleResize(command: Extract<ClientCommand, { type: "terminal.resize" }>): Promise<void> {
+    const scope = terminalCommandScope(command)
     const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
     if (!terminal) {
       throw new SocratesError("terminal_not_running", "Terminal resize can only be sent to a running terminal.", {
@@ -176,14 +180,17 @@ export class ConversationTerminalManager {
         recoverable: true,
       })
     }
+    assertTerminalScope(terminal, scope)
     await this.supervisor.resize(terminal.terminalId, terminal.processId, command.payload.cols, command.payload.rows)
   }
 
   handleRename(command: Extract<ClientCommand, { type: "terminal.rename" }>): void {
+    const scope = terminalCommandScope(command)
     const row = command.conversationId ? this.store.findTerminal(command.conversationId, command.payload.terminalId) : undefined
     if (!row) {
       throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { terminalId: command.payload.terminalId }, recoverable: true })
     }
+    assertTerminalScope(row, scope)
     this.store.updateTerminal(row.id, { name: command.payload.name })
     const runtime = this.terminals.get(row.id)
     if (runtime) {
@@ -260,7 +267,7 @@ export class ConversationTerminalManager {
     this.store.updateTerminal(terminalId, {
       cwd: output.cwd,
       platform: output.shell.platform,
-      shellKind: output.shell.kind,
+      ...(output.shell.kind === "direct" ? {} : { shellKind: output.shell.kind }),
       shellExecutable: output.shell.executable,
       processId,
       status: "running",
@@ -699,12 +706,25 @@ export class ConversationTerminalManager {
       source: "terminal",
       payload: event.payload,
     })
-    for (const socket of this.sockets) {
-      if (socket.readyState === 1) {
-        sendEvent(socket, event)
-      }
-    }
+    this.subscriptions.emit(event)
   }
+}
+
+const terminalCommandScope = (command: Pick<ClientCommand, "projectId" | "conversationId">): { projectId: string; conversationId: string } => {
+  if (!command.projectId || !command.conversationId) {
+    throw new SocratesError("missing_command_scope", "projectId and conversationId are required for Terminal controls.", { recoverable: true })
+  }
+  return { projectId: command.projectId, conversationId: command.conversationId }
+}
+
+const assertTerminalScope = (
+  terminal: Pick<RuntimeTerminal, "projectId" | "conversationId">,
+  scope: { projectId: string; conversationId: string },
+): void => {
+  if (terminal.projectId === scope.projectId && terminal.conversationId === scope.conversationId) {
+    return
+  }
+  throw new SocratesError("terminal_scope_mismatch", "Terminal does not belong to this project conversation.", { recoverable: true })
 }
 
 const withTerminalMetadata = (output: BashToolOutput, terminal: ReturnType<SocratesStore["listConversationTerminals"]>[number] | undefined, autoDetached?: boolean): BashToolOutput => {

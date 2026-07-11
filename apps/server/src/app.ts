@@ -7,6 +7,7 @@ import { registerHttpRoutes } from "./routes/httpRoutes"
 import { SocratesStore } from "./services/store"
 import { registerWebSocketRoutes } from "./ws/websocket"
 import { ConversationTerminalManager } from "./ws/conversationTerminals"
+import { ConversationSubscriptions } from "./ws/conversationSubscriptions"
 import { createDefaultSocratesAgent, type SocratesAgent } from "@socrates/core"
 import { McpRuntime } from "@socrates/mcp"
 import { createDefaultModelProvider, type EmbeddingProvider, type ModelProvider } from "@socrates/providers"
@@ -40,7 +41,8 @@ export const buildServer = async (options: BuildServerOptions) => {
   const titleProvider =
     options.titleProvider === false ? undefined : options.titleProvider ?? (options.agent ? undefined : createDefaultModelProvider(credentials))
   const mcpRuntime = new McpRuntime(socratesHome ? { socratesHome } : {})
-  const terminals = new ConversationTerminalManager(store)
+  const subscriptions = new ConversationSubscriptions()
+  const terminals = new ConversationTerminalManager(store, subscriptions)
   await terminals.reconcilePersistedTerminals()
   const app = Fastify({ logger: options.logger ?? false })
 
@@ -60,7 +62,7 @@ export const buildServer = async (options: BuildServerOptions) => {
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   })
 
-  await registerWebSocketRoutes(app, store, terminals, agent, mcpRuntime, titleProvider)
+  await registerWebSocketRoutes(app, store, terminals, subscriptions, agent, mcpRuntime, titleProvider)
   await registerHttpRoutes(app, store, credentials, mcpRuntime, {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),

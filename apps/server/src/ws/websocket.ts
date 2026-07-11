@@ -15,6 +15,7 @@ export const registerWebSocketRoutes = async (
   app: FastifyInstance,
   store: SocratesStore,
   terminals: ConversationTerminalManager,
+  subscriptions: ConversationSubscriptions,
   agent: SocratesAgent = createDefaultSocratesAgent(),
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
@@ -22,14 +23,11 @@ export const registerWebSocketRoutes = async (
   await app.register(websocket)
 
   const activeTurns = new ActiveTurns()
-  const subscriptions = new ConversationSubscriptions()
-
   app.addHook("onClose", async () => {
     activeTurns.abortAll()
   })
 
   app.get("/ws", { websocket: true }, (socket) => {
-    terminals.subscribe(socket)
     const ready = makeEvent("connection.ready", {
       connectionId: createId("conn"),
       serverTime: nowIso(),

@@ -159,6 +159,7 @@ Terminal discipline:
 - Before commands create files/directories, verify the parent or use explicit relative paths/cwd so output does not land accidentally in the root.
 - For missing capabilities, Terminal may run small one-off scripts to parse, transform, render, inspect, or verify data. Keep them narrow and inspect their output before relying on them.
 - Long-running/interactive commands should be started as named Terminals and polled by status/output. Avoid duplicate dev servers/watchers.
+- For a small safe foreground diagnostic, prefer bash argv (for example ["git", "status", "--short"] or ["pwd"]); it executes literal arguments without a shell. Use raw command for shell syntax, scripts, tests, builds, servers, or REPLs, and expect approval outside full-access mode.
 - If a Terminal is awaiting user input, tell the user what input is needed and stop. Do not declare success until user input and follow-up output confirm it.
 
 Implementation defaults:

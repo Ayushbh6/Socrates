@@ -256,6 +256,8 @@ const terminalCommandDescription =
   "Command to execute. Before commands create files or directories, verify the intended parent directory and use an explicit relative path or cwd so outputs do not accidentally land in the workspace root."
 const terminalCwdDescription =
   "Workspace-relative working directory. Use this for subfolder commands instead of prefixing the command with cd."
+const terminalArgvDescription =
+  "Structured executable and literal arguments for a safe foreground diagnostic. This runs without a shell, so it cannot use pipes, redirects, substitutions, or shell syntax. Use only for small diagnostics such as [\"git\", \"status\", \"--short\"] or [\"pwd\"]. Use command for a real shell command, which requires approval outside full-access mode."
 
 export const editToolInputSchema = z
   .object({
@@ -409,6 +411,7 @@ export const bashToolInputSchema = z
   .object({
     operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
     command: z.string().min(1).optional().describe(terminalCommandDescription),
+    argv: z.array(z.string().min(1)).min(1).max(32).optional().describe(terminalArgvDescription),
     processId: z.string().min(1).optional(),
     terminalId: z.string().min(1).optional(),
     name: z.string().min(1).optional(),
@@ -421,12 +424,18 @@ export const bashToolInputSchema = z
   .strict()
   .superRefine((input, context) => {
     const operation = input.operation ?? "run"
-    if ((operation === "run" || operation === "start") && !input.command) {
+    if (input.command && input.argv) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Provide command or argv, not both." })
+    }
+    if ((operation === "run" || operation === "start") && !input.command && !input.argv) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["command"],
-        message: "command is required for run and start operations",
+        message: "command or argv is required for run and start operations",
       })
+    }
+    if (input.argv && operation !== "run") {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["argv"], message: "argv is only supported for foreground run operations." })
     }
   })
 export type BashToolInput = z.infer<typeof bashToolInputSchema>
@@ -435,6 +444,7 @@ export const bashToolModelInputSchema = z
   .object({
     operation: z.enum(["run", "start", "status", "output", "stop"]).optional(),
     command: z.string().min(1).optional().describe(terminalCommandDescription),
+    argv: z.array(z.string().min(1)).min(1).max(32).optional().describe(terminalArgvDescription),
     name: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
     cwd: z.string().min(1).optional().describe(terminalCwdDescription),
@@ -444,12 +454,18 @@ export const bashToolModelInputSchema = z
   .strict()
   .superRefine((input, context) => {
     const operation = input.operation ?? "run"
-    if ((operation === "run" || operation === "start") && !input.command) {
+    if (input.command && input.argv) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Provide command or argv, not both." })
+    }
+    if ((operation === "run" || operation === "start") && !input.command && !input.argv) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["command"],
-        message: "command is required for run and start operations",
+        message: "command or argv is required for run and start operations",
       })
+    }
+    if (input.argv && operation !== "run") {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["argv"], message: "argv is only supported for foreground run operations." })
     }
   })
 
@@ -470,7 +486,7 @@ export const bashToolOutputSchema = z
     shell: z
       .object({
         platform: z.string().min(1),
-        kind: z.enum(["posix", "powershell", "cmd"]),
+        kind: z.enum(["posix", "powershell", "cmd", "direct"]),
         executable: z.string().min(1),
       })
       .strict(),

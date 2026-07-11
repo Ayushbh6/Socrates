@@ -29,6 +29,8 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 ## Inputs
 
 - Always set the correct `cwd` for repo work.
+- For the small safe-diagnostic lane, prefer `argv` with a literal executable and arguments, for example `["git", "status", "--short"]` or `["pwd"]`. It runs without a shell, so pipes, redirects, substitutions, and shell syntax are unavailable.
+- Use raw `command` for real shell work, scripts, tests, builds, servers, REPLs, and one-off programs. Outside full-access mode, raw commands require explicit approval even when they look read-only.
 - Commands should be concrete and non-interactive unless an ongoing terminal session is intended.
 - Long-running commands may need a session name, polling, or explicit shutdown.
 - Protected-path preflight rejects obvious mentions of Socrates-owned docs/memory/tool paths before execution; this is not a process sandbox.

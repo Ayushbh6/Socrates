@@ -1477,6 +1477,9 @@ describe("tool contracts", () => {
       }).success,
     ).toBe(true)
     expect(bashToolInputSchema.safeParse({ command: "pnpm test", timeoutMs: 120_000 }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ argv: ["git", "status", "--short"] }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ command: "pwd", argv: ["pwd"] }).success).toBe(false)
+    expect(bashToolInputSchema.safeParse({ operation: "start", argv: ["git", "status"] }).success).toBe(false)
     expect(bashToolInputSchema.safeParse({ operation: "start", command: "pnpm dev" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output", processId: "proc_1", outputSequence: 0 }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "status", terminalId: "term_1" }).success).toBe(true)
@@ -1485,6 +1488,8 @@ describe("tool contracts", () => {
     expect(bashToolInputSchema.safeParse({ operation: "status", name: "dev-server" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output", target: "frontend" }).success).toBe(true)
     expect(bashToolModelInputSchema.safeParse({ operation: "stop" }).success).toBe(true)
+    expect(bashToolModelInputSchema.safeParse({ argv: ["pwd"] }).success).toBe(true)
+    expect(bashToolModelInputSchema.safeParse({ operation: "start", argv: ["pwd"] }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", name: "dev-server" }).success).toBe(true)
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", terminalId: "term_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)

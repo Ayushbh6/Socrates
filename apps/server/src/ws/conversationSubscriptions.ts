@@ -35,6 +35,10 @@ export class ConversationSubscriptions {
     conversations.clear()
   }
 
+  isSubscribed(socket: WebSocket, conversationId: string): boolean {
+    return this.conversationsBySocket.get(socket)?.has(conversationId) ?? false
+  }
+
   emit(event: ServerEvent, fallbackSocket?: WebSocket): void {
     const recipients = new Set<WebSocket>()
     if (event.conversationId) {

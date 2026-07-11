@@ -5,7 +5,15 @@ import path from "node:path"
 import { promisify } from "node:util"
 import { SocratesError } from "@socrates/shared"
 import { socratesSurface } from "@socrates/contracts"
-export { createWorkspaceShellSession, isInteractiveShellCommand, isShellSessionResetError, runWorkspaceBash, WorkspaceShellSession } from "./tools/bashTool"
+export {
+  createWorkspaceShellSession,
+  formatWorkspaceArgv,
+  isInteractiveShellCommand,
+  isShellSessionResetError,
+  runWorkspaceArgv,
+  runWorkspaceBash,
+  WorkspaceShellSession,
+} from "./tools/bashTool"
 export { applyPatchWorkspace } from "./tools/patchHelpers"
 export { FileFreshnessTracker } from "./tools/fileFreshness"
 export { editWorkspace, __editToolTest } from "./tools/editTool"

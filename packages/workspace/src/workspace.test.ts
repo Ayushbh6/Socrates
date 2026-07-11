@@ -19,6 +19,7 @@ import {
   listStoredResourceFiles,
   pickWorkspaceFolder,
   readWorkspacePath,
+  runWorkspaceArgv,
   runWorkspaceBash,
   searchWorkspace,
   shouldSerializeBashInput,
@@ -1263,6 +1264,20 @@ describe("workspace tools", () => {
     expect(result.stdout).toBe("hel")
     expect(result.truncation.truncated).toBe(true)
     expect(result.exitCode).toBe(0)
+  })
+
+  it("runs structured argv directly without interpreting shell syntax", async () => {
+    const workspacePath = tempDir()
+    const literal = "literal && not-a-shell"
+    const result = await runWorkspaceArgv(
+      { argv: [process.execPath, "-e", "process.stdout.write(process.argv.at(-1) ?? '')", literal] },
+      { workspacePath },
+    )
+
+    expect(result.stdout).toBe(literal)
+    expect(result.exitCode).toBe(0)
+    expect(result.shell.kind).toBe("direct")
+    expect(result.command).toContain(JSON.stringify(literal))
   })
 
   it("starts shell commands with a sanitized workspace environment", async () => {

@@ -1,6 +1,6 @@
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn } from "node:child_process"
 import type { IPty } from "@homebridge/node-pty-prebuilt-multiarch"
 import type { BashToolInput, BashToolOutput, TruncationMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
@@ -572,6 +572,136 @@ export const runWorkspaceBash = async (
   } finally {
     session.dispose()
   }
+}
+
+export const formatWorkspaceArgv = (argv: readonly string[]): string => argv.map((value) => JSON.stringify(value)).join(" ")
+
+export const runWorkspaceArgv = async (
+  input: BashToolInput,
+  context: {
+    workspacePath: string
+    abortSignal?: AbortSignal
+    onOutput?: (output: { stream: "stdout" | "stderr" | "log"; text: string }) => void
+  },
+): Promise<BashToolOutput> => {
+  const argv = input.argv
+  if (!argv || argv.length === 0) {
+    throw new SocratesError("terminal_argv_required", "A non-empty argv array is required for direct Terminal execution.", { recoverable: true })
+  }
+  if ((input.operation ?? "run") !== "run") {
+    throw new SocratesError("terminal_argv_operation_invalid", "Structured argv is only supported for foreground run operations.", { recoverable: true })
+  }
+
+  const command = formatWorkspaceArgv(argv)
+  assertNoProtectedSocratesPathMentions(argv.join("\u0000"), protectedPathOptions(process.env))
+  const cwd = input.cwd ? resolveWorkspacePath(context.workspacePath, input.cwd) : resolveWorkspacePath(context.workspacePath)
+  const startedAt = Date.now()
+  const charLimit = clampCharLimit(input.charLimit)
+  const timeoutMs = input.timeoutMs ?? 120_000
+  const executable = argv[0]!
+  const args = argv.slice(1)
+
+  return await new Promise<BashToolOutput>((resolve, reject) => {
+    let stdout = ""
+    let stderr = ""
+    let returnedLength = 0
+    let originalLength = 0
+    let truncated = false
+    let timedOut = false
+    let settled = false
+
+    const child: import("node:child_process").ChildProcess = spawn(executable, args, {
+      cwd,
+      env: buildWorkspaceCommandEnv(process.env),
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    })
+
+    const append = (stream: "stdout" | "stderr", text: string) => {
+      originalLength += text.length
+      const remaining = Math.max(charLimit - returnedLength, 0)
+      if (remaining <= 0) {
+        truncated = true
+        return
+      }
+      const bounded = text.slice(0, remaining)
+      returnedLength += bounded.length
+      if (bounded.length < text.length) {
+        truncated = true
+      }
+      if (stream === "stdout") {
+        stdout += bounded
+      } else {
+        stderr += bounded
+      }
+      if (bounded) {
+        context.onOutput?.({ stream, text: bounded })
+      }
+    }
+
+    const stop = () => {
+      try {
+        child.kill("SIGTERM")
+      } catch {
+        // The process may already have exited.
+      }
+    }
+
+    const cleanup = () => {
+      clearTimeout(timeout)
+      context.abortSignal?.removeEventListener("abort", onAbort)
+    }
+
+    const finish = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      resolve({
+        operation: "run",
+        command,
+        cwd,
+        exitCode,
+        ...(signal ? { signal } : {}),
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt,
+        timedOut,
+        truncation: { truncated, charLimit, originalLength, returnedLength },
+        shell: { platform: process.platform, kind: "direct", executable },
+      })
+    }
+
+    const fail = (error: Error) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      cleanup()
+      const nodeError = error as NodeJS.ErrnoException
+      reject(
+        new SocratesError("direct_command_start_failed", error.message || "Could not start the direct Terminal command.", {
+          details: { cwd, executable, errorCode: nodeError.code, errno: nodeError.errno, syscall: nodeError.syscall },
+          recoverable: true,
+        }),
+      )
+    }
+
+    const onAbort = () => stop()
+    const timeout = setTimeout(() => {
+      timedOut = true
+      stop()
+    }, timeoutMs)
+
+    child.stdout?.setEncoding("utf8")
+    child.stderr?.setEncoding("utf8")
+    child.stdout?.on("data", (text: string) => append("stdout", text))
+    child.stderr?.on("data", (text: string) => append("stderr", text))
+    child.once("error", fail)
+    child.once("close", (code: number | null, signal: NodeJS.Signals | null) => finish(code, signal))
+    context.abortSignal?.addEventListener("abort", onAbort, { once: true })
+  })
 }
 
 export const isShellSessionResetError = (error: unknown): boolean =>

@@ -6866,6 +6866,60 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("routes Terminal events only to the subscribed conversation and rejects controls from other sockets", async () => {
+    const requests: unknown[] = []
+    const app = await buildTestServer(tempDbPath(), createConversationTerminalAgent(requests))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const firstConversation = await createConversation(app, project.id, "Terminal owner")
+    const secondConversation = await createConversation(app, project.id, "Terminal observer")
+    const ownerSocket = await connectWebSocket(app)
+    const observerSocket = await connectWebSocket(app)
+    let terminalId: string | undefined
+    try {
+      await waitForEvent(ownerSocket, "connection.ready")
+      await waitForEvent(observerSocket, "connection.ready")
+      sendCommand(observerSocket, chatSubscribeCommand(project.id, secondConversation.id))
+
+      sendCommand(ownerSocket, chatMessageCommandWithRuntime(project.id, firstConversation.id, "Start a terminal", { approvalMode: "approve_all" }))
+      const started = await waitForEvent(ownerSocket, "terminal.started", 8_000)
+      terminalId = started.payload.terminalId
+      await waitForEvent(ownerSocket, "turn.completed")
+      await delay(350)
+
+      const observerTerminalEvents = (trackedEvents.get(observerSocket) ?? []).filter((event) => event.type.startsWith("terminal."))
+      expect(observerTerminalEvents).toEqual([])
+
+      sendCommand(observerSocket, {
+        id: createId("evt"),
+        type: "terminal.stop",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: firstConversation.id,
+        actor: { type: "user" },
+        payload: { terminalId },
+      })
+      const rejected = await waitForEvent(observerSocket, "error.created")
+      expect(rejected.payload.error.code).toBe("terminal_conversation_not_subscribed")
+    } finally {
+      if (ownerSocket.readyState === WebSocket.OPEN && terminalId) {
+        sendCommand(ownerSocket, {
+          id: createId("evt"),
+          type: "terminal.stop",
+          schemaVersion: 1,
+          timestamp: nowIso(),
+          projectId: project.id,
+          conversationId: firstConversation.id,
+          actor: { type: "user" },
+          payload: { terminalId, reason: "Test cleanup" },
+        })
+      }
+      ownerSocket.close()
+      observerSocket.close()
+    }
+  })
+
   it("stops detached terminal processes when the server closes", async () => {
     const dbPath = tempDbPath()
     const app = await buildTestServer(dbPath, createShutdownCleanupTerminalAgent())
