@@ -1199,26 +1199,19 @@ setInterval(() => {}, 1000)
           yield { type: "model.completed" }
           return
         }
-        if (!requestHasToolResult(request, "tcall_project_memory_after_premature_stop_start")) {
-          yield projectMemoryReviewCall("tcall_project_memory_after_premature_stop_start")
+        if (!requestHasToolResult(request, "tcall_attempt_stop_awaiting")) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "tcall_attempt_stop_awaiting",
+              toolName: "bash",
+              input: { operation: "stop", target: "premature-stop-test" },
+            },
+          }
           yield { type: "model.completed" }
           return
         }
         yield { type: "model.answer.delta", text: "Terminal is waiting for user input." }
-        yield { type: "model.completed" }
-        return
-      }
-      if (latestUser.includes("Stop before input")) {
-        yield projectNotesPreflightCall("tcall_project_notes_before_premature_stop")
-        yield repoDocsPreflightCall("tcall_repo_docs_before_premature_stop")
-        yield {
-          type: "model.tool_call.completed",
-          toolCall: {
-            toolCallId: "tcall_premature_stop",
-            toolName: "bash",
-            input: { operation: "stop", target: "premature-stop-test" },
-          },
-        }
         yield { type: "model.completed" }
         return
       }
@@ -1441,6 +1434,37 @@ const createFiniteTerminalAgent = (): SocratesAgent => {
         return
       }
       yield { type: "model.answer.delta", text: "Finite Terminal completed." }
+      yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createQuickRunOutputAgent = (): SocratesAgent => {
+  const command = nodeCommand("process.stdout.write('quick-run-evidence\\n')")
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream(request) {
+      if (!requestHasToolResult(request, "tcall_quick_run_output")) {
+        yield projectNotesPreflightCall("tcall_project_notes_before_quick_run_output")
+        yield repoDocsPreflightCall("tcall_repo_docs_before_quick_run_output")
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_quick_run_output",
+            toolName: "bash",
+            input: { operation: "run", command },
+          },
+        }
+        yield { type: "model.completed" }
+        return
+      }
+      if (!requestHasToolResult(request, "tcall_project_memory_after_quick_run_output")) {
+        yield projectMemoryReviewCall("tcall_project_memory_after_quick_run_output")
+        yield { type: "model.completed" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Quick run output observed." }
       yield { type: "model.completed" }
     },
   }
@@ -7427,6 +7451,34 @@ describe("WebSocket API", () => {
     }
   })
 
+  it("returns output when a foreground run exits during its initial Terminal drain", async () => {
+    const app = await buildTestServer(tempDbPath(), createQuickRunOutputAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Run a quick command", { approvalMode: "approve_all" }))
+      await waitForToolCompletedByProviderId(socket, "tcall_quick_run_output")
+      await waitForEvent(socket, "turn.completed")
+
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/projects/${project.id}/conversations/${conversation.id}`,
+      })
+      const body = parseResponse<{ toolRuns: Array<{ providerToolCallId?: string; shell?: { stdout: string; message?: string } }> }>(response.payload)
+      expect(body.ok).toBe(true)
+      if (body.ok) {
+        const run = body.data.toolRuns.find((item) => item.providerToolCallId === "tcall_quick_run_output")
+        expect(run?.shell?.stdout).toContain("quick-run-evidence")
+        expect(run?.shell?.message ?? "").not.toContain("No new Terminal output")
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
   it("reuses an already-running named terminal instead of starting a duplicate", async () => {
     const app = await buildTestServer(tempDbPath(), createDuplicateTerminalStartAgent())
     await onboard(app)
@@ -7633,13 +7685,12 @@ describe("WebSocket API", () => {
       expect(inputRequested.payload.status).toBe("awaiting_input")
 
       await waitForToolCompletedByProviderId(socket, "tcall_premature_stop_start")
-      await waitForEvent(socket, "turn.completed")
-
-      sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Stop before input", { approvalMode: "approve_all" }))
-      const failed = await waitForToolFailedByProviderId(socket, "tcall_premature_stop")
+      const failed = await waitForToolFailedByProviderId(socket, "tcall_attempt_stop_awaiting")
       expect(failed.payload.error.code).toBe("terminal_awaiting_user_input")
       expect(failed.payload.error.recoverable).toBe(true)
-      await waitForEvent(socket, "turn.completed")
+      const waiting = await waitForEvent(socket, "turn.waiting")
+      expect(waiting.payload.terminalNames).toEqual(["premature-stop-test"])
+      expect(waiting.payload.wakeOn).toEqual(["completed", "failed"])
 
       const response = await app.inject({
         method: "GET",

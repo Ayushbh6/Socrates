@@ -229,6 +229,9 @@ const memoryFile = (root: string, area: ToolDocsArea, absolutePath: string): Mem
 
 const normalizeToolDocPath = (inputPath: string, area?: ToolDocsArea, audience: ToolDocsAudience = "main"): string => {
   const normalized = inputPath.replaceAll("\\", "/").replace(/^\/+/, "")
+  if (audience !== "memory_agent" && (normalized === "bash.md" || normalized === "tool_usage/bash.md")) {
+    return "tool_usage/terminal.md"
+  }
   if (normalized.startsWith("tool_usage/")) {
     return normalized
   }

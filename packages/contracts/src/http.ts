@@ -1180,7 +1180,7 @@ export const conversationTerminalSchema = z
 export const conversationPartialTurnSchema = z
   .object({
     turnId: idSchema,
-    status: z.enum(["running", "failed", "cancelled"]),
+    status: z.enum(["running", "failed", "cancelled", "suspended"]),
     answer: z.string().optional(),
     reasoning: z.string().optional(),
   })

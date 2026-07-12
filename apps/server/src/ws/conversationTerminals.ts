@@ -340,6 +340,13 @@ export class ConversationTerminalManager {
     if (!terminalId || !processId) {
       return started
     }
+    // startTerminal may observe a short-lived process all the way through exit and
+    // return its complete, model-visible output. Do not immediately read the same
+    // Terminal again: that second read starts at the cursor advanced by the first
+    // one and replaces useful evidence with a misleading "no new output" result.
+    if (started.process?.status !== "running") {
+      return { ...started, operation: "run" }
+    }
     const deadline = Date.now() + this.autoDetachMs
     for (;;) {
       const runtime = this.terminals.get(terminalId)
@@ -894,9 +901,11 @@ const storedTerminalOutput = (
   store.setModelVisibleTerminalOutputSequence(terminal.terminalId, output.modelVisibleNextSequence)
   const message =
     options.message ??
-    (fromSequence > 0 && output.returnedLength === 0
-      ? "No new Terminal output since the last model-visible check. Full Terminal history remains available in the backend and UI."
-      : undefined)
+    (terminal.awaitingInput
+      ? `Interactive Terminal "${terminal.name}" is awaiting user input in the visible Terminal. Do not send the answer yourself. When the task requires the completed interaction, wait on completed and failed.`
+      : fromSequence > 0 && output.returnedLength === 0
+        ? "No new Terminal output since the last model-visible check. Full Terminal history remains available in the backend and UI."
+        : undefined)
   return {
     operation,
     command: terminal.command,

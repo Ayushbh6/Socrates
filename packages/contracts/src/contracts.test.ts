@@ -778,6 +778,10 @@ describe("http contracts", () => {
             answer: "Partial answer recovered from stream chunks.",
             reasoning: "Recovered reasoning.",
           },
+          {
+            turnId: "turn_waiting",
+            status: "suspended",
+          },
         ],
         tokenUsage: {
           totalTokens: 12,

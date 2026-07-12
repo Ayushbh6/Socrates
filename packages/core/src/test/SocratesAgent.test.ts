@@ -2115,7 +2115,7 @@ describe("SocratesAgent", () => {
     expect(failed?.error.code).toBe("docs_preflight_required")
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain("docs_preflight_required")
     expect(JSON.stringify(streamRequests[1]?.messages)).toContain('project_docs with area=\\"notes\\"')
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("repo_docs with operation read/search")
+    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("call repo_docs in this same turn using read, search, read_index, or read_section")
     expect(approvals).toEqual([])
     expect(editInputs).toEqual([])
   })

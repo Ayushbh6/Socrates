@@ -256,10 +256,10 @@ export class ConversationStore extends StoreBase {
          FROM turns
          WHERE conversation_id = ?
            AND assistant_message_id IS NULL
-           AND status IN ('running', 'failed', 'cancelled')
+           AND status IN ('running', 'failed', 'cancelled', 'suspended')
          ORDER BY started_at`,
       )
-      .all(conversationId) as Array<{ id: string; status: "running" | "failed" | "cancelled" }>
+      .all(conversationId) as Array<{ id: string; status: "running" | "failed" | "cancelled" | "suspended" }>
 
     if (rows.length === 0) {
       return []
@@ -277,7 +277,7 @@ export class ConversationStore extends StoreBase {
           ...(reasoning ? { reasoning } : {}),
         }
       })
-      .filter((turn) => turn.answer || turn.reasoning)
+      .filter((turn) => turn.status === "suspended" || turn.answer || turn.reasoning)
   }
 
   createConversationUserMessage(

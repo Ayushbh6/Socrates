@@ -141,7 +141,7 @@ export class SocratesAgent {
     let currentTurnTokenHardStopSent = false
     let docsPreflightSent = false
     let docsSyncCheckpointSent = false
-    let memoryReviewReminderCount = 0
+    let pendingInteractiveTerminalName: string | undefined
     let preTurnMemoryLoopSummary: string | undefined
     let postEvidenceMemoryLoopSent = false
     let accumulatedAnswerText = ""
@@ -157,6 +157,14 @@ export class SocratesAgent {
     insertDynamicPromptContext(messages, input.promptContext)
     if (preTurnMemoryLoop.developerMessage) {
       messages.push({ role: "developer", content: preTurnMemoryLoop.developerMessage })
+    }
+    if (input.toolExecutors && input.workspacePath) {
+      messages.push({
+        role: "developer",
+        content: `<runtime_terminal_capabilities>
+Current runtime fact: the bash tool is a fully interactive, conversation-scoped PTY Terminal with operation="start" plus live user input, and wait can suspend until completed or failed. This current capability contract overrides contradictory project memory, notes, prior chats, or known-pitfall text. Never tell the user interactive Terminal is unavailable. For an interactive Terminal request, perform the required docs preflight and then use bash operation="start" with a portable Node.js or Python stdin program.
+</runtime_terminal_capabilities>`,
+      })
     }
     memorySaveLedger.recordMemoryLoopRecords(preTurnMemoryLoop.records ?? [])
     const preTurnMemoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
@@ -336,12 +344,43 @@ export class SocratesAgent {
       }
 
       if (toolCalls.length === 0 && docsLedger.requiresProjectMemoryReview()) {
-        if (!input.toolExecutors || tools.length === 0 || memoryReviewReminderCount >= 2) {
+        if (!input.toolExecutors || tools.length === 0) {
           throw memoryReviewRequiredError()
         }
-        messages.push({ role: "developer", content: MEMORY_REVIEW_REQUIRED_CHECKPOINT })
-        memoryReviewReminderCount += 1
-        continue
+        // This is deterministic runtime bookkeeping, not a judgment call. Some
+        // providers repeatedly attempt a final answer instead of following the
+        // reminder, which used to turn a healthy interactive Terminal into a
+        // failed turn. Execute the bounded required read through the normal tool
+        // lifecycle so it remains visible, auditable, and available to the model.
+        const providerToolCallId = createId("tcall")
+        toolCalls.push({
+          toolCallId: toolRunIdFor(providerToolCallId),
+          providerToolCallId,
+          toolName: "project_docs",
+          input: { operation: "read", area: "memory", charLimit: 10_000 },
+        })
+      }
+
+      if (toolCalls.length === 0 && pendingInteractiveTerminalName) {
+        if (!input.toolExecutors || tools.length === 0) {
+          throw new SocratesError("interactive_terminal_wait_required", `Interactive Terminal "${pendingInteractiveTerminalName}" is still awaiting user input.`, {
+            recoverable: true,
+          })
+        }
+        // Once the prompt is visible, the user interacts directly with the PTY.
+        // Suspend deterministically until the full program finishes instead of
+        // relying on every provider to remember the wait call after drafting text.
+        const providerToolCallId = createId("tcall")
+        toolCalls.push({
+          toolCallId: toolRunIdFor(providerToolCallId),
+          providerToolCallId,
+          toolName: "wait",
+          input: {
+            terminalNames: [pendingInteractiveTerminalName],
+            wakeOn: ["completed", "failed"],
+            reason: "Awaiting interactive Terminal completion",
+          },
+        })
       }
 
       if (!input.toolExecutors || tools.length === 0 || toolCalls.length === 0) {
@@ -395,6 +434,10 @@ export class SocratesAgent {
       }
 
       const execution = await batch.done
+      const interactiveTerminalName = interactiveTerminalAwaitingInput(execution.results)
+      if (interactiveTerminalName) {
+        pendingInteractiveTerminalName = interactiveTerminalName
+      }
       const waitResult = execution.results.find(
         (result): result is ToolExecutionResult & { ok: true; output: WaitToolOutput } =>
           result.ok === true && result.toolName === "wait" && waitToolOutputSchema.safeParse(result.output).success,
@@ -1628,7 +1671,7 @@ const safeJsonPreview = (value: unknown, limit: number): string => {
 }
 
 const DOCS_PREFLIGHT_CHECKPOINT = `<runtime_socrates_docs_preflight>
-This turn has workspace tools. Read-only/chat work does not require project docs. Before any bash, edit, or apply_patch call, first call project_docs with area="notes" and operation read/search, and call repo_docs with operation read/search in this same turn. After any successful bash, edit, or apply_patch call, read/search project_docs area="memory" before final answer; update memory only if there is durable project value. The active state ledger lives in project notes and must be fetched with project_docs, not assumed from the prompt. Use tool_docs before unfamiliar, failed, complex, or edge-case tool use.
+This turn has workspace tools. Read-only/chat work does not require project docs. Before any bash, edit, or apply_patch call, first call project_docs with area="notes" and call repo_docs in this same turn using read, search, read_index, or read_section. After any successful bash, edit, or apply_patch call, read/search project_docs area="memory" before final answer; update memory only if there is durable project value. The active state ledger lives in project notes and must be fetched with project_docs, not assumed from the prompt. Use tool_docs before unfamiliar, failed, complex, or edge-case tool use.
 Before an ordered multi-step, verification/review, or closure/handoff workflow, call skills list before project_docs/repo_docs/domain tools and describe the best match; generic tool knowledge does not replace learned user gates.
 </runtime_socrates_docs_preflight>`
 
@@ -1637,7 +1680,7 @@ const MUTATION_SCHEMA_RECOVERY_HINT =
   'Runtime tool-schema recovery: the previous edit/apply_patch input was invalid. For a new file, call edit with exactly { "path": "relative/path.md", "content": "..." }. For a full rewrite of an existing file, use exactly { "path": "relative/path.md", "content": "...", "overwrite": true }. For a targeted replacement, use exactly { "path": "relative/path.md", "oldString": "...", "newString": "..." }. Do not mix content with oldString/newString, and do not set overwrite unless it is true.'
 const FAILED_MUTATION_FORCE_FINAL_THRESHOLD = 4
 const DOCS_PREFLIGHT_MESSAGE =
-  'Before bash, edit, or apply_patch, call project_docs with area="notes" and operation read/search, and call repo_docs with operation read/search in this turn. Then retry the action.'
+  'Before bash, edit, or apply_patch, call project_docs with area="notes" and call repo_docs in this turn using read, search, read_index, or read_section. Then retry the action.'
 const MEMORY_REVIEW_REQUIRED_MESSAGE =
   'After successful bash, edit, or apply_patch, read/search project_docs area="memory" before final answer. Update memory only if there is durable project value.'
 const MEMORY_REVIEW_REQUIRED_CHECKPOINT = `<runtime_memory_review_required>
@@ -1667,6 +1710,24 @@ const memoryReviewRequiredError = (): SocratesError =>
   new SocratesError("memory_review_required", MEMORY_REVIEW_REQUIRED_MESSAGE, {
     recoverable: true,
   })
+
+const interactiveTerminalAwaitingInput = (results: ToolExecutionResult[]): string | undefined => {
+  for (const result of results) {
+    if (!result.ok || result.toolName !== "bash" || !result.output || typeof result.output !== "object") {
+      continue
+    }
+    const terminal = "terminal" in result.output ? result.output.terminal : undefined
+    if (!terminal || typeof terminal !== "object") {
+      continue
+    }
+    const name = "name" in terminal ? terminal.name : undefined
+    const awaitingInput = "awaitingInput" in terminal ? terminal.awaitingInput : undefined
+    if (awaitingInput === true && typeof name === "string" && name.trim()) {
+      return name.trim()
+    }
+  }
+  return undefined
+}
 
 const actionToolNames = new Set<ToolName>(["bash", "edit", "apply_patch"])
 
@@ -1738,10 +1799,10 @@ class TurnDocsLedger {
       return
     }
     const operation = toolOperation(toolCall)
-    if (result.toolName === "repo_docs" && (operation === undefined || operation === "read" || operation === "search")) {
+    if (result.toolName === "repo_docs" && isDocsReadOperation(operation)) {
       this.repoDocsRead = true
     }
-    if (result.toolName === "project_docs" && (operation === "read" || operation === "search")) {
+    if (result.toolName === "project_docs" && isDocsReadOperation(operation)) {
       const area = toolArea(toolCall)
       if (area === "notes") {
         this.projectNotesRead = true
@@ -1984,6 +2045,9 @@ const toolOperation = (toolCall: NormalizedToolCall | undefined): string | undef
   const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined
   return typeof input?.operation === "string" ? input.operation : undefined
 }
+
+const isDocsReadOperation = (operation: string | undefined): boolean =>
+  operation === undefined || operation === "read" || operation === "search" || operation === "read_index" || operation === "read_section"
 
 const toolArea = (toolCall: NormalizedToolCall | undefined): string | undefined => {
   const input = toolCall?.input && typeof toolCall.input === "object" && !Array.isArray(toolCall.input) ? toolCall.input as Record<string, unknown> : undefined

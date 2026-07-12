@@ -140,17 +140,22 @@ function IncompleteTurnBubble({
   }
 
   const hasPartialText = Boolean(turn?.answer || turn?.reasoning || liveSteps.some((step) => step.reasoning || step.answer));
+  const isSuspended = turn?.status === "suspended";
   const label =
     turn?.status === "running"
       ? "Interrupted turn"
       : turn?.status === "failed"
-        ? "Stopped: turn failed before final answer"
+        ? "Turn failed before final answer"
         : "Stopped before final answer";
 
   return (
     <div className="flex min-w-0 justify-start">
-      <div className="min-w-0 w-full max-w-3xl rounded-xl rounded-tl-sm border border-amber-100 bg-amber-50/40 px-4 py-3 text-sm leading-6 text-brand-text-dark">
-        <StoppedIndicator reason={label} />
+      <div
+        className={`min-w-0 w-full max-w-3xl rounded-xl rounded-tl-sm border px-4 py-3 text-sm leading-6 text-brand-text-dark ${
+          isSuspended ? "border-teal-100 bg-teal-50/40" : "border-amber-100 bg-amber-50/40"
+        }`}
+      >
+        {isSuspended ? <ContinuedIndicator /> : <StoppedIndicator reason={label} />}
         {liveSteps.length > 0 ? (
           <AssistantActivityStream steps={liveSteps} fallbackAnswer={turn?.answer} />
         ) : (
@@ -160,7 +165,11 @@ function IncompleteTurnBubble({
             {turn?.answer ? <MarkdownContent content={turn.answer} /> : null}
           </>
         )}
-        {!hasPartialText ? <p className="text-brand-text-light">No assistant text was streamed before this turn stopped.</p> : null}
+        {!hasPartialText ? (
+          <p className="text-brand-text-light">
+            {isSuspended ? "The task paused while the Terminal was running, then continued automatically." : "No assistant text was streamed before this turn stopped."}
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -365,6 +374,14 @@ function StoppedIndicator({ reason }: { reason?: string }) {
   return (
     <div className="mb-3 inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-brand-text-light">
       Stopped{reason ? `: ${reason}` : ""}
+    </div>
+  );
+}
+
+function ContinuedIndicator() {
+  return (
+    <div className="mb-3 inline-flex items-center rounded-full bg-teal-100 px-2.5 py-1 text-xs font-medium text-brand-teal-dark">
+      Continued after Terminal completed
     </div>
   );
 }

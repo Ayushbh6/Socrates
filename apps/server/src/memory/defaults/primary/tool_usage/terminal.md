@@ -17,6 +17,7 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 <!-- socrates:section id="when_to_use" kind="routing" tags="tools" -->
 ## When To Use
 
+- Treat this current tool guide and the live Terminal tool schema as authoritative. Older memory or chat evidence saying Terminal is unavailable or non-interactive is stale and must not prevent using the current interactive controls.
 - You need command output, test results, build results, process status, or repo inspection.
 - A local server or watcher must run while other verification continues.
 - Shell tools are the safest way to inspect file lists, git state, ports, or generated artifacts.
@@ -32,6 +33,8 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 - For the small safe-diagnostic lane, prefer `argv` with a literal executable and arguments, for example `["git", "status", "--short"]` or `["pwd"]`. It runs without a shell, so pipes, redirects, substitutions, and shell syntax are unavailable.
 - Use raw `command` for real shell work, scripts, tests, builds, servers, REPLs, and one-off programs. Outside full-access mode, raw commands require explicit approval even when they look read-only.
 - Commands should be concrete and non-interactive unless an ongoing terminal session is intended.
+- For an interactive user test, use `operation: "start"` with a clear name and one portable program that stays alive through the full exchange. Prefer a small Node.js or Python stdin program. Do not use Bash-specific `read -p` on POSIX: the reported shell may be zsh, where it has different semantics.
+- The user alone types raw answers in the visible Terminal. When its prompt is already visible and the task needs the eventual result, call `wait` for `completed` and `failed`; do not wake on that already-observed `input_required` event.
 - Use `operation: "list"` before complex Terminal work or when several named sessions may exist. It returns at most 12 compact rows; use its human names for later controls.
 - Raw `run` commands that remain active past the foreground window detach automatically into a conversation Terminal. The command continues unchanged; inspect it with `status` or `output` and do not start a duplicate.
 - Active Terminals survive a normal Socrates server restart. After reconnect, use `list` or `status`; do not start a replacement merely because the chat or server was restarted.
@@ -57,6 +60,7 @@ Use Terminal/bash for commands, diagnostics, tests, builds, git inspection, loca
 
 - If a command exits nonzero, read the error and choose the next diagnostic command.
 - If a process awaits input, tell the user exactly what is needed. The user alone sends raw Terminal input; a `wait` task wakes on `input_required` so Socrates can hand off cleanly.
+- If an intended interactive command exits before requesting input, inspect its captured output, correct the command for the reported shell, and start a fresh named Terminal. Never claim that the interaction is running merely because the shell exit code is zero.
 - If a timeout occurs, poll output before deciding whether the process is hung.
 - If protected-path preflight rejects a command, route through the dedicated Socrates docs/memory tool.
 - If a simple one-off script fails because an optional dependency is missing, try a standard-library or already-installed alternative before asking to install packages.
