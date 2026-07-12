@@ -2010,7 +2010,7 @@ Input:
 
 ```ts
 type BashToolInput = {
-  operation?: "run" | "start" | "status" | "output" | "stop"
+  operation?: "run" | "start" | "status" | "output" | "stop" | "list"
   command?: string
   argv?: string[]
   name?: string
@@ -2018,10 +2018,11 @@ type BashToolInput = {
   cwd?: string
   timeoutMs?: number
   charLimit?: number
+  inputMode?: "none" | "user"
 }
 ```
 
-`operation` defaults to `"run"`. `run` and `start` require `command`; `list` requires neither and returns at most 12 compact rows. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. Model-authored inputs do not include `terminalId`, `processId`, or output sequence cursors; those remain internal for UI, persistence, supervisor control, and backwards-compatible server paths. Model-requested `charLimit` is capped at 16,000.
+`operation` defaults to `"run"`. `run` and `start` require `command`; `list` requires neither and returns at most 12 compact rows. An intentionally user-interactive program must use `operation: "start"` with `inputMode: "user"`; this explicit intent is the primary input-state signal, while conservative rolling PTY protocol evidence is only supporting evidence. `status`, `output`, and `stop` are model-facing runtime-owned operations: Socrates should omit the target when exactly one active Terminal exists, or use the human Terminal `name`/`target` shown in prompt context. Model-authored inputs do not include `terminalId`, `processId`, or output sequence cursors; those remain internal for UI, persistence, supervisor control, and backwards-compatible server paths. Model-requested `charLimit` is capped at 16,000.
 
 Output:
 
@@ -2082,7 +2083,7 @@ Rules:
 - Long-running Terminals are independent conversation runtime state so the agent can continue working and inspect/stop them later. If a claimed continuation is interrupted by server shutdown, startup requeues the same durable task and the atomic continuation claim allows one retry.
 - Terminal supervisors are isolated per Socrates home and expose an internal health handshake. A single request timeout must not replace or kill a potentially healthy supervisor. Runtime polling tolerates two consecutive transport failures and marks the Terminal `missing` on the third; startup distinguishes a missing process from an unavailable supervisor. Either unrecoverable state wakes a matching durable wait as `failed` with bounded persisted recovery evidence.
 - `wait` is a separate model tool, not a terminal polling parameter. It accepts one to eight unique human Terminal names, one to three unique events from `completed`, `failed`, and `input_required`, and a required reason limited to 7 words and 64 characters. On success it persists the task dependencies and ends the current model execution without a final assistant message. The coordinator resumes the same task on a requested event with bounded new output; no elapsed timer wakes the model.
-- Conservative prompt detection can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; xterm sends raw data, quick-key compatibility remains accepted, and raw stdin is redacted from persistence and model context. `awaiting_input` is a hard human-handoff state: the model must stop and wait for the user, and model-authored `stop` is rejected until the user has interacted or cancelled from the Terminal shell.
+- Explicit `inputMode: "user"` is the primary signal that a started program will require the user; bounded rolling PTY protocol evidence can additionally recognize structurally anchored confirmation, selector, and hidden-input frames without broad question-word matching. Either path can mark a Terminal `awaiting_input` and emit `terminal.input.requested`. User stdin is sent only by the frontend through `terminal.input`; xterm sends raw data, quick-key compatibility remains accepted, and raw stdin is redacted from persistence and model context. `awaiting_input` is a hard human-handoff state: the model must stop and wait for the user, and model-authored `stop` is rejected until the user has interacted or cancelled from the Terminal shell.
 - For a user-interactive `start` result that is already `awaiting_input`, the runtime deterministically performs any mandatory project-memory review and registers a `completed`/`failed` wait if the provider tries to answer instead. Completion resumes the same task and the transcript represents the suspended phase as a successful continuation, not a stopped or failed turn. Current runtime tool capabilities are authoritative over stale memory or prior-chat claims that interactive Terminal is unavailable.
 - Command wrapping, cwd markers, exit-code capture, quoting, and output streaming are shell-specific for `run`. Socrates must not rewrite Unix commands into PowerShell automatically; prompt guidance tells the agent to use PowerShell-compatible syntax on Windows.
 - If a Terminal command times out or hits a shell start/protocol failure, the PTY command is stopped before later Terminal calls. Recoverable shell errors include platform, shell kind, executable, cwd, and the underlying process error details when available.

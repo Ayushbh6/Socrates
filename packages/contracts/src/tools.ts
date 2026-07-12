@@ -422,6 +422,7 @@ export const bashToolInputSchema = z
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(16_000).optional(),
     limit: z.number().int().positive().max(12).optional(),
+    inputMode: z.enum(["none", "user"]).optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -438,6 +439,9 @@ export const bashToolInputSchema = z
     }
     if (input.argv && operation !== "run") {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["argv"], message: "argv is only supported for foreground run operations." })
+    }
+    if (input.inputMode === "user" && operation !== "start") {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["inputMode"], message: "inputMode=user is only supported for start operations." })
     }
   })
 export type BashToolInput = z.infer<typeof bashToolInputSchema>
@@ -453,6 +457,7 @@ export const bashToolModelInputSchema = z
     timeoutMs: z.number().int().positive().max(600_000).optional(),
     charLimit: z.number().int().positive().max(16_000).optional(),
     limit: z.number().int().positive().max(12).optional(),
+    inputMode: z.enum(["none", "user"]).optional().describe("Set to user only when the started program intentionally needs live user input."),
   })
   .strict()
   .superRefine((input, context) => {
@@ -469,6 +474,9 @@ export const bashToolModelInputSchema = z
     }
     if (input.argv && operation !== "run") {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["argv"], message: "argv is only supported for foreground run operations." })
+    }
+    if (input.inputMode === "user" && operation !== "start") {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["inputMode"], message: "inputMode=user is only supported for start operations." })
     }
   })
 

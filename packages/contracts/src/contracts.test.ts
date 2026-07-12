@@ -1504,6 +1504,8 @@ describe("tool contracts", () => {
     expect(bashToolInputSchema.safeParse({ command: "pwd", argv: ["pwd"] }).success).toBe(false)
     expect(bashToolInputSchema.safeParse({ operation: "start", argv: ["git", "status"] }).success).toBe(false)
     expect(bashToolInputSchema.safeParse({ operation: "start", command: "pnpm dev" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "start", command: "node -e 'process.stdin.resume()'", inputMode: "user" }).success).toBe(true)
+    expect(bashToolInputSchema.safeParse({ operation: "status", inputMode: "user" }).success).toBe(false)
     expect(bashToolInputSchema.safeParse({ operation: "output", processId: "proc_1", outputSequence: 0 }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "status", terminalId: "term_1" }).success).toBe(true)
     expect(bashToolInputSchema.safeParse({ operation: "output" }).success).toBe(true)

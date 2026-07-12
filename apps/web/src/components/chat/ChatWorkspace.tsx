@@ -10,7 +10,7 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatTranscript, type LiveActivityStep } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
-import { TerminalDockPanel, TerminalPanel } from "./TerminalPanel";
+import { TerminalDockPanel } from "./TerminalPanel";
 import { type PendingApproval, type ToolTimelineItem } from "./ToolTimelineTypes";
 import { ActivityCenter } from "./ActivityCenter";
 
@@ -19,17 +19,11 @@ interface ChatWorkspaceProps {
   conversationId: string;
 }
 
-const DEFAULT_TERMINAL_PANEL_WIDTH = 420;
-const MIN_TERMINAL_PANEL_WIDTH = 320;
-const MAX_TERMINAL_PANEL_WIDTH = 720;
 const DEFAULT_TERMINAL_DOCK_HEIGHT = 320;
 const MIN_TERMINAL_DOCK_HEIGHT = 220;
 const MAX_TERMINAL_DOCK_HEIGHT = 760;
-const COLLAPSED_TERMINAL_PANEL_WIDTH = 48;
 const MOBILE_TERMINAL_BREAKPOINT = 1024;
 
-const TERMINAL_PANEL_WIDTH_KEY_PREFIX = "socrates-terminal-panel-width-v1";
-const TERMINAL_PANEL_COLLAPSED_KEY_PREFIX = "socrates-terminal-panel-collapsed-v1";
 const TERMINAL_DOCK_HEIGHT_KEY_PREFIX = "socrates-terminal-dock-height-v1";
 const TERMINAL_DOCK_OPEN_KEY_PREFIX = "socrates-terminal-dock-open-v1";
 const TERMINAL_DOCK_ACTIVE_KEY_PREFIX = "socrates-terminal-dock-active-v1";
@@ -173,8 +167,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
-  const [isTerminalPanelCollapsed, setIsTerminalPanelCollapsed] = useState(false);
-  const [terminalPanelWidth, setTerminalPanelWidth] = useState(DEFAULT_TERMINAL_PANEL_WIDTH);
   const [terminalDockHeight, setTerminalDockHeight] = useState(DEFAULT_TERMINAL_DOCK_HEIGHT);
   const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
   const [activeDockTerminalId, setActiveDockTerminalId] = useState<string | undefined>(undefined);
@@ -187,11 +179,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [error, setError] = useState<string | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
-  const previousLiveTerminalCountRef = useRef(0);
   const previousAwaitingTerminalInputRef = useRef(false);
 
-  const panelWidthKey = `${TERMINAL_PANEL_WIDTH_KEY_PREFIX}:${projectId}:${conversationId}`;
-  const panelCollapsedKey = `${TERMINAL_PANEL_COLLAPSED_KEY_PREFIX}:${projectId}:${conversationId}`;
   const dockHeightKey = `${TERMINAL_DOCK_HEIGHT_KEY_PREFIX}:${projectId}:${conversationId}`;
   const dockOpenKey = `${TERMINAL_DOCK_OPEN_KEY_PREFIX}:${projectId}:${conversationId}`;
   const dockActiveKey = `${TERMINAL_DOCK_ACTIVE_KEY_PREFIX}:${projectId}:${conversationId}`;
@@ -215,15 +204,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     updateMedia();
     media.addEventListener("change", updateMedia);
 
-    const storedPanelWidth = Number.parseInt(window.localStorage.getItem(panelWidthKey) ?? "", 10);
-    if (Number.isFinite(storedPanelWidth)) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setTerminalPanelWidth(storedPanelWidth);
-    }
-    const storedPanelCollapsed = window.localStorage.getItem(panelCollapsedKey);
-    if (storedPanelCollapsed === "true" || storedPanelCollapsed === "false") {
-      setIsTerminalPanelCollapsed(storedPanelCollapsed === "true");
-    }
     const storedDockHeight = Number.parseInt(window.localStorage.getItem(dockHeightKey) ?? "", 10);
     if (Number.isFinite(storedDockHeight)) {
       setTerminalDockHeight(storedDockHeight);
@@ -238,21 +218,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     }
 
     return () => media.removeEventListener("change", updateMedia);
-  }, [conversationId, dockActiveKey, dockHeightKey, dockOpenKey, panelCollapsedKey, panelWidthKey, projectId]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(panelWidthKey, String(terminalPanelWidth));
-  }, [panelWidthKey, terminalPanelWidth]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-    window.localStorage.setItem(panelCollapsedKey, String(isTerminalPanelCollapsed));
-  }, [isTerminalPanelCollapsed, panelCollapsedKey]);
+  }, [conversationId, dockActiveKey, dockHeightKey, dockOpenKey, projectId]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -977,8 +943,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       actor: { type: "user" },
       payload: {
         terminalId,
-        cols: size.cols,
-        rows: size.rows,
+        cols: Math.min(500, Math.max(2, Math.floor(size.cols))),
+        rows: Math.min(500, Math.max(2, Math.floor(size.rows))),
       },
     };
     sendCommand(command);
@@ -1086,13 +1052,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   );
   const hasAwaitingTerminalInput = orderedTerminals.some((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input");
   const liveTerminalCount = orderedTerminals.filter((terminal) => terminal.status === "running" || terminal.status === "awaiting_input").length;
-  const clampedTerminalPanelWidth = Math.min(Math.max(terminalPanelWidth, MIN_TERMINAL_PANEL_WIDTH), MAX_TERMINAL_PANEL_WIDTH);
   const clampedTerminalDockHeight = Math.min(Math.max(terminalDockHeight, MIN_TERMINAL_DOCK_HEIGHT), MAX_TERMINAL_DOCK_HEIGHT);
-
-  const handleOpenTerminalInDock = (terminalId: string) => {
-    setActiveDockTerminalId(terminalId);
-    setIsTerminalDockOpen(true);
-  };
 
   const messages: Message[] = conversationData?.messages ?? [];
   const toolRuns = conversationData?.toolRuns ?? [];
@@ -1102,10 +1062,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const hasTerminals = terminals.length > 0;
   const awaitingTerminalInputCount = orderedTerminals.filter((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input").length;
   const activeTerminalCount = liveTerminalCount;
-  const effectiveTerminalPanelCollapsed = isTerminalPanelCollapsed;
-  const showDesktopRail = hasTerminals && !isMobileView;
   const showTerminalDock = hasTerminals || Boolean(activeDockTerminalId);
-  const terminalRailWidth = effectiveTerminalPanelCollapsed ? COLLAPSED_TERMINAL_PANEL_WIDTH : clampedTerminalPanelWidth;
   const preferredDockTerminalId = orderedTerminals.find((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input")?.terminalId;
   const activeDockTerminalForDisplay =
     activeDockTerminalId && orderedTerminals.some((terminal) => terminal.terminalId === activeDockTerminalId)
@@ -1113,12 +1070,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       : undefined;
   const resolvedActiveDockTerminalId = activeDockTerminalForDisplay ?? preferredDockTerminalId ?? orderedTerminals[0]?.terminalId;
   const resolvedIsTerminalDockOpen = isTerminalDockOpen;
-  const workspaceBodyClass = showDesktopRail
-    ? "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:grid"
-    : "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
-  const workspaceBodyStyle = showDesktopRail
-    ? ({ gridTemplateColumns: `minmax(0, 1fr) ${terminalRailWidth}px` } as const)
-    : undefined;
+  const workspaceBodyClass = "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden";
   const tokenLabel = useMemo(() => {
     if (contextUsage) {
       return `${contextUsage.contextUsedTokens.toLocaleString()} tokens`;
@@ -1149,25 +1101,14 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   }, [costUsage]);
 
   useEffect(() => {
-    const hadLiveTerminals = previousLiveTerminalCountRef.current > 0;
-    const hasLiveTerminals = liveTerminalCount > 0;
     const hadAwaitingInput = previousAwaitingTerminalInputRef.current;
-
-    if (!isMobileView && !hadLiveTerminals && hasLiveTerminals) {
-      setIsTerminalPanelCollapsed(false);
-    }
-
-    if (!isMobileView && hadLiveTerminals && !hasLiveTerminals && !hasAwaitingTerminalInput) {
-      setIsTerminalPanelCollapsed(true);
-    }
 
     if (!hadAwaitingInput && hasAwaitingTerminalInput) {
       setIsTerminalDockOpen(true);
     }
 
-    previousLiveTerminalCountRef.current = liveTerminalCount;
     previousAwaitingTerminalInputRef.current = hasAwaitingTerminalInput;
-  }, [hasAwaitingTerminalInput, isMobileView, liveTerminalCount]);
+  }, [hasAwaitingTerminalInput]);
 
   return (
     <main className="flex h-screen overflow-hidden bg-brand-bg">
@@ -1221,17 +1162,11 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             <button
               type="button"
               className="ml-2 inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
-              title={isMobileView ? (isTerminalDockOpen ? "Hide terminal panel" : "Show terminal panel") : effectiveTerminalPanelCollapsed ? "Show terminal panel" : "Hide terminal panel"}
-              aria-pressed={isMobileView ? isTerminalDockOpen : !effectiveTerminalPanelCollapsed}
-              onClick={() => {
-                if (isMobileView) {
-                  setIsTerminalDockOpen((current) => !current);
-                  return;
-                }
-                setIsTerminalPanelCollapsed((current) => !current);
-              }}
+              title={isTerminalDockOpen ? "Hide terminal dock" : "Show terminal dock"}
+              aria-pressed={isTerminalDockOpen}
+              onClick={() => setIsTerminalDockOpen((current) => !current)}
             >
-              {isMobileView ? isTerminalDockOpen ? <EyeOff className="size-4" /> : <Eye className="size-4" /> : effectiveTerminalPanelCollapsed ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
+              {isTerminalDockOpen ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
               <span className="hidden sm:inline">Terminal</span>
               {activeTerminalCount > 0 ? (
                 <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] text-brand-teal-dark">
@@ -1242,7 +1177,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             </button>
           ) : null}
         </header>
-        <div className={workspaceBodyClass} style={workspaceBodyStyle}>
+        <div className={workspaceBodyClass}>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {isLoading ? (
               <div className="flex flex-1 items-center justify-center text-sm text-brand-text-light">Loading conversation...</div>
@@ -1306,6 +1241,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               onActiveTerminalIdChange={setActiveDockTerminalId}
               onClose={() => setIsTerminalDockOpen(false)}
               onStop={handleTerminalStop}
+              onRename={handleTerminalRename}
               onInput={handleTerminalInput}
               onResize={handleTerminalResize}
               dockHeight={clampedTerminalDockHeight}
@@ -1314,19 +1250,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               }
             />
           </div>
-          {showDesktopRail ? (
-            <TerminalPanel
-              terminals={orderedTerminals}
-              isCollapsed={effectiveTerminalPanelCollapsed}
-              onToggleCollapsed={() => setIsTerminalPanelCollapsed((current) => !current)}
-              onResizePanel={(nextWidth) =>
-                setTerminalPanelWidth(Math.min(Math.max(nextWidth, MIN_TERMINAL_PANEL_WIDTH), MAX_TERMINAL_PANEL_WIDTH))
-              }
-              onStop={handleTerminalStop}
-              onRename={handleTerminalRename}
-              onOpenInDock={handleOpenTerminalInDock}
-            />
-          ) : null}
         </div>
       </section>
     </main>

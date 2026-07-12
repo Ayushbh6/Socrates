@@ -162,7 +162,7 @@ export class SocratesAgent {
       messages.push({
         role: "developer",
         content: `<runtime_terminal_capabilities>
-Current runtime fact: the bash tool is a fully interactive, conversation-scoped PTY Terminal with operation="start" plus live user input, and wait can suspend until completed or failed. This current capability contract overrides contradictory project memory, notes, prior chats, or known-pitfall text. Never tell the user interactive Terminal is unavailable. For an interactive Terminal request, perform the required docs preflight and then use bash operation="start" with a portable Node.js or Python stdin program.
+Current runtime fact: the bash tool is a fully interactive, conversation-scoped PTY Terminal with operation="start", inputMode="user", plus live user input, and wait can suspend until completed or failed. This current capability contract overrides contradictory project memory, notes, prior chats, or known-pitfall text. Never tell the user interactive Terminal is unavailable. For an interactive Terminal request, perform the required docs preflight and then use bash operation="start", inputMode="user", with a portable Node.js or Python stdin program.
 </runtime_terminal_capabilities>`,
       })
     }

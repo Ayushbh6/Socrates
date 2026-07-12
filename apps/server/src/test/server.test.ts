@@ -1079,7 +1079,7 @@ setInterval(() => {}, 1000)
           toolCall: {
             toolCallId: "tcall_interactive_terminal_start",
             toolName: "bash",
-            input: { operation: "start", command, name: "interactive-test" },
+            input: { operation: "start", command, name: "interactive-test", inputMode: "user" },
           },
         }
         yield { type: "model.completed" }
@@ -1133,10 +1133,18 @@ setInterval(() => {}, 1000)
 
 const createTextInputTerminalAgent = (): SocratesAgent => {
   const command = nodeCommand(`
-process.stdout.write("What is your name? ")
-process.stdin.once("data", (data) => {
-  const name = data.toString("utf8").trim()
-  process.stdout.write("Hello, " + name + "!\\n")
+let stage = 0
+let colour = ""
+process.stdout.write("What is your favorite colour? ")
+process.stdin.on("data", (data) => {
+  const answer = data.toString("utf8").trim()
+  if (stage === 0) {
+    colour = answer
+    stage = 1
+    process.stdout.write("Name an animal with the colour " + colour + ": ")
+    return
+  }
+  process.stdout.write("Recorded " + answer + " for " + colour + "!\\n")
   process.exit(0)
 })
 setInterval(() => {}, 1000)
@@ -1152,7 +1160,7 @@ setInterval(() => {}, 1000)
           toolCall: {
             toolCallId: "tcall_text_input_terminal_start",
             toolName: "bash",
-            input: { operation: "start", command, name: "text-input-test" },
+            input: { operation: "start", command, name: "text-input-test", inputMode: "user" },
           },
         }
         yield { type: "model.completed" }
@@ -1193,7 +1201,7 @@ setInterval(() => {}, 1000)
             toolCall: {
               toolCallId: "tcall_premature_stop_start",
               toolName: "bash",
-              input: { operation: "start", command, name: "premature-stop-test" },
+              input: { operation: "start", command, name: "premature-stop-test", inputMode: "user" },
             },
           }
           yield { type: "model.completed" }
@@ -7238,7 +7246,7 @@ describe("WebSocket API", () => {
     }
   }, 15_000)
 
-  it("reconciles a lost supervisor on startup and wakes the waiting task as failed", async () => {
+  it("restarts a crashed coordinator and reconnects to the independently hosted PTY", async () => {
     const dbPath = tempDbPath()
     const agent = createTerminalWaitResumeAgent(5_000)
     const firstApp = await buildTestServer(dbPath, agent, { preserveTerminalsOnClose: true })
@@ -7298,10 +7306,10 @@ describe("WebSocket API", () => {
       const task = db.prepare("SELECT status, metadata_json FROM agent_tasks").get() as { status: string; metadata_json: string | null }
       const terminalMetadata = JSON.parse(terminal.metadata_json ?? "{}") as { supervisorRecovery?: { state?: unknown } }
       const taskMetadata = JSON.parse(task.metadata_json ?? "{}") as { wakeEvent?: unknown }
-      expect(terminal.status).toBe("detached")
-      expect(terminalMetadata.supervisorRecovery?.state).toBe("supervisor_unavailable")
+      expect(terminal.status).toBe("exited")
+      expect(terminalMetadata.supervisorRecovery?.state).toBe("reconnected")
       expect(task.status).toBe("completed")
-      expect(taskMetadata.wakeEvent).toBe("failed")
+      expect(taskMetadata.wakeEvent).toBe("completed")
     } finally {
       db.close()
       if (terminalSystemPid && processExists(terminalSystemPid)) {
@@ -7408,7 +7416,7 @@ describe("WebSocket API", () => {
         const terminalLines = terminal?.output.stdout.split(/\r?\n/).filter(Boolean) ?? []
         const stopLines = stopRun?.shell?.stdout.split(/\r?\n/).filter(Boolean) ?? []
         expect(terminalLines.length).toBeGreaterThan(0)
-        expect(new Set(terminalLines).size).toBe(terminalLines.length)
+        expect(terminalLines).toEqual([...new Set(terminalLines)])
         expect(new Set(stopLines).size).toBe(stopLines.length)
       }
     } finally {
@@ -7627,7 +7635,7 @@ describe("WebSocket API", () => {
     }
   }, 10_000)
 
-  it("accepts user text input and returns the interactive terminal response", async () => {
+  it("accepts two user inputs and derives the second prompt from the first", async () => {
     const app = await buildTestServer(tempDbPath(), createTextInputTerminalAgent())
     await onboard(app)
     const { project } = await createProject(app)
@@ -7639,7 +7647,7 @@ describe("WebSocket API", () => {
       const inputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
       expect(inputRequested.payload.name).toBe("text-input-test")
       expect(inputRequested.payload.status).toBe("awaiting_input")
-      expect(inputRequested.payload.prompt).toContain("What is your name?")
+      expect(inputRequested.payload.prompt).toContain("What is your favorite colour?")
 
       sendCommand(socket, {
         id: createId("evt"),
@@ -7649,7 +7657,19 @@ describe("WebSocket API", () => {
         projectId: project.id,
         conversationId: conversation.id,
         actor: { type: "user" },
-        payload: { terminalId: inputRequested.payload.terminalId, data: "Ayush\n" },
+        payload: { terminalId: inputRequested.payload.terminalId, data: "violet\n" },
+      })
+      const secondInputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
+      expect(secondInputRequested.payload.prompt).toContain("Name an animal with the colour violet")
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "terminal.input",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { terminalId: inputRequested.payload.terminalId, data: "butterfly\n" },
       })
       const completed = await waitForEvent(socket, "terminal.completed")
       expect(completed.payload.terminalId).toBe(inputRequested.payload.terminalId)
@@ -7663,8 +7683,9 @@ describe("WebSocket API", () => {
       if (body.ok) {
         const terminal = body.data.terminals.find((item) => item.terminalId === inputRequested.payload.terminalId)
         expect(terminal?.status).toBe("exited")
-        expect(terminal?.output.stdout).toContain("What is your name?")
-        expect(terminal?.output.stdout).toContain("Hello, Ayush!")
+        expect(terminal?.output.stdout).toContain("What is your favorite colour?")
+        expect(terminal?.output.stdout).toContain("Name an animal with the colour violet")
+        expect(terminal?.output.stdout).toContain("Recorded butterfly for violet!")
       }
     } finally {
       socket.close()

@@ -727,7 +727,7 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `exit_code` | `INTEGER` | no | Process exit code when known. |
 | `signal` | `TEXT` | no | Termination signal when known. |
 | `auto_detached` | `INTEGER` | yes | Boolean as `0` or `1`; true when detached from a long blocking `run`. |
-| `awaiting_input` | `INTEGER` | yes | Boolean as `0` or `1`; true when conservative prompt detection surfaced user-only stdin. |
+| `awaiting_input` | `INTEGER` | yes | Boolean as `0` or `1`; true when explicit interactive intent or conservative PTY protocol evidence surfaced user-only stdin. |
 | `last_prompt` | `TEXT` | no | Safe prompt text for awaiting-input UI/model context. Secret-like input itself is never stored here. |
 | `started_at` | `TEXT` | yes | ISO timestamp. |
 | `updated_at` | `TEXT` | yes | ISO timestamp. |

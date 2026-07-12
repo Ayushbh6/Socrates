@@ -22,6 +22,11 @@ type RuntimeTerminal = {
   supervisorOutputSequence: number
   drainPromise?: Promise<BashToolOutput>
   consecutivePollFailures: number
+  inputMode: "none" | "user"
+  promptFrame: string
+  lastOutputAt: number
+  inputDetectionTimer?: NodeJS.Timeout
+  stopping: boolean
 }
 
 type TerminalManagerOptions = {
@@ -39,6 +44,9 @@ const maxTerminalListTextChars = 12_000
 const terminalInitialOutputDrainMs = 500
 const terminalInitialOutputPollMs = 50
 const maxConsecutiveSupervisorPollFailures = 3
+const terminalInteractiveSettleMs = 180
+const maxTerminalPromptFrameChars = 2_000
+const maxTerminalPromptChars = 500
 const terminalAwaitingUserInputStopMessage = "Terminal is waiting for user input. Leave it running and ask the user to type in the Terminal panel."
 
 export class ConversationTerminalManager {
@@ -61,7 +69,7 @@ export class ConversationTerminalManager {
   }
 
   async reconcilePersistedTerminals(): Promise<void> {
-    const health = await this.supervisor.inspectHealth()
+    const health = (await this.supervisor.inspectHealth()) ?? (await this.supervisor.health().catch(() => undefined))
     for (const terminal of this.store.listActiveTerminals()) {
       const owned = health ? await this.supervisor.has(terminal.terminalId).catch(() => false) : false
       if (!owned) {
@@ -211,13 +219,23 @@ export class ConversationTerminalManager {
     const scope = terminalCommandScope(command)
     const terminal = this.findRuntimeTerminal(command.conversationId, command.payload.terminalId)
     if (!terminal) {
+      const row = command.conversationId ? this.store.findTerminal(command.conversationId, command.payload.terminalId) : undefined
+      if (row) {
+        assertTerminalScope(row, scope)
+        // ResizeObserver can deliver one final size after a PTY exits. Resize is
+        // best-effort UI state, so an already-finished scoped Terminal is a no-op.
+        return
+      }
       throw new SocratesError("terminal_not_running", "Terminal resize can only be sent to a running terminal.", {
         details: { terminalId: command.payload.terminalId },
         recoverable: true,
       })
     }
     assertTerminalScope(terminal, scope)
-    await this.supervisor.resize(terminal.terminalId, terminal.processId, command.payload.cols, command.payload.rows)
+    // PTY exit and ResizeObserver delivery can cross in flight. Resize carries
+    // no task semantics, so a process that ended between lookup and delivery is
+    // a successful no-op rather than a user-visible command failure.
+    await this.supervisor.resize(terminal.terminalId, terminal.processId, command.payload.cols, command.payload.rows).catch(() => undefined)
   }
 
   handleRename(command: Extract<ClientCommand, { type: "terminal.rename" }>): void {
@@ -300,6 +318,10 @@ export class ConversationTerminalManager {
       awaitingInput: false,
       supervisorOutputSequence: output.process?.nextOutputSequence ?? 0,
       consecutivePollFailures: 0,
+      inputMode: input.inputMode ?? "none",
+      promptFrame: "",
+      lastOutputAt: Date.now(),
+      stopping: false,
     }
     this.terminals.set(terminalId, runtime)
     this.store.updateTerminal(terminalId, {
@@ -316,12 +338,16 @@ export class ConversationTerminalManager {
         lastToolCallId: context.toolCallId,
         lastTurnId: context.turnId,
         systemPid: output.process?.systemPid,
+        inputMode: input.inputMode ?? "none",
         ...(supervisorHealth ? { supervisor: supervisorHealthMetadata(supervisorHealth) } : {}),
       },
     })
     this.appendOutputSnapshot(terminalId, context, output)
     if (!hasShellOutput(output)) {
       await this.drainInitialTerminalOutput(runtime, context)
+    }
+    if (runtime.inputMode === "user" && runtime.status === "running" && !runtime.awaitingInput) {
+      this.markAwaitingInput(runtime, analyzeTerminalInputEvidence(runtime.promptFrame).prompt || "Terminal is ready for user input.", context.conversationId)
     }
     const initialTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
     if (!this.terminals.has(terminalId) || !isActiveTerminalStatus(runtime.status)) {
@@ -440,6 +466,7 @@ export class ConversationTerminalManager {
     if (isRuntimeTerminal(runtime)) {
       const terminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === runtime.terminalId)
       assertModelCanStopTerminal(terminal ?? runtime)
+      runtime.stopping = true
       await this.waitForPendingDrain(runtime)
       const output = await this.supervisor.stop(runtime.terminalId, runtime.processId, {
         ...input,
@@ -512,16 +539,35 @@ export class ConversationTerminalManager {
     if (terminal) {
       this.emitTerminalEvent("terminal.data", terminal, { stream: chunk.stream, text: chunk.text, sequence })
     }
-    const prompt = detectPrompt(chunk.text)
-    if (prompt && runtime && !runtime.awaitingInput) {
-      runtime.awaitingInput = true
-      runtime.status = "awaiting_input"
-      this.store.updateTerminal(terminalId, { status: "awaiting_input", awaitingInput: true, lastPrompt: prompt })
-      const prompted = conversationId ? this.store.listConversationTerminals(conversationId).find((item) => item.terminalId === terminalId) : undefined
-      if (prompted) {
-        this.emitTerminalEvent("terminal.input.requested", prompted, { prompt, secret: isSecretPrompt(prompt) })
-        this.wakeWaitingTasks(terminalId, "input_required")
+    if (runtime && !runtime.awaitingInput) {
+      runtime.lastOutputAt = Date.now()
+      runtime.promptFrame = rollingPromptFrame(runtime.promptFrame, chunk.text)
+      clearTimeout(runtime.inputDetectionTimer)
+      const evidence = analyzeTerminalInputEvidence(runtime.promptFrame)
+      if (evidence.kind === "protocol") {
+        this.markAwaitingInput(runtime, evidence.prompt, conversationId)
+      } else if (runtime.inputMode === "user") {
+        runtime.inputDetectionTimer = setTimeout(() => {
+          if (this.terminals.get(terminalId) !== runtime || runtime.awaitingInput || runtime.status !== "running") return
+          const currentEvidence = analyzeTerminalInputEvidence(runtime.promptFrame)
+          const prompt = currentEvidence.prompt || "Terminal is ready for user input."
+          this.markAwaitingInput(runtime, prompt, runtime.conversationId)
+        }, terminalInteractiveSettleMs)
+        runtime.inputDetectionTimer.unref?.()
       }
+    }
+  }
+
+  private markAwaitingInput(runtime: RuntimeTerminal, prompt: string, conversationId: string | undefined): void {
+    if (runtime.awaitingInput || runtime.status !== "running") return
+    runtime.awaitingInput = true
+    runtime.status = "awaiting_input"
+    const boundedPrompt = clipText(prompt, maxTerminalPromptChars)
+    this.store.updateTerminal(runtime.terminalId, { status: "awaiting_input", awaitingInput: true, lastPrompt: boundedPrompt })
+    const prompted = conversationId ? this.store.listConversationTerminals(conversationId).find((item) => item.terminalId === runtime.terminalId) : undefined
+    if (prompted) {
+      this.emitTerminalEvent("terminal.input.requested", prompted, { prompt: boundedPrompt, secret: isSecretPrompt(boundedPrompt) })
+      this.wakeWaitingTasks(runtime.terminalId, "input_required")
     }
   }
 
@@ -538,16 +584,17 @@ export class ConversationTerminalManager {
   }
 
   private async pollTerminal(terminal: RuntimeTerminal): Promise<void> {
-    if (terminal.drainPromise) {
+    if (terminal.stopping || terminal.drainPromise) {
       return
     }
     await this.drainRuntimeTerminal(terminal, undefined)
   }
 
   private async drainRuntimeTerminal(terminal: RuntimeTerminal, context: ToolExecutorContext | undefined): Promise<BashToolOutput> {
-    const previousDrain = terminal.drainPromise?.catch(() => undefined)
+    if (terminal.drainPromise) {
+      return terminal.drainPromise
+    }
     const drain = (async () => {
-      await previousDrain
       const output = await this.supervisor.output(terminal.terminalId, terminal.processId, {
         operation: "output",
         processId: terminal.processId,
@@ -619,6 +666,7 @@ export class ConversationTerminalManager {
   }
 
   private async stopRuntimeTerminal(terminal: RuntimeTerminal, reason?: string): Promise<void> {
+    terminal.stopping = true
     await this.waitForPendingDrain(terminal)
     const output = await this.supervisor
       .stop(terminal.terminalId, terminal.processId, {
@@ -703,6 +751,7 @@ export class ConversationTerminalManager {
     if (terminal.pollTimer) {
       clearInterval(terminal.pollTimer)
     }
+    clearTimeout(terminal.inputDetectionTimer)
     this.terminals.delete(terminal.terminalId)
   }
 
@@ -719,6 +768,10 @@ export class ConversationTerminalManager {
       awaitingInput: terminal.awaitingInput,
       supervisorOutputSequence: terminal.output.nextOutputSequence,
       consecutivePollFailures: 0,
+      inputMode: terminalInputMode(this.store.findTerminal(terminal.conversationId, terminal.terminalId)?.metadataJson),
+      promptFrame: terminal.output.pty?.slice(-maxTerminalPromptFrameChars) ?? "",
+      lastOutputAt: Date.now(),
+      stopping: false,
     }
   }
 
@@ -734,7 +787,10 @@ export class ConversationTerminalManager {
     }
     const runtime = this.terminals.get(terminalId)
     if (runtime && typeof output.process?.nextOutputSequence === "number") {
-      runtime.supervisorOutputSequence = output.process.nextOutputSequence
+      // A host may disappear just after reporting process completion. A late
+      // missing/status response carries cursor zero; never let that rewind a
+      // Terminal and replay already persisted PTY chunks.
+      runtime.supervisorOutputSequence = Math.max(runtime.supervisorOutputSequence, output.process.nextOutputSequence)
     }
   }
 
@@ -1052,24 +1108,34 @@ const terminalKeySequence = (key: NonNullable<Extract<ClientCommand, { type: "te
   }
 }
 
-const detectPrompt = (text: string): string | undefined => {
-  const lines = text.split(/\r?\n/).map((line) => stripAnsi(line).trim()).filter(Boolean)
-  const joined = lines.join(" ")
-  const inquirerLine = [...lines].reverse().find((line) => /\b(select|choose|use arrow-keys|return to submit|press enter)\b|[›❯❯]/i.test(line))
-  const candidate = inquirerLine ?? lines.at(-1)
-  if (!candidate) {
-    return undefined
+type InputEvidence = { kind: "none" | "protocol"; prompt: string }
+
+const rollingPromptFrame = (previous: string, chunk: string): string => `${previous}${chunk}`.slice(-maxTerminalPromptFrameChars)
+
+export const analyzeTerminalInputEvidence = (frame: string): InputEvidence => {
+  const plain = stripAnsi(frame).replaceAll("\r", "\n")
+  const lines = plain.split("\n").map((line) => line.trim()).filter(Boolean)
+  const candidate = lines.at(-1) ?? ""
+  const tail = lines.slice(-8).join(" ").slice(-maxTerminalPromptChars)
+  // Conservative terminal protocol shapes only. Free-form question words are
+  // intentionally insufficient because ordinary logs frequently contain them.
+  const anchoredChoice = /(?:^|\s)(?:\[[Yy]\/\s*[Nn]\]|\[[Nn]\/\s*[Yy]\]|\([Yy]\/\s*[Nn]\)|\([Nn]\/\s*[Yy]\))\s*$/
+  const selectorFrame = /(?:^|\n)\s*[›❯]\s+\S/.test(plain) && /\u001b\[[0-?]*[ -/]*[@-~]/.test(frame)
+  const hiddenInputMode = /\u001b\[\?25l/.test(frame) && /(?:password|passphrase|secret)\s*[:?]?\s*$/i.test(candidate)
+  if (anchoredChoice.test(candidate) || selectorFrame || hiddenInputMode) return { kind: "protocol", prompt: tail }
+  return { kind: "none", prompt: tail }
+}
+
+const terminalInputMode = (metadata: unknown): "none" | "user" => {
+  if (typeof metadata === "string") {
+    try {
+      return terminalInputMode(JSON.parse(metadata) as unknown)
+    } catch {
+      return "none"
+    }
   }
-  if (/\b(select|choose|use arrow-keys|return to submit)\b|[›❯]/i.test(joined)) {
-    return joined.slice(-300)
-  }
-  if (/(password|token|api\s*key|secret|passphrase)\s*[:?]?$/i.test(candidate)) {
-    return candidate
-  }
-  if (/(\[[YyNn]\/[YyNn]\]|\([YyNn]\/[YyNn]\)|press enter|select|choose|continue\?|overwrite\?|install\?|proceed\?|:\s*$|\?\s*$|[›❯]\s*)/i.test(candidate)) {
-    return candidate
-  }
-  return undefined
+  if (!metadata || typeof metadata !== "object") return "none"
+  return (metadata as { inputMode?: unknown }).inputMode === "user" ? "user" : "none"
 }
 
 const isSecretPrompt = (prompt: string): boolean => /(password|token|api\s*key|secret|passphrase)/i.test(prompt)

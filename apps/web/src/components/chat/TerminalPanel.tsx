@@ -29,6 +29,7 @@ interface TerminalDockPanelProps {
   onActiveTerminalIdChange: (terminalId: string) => void;
   onClose: () => void;
   onStop: (terminalId: string) => void;
+  onRename: (terminalId: string, name: string) => void;
   onInput: (terminalId: string, input: { data?: string; text?: string; key?: TerminalInputKey; submit?: boolean }) => void;
   onResize: (terminalId: string, size: { cols: number; rows: number }) => void;
   dockHeight: number;
@@ -208,6 +209,7 @@ export function TerminalDockPanel({
   onActiveTerminalIdChange,
   onClose,
   onStop,
+  onRename,
   onInput,
   onResize,
   dockHeight,
@@ -333,6 +335,7 @@ export function TerminalDockPanel({
               </div>
             </div>
             <div className="mt-3 flex items-center gap-2">
+              <RenameButton terminal={activeTerminal} onRename={onRename} />
               <button
                 type="button"
                 className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-brand-text-light transition hover:bg-gray-50 hover:text-brand-text-dark"

@@ -1,46 +1,41 @@
-import net from "node:net"
-import os from "node:os"
-import fs from "node:fs"
+import { spawn } from "node:child_process"
 import crypto from "node:crypto"
-import { createWorkspaceShellSession, type WorkspaceShellSession } from "@socrates/workspace"
+import fs from "node:fs"
+import net from "node:net"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { normalizeError } from "@socrates/shared"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 
-type SupervisorTerminal = {
-  terminalId: string
-  workspacePath: string
-  session: WorkspaceShellSession
-  processId: string
+type Method = "start" | "status" | "output" | "stop" | "input" | "resize" | "has" | "health" | "shutdown-if-idle" | "shutdown"
+type SupervisorRequest = {
+  id: string
+  method: Method
+  terminalId?: string
+  workspacePath?: string
+  processId?: string
+  input?: BashToolInput
+  text?: string
+  cols?: number
+  rows?: number
+}
+type SupervisorResponse = {
+  id: string
+  ok: boolean
+  output?: BashToolOutput
+  has?: boolean
+  health?: { instanceId: string; processId: number; startedAt: string; terminalCount: number }
+  error?: { code: string; message: string; details?: unknown }
 }
 
-type SupervisorRequest =
-  | { id: string; method: "start"; terminalId: string; workspacePath: string; input: BashToolInput }
-  | { id: string; method: "status" | "output" | "stop"; terminalId: string; processId?: string; input?: BashToolInput }
-  | { id: string; method: "input"; terminalId: string; processId?: string; text: string }
-  | { id: string; method: "resize"; terminalId: string; processId?: string; cols: number; rows: number }
-  | { id: string; method: "has"; terminalId: string }
-  | { id: string; method: "health" }
-  | { id: string; method: "shutdown" }
-  | { id: string; method: "shutdown-if-idle" }
-
-type SupervisorResponse =
-  | { id: string; ok: true; output?: BashToolOutput; has?: boolean; health?: { instanceId: string; processId: number; startedAt: string; terminalCount: number } }
-  | { id: string; ok: false; error: { code: string; message: string; details?: unknown } }
-
-const terminals = new Map<string, SupervisorTerminal>()
 const socketPath = process.argv[2]
-const supervisorIdleShutdownMs = Number.parseInt(process.env.SOCRATES_TERMINAL_SUPERVISOR_IDLE_SHUTDOWN_MS ?? "2000", 10)
-const supervisorInstanceId = crypto.randomUUID()
-const supervisorStartedAt = new Date().toISOString()
-let idleShutdownTimer: NodeJS.Timeout | undefined
+const instanceId = crypto.randomUUID()
+const startedAt = new Date().toISOString()
+const knownHosts = new Set<string>()
+const spawningHosts = new Map<string, Promise<void>>()
 
-if (!socketPath) {
-  throw new Error("Supervisor socket path is required.")
-}
-
-if (process.platform !== "win32" && fs.existsSync(socketPath)) {
-  fs.unlinkSync(socketPath)
-}
+if (!socketPath) throw new Error("Supervisor socket path is required.")
+if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
 const server = net.createServer((socket) => {
   let buffer = ""
@@ -49,9 +44,7 @@ const server = net.createServer((socket) => {
     buffer += chunk
     for (;;) {
       const newline = buffer.indexOf("\n")
-      if (newline < 0) {
-        return
-      }
+      if (newline < 0) return
       const line = buffer.slice(0, newline)
       buffer = buffer.slice(newline + 1)
       void handleLine(socket, line)
@@ -61,116 +54,128 @@ const server = net.createServer((socket) => {
 
 server.listen(socketPath)
 server.on("listening", () => {
-  if (process.platform !== "win32") {
-    fs.chmodSync(socketPath, 0o600)
-  }
+  if (process.platform !== "win32") fs.chmodSync(socketPath, 0o600)
 })
 
 const handleLine = async (socket: net.Socket, line: string): Promise<void> => {
   let request: SupervisorRequest
   try {
     request = JSON.parse(line) as SupervisorRequest
-  } catch (error) {
-    write(socket, { id: "unknown", ok: false, error: { code: "invalid_request", message: normalizeError(error).message } })
-    return
-  }
-
-  try {
-    write(socket, await handleRequest(request))
-    refreshIdleShutdown()
+    socket.end(JSON.stringify(await handleRequest(request)) + "\n")
   } catch (error) {
     const normalized = normalizeError(error)
-    write(socket, {
-      id: request.id,
-      ok: false,
-      error: {
-        code: normalized.code,
-        message: normalized.message,
-        ...(normalized.details === undefined ? {} : { details: normalized.details }),
-      },
-    })
+    socket.end(JSON.stringify({ id: requestId(line), ok: false, error: { code: normalized.code, message: normalized.message, details: normalized.details } }) + "\n")
   }
 }
 
 const handleRequest = async (request: SupervisorRequest): Promise<SupervisorResponse> => {
-  if (request.method === "shutdown") {
-    setTimeout(shutdown, 20).unref?.()
-    return { id: request.id, ok: true }
-  }
-
-  if (request.method === "shutdown-if-idle") {
-    if (terminals.size === 0) {
-      setTimeout(shutdown, 20).unref?.()
-    }
-    return { id: request.id, ok: true }
-  }
-
-  if (request.method === "has") {
-    return { id: request.id, ok: true, has: terminals.has(request.terminalId) }
-  }
-
   if (request.method === "health") {
-    return {
-      id: request.id,
-      ok: true,
-      health: { instanceId: supervisorInstanceId, processId: process.pid, startedAt: supervisorStartedAt, terminalCount: terminals.size },
-    }
+    return { id: request.id, ok: true, health: { instanceId, processId: process.pid, startedAt, terminalCount: knownHosts.size } }
   }
-
+  if (request.method === "shutdown-if-idle") {
+    if (knownHosts.size === 0) setTimeout(shutdownCoordinator, 20).unref?.()
+    return { id: request.id, ok: true }
+  }
+  if (request.method === "shutdown") {
+    await Promise.allSettled([...knownHosts].map((terminalId) => sendHost(terminalId, { id: crypto.randomUUID(), method: "shutdown", terminalId })))
+    setTimeout(shutdownCoordinator, 20).unref?.()
+    return { id: request.id, ok: true }
+  }
+  const terminalId = request.terminalId
+  if (!terminalId) throw new Error("Terminal id is required.")
+  if (request.method === "has") {
+    const has = await canConnect(hostSocketPath(terminalId))
+    if (has) knownHosts.add(terminalId)
+    return { id: request.id, ok: true, has }
+  }
   if (request.method === "start") {
-    const existing = terminals.get(request.terminalId)
-    if (existing) {
-      existing.session.dispose()
-      terminals.delete(request.terminalId)
-    }
-    const session = createWorkspaceShellSession(request.workspacePath)
-    try {
-      const output = await session.run({ ...request.input, operation: "start" })
-      const processId = output.process?.processId
-      if (!processId) {
-        session.dispose()
-        throw new Error("Terminal process did not return a process id.")
-      }
-      terminals.set(request.terminalId, { terminalId: request.terminalId, workspacePath: request.workspacePath, session, processId })
-      return { id: request.id, ok: true, output }
-    } catch (error) {
-      session.dispose()
-      throw error
-    }
+    await ensureHost(terminalId)
+    knownHosts.add(terminalId)
   }
-
-  const terminal = terminals.get(request.terminalId)
-  if (!terminal) {
-    const operation = request.method === "input" || request.method === "resize" ? "status" : request.method
-    return {
-      id: request.id,
-      ok: true,
-      output: missingOutput(operation, request.processId),
-    }
+  if (!(await canConnect(hostSocketPath(terminalId)))) {
+    return { id: request.id, ok: true, output: missingOutput(request.method, request.processId) }
   }
-
-  if (request.method === "input") {
-    terminal.session.writeProcessInput(request.processId ?? terminal.processId, request.text)
-    return { id: request.id, ok: true }
+  const response = await sendHost(terminalId, request)
+  if (
+    request.method === "stop" ||
+    (response.output && !response.output.truncation.truncated && (response.output.process?.status === "exited" || response.output.process?.status === "stopped"))
+  ) {
+    knownHosts.delete(terminalId)
   }
-
-  if (request.method === "resize") {
-    terminal.session.resizeProcess(request.processId ?? terminal.processId, request.cols, request.rows)
-    return { id: request.id, ok: true }
-  }
-
-  const input = { ...(request.input ?? {}), operation: request.method, processId: request.processId ?? terminal.processId } as BashToolInput
-  const output = await terminal.session.run(input)
-  if (output.process?.status === "exited" || output.process?.status === "stopped" || request.method === "stop") {
-    terminal.session.dispose()
-    terminals.delete(request.terminalId)
-  }
-  return { id: request.id, ok: true, output }
+  return response
 }
 
-const missingOutput = (operation: "status" | "output" | "stop", processId: string | undefined): BashToolOutput => ({
-  operation,
-  cwd: os.homedir(),
+const ensureHost = async (terminalId: string): Promise<void> => {
+  if (await canConnect(hostSocketPath(terminalId))) return
+  const pending = spawningHosts.get(terminalId)
+  if (pending) return pending
+  const promise = spawnHost(terminalId)
+  spawningHosts.set(terminalId, promise)
+  try {
+    await promise
+  } finally {
+    spawningHosts.delete(terminalId)
+  }
+}
+
+const spawnHost = async (terminalId: string): Promise<void> => {
+  const hostSocket = hostSocketPath(terminalId)
+  if (process.platform !== "win32" && fs.existsSync(hostSocket)) fs.unlinkSync(hostSocket)
+  const currentPath = fileURLToPath(import.meta.url)
+  const isBuilt = currentPath.endsWith(".js")
+  const hostPath = fileURLToPath(new URL(isBuilt ? "./terminalHostProcess.js" : "./terminalHostProcess.ts", import.meta.url))
+  const args = isBuilt ? [hostPath, hostSocket, terminalId] : ["--import", "tsx", hostPath, hostSocket, terminalId]
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: { ...process.env, SOCRATES_TERMINAL_HOST: "1" } })
+  child.unref()
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    if (await canConnect(hostSocket)) return
+    await wait(40)
+  }
+  throw new Error("Terminal host did not become ready.")
+}
+
+const sendHost = (terminalId: string, request: SupervisorRequest): Promise<SupervisorResponse> =>
+  new Promise((resolve, reject) => {
+    const socket = net.createConnection(hostSocketPath(terminalId))
+    let buffer = ""
+    socket.setEncoding("utf8")
+    socket.once("connect", () => socket.write(JSON.stringify(request) + "\n"))
+    socket.on("data", (chunk) => {
+      buffer += chunk
+      const newline = buffer.indexOf("\n")
+      if (newline < 0) return
+      socket.destroy()
+      resolve(JSON.parse(buffer.slice(0, newline)) as SupervisorResponse)
+    })
+    socket.once("error", reject)
+    socket.setTimeout(5_000, () => {
+      socket.destroy()
+      reject(new Error("Terminal host request timed out."))
+    })
+  })
+
+const hostSocketPath = (terminalId: string): string => {
+  const suffix = crypto.createHash("sha256").update(terminalId).digest("hex").slice(0, 16)
+  return process.platform === "win32" ? "\\\\.\\pipe\\socrates-terminal-host-" + suffix : path.join(path.dirname(socketPath), "socrates-terminal-host-" + suffix + ".sock")
+}
+
+const canConnect = (target: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = net.createConnection(target)
+    const done = (ok: boolean) => {
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve(ok)
+    }
+    socket.once("connect", () => done(true))
+    socket.once("error", () => done(false))
+    socket.setTimeout(200, () => done(false))
+  })
+
+const missingOutput = (method: Method, processId: string | undefined): BashToolOutput => ({
+  operation: method === "start" || method === "output" || method === "stop" ? method : "status",
+  cwd: process.cwd(),
   exitCode: null,
   stdout: "",
   stderr: "",
@@ -181,32 +186,20 @@ const missingOutput = (operation: "status" | "output" | "stop", processId: strin
   process: { processId: processId ?? "missing", status: "missing", nextOutputSequence: 0 },
 })
 
-const write = (socket: net.Socket, response: SupervisorResponse): void => {
-  socket.write(`${JSON.stringify(response)}\n`)
-}
-
-const shutdown = (): void => {
-  clearTimeout(idleShutdownTimer)
-  for (const terminal of terminals.values()) {
-    terminal.session.dispose()
+const requestId = (line: string): string => {
+  try {
+    const value = JSON.parse(line) as { id?: unknown }
+    return typeof value.id === "string" ? value.id : "unknown"
+  } catch {
+    return "unknown"
   }
-  terminals.clear()
+}
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+const shutdownCoordinator = (): void => {
   server.close(() => {
-    if (process.platform !== "win32" && fs.existsSync(socketPath)) {
-      fs.unlinkSync(socketPath)
-    }
+    if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
     process.exit(0)
   })
 }
-
-process.on("SIGTERM", shutdown)
-process.on("SIGINT", shutdown)
-
-const refreshIdleShutdown = (): void => {
-  clearTimeout(idleShutdownTimer)
-  if (terminals.size > 0 || supervisorIdleShutdownMs <= 0) {
-    return
-  }
-  idleShutdownTimer = setTimeout(shutdown, supervisorIdleShutdownMs)
-  idleShutdownTimer.unref?.()
-}
+process.on("SIGTERM", shutdownCoordinator)
+process.on("SIGINT", shutdownCoordinator)

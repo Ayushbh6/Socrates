@@ -7,7 +7,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "dev": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/mcp build && pnpm --filter @socrates/core build && tsx watch src/index.ts",
-    "build": "tsup src/index.ts src/ws/terminalSupervisorProcess.ts --format esm --dts --clean && node scripts/copy-memory-assets.mjs",
+    "build": "tsup src/index.ts src/ws/terminalSupervisorProcess.ts src/ws/terminalHostProcess.ts --format esm --dts --clean && node scripts/copy-memory-assets.mjs",
     "test": "pnpm --filter @socrates/shared build && pnpm --filter @socrates/contracts build && pnpm --filter @socrates/workspace build && pnpm --filter @socrates/providers build && pnpm --filter @socrates/mcp build && pnpm --filter @socrates/core build && vitest run",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
