@@ -24,6 +24,8 @@ export type IdPrefix =
   | "term"
   | "task"
   | "twait"
+  | "tturn"
+  | "evd"
   | "tout"
   | "fop"
   | "patch"

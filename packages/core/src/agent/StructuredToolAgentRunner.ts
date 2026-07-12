@@ -116,36 +116,59 @@ export class StructuredToolAgentRunner {
     }
 
     messages.push({ role: "developer", content: "Finish now. Return only the strict structured result requested by the system contract. Do not call tools." })
-    const finalPrepared = await prepareContextForModelCall({
-      provider: input.provider,
-      providerId: input.providerId,
-      modelId: input.modelId,
-      runtimeConfig: input.runtimeConfig,
-      system: input.system,
-      messages,
-      ...(input.contextCompression ? { compression: input.contextCompression } : {}),
-    })
-    const generated = await input.provider.generateStructured<TOutput>({
-      providerId: input.providerId,
-      modelId: input.modelId,
-      system: input.system,
-      messages: finalPrepared.messages,
-      runtimeConfig: input.runtimeConfig,
-      schema: input.schema,
-      modelCallId: createId("mcall"),
-      ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:structured-final` } : {}),
-      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    })
-    if (generated.usage) usages.push(generated.usage)
-    const parsed = input.schema.safeParse(generated.output)
-    if (!parsed.success) {
-      throw new SocratesError("structured_agent_output_invalid", "Structured agent output did not match its schema.", {
-        details: { validation: JSON.stringify(parsed.error.flatten()) },
-        recoverable: true,
+    let lastValidation: unknown
+    let lastOutput: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const finalPrepared = await prepareContextForModelCall({
+        provider: input.provider,
+        providerId: input.providerId,
+        modelId: input.modelId,
+        runtimeConfig: input.runtimeConfig,
+        system: input.system,
+        messages,
+        ...(input.contextCompression ? { compression: input.contextCompression } : {}),
       })
+      const generated = await input.provider.generateStructured<TOutput>({
+        providerId: input.providerId,
+        modelId: input.modelId,
+        system: input.system,
+        messages: finalPrepared.messages,
+        runtimeConfig: input.runtimeConfig,
+        schema: input.schema,
+        modelCallId: createId("mcall"),
+        ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:structured-final:${attempt + 1}` } : {}),
+        ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      })
+      if (generated.usage) usages.push(generated.usage)
+      const parsed = input.schema.safeParse(generated.output)
+      if (parsed.success) {
+        return { output: parsed.data, toolCalls: usedToolCalls, usages }
+      }
+      lastValidation = parsed.error.flatten()
+      lastOutput = generated.output
+      if (attempt === 0) {
+        messages.push({ role: "assistant", content: boundedJson(generated.output, 4_000) })
+        messages.push({
+          role: "developer",
+          content: `Your structured result failed validation. Correct only the reported fields and return the complete strict object again. Validation: ${boundedJson(lastValidation, 4_000)}`,
+        })
+      }
     }
-    return { output: parsed.data, toolCalls: usedToolCalls, usages }
+    throw new SocratesError("structured_agent_output_invalid", "Structured agent output did not match its schema after one bounded repair attempt.", {
+      details: { validation: boundedJson(lastValidation, 4_000), outputPreview: boundedJson(lastOutput, 2_000) },
+      recoverable: true,
+    })
   }
+}
+
+const boundedJson = (value: unknown, limit: number): string => {
+  let serialized: string
+  try {
+    serialized = JSON.stringify(value)
+  } catch {
+    serialized = String(value)
+  }
+  return serialized.length > limit ? `${serialized.slice(0, limit)}...` : serialized
 }
 
 const executeTool = async <TOutput>(

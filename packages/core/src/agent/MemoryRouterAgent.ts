@@ -18,7 +18,7 @@ import {
   POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
   PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT,
 } from "../prompts/memoryRoutingPrompt"
-import { createMemoryRouterToolRegistry } from "../tools/registry"
+import { createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry } from "../tools/registry"
 import type { ToolExecutors } from "../tools/types"
 import { StructuredToolAgentRunner } from "./StructuredToolAgentRunner"
 
@@ -112,7 +112,7 @@ export class MemoryRouterAgent {
         assistantDraft: input.assistantDraft,
       }),
       schema: memoryRouterPostTurnResultSchema,
-      toolRegistry: createMemoryRouterToolRegistry(),
+      toolRegistry: createMemoryFinalizationToolRegistry(),
       toolExecutors: input.toolExecutors,
       maxToolCalls: MAX_ROUTER_TOOL_CALLS,
       projectId: input.projectId,

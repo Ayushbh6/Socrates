@@ -1324,6 +1324,9 @@ const removeSettledLiveTurn = (
 
 const upsertTerminal = (terminals: ConversationTerminal[], terminal: ConversationTerminal): ConversationTerminal[] => {
   const existing = terminals.find((item) => item.terminalId === terminal.terminalId);
+  if (existing && (terminal.stateVersion ?? 0) < (existing.stateVersion ?? 0)) {
+    return terminals;
+  }
   const output =
     terminal.output.stdout || terminal.output.stderr || terminal.output.pty
       ? terminal.output
@@ -1416,6 +1419,7 @@ const terminalEventToConversationTerminal = (
   ...(event.payload.signal === undefined ? {} : { signal: event.payload.signal }),
   autoDetached: event.payload.autoDetached,
   awaitingInput: event.payload.awaitingInput,
+  ...(event.payload.stateVersion === undefined ? {} : { stateVersion: event.payload.stateVersion }),
   ...(event.payload.lastPrompt ? { lastPrompt: event.payload.lastPrompt } : {}),
   startedAt: event.payload.startedAt,
   updatedAt: event.payload.updatedAt,

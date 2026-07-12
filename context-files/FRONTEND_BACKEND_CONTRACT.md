@@ -186,6 +186,7 @@ type ConversationTerminal = {
   signal?: string | null
   autoDetached: boolean
   awaitingInput: boolean
+  stateVersion?: number
   lastPrompt?: string
   startedAt: string
   updatedAt: string
@@ -2090,6 +2091,7 @@ Rules:
 - Commands that begin by changing into a guessed absolute path outside the active workspace are rejected. Terminal already starts in the active workspace; use relative paths from there. For subfolder commands, pass `cwd` instead of prefixing the command with `cd`. Before Terminal commands create files or directories, verify the intended parent directory exists and use an explicit relative path or `cwd`.
 - Command output must stream through `tool.call.output`.
 - Long-running Terminal output streams through `terminal.data` so the xterm-backed Terminal shell updates even when the chat turn is idle or another turn is active. `terminal.output` is legacy-compatible event language.
+- Terminal lifecycle snapshots carry a monotonic `stateVersion`. Input first commits `running`, then writes to the PTY; any newly detected prompt commits a later `awaiting_input` version. Prompt timers are tied to that exact input/output generation, unchanged polling does not emit duplicate lifecycle events, and the frontend ignores any late snapshot older than its current version.
 - Returned stdout/stderr must be truncated when large, with full output persisted for later retrieval.
 - `cwd` must stay inside the active project workspace unless explicitly approved.
 - Only structured allowlisted argv diagnostics can be auto-allowed by policy; raw shell text is approval-gated outside full-access mode.
@@ -2136,7 +2138,7 @@ Rules:
 
 Accepted replacement contract: main Socrates retrieval is active-project scoped and defaults to the full project. Search modes are `lexical`, `semantic`, `combined`, and `audit`; `exact` and main-agent cross-project selectors are retired. Lexical queries accept at most 128 characters and search all supplied terms. Semantic/combined queries accept at most 1,000 characters. Normal rows return only `resultNumber`, `content`, `turnId`, `conversationTitle`, `turnNumber`, `matchedRole`, `status`, and `occurredAt`; inspect resolves the numbered result to its full parent. Scores and storage/vector/message/chunk ids remain backend-only.
 
-Memory retrieval rows return only `resultNumber`, `content`, `surface`, `fileName`, `sectionId`, `sectionHeading`, and `scope`. `MemoryRouterAgent` receives automatic hybrid candidates, may call `memory_search` three times, and must finish with Zod-validated exact `readTargets`/`memoryWrites`.
+Memory retrieval rows return only `resultNumber`, `content`, `surface`, `fileName`, `sectionId`, `sectionHeading`, and `scope`. The pre-turn `MemoryRouterAgent` receives automatic hybrid candidates, may call `memory_search` three times, and must finish with Zod-validated exact `readTargets` only. It has no write field or write path.
 
 Normal retrieval searches visible active/archived conversation turns in the active project. The main-agent contract never accepts a project selector; the WebSocket executor supplies the active `projectId`. The Global Memory Agent has a separate explicit cross-project contract.
 
@@ -2453,18 +2455,26 @@ type MemoryReadTarget = {
   reason: string
 }
 
-type RoutedMemoryWrite =
-  | { kind: "document"; surface: MemorySurface; fileName: MemoryRetrievalFile; sectionId: MemoryRetrievalSection; text: string; reason: string }
-  | { kind: "skill_candidate"; text: string; reason: string }
-
 type MemoryRouterPreTurnResult = {
   readTargets: MemoryReadTarget[] // max 8
-  memoryWrites: RoutedMemoryWrite[] // max 3
   reason: string
 }
 
+type MemoryReconciliationAction = {
+  operation: "upsert" | "replace" | "remove" | "archive" | "condense"
+  surface: "project_notes" | "project_memory" | "repo_docs"
+  fileName: MemoryRetrievalFile
+  sectionId: MemoryRetrievalSection
+  instruction: string // max 1,200 characters
+  reason: string // max 500 characters
+  evidenceReferences: string[] // max 5 backend-created evd_ ids
+  capabilityId?: string
+  verifiedRuntime?: string
+  verifiedAt?: string
+}
+
 type MemoryRouterPostTurnResult = {
-  memoryWrites: RoutedMemoryWrite[] // max 3
+  actions: MemoryReconciliationAction[] // max 5
   reason: string
 }
 ```
@@ -2474,13 +2484,14 @@ The behavior stays simple and human-facing:
 - Pre-turn routing returns exact valid file/section read targets, not boolean surfaces or loose doc hints.
 - Pre-turn runtime always reads bounded identity sections (`core_identity`, `voice_and_presence`, `relationship_to_user`) plus global/project always-apply sections and renders them with the registry-generated surface map into a provider-agnostic stable cache prelude before conversation/user text. This stable read path does not depend on successful structured Memory Router generation. Router-selected docs, user/project metadata, save summaries, runtime facts, attachments, and same-turn ledgers remain in the later dynamic context tail.
 - Before router reasoning, the complete user prompt is shared-chunked and automatically hybrid-prefetched against eligible memory sections. Up to 12 prompt segments are merged into at most eight section parents; this does not consume the router's tool budget.
-- `MemoryRouterAgent` has exactly one `memory_search` tool, at most three calls per pre-turn/post-evidence phase, then tools are disabled and the final response is strict Zod structured output.
+- The pre-turn router has `memory_search` only for routing and is strictly read-only. The final router may also use `turn_evidence` to inspect backend-created references, with at most three total drill-down calls before strict Zod output. Malformed structured output gets one bounded validation-feedback repair attempt. `project_notes/runtime_context` and `project_notes/state_ledger` are backend-owned and rejected as reconciliation actions.
 - The Global Memory Agent follows the same tool-loop then structured-final pattern. Its final Zod journal has bounded `summary`, `patternsObserved`, `skillsAffected`, `decisions`, `openInvestigations`, and `nextRunFocus`; scoped file/proposal work remains normal internal tool calls. A valid successful run creates one `memory_agent_journal` row and refreshes the generated Memory Agent Ledger file exposed by Memory Center.
 - The Memory Agent-only `read_memory_journal` tool is read-only. `list` defaults to 5 and caps at 10 compact previews; `read` accepts one run id. Character limits default to 8,000 for list serialization and 12,000 for a run, with a 20,000 hard maximum and explicit truncation metadata. It cannot write, delete, search, or embed journal history.
-- The router never authors `oldText`, `newText`, patches, hashes, or hidden backend ids.
-- Socrates opens exact targets, checks what is already represented, and uses `project_docs` or `repo_docs` for project/repo writes. User-profile/identity/skill candidates go through `memory_note` to their owning agents.
-- Post-evidence routing saves only durable outcomes, open loops, corrections, or repo doctrine changes created by completed work.
-- Equivalent same-turn pre/post writes are suppressed by the routed-memory ledger; paraphrased same-turn memory notes are also deduplicated by the backend.
+- The router never authors `oldText`, `newText`, patches, hashes, or evidence ids. `evd_` ids are created and task-bound by backend code.
+- Every user request creates one durable task. Automatic Terminal wait/resume turns stay inside that task; a user-authored follow-up starts a new task.
+- The first no-tool answer is held as a proposed draft. The final router runs only there, with bounded lifecycle evidence and that draft.
+- Socrates opens exact planned targets and uses `project_docs` or `repo_docs` for mutations. The runtime blocks the final answer until every planned target has a successful mutation followed by a successful read of that same section.
+- Stale claims are replaced, removed, archived, or condensed rather than contradicted by append-only prose. Verified runtime capability entries may include stable `capability`, `verified_runtime`, and `verified_at` anchors.
 
 ### `project_docs`
 
@@ -2508,7 +2519,7 @@ Rules:
 
 - `area: "memory"` is durable cross-conversation project state: goals, decisions, constraints, blockers, durable preferences, changed workflow facts, and handoff facts.
 - Project memory should include a human-readable `Project Always-Apply Rules` section capped at 10 rules. Together with `user_profile`'s `Global Always-Apply Rules`, this forms the centralized always-apply rules list attached to every applicable turn through the stable cache prelude. The project section is for short hard project rules only; fuller repo doctrine still belongs in `repo_docs`.
-- `area: "notes"` is the active assistant notebook: active project context, current todos, checked files, partial progress, next commands, short-term restart points, and a protected backend-owned `runtime_context` section.
+- `area: "notes"` is the active assistant notebook: active project context, current todos, checked files, partial progress, next commands, and short-term restart points. `runtime_context` and `state_ledger` are backend-owned protected sections; the state ledger is rewritten from structured turn data and deduplicated to one bounded block.
 - Runtime docs are structured markdown with YAML frontmatter and `socrates:section` markers. `read_index` returns the parsed section map; `read_section` returns one section; `patch_section` limits an exact oldText/newText replacement to one section.
 - `runtime_context` is system-owned. `project_docs` rejects attempts to patch or change it. It may contain compact workspace scan facts, but must not persist terminal output, live terminal state, dependency dumps, package lists, or root-script inventories.
 - Successful `project_docs` edits stamp YAML frontmatter with backend-owned `updated_at`, `updated_by`, and `last_edited_section`.

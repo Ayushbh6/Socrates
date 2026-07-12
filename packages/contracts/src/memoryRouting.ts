@@ -110,6 +110,7 @@ export const memoryReadTargetSchema = z
   .superRefine(validateMemoryDestination)
 export type MemoryReadTarget = z.infer<typeof memoryReadTargetSchema>
 
+/** @deprecated The router no longer returns writes. Kept only for persisted-history compatibility. */
 export const routedMemoryWriteSchema = z.union([
   z
     .object({ kind: z.literal("document"), ...memoryDestinationShape, text: z.string().min(1).max(1_200), reason: z.string().min(1).max(500) })
@@ -122,14 +123,34 @@ export type RoutedMemoryWrite = z.infer<typeof routedMemoryWriteSchema>
 export const memoryRouterPreTurnResultSchema = z
   .object({
     readTargets: z.array(memoryReadTargetSchema).max(8),
-    memoryWrites: z.array(routedMemoryWriteSchema).max(3),
     reason: z.string().min(1).max(500),
   })
   .strict()
 export type MemoryRouterPreTurnResult = z.infer<typeof memoryRouterPreTurnResultSchema>
 
+export const memoryReconciliationActionSchema = z
+  .object({
+    operation: z.enum(["upsert", "replace", "remove", "archive", "condense"]),
+    ...memoryDestinationShape,
+    surface: z.enum(["project_notes", "project_memory", "repo_docs"]),
+    instruction: z.string().min(1).max(1_200),
+    reason: z.string().min(1).max(500),
+    evidenceReferences: z.array(z.string().regex(/^evd_[A-Za-z0-9_-]+$/)).max(5).default([]),
+    capabilityId: z.string().min(3).max(120).regex(/^[a-z0-9]+(?:[._-][a-z0-9]+)*$/).optional(),
+    verifiedRuntime: z.string().min(1).max(200).optional(),
+    verifiedAt: z.string().datetime().optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    validateMemoryDestination(input, context)
+    if (input.surface === "project_notes" && ["runtime_context", "state_ledger"].includes(input.sectionId)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["sectionId"], message: `${input.sectionId} is backend-owned and cannot be a reconciliation action.` })
+    }
+  })
+export type MemoryReconciliationAction = z.infer<typeof memoryReconciliationActionSchema>
+
 export const memoryRouterPostTurnResultSchema = z
-  .object({ memoryWrites: z.array(routedMemoryWriteSchema).max(3), reason: z.string().min(1).max(500) })
+  .object({ actions: z.array(memoryReconciliationActionSchema).max(5), reason: z.string().min(1).max(500) })
   .strict()
 export type MemoryRouterPostTurnResult = z.infer<typeof memoryRouterPostTurnResultSchema>
 

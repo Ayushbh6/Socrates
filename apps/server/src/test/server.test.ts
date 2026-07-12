@@ -5022,9 +5022,21 @@ describe("WebSocket API", () => {
       expect(projectNotesAfterPatch).toContain("Memory tool smoke note")
       expect(projectNotesAfterPatch).toContain('updated_by: "project_docs"')
       expect(projectNotesAfterPatch).toContain('last_edited_section: "document"')
+      expect(() =>
+        store.runProjectDocsTool(project.id, primaryWorkspace.path as string, {
+          operation: "patch_section",
+          area: "notes",
+          sectionId: "state_ledger",
+          oldText: "Machine-managed compact state",
+          newText: "Agent-managed state",
+        }),
+      ).toThrow(/system-owned/)
+      const projectNotesPath = path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md")
+      fs.appendFileSync(projectNotesPath, "\n<!-- socrates-state-ledger:start -->\nSTALE DUPLICATE LEDGER\n<!-- socrates-state-ledger:end -->\n")
       store.recordProjectStateLedgerTurn(project.id, conversation.id, "synthetic_cancelled_turn", "cancelled", "Cancelled after reading evidence.")
-      const notesAfterCancelledLedger = fs.readFileSync(path.join(primaryWorkspace.path as string, ".socrates", "PROJECT_NOTES.md"), "utf8")
+      const notesAfterCancelledLedger = fs.readFileSync(projectNotesPath, "utf8")
       expect(notesAfterCancelledLedger.match(/<!-- socrates-state-ledger:start -->/g)).toHaveLength(1)
+      expect(notesAfterCancelledLedger).not.toContain("STALE DUPLICATE LEDGER")
       expect(notesAfterCancelledLedger).toContain("Last turn: cancelled")
       expect(notesAfterCancelledLedger).toContain("Outcome: turn cancelled")
       expect(notesAfterCancelledLedger).toContain("Docs touched: none")
@@ -7659,7 +7671,17 @@ describe("WebSocket API", () => {
         actor: { type: "user" },
         payload: { terminalId: inputRequested.payload.terminalId, data: "violet\n" },
       })
+      let runningAfterFirstInput = await waitForEvent(socket, "terminal.status", 8_000)
+      while ((runningAfterFirstInput.payload.stateVersion ?? -1) <= (inputRequested.payload.stateVersion ?? -1)) {
+        runningAfterFirstInput = await waitForEvent(socket, "terminal.status", 8_000)
+      }
+      expect(runningAfterFirstInput.payload.status).toBe("running")
+      expect(runningAfterFirstInput.payload.awaitingInput).toBe(false)
+      expect(runningAfterFirstInput.payload.stateVersion).toBeGreaterThan(inputRequested.payload.stateVersion ?? -1)
       const secondInputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
+      expect(secondInputRequested.payload.status).toBe("awaiting_input")
+      expect(secondInputRequested.payload.awaitingInput).toBe(true)
+      expect(secondInputRequested.payload.stateVersion).toBeGreaterThan(runningAfterFirstInput.payload.stateVersion ?? -1)
       expect(secondInputRequested.payload.prompt).toContain("Name an animal with the colour violet")
       sendCommand(socket, {
         id: createId("evt"),

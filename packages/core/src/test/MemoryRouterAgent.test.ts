@@ -72,7 +72,6 @@ describe("MemoryRouterAgent", () => {
               sectionId: "collaboration_style",
               reason: "The prompt explicitly invokes the stored slow-mode collaboration behavior.",
             }],
-            memoryWrites: [],
             reason: "Recall the exact collaboration section before Socrates plans the work.",
           } as never,
         }
@@ -102,18 +101,45 @@ describe("MemoryRouterAgent", () => {
   })
 
   it("rejects a final object that does not satisfy the strict routing schema", async () => {
+    let structuredCalls = 0
     const provider: ModelProvider = {
       countTokens: async (request) => ({ providerId: request.providerId, modelId: request.modelId, inputTokens: 1, baseTokens: 1, method: "local_tiktoken", safetyMarginPercent: 0 }),
       async *stream() {
         yield { type: "model.completed" }
       },
       async generateStructured() {
-        return { output: { readTargets: [{ surface: "user_profile", fileName: "MEMORY.md", sectionId: "collaboration_style", reason: "invalid ownership" }], memoryWrites: [], reason: "invalid" } as never }
+        structuredCalls += 1
+        return { output: { readTargets: [{ surface: "user_profile", fileName: "MEMORY.md", sectionId: "collaboration_style", reason: "invalid ownership" }], reason: "invalid" } as never }
       },
     }
     await expect(new MemoryRouterAgent(provider).routePreTurn({
       ...context,
       toolExecutors: {} as ToolExecutors,
     })).rejects.toMatchObject({ code: "structured_agent_output_invalid" })
+    expect(structuredCalls).toBe(2)
+  })
+
+  it("repairs one invalid structured result using bounded validation feedback", async () => {
+    let structuredCalls = 0
+    const repairMessages: unknown[] = []
+    const provider: ModelProvider = {
+      countTokens: async (request) => ({ providerId: request.providerId, modelId: request.modelId, inputTokens: 1, baseTokens: 1, method: "local_tiktoken", safetyMarginPercent: 0 }),
+      async *stream() {
+        yield { type: "model.completed" }
+      },
+      async generateStructured(request) {
+        structuredCalls += 1
+        repairMessages.push(request.messages)
+        if (structuredCalls === 1) return { output: { readTargets: [], reason: "" } as never }
+        return { output: { readTargets: [], reason: "No project context is needed." } as never }
+      },
+    }
+    const output = await new MemoryRouterAgent(provider).routePreTurn({
+      ...context,
+      toolExecutors: {} as ToolExecutors,
+    })
+    expect(output).toEqual({ readTargets: [], reason: "No project context is needed." })
+    expect(structuredCalls).toBe(2)
+    expect(JSON.stringify(repairMessages[1])).toContain("failed validation")
   })
 })

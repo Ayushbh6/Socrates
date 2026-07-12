@@ -19,6 +19,7 @@ export type CreateTerminalInput = {
   processId?: string
   autoDetached?: boolean
   awaitingInput?: boolean
+  stateVersion?: number
   lastPrompt?: string
   metadata?: unknown
 }
@@ -35,6 +36,7 @@ export type UpdateTerminalInput = Partial<{
   signal: string | null
   autoDetached: boolean
   awaitingInput: boolean
+  stateVersion: number
   lastPrompt: string | null
   completedAt: string | null
   metadata: unknown
@@ -77,6 +79,7 @@ export class TerminalStore extends StoreBase {
         processId: input.processId,
         autoDetached: input.autoDetached ?? false,
         awaitingInput: input.awaitingInput ?? false,
+        stateVersion: input.stateVersion ?? 0,
         lastPrompt: input.lastPrompt,
         startedAt: now,
         updatedAt: now,
@@ -90,6 +93,15 @@ export class TerminalStore extends StoreBase {
     const current = this.getTerminalRow(terminalId)
     const previousMetadata = asRecord(parseJson(current?.metadataJson ?? null))
     const nextMetadata = input.metadata === undefined ? previousMetadata : { ...(previousMetadata ?? {}), ...(asRecord(input.metadata) ?? {}) }
+    const stateChanged = Boolean(
+      current &&
+        ((input.status !== undefined && input.status !== current.status) ||
+          (input.exitCode !== undefined && input.exitCode !== current.exitCode) ||
+          (input.signal !== undefined && input.signal !== current.signal) ||
+          (input.awaitingInput !== undefined && input.awaitingInput !== current.awaitingInput) ||
+          (input.lastPrompt !== undefined && input.lastPrompt !== current.lastPrompt) ||
+          (input.completedAt !== undefined && input.completedAt !== current.completedAt)),
+    )
     this.handle.db
       .update(terminalSessions)
       .set({
@@ -104,6 +116,7 @@ export class TerminalStore extends StoreBase {
         ...(input.signal === undefined ? {} : { signal: input.signal }),
         ...(input.autoDetached === undefined ? {} : { autoDetached: input.autoDetached }),
         ...(input.awaitingInput === undefined ? {} : { awaitingInput: input.awaitingInput }),
+        ...(stateChanged ? { stateVersion: (current?.stateVersion ?? 0) + 1 } : {}),
         ...(input.lastPrompt === undefined ? {} : { lastPrompt: input.lastPrompt }),
         ...(input.completedAt === undefined ? {} : { completedAt: input.completedAt }),
         ...(input.metadata === undefined ? {} : { metadataJson: JSON.stringify(nextMetadata ?? {}) }),
@@ -300,6 +313,7 @@ export class TerminalStore extends StoreBase {
       ...(row.signal ? { signal: row.signal } : {}),
       autoDetached: row.autoDetached,
       awaitingInput: row.awaitingInput,
+      stateVersion: row.stateVersion,
       ...(row.lastPrompt ? { lastPrompt: row.lastPrompt } : {}),
       startedAt: row.startedAt,
       updatedAt: row.updatedAt,

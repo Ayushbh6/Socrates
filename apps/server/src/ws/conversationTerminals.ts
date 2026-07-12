@@ -26,6 +26,7 @@ type RuntimeTerminal = {
   promptFrame: string
   lastOutputAt: number
   inputDetectionTimer?: NodeJS.Timeout
+  inputGeneration: number
   stopping: boolean
 }
 
@@ -202,17 +203,27 @@ export class ConversationTerminalManager {
       })
     }
     const inputText = terminalInputText(command.payload)
-    await this.supervisor.input(terminal.terminalId, terminal.processId, inputText)
+    const previousPrompt = row.lastPrompt ?? analyzeTerminalInputEvidence(terminal.promptFrame).prompt
+    clearTimeout(terminal.inputDetectionTimer)
+    delete terminal.inputDetectionTimer
+    terminal.inputGeneration += 1
     terminal.awaitingInput = false
     terminal.status = "running"
+    terminal.promptFrame = ""
+    this.store.updateTerminal(terminal.terminalId, { status: "running", awaitingInput: false, lastPrompt: null })
+    this.emitTerminalStatus(terminal)
+    try {
+      await this.supervisor.input(terminal.terminalId, terminal.processId, inputText)
+    } catch (error) {
+      this.markAwaitingInput(terminal, previousPrompt || "Terminal is ready for user input.", terminal.conversationId, terminal.inputGeneration)
+      throw error
+    }
     this.store.appendTerminalOutput({
       terminalId: terminal.terminalId,
       stream: "input",
       text: "[user input sent]\n",
       redacted: true,
     })
-    this.store.updateTerminal(terminal.terminalId, { status: "running", awaitingInput: false, lastPrompt: null })
-    this.emitTerminalStatus(terminal)
   }
 
   async handleResize(command: Extract<ClientCommand, { type: "terminal.resize" }>): Promise<void> {
@@ -321,6 +332,7 @@ export class ConversationTerminalManager {
       inputMode: input.inputMode ?? "none",
       promptFrame: "",
       lastOutputAt: Date.now(),
+      inputGeneration: 0,
       stopping: false,
     }
     this.terminals.set(terminalId, runtime)
@@ -541,25 +553,33 @@ export class ConversationTerminalManager {
     }
     if (runtime && !runtime.awaitingInput) {
       runtime.lastOutputAt = Date.now()
+      const outputAt = runtime.lastOutputAt
+      const inputGeneration = runtime.inputGeneration
       runtime.promptFrame = rollingPromptFrame(runtime.promptFrame, chunk.text)
       clearTimeout(runtime.inputDetectionTimer)
       const evidence = analyzeTerminalInputEvidence(runtime.promptFrame)
       if (evidence.kind === "protocol") {
-        this.markAwaitingInput(runtime, evidence.prompt, conversationId)
+        this.markAwaitingInput(runtime, evidence.prompt, conversationId, inputGeneration)
       } else if (runtime.inputMode === "user") {
         runtime.inputDetectionTimer = setTimeout(() => {
-          if (this.terminals.get(terminalId) !== runtime || runtime.awaitingInput || runtime.status !== "running") return
+          if (
+            this.terminals.get(terminalId) !== runtime ||
+            runtime.awaitingInput ||
+            runtime.status !== "running" ||
+            runtime.inputGeneration !== inputGeneration ||
+            runtime.lastOutputAt !== outputAt
+          ) return
           const currentEvidence = analyzeTerminalInputEvidence(runtime.promptFrame)
           const prompt = currentEvidence.prompt || "Terminal is ready for user input."
-          this.markAwaitingInput(runtime, prompt, runtime.conversationId)
+          this.markAwaitingInput(runtime, prompt, runtime.conversationId, inputGeneration)
         }, terminalInteractiveSettleMs)
         runtime.inputDetectionTimer.unref?.()
       }
     }
   }
 
-  private markAwaitingInput(runtime: RuntimeTerminal, prompt: string, conversationId: string | undefined): void {
-    if (runtime.awaitingInput || runtime.status !== "running") return
+  private markAwaitingInput(runtime: RuntimeTerminal, prompt: string, conversationId: string | undefined, inputGeneration = runtime.inputGeneration): void {
+    if (runtime.awaitingInput || runtime.status !== "running" || runtime.inputGeneration !== inputGeneration) return
     runtime.awaitingInput = true
     runtime.status = "awaiting_input"
     const boundedPrompt = clipText(prompt, maxTerminalPromptChars)
@@ -645,6 +665,9 @@ export class ConversationTerminalManager {
         code: "terminal_supervisor_lost_process",
         message: "The Terminal supervisor no longer owns this PTY process.",
       })
+      return
+    }
+    if (status === terminal.status && status !== "exited" && status !== "stopped") {
       return
     }
     terminal.status = status
@@ -771,6 +794,7 @@ export class ConversationTerminalManager {
       inputMode: terminalInputMode(this.store.findTerminal(terminal.conversationId, terminal.terminalId)?.metadataJson),
       promptFrame: terminal.output.pty?.slice(-maxTerminalPromptFrameChars) ?? "",
       lastOutputAt: Date.now(),
+      inputGeneration: 0,
       stopping: false,
     }
   }
@@ -869,6 +893,7 @@ export class ConversationTerminalManager {
         ...(terminal.signal === undefined ? {} : { signal: terminal.signal }),
         autoDetached: terminal.autoDetached,
         awaitingInput: terminal.awaitingInput,
+        stateVersion: terminal.stateVersion,
         ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
         nextOutputSequence: terminal.output.nextOutputSequence,
         startedAt: terminal.startedAt,
@@ -929,6 +954,7 @@ const withTerminalMetadata = (output: BashToolOutput, terminal: ReturnType<Socra
       status: terminal.status,
       autoDetached: autoDetached ?? terminal.autoDetached,
       awaitingInput: terminal.awaitingInput,
+      stateVersion: terminal.stateVersion,
       ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
       nextOutputSequence: terminal.output.nextOutputSequence,
       startedAt: terminal.startedAt,
@@ -1000,6 +1026,7 @@ const storedTerminalOutput = (
       status: terminal.status,
       autoDetached: options.autoDetached ?? terminal.autoDetached,
       awaitingInput: terminal.awaitingInput,
+      stateVersion: terminal.stateVersion,
       ...(terminal.lastPrompt ? { lastPrompt: terminal.lastPrompt } : {}),
       nextOutputSequence: terminal.output.nextOutputSequence,
       startedAt: terminal.startedAt,

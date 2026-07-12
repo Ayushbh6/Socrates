@@ -114,6 +114,9 @@ export const handleChatMessageSend = async (
         fallbackTitle: "",
       }
     : store.createTurnFromUserMessage(projectId, conversationId, payload as NonNullable<typeof payload>)
+  if (!continuation) {
+    store.startAgentTask({ projectId, conversationId, sessionId: created.sessionId, turnId: created.turnId, runtimeConfig })
+  }
   const abortController = activeTurns.create(created.turnId)
 
   if (!continuation && created.userMessage) {
@@ -1017,6 +1020,7 @@ const createToolExecutors = (
   current_time: () => Promise.resolve(currentRuntimeTime()),
   trace_retrieve: (input, context) => store.retrieveMainToolTraces(projectId, context.conversationId, input as TraceRetrieveMainToolInput).then((result) => result as never),
   memory_search: (input) => store.searchMemory(projectId, input, false),
+  turn_evidence: (input, context) => Promise.resolve(store.getTaskEvidence(context.turnId, input)),
   tool_docs: (input) => Promise.resolve(store.runToolDocsTool(projectId, input)),
   skills: async (input, context) => {
     const output = input.operation === "preview_import" || input.operation === "commit_import"

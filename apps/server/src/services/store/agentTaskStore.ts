@@ -1,7 +1,7 @@
-import type { RuntimeConfig, TerminalWaitWakeOn, WaitToolInput } from "@socrates/contracts"
+import type { RuntimeConfig, TerminalWaitWakeOn, TurnEvidenceToolInput, TurnEvidenceToolOutput, WaitToolInput } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { and, eq, inArray } from "drizzle-orm"
-import { agentTaskWaits, agentTasks, sessions, terminalSessions, turns } from "../../db/schema"
+import { agentTaskTurns, agentTaskWaits, agentTasks, sessions, taskEvidenceReferences, terminalSessions, turns } from "../../db/schema"
 import { StoreBase } from "./shared"
 
 type TerminalWakeEvent = TerminalWaitWakeOn
@@ -35,6 +35,133 @@ export type ContinuedTerminalTask = ReadyTerminalTask & {
 }
 
 export class AgentTaskStore extends StoreBase {
+  startTask(input: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId: string
+    runtimeConfig: RuntimeConfig
+  }): string {
+    const existing = this.taskForTurn(input.turnId)
+    if (existing) return existing.id
+    const now = nowIso()
+    const taskId = createId("task")
+    this.handle.sqlite.transaction(() => {
+      this.handle.db.insert(agentTasks).values({
+        id: taskId,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        rootTurnId: input.turnId,
+        currentTurnId: input.turnId,
+        status: "running",
+        runtimeConfigJson: JSON.stringify(input.runtimeConfig),
+        createdAt: now,
+        updatedAt: now,
+        metadataJson: JSON.stringify({ lifecycle: "user_request" }),
+      }).run()
+      this.handle.db.insert(agentTaskTurns).values({ id: createId("tturn"), taskId, turnId: input.turnId, ordinal: 0, kind: "root", createdAt: now }).run()
+    })()
+    return taskId
+  }
+
+  evidenceForTurn(turnId: string, input: TurnEvidenceToolInput): TurnEvidenceToolOutput {
+    const task = this.taskForTurn(turnId)
+    if (!task) throw new SocratesError("task_evidence_unavailable", "No task lifecycle is registered for this turn.", { recoverable: true })
+    const turnRows = this.handle.db.select({ turnId: agentTaskTurns.turnId }).from(agentTaskTurns).where(eq(agentTaskTurns.taskId, task.id)).all()
+    const turnIds = turnRows.map((row) => row.turnId)
+    const placeholders = turnIds.map(() => "?").join(",")
+    const query = <T>(sql: string, ...params: unknown[]): T[] => this.handle.sqlite.prepare(sql).all(...params) as T[]
+    const references: TurnEvidenceToolOutput["references"] = []
+    const makeReference = (kind: string, label: string, selector: Record<string, unknown>): string => {
+      const selectorJson = JSON.stringify(selector)
+      const existing = this.handle.db.select({ id: taskEvidenceReferences.id }).from(taskEvidenceReferences)
+        .where(and(eq(taskEvidenceReferences.taskId, task.id), eq(taskEvidenceReferences.kind, kind), eq(taskEvidenceReferences.selectorJson, selectorJson))).limit(1).get()
+      const id = existing?.id ?? createId("evd")
+      if (!existing) this.handle.db.insert(taskEvidenceReferences).values({ id, taskId: task.id, kind, selectorJson, createdAt: nowIso() }).run()
+      references.push({ id, kind, label: label.slice(0, 160) })
+      return id
+    }
+    let payload: unknown
+    if (input.operation === "inspect") {
+      const ref = this.handle.db.select().from(taskEvidenceReferences)
+        .where(and(eq(taskEvidenceReferences.id, input.reference as string), eq(taskEvidenceReferences.taskId, task.id))).limit(1).get()
+      if (!ref) throw new SocratesError("task_evidence_reference_invalid", "That evidence reference does not belong to the current task.", { recoverable: true })
+      const selector = JSON.parse(ref.selectorJson) as { table?: string; ids?: string[] }
+      const allowed: Record<string, string> = {
+        tool_calls: `SELECT id, turn_id, tool_name, status, arguments_json, result_json, error_id, started_at, completed_at FROM tool_calls WHERE turn_id IN (${placeholders}) ORDER BY COALESCE(started_at, completed_at) ASC LIMIT ?`,
+        file_operations: `SELECT id, turn_id, operation, path, old_path, status, error_id, completed_at FROM file_operations WHERE turn_id IN (${placeholders}) ORDER BY started_at ASC LIMIT ?`,
+        shell_commands: `SELECT id, turn_id, command, cwd, status, exit_code, duration_ms, metadata_json FROM shell_commands WHERE turn_id IN (${placeholders}) ORDER BY started_at ASC LIMIT ?`,
+        waits: `SELECT w.id, w.terminal_id, w.wake_on_json, w.reason, w.status, w.wake_event, w.created_at, w.woken_at FROM agent_task_waits w WHERE w.task_id = ? ORDER BY w.created_at ASC LIMIT ?`,
+      }
+      if (selector.table === "terminal_sessions" && selector.ids?.length) {
+        const ids = selector.ids.slice(0, 20)
+        payload = query(`SELECT id, name, command, cwd, status, exit_code, awaiting_input, last_prompt, started_at, completed_at FROM terminal_sessions WHERE id IN (${ids.map(() => "?").join(",")}) ORDER BY started_at ASC LIMIT ?`, ...ids, input.limit)
+        references.push({ id: ref.id, kind: ref.kind, label: `Inspected ${ref.kind}` })
+        const raw = JSON.stringify(payload, null, 2)
+        const content = raw.slice(0, input.charLimit)
+        return { operation: input.operation, taskId: task.id, rootTurnId: task.rootTurnId, status: task.status, resumedCount: Math.max(0, turnIds.length - 1), content, references, truncation: { truncated: raw.length > input.charLimit, charLimit: input.charLimit, originalLength: raw.length, returnedLength: content.length } }
+      }
+      const sql = selector.table ? allowed[selector.table] : undefined
+      if (!sql) throw new SocratesError("task_evidence_reference_invalid", "That evidence reference cannot be inspected.", { recoverable: true })
+      payload = selector.table === "waits" ? query(sql, task.id, input.limit) : query(sql, ...turnIds, input.limit)
+      references.push({ id: ref.id, kind: ref.kind, label: `Inspected ${ref.kind}` })
+    } else {
+      const user = query<{ content: string }>(`SELECT content FROM messages WHERE turn_id = ? AND role = 'user' ORDER BY created_at ASC LIMIT 1`, task.rootTurnId)[0]
+      const tools = query<{ tool_name: string; status: string; total: number }>(
+        `SELECT tool_name, status, COUNT(*) AS total FROM tool_calls WHERE turn_id IN (${placeholders}) GROUP BY tool_name, status ORDER BY total DESC LIMIT 30`, ...turnIds,
+      )
+      const failures = query<{ tool_name: string; error_id: string | null; total: number }>(
+        `SELECT tool_name, error_id, COUNT(*) AS total FROM tool_calls WHERE turn_id IN (${placeholders}) AND status = 'failed' GROUP BY tool_name, error_id ORDER BY total DESC LIMIT 10`, ...turnIds,
+      )
+      const files = query<{ path: string; operation: string; status: string }>(
+        `SELECT path, operation, status FROM file_operations WHERE turn_id IN (${placeholders}) ORDER BY started_at ASC LIMIT 40`, ...turnIds,
+      )
+      const commands = query<{ command: string; status: string; exit_code: number | null; metadata_json: string | null }>(
+        `SELECT command, status, exit_code, metadata_json FROM shell_commands WHERE turn_id IN (${placeholders}) ORDER BY started_at ASC LIMIT 20`, ...turnIds,
+      )
+      const waits = query<{ reason: string; status: string; wake_event: string | null }>(
+        `SELECT reason, status, wake_event FROM agent_task_waits WHERE task_id = ? ORDER BY created_at ASC LIMIT 20`, task.id,
+      )
+      if (tools.length) makeReference("tool_calls", "Task tool calls and results", { table: "tool_calls" })
+      if (files.length) makeReference("changed_files", "Task file operations", { table: "file_operations" })
+      if (commands.length) makeReference("shell_commands", "Task shell commands", { table: "shell_commands" })
+      if (waits.length) makeReference("waits", "Task waits and wake events", { table: "waits" })
+      const terminalIds = [...new Set(commands.flatMap((row) => {
+        const metadata = parseRecord(row.metadata_json)
+        return typeof metadata?.terminalId === "string" ? [metadata.terminalId] : []
+      }))]
+      const terminals = terminalIds.length
+        ? query<{ id: string; name: string; status: string; exit_code: number | null; awaiting_input: number }>(
+            `SELECT id, name, status, exit_code, awaiting_input FROM terminal_sessions WHERE id IN (${terminalIds.map(() => "?").join(",")}) ORDER BY started_at ASC`, ...terminalIds,
+          )
+        : []
+      if (terminals.length) makeReference("terminals", "Task Terminal final states", { table: "terminal_sessions", ids: terminalIds })
+      payload = {
+        userRequest: (user?.content ?? "").slice(0, 2_000),
+        turns: turnIds.length,
+        tools,
+        failures,
+        files,
+        commands: commands.map((row) => ({ command: row.command.slice(0, 500), status: row.status, exitCode: row.exit_code })),
+        terminals,
+        waits,
+      }
+    }
+    const raw = JSON.stringify(payload, null, 2)
+    const content = raw.slice(0, input.charLimit)
+    return {
+      operation: input.operation,
+      taskId: task.id,
+      rootTurnId: task.rootTurnId,
+      status: task.status,
+      resumedCount: Math.max(0, turnIds.length - 1),
+      content,
+      references: references.slice(0, 20),
+      truncation: { truncated: raw.length > input.charLimit, charLimit: input.charLimit, originalLength: raw.length, returnedLength: content.length },
+    }
+  }
+
   registerTerminalWait(input: {
     projectId: string
     conversationId: string
@@ -197,6 +324,8 @@ export class AgentTaskStore extends StoreBase {
         .run().changes
       if (changed === 0) return false
       this.handle.db.insert(turns).values({ id: turnId, sessionId: task.sessionId, conversationId: task.conversationId, status: "running", startedAt: now }).run()
+      const ordinal = this.handle.db.select({ id: agentTaskTurns.id }).from(agentTaskTurns).where(eq(agentTaskTurns.taskId, task.taskId)).all().length
+      this.handle.db.insert(agentTaskTurns).values({ id: createId("tturn"), taskId: task.taskId, turnId, ordinal, kind: "resume", createdAt: now }).run()
       this.insertRuntimeConfigWithId(runtimeConfigId, turnId, task.runtimeConfig, now)
       this.handle.db.update(sessions).set({ status: "active", updatedAt: now }).where(eq(sessions.id, task.sessionId)).run()
       return true
@@ -319,6 +448,11 @@ export class AgentTaskStore extends StoreBase {
       resolved.push(terminal)
     }
     return resolved
+  }
+
+  private taskForTurn(turnId: string): typeof agentTasks.$inferSelect | undefined {
+    return this.handle.db.select().from(agentTasks).innerJoin(agentTaskTurns, eq(agentTasks.id, agentTaskTurns.taskId))
+      .where(eq(agentTaskTurns.turnId, turnId)).limit(1).get()?.agent_tasks
   }
 
   private insertRuntimeConfigWithId(id: string, turnId: string, runtimeConfig: RuntimeConfig, createdAt: string): void {

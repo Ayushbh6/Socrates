@@ -169,6 +169,20 @@
       "when": 1783850400000,
       "tag": "0023_terminal_task_supervisor",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1783875000000,
+      "tag": "0024_task_evidence_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1783878000000,
+      "tag": "0025_terminal_state_versions",
+      "breakpoints": true
     }
   ]
 }

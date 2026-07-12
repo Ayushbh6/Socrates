@@ -49,6 +49,8 @@ import type {
   TraceRetrieveMainToolOutput,
   TraceRetrieveToolInput,
   TraceRetrieveToolOutput,
+  TurnEvidenceToolInput,
+  TurnEvidenceToolOutput,
   UrlFetchToolInput,
   UrlFetchToolOutput,
   WaitToolInput,
@@ -104,6 +106,7 @@ export type ToolExecutors = {
   memory_note?: (input: MemoryNoteToolInput, context: ToolExecutorContext) => Promise<MemoryNoteToolOutput>
   memory_notes?: (input: MemoryNotesToolInput, context: ToolExecutorContext) => Promise<MemoryNotesToolOutput>
   memory_search?: (input: MemorySearchInput, context: ToolExecutorContext) => Promise<MemorySearchOutput>
+  turn_evidence?: (input: TurnEvidenceToolInput, context: ToolExecutorContext) => Promise<TurnEvidenceToolOutput>
   read_memory_journal?: (input: ReadMemoryJournalToolInput, context: ToolExecutorContext) => Promise<ReadMemoryJournalToolOutput>
   skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
   mcp_registry?: (input: McpRegistryToolInput, context: ToolExecutorContext) => Promise<McpRegistryToolOutput>

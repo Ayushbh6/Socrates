@@ -600,6 +600,7 @@ export const terminalEventPayloadBaseSchema = z
     signal: z.string().nullable().optional(),
     autoDetached: z.boolean(),
     awaitingInput: z.boolean(),
+    stateVersion: z.number().int().nonnegative().optional(),
     lastPrompt: z.string().optional(),
     nextOutputSequence: z.number().int().nonnegative().optional(),
     startedAt: z.string().min(1),

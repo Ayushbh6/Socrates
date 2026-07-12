@@ -762,6 +762,14 @@ export class SocratesStore {
     return this.turns.createTurnFromUserMessage(projectId, conversationId, payload)
   }
 
+  startAgentTask(input: Parameters<AgentTaskStore["startTask"]>[0]): string {
+    return this.agentTasks.startTask(input)
+  }
+
+  getTaskEvidence(turnId: string, input: import("@socrates/contracts").TurnEvidenceToolInput) {
+    return this.agentTasks.evidenceForTurn(turnId, input)
+  }
+
   registerTerminalWait(input: Parameters<AgentTaskStore["registerTerminalWait"]>[0]) {
     return this.agentTasks.registerTerminalWait(input)
   }

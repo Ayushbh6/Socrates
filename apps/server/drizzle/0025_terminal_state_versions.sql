@@ -1,0 +1,1 @@
+ALTER TABLE `terminal_sessions` ADD `state_version` integer DEFAULT 0 NOT NULL;

@@ -57,7 +57,7 @@ export {
   renderMemoryCompactionMarkdown,
   type MemoryAgentCompressorUserPromptInput,
 } from "./prompts/memoryAgentCompressorPrompt"
-export { createDefaultToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, ToolRegistry } from "./tools/registry"
+export { createDefaultToolRegistry, createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"
 export * from "./retrieval"
 export { SOCRATES_SURFACES, renderSocratesSurfaceMap, socratesSurface, type SocratesSurface } from "@socrates/contracts"

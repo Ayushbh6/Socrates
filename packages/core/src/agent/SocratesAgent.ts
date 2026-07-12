@@ -4,12 +4,12 @@ import {
   waitToolOutputSchema,
   type MemoryRouterPostTurnResult,
   type MemoryRouterPreTurnResult,
+  type MemoryReconciliationAction,
   type MemorySearchInput,
   type MemorySearchOutput,
   type ModelToolDefinition,
   type NormalizedToolCall,
   type ProviderId,
-  type RoutedMemoryWrite,
   type RuntimeConfig,
   type ToolExecutionResult,
   type ToolName,
@@ -134,7 +134,6 @@ export class SocratesAgent {
     const actionLedger = new TurnActionLedger()
     const docsLedger = new TurnDocsLedger()
     const memorySaveLedger = new TurnMemorySaveLedger()
-    const routedMemoryWriteLedger = new TurnRoutedMemoryWriteLedger()
     let totalToolCountNudgeSent = false
     let baselineInputTokens: number | undefined
     let currentTurnTokenSoftNudgeSent = false
@@ -143,10 +142,13 @@ export class SocratesAgent {
     let docsSyncCheckpointSent = false
     let pendingInteractiveTerminalName: string | undefined
     let preTurnMemoryLoopSummary: string | undefined
-    let postEvidenceMemoryLoopSent = false
+    let finalReconciliationSent = false
     let accumulatedAnswerText = ""
+    const memoryFinalizationEnabled = canRunMemoryLoop(this.provider, input, this.toolRegistry)
+    const reconciliationVerification = new ReconciliationVerificationLedger()
+    let reconciliationReminderCount = 0
 
-    const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger, routedMemoryWriteLedger)
+    const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger)
     preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
     for (const event of preTurnMemoryLoop.events) {
       yield event
@@ -249,7 +251,9 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
       const repeatedToolInputsThisStep = new Set<string>()
       const toolRunIds = new Map<string, string>()
       let stepText = ""
-      const suppressAnswerDeltas = docsLedger.requiresProjectMemoryReview()
+      // The first no-tool answer is a proposed draft. Hold its user-visible
+      // deltas until the genuine task-finalization router has run.
+      const suppressAnswerDeltas = docsLedger.requiresProjectMemoryReview() || (memoryFinalizationEnabled && !finalReconciliationSent && tools.length > 0)
       const preferredOpenRouterProvider =
         input.providerId === "openrouter" ? openRouterPreferredProvidersByModel.get(input.modelId) : undefined
       const toolRunIdFor = (providerToolCallId: string): string => {
@@ -383,6 +387,57 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         })
       }
 
+      if (toolCalls.length === 0 && input.toolExecutors && tools.length > 0 && !finalReconciliationSent && memoryFinalizationEnabled) {
+        const evidence = input.toolExecutors.turn_evidence
+          ? await input.toolExecutors.turn_evidence(
+              { operation: "overview", limit: 10, charLimit: 8_000 },
+              {
+                projectId: input.projectId ?? "",
+                conversationId: input.conversationId ?? "",
+                sessionId: input.sessionId ?? "",
+                turnId: input.turnId ?? "",
+                workspacePath: input.workspacePath ?? "",
+                runtimeConfig: input.runtimeConfig,
+                ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+              },
+            )
+          : undefined
+        const finalMemoryLoop = await this.runPostEvidenceMemoryLoop(input, messages, {
+          ...(preTurnMemoryLoopSummary ? { preflightSummary: preTurnMemoryLoopSummary } : {}),
+          toolSummary: evidence
+            ? JSON.stringify({
+                scope: { taskId: evidence.taskId, rootTurnId: evidence.rootTurnId, status: evidence.status, resumedCount: evidence.resumedCount },
+                overview: evidence.content,
+                references: evidence.references,
+                truncation: evidence.truncation,
+              })
+            : "No structured task evidence was available.",
+          assistantDraft: stepText || accumulatedAnswerText,
+        })
+        finalReconciliationSent = true
+        reconciliationVerification.require(finalMemoryLoop.reconciliationActions ?? [])
+        for (const event of finalMemoryLoop.events) yield event
+        if (finalMemoryLoop.developerMessage) {
+          messages.push({ role: "developer", content: finalMemoryLoop.developerMessage })
+          continue
+        }
+        messages.push({ role: "developer", content: "Task finalization check completed with no .socrates reconciliation needed. Give the final answer now without more tools." })
+        forceFinalNoTools = true
+        continue
+      }
+
+      if (toolCalls.length === 0 && finalReconciliationSent && reconciliationVerification.hasPending()) {
+        if (reconciliationReminderCount >= 2) {
+          throw new SocratesError("memory_reconciliation_incomplete", `Required .socrates reconciliation was not verified: ${reconciliationVerification.pendingSummary()}`, { recoverable: true })
+        }
+        reconciliationReminderCount += 1
+        messages.push({
+          role: "developer",
+          content: `Final answer is blocked until the required .socrates reconciliation is completed and verified. Pending: ${reconciliationVerification.pendingSummary()}. Read the current target, apply the exact update, then read that same section again after the mutation.`,
+        })
+        continue
+      }
+
       if (!input.toolExecutors || tools.length === 0 || toolCalls.length === 0) {
         return
       }
@@ -467,6 +522,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
       docsLedger.recordBatch({ toolCalls, results: execution.results })
+      reconciliationVerification.recordBatch(toolCalls, execution.results)
       const ledgerUpdate = actionLedger.recordBatch({
         toolCalls,
         results: execution.results,
@@ -481,25 +537,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
       const memoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
       if (memoryLedgerMessage) {
         messages.push({ role: "developer", content: memoryLedgerMessage })
-      }
-      if (!postEvidenceMemoryLoopSent && shouldRunPostEvidenceMemoryLoop(execution.results)) {
-        const postTurnMemoryLoop = await this.runPostEvidenceMemoryLoop(input, messages, docsLedger, routedMemoryWriteLedger, {
-          ...(preTurnMemoryLoopSummary ? { preflightSummary: preTurnMemoryLoopSummary } : {}),
-          toolSummary: summarizeToolResultsForMemoryLoop(execution.results),
-          assistantDraft: accumulatedAnswerText,
-        })
-        postEvidenceMemoryLoopSent = true
-        for (const event of postTurnMemoryLoop.events) {
-          yield event
-        }
-        if (postTurnMemoryLoop.developerMessage) {
-          messages.push({ role: "developer", content: postTurnMemoryLoop.developerMessage })
-        }
-        memorySaveLedger.recordMemoryLoopRecords(postTurnMemoryLoop.records ?? [])
-        const postTurnMemoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
-        if (postTurnMemoryLedgerMessage) {
-          messages.push({ role: "developer", content: postTurnMemoryLedgerMessage })
-        }
       }
       if (!docsSyncCheckpointSent) {
         const checkpoint = docsLedger.buildSyncCheckpoint()
@@ -616,7 +653,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
     input: SocratesAgentTurnInput,
     messages: ModelMessage[],
     docsLedger: TurnDocsLedger,
-    routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
   ): Promise<MemoryLoopRunResult> {
     if (!canLoadStableCachePrelude(input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
@@ -649,11 +685,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         records.push(record)
       }
 
-      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, routedMemoryWriteLedger, route.memoryWrites, "pre_turn")
-      events.push(...saveResult.events)
-      records.push(...saveResult.records)
-      skipped.push(...saveResult.skipped)
-
       const summary = summarizeMemoryLoop("pre_turn", route, records, skipped)
       const dynamicRecords = records.filter((record) => !isStableCachePreludeRecord(record))
       return {
@@ -680,8 +711,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
   private async runPostEvidenceMemoryLoop(
     input: SocratesAgentTurnInput,
     messages: ModelMessage[],
-    docsLedger: TurnDocsLedger,
-    routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
     context: { preflightSummary?: string; toolSummary: string; assistantDraft: string },
   ): Promise<MemoryLoopRunResult> {
     if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
@@ -695,180 +724,29 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         toolSummary: context.toolSummary,
         assistantDraft: context.assistantDraft,
       })
-      const saveResult = await this.executeMemoryLoopSaves(input, docsLedger, routedMemoryWriteLedger, route.memoryWrites, "post_evidence")
-      const summary = summarizeMemoryLoop("post_evidence", route, saveResult.records, saveResult.skipped)
+      const summary = summarizeMemoryLoop("post_evidence", route, [], [])
       return {
-        events: saveResult.events,
+        events: [],
         summary,
-        records: saveResult.records,
-        developerMessage: renderMemoryLoopDeveloperMessage("post_evidence", route, saveResult.records, saveResult.skipped),
+        records: [],
+        ...(route.actions.length > 0
+          ? {
+              developerMessage: [
+                '<socrates_memory_reconciliation phase="finalization">',
+                "Before giving the final answer, reconcile these exact .socrates sections. The router only planned the work; you own every read and mutation.",
+                `actions: ${JSON.stringify(route.actions)}`,
+                "For each action: read the current section, apply the smallest exact patch using project_docs or repo_docs, then re-read the affected section and verify the stale claim is gone and the replacement is present. Replace/archive contradictions; do not append a competing claim. Include capability, verified_runtime, and verified_at anchors when supplied. If current evidence disproves an action, do not write it and state why in the final answer.",
+                "After verification, give the user the final answer.",
+                "</socrates_memory_reconciliation>",
+              ].join("\n"),
+            }
+          : {}),
+        reconciliationActions: route.actions,
       }
     } catch (error) {
       const normalized = normalizeError(error)
-      return memoryLoopWarning("post_evidence", `${normalized.code}: ${normalized.message}`)
-    }
-  }
-
-  private async executeMemoryLoopSaves(
-    input: SocratesAgentTurnInput,
-    docsLedger: TurnDocsLedger,
-    routedMemoryWriteLedger: TurnRoutedMemoryWriteLedger,
-    candidates: RoutedMemoryWrite[],
-    phase: MemoryLoopPhase,
-  ): Promise<MemoryLoopSaveResult> {
-    const events: ToolLifecycleEvent[] = []
-    const records: MemoryLoopToolRecord[] = []
-    const skipped: string[] = []
-    for (const candidate of candidates) {
-      if (!routedMemoryWriteLedger.claim(candidate)) {
-        skipped.push(`Equivalent ${memoryWriteTarget(candidate)} write was already attempted during this user turn.`)
-        continue
-      }
-      const result = await this.executeMemoryLoopSave(input, docsLedger, candidate, phase)
-      events.push(...result.events)
-      records.push(...result.records)
-      skipped.push(...result.skipped)
-    }
-    return { events, records, skipped }
-  }
-
-  private async executeMemoryLoopSave(
-    input: SocratesAgentTurnInput,
-    docsLedger: TurnDocsLedger,
-    candidate: RoutedMemoryWrite,
-    phase: MemoryLoopPhase,
-  ): Promise<MemoryLoopSaveResult> {
-    const saveText = cleanMemoryLoopText(candidate.text)
-    if (!saveText) {
-      return emptyMemoryLoopSaveResult()
-    }
-    if (candidate.kind === "document" && candidate.surface === "project_notes") {
-      return this.patchMemoryLoopSection(input, docsLedger, {
-        toolName: "project_docs",
-        readInput: { operation: "read_section", area: "notes", sectionId: candidate.sectionId, charLimit: 20_000 },
-        patchInput: (oldText, newText) => ({
-          operation: "patch_section",
-          area: "notes",
-          sectionId: candidate.sectionId,
-          oldText,
-          newText,
-        }),
-        text: saveText,
-        phase,
-      })
-    }
-    if (candidate.kind === "document" && candidate.surface === "project_memory") {
-      const sectionId = candidate.sectionId
-      return this.patchMemoryLoopSection(input, docsLedger, {
-        toolName: "project_docs",
-        readInput: { operation: "read_section", area: "memory", sectionId, charLimit: 20_000 },
-        patchInput: (oldText, newText) => ({
-          operation: "patch_section",
-          area: "memory",
-          sectionId,
-          oldText,
-          newText,
-        }),
-        text: saveText,
-        phase,
-        ...(sectionId === "always_apply_rules" ? { maxBullets: 10 } : {}),
-      })
-    }
-    if (candidate.kind === "document" && candidate.surface === "repo_docs") {
-      return this.patchMemoryLoopSection(input, docsLedger, {
-        toolName: "repo_docs",
-        readInput: { operation: "read_section", path: candidate.fileName, sectionId: candidate.sectionId, charLimit: 20_000 },
-        patchInput: (oldText, newText) => ({
-          operation: "patch_section",
-          path: candidate.fileName,
-          sectionId: candidate.sectionId,
-          oldText,
-          newText,
-        }),
-        text: saveText,
-        phase,
-      })
-    }
-    const record = await this.executeMemoryLoopTool(input, docsLedger, {
-      toolName: "memory_note",
-      input: { note: memoryNoteTextForCandidate(candidate, saveText), importance: phase === "pre_turn" ? "high" : "normal" },
-    })
-    return { events: record.events, records: [record], skipped: [] }
-  }
-
-  private async patchMemoryLoopSection(
-    input: SocratesAgentTurnInput,
-    docsLedger: TurnDocsLedger,
-    request: {
-      toolName: "project_docs" | "repo_docs"
-      readInput: Record<string, unknown>
-      patchInput: (oldText: string, newText: string) => Record<string, unknown>
-      text: string
-      phase: MemoryLoopPhase
-      maxBullets?: number
-    },
-  ): Promise<MemoryLoopSaveResult> {
-    const readRecord = await this.executeMemoryLoopTool(input, docsLedger, {
-      toolName: request.toolName,
-      input: request.readInput,
-    })
-    const events = [...readRecord.events]
-    const records = [readRecord]
-    if (!readRecord.result.ok) {
-      return { events, records, skipped: [] }
-    }
-    const oldText = memoryLoopSectionContent(readRecord.result.output)
-    if (!oldText) {
-      if (request.toolName === "repo_docs") {
-        return { events, records, skipped: ["repo_docs section content was empty, so the memory-loop repo_docs write was skipped."] }
-      }
-      const fallbackRecord = await this.executeMemoryLoopFallbackAppend(input, docsLedger, request.toolName, request.text, request.phase)
-      return { events: [...events, ...fallbackRecord.events], records: [...records, fallbackRecord], skipped: [] }
-    }
-    if (oldText.includes(request.text)) {
-      return {
-        events,
-        records,
-        skipped: [`${request.toolName} already contained the selected memory text.`],
-      }
-    }
-    const newText = appendMemoryLoopEntry(oldText, request.text, request.phase, request.maxBullets ? { maxBullets: request.maxBullets } : undefined)
-    if (!newText) {
-      return {
-        events,
-        records,
-        skipped: [`${request.toolName} section already has ${request.maxBullets} rule bullets, so the memory-loop write was skipped to preserve the cap.`],
-      }
-    }
-    const patchRecord = await this.executeMemoryLoopTool(input, docsLedger, {
-      toolName: request.toolName,
-      input: request.patchInput(oldText, newText),
-    })
-    return { events: [...events, ...patchRecord.events], records: [...records, patchRecord], skipped: [] }
-  }
-
-  private async executeMemoryLoopFallbackAppend(
-    input: SocratesAgentTurnInput,
-    docsLedger: TurnDocsLedger,
-    toolName: "project_docs" | "repo_docs",
-    text: string,
-    phase: MemoryLoopPhase,
-  ): Promise<MemoryLoopToolRecord> {
-    if (toolName === "project_docs") {
-      return this.executeMemoryLoopTool(input, docsLedger, {
-        toolName,
-        input: { operation: "edit", area: "notes", editMode: "append", text: memoryLoopEntry(text, phase) },
-      })
-    }
-    const error = new SocratesError("memory_loop_repo_docs_fallback_unavailable", "repo_docs fallback append requires a readable target section.", {
-      recoverable: true,
-    })
-    const toolCallId = createId("tcall")
-    return {
-      toolName,
-      input: { operation: "edit", path: "REPO_RULES.md" },
-      events: [],
-      result: toolErrorResult({ toolCallId, toolName, input: { operation: "edit", path: "REPO_RULES.md" } }, error),
+      const details = normalized.details === undefined ? "" : ` Details: ${clipText(previewMemoryLoopOutput(normalized.details), 4_000)}`
+      return memoryLoopWarning("post_evidence", `${normalized.code}: ${normalized.message}${details}`)
     }
   }
 
@@ -1206,12 +1084,7 @@ type MemoryLoopRunResult = {
   records?: MemoryLoopToolRecord[]
   stableCachePreludeMessage?: string
   developerMessage?: string
-}
-
-type MemoryLoopSaveResult = {
-  events: ToolLifecycleEvent[]
-  records: MemoryLoopToolRecord[]
-  skipped: string[]
+  reconciliationActions?: MemoryReconciliationAction[]
 }
 
 type MemoryLoopToolRecord = {
@@ -1222,7 +1095,6 @@ type MemoryLoopToolRecord = {
 }
 
 const emptyMemoryLoopRunResult = (): MemoryLoopRunResult => ({ events: [] })
-const emptyMemoryLoopSaveResult = (): MemoryLoopSaveResult => ({ events: [], records: [], skipped: [] })
 
 const insertStableCachePrelude = (messages: ModelMessage[], content: string): void => {
   const firstNonSystemIndex = messages.findIndex((message) => message.role !== "system")
@@ -1328,9 +1200,6 @@ const routedPreTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ 
   return requests
 }
 
-const shouldRunPostEvidenceMemoryLoop = (results: ToolExecutionResult[]): boolean =>
-  results.some((result) => result.ok && ["read", "search", "trace_retrieve", "bash", "edit", "apply_patch", "project_docs", "repo_docs"].includes(result.toolName))
-
 const latestUserText = (messages: ModelMessage[]): string => {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
@@ -1353,47 +1222,9 @@ const memoryLoopSectionContent = (output: unknown): string | undefined => {
 
 const cleanMemoryLoopText = (text: string): string => text.trim().replace(/^[-*]\s+/, "").trim()
 
-const memoryLoopEntry = (text: string, phase: MemoryLoopPhase): string => `- [${phase === "pre_turn" ? "pre-turn" : "post-evidence"}] ${cleanMemoryLoopText(text)}`
-
-const appendMemoryLoopEntry = (oldText: string, text: string, phase: MemoryLoopPhase, options?: { maxBullets?: number }): string | undefined => {
-  const entry = memoryLoopEntry(text, phase)
-  if (isAlwaysApplyPlaceholderText(oldText)) {
-    return entry
-  }
-  if (options?.maxBullets && countMeaningfulBullets(oldText) >= options.maxBullets) {
-    return undefined
-  }
-  return oldText.trimEnd().length === 0 ? entry : `${oldText.trimEnd()}\n${entry}`
-}
-
-const countMeaningfulBullets = (text: string): number =>
-  text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => /^[-*]\s+/.test(line) && !isAlwaysApplyPlaceholderText(line))
-    .length
-
 const isAlwaysApplyPlaceholderText = (text: string): boolean => {
   const normalized = cleanMemoryLoopText(text).toLowerCase()
   return normalized.startsWith("add at most 10") && (normalized.includes("hard") || normalized.includes("rule"))
-}
-
-const memoryNoteTextForCandidate = (candidate: RoutedMemoryWrite, saveText: string): string => {
-  const target = candidate.kind === "skill_candidate" ? "skill_candidate" : `${candidate.surface}/${candidate.fileName}/${candidate.sectionId}`
-  return `Memory router candidate for ${target}: ${saveText}`
-}
-
-const summarizeToolResultsForMemoryLoop = (results: ToolExecutionResult[]): string => {
-  if (results.length === 0) {
-    return "No tool results."
-  }
-  return results
-    .slice(0, 12)
-    .map((result, index) => {
-      const status = result.ok ? "ok" : `failed:${result.error?.code ?? "unknown"}`
-      return `${index + 1}. ${result.toolName} ${status}: ${clipText(previewMemoryLoopOutput(result.output), 800)}`
-    })
-    .join("\n")
 }
 
 const summarizeMemoryLoop = (
@@ -1402,10 +1233,7 @@ const summarizeMemoryLoop = (
   records: MemoryLoopToolRecord[],
   skipped: string[],
 ): string => {
-  const routeSummary =
-    "readTargets" in route
-      ? `readTargets=${route.readTargets.length}; memoryWrites=${route.memoryWrites.length}`
-      : `memoryWrites=${route.memoryWrites.length}`
+  const routeSummary = "readTargets" in route ? `readTargets=${route.readTargets.length}` : `actions=${route.actions.length}`
   const actions = records.map((record) => `${record.toolName}:${record.result.ok ? "ok" : record.result.error?.code ?? "failed"}`)
   return [`${phase}: ${routeSummary}`, `reason: ${route.reason}`, actions.length ? `actions: ${actions.join(", ")}` : "actions: none", ...skipped].join("\n")
 }
@@ -1760,6 +1588,69 @@ type MemorySaveLedgerBatchInput = {
   results: ToolExecutionResult[]
 }
 
+class ReconciliationVerificationLedger {
+  private readonly targets = new Map<string, { label: string; mutated: boolean; verified: boolean }>()
+
+  require(actions: MemoryReconciliationAction[]): void {
+    for (const action of actions) {
+      const key = this.keyForAction(action)
+      this.targets.set(key, { label: `${action.fileName}/${action.sectionId}`, mutated: false, verified: false })
+    }
+  }
+
+  recordBatch(toolCalls: NormalizedToolCall[], results: ToolExecutionResult[]): void {
+    const resultsById = new Map<string, ToolExecutionResult>()
+    for (const result of results) {
+      resultsById.set(result.toolCallId, result)
+      if (result.providerToolCallId) resultsById.set(result.providerToolCallId, result)
+    }
+    for (const call of toolCalls) {
+      const result = resultsById.get(call.toolCallId) ?? (call.providerToolCallId ? resultsById.get(call.providerToolCallId) : undefined)
+      if (!result?.ok) continue
+      const key = this.keyForCall(call)
+      if (!key) continue
+      const target = this.targets.get(key)
+      if (!target) continue
+      const operation = toolOperation(call)
+      if (operation === "edit" || operation === "patch_section") {
+        target.mutated = true
+        target.verified = false
+      } else if (target.mutated && isDocsReadOperation(operation)) {
+        target.verified = true
+      }
+    }
+  }
+
+  hasPending(): boolean {
+    return [...this.targets.values()].some((target) => !target.mutated || !target.verified)
+  }
+
+  pendingSummary(): string {
+    return [...this.targets.values()]
+      .filter((target) => !target.mutated || !target.verified)
+      .map((target) => `${target.label} (${target.mutated ? "needs post-write read" : "needs mutation and post-write read"})`)
+      .join(", ")
+  }
+
+  private keyForAction(action: MemoryReconciliationAction): string {
+    const owner = action.surface === "repo_docs" ? `repo:${action.fileName}` : `project:${action.surface === "project_notes" ? "notes" : "memory"}`
+    return `${owner}:${action.sectionId}`
+  }
+
+  private keyForCall(call: NormalizedToolCall): string | undefined {
+    if (!call.input || typeof call.input !== "object" || Array.isArray(call.input)) return undefined
+    const input = call.input as Record<string, unknown>
+    const sectionId = typeof input.sectionId === "string" ? input.sectionId : undefined
+    if (!sectionId) return undefined
+    if (call.toolName === "project_docs") {
+      const area = input.area === "notes" ? "notes" : input.area === "memory" ? "memory" : undefined
+      return area ? `project:${area}:${sectionId}` : undefined
+    }
+    if (call.toolName === "repo_docs" && typeof input.path === "string") return `repo:${input.path}:${sectionId}`
+    return undefined
+  }
+}
+
 class TurnDocsLedger {
   private totalToolCalls = 0
   private evidenceToolCalls = 0
@@ -1992,53 +1883,6 @@ class TurnMemorySaveLedger {
       this.entries.splice(0, this.entries.length - 6)
     }
   }
-}
-
-class TurnRoutedMemoryWriteLedger {
-  private readonly entries: Array<{ target: string; normalizedText: string; tokens: Set<string> }> = []
-
-  claim(candidate: RoutedMemoryWrite): boolean {
-    const target = memoryWriteTarget(candidate)
-    const normalizedText = normalizeRoutedMemoryWriteText(candidate.text)
-    const tokens = new Set(normalizedText.split(" ").filter(Boolean))
-    const duplicate = this.entries.some(
-      (entry) =>
-        entry.target === target &&
-        (entry.normalizedText === normalizedText || routedMemoryWriteSimilarity(entry.tokens, tokens) >= 0.72),
-    )
-    if (duplicate) {
-      return false
-    }
-    this.entries.push({ target, normalizedText, tokens })
-    return true
-  }
-}
-
-const memoryWriteTarget = (candidate: RoutedMemoryWrite): string =>
-  candidate.kind === "skill_candidate"
-    ? "skill_candidate"
-    : `${candidate.surface}/${candidate.fileName.toLowerCase()}/${candidate.sectionId.toLowerCase()}`
-
-const normalizeRoutedMemoryWriteText = (text: string): string =>
-  text
-    .normalize("NFKC")
-    .toLowerCase()
-    .replaceAll("_", " ")
-    .replace(/[\p{P}\p{S}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-
-const routedMemoryWriteSimilarity = (left: Set<string>, right: Set<string>): number => {
-  if (left.size === 0 || right.size === 0) {
-    return 0
-  }
-  let intersection = 0
-  for (const token of left) {
-    if (right.has(token)) {
-      intersection += 1
-    }
-  }
-  return (2 * intersection) / (left.size + right.size)
 }
 
 const toolOperation = (toolCall: NormalizedToolCall | undefined): string | undefined => {

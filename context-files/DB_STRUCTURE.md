@@ -211,7 +211,7 @@ When a workspace is created or attached, Socrates creates this project-local sca
 <workspace>/.socrates/repo_docs/
 ```
 
-The project memory, project notes, and runtime `.socrates/repo_docs/*.md` files are structured markdown documents with Socrates YAML frontmatter and explicit `socrates:section` markers. SQLite stores parsed section indexes for lookup, but markdown remains the durable source of truth. Dedicated docs/memory write paths may stamp optional frontmatter fields `updated_at`, `updated_by`, and `last_edited_section` after successful backend-owned edits. Project notes include active project context and may also include a protected generated `runtime_context` section for compact workspace scan facts; terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be persisted there.
+The project memory, project notes, and runtime `.socrates/repo_docs/*.md` files are structured markdown documents with Socrates YAML frontmatter and explicit `socrates:section` markers. SQLite stores parsed section indexes for lookup, but markdown remains the durable source of truth. Dedicated docs/memory write paths may stamp optional frontmatter fields `updated_at`, `updated_by`, and `last_edited_section` after successful backend-owned edits. Project notes include active project context plus protected backend-owned `runtime_context` and `state_ledger` sections. The ledger is regenerated from structured turn/tool data and removes duplicate legacy ledger blocks; terminal output, live terminal state, dependency dumps, package lists, and root-script inventories must not be persisted in runtime context.
 
 The planned always-apply recall feature should use normal structured markdown sections, not a new DB-owned memory table. `user_profile.md` owns the global lane (`Global Always-Apply Rules`, max 10 rules) and workspace project memory owns the project lane (`Project Always-Apply Rules`, max 10 rules). SQLite may index these sections through `memory_doc_sections`, but the markdown remains the human-readable source of truth.
 
@@ -728,6 +728,7 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `signal` | `TEXT` | no | Termination signal when known. |
 | `auto_detached` | `INTEGER` | yes | Boolean as `0` or `1`; true when detached from a long blocking `run`. |
 | `awaiting_input` | `INTEGER` | yes | Boolean as `0` or `1`; true when explicit interactive intent or conservative PTY protocol evidence surfaced user-only stdin. |
+| `state_version` | `INTEGER` | yes | Monotonic lifecycle version. It increments only when status, input state/prompt, exit details, or completion state changes, allowing clients to reject late stale snapshots. |
 | `last_prompt` | `TEXT` | no | Safe prompt text for awaiting-input UI/model context. Secret-like input itself is never stored here. |
 | `started_at` | `TEXT` | yes | ISO timestamp. |
 | `updated_at` | `TEXT` | yes | ISO timestamp. |
@@ -750,9 +751,9 @@ Stores full Terminal output, including raw PTY replay chunks, and redacted user-
 | `redacted` | `INTEGER` | yes | Boolean as `0` or `1`; true for user-only stdin markers or other redacted terminal entries. |
 | `created_at` | `TEXT` | yes | ISO timestamp. |
 
-## `agent_tasks` and `agent_task_waits`
+## `agent_tasks`, `agent_task_turns`, `agent_task_waits`, and `task_evidence_references`
 
-These tables are the durable non-LLM task supervisor. `agent_tasks` stores the original/current turn, resolved runtime configuration, and lifecycle (`waiting`, `ready`, `running`, `completed`, `failed`, or `cancelled`). `agent_task_waits` stores one named Terminal dependency per task with bounded requested wake events and a compact reason. Registration rechecks terminal state after persistence so an event racing with `wait` cannot strand a task. A claimed event wakes at most one continuation of the task; it does not poll or run an LLM while no requested event exists. On startup, stale active turns are cancelled and a task whose continuation turn is now `cancelled` is atomically returned to `ready`; tasks whose continuation turn already committed `completed` or `failed` are finalized instead of retried. The next `ready` to `running` claim still succeeds only once.
+These tables are the durable non-LLM task supervisor and evidence scope. Every user-authored request creates `agent_tasks` immediately, not only when `wait` is called. `agent_task_turns` maps the root turn plus every automatic wake/resume continuation in ordinal order, so a long-running request has one exact lifecycle scope without guessing from event text. A user-authored follow-up creates a new task. `agent_task_waits` stores named Terminal dependencies and bounded wake events. `task_evidence_references` stores backend-created opaque `evd_` ids with a task id, evidence kind, and validated selector; an inspect call must resolve inside the current task. Evidence overviews group and cap tool outcomes, failures, file operations, shell commands, Terminal final states, and waits instead of copying the whole event stream.
 
 ## `file_operations`
 

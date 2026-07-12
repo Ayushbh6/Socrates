@@ -563,6 +563,7 @@ export const terminalSessions = sqliteTable(
     signal: text("signal"),
     autoDetached: integer("auto_detached", { mode: "boolean" }).notNull(),
     awaitingInput: integer("awaiting_input", { mode: "boolean" }).notNull(),
+    stateVersion: integer("state_version").notNull().default(0),
     lastPrompt: text("last_prompt"),
     startedAt: text("started_at").notNull(),
     updatedAt: text("updated_at").notNull(),
@@ -630,6 +631,36 @@ export const agentTaskWaits = sqliteTable(
   (table) => ({
     terminalStatusIdx: index("agent_task_waits_terminal_status_idx").on(table.terminalId, table.status),
     taskStatusIdx: index("agent_task_waits_task_status_idx").on(table.taskId, table.status),
+  }),
+)
+
+export const agentTaskTurns = sqliteTable(
+  "agent_task_turns",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    turnId: text("turn_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    kind: text("kind").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    taskOrdinalIdx: uniqueIndex("agent_task_turns_task_ordinal_idx").on(table.taskId, table.ordinal),
+    turnIdx: uniqueIndex("agent_task_turns_turn_idx").on(table.turnId),
+  }),
+)
+
+export const taskEvidenceReferences = sqliteTable(
+  "task_evidence_references",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull(),
+    kind: text("kind").notNull(),
+    selectorJson: text("selector_json").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    taskIdx: index("task_evidence_references_task_idx").on(table.taskId),
   }),
 )
 

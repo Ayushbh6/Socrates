@@ -25,6 +25,7 @@ export const baseToolNameSchema = z.enum([
   "memory_note",
   "memory_notes",
   "memory_search",
+  "turn_evidence",
   "read_memory_journal",
   "skill_write",
 ])
@@ -51,6 +52,24 @@ export type CurrentTimeToolInput = z.infer<typeof currentTimeToolInputSchema>
 export const currentTimeToolOutputSchema = runtimeTimeMetadataSchema
 export type CurrentTimeToolOutput = z.infer<typeof currentTimeToolOutputSchema>
 
+export const turnEvidenceToolInputSchema = z
+  .object({
+    operation: z.enum(["overview", "inspect"]).default("overview"),
+    reference: z.string().regex(/^evd_[A-Za-z0-9_-]+$/).optional(),
+    limit: z.number().int().positive().max(20).default(10),
+    charLimit: z.number().int().min(500).max(12_000).default(8_000),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.operation === "inspect" && !value.reference) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "reference is required for inspect." })
+    }
+    if (value.operation === "overview" && value.reference) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["reference"], message: "reference is only valid for inspect." })
+    }
+  })
+export type TurnEvidenceToolInput = z.infer<typeof turnEvidenceToolInputSchema>
+
 export const toolPermissionSchema = z.enum(["read", "mutate", "execute"])
 export type ToolPermission = z.infer<typeof toolPermissionSchema>
 
@@ -67,6 +86,21 @@ export const truncationMetadataSchema = z
   })
   .strict()
 export type TruncationMetadata = z.infer<typeof truncationMetadataSchema>
+
+export const turnEvidenceReferenceSchema = z.object({ id: z.string(), kind: z.string(), label: z.string().max(160) }).strict()
+export const turnEvidenceToolOutputSchema = z
+  .object({
+    operation: z.enum(["overview", "inspect"]),
+    taskId: z.string(),
+    rootTurnId: z.string(),
+    status: z.string(),
+    resumedCount: z.number().int().nonnegative(),
+    content: z.string(),
+    references: z.array(turnEvidenceReferenceSchema).max(20),
+    truncation: truncationMetadataSchema,
+  })
+  .strict()
+export type TurnEvidenceToolOutput = z.infer<typeof turnEvidenceToolOutputSchema>
 
 export const readToolInputSchema = z
   .object({
@@ -400,6 +434,7 @@ export const bashTerminalMetadataSchema = z
     status: terminalStatusSchema,
     autoDetached: z.boolean().optional(),
     awaitingInput: z.boolean().optional(),
+    stateVersion: z.number().int().nonnegative().optional(),
     lastPrompt: z.string().optional(),
     nextOutputSequence: z.number().int().nonnegative().optional(),
     startedAt: z.string().optional(),

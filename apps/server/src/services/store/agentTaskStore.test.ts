@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { RuntimeConfig } from "@socrates/contracts"
 import { eq } from "drizzle-orm"
 import { openDatabase, runMigrations, type DatabaseHandle } from "../../db/client"
-import { agentTasks, terminalSessions, turns } from "../../db/schema"
+import { agentTasks, agentTaskTurns, fileOperations, messages, terminalSessions, toolCalls, turns } from "../../db/schema"
 import { AgentTaskStore } from "./agentTaskStore"
 
 const handles: DatabaseHandle[] = []
@@ -41,6 +41,7 @@ describe("AgentTaskStore", () => {
       approvalMode: "manual",
       sandboxMode: "workspace_write",
     }
+    tasks.startTask({ projectId: "proj_1", conversationId: "conv_1", sessionId: "sess_1", turnId: "turn_1", runtimeConfig })
 
     expect(
       tasks.registerTerminalWait({
@@ -98,10 +99,43 @@ describe("AgentTaskStore", () => {
     expect(secondReady[0]?.taskId).toBe(recoveredContinuation?.taskId)
     const finalContinuation = tasks.beginContinuation(secondReady[0]!)
     expect(finalContinuation).toMatchObject({ taskId: recoveredContinuation?.taskId })
+    expect(handle.db.select().from(agentTaskTurns).where(eq(agentTaskTurns.taskId, finalContinuation?.taskId ?? "missing")).all()).toHaveLength(4)
     handle.db.update(turns).set({ status: "completed" }).where(eq(turns.id, finalContinuation?.turnId ?? "missing")).run()
     expect(tasks.requeueInterruptedContinuations()).toBe(0)
     expect(handle.db.select({ status: agentTasks.status }).from(agentTasks).where(eq(agentTasks.id, finalContinuation?.taskId ?? "missing")).get()).toEqual({
       status: "completed",
     })
+  })
+
+  it("builds bounded lifecycle evidence with durable task-scoped references", () => {
+    const handle = openDatabase(":memory:")
+    handles.push(handle)
+    runMigrations(handle)
+    const tasks = new AgentTaskStore({ handle, appendEvent: () => undefined })
+    const now = "2026-07-12T10:00:00.000Z"
+    const runtimeConfig: RuntimeConfig = {
+      providerId: "deepseek",
+      modelId: "deepseek-v4-pro",
+      thinkingEnabled: false,
+      thinkingEffort: "none",
+      approvalMode: "manual",
+      sandboxMode: "workspace_write",
+    }
+    handle.db.insert(turns).values({ id: "turn_evidence", sessionId: "sess_1", conversationId: "conv_1", status: "running", startedAt: now }).run()
+    handle.db.insert(messages).values({ id: "msg_user", conversationId: "conv_1", sessionId: "sess_1", turnId: "turn_evidence", role: "user", content: "Verify the terminal contract.", contentFormat: "text", status: "completed", createdAt: now }).run()
+    tasks.startTask({ projectId: "proj_1", conversationId: "conv_1", sessionId: "sess_1", turnId: "turn_evidence", runtimeConfig })
+    handle.db.insert(toolCalls).values({ id: "tcall_failed", conversationId: "conv_1", sessionId: "sess_1", turnId: "turn_evidence", toolName: "bash", status: "failed", argumentsJson: JSON.stringify({ command: "false" }), errorId: "err_1", requiresApproval: false, startedAt: now, completedAt: now }).run()
+    handle.db.insert(fileOperations).values({ id: "fop_1", toolCallId: "tcall_failed", conversationId: "conv_1", sessionId: "sess_1", turnId: "turn_evidence", operation: "edit", path: ".socrates/MEMORY.md", status: "completed", startedAt: now, completedAt: now }).run()
+
+    const overview = tasks.evidenceForTurn("turn_evidence", { operation: "overview", limit: 10, charLimit: 8_000 })
+    expect(overview.content).toContain("Verify the terminal contract")
+    expect(overview.content).toContain('"tool_name": "bash"')
+    expect(overview.references.map((ref) => ref.kind)).toEqual(expect.arrayContaining(["tool_calls", "changed_files"]))
+    const toolRef = overview.references.find((ref) => ref.kind === "tool_calls")
+    const secondOverview = tasks.evidenceForTurn("turn_evidence", { operation: "overview", limit: 10, charLimit: 8_000 })
+    expect(secondOverview.references.find((ref) => ref.kind === "tool_calls")?.id).toBe(toolRef?.id)
+    const detail = tasks.evidenceForTurn("turn_evidence", { operation: "inspect", reference: toolRef?.id, limit: 5, charLimit: 2_000 })
+    expect(detail.content).toContain("tcall_failed")
+    expect(() => tasks.evidenceForTurn("turn_evidence", { operation: "inspect", reference: "evd_not_current", limit: 5, charLimit: 2_000 })).toThrowError(/does not belong/)
   })
 })

@@ -619,6 +619,9 @@ describe("SocratesAgent", () => {
       async generateStructured(request) {
         structuredRequests.push(request)
         structuredSystems.push(request.system)
+        if (request.system.includes("post-evidence")) {
+          return { output: { actions: [], reason: "No durable reconciliation is needed." } as never }
+        }
         return {
           output: {
             readTargets: [
@@ -639,24 +642,6 @@ describe("SocratesAgent", () => {
                 fileName: "user_profile.md",
                 sectionId: "collaboration_style",
                 reason: "The user referenced a cross-project collaboration preference.",
-              },
-            ],
-            memoryWrites: [
-              {
-                kind: "document",
-                surface: "project_notes",
-                fileName: "PROJECT_NOTES.md",
-                sectionId: "active_context",
-                text: "Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces.",
-                reason: "The user gave project-local guidance before asking for repo work.",
-              },
-              {
-                kind: "document",
-                surface: "user_profile",
-                fileName: "user_profile.md",
-                sectionId: "global_always_apply_rules",
-                text: "When the user asks for slow mode, discuss the plan before implementation across projects.",
-                reason: "The user gave a stable cross-project collaboration rule.",
               },
             ],
             reason: "The user gave project-local guidance before asking for repo work.",
@@ -756,7 +741,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(structuredSystems[0]).toContain("pre-turn Memory Router Agent")
-    expect(structuredRequests).toHaveLength(1)
+    expect(structuredRequests).toHaveLength(2)
     expect(structuredRequests[0]).toMatchObject({
       providerId: "google",
       modelId: "gemini-3.3-flash-preview",
@@ -781,27 +766,14 @@ describe("SocratesAgent", () => {
     expect(projectDocsInputs).toEqual([
       { operation: "read_section", area: "memory", sectionId: "always_apply_rules", charLimit: 10_000 },
       { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
-      { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
-      {
-        operation: "patch_section",
-        area: "notes",
-        sectionId: "active_context",
-        oldText: "- Existing active item.",
-        newText: "- Existing active item.\n- [pre-turn] Remember that root MEMORY.md and context-files are separate from Socrates runtime memory surfaces.",
-      },
     ])
     expect(userProfileInputs).toEqual([
       { operation: "read_section", sectionId: "global_always_apply_rules", charLimit: 10_000 },
       { operation: "read_section", sectionId: "collaboration_style", charLimit: 20_000 },
     ])
-    expect(memoryNoteInputs).toEqual([
-      {
-        note: "Memory router candidate for user_profile/user_profile.md/global_always_apply_rules: When the user asks for slow mode, discuss the plan before implementation across projects.",
-        importance: "high",
-      },
-    ])
+    expect(memoryNoteInputs).toEqual([])
     const toolNames = streamed.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)
-    expect(toolNames).toEqual(["project_docs", "user_profile", "soul", "soul", "soul", "project_docs", "repo_docs", "user_profile", "project_docs", "project_docs", "memory_note"])
+    expect(toolNames).toEqual(["project_docs", "user_profile", "soul", "soul", "soul", "project_docs", "repo_docs", "user_profile"])
     const firstRequestMessages = streamRequests[0]?.messages ?? []
     const firstRequestJson = JSON.stringify(firstRequestMessages)
     const firstRequestText = stringMessageContents(firstRequestMessages).join("\n")
@@ -818,8 +790,6 @@ describe("SocratesAgent", () => {
     expect(firstRequestText.indexOf("socrates_memory_loop")).toBeGreaterThan(
       firstRequestText.indexOf("Remember this project boundary"),
     )
-    expect(firstRequestJson).toContain("root MEMORY.md and context-files")
-    expect(firstRequestJson).toContain("user_profile/user_profile.md/global_always_apply_rules")
     expect(firstRequestJson).toContain("stable_cache_prelude")
     const dynamicLoopContent = stringMessageContents(firstRequestMessages).find((content) => content.includes("socrates_memory_loop")) ?? ""
     expect(dynamicLoopContent).not.toContain("Existing global rule")
@@ -840,21 +810,21 @@ describe("SocratesAgent", () => {
           return {
             output: {
               readTargets: [],
-              memoryWrites: [],
               reason: "No pre-turn recall needed.",
             } as never,
           }
         }
         return {
           output: {
-            memoryWrites: [
+            actions: [
               {
-                kind: "document",
+                operation: "replace",
                 surface: "project_memory",
                 fileName: "MEMORY.md",
                 sectionId: "durable_decisions",
-                text: "Verified README mentions the Socrates memory loop.",
+                instruction: "Replace the stale README claim with the verified Socrates memory-loop fact.",
                 reason: "A read tool produced a durable project fact.",
+                evidenceReferences: [],
               },
             ],
             reason: "A read tool produced a durable project fact.",
@@ -873,6 +843,13 @@ describe("SocratesAgent", () => {
             type: "model.tool_call.completed",
             toolCall: { toolCallId: "tcall_read_memory_loop", toolName: "read", input: { path: "README.md" } },
           }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (streamCalls === 3) {
+          yield { type: "model.tool_call.completed", toolCall: { toolCallId: "tcall_memory_read", toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: "durable_decisions", charLimit: 20_000 } } }
+          yield { type: "model.tool_call.completed", toolCall: { toolCallId: "tcall_memory_patch", toolName: "project_docs", input: { operation: "patch_section", area: "memory", sectionId: "durable_decisions", oldText: "- Existing durable decision.", newText: "- Verified README mentions the Socrates memory loop." } } }
+          yield { type: "model.tool_call.completed", toolCall: { toolCallId: "tcall_memory_verify", toolName: "project_docs", input: { operation: "read_section", area: "memory", sectionId: "durable_decisions", charLimit: 20_000 } } }
           yield { type: "model.completed", finishReason: "tool-calls" }
           return
         }
@@ -956,17 +933,23 @@ describe("SocratesAgent", () => {
         area: "memory",
         sectionId: "durable_decisions",
         oldText: "- Existing durable decision.",
-        newText: "- Existing durable decision.\n- [post-evidence] Verified README mentions the Socrates memory loop.",
+        newText: "- Verified README mentions the Socrates memory loop.",
+      },
+      {
+        operation: "read_section",
+        area: "memory",
+        sectionId: "durable_decisions",
+        charLimit: 20_000,
       },
     ])
     const toolNames = streamed.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)
-    expect(toolNames).toEqual(["project_docs", "user_profile", "soul", "soul", "soul", "read", "project_docs", "project_docs"])
-    expect(streamRequests).toHaveLength(2)
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Verified README mentions the Socrates memory loop")
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("socrates_memory_loop")
+    expect(toolNames).toEqual(["project_docs", "user_profile", "soul", "soul", "soul", "read", "project_docs", "project_docs", "project_docs"])
+    expect(streamRequests).toHaveLength(4)
+    expect(JSON.stringify(streamRequests[2]?.messages)).toContain("socrates_memory_reconciliation")
+    expect(JSON.stringify(streamRequests[3]?.messages)).toContain("Verified README mentions the Socrates memory loop")
   })
 
-  it("deduplicates equivalent pre-turn and post-evidence routed writes within one turn", async () => {
+  it("keeps pre-turn routing read-only and skips final writes when no reconciliation is needed", async () => {
     const projectDocsInputs: Array<Record<string, unknown>> = []
     const memoryNoteInputs: unknown[] = []
     const streamRequests: ModelRequestLike[] = []
@@ -980,43 +963,14 @@ describe("SocratesAgent", () => {
           return {
             output: {
               readTargets: [],
-              memoryWrites: [
-                {
-                  kind: "document",
-                  surface: "project_notes",
-                  fileName: "PROJECT_NOTES.md",
-                  sectionId: "active_context",
-                  text: "Created retrieval_e2e_note.md at the workspace root summarizing the unresolved Deepplay question and narrowest-check workflow.",
-                  reason: "The user requested a durable project note.",
-                },
-                {
-                  kind: "skill_candidate",
-                  text: "When creating a summary note about an unresolved project question, first read active context and handoff, then use the narrowest reliable check workflow.",
-                  reason: "This may be reusable.",
-                },
-              ],
-              reason: "Record the requested project outcome and reusable procedure.",
+              reason: "No pre-turn recall needed.",
             } as never,
           }
         }
         return {
           output: {
-            memoryWrites: [
-              {
-                kind: "document",
-                surface: "project_notes",
-                fileName: "PROJECT_NOTES.md",
-                sectionId: "active_context",
-                text: "Created retrieval_e2e_note.md at workspace root summarizing the unresolved Deepplay question and verification workflow using the narrowest reliable check.",
-                reason: "Tool evidence confirmed the result.",
-              },
-              {
-                kind: "skill_candidate",
-                text: "When creating a summary note for an unresolved project question, read the active_context and handoff sections first, then apply the narrowest reliable verification check.",
-                reason: "This may be reusable.",
-              },
-            ],
-            reason: "Tool evidence confirmed the same routed outcomes.",
+            actions: [],
+            reason: "No durable reconciliation is needed.",
           } as never,
         }
       },
@@ -1087,10 +1041,10 @@ describe("SocratesAgent", () => {
       // Drain the turn.
     }
 
-    expect(projectDocsInputs.filter((input) => input.operation === "patch_section")).toHaveLength(1)
-    expect(memoryNoteInputs).toHaveLength(1)
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Equivalent project_notes/project_notes.md/active_context write was already attempted")
-    expect(JSON.stringify(streamRequests[1]?.messages)).toContain("Equivalent skill_candidate write was already attempted")
+    expect(projectDocsInputs.filter((input) => input.operation === "patch_section")).toHaveLength(0)
+    expect(memoryNoteInputs).toHaveLength(0)
+    expect(streamRequests).toHaveLength(3)
+    expect(JSON.stringify(streamRequests[2]?.messages)).toContain("no .socrates reconciliation needed")
   })
 
   it("preserves OpenAI reasoning item metadata when continuing after tool calls", async () => {

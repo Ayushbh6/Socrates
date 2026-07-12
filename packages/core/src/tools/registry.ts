@@ -8,6 +8,7 @@ import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { memoryNoteTool } from "./memoryNoteTool"
 import { memoryNotesTool } from "./memoryNotesTool"
 import { memorySearchTool } from "./memorySearchTool"
+import { turnEvidenceTool } from "./turnEvidenceTool"
 import { mcpRegistryTool } from "./mcpRegistryTool"
 import { projectDocsTool } from "./projectDocsTool"
 import { projectsTool } from "./projectsTool"
@@ -81,6 +82,8 @@ const memoryTools = [currentTimeTool, globalTraceRetrieveTool, projectsTool, too
 export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(memoryTools)
 
 export const createMemoryRouterToolRegistry = (): ToolRegistry => new ToolRegistry([memorySearchTool])
+
+export const createMemoryFinalizationToolRegistry = (): ToolRegistry => new ToolRegistry([memorySearchTool, turnEvidenceTool])
 
 const skillWriterTools = [currentTimeTool, globalTraceRetrieveTool, skillsReadOnlyTool, userProfileTool, soulTool, projectDocsTool, repoDocsTool, skillWriteTool] as const
 

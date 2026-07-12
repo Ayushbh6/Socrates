@@ -865,8 +865,8 @@ export class MemoryStore extends StoreBase {
   }
 
   private assertProjectDocsSectionMutable(area: ProjectDocsArea, sectionId: string): void {
-    if (area === "notes" && sectionId === PROJECT_NOTES_RUNTIME_CONTEXT_SECTION) {
-      throw new SocratesError("project_docs_runtime_context_protected", "runtime_context is system-owned and cannot be edited by project_docs.", {
+    if (area === "notes" && [PROJECT_NOTES_RUNTIME_CONTEXT_SECTION, "state_ledger"].includes(sectionId)) {
+      throw new SocratesError("project_docs_system_section_protected", `${sectionId} is system-owned and cannot be edited by project_docs.`, {
         recoverable: true,
         details: { area, sectionId },
       })
@@ -877,13 +877,15 @@ export class MemoryStore extends StoreBase {
     if (area !== "notes" || before === after) {
       return
     }
-    const beforeSection = sectionContentOrUndefined(before, profile, PROJECT_NOTES_RUNTIME_CONTEXT_SECTION)
-    const afterSection = sectionContentOrUndefined(after, profile, PROJECT_NOTES_RUNTIME_CONTEXT_SECTION)
-    if (beforeSection !== afterSection) {
-      throw new SocratesError("project_docs_runtime_context_protected", "runtime_context is system-owned and cannot be changed by project_docs.", {
-        recoverable: true,
-        details: { area, sectionId: PROJECT_NOTES_RUNTIME_CONTEXT_SECTION },
-      })
+    for (const sectionId of [PROJECT_NOTES_RUNTIME_CONTEXT_SECTION, "state_ledger"]) {
+      const beforeSection = sectionContentOrUndefined(before, profile, sectionId)
+      const afterSection = sectionContentOrUndefined(after, profile, sectionId)
+      if (beforeSection !== afterSection) {
+        throw new SocratesError("project_docs_system_section_protected", `${sectionId} is system-owned and cannot be changed by project_docs.`, {
+          recoverable: true,
+          details: { area, sectionId },
+        })
+      }
     }
   }
 
@@ -3921,14 +3923,29 @@ const formatProjectStateLedgerSection = (input: {
 }
 
 const replaceStateLedgerSection = (content: string, section: string): string => {
-  const start = content.indexOf(STATE_LEDGER_START)
-  const end = content.indexOf(STATE_LEDGER_END)
-  if (start >= 0 && end > start) {
-    const afterEnd = end + STATE_LEDGER_END.length
-    return `${content.slice(0, start).trimEnd()}\n\n${section}\n\n${content.slice(afterEnd).trimStart()}`.trimEnd() + "\n"
+  const markerPattern = new RegExp(`${escapeRegExp(STATE_LEDGER_START)}[\\s\\S]*?${escapeRegExp(STATE_LEDGER_END)}`, "g")
+  const withoutDuplicateMarkers = content.replace(markerPattern, "").replace(/\n{3,}/g, "\n\n")
+  const wrappedSection = [
+    '<!-- socrates:section id="state_ledger" kind="state" tags="machine,startup" -->',
+    "## State Ledger",
+    "",
+    section,
+    "<!-- /socrates:section -->",
+  ].join("\n")
+  const sectionPattern = /<!-- socrates:section id="state_ledger"[^>]*-->[\s\S]*?<!-- \/socrates:section -->/g
+  let replaced = false
+  const next = withoutDuplicateMarkers.replace(sectionPattern, () => {
+    if (replaced) return ""
+    replaced = true
+    return wrappedSection
+  })
+  if (replaced) {
+    return `${next.replace(/\n{3,}/g, "\n\n").trimEnd()}\n`
   }
-  return `${content.trimEnd()}\n\n${section}\n`
+  return `${next.trimEnd()}\n\n${wrappedSection}\n`
 }
+
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 const removeAssistantStatusPreviewLines = (content: string): string =>
   content
