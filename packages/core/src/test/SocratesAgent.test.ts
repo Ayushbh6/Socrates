@@ -55,6 +55,8 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("Explicit docs operating loop")
     expect(requestJson).toContain("repo_docs")
     expect(requestJson).toContain("A separate Global Memory Agent runs in the background")
+    expect(requestJson).toContain("A genuine user instruction not to remember")
+    expect(requestJson).toContain("Interpret intent from the full semantic meaning, not by keyword")
     expect(requestJson).toContain("Explicit user-stated allergies")
     expect(requestJson).toContain("compare stack trace lines to current files")
     expect(requestJson).toContain("distinguish config/credential issues from service availability")
@@ -197,6 +199,7 @@ describe("SocratesAgent", () => {
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("canonical id")
     expect(tools.find((tool) => tool.name === "skills")?.description).toContain("preview_import")
     expect(tools.find((tool) => tool.name === "memory_note")?.description).toContain("Memory Agent")
+    expect(tools.find((tool) => tool.name === "memory_note")?.description).toContain("not to remember")
     expect(tools.find((tool) => tool.name === "edit")?.inputSchema.safeParse({ path: "README.md", content: "new" }).success).toBe(true)
     expect(
       tools

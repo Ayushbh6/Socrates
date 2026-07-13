@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { MemorySearchOutput } from "@socrates/contracts"
 import type { ModelProvider } from "@socrates/providers"
 import { MemoryRouterAgent } from "../agent/MemoryRouterAgent"
+import { POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT, PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT } from "../prompts/memoryRoutingPrompt"
 import type { ToolExecutors } from "../tools/types"
 
 const context = {
@@ -34,6 +35,13 @@ const slowModeResult = (): MemorySearchOutput => ({
 })
 
 describe("MemoryRouterAgent", () => {
+  it("keeps genuine memory opt-outs out of recall routing and final reconciliation", () => {
+    expect(PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("Interpret it from the full semantic meaning")
+    expect(PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("treat the entire latest user message as opted out")
+    expect(POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("blocks reconciliation")
+    expect(POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("Never preserve opted-out content indirectly")
+  })
+
   it("prefetches the full prompt, caps explicit search at three calls, and returns exact routes", async () => {
     let streamCall = 0
     let automaticCalls = 0

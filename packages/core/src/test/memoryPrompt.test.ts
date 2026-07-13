@@ -26,6 +26,12 @@ describe("memory agent prompt", () => {
     expect(memoryAgentBasePrompt).toContain("openInvestigations: at most 10")
     expect(memoryAgentBasePrompt).toContain("Skill maturation is a core responsibility")
     expect(memoryAgentBasePrompt).toContain('skillsAffected action="already_represented" only after reading the current skill')
+    expect(memoryAgentBasePrompt).toContain("inspect the exact full Q&A parent")
+    expect(memoryAgentBasePrompt).toContain("an authoritative memory opt-out")
+    expect(memoryAgentBasePrompt).toContain("quoted examples, hypothetical text, or a discussion about memory opt-outs do not trigger the rule")
+    expect(memoryAgentBasePrompt).toContain("conservatively treat the entire source user message as opted out")
+    expect(memoryAgentBasePrompt).toContain('close it with outcome="skipped"')
+    expect(memoryAgentBasePrompt).toContain("The self-healing audit and skill-maturation duties never override this rule")
     expect(memoryAgentBasePrompt).not.toContain("Deep evidence comes from trace_documents")
   })
 
