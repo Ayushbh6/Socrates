@@ -587,6 +587,8 @@ If assistant answer text has already streamed when the user stops a turn, the ba
 
 If a running, failed, or cancelled turn has streamed text but no completed assistant message row, `GET /api/projects/:projectId/conversations/:conversationId` can return a `partialTurns` entry recovered from `model_stream_chunks`. The frontend renders that incomplete turn with recovered answer text, reasoning, and persisted historical tool runs, and it can restore stop-button state when the turn is still running after reload.
 
+Completed-turn hydration also preserves the union of `activitySteps` and turn-level `toolRuns`. Model-owned calls remain beside their reasoning step. Tool runs without a matching activity-step ownership record, including deterministic pre-model context reads, are not discarded; the transcript presents them in a subtle `Understanding your intent` live phase that settles to `Intent understood`, with every underlying call still expandable. This is presentation grouping only, not a separate router-cost surface or a claim that the user query itself was changed.
+
 The same conversation response returns active and recent `terminals` so reloads hydrate the Terminal shell. Terminal response entries include bounded stdout/stderr tails, optional raw PTY replay text, and process metadata for the desktop rail, bottom dock, and mobile sheet, not the complete log archive.
 
 Runtime settings are per turn:

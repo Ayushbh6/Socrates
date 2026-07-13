@@ -1,12 +1,13 @@
 "use client";
 
 import type { ConversationActivityStep, ConversationPartialTurn, ConversationToolRun, Message, MessageAttachment } from "@socrates/contracts";
-import { Check, ChevronDown, Copy, SquareTerminal } from "lucide-react";
+import { Check, ChevronDown, Compass, Copy, SquareTerminal } from "lucide-react";
 import { isValidElement, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { socratesApiBaseUrl } from "@/lib/api";
 import { ChatToolTimeline } from "./ChatToolTimeline";
+import { ToolActivityRow } from "./ToolActivityRow";
 import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
 import { toolRunToTimelineItem } from "./ToolTimelineTypes";
 
@@ -28,11 +29,14 @@ export type LiveActivityStep = {
   key: string;
   turnId?: string;
   modelCallId?: string;
+  kind?: ActivityStepKind;
   stepIndex: number;
   reasoning: string;
   answer: string;
   tools: ToolTimelineItem[];
 };
+
+type ActivityStepKind = "intent" | "agent";
 
 export function ChatTranscript({
   messages,
@@ -108,6 +112,7 @@ export function ChatTranscript({
               {liveSteps.map((step, index) => (
                 <ActivityStepView
                   key={step.key}
+                  kind={step.kind ?? (step.modelCallId ? "agent" : "intent")}
                   reasoning={step.reasoning}
                   answer={step.answer}
                   tools={step.tools}
@@ -232,7 +237,8 @@ function MessageBubble({
             {steps.length > 0 ? (
               <AssistantActivityStream
                 steps={steps.map((step) => ({
-                  key: step.modelCallId,
+                  key: step.key,
+                  kind: step.kind,
                   reasoning: step.reasoning ?? "",
                   answer: step.answer ?? "",
                   tools: step.tools,
@@ -255,9 +261,15 @@ function MessageBubble({
   );
 }
 
-type HistoricalActivityStep = ConversationActivityStep & { tools: ToolTimelineItem[] };
+type HistoricalActivityStep = Omit<ConversationActivityStep, "modelCallId"> & {
+  key: string;
+  modelCallId?: string;
+  kind: ActivityStepKind;
+  tools: ToolTimelineItem[];
+};
 
 function ActivityStepView({
+  kind = "agent",
   reasoning,
   answer,
   tools,
@@ -265,6 +277,7 @@ function ActivityStepView({
   defaultOpen = false,
   onApprovalDecision,
 }: {
+  kind?: ActivityStepKind;
   reasoning: string;
   answer: string;
   tools: ToolTimelineItem[];
@@ -274,6 +287,9 @@ function ActivityStepView({
 }) {
   if (!reasoning && !answer && tools.length === 0) {
     return null;
+  }
+  if (kind === "intent") {
+    return <IntentDiscoveryStep tools={tools} defaultOpen={defaultOpen} />;
   }
   return (
     <div className="space-y-3">
@@ -288,7 +304,7 @@ function AssistantActivityStream({
   steps,
   fallbackAnswer,
 }: {
-  steps: Array<{ key: string; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
+  steps: Array<{ key: string; kind?: ActivityStepKind; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
   fallbackAnswer?: string;
 }) {
   const answer = steps
@@ -307,7 +323,7 @@ function AssistantActivityStream({
 function AssistantWorkGroup({
   steps,
 }: {
-  steps: Array<{ key: string; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
+  steps: Array<{ key: string; kind?: ActivityStepKind; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
 }) {
   const tools = steps.flatMap((step) => step.tools);
   const hasActiveWork = tools.some((tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval");
@@ -332,13 +348,74 @@ function AssistantWorkGroup({
         <div className="space-y-3 pb-1 pt-2">
           {steps.map((step) => (
             <div key={step.key} className="space-y-2">
-              {step.reasoning ? <ThinkingBlock content={step.reasoning} /> : null}
-              <ChatToolTimeline tools={step.tools} />
+              {step.kind === "intent" ? (
+                <IntentDiscoveryStep tools={step.tools} defaultOpen />
+              ) : (
+                <>
+                  {step.reasoning ? <ThinkingBlock content={step.reasoning} /> : null}
+                  <ChatToolTimeline tools={step.tools} />
+                </>
+              )}
             </div>
           ))}
         </div>
       ) : null}
     </div>
+  );
+}
+
+function IntentDiscoveryStep({ tools, defaultOpen = false }: { tools: ToolTimelineItem[]; defaultOpen?: boolean }) {
+  const hasActiveWork = tools.some(
+    (tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval",
+  );
+  const hasFailedWork = tools.some(
+    (tool) => tool.status === "failed" || tool.status === "rejected" || tool.status === "cancelled",
+  );
+  const [isOpen, setIsOpen] = useState(defaultOpen || hasActiveWork || hasFailedWork);
+  const shouldShowDetails = isOpen || hasActiveWork;
+  const label = hasActiveWork ? "Understanding your intent" : "Intent understood";
+
+  if (tools.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg bg-teal-50/45 ring-1 ring-inset ring-teal-100/80">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-brand-text-light transition-colors hover:bg-teal-50/80"
+        onClick={() => setIsOpen((current) => !current)}
+        aria-expanded={shouldShowDetails}
+      >
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-white text-brand-teal-dark shadow-sm ring-1 ring-teal-100">
+          {hasActiveWork ? <IntentActivityDot /> : <Compass className="size-3.5" />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block font-medium text-brand-text-dark">{label}</span>
+          <span className="block text-xs text-brand-text-light">
+            {tools.length} {tools.length === 1 ? "context check" : "context checks"}
+          </span>
+        </span>
+        {!hasActiveWork ? <Check className="size-3.5 shrink-0 text-brand-teal-dark" /> : null}
+        <ChevronDown className={`size-3.5 shrink-0 transition-transform ${shouldShowDetails ? "rotate-180" : ""}`} />
+      </button>
+      {shouldShowDetails ? (
+        <div className="border-t border-teal-100/80 bg-white/55 px-2 py-1.5">
+          {tools.map((tool) => (
+            <ToolActivityRow key={tool.toolCallId} tool={tool} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function IntentActivityDot() {
+  return (
+    <span className="relative flex size-2" aria-hidden>
+      <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-teal-dark opacity-25" />
+      <span className="relative inline-flex size-2 rounded-full bg-brand-teal-dark" />
+    </span>
   );
 }
 
@@ -401,17 +478,45 @@ function groupActivityStepsByTurn(
   toolRuns: ConversationToolRun[],
 ): Map<string, HistoricalActivityStep[]> {
   const toolsById = new Map(toolRuns.map((run) => [run.toolCallId, toolRunToTimelineItem(run)]));
+  const claimedToolIds = new Set(activitySteps.flatMap((step) => step.toolCallIds));
   const grouped = new Map<string, HistoricalActivityStep[]>();
   for (const step of activitySteps) {
     const steps = grouped.get(step.turnId) ?? [];
     steps.push({
       ...step,
+      key: step.modelCallId,
+      kind: "agent",
       tools: step.toolCallIds.map((id) => toolsById.get(id)).filter((tool): tool is ToolTimelineItem => Boolean(tool)),
     });
     grouped.set(
       step.turnId,
       steps.sort((left, right) => left.stepIndex - right.stepIndex),
     );
+  }
+
+  const unclaimedToolsByTurn = new Map<string, ToolTimelineItem[]>();
+  for (const run of toolRuns) {
+    if (claimedToolIds.has(run.toolCallId)) {
+      continue;
+    }
+    const tools = unclaimedToolsByTurn.get(run.turnId) ?? [];
+    tools.push(toolRunToTimelineItem(run));
+    unclaimedToolsByTurn.set(run.turnId, tools);
+  }
+
+  for (const [turnId, tools] of unclaimedToolsByTurn) {
+    const existing = grouped.get(turnId) ?? [];
+    grouped.set(turnId, [
+      {
+        key: `intent-${turnId}`,
+        turnId,
+        stepIndex: -1,
+        kind: "intent",
+        toolCallIds: tools.map((tool) => tool.toolCallId),
+        tools,
+      },
+      ...existing,
+    ]);
   }
   return grouped;
 }

@@ -953,7 +953,7 @@ type GetConversationResponse = {
 }
 ```
 
-`toolRuns` contains persisted, bounded tool activity for completed or cancelled turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts.
+`toolRuns` contains persisted, bounded tool activity for completed or cancelled turns in this conversation. It is for frontend replay/audit UI only; it is not automatically fed back into later model prompts. `activitySteps` supplies model-call chronology but is not an exhaustive replacement for `toolRuns`: during hydration, the frontend must render every unique turn-level tool run. A run claimed by an activity step stays with that model step; an unclaimed pre-model/context run is grouped into the quiet intent-discovery disclosure and remains individually expandable.
 
 `terminals` contains active and recent conversation-scoped Terminal sessions for the Terminal shell. It includes bounded stdout/stderr tails, optional raw PTY replay text, and metadata needed to hydrate the desktop right rail, bottom dock, and mobile full-screen sheet after reload. Full logs remain in terminal output persistence and can be polled or retrieved; the frontend must not treat this bounded response as the complete log archive.
 

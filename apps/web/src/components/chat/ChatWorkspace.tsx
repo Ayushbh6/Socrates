@@ -1288,6 +1288,7 @@ const updateLiveStep = (
       key,
       ...(turnId ? { turnId } : {}),
       ...(modelCallId ? { modelCallId } : {}),
+      kind: modelCallId ? "agent" : "intent",
       stepIndex: stepIndex ?? steps.length,
       reasoning: "",
       answer: "",
