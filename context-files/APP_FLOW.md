@@ -639,9 +639,9 @@ not yet enabled:
   dedicated git tool
   sub-agent/task/todo tools
 
-accepted next/refactor direction:
+current memory-agent architecture:
   memory_note for Socrates-to-Memory-Agent leads
-  centralized Memory Router recall/write routing with always-apply rules
+  read-only pre-turn Memory Router recall plus end-of-task reconciliation planning
   Memory Agent skill freshness suggestions and approved update requests
   Skill Writer Agent as a real specialized agent path, not a one-off provider workflow
 ```
@@ -789,7 +789,7 @@ It should not receive Terminal, arbitrary filesystem read/write, generic patch t
 
 Settings exposes independent worker model selectors for Skill Writer, Context Compactor, Title Generator, and Memory Router. Each selector uses the normal model registry and thinking options, with defaults preserving the current production choices. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
 
-Memory Router strengthening target:
+Current Memory Router flow:
 
 ```text
 pre-turn

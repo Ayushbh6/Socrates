@@ -1145,7 +1145,7 @@ Suggested URL:
 
 The frontend should identify the active project and conversation in the first command. A chat page should subscribe on initial connect and every reconnect. Returning to a conversation with an active turn should request active-turn replay before relying only on fresh deltas.
 
-Closing the app/backend process is the boundary for V1. Since V1 has no true pause/resume, startup reconciliation marks any previously active turn as stopped/cancelled so the UI does not show a fake live stop button for work that cannot still be running.
+Closing the app/backend cannot transparently resume an arbitrary model invocation from its exact instruction pointer. Startup reconciliation therefore cancels a stale `running` turn so the UI never shows a fake live stop button. Durable agent tasks are a separate lifecycle: a Terminal-waiting task survives through persisted task/turn/wait rows, active supervisor-owned Terminals are reconciled, and an interrupted claimed continuation is safely requeued for one fresh continuation attempt. Completed or failed continuations finalize the task instead of being duplicated.
 
 WebSocket payloads use JSON.
 
