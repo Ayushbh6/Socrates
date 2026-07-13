@@ -11,6 +11,7 @@ import type { ConversationTerminalManager } from "./conversationTerminals"
 import type { ConversationSubscriptions } from "./conversationSubscriptions"
 import { handleApprovalDecide } from "./commandHandlers/approvalDecide"
 import { handleChatMessageSend } from "./commandHandlers/chatMessageSend"
+import { handleCredentialInputSubmit } from "./commandHandlers/credentialInputSubmit"
 import { handleTurnCancel } from "./commandHandlers/chatTurnCancel"
 import { handleFeedbackSubmit } from "./commandHandlers/feedbackSubmit"
 import { emitError, emitNormalizedError, idsFromCommand } from "./eventSender"
@@ -80,6 +81,10 @@ export const handleInboundMessage = async (
         return
       case "approval.decide":
         handleApprovalDecide(store, activeTurns, command)
+        return
+      case "credential.input.submit":
+        requireSubscribedConversationScope(socket, store, subscriptions, command)
+        handleCredentialInputSubmit(activeTurns, command)
         return
       case "terminal.stop":
         requireSubscribedConversationScope(socket, store, subscriptions, command)

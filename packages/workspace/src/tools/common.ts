@@ -74,12 +74,45 @@ export const isSensitivePath = (targetPath: string): boolean => {
     return false
   }
   return (
-    base === ".env" ||
-    base.startsWith(".env.") ||
-    base.endsWith(".pem") ||
-    base.endsWith(".key") ||
+    isSecretMaterialPath(targetPath) ||
     base.includes("secret") ||
     base.includes("credential")
+  )
+}
+
+export const isSecretMaterialPath = (targetPath: string): boolean => {
+  const base = path.basename(targetPath).toLowerCase()
+  if (isEnvTemplatePath(base)) {
+    return false
+  }
+  return (
+    base === ".env" ||
+    base.startsWith(".env.") ||
+    base === ".npmrc" ||
+    base === ".netrc" ||
+    base === "id_rsa" ||
+    base === "id_ed25519" ||
+    base.endsWith(".pem") ||
+    base.endsWith(".key") ||
+    base.endsWith(".p12") ||
+    base.endsWith(".pfx")
+  )
+}
+
+export const assertNoSecretMaterialPathMentions = (text: string): void => {
+  const tokens = text
+    .replaceAll("\\", "/")
+    .split(/[\s\0"'`=;|&(){}\[\],<>]+/)
+    .map((token) => token.replace(/[.:]+$/, ""))
+    .filter(Boolean)
+  const match = tokens.find((token) => isSecretMaterialPath(token))
+  if (!match) {
+    return
+  }
+  throw new SocratesError(
+    "terminal_secret_path_rejected",
+    "Terminal commands cannot access real environment, private-key, or credential material. Use the dedicated credential input flow or inspect a safe template file instead.",
+    { recoverable: true, details: { path: path.basename(match) } },
   )
 }
 

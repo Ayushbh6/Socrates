@@ -8,7 +8,7 @@ import remarkGfm from "remark-gfm";
 import { socratesApiBaseUrl } from "@/lib/api";
 import { ChatToolTimeline } from "./ChatToolTimeline";
 import { ToolActivityRow } from "./ToolActivityRow";
-import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
+import type { PendingApproval, PendingCredentialInput, ToolTimelineItem } from "./ToolTimelineTypes";
 import { toolRunToTimelineItem } from "./ToolTimelineTypes";
 
 interface ChatTranscriptProps {
@@ -18,11 +18,13 @@ interface ChatTranscriptProps {
   activitySteps?: ConversationActivityStep[];
   liveSteps?: LiveActivityStep[];
   approvals?: PendingApproval[];
+  credentialRequests?: PendingCredentialInput[];
   settledLiveTurns?: Record<string, LiveActivityStep[]>;
   anchorMessageId?: string | null;
   isStreaming?: boolean;
   isCompacting?: boolean;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
+  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }
 
 export type LiveActivityStep = {
@@ -45,11 +47,13 @@ export function ChatTranscript({
   activitySteps = [],
   liveSteps = [],
   approvals = [],
+  credentialRequests = [],
   settledLiveTurns = {},
   anchorMessageId,
   isStreaming,
   isCompacting,
   onApprovalDecision,
+  onCredentialInput,
 }: ChatTranscriptProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const scrolledAnchorRef = useRef<string | null>(null);
@@ -117,8 +121,10 @@ export function ChatTranscript({
                   answer={step.answer}
                   tools={step.tools}
                   approvals={approvalsForLiveStep(step, approvals, liveToolIds, index === liveSteps.length - 1)}
+                  credentialRequests={credentialRequests.filter((request) => step.tools.some((tool) => tool.toolCallId === request.toolCallId))}
                   defaultOpen
                   onApprovalDecision={onApprovalDecision}
+                  onCredentialInput={onCredentialInput}
                 />
               ))}
               {isCompacting ? <CompactionLoader /> : null}
@@ -274,16 +280,20 @@ function ActivityStepView({
   answer,
   tools,
   approvals,
+  credentialRequests,
   defaultOpen = false,
   onApprovalDecision,
+  onCredentialInput,
 }: {
   kind?: ActivityStepKind;
   reasoning: string;
   answer: string;
   tools: ToolTimelineItem[];
   approvals?: PendingApproval[];
+  credentialRequests?: PendingCredentialInput[];
   defaultOpen?: boolean;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
+  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }) {
   if (!reasoning && !answer && tools.length === 0) {
     return null;
@@ -295,7 +305,13 @@ function ActivityStepView({
     <div className="space-y-3">
       {reasoning ? <ThinkingBlock content={reasoning} defaultOpen={defaultOpen} /> : null}
       {answer ? <MarkdownContent content={answer} /> : null}
-      <ChatToolTimeline tools={tools} approvals={approvals} onApprovalDecision={onApprovalDecision} />
+      <ChatToolTimeline
+        tools={tools}
+        approvals={approvals}
+        credentialRequests={credentialRequests}
+        onApprovalDecision={onApprovalDecision}
+        onCredentialInput={onCredentialInput}
+      />
     </div>
   );
 }

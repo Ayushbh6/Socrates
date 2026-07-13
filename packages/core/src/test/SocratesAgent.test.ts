@@ -5,6 +5,7 @@ import path from "node:path"
 import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
 import type { ModelEvent, ModelMessage, ModelProvider } from "@socrates/providers"
 import { bashTool } from "../tools/bashTool"
+import { mcpRegistryTool } from "../tools/mcpRegistryTool"
 import { skillsTool } from "../tools/skillsTool"
 
 describe("SocratesAgent", () => {
@@ -111,6 +112,88 @@ describe("SocratesAgent", () => {
     expect(String(firstMessages[0]?.content)).toContain("Calm, exact, and collaborative.")
     expect(String(firstMessages[0]?.content)).toContain("socrates_surface_map")
     expect(firstMessages[1]).toMatchObject({ role: "user", content: "Hi" })
+  })
+
+  it("uses a backend stable snapshot without emitting the five standing reads and hard-deduplicates routed stable targets", async () => {
+    const requests: Array<{ messages: ModelMessage[] }> = []
+    const projectDocsInputs: unknown[] = []
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async generateStructured(request) {
+        if (request.system.includes("post-evidence")) {
+          return { output: { actions: [], reason: "No durable update." } as never }
+        }
+        return {
+          output: {
+            readTargets: [
+              { surface: "project_memory", fileName: "MEMORY.md", sectionId: "always_apply_rules", reason: "Standing target duplicate." },
+              { surface: "user_profile", fileName: "user_profile.md", sectionId: "global_always_apply_rules", reason: "Standing target duplicate." },
+              { surface: "identity", fileName: "identity.md", sectionId: "core_identity", reason: "Standing target duplicate." },
+              { surface: "identity", fileName: "identity.md", sectionId: "voice_and_presence", reason: "Standing target duplicate." },
+              { surface: "identity", fileName: "identity.md", sectionId: "relationship_to_user", reason: "Standing target duplicate." },
+              { surface: "project_notes", fileName: "PROJECT_NOTES.md", sectionId: "active_context", reason: "Dynamic context." },
+              { surface: "project_notes", fileName: "PROJECT_NOTES.md", sectionId: "active_context", reason: "Exact duplicate." },
+            ],
+            reason: "Load only dynamic context beyond the standing snapshot.",
+          } as never,
+        }
+      },
+      async *stream(request) {
+        requests.push(request)
+        yield { type: "model.answer.delta", text: "Ready." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.project_docs = async (input) => {
+      projectDocsInputs.push(input)
+      return projectDocsSectionOutput(input.area, input.sectionId ?? "active_context", "- Dynamic note.")
+    }
+
+    const events: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openai",
+      modelId: "gpt-5.4-mini",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Continue the project." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+      stableCachePreludeSnapshot: {
+        projectRules: "- Project standing rule.",
+        globalRules: "- Global standing rule.",
+        identitySections: {
+          core_identity: "Calm and exact.",
+          voice_and_presence: "Warm and direct.",
+          relationship_to_user: "Collaborative.",
+        },
+        cacheHit: true,
+      },
+    })) {
+      events.push(event)
+    }
+
+    expect(projectDocsInputs).toEqual([
+      { operation: "read_section", area: "notes", sectionId: "active_context", charLimit: 20_000 },
+    ])
+    expect(events.filter((event) => event.type === "tool.call.started").map((event) => event.toolName)).toEqual(["project_docs"])
+    const messages = requests.find((request) => JSON.stringify(request.messages).includes("socrates_stable_cache_prelude"))?.messages ?? []
+    const serializedMessages = JSON.stringify(messages)
+    expect(serializedMessages).toContain("Project standing rule")
+    expect(serializedMessages).toContain("Global standing rule")
+    expect(serializedMessages.indexOf("socrates_stable_cache_prelude")).toBeLessThan(serializedMessages.indexOf("Continue the project."))
   })
 
   it("keeps the full stable prelude byte-identical across dynamic context changes and changes it with identity", async () => {
@@ -2491,6 +2574,76 @@ describe("SocratesAgent", () => {
         context,
       ),
     ).toMatchObject({ type: "approval_required", request: { risk: "medium" } })
+  })
+
+  it("collects multiple MCP credentials sequentially and passes values only to the runtime executor", async () => {
+    const requestedKeys: string[] = []
+    let executorInput: unknown
+    let executorSecrets: Readonly<Record<string, string>> | undefined
+    const executors = emptyToolExecutors()
+    executors.mcp_registry = async (input, _context, resolvedSecretEnv) => {
+      executorInput = input
+      executorSecrets = resolvedSecretEnv
+      return {
+        operation: "configure",
+        configPath: ".socrates/mcp.json",
+        envPath: ".socrates/.env",
+        configured: true,
+        summary: "Configured safely.",
+      }
+    }
+    const result = await mcpRegistryTool.execute({
+      operation: "configure",
+      confirmed: true,
+      scope: "project",
+      server: {
+        id: "multi-secret",
+        command: "trusted-mcp-command",
+        secretBindings: [
+          { envKey: "FIRST_API_KEY", source: "user_input" },
+          { envKey: "SECOND_API_KEY", source: "workspace_env" },
+        ],
+      },
+    }, {
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      toolCallId: "tcall_1",
+      workspacePath: "/tmp",
+      runtimeConfig: {
+        providerId: "openai",
+        modelId: "gpt-5.4-mini",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      executors,
+      onOutput: () => undefined,
+      requestApproval: async () => ({ decision: "approved" }),
+      requestCredentialInput: async (request) => {
+        requestedKeys.push(request.envKey)
+        expect(request.toolCallId).toBe("tcall_1")
+        return { decision: "submitted", value: `${request.envKey}-private`, source: request.source }
+      },
+    })
+
+    expect(result.summary).toBe("Configured safely.")
+    expect(requestedKeys).toEqual(["FIRST_API_KEY", "SECOND_API_KEY"])
+    expect(executorSecrets).toEqual({
+      FIRST_API_KEY: "FIRST_API_KEY-private",
+      SECOND_API_KEY: "SECOND_API_KEY-private",
+    })
+    expect(JSON.stringify(executorInput)).not.toContain("-private")
+    expect(executorInput).toMatchObject({
+      server: {
+        secretBindings: [
+          { envKey: "FIRST_API_KEY", source: "user_input" },
+          { envKey: "SECOND_API_KEY", source: "workspace_env" },
+        ],
+      },
+    })
   })
 })
 

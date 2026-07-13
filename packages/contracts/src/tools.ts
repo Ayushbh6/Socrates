@@ -2114,6 +2114,34 @@ export type McpServerScope = z.infer<typeof mcpServerScopeSchema>
 export const mcpRegistryOperationSchema = z.enum(["list", "describe", "check", "configure", "delete"])
 export type McpRegistryOperation = z.infer<typeof mcpRegistryOperationSchema>
 
+export const mcpSecretSourceSchema = z.enum(["user_input", "workspace_env"])
+export type McpSecretSource = z.infer<typeof mcpSecretSourceSchema>
+
+export const mcpSecretBindingSchema = z
+  .object({
+    envKey: z.string().min(1).max(128).regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    source: mcpSecretSourceSchema.default("user_input"),
+  })
+  .strict()
+export type McpSecretBinding = z.infer<typeof mcpSecretBindingSchema>
+
+const mcpSecretBindingsSchema = z
+  .array(mcpSecretBindingSchema)
+  .max(12)
+  .optional()
+  .superRefine((bindings, context) => {
+    if (!bindings) return
+    const seen = new Set<string>()
+    for (let index = 0; index < bindings.length; index += 1) {
+      const key = bindings[index]?.envKey
+      if (!key || !seen.has(key)) {
+        if (key) seen.add(key)
+        continue
+      }
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [index, "envKey"], message: `Duplicate secret binding: ${key}` })
+    }
+  })
+
 export const mcpRegistryToolInputSchema = z
   .object({
     operation: mcpRegistryOperationSchema,
@@ -2131,7 +2159,7 @@ export const mcpRegistryToolInputSchema = z
         command: z.string().min(1),
         args: z.array(z.string()).max(40).optional(),
         env: z.record(z.string(), z.string()).optional(),
-        secretEnv: z.record(z.string(), z.string()).optional(),
+        secretBindings: mcpSecretBindingsSchema,
         enabled: z.boolean().optional(),
       })
       .strict()
@@ -2174,7 +2202,9 @@ export const mcpRegistryToolModelInputSchema = z.discriminatedUnion("operation",
           command: z.string().min(1),
           args: z.array(z.string()).max(40).optional(),
           env: z.record(z.string(), z.string()).optional().describe("Non-secret environment values only."),
-          secretEnv: z.record(z.string(), z.string()).optional().describe("Secret values stored in the project .socrates/.env file, never mcp.json."),
+          secretBindings: mcpSecretBindingsSchema.describe(
+            "Secret key names and their source only. Use user_input unless the user explicitly asked to reuse that exact key from a workspace .env file. Never provide a secret value.",
+          ),
         })
         .strict(),
     })

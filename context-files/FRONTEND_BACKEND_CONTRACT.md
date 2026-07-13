@@ -1202,6 +1202,7 @@ chat.conversation.unsubscribe
 chat.message.send
 chat.turn.cancel
 approval.decide
+credential.input.submit
 feedback.submit
 terminal.stop
 terminal.input
@@ -1278,6 +1279,19 @@ type ApprovalDecidePayload = {
   approvalId: string
   decision: "approved" | "rejected"
   reason?: string
+}
+```
+
+### `credential.input.submit`
+
+Submits or cancels exactly one pending MCP credential request. The frontend must keep the input masked by default, clear its component state immediately after submit/cancel, and must not copy the value into chat messages, URL state, browser storage, analytics, or persisted UI events. The backend consumes the value only through the active in-memory turn waiter.
+
+```ts
+type CredentialInputSubmitPayload = {
+  credentialRequestId: string
+  turnId: string
+  decision: "submitted" | "cancelled"
+  value?: string // required only for submitted; forbidden for cancelled
 }
 ```
 
@@ -1361,6 +1375,8 @@ tool.call.completed
 tool.call.failed
 approval.requested
 approval.resolved
+credential.input.requested
+credential.input.resolved
 context.usage.snapshot
 context.compaction.started
 context.compaction.completed
@@ -1388,6 +1404,7 @@ This is enough to render:
 - Final answer stream.
 - Tool calls as they happen.
 - Approval prompts.
+- Inline masked credential handoffs attached to their MCP tool row.
 - Tool results and failures.
 - Context usage widget.
 - Subtle compaction status.
@@ -2482,7 +2499,7 @@ type MemoryRouterPostTurnResult = {
 The behavior stays simple and human-facing:
 
 - Pre-turn routing returns exact valid file/section read targets, not boolean surfaces or loose doc hints.
-- Pre-turn runtime always reads bounded identity sections (`core_identity`, `voice_and_presence`, `relationship_to_user`) plus global/project always-apply sections and renders them with the registry-generated surface map into a provider-agnostic stable cache prelude before conversation/user text. This stable read path does not depend on successful structured Memory Router generation. Router-selected docs, user/project metadata, save summaries, runtime facts, attachments, and same-turn ledgers remain in the later dynamic context tail.
+- Pre-turn runtime loads bounded identity sections (`core_identity`, `voice_and_presence`, `relationship_to_user`) plus global/project always-apply sections into one backend-owned per-project snapshot and renders it with the registry-generated surface map into a provider-agnostic stable cache prelude before conversation/user text. A stat fast path avoids re-reading unchanged files; changed files are content-hashed and parsed, but same-content rewrites or changes outside these standing sections retain the cached snapshot. Only a changed standing-section hash replaces it. The bounded cache uses least-recently-used eviction. This path emits no standing-section tool calls and does not depend on successful structured Memory Router generation. Router targets matching standing sections and exact repeated dynamic targets are hard-deduplicated; only dynamic docs remain in the later visible context tail.
 - Before router reasoning, the complete user prompt is shared-chunked and automatically hybrid-prefetched against eligible memory sections. Up to 12 prompt segments are merged into at most eight section parents; this does not consume the router's tool budget.
 - The pre-turn router has `memory_search` only for routing and is strictly read-only. The final router may also use `turn_evidence` to inspect backend-created references, with at most three total drill-down calls before strict Zod output. Malformed structured output gets one bounded validation-feedback repair attempt. `project_notes/runtime_context` and `project_notes/state_ledger` are backend-owned and rejected as reconciliation actions.
 - The Global Memory Agent follows the same tool-loop then structured-final pattern. Its final Zod journal has bounded `summary`, `patternsObserved`, `skillsAffected`, `decisions`, `openInvestigations`, and `nextRunFocus`; scoped file/proposal work remains normal internal tool calls. A valid successful run creates one `memory_agent_journal` row and refreshes the generated Memory Agent Ledger file exposed by Memory Center.
@@ -2675,7 +2692,10 @@ type McpRegistryToolInput =
         command: string
         args?: string[]
         env?: Record<string, string>
-        secretEnv?: Record<string, string>
+        secretBindings?: Array<{
+          envKey: string
+          source: "user_input" | "workspace_env"
+        }>
       }
     }
   | { operation: "delete"; scope?: "project" | "global"; id: string }
@@ -2730,10 +2750,10 @@ Rules:
 - `describe` requires an exact listed `id` or exact listed `name`; prefer canonical `id`.
 - If both `id` and `name` are provided, they must resolve to the same listed server. Otherwise the tool returns a constructive recoverable error.
 - Describing a server loads only that server's docs and exposes its dynamic `mcp__...` tool definitions for later provider calls in the same turn.
-- Configure/delete always use the mutation lane and normal approval surface. Configure accepts only exact user-supplied or trusted stdio commands, forces the initial save disabled, performs initialize plus tools/list inside the approved call, enables only on success, and redacts `secretEnv` from approval previews.
+- Configure/delete always use the mutation lane and normal approval surface. Configure accepts only exact user-supplied or trusted stdio commands. The model may declare secret key names and a semantic source through `secretBindings`, but its strict schema rejects `secretEnv` and every plaintext secret value. After approval, the UI receives one `credential.input.requested` event at a time and replies with `credential.input.submit`; the server emits only safe requested/resolved metadata, keeps the value in the active waiter, and passes it privately to the MCP runtime. Multiple bindings and multiple configure calls remain sequential through the mutation lane. `workspace_env` is permitted only when the user explicitly requested reuse of that exact key; if it is absent, the flow falls back to user input. Configure forces the initial save disabled, performs initialize plus tools/list inside the approved call, and enables only on success.
 - Check launches project servers from the project workspace and persists health/tool-count metadata without changing enablement. The HTTP dashboard flow may explicitly request enable-on-success after its own user-initiated save.
 - UI import accepts common JSON `mcpServers`/`servers` and Codex TOML `mcp_servers`; remote HTTP/SSE entries receive a clear unsupported-transport error until those transports are implemented.
-- Secret values are written with private permissions to the scope's `.env`; `mcp.json` stores only `secretKeys`. Deleting a server removes only secret keys not referenced by another server.
+- Secret values are written with private permissions to the scope's `.env`; `mcp.json` stores only `secretKeys`. GET config responses expose existing key names with blank values, and blank dashboard updates preserve the existing private value. Generic workspace `read`, `search`, and Terminal calls reject real env/private-key material; safe env templates remain readable. Persisted events, approvals, tool arguments/results, trace rows, provider requests, and `mcp.json` must never contain the value. Deleting a server removes only secret keys not referenced by another server.
 - `GET /api/mcp` returns the selected scope's config/env paths. The panel provides copy/open actions, manual editing with immutable ids, and add/check/enable/delete controls.
 - MCP server tool lists and schemas must not be dumped into the system prompt or first provider-call schemas.
 - Global MCP servers are inherited by all projects. Project MCP servers are visible only in that workspace. Bundled Playwright is protected from deletion and should be discoverable for browser/web/page/screenshot tasks.

@@ -29,7 +29,7 @@ import {
 import { buildSocratesDynamicContext, buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { renderSocratesSurfaceMap } from "@socrates/contracts"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
-import type { ApprovalDecision, ApprovalRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
+import type { ApprovalDecision, ApprovalRequest, CredentialInputDecision, CredentialInputRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
 import { MemoryRouterAgent } from "./MemoryRouterAgent"
 
 export type SocratesAgentTurnInput = {
@@ -58,6 +58,8 @@ export type SocratesAgentTurnInput = {
     tools: ModelToolDefinition[]
   }) => string
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  requestCredentialInput?: (request: CredentialInputRequest) => Promise<CredentialInputDecision>
+  stableCachePreludeSnapshot?: StableCachePreludeSnapshot
   recordMemoryRouterUsage?: (input: MemoryRouterUsageRecord) => void | Promise<void>
   automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
   contextCompression?: ContextCompressionRuntime
@@ -67,6 +69,13 @@ export type SocratesAgentTurnInput = {
   dynamicTools?: ModelToolDefinition[] | (() => ModelToolDefinition[])
   abortSignal?: AbortSignal
   fileFreshness?: import("../tools/types").FileFreshnessTracker
+}
+
+export type StableCachePreludeSnapshot = {
+  projectRules?: string
+  globalRules?: string
+  identitySections: Partial<Record<"core_identity" | "voice_and_presence" | "relationship_to_user", string>>
+  cacheHit?: boolean
 }
 
 export type MemoryLoopPhase = "pre_turn" | "post_evidence"
@@ -473,6 +482,9 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           runtimeConfig: input.runtimeConfig,
           executors: input.toolExecutors,
           requestApproval: input.requestApproval,
+          requestCredentialInput:
+            input.requestCredentialInput ??
+            (async (request) => ({ decision: "cancelled" as const, source: request.source })),
           modelCallId,
           stepIndex: step,
           ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
@@ -654,18 +666,22 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
     messages: ModelMessage[],
     docsLedger: TurnDocsLedger,
   ): Promise<MemoryLoopRunResult> {
-    if (!canLoadStableCachePrelude(input, this.toolRegistry)) {
+    if (!input.stableCachePreludeSnapshot && !canLoadStableCachePrelude(input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
     }
 
     const events: ToolLifecycleEvent[] = []
     const records: MemoryLoopToolRecord[] = []
-    for (const request of stablePreludeRecallRequests()) {
-      const record = await this.executeMemoryLoopTool(input, docsLedger, request)
-      events.push(...record.events)
-      records.push(record)
+    if (!input.stableCachePreludeSnapshot) {
+      for (const request of stablePreludeRecallRequests()) {
+        const record = await this.executeMemoryLoopTool(input, docsLedger, request)
+        events.push(...record.events)
+        records.push(record)
+      }
     }
-    const stableCachePreludeMessage = renderStableCachePrelude(records)
+    const stableCachePreludeMessage = input.stableCachePreludeSnapshot
+      ? renderStableCachePreludeSnapshot(input.stableCachePreludeSnapshot)
+      : renderStableCachePrelude(records)
 
     if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
       return {
@@ -1177,6 +1193,13 @@ const stablePreludeRecallRequests = (): Array<{ toolName: ToolName; input: unkno
 const routedPreTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ toolName: ToolName; input: unknown }> => {
   const requests: Array<{ toolName: ToolName; input: unknown }> = []
   const seen = new Set<string>()
+  const stableTargets = new Set([
+    "project_memory:always_apply_rules",
+    "user_profile:global_always_apply_rules",
+    "identity:core_identity",
+    "identity:voice_and_presence",
+    "identity:relationship_to_user",
+  ])
   const push = (request: { toolName: ToolName; input: unknown }) => {
     const key = `${request.toolName}:${JSON.stringify(request.input)}`
     if (!seen.has(key)) {
@@ -1185,6 +1208,9 @@ const routedPreTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ 
     }
   }
   for (const target of route.readTargets) {
+    if (stableTargets.has(`${target.surface}:${target.sectionId}`)) {
+      continue
+    }
     if (target.surface === "project_notes") {
       push({ toolName: "project_docs", input: { operation: "read_section", area: "notes", sectionId: target.sectionId, charLimit: 20_000 } })
     } else if (target.surface === "project_memory") {
@@ -1291,7 +1317,19 @@ const renderStableCachePrelude = (records: MemoryLoopToolRecord[]): string | und
     return undefined
   }
 
-  return [
+  return renderStableCachePreludeParts({ projectRules, globalRules, identitySections })
+}
+
+const renderStableCachePreludeParts = ({
+  projectRules,
+  globalRules,
+  identitySections,
+}: {
+  projectRules: string | undefined
+  globalRules: string | undefined
+  identitySections: Map<string, string>
+}): string =>
+  [
     "<socrates_stable_cache_prelude>",
     "Stable always-apply rules loaded by the runtime before conversation/user text. Treat them as standing instructions for this turn; do not quote these tags to the user.",
     "<identity_core>",
@@ -1308,7 +1346,15 @@ const renderStableCachePrelude = (records: MemoryLoopToolRecord[]): string | und
     renderSocratesSurfaceMap(),
     "</socrates_stable_cache_prelude>",
   ].join("\n")
-}
+
+const renderStableCachePreludeSnapshot = (snapshot: StableCachePreludeSnapshot): string =>
+  renderStableCachePreludeParts({
+    projectRules: normalizeAlwaysApplyRules(snapshot.projectRules),
+    globalRules: normalizeAlwaysApplyRules(snapshot.globalRules),
+    identitySections: new Map(
+      Object.entries(snapshot.identitySections).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  })
 
 const isStableCachePreludeRecord = (record: MemoryLoopToolRecord): boolean =>
   isProjectAlwaysApplyRecord(record) || isGlobalAlwaysApplyRecord(record) || isStableIdentityRecord(record)

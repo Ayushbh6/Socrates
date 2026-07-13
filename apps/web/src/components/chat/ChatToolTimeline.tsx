@@ -1,25 +1,28 @@
 import { ChevronDown, SquareTerminal } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ToolActivityRow } from "./ToolActivityRow";
-import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
+import type { PendingApproval, PendingCredentialInput, ToolTimelineItem } from "./ToolTimelineTypes";
 
 interface ChatToolTimelineProps {
   tools: ToolTimelineItem[];
   approvals?: PendingApproval[];
+  credentialRequests?: PendingCredentialInput[];
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
+  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }
 
-export function ChatToolTimeline({ tools, approvals = [], onApprovalDecision }: ChatToolTimelineProps) {
+export function ChatToolTimeline({ tools, approvals = [], credentialRequests = [], onApprovalDecision, onCredentialInput }: ChatToolTimelineProps) {
   const orphanApprovals = approvals.filter((approval) => approval.toolCallId && !tools.some((tool) => tool.toolCallId === approval.toolCallId));
   const hasPendingApproval = approvals.some((approval) => approval.status === "pending");
   const hasActiveWork = tools.some(
     (tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval",
   );
-  const [isOpen, setIsOpen] = useState(hasPendingApproval || hasActiveWork);
+  const hasPendingCredential = credentialRequests.some((request) => request.status === "pending");
+  const [isOpen, setIsOpen] = useState(hasPendingApproval || hasActiveWork || hasPendingCredential);
   const summary = useMemo(() => summarizeToolGroup(tools, approvals), [tools, approvals]);
-  const shouldShowDetails = isOpen || hasPendingApproval || hasActiveWork;
+  const shouldShowDetails = isOpen || hasPendingApproval || hasActiveWork || hasPendingCredential;
 
-  if (tools.length === 0 && approvals.length === 0) {
+  if (tools.length === 0 && approvals.length === 0 && credentialRequests.length === 0) {
     return null;
   }
 
@@ -42,7 +45,9 @@ export function ChatToolTimeline({ tools, approvals = [], onApprovalDecision }: 
               key={tool.toolCallId}
               tool={tool}
               approval={findApprovalForTool(tool, approvals)}
+              credentialRequest={credentialRequests.find((request) => request.toolCallId === tool.toolCallId)}
               onApprovalDecision={onApprovalDecision}
+              onCredentialInput={onCredentialInput}
             />
           ))}
           {orphanApprovals.map((approval) => {

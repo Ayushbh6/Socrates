@@ -4,7 +4,7 @@ import { execFileSync, spawn } from "node:child_process"
 import type { IPty } from "@homebridge/node-pty-prebuilt-multiarch"
 import type { BashToolInput, BashToolOutput, TruncationMetadata } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
-import { assertNoProtectedSocratesPathMentions, clampCharLimit, resolveWorkspacePath } from "./common"
+import { assertNoProtectedSocratesPathMentions, assertNoSecretMaterialPathMentions, clampCharLimit, resolveWorkspacePath } from "./common"
 
 type ShellKind = "posix" | "powershell" | "cmd"
 type BashOperation = NonNullable<BashToolInput["operation"]>
@@ -152,6 +152,7 @@ export class WorkspaceShellSession {
     }
     rejectLeadingExternalCd(commandText, this.workspacePath)
     assertNoProtectedSocratesPathMentions(commandText, protectedPathOptions(this.env))
+    assertNoSecretMaterialPathMentions(commandText)
 
     const startedAt = Date.now()
     const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
@@ -303,6 +304,7 @@ export class WorkspaceShellSession {
     }
     rejectLeadingExternalCd(commandText, this.workspacePath)
     assertNoProtectedSocratesPathMentions(commandText, protectedPathOptions(this.env))
+    assertNoSecretMaterialPathMentions(commandText)
 
     const startedAt = Date.now()
     const cwd = input.cwd ? resolveWorkspacePath(this.workspacePath, input.cwd) : this.workspacePath
@@ -594,6 +596,7 @@ export const runWorkspaceArgv = async (
 
   const command = formatWorkspaceArgv(argv)
   assertNoProtectedSocratesPathMentions(argv.join("\u0000"), protectedPathOptions(process.env))
+  assertNoSecretMaterialPathMentions(argv.join("\u0000"))
   const cwd = input.cwd ? resolveWorkspacePath(context.workspacePath, input.cwd) : resolveWorkspacePath(context.workspacePath)
   const startedAt = Date.now()
   const charLimit = clampCharLimit(input.charLimit)

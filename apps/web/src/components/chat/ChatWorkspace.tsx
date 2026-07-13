@@ -11,7 +11,7 @@ import { ChatTranscript, type LiveActivityStep } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
 import { TerminalDockPanel } from "./TerminalPanel";
-import { type PendingApproval, type ToolTimelineItem } from "./ToolTimelineTypes";
+import { type PendingApproval, type PendingCredentialInput, type ToolTimelineItem } from "./ToolTimelineTypes";
 import { ActivityCenter } from "./ActivityCenter";
 
 interface ChatWorkspaceProps {
@@ -165,6 +165,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [anchorMessageId, setAnchorMessageId] = useState<string | null>(null);
   const [terminals, setTerminals] = useState<ConversationTerminal[]>([]);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [credentialRequests, setCredentialRequests] = useState<PendingCredentialInput[]>([]);
   const [isCompacting, setIsCompacting] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [terminalDockHeight, setTerminalDockHeight] = useState(DEFAULT_TERMINAL_DOCK_HEIGHT);
@@ -560,12 +561,34 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         return;
       }
 
+      if (event.type === "credential.input.requested") {
+        const turnId = event.turnId ?? activeTurnIdRef.current;
+        if (!turnId) return;
+        setCredentialRequests((current) => [
+          ...current.filter((request) => request.credentialRequestId !== event.payload.credentialRequestId),
+          { ...event.payload, turnId, status: "pending" },
+        ]);
+        return;
+      }
+
+      if (event.type === "credential.input.resolved") {
+        setCredentialRequests((current) =>
+          current.map((request) =>
+            request.credentialRequestId === event.payload.credentialRequestId
+              ? { ...request, status: event.payload.decision }
+              : request,
+          ),
+        );
+        return;
+      }
+
       if (event.type === "turn.completed") {
         const completedTurnId = event.payload.turnId;
         activeTurnIdRef.current = null;
         setIsSending(false);
         setActiveTurnId(null);
         setApprovals([]);
+        setCredentialRequests([]);
         setIsCompacting(false);
         if (event.payload.turnUsageReport) {
           setConversationData((current) => (current ? applyTurnUsageReport(current, event.payload.turnUsageReport as TurnUsageReport) : current));
@@ -606,6 +629,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         liveStepsRef.current = [];
         setLiveSteps([]);
         setApprovals([]);
+        setCredentialRequests([]);
         setIsCompacting(false);
         void refreshConversation().finally(() => {
           setSettledLiveTurns((current) => removeSettledLiveTurn(current, cancelledTurnId));
@@ -632,6 +656,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         liveStepsRef.current = [];
         setLiveSteps([]);
         setApprovals([]);
+        setCredentialRequests([]);
         void refreshConversation().finally(() => {
           setSettledLiveTurns((current) => removeSettledLiveTurn(current, failedTurnId));
         });
@@ -885,6 +910,35 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       },
     };
     sendCommand(command);
+  };
+
+  const handleCredentialInput = (
+    request: PendingCredentialInput,
+    decision: "submitted" | "cancelled",
+    value?: string,
+  ) => {
+    const command: ClientCommand = {
+      id: `cmd_${crypto.randomUUID()}`,
+      type: "credential.input.submit",
+      schemaVersion: 1,
+      timestamp: new Date().toISOString(),
+      projectId,
+      conversationId,
+      turnId: request.turnId,
+      actor: { type: "user" },
+      payload: {
+        credentialRequestId: request.credentialRequestId,
+        turnId: request.turnId,
+        decision,
+        ...(value === undefined ? {} : { value }),
+      },
+    };
+    sendCommand(command);
+    setCredentialRequests((current) =>
+      current.map((item) =>
+        item.credentialRequestId === request.credentialRequestId ? { ...item, status: decision } : item,
+      ),
+    );
   };
 
   const handleTerminalStop = (terminalId: string) => {
@@ -1207,11 +1261,13 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                   activitySteps={conversationData?.activitySteps ?? []}
                   liveSteps={liveSteps}
                   approvals={approvals}
+                  credentialRequests={credentialRequests}
                   settledLiveTurns={settledLiveTurns}
                   anchorMessageId={anchorMessageId}
                   isStreaming={isSending}
                   isCompacting={isCompacting}
                   onApprovalDecision={handleApprovalDecision}
+                  onCredentialInput={handleCredentialInput}
                 />
                 <div className="min-w-0 border-t border-gray-100 bg-white px-6 py-3">
                   <div className="mx-auto max-w-3xl min-w-0">

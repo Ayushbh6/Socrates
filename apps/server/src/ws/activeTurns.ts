@@ -6,6 +6,10 @@ export class ActiveTurns {
     {
       controller: AbortController
       approvals: Map<string, (decision: { decision: "approved" | "rejected"; reason?: string }) => void>
+      credentialInputs: Map<
+        string,
+        (decision: { decision: "submitted" | "cancelled"; value?: string; source: "user_input" | "workspace_env" }) => void
+      >
       shellSession?: WorkspaceShellSession
       fileFreshness: FileFreshnessTracker
     }
@@ -13,7 +17,7 @@ export class ActiveTurns {
 
   create(turnId: string): AbortController {
     const controller = new AbortController()
-    this.turns.set(turnId, { controller, approvals: new Map(), fileFreshness: new FileFreshnessTracker() })
+    this.turns.set(turnId, { controller, approvals: new Map(), credentialInputs: new Map(), fileFreshness: new FileFreshnessTracker() })
     return controller
   }
 
@@ -81,11 +85,54 @@ export class ActiveTurns {
     return false
   }
 
+  waitForCredentialInput(
+    turnId: string,
+    credentialRequestId: string,
+    source: "user_input" | "workspace_env",
+    abortSignal?: AbortSignal,
+  ): Promise<{ decision: "submitted" | "cancelled"; value?: string; source: "user_input" | "workspace_env" }> {
+    const turn = this.turns.get(turnId)
+    if (!turn) {
+      return Promise.resolve({ decision: "cancelled", source })
+    }
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        turn.credentialInputs.delete(credentialRequestId)
+        abortSignal?.removeEventListener("abort", onAbort)
+      }
+      const onAbort = () => {
+        cleanup()
+        resolve({ decision: "cancelled", source })
+      }
+      turn.credentialInputs.set(credentialRequestId, (decision) => {
+        cleanup()
+        resolve(decision)
+      })
+      abortSignal?.addEventListener("abort", onAbort, { once: true })
+    })
+  }
+
+  resolveCredentialInput(
+    turnId: string,
+    credentialRequestId: string,
+    decision: { decision: "submitted" | "cancelled"; value?: string; source: "user_input" | "workspace_env" },
+  ): boolean {
+    const waiter = this.turns.get(turnId)?.credentialInputs.get(credentialRequestId)
+    if (waiter) {
+      waiter(decision)
+      return true
+    }
+    return false
+  }
+
   delete(turnId: string): void {
     const turn = this.turns.get(turnId)
     if (turn) {
       for (const waiter of turn.approvals.values()) {
         waiter({ decision: "rejected", reason: "Turn ended before approval was resolved." })
+      }
+      for (const waiter of turn.credentialInputs.values()) {
+        waiter({ decision: "cancelled", source: "user_input" })
       }
       turn.shellSession?.dispose()
     }

@@ -1,9 +1,14 @@
-import type { ConversationToolApproval, ConversationToolRun } from "@socrates/contracts";
+import type { ConversationToolApproval, ConversationToolRun, ServerEvent } from "@socrates/contracts";
 
 export type ToolTimelineStatus = ConversationToolRun["status"];
 
 export type PendingApproval = ConversationToolApproval & {
   toolCallId?: string;
+};
+
+export type PendingCredentialInput = Extract<ServerEvent, { type: "credential.input.requested" }>["payload"] & {
+  turnId: string;
+  status: "pending" | "submitted" | "cancelled";
 };
 
 export type ToolTimelineItem = Omit<ConversationToolRun, "approval"> & {

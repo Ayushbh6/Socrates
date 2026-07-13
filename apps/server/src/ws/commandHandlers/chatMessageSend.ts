@@ -18,7 +18,9 @@ import {
   FileFreshnessTracker,
   isWorkspaceMutationLocked,
   isShellSessionResetError,
+  listWorkspaceEnvKeyCandidates,
   readWorkspacePath,
+  readWorkspaceEnvValue,
   searchWorkspace,
   shouldSerializeBashInput,
   withWorkspaceMutationLock,
@@ -220,9 +222,9 @@ export const handleChatMessageSend = async (
   const includeImageParts = selectedModel?.capabilities?.vision === true
   const history = store.getConversationModelMessages(projectId, conversationId, { includeImageParts })
   const workspacePath = store.getPrimaryWorkspacePath(projectId)
-  store.ensureProjectMemory(projectId)
   const terminalContext = store.terminalContextBrief(conversationId)
   const modelHistory = withLateDeveloperContext(history, terminalContext, continuation?.wakeContext)
+  const stableCachePreludeSnapshot = store.loadStableCachePreludeSnapshot(projectId, workspacePath)
   const promptContext = {
     ...store.getAgentContext(projectId),
   }
@@ -254,6 +256,7 @@ export const handleChatMessageSend = async (
       messages: modelHistory,
       promptContext,
       workspacePath,
+      stableCachePreludeSnapshot,
       automaticMemorySearch: (input) => store.searchMemory(projectId, input, true),
       toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime, {
         exposeMcpServer: (serverId) => exposedMcpServers.add(serverId),
@@ -281,6 +284,10 @@ export const handleChatMessageSend = async (
             promptContext: modelRequest.promptContext,
             runtimeConfig: modelRequest.runtimeConfig,
             tools: modelRequest.tools.map((tool) => tool.name),
+            stablePrelude: {
+              source: "backend_snapshot",
+              cacheHit: stableCachePreludeSnapshot.cacheHit === true,
+            },
           },
         })
         modelCallIds.push(modelCallId)
@@ -340,6 +347,65 @@ export const handleChatMessageSend = async (
         )
         appendAndEmit(emitEvent, store, event, "server")
         return activeTurns.waitForApproval(created.turnId, approvalId, abortController.signal)
+      },
+      requestCredentialInput: async (request) => {
+        if (request.source === "workspace_env") {
+          const candidate = listWorkspaceEnvKeyCandidates(workspacePath, request.envKey).find((item) => item.hasKey)
+          if (candidate) {
+            const value = readWorkspaceEnvValue(workspacePath, candidate.fileName, request.envKey)
+            if (value) {
+              return { decision: "submitted" as const, value, source: "workspace_env" as const }
+            }
+          }
+        }
+
+        const effectiveSource = "user_input" as const
+        const event = makeEvent(
+          "credential.input.requested",
+          {
+            credentialRequestId: request.credentialRequestId,
+            toolCallId: request.toolCallId,
+            serverId: request.serverId,
+            ...(request.serverLabel ? { serverLabel: request.serverLabel } : {}),
+            envKey: request.envKey,
+            source: effectiveSource,
+          },
+          {
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            actor: { type: "system" },
+          },
+        )
+        appendAndEmit(emitEvent, store, event, "server")
+        const decision = await activeTurns.waitForCredentialInput(
+          created.turnId,
+          request.credentialRequestId,
+          effectiveSource,
+          abortController.signal,
+        )
+        appendAndEmit(
+          emitEvent,
+          store,
+          makeEvent(
+            "credential.input.resolved",
+            {
+              credentialRequestId: request.credentialRequestId,
+              toolCallId: request.toolCallId,
+              decision: decision.decision,
+            },
+            {
+              projectId,
+              conversationId,
+              sessionId: created.sessionId,
+              turnId: created.turnId,
+              actor: { type: "system" },
+            },
+          ),
+          "server",
+        )
+        return decision
       },
       recordMemoryRouterUsage: async (usageEvent) => {
         store.recordMemoryRouterUsage({
@@ -1055,11 +1121,14 @@ const createToolExecutors = (
     requireSkillsDiscoveryForProjectResources("list_project_resources")
     return Promise.resolve(listProjectResourcesForTool(store, projectId, input))
   },
-  mcp_registry: async (input, context) => {
+  mcp_registry: async (input, context, resolvedSecretEnv) => {
     if (!mcpRuntime) {
       throw new SocratesError("mcp_runtime_unavailable", "MCP runtime is not available.", { recoverable: true })
     }
-    const output = await mcpRuntime.handleRegistryTool(input, { workspacePath: context.workspacePath })
+    const output = await mcpRuntime.handleRegistryTool(input, {
+      workspacePath: context.workspacePath,
+      ...(resolvedSecretEnv ? { resolvedSecretEnv } : {}),
+    })
     if (output.tools && output.tools.length > 0) {
       options.exposeMcpServer?.(output.server?.id ?? input.id ?? input.serverId ?? input.name ?? input.serverName ?? input.preset ?? "playwright")
     }

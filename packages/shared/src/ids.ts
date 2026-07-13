@@ -19,6 +19,7 @@ export type IdPrefix =
   | "ctxcmp"
   | "tcall"
   | "appr"
+  | "creq"
   | "sh"
   | "shout"
   | "term"

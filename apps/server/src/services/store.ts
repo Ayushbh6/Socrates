@@ -2,6 +2,7 @@ import type {
   CompleteCompactionSnapshotInput,
   ContextCompactionSummary,
   FailCompactionSnapshotInput,
+  StableCachePreludeSnapshot,
   StartCompactionSnapshotInput,
 } from "@socrates/core"
 import { normalizeScores, rankDistinctParents } from "@socrates/core"
@@ -628,6 +629,10 @@ export class SocratesStore {
 
   runProjectDocsTool(projectId: string, workspacePath: string, input: ProjectDocsToolInput): ProjectDocsToolOutput {
     return this.memory.runProjectDocsTool(projectId, workspacePath, input)
+  }
+
+  loadStableCachePreludeSnapshot(projectId: string, workspacePath: string): StableCachePreludeSnapshot {
+    return this.memory.loadStableCachePreludeSnapshot(projectId, workspacePath)
   }
 
   runRepoDocsTool(projectId: string, workspacePath: string, input: RepoDocsToolInput): RepoDocsToolOutput {

@@ -3,7 +3,7 @@ import { apiErrorSchema } from "./api"
 import { conversationSchema, idSchema, messageSchema, notificationSchema, timestampSchema } from "./entities"
 import { memoryAgentSignalSnapshotSchema } from "./http"
 import { providerAuthModeSchema, providerIdSchema, thinkingEffortSchema, turnUsageReportSchema } from "./models"
-import { memoryNoteImportanceSchema, skillScopeSchema, terminalStatusSchema, toolNameSchema } from "./tools"
+import { mcpSecretSourceSchema, memoryNoteImportanceSchema, skillScopeSchema, terminalStatusSchema, toolNameSchema } from "./tools"
 import { MAX_INLINE_MESSAGE_CHARS, MAX_MESSAGE_ATTACHMENTS } from "./attachments"
 
 export const schemaVersionSchema = z.literal(1)
@@ -103,6 +103,23 @@ export const approvalDecidePayloadSchema = z
   })
   .strict()
 
+export const credentialInputSubmitPayloadSchema = z
+  .object({
+    credentialRequestId: idSchema,
+    turnId: idSchema,
+    decision: z.enum(["submitted", "cancelled"]),
+    value: z.string().min(1).max(20_000).optional(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.decision === "submitted" && input.value === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["value"], message: "A credential value is required when submitting." })
+    }
+    if (input.decision === "cancelled" && input.value !== undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["value"], message: "Cancelled credential input must not include a value." })
+    }
+  })
+
 export const terminalStopPayloadSchema = z
   .object({
     terminalId: idSchema,
@@ -166,6 +183,7 @@ export const chatConversationUnsubscribeCommandSchema = socketEnvelopeSchema(
   chatConversationUnsubscribePayloadSchema,
 )
 export const approvalDecideCommandSchema = socketEnvelopeSchema("approval.decide", approvalDecidePayloadSchema)
+export const credentialInputSubmitCommandSchema = socketEnvelopeSchema("credential.input.submit", credentialInputSubmitPayloadSchema)
 export const terminalStopCommandSchema = socketEnvelopeSchema("terminal.stop", terminalStopPayloadSchema)
 export const terminalInputCommandSchema = socketEnvelopeSchema("terminal.input", terminalInputPayloadSchema)
 export const terminalResizeCommandSchema = socketEnvelopeSchema("terminal.resize", terminalResizePayloadSchema)
@@ -178,6 +196,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   chatConversationSubscribeCommandSchema,
   chatConversationUnsubscribeCommandSchema,
   approvalDecideCommandSchema,
+  credentialInputSubmitCommandSchema,
   terminalStopCommandSchema,
   terminalInputCommandSchema,
   terminalResizeCommandSchema,
@@ -627,6 +646,26 @@ export const terminalInputRequestedPayloadSchema = terminalEventPayloadBaseSchem
   })
   .strict()
 
+export const credentialInputRequestedPayloadSchema = z
+  .object({
+    credentialRequestId: idSchema,
+    toolCallId: idSchema,
+    providerToolCallId: z.string().min(1).optional(),
+    serverId: z.string().min(1).max(64),
+    serverLabel: z.string().min(1).max(120).optional(),
+    envKey: z.string().min(1).max(128),
+    source: mcpSecretSourceSchema,
+  })
+  .strict()
+
+export const credentialInputResolvedPayloadSchema = z
+  .object({
+    credentialRequestId: idSchema,
+    toolCallId: idSchema,
+    decision: z.enum(["submitted", "cancelled"]),
+  })
+  .strict()
+
 export const connectionReadyEventSchema = socketEnvelopeSchema("connection.ready", connectionReadyPayloadSchema)
 export const turnStartedEventSchema = socketEnvelopeSchema("turn.started", turnStartedPayloadSchema)
 export const turnWaitingEventSchema = socketEnvelopeSchema("turn.waiting", turnWaitingPayloadSchema)
@@ -641,6 +680,8 @@ export const toolCallCompletedEventSchema = socketEnvelopeSchema("tool.call.comp
 export const toolCallFailedEventSchema = socketEnvelopeSchema("tool.call.failed", toolCallFailedPayloadSchema)
 export const approvalRequestedEventSchema = socketEnvelopeSchema("approval.requested", approvalRequestedPayloadSchema)
 export const approvalResolvedEventSchema = socketEnvelopeSchema("approval.resolved", approvalResolvedPayloadSchema)
+export const credentialInputRequestedEventSchema = socketEnvelopeSchema("credential.input.requested", credentialInputRequestedPayloadSchema)
+export const credentialInputResolvedEventSchema = socketEnvelopeSchema("credential.input.resolved", credentialInputResolvedPayloadSchema)
 export const contextUsageSnapshotEventSchema = socketEnvelopeSchema(
   "context.usage.snapshot",
   contextUsageSnapshotPayloadSchema,
@@ -709,6 +750,8 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   toolCallFailedEventSchema,
   approvalRequestedEventSchema,
   approvalResolvedEventSchema,
+  credentialInputRequestedEventSchema,
+  credentialInputResolvedEventSchema,
   contextUsageSnapshotEventSchema,
   contextCompactionStartedEventSchema,
   contextCompactionCompletedEventSchema,

@@ -30,7 +30,7 @@ export class ToolStore extends StoreBase {
         providerToolCallId: input.providerToolCallId,
         toolName: input.toolName,
         status: input.requiresApproval ? "awaiting_approval" : "running",
-        argumentsJson: JSON.stringify(input.arguments),
+        argumentsJson: JSON.stringify(redactSecretFields(input.arguments)),
         requiresApproval: input.requiresApproval,
         approvalId: pendingApproval?.id,
         startedAt: nowIso(),
@@ -57,7 +57,7 @@ export class ToolStore extends StoreBase {
   completeToolCall(toolCallId: string, result: unknown): void {
     this.handle.db
       .update(toolCalls)
-      .set({ status: "completed", resultJson: JSON.stringify(result), completedAt: nowIso() })
+      .set({ status: "completed", resultJson: JSON.stringify(redactSecretFields(result)), completedAt: nowIso() })
       .where(eq(toolCalls.id, toolCallId))
       .run()
   }
@@ -370,6 +370,25 @@ export class ToolStore extends StoreBase {
     })
   }
 }
+
+const redactSecretFields = (value: unknown, parentKey = ""): unknown => {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecretFields(item, parentKey))
+  }
+  if (!value || typeof value !== "object") {
+    return secretFieldName(parentKey) && value !== undefined ? "[REDACTED]" : value
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, child]) => [
+      key,
+      secretFieldName(key) ? "[REDACTED]" : redactSecretFields(child, key),
+    ]),
+  )
+}
+
+const secretFieldName = (key: string): boolean =>
+  /(?:^|_)(?:api_?key|access_?token|refresh_?token|password|passphrase|secret|credential)(?:$|_)/i.test(key) ||
+  key === "secretEnv"
 
 const parseJson = (text: string | null): unknown => {
   if (!text) {

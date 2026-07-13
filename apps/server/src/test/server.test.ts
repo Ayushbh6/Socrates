@@ -228,6 +228,23 @@ const repoDocsPreflightCall = (toolCallId = "tcall_repo_docs_preflight") =>
     },
   })
 
+const writeCredentialFlowMcpScript = (root: string): string => {
+  const scriptPath = path.join(root, "credential-flow-mcp.cjs")
+  fs.mkdirSync(root, { recursive: true })
+  fs.writeFileSync(scriptPath, [
+    "const readline = require('node:readline');",
+    "const rl = readline.createInterface({ input: process.stdin });",
+    "const send = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');",
+    "rl.on('line', (line) => {",
+    "  const message = JSON.parse(line);",
+    "  if (message.method === 'initialize') return send(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'credential-flow', version: '1.0.0' } });",
+    "  if (message.method === 'tools/list') return send(message.id, { tools: [{ name: 'noop', description: 'No-op test tool.' }] });",
+    "  if (message.id !== undefined) send(message.id, {});",
+    "});",
+  ].join("\n"))
+  return scriptPath
+}
+
 const projectNotesPreflightCall = (toolCallId = "tcall_project_notes_preflight") =>
   ({
     type: "model.tool_call.completed" as const,
@@ -577,6 +594,49 @@ const createApprovalWaitingAgent = (): SocratesAgent => {
         },
       }
       yield { type: "model.completed" }
+    },
+  }
+  return new SocratesAgent(provider)
+}
+
+const createCredentialFlowAgent = (scriptPath: string): SocratesAgent => {
+  const provider: ConstructorParameters<typeof SocratesAgent>[0] = {
+    countTokens: fakeCountTokens,
+    async *stream(request) {
+      const serialized = JSON.stringify(request.messages)
+      if (!serialized.includes("tcall_credential_repo_preflight")) {
+        yield projectNotesPreflightCall("tcall_credential_notes_preflight")
+        yield repoDocsPreflightCall("tcall_credential_repo_preflight")
+        yield { type: "model.completed", finishReason: "tool-calls" }
+        return
+      }
+      if (!serialized.includes("tcall_secure_mcp_configure")) {
+        yield {
+          type: "model.tool_call.completed",
+          toolCall: {
+            toolCallId: "tcall_secure_mcp_configure",
+            toolName: "mcp_registry",
+            input: {
+              operation: "configure",
+              scope: "project",
+              server: {
+                id: "credential-flow",
+                label: "Credential Flow MCP",
+                command: process.execPath,
+                args: [scriptPath],
+                secretBindings: [
+                  { envKey: "FIRST_TEST_KEY", source: "user_input" },
+                  { envKey: "SECOND_TEST_KEY", source: "user_input" },
+                ],
+              },
+            },
+          },
+        }
+        yield { type: "model.completed", finishReason: "tool-calls" }
+        return
+      }
+      yield { type: "model.answer.delta", text: "Credential flow completed." }
+      yield { type: "model.completed", usage: { inputTokens: 6, outputTokens: 3, totalTokens: 9 } }
     },
   }
   return new SocratesAgent(provider)
@@ -7865,6 +7925,107 @@ describe("WebSocket API", () => {
         expect(approvalRun?.approval?.decision).toBe("approved")
         expect(approvalRun?.shell?.exitCode).toBe(0)
         expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "approved.txt"), "utf8")).toBe("approved")
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("collects multiple MCP credentials one at a time without persisting or returning plaintext", async () => {
+    const root = tempDir()
+    const dbPath = path.join(root, "socrates.sqlite")
+    const scriptPath = writeCredentialFlowMcpScript(root)
+    const app = await buildTestServer(dbPath, createCredentialFlowAgent(scriptPath), { socratesHome: path.join(root, "home") })
+    await onboard(app)
+    const { project, primaryWorkspace } = await createProject(app, "Credential Flow Project")
+    const conversation = await createConversation(app, project.id, "Credential Flow")
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Configure the trusted credential test MCP."))
+      const approval = await waitForEvent(socket, "approval.requested")
+      expect(approval.payload.actionPreview).toContain("FIRST_TEST_KEY")
+      expect(approval.payload.actionPreview).not.toContain("first-private-value")
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "approval.decide",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { approvalId: approval.payload.approvalId, decision: "approved" },
+      })
+      await waitForEvent(socket, "approval.resolved")
+
+      const firstRequest = await waitForEvent(socket, "credential.input.requested")
+      expect(firstRequest.payload.envKey).toBe("FIRST_TEST_KEY")
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "credential.input.submit",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        turnId: firstRequest.turnId,
+        actor: { type: "user" },
+        payload: {
+          credentialRequestId: firstRequest.payload.credentialRequestId,
+          turnId: firstRequest.turnId,
+          decision: "submitted",
+          value: "first-private-value",
+        },
+      })
+      await waitForEvent(socket, "credential.input.resolved")
+
+      const secondRequest = await waitForEvent(socket, "credential.input.requested")
+      expect(secondRequest.payload.envKey).toBe("SECOND_TEST_KEY")
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "credential.input.submit",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        turnId: secondRequest.turnId,
+        actor: { type: "user" },
+        payload: {
+          credentialRequestId: secondRequest.payload.credentialRequestId,
+          turnId: secondRequest.turnId,
+          decision: "submitted",
+          value: "second-private-value",
+        },
+      })
+      await waitForEvent(socket, "credential.input.resolved")
+      await waitForEvent(socket, "message.completed", 5_000)
+      const completedTurn = await waitForEvent(socket, "turn.completed", 5_000)
+
+      const workspacePath = primaryWorkspace.path as string
+      const envText = fs.readFileSync(path.join(workspacePath, ".socrates", ".env"), "utf8")
+      const configText = fs.readFileSync(path.join(workspacePath, ".socrates", "mcp.json"), "utf8")
+      expect(envText).toContain("FIRST_TEST_KEY=first-private-value")
+      expect(envText).toContain("SECOND_TEST_KEY=second-private-value")
+      expect(configText).toContain("FIRST_TEST_KEY")
+      expect(configText).not.toContain("first-private-value")
+      expect(configText).not.toContain("secretBindings")
+
+      const sqlite = new Database(dbPath)
+      try {
+        const persisted = sqlite.prepare(
+          `SELECT
+             (SELECT group_concat(arguments_json, '') FROM tool_calls WHERE turn_id = ?) AS tool_args,
+             (SELECT group_concat(payload_json, '') FROM events WHERE turn_id = ?) AS events,
+             (SELECT group_concat(request_json || COALESCE(response_json, ''), '') FROM model_calls WHERE turn_id = ?) AS model_calls`,
+        ).get(completedTurn.payload.turnId, completedTurn.payload.turnId, completedTurn.payload.turnId) as {
+          tool_args: string
+          events: string
+          model_calls: string
+        }
+        const persistedJson = `${persisted.tool_args}${persisted.events}${persisted.model_calls}`
+        expect(persistedJson).not.toContain("first-private-value")
+        expect(persistedJson).not.toContain("second-private-value")
+      } finally {
+        sqlite.close()
       }
     } finally {
       socket.close()

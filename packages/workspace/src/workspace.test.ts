@@ -289,6 +289,28 @@ describe("workspace tools", () => {
     await expect(readWorkspacePath({ path: "../outside.txt" }, { workspacePath })).rejects.toThrow(SocratesError)
   })
 
+  it("blocks secret material from read, search, and Terminal while allowing env templates", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, ".env"), "API_TOKEN=never-return-this\n")
+    fs.writeFileSync(path.join(workspacePath, ".env.example"), "API_TOKEN=replace-me\n")
+
+    await expect(readWorkspacePath({ path: ".env" }, { workspacePath })).rejects.toMatchObject({ code: "sensitive_path_denied" })
+    const template = await readWorkspacePath({ path: ".env.example" }, { workspacePath })
+    expect(template.content).toContain("API_TOKEN=replace-me")
+
+    const text = await searchWorkspace({ mode: "text", query: "never-return-this", includeHidden: true }, { workspacePath })
+    const files = await searchWorkspace({ mode: "files", query: ".env", includeHidden: true }, { workspacePath })
+    expect(text.matches).toEqual([])
+    expect(JSON.stringify(files.matches)).not.toContain('".env"')
+
+    await expect(runWorkspaceBash({ command: "cat .env" }, { workspacePath })).rejects.toMatchObject({
+      code: "terminal_secret_path_rejected",
+    })
+    await expect(runWorkspaceArgv({ argv: ["cat", ".env"] }, { workspacePath })).rejects.toMatchObject({
+      code: "terminal_secret_path_rejected",
+    })
+  })
+
   it("applies the read token cap across normal file reads", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "large.txt"), "x".repeat(30_000))

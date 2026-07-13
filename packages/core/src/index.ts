@@ -4,6 +4,7 @@ export {
   type SocratesAgentContextPrecomputeInput,
   type SocratesAgentEvent,
   type SocratesAgentTurnInput,
+  type StableCachePreludeSnapshot,
 } from "./agent/SocratesAgent"
 export {
   CompressorAgent,

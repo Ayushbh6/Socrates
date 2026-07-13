@@ -149,7 +149,10 @@ export class McpRuntime {
     this.registryPath = path.join(this.socratesHome, "mcp", "registry")
   }
 
-  handleRegistryTool(input: McpRegistryToolInput, options: { workspacePath?: string | undefined } = {}): Promise<McpRegistryToolOutput> {
+  handleRegistryTool(
+    input: McpRegistryToolInput,
+    options: { workspacePath?: string | undefined; resolvedSecretEnv?: Readonly<Record<string, string>> | undefined } = {},
+  ): Promise<McpRegistryToolOutput> {
     this.ensureDefaults()
     switch (input.operation) {
       case "list":
@@ -169,7 +172,20 @@ export class McpRuntime {
       case "configure":
         if (input.server) {
           const scope = input.scope ?? "project"
-          const server = this.upsertManagedServer(scope, { ...input.server, enabled: false }, options)
+          const server = this.upsertManagedServer(
+            scope,
+            {
+              id: input.server.id,
+              ...(input.server.label ? { label: input.server.label } : {}),
+              command: input.server.command,
+              ...(input.server.args ? { args: input.server.args } : {}),
+              ...(input.server.env ? { env: input.server.env } : {}),
+              ...(options.resolvedSecretEnv ? { secretEnv: { ...options.resolvedSecretEnv } } : {}),
+              requiresSecrets: Boolean(input.server.secretBindings?.length),
+              enabled: false,
+            },
+            options,
+          )
           const paths = this.pathsForScope(scope, options.workspacePath)
           return this.checkManagedServer(server.id, { ...options, scope, enableOnSuccess: true }).then((checked) => ({
             operation: "configure" as const,

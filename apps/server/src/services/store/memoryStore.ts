@@ -52,6 +52,7 @@ import type {
   CommitSkillImportResponse,
 } from "@socrates/contracts"
 import { memoryDocRequiredSections } from "@socrates/contracts"
+import type { StableCachePreludeSnapshot } from "@socrates/core"
 import type { ModelProvider, ModelUsage, ProviderCredentialResolver } from "@socrates/providers"
 import { estimateTextTokens } from "@socrates/providers"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
@@ -233,7 +234,14 @@ const scopedIds = (input: { conversationId?: string; sessionId?: string; turnId?
 })
 
 export class MemoryStore extends StoreBase {
+  private static readonly MAX_STABLE_PRELUDE_CACHE_ENTRIES = 100
   private readonly socratesHome: string
+  private readonly stablePreludeCache = new Map<string, {
+    statSignature: string
+    fullContentSignature: string
+    standingContentSignature: string
+    snapshot: StableCachePreludeSnapshot
+  }>()
   private globalMemoryRunActive = false
 
   constructor(context: ConstructorParameters<typeof StoreBase>[0], private readonly options: MemoryStoreOptions = {}) {
@@ -262,6 +270,119 @@ export class MemoryStore extends StoreBase {
         projectDocRelativePath("notes"),
         ...REPO_DOC_NAMES.map((name) => `.socrates/repo_docs/${name}`),
       ]))
+    }
+  }
+
+  loadStableCachePreludeSnapshot(projectId: string, workspacePath: string): StableCachePreludeSnapshot {
+    const projectPath = projectDocPath(workspacePath, "memory")
+    const identityPath = this.soulPath()
+    const userProfilePath = this.userProfilePath()
+    const sourcePaths = [projectPath, identityPath, userProfilePath]
+    if (sourcePaths.some((filePath) => !fs.existsSync(filePath))) {
+      this.ensureProjectMemory(projectId, workspacePath)
+    }
+
+    const readStatSignature = (): string => sourcePaths
+      .map((filePath) => {
+        const stat = fs.statSync(filePath)
+        // Size + mtime are the common fast path. ctime and inode also catch
+        // same-sized replacements whose mtime was deliberately preserved.
+        return `${filePath}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
+      })
+      .join("|")
+    let statSignature = readStatSignature()
+    const cacheKey = `${projectId}:${workspacePath}`
+    const cached = this.stablePreludeCache.get(cacheKey)
+    if (cached?.statSignature === statSignature) {
+      this.cacheStablePrelude(cacheKey, cached)
+      return {
+        ...cached.snapshot,
+        identitySections: { ...cached.snapshot.identitySections },
+        cacheHit: true,
+      }
+    }
+
+    let projectContent = fs.readFileSync(projectPath, "utf8")
+    let identityContent = fs.readFileSync(identityPath, "utf8")
+    let userProfileContent = fs.readFileSync(userProfilePath, "utf8")
+    let fullContentSignature = hashText([projectContent, identityContent, userProfileContent].join("\0"))
+    if (cached?.fullContentSignature === fullContentSignature) {
+      this.cacheStablePrelude(cacheKey, { ...cached, statSignature })
+      return {
+        ...cached.snapshot,
+        identitySections: { ...cached.snapshot.identitySections },
+        cacheHit: true,
+      }
+    }
+
+    const buildCandidateSnapshot = (): StableCachePreludeSnapshot => {
+      const projectIndex = parseMemoryDoc(projectContent, projectDocProfile(projectId, "memory"))
+      const identityIndex = parseMemoryDoc(identityContent, globalMemoryDocProfile(this.socratesHome, "identity"))
+      const userProfileIndex = parseMemoryDoc(userProfileContent, globalMemoryDocProfile(this.socratesHome, "user_profile"))
+      return {
+        projectRules: findMemoryDocSection(projectIndex, "always_apply_rules").content,
+        globalRules: findMemoryDocSection(userProfileIndex, "global_always_apply_rules").content,
+        identitySections: {
+          core_identity: findMemoryDocSection(identityIndex, "core_identity").content,
+          voice_and_presence: findMemoryDocSection(identityIndex, "voice_and_presence").content,
+          relationship_to_user: findMemoryDocSection(identityIndex, "relationship_to_user").content,
+        },
+        cacheHit: false,
+      }
+    }
+    let candidateSnapshot: StableCachePreludeSnapshot
+    try {
+      candidateSnapshot = buildCandidateSnapshot()
+    } catch {
+      // Repair legacy or partially-written sources only on a cache miss. The
+      // normal hit path remains three stats with no document reads.
+      ensureStructuredMemoryDoc(projectPath, projectDocProfile(projectId, "memory"))
+      ensureStructuredMemoryDoc(identityPath, globalMemoryDocProfile(this.socratesHome, "identity"))
+      ensureStructuredMemoryDoc(userProfilePath, globalMemoryDocProfile(this.socratesHome, "user_profile"))
+      projectContent = fs.readFileSync(projectPath, "utf8")
+      identityContent = fs.readFileSync(identityPath, "utf8")
+      userProfileContent = fs.readFileSync(userProfilePath, "utf8")
+      statSignature = readStatSignature()
+      fullContentSignature = hashText([projectContent, identityContent, userProfileContent].join("\0"))
+      candidateSnapshot = buildCandidateSnapshot()
+    }
+    const standingContentSignature = hashText(JSON.stringify({
+      projectRules: candidateSnapshot.projectRules,
+      globalRules: candidateSnapshot.globalRules,
+      identitySections: candidateSnapshot.identitySections,
+    }))
+    if (cached?.standingContentSignature === standingContentSignature) {
+      this.cacheStablePrelude(cacheKey, {
+        ...cached,
+        statSignature,
+        fullContentSignature,
+      })
+      return {
+        ...cached.snapshot,
+        identitySections: { ...cached.snapshot.identitySections },
+        cacheHit: true,
+      }
+    }
+
+    this.cacheStablePrelude(cacheKey, {
+      statSignature,
+      fullContentSignature,
+      standingContentSignature,
+      snapshot: candidateSnapshot,
+    })
+    return { ...candidateSnapshot, identitySections: { ...candidateSnapshot.identitySections } }
+  }
+
+  private cacheStablePrelude(
+    cacheKey: string,
+    entry: { statSignature: string; fullContentSignature: string; standingContentSignature: string; snapshot: StableCachePreludeSnapshot },
+  ): void {
+    this.stablePreludeCache.delete(cacheKey)
+    this.stablePreludeCache.set(cacheKey, entry)
+    while (this.stablePreludeCache.size > MemoryStore.MAX_STABLE_PRELUDE_CACHE_ENTRIES) {
+      const oldestKey = this.stablePreludeCache.keys().next().value as string | undefined
+      if (!oldestKey) break
+      this.stablePreludeCache.delete(oldestKey)
     }
   }
 
@@ -4172,7 +4293,8 @@ const shouldRefreshBundledToolUsageDoc = (name: string, content: string): boolea
 
 const isOutdatedBundledToolUsageDoc = (name: string, content: string): boolean =>
   (["user_profile.md", path.join("memory_agent", "user_profile.md")].includes(name) && (!content.includes("turnId/messageId/event") || content.includes("trace handle"))) ||
-  (["trace_retrieve.md", path.join("memory_agent", "trace_retrieve.md")].includes(name) && !content.includes('mode: "lexical"'))
+  (["trace_retrieve.md", path.join("memory_agent", "trace_retrieve.md")].includes(name) && !content.includes('mode: "lexical"')) ||
+  (name === "mcp_registry.md" && (content.includes("secretEnv") || !content.includes("secretBindings")))
 
 const isStructuredToolUsageDoc = (name: string, content: string): boolean => {
   try {

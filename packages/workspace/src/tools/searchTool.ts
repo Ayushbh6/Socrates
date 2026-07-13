@@ -3,7 +3,8 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { promisify } from "node:util"
 import type { SearchToolInput, SearchToolOutput } from "@socrates/contracts"
-import { clampCharLimit, resolveWorkspacePath, toWorkspaceRelativePath } from "./common"
+import { SocratesError } from "@socrates/shared"
+import { clampCharLimit, isSecretMaterialPath, resolveWorkspacePath, toWorkspaceRelativePath } from "./common"
 
 const execFileAsync = promisify(execFile)
 const defaultMaxResults = 20
@@ -12,6 +13,11 @@ const skippedDirectories = new Set([".git", "node_modules", "dist", "build", ".n
 
 export const searchWorkspace = async (input: SearchToolInput, context: { workspacePath: string }): Promise<SearchToolOutput> => {
   const root = resolveWorkspacePath(context.workspacePath, input.path)
+  if (isSecretMaterialPath(root)) {
+    throw new SocratesError("sensitive_path_denied", "Searching real environment, private-key, or credential material is denied.", {
+      recoverable: true,
+    })
+  }
   const maxResults = Math.min(input.maxResults ?? defaultMaxResults, hardMaxResults)
   const charLimit = clampCharLimit(input.charLimit)
   const warnings: string[] = []
@@ -70,6 +76,7 @@ const searchFiles = async (
   const candidates = rgFiles ?? (await walkFiles(root, includeHidden))
   const loweredQuery = normalizePathForSearch(query)
   const filtered = candidates.filter((candidate) => {
+    if (isSecretMaterialPath(candidateAbsolutePath(root, candidate))) return false
     const relative = candidateRelativePath(root, candidate)
     const basename = path.basename(relative)
     return query.includes("*")
@@ -105,12 +112,13 @@ const searchText = async (
     ...(useRegex ? [] : ["--fixed-strings"]),
     ...(input.caseSensitive ? [] : ["--ignore-case"]),
     ...generatedDirectoryRgGlobs(skipGenerated),
+    ...secretMaterialRgGlobs,
     input.query,
     root,
   ]
   try {
     const rgOutput = await runRgWithLineLimit(args, maxResults + 1)
-    const allMatches = parseRgOutput(rgOutput.stdout, workspacePath)
+    const allMatches = parseRgOutput(rgOutput.stdout, workspacePath).filter((match) => !isSecretMaterialPath(match.path))
     addResultCapWarning(rgOutput.maybeMore ? maxResults + 1 : allMatches.length, maxResults, warnings)
     addGeneratedDirectoryWarning(skipGenerated, warnings)
     addZeroMatchWarning(allMatches, input, useRegex, regexLike, warnings)
@@ -118,7 +126,7 @@ const searchText = async (
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException & { stdout?: string; code?: number }
     if (nodeError.stdout) {
-      const allMatches = parseRgOutput(nodeError.stdout, workspacePath)
+      const allMatches = parseRgOutput(nodeError.stdout, workspacePath).filter((match) => !isSecretMaterialPath(match.path))
       addResultCapWarning(allMatches.length, maxResults, warnings)
       addGeneratedDirectoryWarning(skipGenerated, warnings)
       addZeroMatchWarning(allMatches, input, useRegex, regexLike, warnings)
@@ -243,7 +251,7 @@ const parseRgOutput = (stdout: string, workspacePath: string): SearchToolOutput[
 
 const tryRgFiles = async (root: string, includeHidden: boolean, skipGenerated: boolean): Promise<string[] | null> => {
   try {
-    const result = await execFileAsync("rg", ["--files", ...(includeHidden ? ["--hidden"] : []), ...generatedDirectoryRgGlobs(skipGenerated), root], {
+    const result = await execFileAsync("rg", ["--files", ...(includeHidden ? ["--hidden"] : []), ...generatedDirectoryRgGlobs(skipGenerated), ...secretMaterialRgGlobs, root], {
       encoding: "utf8",
       timeout: 20_000,
       maxBuffer: 4_000_000,
@@ -253,6 +261,19 @@ const tryRgFiles = async (root: string, includeHidden: boolean, skipGenerated: b
     return null
   }
 }
+
+const secretMaterialRgGlobs = [
+  "--glob", "!.env",
+  "--glob", "!.env.*",
+  "--glob", "!.npmrc",
+  "--glob", "!.netrc",
+  "--glob", "!id_rsa",
+  "--glob", "!id_ed25519",
+  "--glob", "!*.pem",
+  "--glob", "!*.key",
+  "--glob", "!*.p12",
+  "--glob", "!*.pfx",
+]
 
 const walkFiles = async (root: string, includeHidden: boolean): Promise<string[]> => {
   const found: string[] = []
@@ -291,6 +312,7 @@ const searchTextFallback = async (
   const matches: SearchToolOutput["matches"] = []
   const scanLimit = maxResults + 1
   for (const file of files) {
+    if (isSecretMaterialPath(file)) continue
     if (matches.length >= scanLimit) {
       break
     }

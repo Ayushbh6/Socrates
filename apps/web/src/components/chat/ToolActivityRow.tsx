@@ -1,23 +1,26 @@
 import { ChevronDown, CircleAlert, Clock3, FileText, Pencil, Search, SquareTerminal, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ApprovalPrompt } from "./ApprovalPrompt";
+import { CredentialPrompt } from "./CredentialPrompt";
 import { ToolDetails } from "./ToolDetails";
-import type { PendingApproval, ToolTimelineItem } from "./ToolTimelineTypes";
+import type { PendingApproval, PendingCredentialInput, ToolTimelineItem } from "./ToolTimelineTypes";
 import { summarizeEditTool } from "./editPresentation";
 
 interface ToolActivityRowProps {
   tool: ToolTimelineItem;
   approval?: PendingApproval;
+  credentialRequest?: PendingCredentialInput;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
+  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }
 
-export function ToolActivityRow({ tool, approval, onApprovalDecision }: ToolActivityRowProps) {
+export function ToolActivityRow({ tool, approval, credentialRequest, onApprovalDecision, onCredentialInput }: ToolActivityRowProps) {
   const isStreaming = tool.phase === "streaming";
   // Auto-reveal command output: terminal rows expand once they have output, and any
   // actively running/awaiting row stays open so the user is never staring at a blank wait.
   const autoOpen =
     (tool.toolName === "bash" && Boolean(tool.stdout || tool.stderr || tool.output)) ||
-    tool.status === "awaiting_approval";
+    tool.status === "awaiting_approval" || credentialRequest?.status === "pending";
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   const isOpen = manualOpen ?? autoOpen;
   const summary = useMemo(() => summarizeTool(tool), [tool]);
@@ -54,6 +57,11 @@ export function ToolActivityRow({ tool, approval, onApprovalDecision }: ToolActi
       {approval && (
         <div className="ml-6 pb-2">
           <ApprovalPrompt approval={approval} onApprovalDecision={onApprovalDecision} />
+        </div>
+      )}
+      {credentialRequest && (
+        <div className="ml-6 pb-2">
+          <CredentialPrompt request={credentialRequest} onSubmit={onCredentialInput} />
         </div>
       )}
     </div>

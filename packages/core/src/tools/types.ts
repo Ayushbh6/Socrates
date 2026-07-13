@@ -109,7 +109,11 @@ export type ToolExecutors = {
   turn_evidence?: (input: TurnEvidenceToolInput, context: ToolExecutorContext) => Promise<TurnEvidenceToolOutput>
   read_memory_journal?: (input: ReadMemoryJournalToolInput, context: ToolExecutorContext) => Promise<ReadMemoryJournalToolOutput>
   skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
-  mcp_registry?: (input: McpRegistryToolInput, context: ToolExecutorContext) => Promise<McpRegistryToolOutput>
+  mcp_registry?: (
+    input: McpRegistryToolInput,
+    context: ToolExecutorContext,
+    resolvedSecretEnv?: Readonly<Record<string, string>>,
+  ) => Promise<McpRegistryToolOutput>
   mcp_dynamic?: (input: { dynamicName: string; input: unknown }, context: ToolExecutorContext) => Promise<unknown>
 }
 
@@ -130,9 +134,25 @@ export type ApprovalDecision = {
   reason?: string
 }
 
+export type CredentialInputRequest = {
+  credentialRequestId: string
+  toolCallId: string
+  serverId: string
+  serverLabel?: string | undefined
+  envKey: string
+  source: "user_input" | "workspace_env"
+}
+
+export type CredentialInputDecision = {
+  decision: "submitted" | "cancelled"
+  value?: string | undefined
+  source: "user_input" | "workspace_env"
+}
+
 export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
   executors: ToolExecutors
   requestApproval: (request: ApprovalRequest) => Promise<ApprovalDecision>
+  requestCredentialInput?: (request: CredentialInputRequest) => Promise<CredentialInputDecision>
   modelCallId?: string | undefined
   stepIndex?: number | undefined
 }

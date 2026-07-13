@@ -140,6 +140,10 @@ describe("McpRuntime", () => {
     expect(configText).toContain("TEST_TOKEN")
     expect(configText).not.toContain("private-value")
     expect(fs.readFileSync(path.join(workspace, ".socrates", ".env"), "utf8")).toContain("TEST_TOKEN=private-value")
+    const dashboardConfig = runtime.getManagedServerConfig("project", "secure", { workspacePath: workspace })
+    expect(dashboardConfig.secretEnv).toEqual({ TEST_TOKEN: "" })
+    runtime.upsertManagedServer("project", dashboardConfig, { workspacePath: workspace })
+    expect(fs.readFileSync(path.join(workspace, ".socrates", ".env"), "utf8")).toContain("TEST_TOKEN=private-value")
 
     const checked = await runtime.checkManagedServer("secure", { scope: "project", workspacePath: workspace, enableOnSuccess: true })
     expect(checked.server).toMatchObject({ status: "available", enabled: true, toolCount: 2 })
@@ -172,6 +176,33 @@ describe("McpRuntime", () => {
     expect(runtime.listManagedServers({ workspacePath: workspace }).some((server) => server.id === "globalfake" && server.scope === "global")).toBe(true)
     await runtime.handleRegistryTool({ operation: "delete", confirmed: true, scope: "global", id: "globalfake" }, { workspacePath: workspace })
     expect(runtime.listManagedServers({ workspacePath: workspace }).some((server) => server.id === "globalfake")).toBe(false)
+  })
+
+  it("accepts model-visible secret bindings while persisting only key names and resolved private values", async () => {
+    const home = tempHome()
+    const workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "socrates-mcp-binding-")))
+    const runtime = new McpRuntime({ socratesHome: home })
+    const scriptPath = writeFakeMcpScript(workspace)
+    const input = {
+      operation: "configure" as const,
+      confirmed: true,
+      scope: "project" as const,
+      server: {
+        id: "bound-secret",
+        command: process.execPath,
+        args: [path.basename(scriptPath)],
+        secretBindings: [{ envKey: "BOUND_TOKEN", source: "user_input" as const }],
+      },
+    }
+    await runtime.handleRegistryTool(input, { workspacePath: workspace, resolvedSecretEnv: { BOUND_TOKEN: "private-bound-value" } })
+
+    const configText = fs.readFileSync(path.join(workspace, ".socrates", "mcp.json"), "utf8")
+    const envText = fs.readFileSync(path.join(workspace, ".socrates", ".env"), "utf8")
+    expect(configText).toContain("BOUND_TOKEN")
+    expect(configText).not.toContain("secretBindings")
+    expect(configText).not.toContain("private-bound-value")
+    expect(envText).toContain("BOUND_TOKEN=private-bound-value")
+    runtime.close()
   })
 
   it("resolves human MCP labels to canonical project server ids", async () => {

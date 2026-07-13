@@ -30,7 +30,7 @@ index_tags: [tool_usage]
 - `operation: "describe"` accepts the exact canonical `id` or exact listed `name` and returns server details and bounded tool descriptors.
 - `operation: "check"` validates one exact server id through a real MCP handshake and tool listing.
 - `operation: "configure"` accepts `scope: "project" | "global"` plus an exact trusted stdio `server` object. IDs are lowercase and capped at 64 characters; labels at 120; arguments at 40.
-- Put only non-secret values in `env`. Put credentials and tokens in `secretEnv`; the runtime stores their values in the scope-private `.env` and never in `mcp.json` or approval previews.
+- Put only non-secret values in `env`. Declare credentials by key name through `secretBindings`, using `source: "user_input"` by default. Use `source: "workspace_env"` only when the user explicitly asked to reuse that exact key from a workspace env file. Never read an env/credential file, request the value in chat, or put a plaintext value in any tool call; the backend collects or resolves it privately.
 - `operation: "delete"` accepts an exact id and scope. Bundled protected servers cannot be deleted.
 <!-- /socrates:section -->
 
@@ -41,8 +41,9 @@ index_tags: [tool_usage]
 2. Use `describe` with the exact canonical id. Dynamic `mcp__...` tools are exposed only after describe, successful check, or successful configure returns them.
 3. Use `check` when current server health or tool discovery must be verified.
 4. Configure only from an exact user-supplied or trusted stdio command. Configuration and deletion require normal user approval.
-5. Configure saves the server disabled first, performs the real handshake and tool listing, and enables it only on success. A failed check must not leave a new server enabled.
-6. Use returned dynamic tools for the requested work; do not simulate their results.
+5. When one or more `secretBindings` are present, the backend collects one masked credential at a time after approval. Multiple keys or MCP configure calls remain sequential. Do not ask for, repeat, or inspect the value yourself.
+6. Configure saves the server disabled first, performs the real handshake and tool listing, and enables it only on success. A failed check must not leave a new server enabled.
+7. Use returned dynamic tools for the requested work; do not simulate their results.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="failure_handling" kind="recovery" tags="tools" -->

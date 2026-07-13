@@ -34,6 +34,9 @@ import {
   contextUsageSnapshotEventSchema,
   conversationSchema,
   conversationUpdatedEventSchema,
+  credentialInputRequestedEventSchema,
+  credentialInputResolvedEventSchema,
+  credentialInputSubmitCommandSchema,
   createConversationRequestSchema,
   createConversationMessageRequestSchema,
   createConversationMessageResponseSchema,
@@ -931,6 +934,14 @@ describe("websocket client command contracts", () => {
     approvalDecideCommandSchema.safeParse(
       envelope("approval.decide", { approvalId: "appr_1", decision: "approved" }),
     ),
+    credentialInputSubmitCommandSchema.safeParse(
+      envelope("credential.input.submit", {
+        credentialRequestId: "creq_1",
+        turnId: "turn_1",
+        decision: "submitted",
+        value: "private-and-ephemeral",
+      }),
+    ),
     feedbackSubmitCommandSchema.safeParse(
       envelope("feedback.submit", {
         messageId: "msg_assistant_1",
@@ -953,6 +964,8 @@ describe("websocket client command contracts", () => {
   it("rejects unknown command types and malformed payloads", () => {
     expect(clientCommandSchema.safeParse(envelope("chat.unknown", {})).success).toBe(false)
     expect(clientCommandSchema.safeParse(envelope("terminal.input", { terminalId: "term_1" })).success).toBe(false)
+    expect(clientCommandSchema.safeParse(envelope("credential.input.submit", { credentialRequestId: "creq_1", turnId: "turn_1", decision: "submitted" })).success).toBe(false)
+    expect(clientCommandSchema.safeParse(envelope("credential.input.submit", { credentialRequestId: "creq_1", turnId: "turn_1", decision: "cancelled", value: "must-not-be-here" })).success).toBe(false)
     expect(
       clientCommandSchema.safeParse(
         envelope("chat.message.send", {
@@ -1013,6 +1026,23 @@ describe("websocket server event contracts", () => {
         category: "file",
         displayName: "Reading README.md",
         requiresApproval: false,
+      }),
+    ),
+    credentialInputRequestedEventSchema.safeParse(
+      envelope("credential.input.requested", {
+        credentialRequestId: "creq_1",
+        toolCallId: "tcall_1",
+        serverId: "search",
+        serverLabel: "Search MCP",
+        envKey: "SEARCH_API_KEY",
+        source: "user_input",
+      }),
+    ),
+    credentialInputResolvedEventSchema.safeParse(
+      envelope("credential.input.resolved", {
+        credentialRequestId: "creq_1",
+        toolCallId: "tcall_1",
+        decision: "submitted",
       }),
     ),
     toolCallOutputEventSchema.safeParse(
@@ -1632,6 +1662,23 @@ describe("tool contracts", () => {
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", serverName: "playwright" }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "check", id: "playwright" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "configure", scope: "project", server: { id: "time", command: "uvx", args: ["mcp-server-time"] } }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({
+      operation: "configure",
+      scope: "project",
+      server: {
+        id: "search",
+        command: "trusted-search-mcp",
+        secretBindings: [
+          { envKey: "FIRST_API_KEY", source: "user_input" },
+          { envKey: "SECOND_API_KEY", source: "workspace_env" },
+        ],
+      },
+    }).success).toBe(true)
+    expect(mcpRegistryToolModelInputSchema.safeParse({
+      operation: "configure",
+      scope: "project",
+      server: { id: "search", command: "trusted-search-mcp", secretEnv: { API_KEY: "plaintext-must-be-rejected" } },
+    }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "configure", server: { id: "time" } }).success).toBe(false)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "delete", scope: "global", id: "time" }).success).toBe(true)
     expect(mcpRegistryToolModelInputSchema.safeParse({ operation: "describe" }).success).toBe(false)
