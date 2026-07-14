@@ -43,3 +43,8 @@ try {
   db?.close();
   fs.rmSync(databasePath, { recursive: true, force: true });
 }
+
+// LanceDB can retain native background handles after every resource has been
+// closed. This is a standalone release smoke process, so exit explicitly after
+// the successful cleanup path instead of leaving runtime packaging suspended.
+process.exit(0);
