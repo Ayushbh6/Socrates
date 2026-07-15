@@ -31,6 +31,8 @@ Socrates/
         lib/
 
     server/
+      scripts/
+        run-memory-router-gate-eval.ts
       src/
         index.ts
         app.ts
@@ -103,7 +105,18 @@ Socrates/
     PROVIDER_USAGE.md
     REPO_STRCUTURE.md
     REPO_RULES.md
+
+  scripts/
+    runtime/
+
+  evals/
+    memory-router-gate/
+      README.md
+      golden-dataset.json
+      report.md
 ```
+
+Root `scripts/` owns opt-in maintenance, packaging, benchmark, and evaluation entrypoints that are not application runtime modules; a package-specific runner may live under that package's `scripts/` directory when it needs package-owned dependencies. Evaluation fixtures and durable summarized findings live under a matching `evals/<name>/` directory. The Memory Router gate experiment follows this boundary: its runner lives outside server `src`, is invoked only by `pnpm eval:memory-router-gate`, uses a synthetic dataset, and records the rejected production decision in a report while raw provider result JSON is ignored. Nothing under that experiment is imported by the server, web app, CLI, or runtime archive.
 
 ## Package Responsibilities
 

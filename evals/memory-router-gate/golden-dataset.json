@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic, non-personal, human-style conversations for evaluating whether post-evidence memory reconciliation is mandatory before execution.",
+  "fixtures": [
+    {
+      "id": "cold_start_followup",
+      "gold": "skip_candidate",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace.",
+      "recentMessages": [
+        { "role": "user", "content": "Why was the first reply slower than the second one?" },
+        { "role": "assistant", "content": "The first request had to establish the stable prompt prefix; later requests could reuse cached input." }
+      ],
+      "userMessage": "Okay, that clicks now. Why does the very first request still miss the cache completely?",
+      "rationale": "A transient technical follow-up that does not establish durable project state."
+    },
+    {
+      "id": "release_status_question",
+      "gold": "skip_candidate",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace distributed through npm and GitHub runtime releases.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The tag-triggered workflow is building the three runtime archives." }
+      ],
+      "userMessage": "So is 0.1.18 actually live on GitHub now, or are we still waiting on something?",
+      "rationale": "A status query; any verified discovery would be handled by the execution override."
+    },
+    {
+      "id": "readonly_duplicate_diagnosis",
+      "gold": "skip_candidate",
+      "projectName": "Ledger API",
+      "projectDescription": "An internal service that imports transaction batches.",
+      "recentMessages": [
+        { "role": "user", "content": "The import produced the same transaction twice." },
+        { "role": "assistant", "content": "I can inspect the ingestion path and identify where idempotency breaks." }
+      ],
+      "userMessage": "Before we touch it, can you tell me what you think is causing those duplicate rows?",
+      "rationale": "Read-only diagnosis; tool evidence or later mutations would force post review."
+    },
+    {
+      "id": "queue_tradeoff_brainstorm",
+      "gold": "skip_candidate",
+      "projectName": "Notifications",
+      "projectDescription": "A small notification delivery service using an in-process queue.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Redis would add durability and operational overhead." }
+      ],
+      "userMessage": "Don't implement anything yet—what would we really gain and lose by moving this queue to Redis?",
+      "rationale": "Option exploration without a decision or request to preserve one."
+    },
+    {
+      "id": "copy_tone_rewrite",
+      "gold": "skip_candidate",
+      "projectName": "Onboarding UI",
+      "projectDescription": "The first-run setup flow for a developer tool.",
+      "recentMessages": [
+        { "role": "user", "content": "The empty-state message sounds a bit accusatory." }
+      ],
+      "userMessage": "Can you make this sound less defensive: ‘You failed to configure a provider’?",
+      "rationale": "A one-off wording request with no durable policy."
+    },
+    {
+      "id": "personal_advice_optout",
+      "gold": "skip_candidate",
+      "projectName": "Personal Notes",
+      "projectDescription": "A general conversational workspace.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Of course. Share only what you are comfortable sharing." }
+      ],
+      "userMessage": "I'm about to explain a family situation. Please keep it out of memory; I only want your take on what to say.",
+      "rationale": "A genuine opt-out blocks durable reconciliation for the personal content."
+    },
+    {
+      "id": "stable_prelude_clarification",
+      "gold": "skip_candidate",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace with cached standing context.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The standing sections are rendered into a stable prelude before the user message." }
+      ],
+      "userMessage": "When you say stable prelude, do you mean the whole system prompt or only those five sections?",
+      "rationale": "A clarification question that does not modify state."
+    },
+    {
+      "id": "hash_example_request",
+      "gold": "skip_candidate",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace with content-hashed context snapshots.",
+      "recentMessages": [
+        { "role": "assistant", "content": "A stat fast path is followed by content hashing only when metadata changes." }
+      ],
+      "userMessage": "I lost you after the hash check. Can you walk through that part with one concrete example?",
+      "rationale": "A request for explanation, not a durable decision."
+    },
+    {
+      "id": "stop_without_change",
+      "gold": "skip_candidate",
+      "projectName": "Billing Dashboard",
+      "projectDescription": "A dashboard redesign under discussion.",
+      "recentMessages": [
+        { "role": "assistant", "content": "I can next replace the table with the compact layout." }
+      ],
+      "userMessage": "That answer is enough. Let's leave the implementation alone for now.",
+      "rationale": "A conversational stop instruction, not a new standing project rule."
+    },
+    {
+      "id": "intent_ui_brainstorm",
+      "gold": "skip_candidate",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace with visible agent activity.",
+      "recentMessages": [
+        { "role": "user", "content": "The word ‘routing’ feels too mechanical in the chat UI." }
+      ],
+      "userMessage": "Give me three less intrusive ways to show that Socrates is figuring out what I mean.",
+      "rationale": "Brainstorming alternatives without choosing a durable UI direction."
+    },
+    {
+      "id": "endpoint_behavior_question",
+      "gold": "skip_candidate",
+      "projectName": "Projects API",
+      "projectDescription": "A JSON API for project workspaces.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The handler delegates lookup to the project store." }
+      ],
+      "userMessage": "Does that endpoint return a 404 when the project is missing, or a 200 with empty data?",
+      "rationale": "A factual question; inspection evidence would trigger final review if necessary."
+    },
+    {
+      "id": "release_recap",
+      "gold": "skip_candidate",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace distributed through npm and GitHub.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Tests passed, the tag was pushed, and GitHub Actions is publishing assets." }
+      ],
+      "userMessage": "Can you give me a five-line recap of where the release stands?",
+      "rationale": "A summary request that does not itself change project state."
+    },
+    {
+      "id": "schema_critique",
+      "gold": "skip_candidate",
+      "projectName": "Review Service",
+      "projectDescription": "A small service for assigning document reviews.",
+      "recentMessages": [
+        { "role": "user", "content": "The proposal adds separate tables for runs, stages, and attempts." }
+      ],
+      "userMessage": "Be honest: is this schema overengineered for what we're doing?",
+      "rationale": "A request for judgment before any decision is made."
+    },
+    {
+      "id": "changelog_rewrite",
+      "gold": "skip_candidate",
+      "projectName": "CLI Release",
+      "projectDescription": "Release notes for a developer CLI.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The current note says: ‘Credential orchestration has been optimized.’" }
+      ],
+      "userMessage": "Can you rewrite that so it sounds like a normal person wrote it?",
+      "rationale": "A transient editing request with no lasting behavioral rule."
+    },
+    {
+      "id": "pause_for_windows_explanation",
+      "gold": "skip_candidate",
+      "projectName": "Runtime Packaging",
+      "projectDescription": "Cross-platform runtime archives for macOS and Windows.",
+      "recentMessages": [
+        { "role": "assistant", "content": "I can patch the Windows build script next." }
+      ],
+      "userMessage": "Hold on—don't change anything. I want to understand why the Windows build is different first.",
+      "rationale": "A temporary read-only pause, not a durable workflow preference."
+    },
+    {
+      "id": "pnpm_workflow_decision",
+      "gold": "required",
+      "projectName": "Socrates",
+      "projectDescription": "A pnpm monorepo.",
+      "recentMessages": [
+        { "role": "user", "content": "npm install happened to work on my machine." },
+        { "role": "assistant", "content": "The checked-in lockfile and release workflow both use pnpm." }
+      ],
+      "userMessage": "Let's settle this: this repo uses pnpm. If npm happens to work, that doesn't make it part of the workflow.",
+      "rationale": "Establishes a durable repository workflow rule."
+    },
+    {
+      "id": "utc_storage_contract",
+      "gold": "required",
+      "projectName": "Scheduling API",
+      "projectDescription": "A service that stores and displays scheduled events.",
+      "recentMessages": [
+        { "role": "assistant", "content": "We can normalize at write time or preserve each caller's offset." }
+      ],
+      "userMessage": "We've landed on UTC in the database and local time only at the display edge. Let's treat that as the contract.",
+      "rationale": "Finalizes a durable architecture contract."
+    },
+    {
+      "id": "auth_note_correction",
+      "gold": "required",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace with provider onboarding.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The old setup note says users may skip provider configuration." }
+      ],
+      "userMessage": "That note saying auth is optional is going to trip us up. Onboarding now has to stop until a provider is configured.",
+      "rationale": "Corrects stale guidance and establishes the replacement behavior."
+    },
+    {
+      "id": "diagnosis_collaboration_preference",
+      "gold": "required",
+      "projectName": "Socrates",
+      "projectDescription": "A collaborative coding workspace.",
+      "recentMessages": [
+        { "role": "assistant", "content": "I can patch the failing handler immediately." }
+      ],
+      "userMessage": "One thing about how I want us to work: when I ask for a diagnosis, talk me through the evidence before you edit anything.",
+      "rationale": "Defines a durable collaboration preference."
+    },
+    {
+      "id": "tomorrow_restart_point",
+      "gold": "required",
+      "projectName": "Runtime Packaging",
+      "projectDescription": "Cross-platform release archives.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The cache investigation is complete; the Intel archive still fails during native dependency rebuild." }
+      ],
+      "userMessage": "I'm done for tonight. Tomorrow I want to reopen this and start from the failing Intel bundle, not repeat the cache investigation.",
+      "rationale": "Establishes an explicit cross-session restart point."
+    },
+    {
+      "id": "invoice_number_ownership",
+      "gold": "required",
+      "projectName": "Billing Platform",
+      "projectDescription": "Services for invoices and payment collection.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Both the billing worker and public API currently touch invoice identifiers." }
+      ],
+      "userMessage": "Invoice numbers belong to billing. The API can display them, but it should never mint or repair one.",
+      "rationale": "Establishes durable service ownership and a hard contract."
+    },
+    {
+      "id": "webhook_endpoint_retirement",
+      "gold": "required",
+      "projectName": "Events API",
+      "projectDescription": "Public webhook ingestion endpoints.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Both `/v1/hooks` and `/v2/events` are currently documented." }
+      ],
+      "userMessage": "We're done carrying `/v1/hooks`; `/v2/events` is the supported path from here on.",
+      "rationale": "Retires a capability and establishes the supported replacement."
+    },
+    {
+      "id": "windows_blocker_state",
+      "gold": "required",
+      "projectName": "Socrates",
+      "projectDescription": "A cross-platform local AI workspace.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Provider authentication is fixed. The Windows archive has not been retested." }
+      ],
+      "userMessage": "Windows is still blocked on the native module. The auth work is finished, but that packaging issue absolutely isn't.",
+      "rationale": "Corrects durable completion and blocker state for future work."
+    },
+    {
+      "id": "blue_green_workflow_replacement",
+      "gold": "required",
+      "projectName": "Operations",
+      "projectDescription": "Deployment procedures for a production API.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The existing checklist performs an in-place restart after migration." }
+      ],
+      "userMessage": "Blue-green is the deployment flow now. The old checklist with the in-place restart shouldn't guide anybody anymore.",
+      "rationale": "Replaces a durable workflow and marks prior guidance stale."
+    },
+    {
+      "id": "migration_approval_preference_change",
+      "gold": "required",
+      "projectName": "Compliance API",
+      "projectDescription": "A regulated document-processing service.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The current project preference allows automatic local migrations." }
+      ],
+      "userMessage": "I know I previously allowed automatic migrations, but I don't want that anymore. Always ask me first.",
+      "rationale": "Explicitly revises a durable user/project preference."
+    },
+    {
+      "id": "phase_handoff_direction",
+      "gold": "required",
+      "projectName": "Analytics Dashboard",
+      "projectDescription": "A multi-phase dashboard rebuild.",
+      "recentMessages": [
+        { "role": "assistant", "content": "Phase three validation is green; dashboard polish and router evaluation remain." }
+      ],
+      "userMessage": "Phase three is complete. The next session should begin with the router benchmark and leave the dashboard polish alone.",
+      "rationale": "Records a milestone and explicit next-session direction."
+    },
+    {
+      "id": "scoped_optout_repo_decision",
+      "gold": "required",
+      "projectName": "Socrates",
+      "projectDescription": "A local-first AI coding workspace with MCP integrations.",
+      "recentMessages": [
+        { "role": "assistant", "content": "We discussed both a private health matter and the MCP credential flow." }
+      ],
+      "userMessage": "Please don't keep the health stuff we discussed. The repo decision is separate: credentials have to be entered one at a time and never read back from `.env`.",
+      "rationale": "The opt-out blocks personal content while a separately scoped durable repository rule remains."
+    },
+    {
+      "id": "platform_support_boundary",
+      "gold": "required",
+      "projectName": "Desktop Runtime",
+      "projectDescription": "Packaged runtime distribution for a developer application.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The draft roadmap currently lists macOS, Windows, and Linux for launch." }
+      ],
+      "userMessage": "Linux can wait. For the first public release, macOS and Windows are the support boundary.",
+      "rationale": "Changes durable release scope."
+    },
+    {
+      "id": "live_contract_authority_rule",
+      "gold": "required",
+      "projectName": "Socrates",
+      "projectDescription": "A tool-using AI workspace with curated memory documents.",
+      "recentMessages": [
+        { "role": "assistant", "content": "An old project note disagrees with the currently registered Terminal schema." }
+      ],
+      "userMessage": "If an old note conflicts with the live tool contract, the tool wins and the note should be cleaned up at finalization.",
+      "rationale": "Establishes a durable authority and reconciliation rule."
+    },
+    {
+      "id": "green_tests_completion_rule",
+      "gold": "required",
+      "projectName": "Compliance API",
+      "projectDescription": "A production service with strict release verification.",
+      "recentMessages": [
+        { "role": "assistant", "content": "The feature works manually, but one relevant integration test is still red." }
+      ],
+      "userMessage": "For this project, a failed relevant test is not ‘done with warnings.’ We only call it complete when that suite is green.",
+      "rationale": "Defines a durable project completion standard."
+    }
+  ]
+}

@@ -210,8 +210,8 @@ Tool routing:
 
 ## Release State
 
-- Current GitHub runtime release target is `v0.1.18`; npm launcher source is prepared as `@socrates-ai/cli@0.1.18` for manual npm publish after the GitHub runtime release completes.
-- `v0.1.18` preserves the `v0.1.17` provider, retrieval, model-catalog, Ollama, and runtime-packaging foundation. It adds semantic user-controlled memory opt-outs across Socrates and both Memory Router phases; complete persisted tool-call traces with distinct intent-discovery UI; credential-safe one-at-a-time MCP secret collection with protected environment-file boundaries; and a bounded, content-hashed standing-context snapshot that removes duplicate standing reads while preserving provider prompt-cache reuse. Post-turn Memory Router skipping remains an evaluated follow-up, not part of this release.
+- Current GitHub runtime release `v0.1.18` is published and non-prerelease, and the public npm registry serves `@socrates-ai/cli@0.1.18`.
+- `v0.1.18` preserves the `v0.1.17` provider, retrieval, model-catalog, Ollama, and runtime-packaging foundation. It adds semantic user-controlled memory opt-outs across Socrates and both Memory Router phases; complete persisted tool-call traces with distinct intent-discovery UI; credential-safe one-at-a-time MCP secret collection with protected environment-file boundaries; and a bounded, content-hashed standing-context snapshot that removes duplicate standing reads while preserving provider prompt-cache reuse. Production still runs the post-turn Memory Router at genuine finalization. The evaluated one-call `skip_candidate` gate was rejected after two 90-attempt DeepSeek V4 Flash runs each produced three unsafe skips; the synthetic dataset, opt-in runner, and report remain isolated under `evals/memory-router-gate/` and `apps/server/scripts/run-memory-router-gate-eval.ts`, while raw provider result JSON stays ignored.
 - Release tooling remains pinned to the proven `pnpm@9.15.1` path for GitHub runtime builds. The runtime release workflow recreates the tag release and uploads each runtime asset explicitly (`darwin-arm64`, `darwin-x64`, `win32-x64`, then `SHA256SUMS`) so a stale partial draft cannot be reused. The produced runtime archive still bundles Node v20.20.2.
 - Shell Tooling pins its Windows leg to `windows-2022`; `windows-latest` moved to Windows Server 2025 / VS 2026, where `node-gyp` cannot identify Visual Studio 18 while building native dependencies such as `better-sqlite3`. Windows still runs install/typecheck plus contracts/workspace/core tests, while the server PTY/WebSocket test suite runs on Ubuntu only because it assumes POSIX bash/PTY behavior.
 - `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id when available, the supported claim, and the profile section using that claim.
@@ -229,6 +229,25 @@ Tool routing:
 - The completed 2026-07-10/11 skill-learning evaluation hardened evidence handoff, canonical skill ids, write validation/supporting files, no-op rejection, bounded Writer repair, cross-run structured Memory Agent journaling, backend-authoritative create/update classification, and main-agent discovery for ordered verification/closure workflows. The composed isolated official-DeepSeek E2E passed: an earlier full run proved behavioral pattern proposal -> approved Writer creation -> v1 held-out use, and a deterministic seeded continuation proved a cross-project handoff refinement -> update proposal -> Writer v2 -> actual main-agent `skills list` + `describe` -> 6/6 held-out behavior signals. Use Memory Pro/high plus Writer Flash/off as the experimental default, keep manual proposal approval, and do not claim production-scale reliability from one passing chain.
 
 ## Verification
+
+Latest verified for the isolated Memory Router gate evaluation and clean handoff on 2026-07-15:
+
+```text
+pnpm eval:memory-router-gate --dry-run
+  -> 30 synthetic fixtures, balanced 15/15, 3 rounds, 90 planned attempts, OpenRouter DeepSeek V4 Flash, thinking off
+pnpm --filter @socrates/server exec tsc --noEmit --skipLibCheck --module ESNext --moduleResolution Bundler --target ES2022 --types node scripts/run-memory-router-gate-eval.ts
+pnpm --filter @socrates/server build
+  -> normal server entries only; no Memory Router gate runner or classifier text in dist
+pnpm typecheck
+pnpm test
+  -> CLI 9, contracts 24, MCP 14, providers 92 (+1 intentionally skipped), workspace 104, core 71, server 142; 456 passed total
+gh release view v0.1.18 --json tagName,isDraft,isPrerelease,publishedAt,url
+  -> published, non-draft, non-prerelease GitHub release
+npm view @socrates-ai/cli version
+  -> 0.1.18
+git diff --check
+tracked-change sensitive-data scan
+```
 
 Latest verified for soft-target compaction budgeting and memory-front hardening on 2026-07-11:
 
