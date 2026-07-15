@@ -8,7 +8,7 @@ interface TerminalBlockProps {
   exitCode?: number | null;
   signal?: string | null;
   durationMs?: number;
-  status?: "running" | "exited" | "failed" | "detached" | "stale" | "awaiting_input" | "missing";
+  status?: "starting" | "running" | "exited" | "failed" | "detached" | "stale" | "awaiting_input" | "missing";
   shell?: string;
   // Optional chrome for the persistent Terminal panel; omitted for inline tool output.
   name?: string;
@@ -36,7 +36,7 @@ export function TerminalBlock({
   children,
 }: TerminalBlockProps) {
   const awaitingInput = status === "awaiting_input";
-  const isRunning = status === "running" || awaitingInput;
+  const isRunning = status === "starting" || status === "running" || awaitingInput;
   const out = stdout ?? "";
   const err = stderr ?? "";
   const hasOutput = Boolean(out || err);

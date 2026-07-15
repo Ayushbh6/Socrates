@@ -37,6 +37,8 @@ import { openDatabase, runMigrations } from "../db/client"
 import { SocratesStore } from "../services/store"
 import { buildStructuredMemoryDoc, parseMemoryDoc, patchMemoryDocSection } from "../services/store/memoryDocParser"
 import { ToolDocsStore } from "../services/store/toolDocsStore"
+import { TerminalSupervisorClient } from "../ws/terminalSupervisorClient"
+import { terminalHostSocketPath, terminalSupervisorSocketPath } from "../ws/terminalSupervisorPaths"
 
 type TestServer = Awaited<ReturnType<typeof buildServer>>
 
@@ -1347,7 +1349,7 @@ const createTerminalOutputAgent = (): SocratesAgent => {
   return new SocratesAgent(provider)
 }
 
-const createTerminalWaitResumeAgent = (completionDelayMs = 2500): SocratesAgent => {
+const createTerminalWaitResumeAgent = (completionDelayMs = 2500, onContinuationContext?: (serializedMessages: string) => void): SocratesAgent => {
   const command = nodeCommand(`
 setTimeout(() => {
   process.stdout.write("wait-resume-complete\\n")
@@ -1360,6 +1362,7 @@ setTimeout(() => {
       const serialized = JSON.stringify(request.messages)
       const latestUser = String(latestUserContent(request.messages) ?? "")
       if (serialized.includes("terminal_wake_context")) {
+        onContinuationContext?.(serialized)
         yield { type: "model.answer.delta", text: "Background terminal result verified." }
         yield { type: "model.completed" }
         return
@@ -7235,7 +7238,10 @@ describe("WebSocket API", () => {
   })
 
   it("suspends and resumes the same task when a waited Terminal completes", async () => {
-    const app = await buildTestServer(tempDbPath(), createTerminalWaitResumeAgent())
+    let continuationContext = ""
+    const app = await buildTestServer(tempDbPath(), createTerminalWaitResumeAgent(2500, (serialized) => {
+      continuationContext = serialized
+    }))
     await onboard(app)
     const { project } = await createProject(app)
     const conversation = await createConversation(app, project.id)
@@ -7248,6 +7254,9 @@ describe("WebSocket API", () => {
       const resumed = await waitForEvent(socket, "turn.resumed", 6_000)
       expect(resumed.payload).toMatchObject({ terminalName: "wait-resume-tests", wakeEvent: "completed" })
       await waitForEvent(socket, "turn.completed")
+      expect(continuationContext).toContain("Task progress before this wake is authoritative lifecycle evidence")
+      expect(continuationContext).toContain('\\\"name\\\": \\\"wait-resume-tests\\\"')
+      expect(continuationContext).toContain('\\\"status\\\": \\\"exited\\\"')
 
       const response = await app.inject({ method: "GET", url: `/api/projects/${project.id}/conversations/${conversation.id}` })
       const body = parseResponse<{ messages: Array<{ content: string }> }>(response.payload)
@@ -7829,6 +7838,137 @@ describe("WebSocket API", () => {
       socket.close()
     }
   }, 10_000)
+
+  it("drains a resumed Terminal start that races with server shutdown and reconciles every durable lifecycle row", async () => {
+    const dbPath = tempDbPath()
+    const supervisorSocket = terminalSupervisorSocketPath(path.dirname(dbPath))
+    const app = await buildTestServer(dbPath, createPrematureInteractiveStopAgent())
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    await waitForEvent(socket, "connection.ready")
+    sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Start interactive and stop too early", { approvalMode: "approve_all" }))
+    const inputRequested = await waitForEvent(socket, "terminal.input.requested", 8_000)
+    await waitForToolFailedByProviderId(socket, "tcall_attempt_stop_awaiting")
+    await waitForEvent(socket, "turn.waiting")
+    sendCommand(socket, {
+      id: createId("evt"),
+      type: "terminal.stop",
+      schemaVersion: 1,
+      timestamp: nowIso(),
+      projectId: project.id,
+      conversationId: conversation.id,
+      actor: { type: "user" },
+      payload: { terminalId: inputRequested.payload.terminalId, reason: "Trigger shutdown race" },
+    })
+    await waitForEvent(socket, "terminal.stopped")
+    await waitForEvent(socket, "turn.resumed")
+
+    const deadline = Date.now() + 3_000
+    let sawResumedStart = false
+    while (Date.now() < deadline && !sawResumedStart) {
+      const db = new Database(dbPath, { readonly: true })
+      try {
+        sawResumedStart = Boolean(
+          db
+            .prepare("SELECT 1 FROM tool_calls WHERE provider_tool_call_id = ? AND status = 'running' LIMIT 1")
+            .get("tcall_premature_stop_start"),
+        )
+      } finally {
+        db.close()
+      }
+      if (!sawResumedStart) await delay(5)
+    }
+    expect(sawResumedStart).toBe(true)
+
+    socket.close()
+    await closeTestServer(app)
+
+    const db = new Database(dbPath, { readonly: true })
+    let rows: Array<{ id: string; status: string; metadata_json?: string }>
+    try {
+      rows = db.prepare("SELECT id, status, metadata_json FROM terminal_sessions ORDER BY started_at").all() as typeof rows
+      const activeTerminals = rows.filter((row) => ["starting", "running", "awaiting_input"].includes(row.status))
+      const activeTools = db.prepare("SELECT COUNT(*) AS count FROM tool_calls WHERE status IN ('running', 'awaiting_approval')").get() as { count: number }
+      const activeTurns = db.prepare("SELECT COUNT(*) AS count FROM turns WHERE status IN ('queued', 'running', 'awaiting_approval')").get() as { count: number }
+      const activeTasks = db.prepare("SELECT COUNT(*) AS count FROM agent_tasks WHERE status IN ('running', 'waiting')").get() as { count: number }
+      expect(rows.length).toBeGreaterThanOrEqual(2)
+      expect(activeTerminals).toEqual([])
+      expect(activeTools.count).toBe(0)
+      expect(activeTurns.count).toBe(0)
+      expect(activeTasks.count).toBe(0)
+    } finally {
+      db.close()
+    }
+
+    for (const row of rows) {
+      const metadata = JSON.parse(row.metadata_json ?? "{}") as { systemPid?: unknown }
+      if (typeof metadata.systemPid === "number") await waitForProcessExit(metadata.systemPid)
+      if (process.platform !== "win32") expect(fs.existsSync(terminalHostSocketPath(supervisorSocket, row.id))).toBe(false)
+    }
+    if (process.platform !== "win32") expect(fs.existsSync(supervisorSocket)).toBe(false)
+  }, 15_000)
+
+  it("recovers a supervisor-owned Terminal left in the durable starting phase", async () => {
+    const dbPath = tempDbPath()
+    const firstApp = await buildTestServer(dbPath)
+    await onboard(firstApp)
+    const { project, primaryWorkspace } = await createProject(firstApp)
+    const conversation = await createConversation(firstApp, project.id)
+    await closeTestServer(firstApp)
+
+    const terminalId = createId("term")
+    const commandText = nodeCommand('process.stdout.write("recoverable-start\\n"); setInterval(() => {}, 1000)')
+    const supervisor = new TerminalSupervisorClient(path.dirname(dbPath))
+    const workspacePath = primaryWorkspace.path
+    if (!workspacePath) throw new Error("Expected a primary workspace path")
+    const started = await supervisor.start(terminalId, workspacePath, { operation: "start", command: commandText, name: "recoverable-start" })
+    const systemPid = started.process?.systemPid
+    expect(typeof systemPid).toBe("number")
+
+    const db = new Database(dbPath)
+    const timestamp = nowIso()
+    try {
+      db.prepare(
+        `INSERT INTO terminal_sessions (
+          id, project_id, conversation_id, workspace_path, name, command, cwd, status,
+          auto_detached, awaiting_input, started_at, updated_at, state_version, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'starting', 0, 0, ?, ?, 0, ?)`,
+      ).run(
+        terminalId,
+        project.id,
+        conversation.id,
+        workspacePath,
+        "recoverable-start",
+        commandText,
+        workspacePath,
+        timestamp,
+        timestamp,
+        JSON.stringify({ lifecycle: { phase: "starting", recordedAt: timestamp } }),
+      )
+    } finally {
+      db.close()
+    }
+
+    const secondApp = await buildTestServer(dbPath)
+    const recoveredDb = new Database(dbPath, { readonly: true })
+    try {
+      const recovered = recoveredDb
+        .prepare("SELECT status, process_id, metadata_json FROM terminal_sessions WHERE id = ?")
+        .get(terminalId) as { status: string; process_id?: string; metadata_json?: string }
+      const metadata = JSON.parse(recovered.metadata_json ?? "{}") as { supervisorRecovery?: { state?: string } }
+      expect(recovered.status).toBe("running")
+      expect(recovered.process_id).toBe(started.process?.processId)
+      expect(metadata.supervisorRecovery?.state).toBe("incomplete_start_recovered")
+    } finally {
+      recoveredDb.close()
+    }
+
+    await closeTestServer(secondApp)
+    await supervisor.shutdown()
+    await waitForProcessExit(systemPid as number)
+  }, 15_000)
 
   it("persists recoverable shell failures and continues with the next PTY run", async () => {
     const dbPath = tempDbPath()

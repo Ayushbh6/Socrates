@@ -424,7 +424,7 @@ export type EditToolOutput = z.infer<typeof editToolOutputSchema>
 export const applyPatchToolOutputSchema = editToolOutputSchema
 export type ApplyPatchToolOutput = EditToolOutput
 
-export const terminalStatusSchema = z.enum(["running", "exited", "stopped", "detached", "stale", "awaiting_input", "missing"])
+export const terminalStatusSchema = z.enum(["starting", "running", "exited", "stopped", "detached", "stale", "awaiting_input", "missing"])
 export type TerminalStatus = z.infer<typeof terminalStatusSchema>
 
 export const bashTerminalMetadataSchema = z

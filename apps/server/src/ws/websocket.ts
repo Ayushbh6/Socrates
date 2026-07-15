@@ -20,21 +20,21 @@ export const registerWebSocketRoutes = async (
   agent: SocratesAgent = createDefaultSocratesAgent(),
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
-): Promise<void> => {
+): Promise<{ shutdown: () => Promise<boolean> }> => {
   await app.register(websocket)
 
   const activeTurns = new ActiveTurns()
+  let acceptingTaskWakes = true
   terminals.setTaskWakeHandler((task) => {
+    if (!acceptingTaskWakes) return
     void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider).catch(() => {
       // The durable task remains available for a later reconciliation if a continuation cannot start.
     })
   })
   for (const task of store.listReadyTerminalTasks()) {
+    if (!acceptingTaskWakes) break
     void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider).catch(() => undefined)
   }
-  app.addHook("onClose", async () => {
-    activeTurns.abortAll()
-  })
 
   app.get("/ws", { websocket: true }, (socket) => {
     const ready = makeEvent("connection.ready", {
@@ -47,4 +47,13 @@ export const registerWebSocketRoutes = async (
       void handleInboundMessage(socket, store, agent, activeTurns, terminals, subscriptions, raw.toString(), mcpRuntime, titleProvider)
     })
   })
+
+  return {
+    shutdown: async () => {
+      acceptingTaskWakes = false
+      terminals.clearTaskWakeHandler()
+      activeTurns.abortAll()
+      return activeTurns.waitForIdle()
+    },
+  }
 }

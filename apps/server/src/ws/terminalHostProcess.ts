@@ -8,7 +8,7 @@ import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 
 type HostRequest = {
   id: string
-  method: "start" | "status" | "output" | "stop" | "input" | "resize" | "health" | "shutdown"
+  method: "start" | "status" | "output" | "stop" | "input" | "resize" | "health" | "shutdown" | "shutdown-host"
   terminalId: string
   workspacePath?: string
   processId?: string
@@ -32,6 +32,12 @@ const instanceId = crypto.randomUUID()
 const startedAt = new Date().toISOString()
 let session: WorkspaceShellSession | undefined
 let processId: string | undefined
+let shuttingDown = false
+const startupTimeoutMs = boundedMilliseconds(process.env.SOCRATES_TERMINAL_HOST_STARTUP_TIMEOUT_MS, 30_000, 1_000, 10 * 60_000)
+const startupTimer = setTimeout(() => {
+  if (!session) shutdown()
+}, startupTimeoutMs)
+startupTimer.unref?.()
 
 if (!socketPath || !expectedTerminalId) throw new Error("Terminal host socket path and terminal id are required.")
 if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
@@ -72,12 +78,14 @@ const handleRequest = async (request: HostRequest): Promise<HostResponse> => {
   if (request.method === "health") {
     return { id: request.id, ok: true, health: { instanceId, processId: process.pid, startedAt } }
   }
-  if (request.method === "shutdown") {
+  if (request.method === "shutdown" || request.method === "shutdown-host") {
     setTimeout(shutdown, 20).unref?.()
     return { id: request.id, ok: true }
   }
   if (request.method === "start") {
+    if (shuttingDown) throw new Error("Terminal host is shutting down.")
     if (!request.workspacePath || !request.input) throw new Error("Terminal start payload is incomplete.")
+    clearTimeout(startupTimer)
     session?.dispose()
     session = createWorkspaceShellSession(request.workspacePath)
     const output = await session.run({ ...request.input, operation: "start" })
@@ -132,11 +140,19 @@ const requestId = (line: string): string => {
 }
 
 const shutdown = (): void => {
+  if (shuttingDown) return
+  shuttingDown = true
+  clearTimeout(startupTimer)
   session?.dispose()
   server.close(() => {
     if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
     process.exit(0)
   })
+}
+
+function boundedMilliseconds(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
+  const parsed = Number.parseInt(value ?? "", 10)
+  return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback
 }
 
 process.on("SIGTERM", shutdown)

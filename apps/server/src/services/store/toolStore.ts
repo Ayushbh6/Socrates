@@ -413,7 +413,8 @@ const isShellKind = (value: unknown): value is "posix" | "powershell" | "cmd" =>
 const isShellProcessStatus = (value: unknown): value is "running" | "exited" | "stopped" | "missing" =>
   value === "running" || value === "exited" || value === "stopped" || value === "missing"
 
-const isTerminalStatus = (value: unknown): value is "running" | "exited" | "stopped" | "detached" | "stale" | "awaiting_input" | "missing" =>
+const isTerminalStatus = (value: unknown): value is "starting" | "running" | "exited" | "stopped" | "detached" | "stale" | "awaiting_input" | "missing" =>
+  value === "starting" ||
   value === "running" ||
   value === "exited" ||
   value === "stopped" ||

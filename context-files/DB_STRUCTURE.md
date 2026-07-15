@@ -708,7 +708,7 @@ Stores stdout/stderr chunks for shell commands.
 
 Stores conversation-scoped Terminal sessions started through the model-visible `bash` tool or auto-detached from a long blocking `bash run`.
 
-Terminal sessions are durable conversation runtime state. A Terminal may outlive a single turn, but it is still scoped to one project, one conversation, and one workspace path. On server restart, rows that were `running` or `awaiting_input` are reconciled with the local Terminal supervisor when possible; uncontrollable rows become `detached` or `missing`.
+Terminal sessions are durable conversation runtime state. A Terminal may outlive a single turn, but it is still scoped to one project, one conversation, and one workspace path. Creation first persists `starting`, then commits `running` only after supervisor ownership and process metadata are known. On server restart, rows that were `starting`, `running`, or `awaiting_input` are reconciled with the local Terminal supervisor when possible; uncontrollable rows become `detached` or `missing`.
 
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -719,7 +719,7 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `name` | `TEXT` | yes | User/model-facing terminal name. |
 | `command` | `TEXT` | yes | Original command string. |
 | `cwd` | `TEXT` | yes | Last known working directory. |
-| `status` | `TEXT` | yes | `running`, `exited`, `stopped`, `detached`, `awaiting_input`, `missing`, or legacy `stale`. |
+| `status` | `TEXT` | yes | `starting`, `running`, `exited`, `stopped`, `detached`, `awaiting_input`, `missing`, or legacy `stale`. |
 | `platform` | `TEXT` | no | Runtime platform such as `darwin`, `linux`, or `win32`. |
 | `shell_kind` | `TEXT` | no | `posix`, `powershell`, or `cmd`. |
 | `shell_executable` | `TEXT` | no | Resolved shell executable. |
@@ -732,10 +732,10 @@ Terminal sessions are durable conversation runtime state. A Terminal may outlive
 | `last_prompt` | `TEXT` | no | Safe prompt text for awaiting-input UI/model context. Secret-like input itself is never stored here. |
 | `started_at` | `TEXT` | yes | ISO timestamp. |
 | `updated_at` | `TEXT` | yes | ISO timestamp. |
-| `completed_at` | `TEXT` | no | ISO timestamp for exited, stopped, detached, missing, or legacy stale completion. |
+| `completed_at` | `TEXT` | no | ISO timestamp for exited, stopped, detached, missing, or legacy stale completion. `starting`, `running`, and `awaiting_input` are active states. |
 | `metadata_json` | `TEXT` | no | Extra terminal metadata such as linked tool call id or stop reason. |
 
-Supervisor metadata is bounded operational state. New sessions record the owning supervisor instance/process/start time. Startup reconciliation merges `supervisorRecovery` with `reconnected`, `process_missing`, or `supervisor_unavailable` plus the check time; live transport degradation records a bounded failure count and normalized error. These fields explain recovery decisions but do not replace `terminal_sessions.status` as the lifecycle authority.
+Supervisor metadata is bounded operational state. A new row records its `starting` lifecycle phase before launch, then the owning supervisor instance/process/start time and committed phase after launch. Startup reconciliation merges `supervisorRecovery` with `reconnected`, `incomplete_start_recovered`, `incomplete_start_missing`, `process_missing`, or `supervisor_unavailable` plus the check time; live transport degradation records a bounded failure count and normalized error. Shutdown waits for in-flight starts, idle supervisors self-expire, and a stop failure becomes `detached` with bounded error metadata rather than a false stopped state. These fields explain recovery decisions but do not replace `terminal_sessions.status` as the lifecycle authority.
 
 ## `terminal_output_chunks`
 

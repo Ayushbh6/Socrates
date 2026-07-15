@@ -48,11 +48,6 @@ export const buildServer = async (options: BuildServerOptions) => {
   await terminals.reconcilePersistedTerminals()
   const app = Fastify({ logger: options.logger ?? false })
 
-  app.addHook("onClose", async () => {
-    await terminals.dispose({ preserveRunning: options.preserveTerminalsOnClose ?? true })
-    await store.close()
-  })
-
   await app.register(multipart, {
     limits: {
       fileSize: 50 * 1024 * 1024,
@@ -64,10 +59,19 @@ export const buildServer = async (options: BuildServerOptions) => {
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   })
 
-  await registerWebSocketRoutes(app, store, terminals, subscriptions, agent, mcpRuntime, titleProvider)
+  const websocketRuntime = await registerWebSocketRoutes(app, store, terminals, subscriptions, agent, mcpRuntime, titleProvider)
   await registerHttpRoutes(app, store, credentials, mcpRuntime, {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),
+  })
+
+  app.addHook("onClose", async () => {
+    terminals.beginShutdown()
+    await websocketRuntime.shutdown()
+    store.cancelStaleActiveTurns("Socrates shut down before this response completed.")
+    store.requeueInterruptedTerminalTasks()
+    await terminals.dispose({ preserveRunning: options.preserveTerminalsOnClose ?? true })
+    await store.close()
   })
 
   return app

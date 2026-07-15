@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { TerminalSupervisorClient } from "./terminalSupervisorClient"
+import { terminalHostSocketPath, terminalSupervisorSocketPath } from "./terminalSupervisorPaths"
 
 const clients: TerminalSupervisorClient[] = []
 const command = (source: string): string => JSON.stringify(process.execPath) + " -e " + JSON.stringify(source)
@@ -13,6 +14,64 @@ afterEach(async () => {
 })
 
 describe("Terminal supervisor resilience", () => {
+  it("serializes shutdown behind an in-flight start and never respawns afterward", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-shutdown-race-"))
+    const client = new TerminalSupervisorClient(workspace)
+    clients.push(client)
+    const terminalId = "term_shutdown_race"
+    const start = client.start(terminalId, workspace, {
+      operation: "start",
+      command: command('process.stdout.write("race-ready\\n"); setInterval(() => {}, 1000)'),
+      name: "shutdown-race",
+    })
+
+    const shutdown = client.shutdown()
+    const started = await start
+    expect(started.process?.status).toBe("running")
+    await shutdown
+
+    if (process.platform !== "win32") {
+      expect(fs.existsSync(terminalHostSocketPath(terminalSupervisorSocketPath(workspace), terminalId))).toBe(false)
+      expect(fs.existsSync(terminalSupervisorSocketPath(workspace))).toBe(false)
+    }
+    await expect(client.health()).rejects.toMatchObject({ code: "terminal_supervisor_closed" })
+  })
+
+  it("self-expires while genuinely idle and can be restarted by a live client", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-idle-"))
+    const client = new TerminalSupervisorClient(workspace, { idleShutdownMs: 100 })
+    clients.push(client)
+    const first = await client.health()
+    await wait(350)
+    if (process.platform !== "win32") {
+      expect(fs.existsSync(terminalSupervisorSocketPath(workspace))).toBe(false)
+    }
+    const second = await client.health()
+    expect(second.processId).not.toBe(first.processId)
+  })
+
+  it("forgets a naturally exited host that disappears before a poll response and then self-expires", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-natural-exit-"))
+    const client = new TerminalSupervisorClient(workspace, { idleShutdownMs: 100 })
+    clients.push(client)
+    const terminalId = "term_natural_exit"
+    const started = await client.start(terminalId, workspace, {
+      operation: "start",
+      command: command('setTimeout(() => process.exit(0), 40)'),
+      name: "natural-exit",
+    })
+
+    await wait(250)
+    const final = await client.status(terminalId, started.process?.processId)
+    expect(["exited", "missing"]).toContain(final.process?.status)
+    await wait(350)
+
+    if (process.platform !== "win32") {
+      expect(fs.existsSync(terminalHostSocketPath(terminalSupervisorSocketPath(workspace), terminalId))).toBe(false)
+      expect(fs.existsSync(terminalSupervisorSocketPath(workspace))).toBe(false)
+    }
+  })
+
   it("keeps concurrent PTYs isolated, survives coordinator loss, accepts input, and bounds large reads", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-stress-"))
     const client = new TerminalSupervisorClient(workspace)

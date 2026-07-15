@@ -951,12 +951,15 @@ export const resumeTerminalTask = async (
   const fromSequence = store.getModelVisibleTerminalOutputSequence(continued.terminalId)
   const output = store.terminalOutputSnapshot(continued.terminalId, fromSequence, 8_000)
   store.setModelVisibleTerminalOutputSequence(continued.terminalId, output.modelVisibleNextSequence)
+  const taskProgress = store.getTaskEvidence(continued.turnId, { operation: "overview", limit: 10, charLimit: 6_000 })
   const wakeContext = [
     `You were waiting for Terminal \"${continued.terminalName}\".`,
     `Wake reason: ${continued.wakeEvent}.`,
     `Terminal status: ${continued.terminalStatus}${continued.exitCode === null ? "" : `; exit code ${continued.exitCode}`}.`,
     `Wait reason: ${continued.reason}.`,
     output.stdout || output.stderr ? `New terminal output:\n${[output.stdout, output.stderr].filter(Boolean).join("\n")}` : "No new terminal output was captured.",
+    "Task progress before this wake is authoritative lifecycle evidence. Do not restart completed, stopped, exited, or otherwise already-attempted work merely because it is absent from the active Terminal list. Verify with bash list/status only when the remaining task genuinely requires it.",
+    taskProgress.content,
   ].join("\n")
   await handleChatMessageSend(undefined, store, agent, activeTurns, terminals, subscriptions, undefined, mcpRuntime, titleProvider, {
     projectId: continued.projectId,

@@ -54,6 +54,8 @@ export class ConversationTerminalManager {
   private readonly terminals = new Map<string, RuntimeTerminal>()
   private readonly supervisor: TerminalSupervisorClient
   private readonly autoDetachMs: number
+  private readonly inFlightStarts = new Set<Promise<BashToolOutput>>()
+  private lifecycle: "open" | "closing" | "closed" = "open"
   private onTaskReady: ((task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number]) => void) | undefined
 
   constructor(
@@ -69,9 +71,21 @@ export class ConversationTerminalManager {
     this.onTaskReady = handler
   }
 
+  clearTaskWakeHandler(): void {
+    this.onTaskReady = undefined
+  }
+
+  beginShutdown(): void {
+    if (this.lifecycle !== "open") return
+    this.lifecycle = "closing"
+    this.clearTaskWakeHandler()
+  }
+
   async reconcilePersistedTerminals(): Promise<void> {
     const health = (await this.supervisor.inspectHealth()) ?? (await this.supervisor.health().catch(() => undefined))
-    for (const terminal of this.store.listActiveTerminals()) {
+    for (const persistedTerminal of this.store.listActiveTerminals()) {
+      let terminal = persistedTerminal
+      let recoveredIncompleteStart = false
       const owned = health ? await this.supervisor.has(terminal.terminalId).catch(() => false) : false
       if (!owned) {
         const checkedAt = nowIso()
@@ -94,10 +108,63 @@ export class ConversationTerminalManager {
         this.wakeWaitingTasks(terminal.terminalId, "failed")
         continue
       }
+      if (terminal.status === "starting" || !terminal.processId) {
+        const recovered = await this.supervisor.status(terminal.terminalId, undefined, { operation: "status" }).catch(() => undefined)
+        const processId = recovered?.process?.processId
+        const recoveredStatus = processStatusToTerminalStatus(recovered?.process?.status)
+        if (!recovered || !processId || recoveredStatus === "missing") {
+          const checkedAt = nowIso()
+          this.store.updateTerminal(terminal.terminalId, {
+            status: "missing",
+            awaitingInput: false,
+            completedAt: checkedAt,
+            metadata: {
+              supervisorRecovery: {
+                state: "incomplete_start_missing",
+                checkedAt,
+                ...supervisorHealthMetadata(health as TerminalSupervisorHealth),
+              },
+            },
+          })
+          this.wakeWaitingTasks(terminal.terminalId, "failed")
+          continue
+        }
+        this.store.updateTerminal(terminal.terminalId, {
+          processId,
+          cwd: recovered.cwd,
+          platform: recovered.shell.platform,
+          ...(recovered.shell.kind === "direct" ? {} : { shellKind: recovered.shell.kind }),
+          shellExecutable: recovered.shell.executable,
+          status: recoveredStatus,
+          awaitingInput: false,
+          ...(recoveredStatus === "exited" || recoveredStatus === "stopped" ? { completedAt: nowIso() } : {}),
+          metadata: {
+            systemPid: recovered.process?.systemPid,
+            supervisorRecovery: {
+              state: "incomplete_start_recovered",
+              checkedAt: nowIso(),
+              ...supervisorHealthMetadata(health as TerminalSupervisorHealth),
+            },
+          },
+        })
+        this.appendOutputSnapshot(terminal.terminalId, undefined, recovered)
+        terminal = this.store.listConversationTerminals(terminal.conversationId).find((item) => item.terminalId === terminal.terminalId) ?? terminal
+        recoveredIncompleteStart = true
+        if (recoveredStatus === "exited" || recoveredStatus === "stopped") {
+          this.wakeWaitingTasks(terminal.terminalId, recoveredStatus === "exited" && recovered.exitCode === 0 ? "completed" : "failed")
+          continue
+        }
+      }
       const runtime = this.runtimeFromSnapshot(terminal)
       this.terminals.set(terminal.terminalId, runtime)
       this.store.updateTerminal(terminal.terminalId, {
-        metadata: { supervisorRecovery: { state: "reconnected", checkedAt: nowIso(), ...supervisorHealthMetadata(health as TerminalSupervisorHealth) } },
+        metadata: {
+          supervisorRecovery: {
+            state: recoveredIncompleteStart ? "incomplete_start_recovered" : "reconnected",
+            checkedAt: nowIso(),
+            ...supervisorHealthMetadata(health as TerminalSupervisorHealth),
+          },
+        },
       })
       await this.pollTerminal(runtime).catch((error) => this.handleSupervisorPollFailure(runtime, error))
       if (this.terminals.has(runtime.terminalId)) this.startPolling(runtime)
@@ -107,7 +174,8 @@ export class ConversationTerminalManager {
   async dispose(options: { preserveRunning?: boolean } = {}): Promise<void> {
     // A main-server restart must not own the lifetime of independently supervised
     // Terminals. Explicit conversation/project/user stops still terminate them.
-    this.onTaskReady = undefined
+    this.beginShutdown()
+    await Promise.allSettled([...this.inFlightStarts])
     if (options.preserveRunning) {
       await Promise.allSettled([...this.terminals.values()].map((terminal) => this.waitForPendingDrain(terminal)))
       for (const terminal of this.terminals.values()) {
@@ -119,27 +187,29 @@ export class ConversationTerminalManager {
       await this.supervisor.shutdown()
     }
     this.terminals.clear()
+    this.lifecycle = "closed"
   }
 
   stopConversation(conversationId: string, reason?: string): void {
-    for (const terminal of [...this.terminals.values()]) {
-      if (terminal.conversationId === conversationId) {
-        void this.stopRuntimeTerminal(terminal, reason)
-      }
+    const active = this.store.listConversationTerminals(conversationId).filter((terminal) => isActiveTerminalStatus(terminal.status))
+    for (const terminal of active) {
+      const runtime = this.terminals.get(terminal.terminalId)
+      void (runtime ? this.stopRuntimeTerminal(runtime, reason) : this.stopStoredTerminal(terminal, reason)).catch(() => undefined)
     }
-    this.store.stopConversationTerminals(conversationId)
   }
 
   stopProject(projectId: string, reason?: string): void {
-    for (const terminal of [...this.terminals.values()]) {
-      if (terminal.projectId === projectId) {
-        void this.stopRuntimeTerminal(terminal, reason)
-      }
+    const active = this.store.listActiveTerminals().filter((terminal) => terminal.projectId === projectId)
+    for (const terminal of active) {
+      const runtime = this.terminals.get(terminal.terminalId)
+      void (runtime ? this.stopRuntimeTerminal(runtime, reason) : this.stopStoredTerminal(terminal, reason)).catch(() => undefined)
     }
-    this.store.stopProjectTerminals(projectId)
   }
 
   async executeBash(input: BashToolInput, context: ToolExecutorContext, activeTurns: ActiveTurns): Promise<BashToolOutput> {
+    if (this.lifecycle !== "open" || context.abortSignal?.aborted) {
+      throw new SocratesError("terminal_runtime_closing", "Terminal runtime is shutting down and cannot accept new operations.", { recoverable: true })
+    }
     const operation = input.operation ?? "run"
     if (input.argv) {
       return runWorkspaceArgv(input, context)
@@ -178,11 +248,8 @@ export class ConversationTerminalManager {
       throw new SocratesError("terminal_not_found", "Terminal was not found.", { details: { terminalId: command.payload.terminalId }, recoverable: true })
     }
     assertTerminalScope(row, scope)
-    this.store.updateTerminal(row.id, { status: "stopped", awaitingInput: false, signal: "SIGTERM", completedAt: nowIso() })
-    const terminalSnapshot = this.store.listConversationTerminals(row.conversationId).find((item) => item.terminalId === row.id)
-    if (terminalSnapshot) {
-      this.emitTerminalEvent("terminal.stopped", terminalSnapshot)
-    }
+    const snapshot = this.store.listConversationTerminals(row.conversationId).find((item) => item.terminalId === row.id)
+    if (snapshot && isActiveTerminalStatus(snapshot.status)) await this.stopStoredTerminal(snapshot, command.payload.reason)
   }
 
   async handleInput(command: Extract<ClientCommand, { type: "terminal.input" }>): Promise<void> {
@@ -267,7 +334,16 @@ export class ConversationTerminalManager {
     }
   }
 
-  private async startTerminal(input: BashToolInput, context: ToolExecutorContext, autoDetached: boolean): Promise<BashToolOutput> {
+  private startTerminal(input: BashToolInput, context: ToolExecutorContext, autoDetached: boolean): Promise<BashToolOutput> {
+    const start = this.performTerminalStart(input, context, autoDetached)
+    this.inFlightStarts.add(start)
+    return start.finally(() => this.inFlightStarts.delete(start))
+  }
+
+  private async performTerminalStart(input: BashToolInput, context: ToolExecutorContext, autoDetached: boolean): Promise<BashToolOutput> {
+    if (this.lifecycle !== "open" || context.abortSignal?.aborted) {
+      throw new SocratesError("terminal_start_cancelled", "Terminal start was cancelled before launch.", { recoverable: true })
+    }
     const command = input.command
     if (!command) {
       throw new SocratesError("shell_command_required", "A shell command is required for terminal start.")
@@ -291,19 +367,32 @@ export class ConversationTerminalManager {
       name,
       command,
       cwd: input.cwd ?? context.workspacePath,
-      status: "running",
+      status: "starting",
       autoDetached,
+      metadata: {
+        toolCallId: context.toolCallId,
+        startToolCallId: context.toolCallId,
+        lastToolCallId: context.toolCallId,
+        lastTurnId: context.turnId,
+        inputMode: input.inputMode ?? "none",
+        lifecycle: { phase: "starting", recordedAt: nowIso() },
+      },
     })
     let output: BashToolOutput
     try {
       output = await this.supervisor.start(terminalId, context.workspacePath, { ...input, operation: "start" })
     } catch (error) {
       const normalized = normalizeError(error)
+      const cancelled = this.lifecycle !== "open" || context.abortSignal?.aborted
       this.store.updateTerminal(terminalId, {
-        status: "missing",
+        status: cancelled ? "stopped" : "missing",
         awaitingInput: false,
         completedAt: nowIso(),
-        metadata: { startError: { code: normalized.code, message: normalized.message, details: normalized.details } },
+        ...(cancelled ? { signal: "SIGTERM" } : {}),
+        metadata: {
+          lifecycle: { phase: cancelled ? "start_cancelled" : "start_failed", recordedAt: nowIso() },
+          startError: { code: normalized.code, message: normalized.message, details: normalized.details },
+        },
       })
       const failedTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
       if (failedTerminal) {
@@ -316,7 +405,26 @@ export class ConversationTerminalManager {
       this.store.updateTerminal(terminalId, { status: "missing", awaitingInput: false, completedAt: nowIso() })
       throw new SocratesError("terminal_start_failed", "Terminal process did not return a process id.", { recoverable: true })
     }
-    const supervisorHealth = await this.supervisor.health().catch(() => undefined)
+    if (this.lifecycle !== "open" || context.abortSignal?.aborted) {
+      await this.terminateTerminalHost(terminalId, processId)
+      this.store.updateTerminal(terminalId, {
+        status: "stopped",
+        processId,
+        cwd: output.cwd,
+        platform: output.shell.platform,
+        ...(output.shell.kind === "direct" ? {} : { shellKind: output.shell.kind }),
+        shellExecutable: output.shell.executable,
+        awaitingInput: false,
+        signal: "SIGTERM",
+        completedAt: nowIso(),
+        metadata: {
+          systemPid: output.process?.systemPid,
+          lifecycle: { phase: "start_cancelled", recordedAt: nowIso() },
+          stopReason: "Server shutdown interrupted Terminal start.",
+        },
+      })
+      throw new SocratesError("terminal_start_cancelled", "Terminal start was cancelled during shutdown.", { recoverable: true })
+    }
     const runtime: RuntimeTerminal = {
       terminalId,
       projectId: context.projectId,
@@ -345,21 +453,24 @@ export class ConversationTerminalManager {
       status: "running",
       autoDetached,
       metadata: {
-        toolCallId: context.toolCallId,
-        startToolCallId: context.toolCallId,
-        lastToolCallId: context.toolCallId,
-        lastTurnId: context.turnId,
         systemPid: output.process?.systemPid,
-        inputMode: input.inputMode ?? "none",
-        ...(supervisorHealth ? { supervisor: supervisorHealthMetadata(supervisorHealth) } : {}),
+        lifecycle: { phase: "committed", recordedAt: nowIso() },
       },
     })
+    const supervisorHealth = await this.supervisor.health().catch(() => undefined)
+    if (supervisorHealth) {
+      this.store.updateTerminal(terminalId, { metadata: { supervisor: supervisorHealthMetadata(supervisorHealth) } })
+    }
     this.appendOutputSnapshot(terminalId, context, output)
     if (!hasShellOutput(output)) {
       await this.drainInitialTerminalOutput(runtime, context)
     }
     if (runtime.inputMode === "user" && runtime.status === "running" && !runtime.awaitingInput) {
       this.markAwaitingInput(runtime, analyzeTerminalInputEvidence(runtime.promptFrame).prompt || "Terminal is ready for user input.", context.conversationId)
+    }
+    if (this.lifecycle !== "open" || context.abortSignal?.aborted) {
+      await this.stopRuntimeTerminal(runtime, "Server shutdown interrupted Terminal start.")
+      throw new SocratesError("terminal_start_cancelled", "Terminal start was cancelled during shutdown.", { recoverable: true })
     }
     const initialTerminal = this.store.listConversationTerminals(context.conversationId).find((item) => item.terminalId === terminalId)
     if (!this.terminals.has(terminalId) || !isActiveTerminalStatus(runtime.status)) {
@@ -691,17 +802,68 @@ export class ConversationTerminalManager {
   private async stopRuntimeTerminal(terminal: RuntimeTerminal, reason?: string): Promise<void> {
     terminal.stopping = true
     await this.waitForPendingDrain(terminal)
-    const output = await this.supervisor
-      .stop(terminal.terminalId, terminal.processId, {
+    let output: BashToolOutput | undefined
+    try {
+      output = await this.supervisor.stop(terminal.terminalId, terminal.processId, {
         operation: "stop",
         processId: terminal.processId,
         outputSequence: terminal.supervisorOutputSequence,
       })
-      .catch(() => undefined)
+    } catch (error) {
+      try {
+        await this.supervisor.shutdownHost(terminal.terminalId)
+      } catch (shutdownError) {
+        const normalized = normalizeError(shutdownError)
+        this.markRuntimeTerminalDetached(terminal, {
+          code: "terminal_stop_unconfirmed",
+          message: "Terminal stop could not be confirmed by the supervisor.",
+          details: { stopError: normalizeError(error), shutdownError: normalized },
+        })
+        throw shutdownError
+      }
+    }
     if (output) {
       this.appendOutputSnapshot(terminal.terminalId, undefined, output)
     }
     this.markRuntimeTerminalStopped(terminal, reason)
+  }
+
+  private async stopStoredTerminal(terminal: TerminalSnapshot, reason?: string): Promise<void> {
+    try {
+      const output = await this.terminateTerminalHost(terminal.terminalId, terminal.processId)
+      if (output) this.appendOutputSnapshot(terminal.terminalId, undefined, output)
+      this.store.updateTerminal(terminal.terminalId, {
+        status: "stopped",
+        awaitingInput: false,
+        signal: "SIGTERM",
+        completedAt: nowIso(),
+        ...(reason ? { metadata: { stopReason: reason } } : {}),
+      })
+      const snapshot = this.store.listConversationTerminals(terminal.conversationId).find((item) => item.terminalId === terminal.terminalId)
+      if (snapshot) this.emitTerminalEvent("terminal.stopped", snapshot)
+      this.wakeWaitingTasks(terminal.terminalId, "failed")
+    } catch (error) {
+      const normalized = normalizeError(error)
+      this.store.updateTerminal(terminal.terminalId, {
+        status: "detached",
+        awaitingInput: false,
+        completedAt: nowIso(),
+        metadata: { runtimeError: { code: "terminal_stop_unconfirmed", message: normalized.message, details: normalized.details } },
+      })
+      const snapshot = this.store.listConversationTerminals(terminal.conversationId).find((item) => item.terminalId === terminal.terminalId)
+      if (snapshot) this.emitTerminalEvent("terminal.status", snapshot)
+      this.wakeWaitingTasks(terminal.terminalId, "failed")
+      throw error
+    }
+  }
+
+  private async terminateTerminalHost(terminalId: string, processId?: string): Promise<BashToolOutput | undefined> {
+    try {
+      return await this.supervisor.stop(terminalId, processId, { operation: "stop", ...(processId ? { processId } : {}) })
+    } catch {
+      await this.supervisor.shutdownHost(terminalId)
+      return undefined
+    }
   }
 
   private markRuntimeTerminalStopped(terminal: RuntimeTerminal, reason?: string): void {
@@ -1013,7 +1175,14 @@ const storedTerminalOutput = (
     },
     process: {
       processId: terminal.processId ?? terminal.terminalId,
-      status: terminal.status === "running" || terminal.status === "awaiting_input" ? "running" : terminal.status === "stopped" ? "stopped" : "exited",
+      status:
+        terminal.status === "starting" || terminal.status === "running" || terminal.status === "awaiting_input"
+          ? "running"
+          : terminal.status === "stopped"
+            ? "stopped"
+            : terminal.status === "missing" || terminal.status === "detached"
+              ? "missing"
+              : "exited",
       exitCode: terminal.exitCode ?? null,
       ...(terminal.signal ? { signal: terminal.signal } : {}),
       startedAt: terminal.startedAt,
@@ -1035,7 +1204,7 @@ const storedTerminalOutput = (
   }
 }
 
-const isActiveTerminalStatus = (status: TerminalStatus): boolean => status === "running" || status === "awaiting_input"
+const isActiveTerminalStatus = (status: TerminalStatus | string): boolean => status === "starting" || status === "running" || status === "awaiting_input"
 
 const isRuntimeTerminal = (terminal: RuntimeTerminal | ReturnType<typeof storedTerminalFromRow>): terminal is RuntimeTerminal => !("output" in terminal)
 

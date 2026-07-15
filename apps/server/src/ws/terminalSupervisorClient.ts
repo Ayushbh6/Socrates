@@ -1,14 +1,12 @@
 import { spawn } from "node:child_process"
-import crypto from "node:crypto"
 import fs from "node:fs"
 import net from "node:net"
-import os from "node:os"
-import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 import { SocratesError, type ErrorDetails } from "@socrates/shared"
+import { terminalHostSocketPath, terminalSupervisorSocketPath } from "./terminalSupervisorPaths"
 
-type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has" | "health" | "shutdown-if-idle" | "shutdown"
+type SupervisorMethod = "start" | "status" | "output" | "stop" | "input" | "resize" | "has" | "health" | "shutdown-host" | "shutdown-if-idle" | "shutdown"
 type SupervisorRequest = {
   id: string
   method: SupervisorMethod
@@ -36,16 +34,18 @@ export type TerminalSupervisorHealth = {
   terminalCount: number
 }
 
-const terminalSupervisorProtocolVersion = "pty-v3-20260607-text-input"
-
 export class TerminalSupervisorClient {
   private readonly socketPath: string
   private spawnPromise: Promise<void> | undefined
+  private readonly inFlightRequests = new Set<Promise<SupervisorResponse>>()
+  private closing = false
+  private closed = false
 
-  constructor(scope = process.cwd()) {
-    const hash = crypto.createHash("sha256").update(`${scope}:${terminalSupervisorProtocolVersion}`).digest("hex").slice(0, 16)
-    this.socketPath =
-      process.platform === "win32" ? `\\\\.\\pipe\\socrates-terminal-${hash}` : path.join(os.tmpdir(), `socrates-terminal-${hash}.sock`)
+  constructor(
+    scope = process.cwd(),
+    private readonly options: { idleShutdownMs?: number; hostStartupTimeoutMs?: number } = {},
+  ) {
+    this.socketPath = terminalSupervisorSocketPath(scope)
   }
 
   async start(terminalId: string, workspacePath: string, input: BashToolInput): Promise<BashToolOutput> {
@@ -65,7 +65,13 @@ export class TerminalSupervisorClient {
 
   async stop(terminalId: string, processId: string | undefined, input: BashToolInput = {}): Promise<BashToolOutput> {
     const response = await this.request({ method: "stop", terminalId, input, ...(processId ? { processId } : {}) })
-    return requireOutput(response)
+    const output = requireOutput(response)
+    await this.waitForEndpointDisconnect(terminalHostSocketPath(this.socketPath, terminalId))
+    return output
+  }
+
+  async shutdownHost(terminalId: string): Promise<void> {
+    await this.request({ method: "shutdown-host", terminalId })
   }
 
   async input(terminalId: string, processId: string | undefined, text: string): Promise<void> {
@@ -82,6 +88,7 @@ export class TerminalSupervisorClient {
   }
 
   async inspectHealth(): Promise<TerminalSupervisorHealth | undefined> {
+    if (this.closing || this.closed) return undefined
     if (!(await this.canConnect())) return undefined
     const response = await this.send({ method: "health" }).catch(() => undefined)
     if (!response) return undefined
@@ -99,21 +106,42 @@ export class TerminalSupervisorClient {
   }
 
   async shutdownIfIdle(): Promise<void> {
+    if (this.closed) return
+    this.closing = true
+    await Promise.allSettled([...this.inFlightRequests])
     if (!(await this.canConnect())) {
+      this.closed = true
       return
     }
+    const health = await this.send({ method: "health" }).then((response) => response.health).catch(() => undefined)
     await this.send({ method: "shutdown-if-idle" }).catch(() => undefined)
+    if (health?.terminalCount === 0) await this.waitForDisconnect()
+    this.closed = true
   }
 
   async shutdown(): Promise<void> {
+    if (this.closed) return
+    this.closing = true
+    await Promise.allSettled([...this.inFlightRequests])
     if (!(await this.canConnect())) {
+      this.closed = true
       return
     }
     await this.send({ method: "shutdown" }).catch(() => undefined)
     await this.waitForDisconnect()
+    this.closed = true
   }
 
-  private async request(input: Omit<SupervisorRequest, "id">): Promise<SupervisorResponse> {
+  private request(input: Omit<SupervisorRequest, "id">): Promise<SupervisorResponse> {
+    if (this.closing || this.closed) {
+      throw new SocratesError("terminal_supervisor_closed", "Terminal supervisor client is closed.", { recoverable: true })
+    }
+    const request = this.performRequest(input)
+    this.inFlightRequests.add(request)
+    return request.finally(() => this.inFlightRequests.delete(request))
+  }
+
+  private async performRequest(input: Omit<SupervisorRequest, "id">): Promise<SupervisorResponse> {
     await this.ensureRunning()
     try {
       return await this.send(input)
@@ -167,7 +195,12 @@ export class TerminalSupervisorClient {
     const child = spawn(process.execPath, args, {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, SOCRATES_TERMINAL_SUPERVISOR: "1" },
+      env: {
+        ...process.env,
+        SOCRATES_TERMINAL_SUPERVISOR: "1",
+        ...(this.options.idleShutdownMs === undefined ? {} : { SOCRATES_TERMINAL_SUPERVISOR_IDLE_MS: String(this.options.idleShutdownMs) }),
+        ...(this.options.hostStartupTimeoutMs === undefined ? {} : { SOCRATES_TERMINAL_HOST_STARTUP_TIMEOUT_MS: String(this.options.hostStartupTimeoutMs) }),
+      },
     })
     child.unref()
     const deadline = Date.now() + 3_000
@@ -181,17 +214,7 @@ export class TerminalSupervisorClient {
   }
 
   private canConnect(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const socket = net.createConnection(this.socketPath)
-      const done = (ok: boolean) => {
-        socket.removeAllListeners()
-        socket.destroy()
-        resolve(ok)
-      }
-      socket.once("connect", () => done(true))
-      socket.once("error", () => done(false))
-      socket.setTimeout(250, () => done(false))
-    })
+    return canConnectTo(this.socketPath)
   }
 
   private async waitForDisconnect(): Promise<void> {
@@ -202,6 +225,15 @@ export class TerminalSupervisorClient {
       }
       await wait(20)
     }
+  }
+
+  private async waitForEndpointDisconnect(target: string): Promise<void> {
+    const deadline = Date.now() + 3_000
+    while (Date.now() < deadline) {
+      if (!(await canConnectTo(target))) return
+      await wait(25)
+    }
+    throw new SocratesError("terminal_host_shutdown_timeout", "Terminal host did not close after stop.", { recoverable: true })
   }
 
   private send(input: Omit<SupervisorRequest, "id">): Promise<SupervisorResponse> {
@@ -246,6 +278,19 @@ export class TerminalSupervisorClient {
     })
   }
 }
+
+const canConnectTo = (target: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const socket = net.createConnection(target)
+    const done = (ok: boolean) => {
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve(ok)
+    }
+    socket.once("connect", () => done(true))
+    socket.once("error", () => done(false))
+    socket.setTimeout(250, () => done(false))
+  })
 
 const requireOutput = (response: SupervisorResponse): BashToolOutput => {
   if (!response.output) {

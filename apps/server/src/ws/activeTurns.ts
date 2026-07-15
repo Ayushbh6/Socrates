@@ -1,6 +1,7 @@
 import { createWorkspaceShellSession, FileFreshnessTracker, type WorkspaceShellSession } from "@socrates/workspace"
 
 export class ActiveTurns {
+  private readonly idleWaiters = new Set<() => void>()
   private readonly turns = new Map<
     string,
     {
@@ -128,21 +129,53 @@ export class ActiveTurns {
   delete(turnId: string): void {
     const turn = this.turns.get(turnId)
     if (turn) {
-      for (const waiter of turn.approvals.values()) {
-        waiter({ decision: "rejected", reason: "Turn ended before approval was resolved." })
-      }
-      for (const waiter of turn.credentialInputs.values()) {
-        waiter({ decision: "cancelled", source: "user_input" })
-      }
-      turn.shellSession?.dispose()
+      this.releaseTurnResources(turn, "Turn ended before approval was resolved.")
     }
     this.turns.delete(turnId)
+    if (this.turns.size === 0) {
+      for (const resolve of this.idleWaiters) resolve()
+      this.idleWaiters.clear()
+    }
   }
 
   abortAll(): void {
-    for (const [turnId, turn] of [...this.turns]) {
+    for (const turn of this.turns.values()) {
       turn.controller.abort()
-      this.delete(turnId)
+      this.releaseTurnResources(turn, "Turn was cancelled because Socrates is shutting down.")
     }
+  }
+
+  async waitForIdle(timeoutMs = 10_000): Promise<boolean> {
+    if (this.turns.size === 0) return true
+    let timeout: NodeJS.Timeout | undefined
+    const idle = new Promise<boolean>((resolve) => {
+      const onIdle = () => {
+        clearTimeout(timeout)
+        resolve(true)
+      }
+      this.idleWaiters.add(onIdle)
+      timeout = setTimeout(() => {
+        this.idleWaiters.delete(onIdle)
+        resolve(false)
+      }, timeoutMs)
+      timeout.unref?.()
+    })
+    return idle
+  }
+
+  private releaseTurnResources(
+    turn: {
+      approvals: Map<string, (decision: { decision: "approved" | "rejected"; reason?: string }) => void>
+      credentialInputs: Map<string, (decision: { decision: "submitted" | "cancelled"; value?: string; source: "user_input" | "workspace_env" }) => void>
+      shellSession?: WorkspaceShellSession
+    },
+    reason: string,
+  ): void {
+    for (const waiter of [...turn.approvals.values()]) waiter({ decision: "rejected", reason })
+    for (const waiter of [...turn.credentialInputs.values()]) waiter({ decision: "cancelled", source: "user_input" })
+    turn.approvals.clear()
+    turn.credentialInputs.clear()
+    turn.shellSession?.dispose()
+    delete turn.shellSession
   }
 }

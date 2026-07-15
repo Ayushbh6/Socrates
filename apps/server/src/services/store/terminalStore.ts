@@ -194,7 +194,7 @@ export class TerminalStore extends StoreBase {
       .where(and(eq(terminalSessions.conversationId, conversationId), eq(terminalSessions.name, identifier)))
       .orderBy(desc(terminalSessions.updatedAt))
       .all()
-    const activeMatches = nameMatches.filter((row) => row.status === "running" || row.status === "awaiting_input")
+    const activeMatches = nameMatches.filter((row) => row.status === "starting" || row.status === "running" || row.status === "awaiting_input")
     const activeMatch = activeMatches[0]
     if (activeMatches.length === 1 && activeMatch) {
       return activeMatch
@@ -221,14 +221,14 @@ export class TerminalStore extends StoreBase {
     const rows = this.handle.db
       .select()
       .from(terminalSessions)
-      .where(inArray(terminalSessions.status, ["running", "awaiting_input"]))
+      .where(inArray(terminalSessions.status, ["starting", "running", "awaiting_input"]))
       .all()
     return rows.map((row) => this.mapTerminal(row))
   }
 
   terminalContextBrief(conversationId: string, limit = 8): string | undefined {
     const terminals = this.listConversationTerminals(conversationId, limit).filter((terminal) =>
-      ["running", "awaiting_input", "detached", "missing"].includes(terminal.status),
+      ["starting", "running", "awaiting_input", "detached", "missing"].includes(terminal.status),
     )
     if (terminals.length === 0) {
       return undefined
@@ -260,7 +260,7 @@ export class TerminalStore extends StoreBase {
     const rows = this.handle.db
       .select()
       .from(terminalSessions)
-      .where(inArray(terminalSessions.status, ["running", "awaiting_input"]))
+      .where(inArray(terminalSessions.status, ["starting", "running", "awaiting_input"]))
       .all()
     const now = nowIso()
     for (const row of rows) {
@@ -273,7 +273,7 @@ export class TerminalStore extends StoreBase {
     const rows = this.handle.db
       .select()
       .from(terminalSessions)
-      .where(and(eq(terminalSessions.conversationId, conversationId), inArray(terminalSessions.status, ["running", "awaiting_input"])))
+      .where(and(eq(terminalSessions.conversationId, conversationId), inArray(terminalSessions.status, ["starting", "running", "awaiting_input"])))
       .all()
     const now = nowIso()
     for (const row of rows) {
@@ -285,7 +285,7 @@ export class TerminalStore extends StoreBase {
     const rows = this.handle.db
       .select()
       .from(terminalSessions)
-      .where(and(eq(terminalSessions.projectId, projectId), inArray(terminalSessions.status, ["running", "awaiting_input"])))
+      .where(and(eq(terminalSessions.projectId, projectId), inArray(terminalSessions.status, ["starting", "running", "awaiting_input"])))
       .all()
     const now = nowIso()
     for (const row of rows) {
@@ -350,6 +350,7 @@ const boundTerminalOutput = (output: ConversationTerminal["output"], charLimit: 
 }
 
 const toTerminalStatus = (value: string): TerminalStatus =>
+  value === "starting" ||
   value === "running" ||
   value === "exited" ||
   value === "stopped" ||
