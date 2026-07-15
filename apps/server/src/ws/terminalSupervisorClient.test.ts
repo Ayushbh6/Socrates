@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -48,6 +49,26 @@ describe("Terminal supervisor resilience", () => {
     }
     const second = await client.health()
     expect(second.processId).not.toBe(first.processId)
+  })
+
+  it("does not remain alive when shutdown encounters a lingering client socket", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-lingering-client-"))
+    const client = new TerminalSupervisorClient(workspace)
+    const health = await client.health()
+    const socket = net.createConnection(terminalSupervisorSocketPath(workspace))
+    await new Promise<void>((resolve, reject) => {
+      socket.once("connect", resolve)
+      socket.once("error", reject)
+    })
+
+    try {
+      await client.shutdown()
+      await expectProcessToExit(health.processId)
+      expect(fs.existsSync(terminalSupervisorSocketPath(workspace))).toBe(false)
+    } finally {
+      socket.destroy()
+      fs.rmSync(workspace, { recursive: true, force: true })
+    }
   })
 
   it("forgets a naturally exited host that disappears before a poll response and then self-expires", async () => {
@@ -134,3 +155,16 @@ describe("Terminal supervisor resilience", () => {
     ])
   }, 15_000)
 })
+
+const expectProcessToExit = async (processId: number): Promise<void> => {
+  const deadline = Date.now() + 3_000
+  while (Date.now() < deadline) {
+    try {
+      process.kill(processId, 0)
+    } catch {
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`Terminal supervisor process ${processId} did not exit.`)
+}

@@ -34,6 +34,7 @@ const startedAt = new Date().toISOString()
 const knownHosts = new Set<string>()
 const spawningHosts = new Map<string, Promise<void>>()
 const activeStarts = new Set<Promise<SupervisorResponse>>()
+const clientSockets = new Set<net.Socket>()
 const idleShutdownMs = boundedMilliseconds(process.env.SOCRATES_TERMINAL_SUPERVISOR_IDLE_MS, 30_000, 100, 10 * 60_000)
 let shuttingDown = false
 let idleTimer: NodeJS.Timeout | undefined
@@ -42,6 +43,8 @@ if (!socketPath) throw new Error("Supervisor socket path is required.")
 if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
 
 const server = net.createServer((socket) => {
+  clientSockets.add(socket)
+  socket.once("close", () => clientSockets.delete(socket))
   let buffer = ""
   socket.setEncoding("utf8")
   socket.on("data", (chunk) => {
@@ -275,6 +278,8 @@ function boundedMilliseconds(value: string | undefined, fallback: number, minimu
 const shutdownCoordinator = (): void => {
   shuttingDown = true
   clearTimeout(idleTimer)
+  for (const socket of clientSockets) socket.destroy()
+  clientSockets.clear()
   server.close(() => {
     if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath)
     process.exit(0)
