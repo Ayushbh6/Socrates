@@ -800,6 +800,7 @@ pre-turn
   -> attach Global Always-Apply Rules and Project Always-Apply Rules
   -> route Socrates to the right curated docs for working memory
   -> return only exact read targets; never write or propose a write
+  -> have the runtime execute those reads and place their results in Socrates' context before main work
 
 genuine finalization
   -> build one bounded evidence pack for the complete user-request lifecycle

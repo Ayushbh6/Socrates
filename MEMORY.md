@@ -219,6 +219,7 @@ Tool routing:
 - Credential-aware model routing and experimental ChatGPT Codex auth commit `6a29dad Add ChatGPT Codex auth model routing` is pushed to `origin/main`. It adds auth-mode-aware model settings, filtered `/api/models`, ChatGPT Codex OAuth/token refresh, Codex request routing, UI credential status, Codex-preferred defaults for chat/workers/memory-agent, and compressor regression coverage for active context, anchors, and full structured fields.
 - Ollama embedding setup commit `21d9fc9 Add Ollama embedding setup` is pushed to `origin/main`. It adds Ollama model discovery/recommendations, offline setup guidance without automatic pulls, project embedding configuration for Ollama, active-index-only cleanup for `trace_embeddings`, in-flight stale job guards, and updated context files/contracts/tests.
 - Memory-front hardening commit `df82d0b feat: harden Socrates memory front` is pushed to `origin/main`. It adds the code-owned nine-surface registry, byte-stable identity/rules/surface prelude, large-paste text attachments and bounded image/text submissions, hardened snapshot reuse and compaction gates, HY3/GLM catalog updates, and the reproducible `evals/memory-harness/` baseline/report/runner. The subsequent catalog correction replaces ChatGPT Codex `gpt-5.4` with verified `gpt-5.6-terra`, removes the broken Luna row, and adds OpenRouter Grok 4.5.
+- Terminal lifecycle, Memory Router telemetry, and Frontier handover hardening commit `60a7d4e feat: harden memory routing and frontier handover` is pushed to `origin/main`. It keeps router failures bounded and non-blocking while persisting failure/usage evidence, adds one-way same-turn Frontier transfer with complete task context, and requires explicit approval for every transfer. A rejection persists the rejected action, removes the handover tool for the rest of that turn, and returns control to the main Socrates model.
 - Context compaction now uses a single-pass soft sizing policy: 60k or less is `excellent`, 80k or less is `preferred`, 80-120k is `acceptable`, and results above 120k are rejected while the 170k trigger and 180k hard provider ceiling remain unchanged. Recent whole-turn history is dynamically fitted into the remaining 80k budget after fixed prompt/tool context, the active turn, and the maximum summary allowance are reserved; this does not add a second compressor call.
 
 ## Next Major Work
@@ -229,6 +230,22 @@ Tool routing:
 - The completed 2026-07-10/11 skill-learning evaluation hardened evidence handoff, canonical skill ids, write validation/supporting files, no-op rejection, bounded Writer repair, cross-run structured Memory Agent journaling, backend-authoritative create/update classification, and main-agent discovery for ordered verification/closure workflows. The composed isolated official-DeepSeek E2E passed: an earlier full run proved behavioral pattern proposal -> approved Writer creation -> v1 held-out use, and a deterministic seeded continuation proved a cross-project handoff refinement -> update proposal -> Writer v2 -> actual main-agent `skills list` + `describe` -> 6/6 held-out behavior signals. Use Memory Pro/high plus Writer Flash/off as the experimental default, keep manual proposal approval, and do not claim production-scale reliability from one passing chain.
 
 ## Verification
+
+Latest verified for Terminal lifecycle hardening, bounded Memory Router failure telemetry, one-way Frontier handover, and explicit Frontier approval on 2026-07-17:
+
+```text
+pnpm typecheck
+pnpm test
+  -> CLI 9, contracts 24, MCP 14, providers 93 (+1 intentionally skipped), workspace 104, core 76, server 154; 474 passed total
+pnpm --filter web build
+  -> production frontend build passed
+focused Frontier approval integration
+  -> approval is required in every permission mode, including approve-all/full-access
+  -> rejection is persisted, emits no handover/model-call event, removes the tool for the turn, and tells Socrates to continue
+focused Memory Router failure integration
+  -> one bounded repair, persisted error and failed usage telemetry, ordinary task continues without a false success claim
+git diff --check
+```
 
 Latest verified for the isolated Memory Router gate evaluation and clean handoff on 2026-07-15:
 
