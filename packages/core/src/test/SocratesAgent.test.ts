@@ -5,6 +5,7 @@ import path from "node:path"
 import { SocratesAgent, createDefaultToolRegistry, type SocratesAgentEvent, type ToolExecutors } from "../index"
 import type { ModelEvent, ModelMessage, ModelProvider } from "@socrates/providers"
 import { bashTool } from "../tools/bashTool"
+import { frontierHandoverTool } from "../tools/frontierHandoverTool"
 import { mcpRegistryTool } from "../tools/mcpRegistryTool"
 import { skillsTool } from "../tools/skillsTool"
 
@@ -43,6 +44,8 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("You are Socrates")
     expect(requestJson).toContain("Hi")
     expect(requestJson).toContain("Read before existing-file mutations")
+    expect(requestJson).toContain("do not mutate user workspace artifacts")
+    expect(requestJson).toContain("project-doc housekeeping remains governed by the memory rules")
     expect(requestJson).toContain("Product copy says Terminal; tool id is bash")
     expect(requestJson).toContain("tool_docs")
     expect(requestJson).toContain("skills")
@@ -58,9 +61,286 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("A separate Global Memory Agent runs in the background")
     expect(requestJson).toContain("A genuine user instruction not to remember")
     expect(requestJson).toContain("Interpret intent from the full semantic meaning, not by keyword")
+    expect(requestJson).toContain("Keep user workspace artifacts separate from Socrates' internal project state")
+    expect(requestJson).toContain("it does not by itself opt content out of project memory")
     expect(requestJson).toContain("Explicit user-stated allergies")
     expect(requestJson).toContain("compare stack trace lines to current files")
     expect(requestJson).toContain("distinguish config/credential issues from service availability")
+    expect(requestJson).toContain("you are the primary Socrates worker")
+    expect(requestJson).toContain("make a real, substantive effort")
+    expect(requestJson).toContain("Difficulty or importance alone is not a blocker")
+    expect(requestJson).toContain("always pauses for explicit user approval")
+  })
+
+  it("hands the full current task one way to Frontier and suppresses the driver's provisional answer", async () => {
+    const requests: Array<Parameters<ModelProvider["stream"]>[0]> = []
+    let handedOver = false
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async generateStructured() {
+        return { output: {} as never }
+      },
+      async *stream(request) {
+        requests.push(request)
+        const toolNames = request.tools?.map((tool) => tool.name) ?? []
+        if (!toolNames.includes("handover_to_frontier")) {
+          const isPostEvidence = JSON.stringify(request.messages).includes("post-evidence")
+          if (toolNames.includes("memory_search") || toolNames.includes("turn_evidence")) {
+            yield {
+              type: "model.answer.delta",
+              text: JSON.stringify(
+                isPostEvidence
+                  ? { actions: [], reason: "No durable update is needed." }
+                  : { readTargets: [], reason: "No routed recall is needed." },
+              ),
+            }
+            yield { type: "model.completed" }
+            return
+          }
+        }
+        if (!handedOver && toolNames.includes("handover_to_frontier")) {
+          handedOver = true
+          yield { type: "model.answer.delta", text: "Driver draft that must not leak." }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "provider_handover_1",
+              toolName: "handover_to_frontier",
+              input: { focus: "Resolve the conflicting lifecycle evidence" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Frontier completed the task." }
+        yield { type: "model.completed" }
+      },
+    }
+    const modelCalls: Array<{ providerId: string; modelId: string }> = []
+    const streamed: SocratesAgentEvent[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openrouter",
+      modelId: "deepseek/deepseek-v4-flash",
+      runtimeConfig: {
+        providerId: "openrouter",
+        authMode: "api_key",
+        modelId: "deepseek/deepseek-v4-flash",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      frontierModelSettings: {
+        providerId: "openrouter",
+        authMode: "api_key",
+        modelId: "x-ai/grok-4.5",
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+      },
+      messages: [{ role: "user", content: "Resolve this difficult lifecycle problem using the evidence you gather." }],
+      workspacePath: "/tmp",
+      stableCachePreludeSnapshot: { identitySections: {} },
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+      createModelCall: (request) => {
+        modelCalls.push({ providerId: request.providerId, modelId: request.modelId })
+        return `mcall_${modelCalls.length}`
+      },
+    })) {
+      streamed.push(event)
+    }
+
+    expect(modelCalls).toEqual([
+      { providerId: "openrouter", modelId: "deepseek/deepseek-v4-flash" },
+      { providerId: "openrouter", modelId: "x-ai/grok-4.5" },
+      { providerId: "openrouter", modelId: "x-ai/grok-4.5" },
+    ])
+    const driverRequest = requests.find((request) => request.tools?.some((tool) => tool.name === "handover_to_frontier"))
+    const frontierRequests = requests.filter((request) => request.modelId === "x-ai/grok-4.5")
+    expect(driverRequest?.tools?.map((tool) => tool.name)).toContain("handover_to_frontier")
+    expect(frontierRequests).toHaveLength(2)
+    expect(frontierRequests.every((request) => !request.tools?.some((tool) => tool.name === "handover_to_frontier"))).toBe(true)
+    expect(JSON.stringify(frontierRequests[0]?.messages)).toContain("Resolve this difficult lifecycle problem")
+    expect(JSON.stringify(frontierRequests[0]?.messages)).toContain("handover_to_frontier")
+    expect(JSON.stringify(frontierRequests[0]?.messages)).toContain("Resolve the conflicting lifecycle evidence")
+    expect(JSON.stringify(frontierRequests[0]?.messages)).toContain("Frontier and now own this task")
+    expect(streamed.filter((event) => event.type === "model.answer.delta").map((event) => event.text)).toEqual(["Frontier completed the task."])
+    expect(streamed).toContainEqual({
+      type: "approval.requested",
+      request: expect.objectContaining({
+        toolName: "handover_to_frontier",
+        title: "Call Frontier model",
+        description: expect.stringContaining("x-ai/grok-4.5 through openrouter"),
+        actionPreview: "Focus: Resolve the conflicting lifecycle evidence",
+        risk: "medium",
+      }),
+    })
+    expect(streamed).toContainEqual({
+      type: "tool.call.started",
+      toolCallId: expect.stringMatching(/^tcall_/),
+      providerToolCallId: "provider_handover_1",
+      toolName: "handover_to_frontier",
+      category: "other",
+      displayName: "Calling Frontier model",
+      argsPreview: expect.any(String),
+      input: { focus: "Resolve the conflicting lifecycle evidence" },
+      requiresApproval: true,
+      modelCallId: "mcall_1",
+      stepIndex: 0,
+    })
+    expect(streamed).toContainEqual({
+      type: "agent.handover",
+      toolCallId: expect.stringMatching(/^tcall_/),
+      stepIndex: 0,
+      fromProviderId: "openrouter",
+      fromModelId: "deepseek/deepseek-v4-flash",
+      toProviderId: "openrouter",
+      toModelId: "x-ai/grok-4.5",
+      focus: "Resolve the conflicting lifecycle evidence",
+    })
+  })
+
+  it("returns a rejected Frontier request to Socrates and removes the handover tool for the rest of the turn", async () => {
+    const requests: Array<Parameters<ModelProvider["stream"]>[0]> = []
+    let requestedHandover = false
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async generateStructured() {
+        return { output: {} as never }
+      },
+      async *stream(request) {
+        requests.push(request)
+        const toolNames = request.tools?.map((tool) => tool.name) ?? []
+        if (!requestedHandover && toolNames.includes("handover_to_frontier")) {
+          requestedHandover = true
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "provider_handover_rejected",
+              toolName: "handover_to_frontier",
+              input: { focus: "Resolve the remaining invariant" },
+            },
+          }
+          yield { type: "model.completed" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Socrates completed the task after the declined handover." }
+        yield { type: "model.completed" }
+      },
+    }
+    const streamed: SocratesAgentEvent[] = []
+    let approvalRequests = 0
+    const agent = new SocratesAgent(provider)
+
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openrouter",
+      modelId: "deepseek/deepseek-v4-flash",
+      runtimeConfig: {
+        providerId: "openrouter",
+        authMode: "api_key",
+        modelId: "deepseek/deepseek-v4-flash",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "approve_all",
+        sandboxMode: "danger_full_access",
+      },
+      frontierModelSettings: {
+        providerId: "openrouter",
+        authMode: "api_key",
+        modelId: "x-ai/grok-4.5",
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+      },
+      messages: [{ role: "user", content: "Resolve the lifecycle invariant and give me the result." }],
+      workspacePath: "/tmp",
+      stableCachePreludeSnapshot: { identitySections: {} },
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => {
+        approvalRequests += 1
+        return { decision: "rejected", reason: "Keep this turn on Socrates." }
+      },
+    })) {
+      streamed.push(event)
+    }
+
+    expect(approvalRequests).toBe(1)
+    expect(streamed.filter((event) => event.type === "approval.requested")).toHaveLength(1)
+    expect(streamed.some((event) => event.type === "agent.handover")).toBe(false)
+    expect(streamed).toContainEqual(
+      expect.objectContaining({
+        type: "tool.call.failed",
+        toolName: "handover_to_frontier",
+        error: expect.objectContaining({ code: "tool_approval_rejected" }),
+      }),
+    )
+    const handoverRequestIndex = requests.findIndex((request) =>
+      request.tools?.some((tool) => tool.name === "handover_to_frontier"),
+    )
+    const postRejectionRequests = requests.slice(handoverRequestIndex + 1)
+    expect(postRejectionRequests.length).toBeGreaterThan(0)
+    expect(postRejectionRequests.some((request) => JSON.stringify(request.messages).includes("The user declined the Frontier handover"))).toBe(true)
+    expect(postRejectionRequests.every((request) => !request.tools?.some((tool) => tool.name === "handover_to_frontier"))).toBe(true)
+    expect(streamed.filter((event) => event.type === "model.answer.delta").map((event) => event.text)).toEqual([
+      "Socrates completed the task after the declined handover.",
+    ])
+  })
+
+  it("preserves answer-before-completion ordering when Frontier is available but unused", async () => {
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream() {
+        yield { type: "model.answer.delta", text: "Ordinary streamed answer." }
+        yield { type: "model.completed" }
+      },
+    }
+    const agent = new SocratesAgent(provider)
+    const streamed: SocratesAgentEvent[] = []
+
+    for await (const event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "openrouter",
+      modelId: "deepseek/deepseek-v4-flash",
+      runtimeConfig: {
+        providerId: "openrouter",
+        authMode: "api_key",
+        modelId: "deepseek/deepseek-v4-flash",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "workspace_write",
+      },
+      frontierModelSettings: {
+        providerId: "openrouter",
+        authMode: "api_key",
+        modelId: "x-ai/grok-4.5",
+        thinkingEnabled: true,
+        thinkingEffort: "low",
+      },
+      messages: [{ role: "user", content: "Give an ordinary answer." }],
+      workspacePath: "/tmp",
+      stableCachePreludeSnapshot: { identitySections: {} },
+      toolExecutors: emptyToolExecutors(),
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      streamed.push(event)
+    }
+
+    const answerIndex = streamed.findIndex((event) => event.type === "model.answer.delta")
+    const completedIndex = streamed.findIndex((event) => event.type === "model.completed")
+    expect(answerIndex).toBeGreaterThanOrEqual(0)
+    expect(completedIndex).toBeGreaterThan(answerIndex)
   })
 
   it("loads the stable Socrates prelude even when structured memory routing is unavailable", async () => {
@@ -262,6 +542,7 @@ describe("SocratesAgent", () => {
       "apply_patch",
       "bash",
       "wait",
+      "handover_to_frontier",
       "current_time",
       "trace_retrieve",
       "tool_docs",
@@ -289,6 +570,34 @@ describe("SocratesAgent", () => {
         .find((tool) => tool.name === "edit")
         ?.inputSchema.safeParse({ path: "README.md", content: "new", oldString: "old", newString: "new" }).success,
     ).toBe(false)
+  })
+
+  it("always requires explicit approval for Frontier handover, including full-access mode", async () => {
+    const policy = await frontierHandoverTool.decidePolicy(
+      { focus: "Resolve the remaining invariant" },
+      {
+        runtimeConfig: {
+          providerId: "openrouter",
+          modelId: "deepseek/deepseek-v4-flash",
+          thinkingEnabled: false,
+          thinkingEffort: "none",
+          approvalMode: "approve_all",
+          sandboxMode: "danger_full_access",
+        },
+        frontierModel: { providerId: "openrouter", modelId: "x-ai/grok-4.5" },
+      } as Parameters<typeof frontierHandoverTool.decidePolicy>[1],
+    )
+
+    expect(policy).toEqual({
+      type: "approval_required",
+      request: {
+        actionKind: "other",
+        title: "Call Frontier model",
+        description: expect.stringContaining("x-ai/grok-4.5 through openrouter"),
+        actionPreview: "Focus: Resolve the remaining invariant",
+        risk: "medium",
+      },
+    })
   })
 
   it("ends the model turn immediately when wait registers a durable suspension", async () => {
@@ -815,8 +1124,8 @@ describe("SocratesAgent", () => {
         thinkingEnabled: false,
         thinkingEffort: "none",
       },
-      recordMemoryRouterUsage: (usage) => {
-        recordedRouterUsage.push(usage)
+      recordMemoryRouterRun: (run) => {
+        recordedRouterUsage.push(run)
       },
       messages: [{ role: "user", content: "Remember this project boundary, then inspect the repo." }],
       workspacePath: "/tmp",
@@ -843,10 +1152,17 @@ describe("SocratesAgent", () => {
     expect(recordedRouterUsage).toEqual([
       expect.objectContaining({
         phase: "pre_turn",
-        sourceId: "turn_1:memory_router:pre_turn:1",
+        status: "completed",
         providerId: "google",
         modelId: "gemini-3.3-flash-preview",
-        usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16, costUsd: 0.0001 },
+        usages: [{ inputTokens: 12, outputTokens: 4, totalTokens: 16, costUsd: 0.0001 }],
+      }),
+      expect.objectContaining({
+        phase: "post_evidence",
+        status: "completed",
+        providerId: "google",
+        modelId: "gemini-3.3-flash-preview",
+        usages: [],
       }),
     ])
     expect(projectDocsInputs).toEqual([

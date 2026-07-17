@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Route, Type } from "lucide-react";
+import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Route, Sparkles, Type } from "lucide-react";
 import type { ModelOption, ModelSettingsResolution, ModelThinkingOption, WorkerModelRole, WorkerModelSettings } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
@@ -35,6 +35,12 @@ const workers: Array<{
     title: "Memory Router",
     description: "Chooses project, repo, and profile recall before and after turns.",
     icon: Route,
+  },
+  {
+    id: "frontier",
+    title: "Frontier",
+    description: "Takes over a difficult task for the remainder of its current turn.",
+    icon: Sparkles,
   },
 ];
 

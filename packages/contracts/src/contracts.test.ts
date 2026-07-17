@@ -50,6 +50,7 @@ import {
   deleteProjectResourceResponseSchema,
   errorCreatedEventSchema,
   feedbackSubmitCommandSchema,
+  frontierHandoverToolInputSchema,
   getConversationResponseSchema,
   getMemoryAgentFileContentResponseSchema,
   getMeResponseSchema,
@@ -188,6 +189,7 @@ import {
   triggerMemoryAgentRunResponseSchema,
   listWorkerModelSettingsResponseSchema,
   workerModelSettingsParamsSchema,
+  agentModelHandoverEventSchema,
   conversationToolRunSchema,
   editToolOutputSchema,
 } from "./index"
@@ -1851,7 +1853,29 @@ describe("tool contracts", () => {
     ).toBe(true)
     expect(workerModelSettingsParamsSchema.safeParse({ workerId: "skill_writer" }).success).toBe(true)
     expect(workerModelSettingsParamsSchema.safeParse({ workerId: "memory_router" }).success).toBe(true)
+    expect(workerModelSettingsParamsSchema.safeParse({ workerId: "frontier" }).success).toBe(true)
     expect(workerModelSettingsParamsSchema.safeParse({ workerId: "unknown" }).success).toBe(false)
+    expect(frontierHandoverToolInputSchema.safeParse({}).success).toBe(true)
+    expect(frontierHandoverToolInputSchema.safeParse({ focus: "Resolve the lifecycle conflict" }).success).toBe(true)
+    expect(frontierHandoverToolInputSchema.safeParse({ focus: Array.from({ length: 21 }, () => "word").join(" ") }).success).toBe(false)
+    expect(frontierHandoverToolInputSchema.safeParse({ reason: "not part of the contract" }).success).toBe(false)
+    expect(
+      agentModelHandoverEventSchema.safeParse({
+        id: "evt_handover",
+        schemaVersion: 1,
+        timestamp,
+        type: "agent.model.handover",
+        payload: {
+          toolCallId: "tcall_handover",
+          stepIndex: 1,
+          fromProviderId: "openrouter",
+          fromModelId: "deepseek/deepseek-v4-flash",
+          toProviderId: "openrouter",
+          toModelId: "x-ai/grok-4.5",
+          focus: "Resolve the lifecycle conflict",
+        },
+      }).success,
+    ).toBe(true)
     expect(
       updateWorkerModelSettingsRequestSchema.safeParse({
         providerId: "openrouter",

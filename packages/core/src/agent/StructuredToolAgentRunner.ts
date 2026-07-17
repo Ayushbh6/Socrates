@@ -25,6 +25,7 @@ export type StructuredToolAgentRunInput<TOutput> = {
   abortSignal?: AbortSignal
   contextCompression?: ContextCompressionRuntime
   onModelEvent?: (event: ModelEvent) => void
+  onUsage?: (usage: ModelUsage) => void
   onToolResult?: (result: { toolCallId: string; toolName: string; input: unknown; output: unknown }) => void
 }
 
@@ -86,7 +87,10 @@ export class StructuredToolAgentRunner {
             ...(event.toolCall.providerMetadata ? { providerMetadata: event.toolCall.providerMetadata } : {}),
           })
         }
-        if (event.type === "model.usage") usages.push(event.usage)
+        if (event.type === "model.usage") {
+          usages.push(event.usage)
+          input.onUsage?.(event.usage)
+        }
         if (event.type === "model.failed") throw event.error
       }
       if (toolCalls.length === 0) break
@@ -139,7 +143,10 @@ export class StructuredToolAgentRunner {
         ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:structured-final:${attempt + 1}` } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       })
-      if (generated.usage) usages.push(generated.usage)
+      if (generated.usage) {
+        usages.push(generated.usage)
+        input.onUsage?.(generated.usage)
+      }
       const parsed = input.schema.safeParse(generated.output)
       if (parsed.success) {
         return { output: parsed.data, toolCalls: usedToolCalls, usages }

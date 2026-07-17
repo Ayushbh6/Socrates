@@ -153,6 +153,8 @@ const activeToolLabel = (tool: ToolTimelineItem): string => {
       return "Retrieving trace evidence";
     case "list_project_resources":
       return "Listing resources";
+    case "handover_to_frontier":
+      return "Calling Frontier model";
     default:
       return `Working on ${tool.displayName}`;
   }

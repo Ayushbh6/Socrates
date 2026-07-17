@@ -701,7 +701,7 @@ Current date/time is not injected into the Socrates system prompt. The read-only
 
 Main chat does not inject a per-turn wake-context block. Stable recall guidance belongs in the base prompt, and changing facts stay behind tools: `project_docs` for notes/memory, `repo_docs` for doctrine, `current_time` for date/time, `skills` for reusable workflows, and `mcp_registry` for MCP servers. The runtime must not inject hidden skill or MCP matches based on words in the user's prompt.
 
-The Memory Router keeps recall centered on curated docs instead of raw conversation search. Before model routing, the backend chunks the whole user prompt with the shared 500/150 Markdown-aware chunker, hybrid-searches at most 12 segments, and merges at most eight distinct memory sections. The pre-turn router may make at most three targeted `memory_search` calls and returns only exact file/section `readTargets`; it is strictly read-only. Every user request has one durable task scope across automatic Terminal wait/resume continuations. At genuine finalization, a bounded deterministic evidence overview is assembled from structured DB records, with opaque backend-created `evd_` references for drill-down. The final router always runs; there is no production `skip_candidate` decision. It plans reconciliation only, and Socrates performs and verifies exact project/repo doc changes before its answer is released. Backend-owned notes sections are not valid reconciliation targets, and one bounded validation-feedback retry repairs malformed structured router output.
+The Memory Router keeps recall centered on curated docs instead of raw conversation search. Before model routing, the backend chunks the whole user prompt with the shared 500/150 Markdown-aware chunker, hybrid-searches at most 12 segments, and merges at most eight distinct memory sections. The pre-turn router may make at most three targeted `memory_search` calls and returns only exact file/section `readTargets`; it is strictly read-only. Every user request has one durable task scope across automatic Terminal wait/resume continuations. At genuine finalization, a bounded deterministic evidence overview is assembled from structured DB records, with opaque backend-created `evd_` references for drill-down. The final router always runs; there is no production `skip_candidate` decision. It plans reconciliation only, and Socrates performs and verifies exact project/repo doc changes before its answer is released. Ordinary workspace-artifact restrictions such as "do not edit files" do not suppress bounded `.socrates` reconciliation unless the user semantically includes Socrates memory, project notes, internal state, `.socrates`, or all changes whatsoever. Backend-owned notes sections are not valid reconciliation targets, and one bounded validation-feedback retry repairs malformed structured router output.
 
 Always-apply rules are a tiny curated layer, not a new memory store. Treat them as one centralized always-apply rules list with two lanes: `user_profile.md` has a capped `Global Always-Apply Rules` section, and workspace project memory has a capped `Project Always-Apply Rules` section. Each section is limited to 10 human-readable rules. The backend assembles those two sections plus `core_identity`, `voice_and_presence`, and `relationship_to_user` into one bounded per-project snapshot. Unchanged file stats take the fast path; a changed file triggers content hashing and parsing, but same-content rewrites or changes outside the standing sections retain the cached snapshot. Only a changed standing-section hash rebuilds it, and the cache is bounded with least-recently-used eviction. The byte-stable prelude order is bounded identity core, global rules, project rules, then the compact map generated from `packages/contracts/src/socratesSurfaces.ts`. It is inserted before conversation/user text without five model-visible read calls even when structured Memory Router generation is unavailable. Router-selected standing targets and exact repeated dynamic targets are hard-deduplicated; only dynamic reads remain visible afterward.
 
@@ -791,7 +791,7 @@ current_time when truly needed
 
 It should not receive Terminal, arbitrary filesystem read/write, generic patch tools, identity/profile writes, project/repo docs writes, or raw path mutation tools.
 
-Settings exposes independent worker model selectors for Skill Writer, Context Compactor, Title Generator, and Memory Router. Each selector uses the normal model registry and thinking options, with defaults preserving the current production choices. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off.
+Settings exposes independent worker model selectors for Skill Writer, Context Compactor, Title Generator, Memory Router, and Frontier. Each selector uses the normal model registry and thinking options. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off. Frontier defaults to OpenRouter `x-ai/grok-4.5` with low reasoning; OpenRouter declares reasoning mandatory for that endpoint, so its selector exposes Low, Medium, and High rather than an invalid Off choice.
 
 Current Memory Router flow:
 
@@ -808,6 +808,27 @@ genuine finalization
   -> have Socrates read, mutate, and re-read each exact target
   -> block the final answer until every planned target is verified
   -> skip ordinary answers and already-represented facts
+```
+
+If a router phase remains invalid or fails after its one bounded repair, that memory phase is skipped without blocking the ordinary task. The backend persists one `errors` row and records any already-observed usage with failed status, phase, and error linkage. Socrates must not claim the failed recall or reconciliation succeeded; there is no retry queue.
+
+Current Frontier flow:
+
+```text
+default Socrates model begins every user-authored turn
+  -> handles normal work and tools itself
+  -> makes a real, substantive effort before treating Frontier as an exceptional fallback
+  -> only after a concrete unresolved capability/reliability blocker, calls handover_to_frontier alone
+  -> optional focus is at most 20 words and 160 characters
+  -> UI shows "Calling Frontier model" and pauses for explicit user approval in every permission mode
+  -> if rejected: persist the rejected tool/approval, remove handover for this turn, and tell Socrates to continue itself
+  -> if approved: discard provisional driver answer text
+  -> append the accepted handover result plus complete prior conversation/tool evidence
+  -> persist agent.model.handover and start a separate Frontier model_call
+  -> Frontier continues the same task and gives the sole final answer
+  -> no consult, reason, return handoff, or second transfer
+next user-authored turn
+  -> starts on the selected default Socrates model again
 ```
 
 `mcp_registry` is the model-visible MCP discovery and lifecycle tool. `list`, `describe`, and `check` are read/validation operations; `configure` and `delete` support project or global servers only after the normal approval UI. Chat configure accepts an exact user-supplied/trusted stdio command and model-visible `secretBindings` containing key names/source only. After approval, typed `credential.input.requested` UI collects one masked value at a time; plaintext crosses the local socket once, remains only in the active in-memory waiter/runtime call, and is never written to chat events, tool arguments/results, approval previews, or `mcp.json`. Multiple keys and multiple MCP configure calls remain sequential through the mutation lane. If the user explicitly requests reuse of an exact workspace env key, the backend checks presence and resolves that key privately; otherwise it prompts. Generic read/search/Terminal tools deny real env/private-key material. Configure stores secrets separately, saves disabled, performs the handshake/tool listing inside the approved operation, and enables only on success. The dashboard provides the same lifecycle through JSON/TOML import or manual setup, editing, persistent status/tool counts, blank-on-read secret fields, config-path copy/open actions, and deletion. Global servers are inherited by projects. The system prompt carries only concise registry-first guidance; dynamic `mcp__...` tools appear only after describe/check/configure exposes them.

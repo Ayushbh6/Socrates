@@ -456,6 +456,7 @@ export class ModelTelemetryStore extends StoreBase {
     startedAt?: string
     completedAt?: string
     usage?: StoredModelUsage
+    metadata?: Record<string, unknown>
   }): void {
     if (!input.usage) {
       return
@@ -473,6 +474,7 @@ export class ModelTelemetryStore extends StoreBase {
       ...(input.startedAt ? { startedAt: input.startedAt } : {}),
       ...(input.completedAt ? { completedAt: input.completedAt } : {}),
       usage: input.usage,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
     })
   }
 
@@ -598,6 +600,7 @@ export class ModelTelemetryStore extends StoreBase {
     startedAt?: string
     completedAt?: string
     usage: StoredModelUsage
+    metadata?: Record<string, unknown>
   }): void {
     this.handle.db
       .insert(modelUsage)
@@ -621,7 +624,7 @@ export class ModelTelemetryStore extends StoreBase {
         routedProvider: input.usage.routedProvider,
         pricingSnapshotJson: input.usage.pricingSnapshot === undefined ? undefined : JSON.stringify(input.usage.pricingSnapshot),
         rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
-        metadataJson: input.usage.providerMetadata === undefined ? undefined : JSON.stringify({ providerMetadata: input.usage.providerMetadata }),
+        metadataJson: usageMetadataJson(input.usage, input.metadata),
         createdAt: nowIso(),
       })
       .run()
@@ -661,6 +664,7 @@ export class ModelTelemetryStore extends StoreBase {
     startedAt?: string
     completedAt?: string
     usage: StoredModelUsage
+    metadata?: Record<string, unknown>
   }): void {
     const totalTokens =
       input.usage.totalTokens ??
@@ -692,7 +696,7 @@ export class ModelTelemetryStore extends StoreBase {
         routedProvider: input.usage.routedProvider,
         pricingSnapshotJson: input.usage.pricingSnapshot === undefined ? undefined : JSON.stringify(input.usage.pricingSnapshot),
         rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
-        metadataJson: input.usage.providerMetadata === undefined ? undefined : JSON.stringify({ providerMetadata: input.usage.providerMetadata }),
+        metadataJson: usageMetadataJson(input.usage, input.metadata),
         createdAt: nowIso(),
       })
       .onConflictDoUpdate({
@@ -712,7 +716,7 @@ export class ModelTelemetryStore extends StoreBase {
           routedProvider: input.usage.routedProvider,
           pricingSnapshotJson: input.usage.pricingSnapshot === undefined ? undefined : JSON.stringify(input.usage.pricingSnapshot),
           rawUsageJson: input.usage.raw === undefined ? undefined : JSON.stringify(input.usage.raw),
-          metadataJson: input.usage.providerMetadata === undefined ? undefined : JSON.stringify({ providerMetadata: input.usage.providerMetadata }),
+          metadataJson: usageMetadataJson(input.usage, input.metadata),
         },
       })
       .run()
@@ -730,6 +734,14 @@ export class ModelTelemetryStore extends StoreBase {
       )
       .all(turnId) as AiUsageEventRow[]
   }
+}
+
+const usageMetadataJson = (usage: StoredModelUsage, metadata?: Record<string, unknown>): string | undefined => {
+  const value = {
+    ...(usage.providerMetadata === undefined ? {} : { providerMetadata: usage.providerMetadata }),
+    ...(metadata ?? {}),
+  }
+  return Object.keys(value).length > 0 ? JSON.stringify(value) : undefined
 }
 
 type CostSource = "provider_reported" | "computed" | "unknown" | "mixed"

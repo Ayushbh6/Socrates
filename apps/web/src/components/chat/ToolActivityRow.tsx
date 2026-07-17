@@ -1,4 +1,4 @@
-import { ChevronDown, CircleAlert, Clock3, FileText, Pencil, Search, SquareTerminal, Workflow } from "lucide-react";
+import { ChevronDown, CircleAlert, Clock3, FileText, Pencil, Search, Sparkles, SquareTerminal, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { CredentialPrompt } from "./CredentialPrompt";
@@ -99,6 +99,8 @@ function ToolIcon({ tool, className }: { tool: ToolTimelineItem; className: stri
       return <SquareTerminal className={className} />;
     case "trace_retrieve":
       return <Workflow className={className} />;
+    case "handover_to_frontier":
+      return <Sparkles className={className} />;
     default:
       return <Workflow className={className} />;
   }
@@ -140,6 +142,18 @@ function summarizeTool(tool: ToolTimelineItem): string {
   }
   if (tool.toolName === "trace_retrieve") {
     return "Retrieved prior trace evidence";
+  }
+  if (tool.toolName === "handover_to_frontier") {
+    if (tool.status === "awaiting_approval") {
+      return "Calling Frontier model";
+    }
+    if (tool.status === "rejected") {
+      return "Frontier handover declined";
+    }
+    if (tool.status === "running") {
+      return "Connecting to Frontier model";
+    }
+    return "Frontier model took over";
   }
   if (tool.toolName === "list_project_resources") {
     return "Listed project resources";

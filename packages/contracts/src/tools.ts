@@ -10,6 +10,7 @@ export const baseToolNameSchema = z.enum([
   "apply_patch",
   "bash",
   "wait",
+  "handover_to_frontier",
   "current_time",
   "trace_retrieve",
   "tool_docs",
@@ -32,6 +33,27 @@ export const baseToolNameSchema = z.enum([
 export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
 export const toolNameSchema = z.union([baseToolNameSchema, dynamicMcpToolNameSchema])
 export type ToolName = z.infer<typeof toolNameSchema>
+
+export const frontierHandoverToolInputSchema = z
+  .object({
+    focus: z.string().trim().min(1).max(160).optional().describe("Optional compact focus for Frontier; at most 20 words."),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.focus && value.focus.split(/\s+/).length > 20) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["focus"], message: "focus must contain at most 20 words." })
+    }
+  })
+export type FrontierHandoverToolInput = z.infer<typeof frontierHandoverToolInputSchema>
+
+export const frontierHandoverToolOutputSchema = z
+  .object({
+    status: z.literal("accepted"),
+    focus: z.string().min(1).max(160).optional(),
+    message: z.string().min(1),
+  })
+  .strict()
+export type FrontierHandoverToolOutput = z.infer<typeof frontierHandoverToolOutputSchema>
 
 export const providerMetadataSchema = z.record(z.string(), z.record(z.string(), z.unknown()))
 export type ProviderMetadata = z.infer<typeof providerMetadataSchema>

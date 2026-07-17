@@ -10,7 +10,7 @@ import {
   type WorkerModelSettings,
 } from "@socrates/contracts"
 import type { ModelMessage, ModelProvider, ModelUsage } from "@socrates/providers"
-import { nowIso } from "@socrates/shared"
+import { normalizeError, nowIso } from "@socrates/shared"
 import { chunkMarkdown } from "../retrieval"
 import {
   buildPostTurnMemoryRouterUserContent,
@@ -20,7 +20,7 @@ import {
 } from "../prompts/memoryRoutingPrompt"
 import { createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry } from "../tools/registry"
 import type { ToolExecutors } from "../tools/types"
-import { StructuredToolAgentRunner } from "./StructuredToolAgentRunner"
+import { StructuredToolAgentRunner, type StructuredToolAgentRunInput } from "./StructuredToolAgentRunner"
 
 const MAX_ROUTER_TOOL_CALLS = 3
 const MAX_PREFETCH_SEGMENTS = 12
@@ -46,7 +46,18 @@ type MemoryRouterAgentBaseInput = {
   automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
   cacheKey?: string
   abortSignal?: AbortSignal
-  recordUsage?: (input: { phase: "pre_turn" | "post_evidence"; sourceId: string; providerId: RuntimeConfig["providerId"]; modelId: string; usage: ModelUsage; startedAt: string; completedAt: string }) => void | Promise<void>
+  recordRun?: (input: MemoryRouterRunRecord) => void | Promise<void>
+}
+
+export type MemoryRouterRunRecord = {
+  phase: "pre_turn" | "post_evidence"
+  status: "completed" | "failed"
+  providerId: RuntimeConfig["providerId"]
+  modelId: string
+  usages: ModelUsage[]
+  startedAt: string
+  completedAt: string
+  error?: { code: string; message: string; details?: unknown; recoverable: boolean }
 }
 
 export type MemoryRouterPreTurnInput = MemoryRouterAgentBaseInput
@@ -64,7 +75,7 @@ export class MemoryRouterAgent {
   async routePreTurn(input: MemoryRouterPreTurnInput): Promise<MemoryRouterPreTurnResult> {
     const prefetch = await automaticPrefetch(input.userMessage, input.automaticMemorySearch)
     const startedAt = nowIso()
-    const result = await this.runner.run({
+    return this.runRecorded(input, "pre_turn", startedAt, {
       provider: this.provider,
       providerId: input.modelSettings.providerId,
       modelId: input.modelSettings.modelId,
@@ -90,13 +101,11 @@ export class MemoryRouterAgent {
       ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:memory-router:pre-turn` } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     })
-    await recordUsages(input, "pre_turn", result.usages, startedAt)
-    return result.output
   }
 
   async routePostTurn(input: MemoryRouterPostTurnInput): Promise<MemoryRouterPostTurnResult> {
     const startedAt = nowIso()
-    const result = await this.runner.run({
+    return this.runRecorded(input, "post_evidence", startedAt, {
       provider: this.provider,
       providerId: input.modelSettings.providerId,
       modelId: input.modelSettings.modelId,
@@ -123,8 +132,51 @@ export class MemoryRouterAgent {
       ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:memory-router:post-evidence` } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
     })
-    await recordUsages(input, "post_evidence", result.usages, startedAt)
-    return result.output
+  }
+
+  private async runRecorded<TOutput>(
+    input: MemoryRouterAgentBaseInput,
+    phase: MemoryRouterRunRecord["phase"],
+    startedAt: string,
+    runInput: StructuredToolAgentRunInput<TOutput>,
+  ): Promise<TOutput> {
+    const observedUsages: ModelUsage[] = []
+    try {
+      const result = await this.runner.run<TOutput>({
+        ...runInput,
+        onUsage: (usage) => {
+          observedUsages.push(usage)
+        },
+      })
+      await input.recordRun?.({
+        phase,
+        status: "completed",
+        providerId: input.modelSettings.providerId,
+        modelId: input.modelSettings.modelId,
+        usages: result.usages,
+        startedAt,
+        completedAt: nowIso(),
+      })
+      return result.output
+    } catch (error) {
+      const normalized = normalizeError(error)
+      await input.recordRun?.({
+        phase,
+        status: "failed",
+        providerId: input.modelSettings.providerId,
+        modelId: input.modelSettings.modelId,
+        usages: observedUsages,
+        startedAt,
+        completedAt: nowIso(),
+        error: {
+          code: normalized.code,
+          message: normalized.message,
+          ...(normalized.details === undefined ? {} : { details: normalized.details }),
+          recoverable: normalized.recoverable,
+        },
+      })
+      throw error
+    }
   }
 }
 
@@ -168,23 +220,3 @@ const routerRuntimeConfig = (settings: MemoryRouterAgentModelSettings): RuntimeC
   approvalMode: "read_only_auto",
   sandboxMode: "read_only",
 })
-
-const recordUsages = async (
-  input: MemoryRouterAgentBaseInput,
-  phase: "pre_turn" | "post_evidence",
-  usages: ModelUsage[],
-  startedAt: string,
-): Promise<void> => {
-  if (!input.recordUsage) return
-  for (const [index, usage] of usages.entries()) {
-    await input.recordUsage({
-      phase,
-      sourceId: `${input.turnId}:memory_router:${phase}:${index + 1}`,
-      providerId: input.modelSettings.providerId,
-      modelId: input.modelSettings.modelId,
-      usage,
-      startedAt,
-      completedAt: nowIso(),
-    })
-  }
-}

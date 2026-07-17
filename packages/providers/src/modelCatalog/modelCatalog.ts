@@ -172,8 +172,8 @@ export const modelCatalog = [
     modelId: "x-ai/grok-4.5",
     label: "Grok 4.5",
     contextWindowTokens: 500000,
-    thinkingOptions: [offOption, onOption],
-    defaultThinkingOptionId: "off",
+    thinkingOptions: [effortOption("low"), effortOption("medium"), effortOption("high")],
+    defaultThinkingOptionId: "low",
   }),
   makeModel({
     providerId: "openrouter",

@@ -29,6 +29,8 @@ describe("memory agent prompt", () => {
     expect(memoryAgentBasePrompt).toContain("inspect the exact full Q&A parent")
     expect(memoryAgentBasePrompt).toContain("an authoritative memory opt-out")
     expect(memoryAgentBasePrompt).toContain("quoted examples, hypothetical text, or a discussion about memory opt-outs do not trigger the rule")
+    expect(memoryAgentBasePrompt).toContain("Keep workspace-artifact restrictions distinct from memory opt-outs")
+    expect(memoryAgentBasePrompt).toContain("does not by itself prohibit Socrates' internal project or global memory work")
     expect(memoryAgentBasePrompt).toContain("conservatively treat the entire source user message as opted out")
     expect(memoryAgentBasePrompt).toContain('close it with outcome="skipped"')
     expect(memoryAgentBasePrompt).toContain("The self-healing audit and skill-maturation duties never override this rule")

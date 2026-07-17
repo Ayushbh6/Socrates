@@ -891,6 +891,7 @@ export class SocratesStore {
     startedAt?: string
     completedAt?: string
     usage?: StoredModelUsage
+    metadata?: Record<string, unknown>
   }): void {
     this.modelTelemetry.recordConversationTitleUsage(input)
   }
@@ -907,6 +908,7 @@ export class SocratesStore {
     startedAt?: string
     completedAt?: string
     usage?: StoredModelUsage
+    metadata?: Record<string, unknown>
   }): void {
     this.modelTelemetry.recordMemoryRouterUsage(input)
   }

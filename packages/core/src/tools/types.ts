@@ -153,6 +153,10 @@ export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
   executors: ToolExecutors
   requestApproval: (request: ApprovalRequest) => Promise<ApprovalDecision>
   requestCredentialInput?: (request: CredentialInputRequest) => Promise<CredentialInputDecision>
+  frontierModel?: {
+    providerId: string
+    modelId: string
+  }
   modelCallId?: string | undefined
   stepIndex?: number | undefined
 }
@@ -164,6 +168,7 @@ export type ToolPolicyDecision =
 
 export type SocratesTool<TInput, TOutput> = ModelToolDefinition & {
   name: ToolName
+  displayName?: string
   modelInputSchema?: ModelToolDefinition["inputSchema"]
   resultSchema: NonNullable<ModelToolDefinition["resultSchema"]>
   permission: ToolPermission

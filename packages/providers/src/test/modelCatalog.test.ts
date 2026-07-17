@@ -155,7 +155,14 @@ describe("model catalog", () => {
     ])
     expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
     expect(modelCatalog.find((model) => model.modelId === "x-ai/grok-4.5")?.capabilities?.vision).toBe(true)
-    expect(modelCatalog.find((model) => model.modelId === "x-ai/grok-4.5")?.thinkingOptions.map((option) => option.id)).toEqual(["off", "on"])
+  })
+
+  it("does not expose an unsupported non-reasoning mode for Grok 4.5", () => {
+    const grok = modelCatalog.find((model) => model.modelId === "x-ai/grok-4.5")
+
+    expect(grok?.thinkingOptions.map((option) => option.id)).toEqual(["low", "medium", "high"])
+    expect(grok?.thinkingOptions.every((option) => option.enabled)).toBe(true)
+    expect(grok?.defaultThinkingOptionId).toBe("low")
   })
 
   it("matches the live OpenRouter reasoning controls for HY 3 and GLM 5.2", () => {

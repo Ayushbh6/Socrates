@@ -228,6 +228,8 @@ export const handleChatMessageSend = async (
   const promptContext = {
     ...store.getAgentContext(projectId),
   }
+  const configuredFrontier = store.getWorkerModelSetting("frontier")
+  const frontierModelSettings = store.resolveModelSettings(configuredFrontier, "frontier").effective
   const modelCallIds: string[] = []
   const latestUsageByModelCallId = new Map<string, ModelUsage>()
   const responseMetadataByModelCallId = new Map<string, unknown>()
@@ -252,6 +254,7 @@ export const handleChatMessageSend = async (
       modelId: runtimeConfig.modelId,
       runtimeConfig,
       memoryRouterModelSettings: store.getWorkerModelSetting("memory_router"),
+      ...(frontierModelSettings ? { frontierModelSettings } : {}),
       cacheKey: providerCacheKey(projectId, conversationId),
       messages: modelHistory,
       promptContext,
@@ -407,20 +410,39 @@ export const handleChatMessageSend = async (
         )
         return decision
       },
-      recordMemoryRouterUsage: async (usageEvent) => {
-        store.recordMemoryRouterUsage({
-          projectId,
-          conversationId,
-          sessionId: created.sessionId,
-          turnId: created.turnId,
-          sourceId: usageEvent.sourceId,
-          providerId: usageEvent.providerId,
-          modelId: usageEvent.modelId,
-          status: "completed",
-          startedAt: usageEvent.startedAt,
-          completedAt: usageEvent.completedAt,
-          usage: toStoredUsage(usageEvent.usage),
-        })
+      recordMemoryRouterRun: async (run) => {
+        const errorId = run.error
+          ? store.recordError({
+              conversationId,
+              sessionId: created.sessionId,
+              turnId: created.turnId,
+              source: "memory_router",
+              code: run.error.code,
+              message: run.error.message,
+              details: { phase: run.phase, modelId: run.modelId, routerDetails: run.error.details },
+              recoverable: run.error.recoverable,
+            })
+          : undefined
+        for (const [index, usage] of run.usages.entries()) {
+          store.recordMemoryRouterUsage({
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            sourceId: `${created.turnId}:memory_router:${run.phase}:${index + 1}`,
+            providerId: run.providerId,
+            modelId: run.modelId,
+            status: run.status,
+            startedAt: run.startedAt,
+            completedAt: run.completedAt,
+            usage: toStoredUsage(usage),
+            metadata: {
+              phase: run.phase,
+              ...(errorId ? { errorId } : {}),
+              ...(run.error ? { errorCode: run.error.code } : {}),
+            },
+          })
+        }
       },
       abortSignal: abortController.signal,
     })) {
@@ -428,6 +450,33 @@ export const handleChatMessageSend = async (
         suspended = true
         suspendedWait = agentEvent.wait
         break
+      }
+      if (agentEvent.type === "agent.handover") {
+        appendAndEmit(
+          emitEvent,
+          store,
+          makeEvent(
+            "agent.model.handover",
+            {
+              toolCallId: agentEvent.toolCallId,
+              stepIndex: agentEvent.stepIndex,
+              fromProviderId: agentEvent.fromProviderId,
+              fromModelId: agentEvent.fromModelId,
+              toProviderId: agentEvent.toProviderId,
+              toModelId: agentEvent.toModelId,
+              ...(agentEvent.focus ? { focus: agentEvent.focus } : {}),
+            },
+            {
+              projectId,
+              conversationId,
+              sessionId: created.sessionId,
+              turnId: created.turnId,
+              actor: { type: "system", label: "Frontier handover" },
+            },
+          ),
+          "core",
+        )
+        continue
       }
       if (
         agentEvent.type === "context.compaction.started" ||

@@ -259,6 +259,18 @@ export const agentAnswerDeltaPayloadSchema = z
   })
   .strict()
 
+export const agentModelHandoverPayloadSchema = z
+  .object({
+    toolCallId: idSchema,
+    stepIndex: z.number().int().nonnegative(),
+    fromProviderId: providerIdSchema,
+    fromModelId: z.string().min(1),
+    toProviderId: providerIdSchema,
+    toModelId: z.string().min(1),
+    focus: z.string().min(1).max(160).optional(),
+  })
+  .strict()
+
 export const toolCallCategorySchema = z.enum(["file", "search", "shell", "git", "patch", "resource", "trace", "mcp", "other"])
 
 export const toolCallStartedPayloadSchema = z
@@ -673,6 +685,7 @@ export const turnResumedEventSchema = socketEnvelopeSchema("turn.resumed", turnR
 export const conversationUpdatedEventSchema = socketEnvelopeSchema("conversation.updated", conversationUpdatedPayloadSchema)
 export const agentThinkingDeltaEventSchema = socketEnvelopeSchema("agent.thinking.delta", agentThinkingDeltaPayloadSchema)
 export const agentAnswerDeltaEventSchema = socketEnvelopeSchema("agent.answer.delta", agentAnswerDeltaPayloadSchema)
+export const agentModelHandoverEventSchema = socketEnvelopeSchema("agent.model.handover", agentModelHandoverPayloadSchema)
 export const toolCallStartedEventSchema = socketEnvelopeSchema("tool.call.started", toolCallStartedPayloadSchema)
 export const toolCallStreamingEventSchema = socketEnvelopeSchema("tool.call.streaming", toolCallStreamingPayloadSchema)
 export const toolCallOutputEventSchema = socketEnvelopeSchema("tool.call.output", toolCallOutputPayloadSchema)
@@ -743,6 +756,7 @@ export const serverEventSchema = z.discriminatedUnion("type", [
   conversationUpdatedEventSchema,
   agentThinkingDeltaEventSchema,
   agentAnswerDeltaEventSchema,
+  agentModelHandoverEventSchema,
   toolCallStartedEventSchema,
   toolCallStreamingEventSchema,
   toolCallOutputEventSchema,

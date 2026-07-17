@@ -38,8 +38,11 @@ describe("MemoryRouterAgent", () => {
   it("keeps genuine memory opt-outs out of recall routing and final reconciliation", () => {
     expect(PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("Interpret it from the full semantic meaning")
     expect(PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("treat the entire latest user message as opted out")
+    expect(PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("Keep workspace-artifact restrictions distinct from memory opt-outs")
+    expect(PRE_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("does not by itself opt content out")
     expect(POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("blocks reconciliation")
     expect(POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("Never preserve opted-out content indirectly")
+    expect(POST_TURN_MEMORY_ROUTER_SYSTEM_PROMPT).toContain("still allows bounded `.socrates` reconciliation")
   })
 
   it("prefetches the full prompt, caps explicit search at three calls, and returns exact routes", async () => {
@@ -125,6 +128,48 @@ describe("MemoryRouterAgent", () => {
       toolExecutors: {} as ToolExecutors,
     })).rejects.toMatchObject({ code: "structured_agent_output_invalid" })
     expect(structuredCalls).toBe(2)
+  })
+
+  it("records failed status and all observed usage after the bounded repair is exhausted", async () => {
+    const runs: unknown[] = []
+    const provider: ModelProvider = {
+      countTokens: async (request) => ({ providerId: request.providerId, modelId: request.modelId, inputTokens: 1, baseTokens: 1, method: "local_tiktoken", safetyMarginPercent: 0 }),
+      async *stream() {
+        yield { type: "model.usage", usage: { inputTokens: 3, outputTokens: 1, totalTokens: 4 } }
+        yield { type: "model.completed" }
+      },
+      async generateStructured() {
+        return {
+          output: { readTargets: [], reason: "" } as never,
+          usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+        }
+      },
+    }
+
+    await expect(
+      new MemoryRouterAgent(provider).routePreTurn({
+        ...context,
+        toolExecutors: {} as ToolExecutors,
+        recordRun: (run) => {
+          runs.push(run)
+        },
+      }),
+    ).rejects.toMatchObject({ code: "structured_agent_output_invalid" })
+
+    expect(runs).toEqual([
+      expect.objectContaining({
+        phase: "pre_turn",
+        status: "failed",
+        providerId: "deepseek",
+        modelId: "deepseek-v4-flash",
+        usages: [
+          { inputTokens: 3, outputTokens: 1, totalTokens: 4 },
+          { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+          { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
+        ],
+        error: expect.objectContaining({ code: "structured_agent_output_invalid", recoverable: true }),
+      }),
+    ])
   })
 
   it("repairs one invalid structured result using bounded validation feedback", async () => {

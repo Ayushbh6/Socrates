@@ -4,6 +4,7 @@ import { bashTool } from "./bashTool"
 import { currentTimeTool } from "./currentTimeTool"
 import { editTool } from "./editTool"
 import { editFilesTool } from "./editFilesTool"
+import { frontierHandoverTool } from "./frontierHandoverTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { memoryNoteTool } from "./memoryNoteTool"
 import { memoryNotesTool } from "./memoryNotesTool"
@@ -34,6 +35,7 @@ const tools = [
   applyPatchTool,
   bashTool,
   waitTool,
+  frontierHandoverTool,
   currentTimeTool,
   traceRetrieveTool,
   toolDocsTool,

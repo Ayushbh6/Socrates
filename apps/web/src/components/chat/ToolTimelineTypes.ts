@@ -53,6 +53,8 @@ export const displayNameForTool = (toolName: string): string => {
       return "Resources";
     case "mcp_registry":
       return "MCP Registry";
+    case "handover_to_frontier":
+      return "Calling Frontier model";
     default:
       if (toolName.startsWith("mcp__")) {
         return toolName.replace(/^mcp__/, "MCP ");

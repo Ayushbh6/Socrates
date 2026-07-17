@@ -1,4 +1,5 @@
 import {
+  frontierHandoverToolOutputSchema,
   normalizedToolCallSchema,
   toolExecutionResultSchema,
   waitToolOutputSchema,
@@ -19,7 +20,7 @@ import {
 import fs from "node:fs"
 import path from "node:path"
 import { createId, normalizeError, nowIso, SocratesError } from "@socrates/shared"
-import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage, TokenCountResult } from "@socrates/providers"
+import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, TokenCountResult } from "@socrates/providers"
 import {
   prepareContextForModelCall,
   precomputeContextSnapshot,
@@ -30,7 +31,7 @@ import { buildSocratesDynamicContext, buildSocratesSystemPrompt, type SocratesPr
 import { renderSocratesSurfaceMap } from "@socrates/contracts"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, CredentialInputDecision, CredentialInputRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
-import { MemoryRouterAgent } from "./MemoryRouterAgent"
+import { MemoryRouterAgent, type MemoryRouterRunRecord } from "./MemoryRouterAgent"
 
 export type SocratesAgentTurnInput = {
   projectId?: string
@@ -42,6 +43,7 @@ export type SocratesAgentTurnInput = {
   modelId: string
   runtimeConfig: RuntimeConfig
   memoryRouterModelSettings?: MemoryRouterModelSettings
+  frontierModelSettings?: FrontierModelSettings
   messages: ModelMessage[]
   promptContext?: SocratesPromptContext
   systemPromptOverride?: string
@@ -60,7 +62,7 @@ export type SocratesAgentTurnInput = {
   requestApproval?: (request: ApprovalRequest) => Promise<ApprovalDecision>
   requestCredentialInput?: (request: CredentialInputRequest) => Promise<CredentialInputDecision>
   stableCachePreludeSnapshot?: StableCachePreludeSnapshot
-  recordMemoryRouterUsage?: (input: MemoryRouterUsageRecord) => void | Promise<void>
+  recordMemoryRouterRun?: (input: MemoryRouterRunRecord) => void | Promise<void>
   automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
   contextCompression?: ContextCompressionRuntime
   maxToolCallsPerTurn?: number
@@ -81,16 +83,7 @@ export type StableCachePreludeSnapshot = {
 export type MemoryLoopPhase = "pre_turn" | "post_evidence"
 
 export type MemoryRouterModelSettings = Pick<WorkerModelSettings, "providerId" | "authMode" | "modelId" | "thinkingEnabled" | "thinkingEffort">
-
-export type MemoryRouterUsageRecord = {
-  phase: MemoryLoopPhase
-  sourceId: string
-  providerId: ProviderId
-  modelId: string
-  usage: ModelUsage
-  startedAt: string
-  completedAt: string
-}
+export type FrontierModelSettings = Pick<WorkerModelSettings, "providerId" | "authMode" | "modelId" | "thinkingEnabled" | "thinkingEffort">
 
 export type SocratesAgentContextPrecomputeInput = {
   providerId: ProviderId
@@ -101,7 +94,21 @@ export type SocratesAgentContextPrecomputeInput = {
   contextCompression: ContextCompressionRuntime
 }
 
-export type SocratesAgentEvent = ModelEvent | ToolLifecycleEvent | ContextCompactionLifecycleEvent | { type: "agent.suspended"; wait: WaitToolOutput }
+export type SocratesAgentEvent =
+  | ModelEvent
+  | ToolLifecycleEvent
+  | ContextCompactionLifecycleEvent
+  | { type: "agent.suspended"; wait: WaitToolOutput }
+  | {
+      type: "agent.handover"
+      toolCallId: string
+      stepIndex: number
+      fromProviderId: ProviderId
+      fromModelId: string
+      toProviderId: ProviderId
+      toModelId: string
+      focus?: string
+    }
 
 export class SocratesAgent {
   private readonly memoryRouterAgent: MemoryRouterAgent
@@ -153,6 +160,11 @@ export class SocratesAgent {
     let preTurnMemoryLoopSummary: string | undefined
     let finalReconciliationSent = false
     let accumulatedAnswerText = ""
+    let currentProviderId = input.providerId
+    let currentModelId = input.modelId
+    let currentRuntimeConfig = input.runtimeConfig
+    let handedOverToFrontier = isSameModelSelection(input.runtimeConfig, input.frontierModelSettings)
+    let frontierHandoverRejected = false
     const memoryFinalizationEnabled = canRunMemoryLoop(this.provider, input, this.toolRegistry)
     const reconciliationVerification = new ReconciliationVerificationLedger()
     let reconciliationReminderCount = 0
@@ -185,7 +197,19 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
 
     for (let step = 0; ; step += 1) {
       const dynamicTools = typeof input.dynamicTools === "function" ? input.dynamicTools() : input.dynamicTools
-      const tools = forceFinalNoTools || !input.toolExecutors ? [] : this.toolRegistry.modelDefinitions(dynamicTools)
+      const handoverAvailable = Boolean(
+        memoryFinalizationEnabled &&
+          !finalReconciliationSent &&
+          input.frontierModelSettings &&
+          !handedOverToFrontier &&
+          !frontierHandoverRejected,
+      )
+      const tools =
+        forceFinalNoTools || !input.toolExecutors
+          ? []
+          : this.toolRegistry
+              .modelDefinitions(dynamicTools)
+              .filter((tool) => tool.name !== "handover_to_frontier" || handoverAvailable)
       if (!docsPreflightSent && input.toolExecutors && input.workspacePath && tools.length > 0) {
         messages.push({ role: "developer", content: DOCS_PREFLIGHT_CHECKPOINT })
         docsPreflightSent = true
@@ -195,9 +219,9 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         try {
           return await prepareContextForModelCall({
             provider: this.provider,
-            providerId: input.providerId,
-            modelId: input.modelId,
-            runtimeConfig: input.runtimeConfig,
+            providerId: currentProviderId,
+            modelId: currentModelId,
+            runtimeConfig: currentRuntimeConfig,
             system,
             messages,
             tools,
@@ -246,9 +270,9 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         continue
       }
       const modelCallId = input.createModelCall?.({
-        providerId: input.providerId,
-        modelId: input.modelId,
-        runtimeConfig: input.runtimeConfig,
+        providerId: currentProviderId,
+        modelId: currentModelId,
+        runtimeConfig: currentRuntimeConfig,
         messages: preparedContext.messages,
         estimatedTokens: preparedContext.estimatedTokens,
         tokenCount: preparedContext.tokenCount,
@@ -263,8 +287,12 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
       // The first no-tool answer is a proposed draft. Hold its user-visible
       // deltas until the genuine task-finalization router has run.
       const suppressAnswerDeltas = docsLedger.requiresProjectMemoryReview() || (memoryFinalizationEnabled && !finalReconciliationSent && tools.length > 0)
+      const handoverToolExposed = tools.some((tool) => tool.name === "handover_to_frontier")
+      const bufferAnswerForPotentialHandover = handoverToolExposed && !suppressAnswerDeltas
+      const bufferedAnswerEvents: ModelEvent[] = []
+      const bufferedCompletionEvents: ModelEvent[] = []
       const preferredOpenRouterProvider =
-        input.providerId === "openrouter" ? openRouterPreferredProvidersByModel.get(input.modelId) : undefined
+        currentProviderId === "openrouter" ? openRouterPreferredProvidersByModel.get(currentModelId) : undefined
       const toolRunIdFor = (providerToolCallId: string): string => {
         const key = `${modelCallId ?? "model"}:${step}:${providerToolCallId}`
         const existing = toolRunIds.get(key)
@@ -277,14 +305,14 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
       }
 
       for await (const modelEvent of this.provider.stream({
-        providerId: input.providerId,
-        modelId: input.modelId,
+        providerId: currentProviderId,
+        modelId: currentModelId,
         ...(input.sessionId ? { sessionId: input.sessionId } : {}),
         ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
         ...(preferredOpenRouterProvider ? { providerRouting: { preferredOpenRouterProvider } } : {}),
         system,
         messages: preparedContext.messages,
-        runtimeConfig: input.runtimeConfig,
+        runtimeConfig: currentRuntimeConfig,
         tools,
         ...(modelCallId ? { modelCallId } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
@@ -295,16 +323,19 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
 
         if (modelEvent.type === "model.answer.delta") {
           stepText += modelEvent.text
-          accumulatedAnswerText += modelEvent.text
           if (suppressAnswerDeltas) {
+            continue
+          }
+          if (bufferAnswerForPotentialHandover) {
+            bufferedAnswerEvents.push(attachModelMetadata(modelEvent, modelCallId, step))
             continue
           }
         }
 
-        if (input.providerId === "openrouter" && (modelEvent.type === "model.usage" || modelEvent.type === "model.completed")) {
+        if (currentProviderId === "openrouter" && (modelEvent.type === "model.usage" || modelEvent.type === "model.completed")) {
           const routedProvider = modelEvent.usage?.routedProvider?.trim()
-          if (routedProvider && !openRouterPreferredProvidersByModel.has(input.modelId)) {
-            openRouterPreferredProvidersByModel.set(input.modelId, routedProvider)
+          if (routedProvider && !openRouterPreferredProvidersByModel.has(currentModelId)) {
+            openRouterPreferredProvidersByModel.set(currentModelId, routedProvider)
           }
         }
 
@@ -326,7 +357,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
               providerToolCallId: modelEvent.toolCallId,
               toolName: tool.name,
               category: tool.category,
-              displayName: tool.name,
+              displayName: tool.displayName ?? tool.name,
               ...(preview.argsPreview ? { argsPreview: preview.argsPreview } : {}),
               ...(preview.pathPreview ? { pathPreview: preview.pathPreview } : {}),
               ...(modelCallId ? { modelCallId } : {}),
@@ -353,7 +384,23 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           }
         }
 
+        if (bufferAnswerForPotentialHandover && modelEvent.type === "model.completed") {
+          bufferedCompletionEvents.push(attachModelMetadata(modelEvent, modelCallId, step))
+          continue
+        }
+
         yield attachModelMetadata(modelEvent, modelCallId, step)
+      }
+
+      const requestedHandover = toolCalls.find((toolCall) => toolCall.toolName === "handover_to_frontier")
+      if (!requestedHandover) {
+        accumulatedAnswerText += stepText
+        for (const event of bufferedAnswerEvents) {
+          yield event
+        }
+      }
+      for (const event of bufferedCompletionEvents) {
+        yield event
       }
 
       if (toolCalls.length === 0 && docsLedger.requiresProjectMemoryReview()) {
@@ -406,7 +453,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
                 sessionId: input.sessionId ?? "",
                 turnId: input.turnId ?? "",
                 workspacePath: input.workspacePath ?? "",
-                runtimeConfig: input.runtimeConfig,
+                runtimeConfig: currentRuntimeConfig,
                 ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
               },
             )
@@ -458,7 +505,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         throw new SocratesError("approval_handler_required", "Tool execution requires an approval handler")
       }
 
-      if (stepText) {
+      if (stepText && !requestedHandover) {
         assistantParts.push({ type: "text", text: stepText })
       }
       assistantParts.push(
@@ -479,12 +526,20 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           sessionId: input.sessionId ?? "",
           turnId: input.turnId ?? "",
           workspacePath: input.workspacePath,
-          runtimeConfig: input.runtimeConfig,
+          runtimeConfig: currentRuntimeConfig,
           executors: input.toolExecutors,
           requestApproval: input.requestApproval,
           requestCredentialInput:
             input.requestCredentialInput ??
             (async (request) => ({ decision: "cancelled" as const, source: request.source })),
+          ...(input.frontierModelSettings
+            ? {
+                frontierModel: {
+                  providerId: input.frontierModelSettings.providerId,
+                  modelId: input.frontierModelSettings.modelId,
+                },
+              }
+            : {}),
           modelCallId,
           stepIndex: step,
           ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
@@ -531,6 +586,52 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           output: sanitizeToolExecutionResultForModel(result, result.providerToolCallId ?? result.toolCallId),
         })),
       })
+      const rejectedHandover = execution.results.find(
+        (result) =>
+          result.ok === false &&
+          result.toolName === "handover_to_frontier" &&
+          result.error?.code === "tool_approval_rejected",
+      )
+      if (rejectedHandover) {
+        frontierHandoverRejected = true
+        messages.push({
+          role: "developer",
+          content: `<frontier_handover status="rejected">
+The user declined the Frontier handover. The handover tool is unavailable for the rest of this turn. Do not request it again. Continue and complete the task yourself using the work and evidence already gathered.
+</frontier_handover>`,
+        })
+      }
+      const acceptedHandover = execution.results.find(
+        (result) =>
+          result.ok === true &&
+          result.toolName === "handover_to_frontier" &&
+          frontierHandoverToolOutputSchema.safeParse(result.output).success,
+      )
+      if (acceptedHandover && input.frontierModelSettings) {
+        const parsedHandover = frontierHandoverToolOutputSchema.parse(acceptedHandover.output)
+        const fromProviderId = currentProviderId
+        const fromModelId = currentModelId
+        currentProviderId = input.frontierModelSettings.providerId
+        currentModelId = input.frontierModelSettings.modelId
+        currentRuntimeConfig = frontierRuntimeConfig(input.frontierModelSettings, currentRuntimeConfig)
+        handedOverToFrontier = true
+        messages.push({
+          role: "developer",
+          content: `<frontier_handover${parsedHandover.focus ? ` focus="${escapeXmlAttribute(parsedHandover.focus)}"` : ""}>
+You are Frontier and now own this task for the rest of the current turn. Continue from the complete conversation and tool history above; do not restart or repeat completed work. The prior model's provisional answer was discarded. Treat all gathered evidence and tool results as authoritative, perform any remaining work, and give the sole final user answer. You cannot hand this task back.
+</frontier_handover>`,
+        })
+        yield {
+          type: "agent.handover",
+          toolCallId: acceptedHandover.toolCallId,
+          stepIndex: step,
+          fromProviderId,
+          fromModelId,
+          toProviderId: currentProviderId,
+          toModelId: currentModelId,
+          ...(parsedHandover.focus ? { focus: parsedHandover.focus } : {}),
+        }
+      }
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
       docsLedger.recordBatch({ toolCalls, results: execution.results })
@@ -885,7 +986,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           providerToolCallId: toolCall.providerToolCallId,
           toolName: tool.name,
           category: tool.category,
-          displayName: tool.name,
+          displayName: tool.displayName ?? tool.name,
           argsPreview: previewJson(parsed.data),
           input: parsed.data,
           requiresApproval: false,
@@ -923,7 +1024,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         providerToolCallId: toolCall.providerToolCallId,
         toolName: tool.name,
         category: tool.category,
-        displayName: tool.name,
+        displayName: tool.displayName ?? tool.name,
         argsPreview: previewJson(parsed.data),
         input: parsed.data,
         requiresApproval: policy.type === "approval_required",
@@ -1159,6 +1260,28 @@ const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRout
     thinkingEffort: "none",
   }
 
+const isSameModelSelection = (runtimeConfig: RuntimeConfig, settings: FrontierModelSettings | undefined): boolean =>
+  Boolean(
+    settings &&
+      runtimeConfig.providerId === settings.providerId &&
+      runtimeConfig.modelId === settings.modelId &&
+      (runtimeConfig.authMode ?? "api_key") === (settings.authMode ?? "api_key") &&
+      runtimeConfig.thinkingEnabled === settings.thinkingEnabled &&
+      (runtimeConfig.thinkingEffort ?? undefined) === (settings.thinkingEffort ?? undefined),
+  )
+
+const frontierRuntimeConfig = (settings: FrontierModelSettings, current: RuntimeConfig): RuntimeConfig => ({
+  ...current,
+  providerId: settings.providerId,
+  authMode: settings.authMode ?? "api_key",
+  modelId: settings.modelId,
+  thinkingEnabled: settings.thinkingEnabled,
+  ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : { thinkingEffort: undefined }),
+})
+
+const escapeXmlAttribute = (value: string): string =>
+  value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+
 const memoryRouterBaseInput = (input: SocratesAgentTurnInput, messages: ModelMessage[]) => {
   if (!input.projectId || !input.conversationId || !input.sessionId || !input.turnId || !input.workspacePath || !input.toolExecutors) {
     throw new SocratesError("memory_router_context_unavailable", "Memory Router requires complete active-turn context.", { recoverable: true })
@@ -1178,7 +1301,7 @@ const memoryRouterBaseInput = (input: SocratesAgentTurnInput, messages: ModelMes
     ...(input.automaticMemorySearch ? { automaticMemorySearch: input.automaticMemorySearch } : {}),
     ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
     ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-    ...(input.recordMemoryRouterUsage ? { recordUsage: input.recordMemoryRouterUsage } : {}),
+    ...(input.recordMemoryRouterRun ? { recordRun: input.recordMemoryRouterRun } : {}),
   }
 }
 
@@ -1401,7 +1524,11 @@ const normalizeAlwaysApplyRules = (content: string | undefined): string => {
 const memoryLoopWarning = (phase: MemoryLoopPhase, warning: string): MemoryLoopRunResult => ({
   events: [],
   summary: `${phase}: memory loop warning: ${warning}`,
-  developerMessage: `<socrates_memory_loop phase="${phase}" status="warning">\n${warning}\nContinue normally, but do not claim memory was saved by the structured loop.\n</socrates_memory_loop>`,
+  developerMessage: `<socrates_memory_loop phase="${phase}" status="warning">\n${warning}\nContinue with the ordinary task. ${
+    phase === "pre_turn"
+      ? "Do not claim routed memory was successfully loaded."
+      : "Do not claim final memory reconciliation succeeded."
+  }\n</socrates_memory_loop>`,
 })
 
 const previewMemoryLoopOutput = (output: unknown): string => {

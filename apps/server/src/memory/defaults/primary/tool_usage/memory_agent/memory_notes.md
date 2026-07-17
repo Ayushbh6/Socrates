@@ -43,7 +43,7 @@ Each note is a human-readable notepad item. The backend attaches the source turn
 3. Use the returned project, conversation, turn, or message ids with `trace_retrieve` when the note needs exact evidence.
 4. Classify the note first: user profile, identity, skill proposal, or no durable action.
 5. Before any durable action, inspect the exact full Q&A parent and evaluate the full source user message. A note, excerpt, search chunk, or assistant paraphrase is not enough to authorize a write.
-6. Check for a genuine memory opt-out. Interpret intent semantically: quoted examples, hypotheticals, and discussion of opt-out behavior are not themselves opt-outs. Apply a clearly scoped opt-out only to that content; if scope is broad or ambiguous, treat the whole source message as opted out.
+6. Check for a genuine memory opt-out. Interpret intent semantically: quoted examples, hypotheticals, discussion of opt-out behavior, and ordinary workspace-artifact restrictions such as "do not edit files" are not themselves memory opt-outs. Apply a clearly scoped opt-out only to that content; if scope is broad or ambiguous, treat the whole source message as opted out. A workspace restriction suppresses memory only when the user includes Socrates memory, project notes, internal state, `.socrates`, or all changes whatsoever.
 7. Make the appropriate identity/profile edit or skill proposal only if evidence supports it and the content was not opted out.
 8. Mark the note done only after the relevant action is recorded, you confirm the memory is already represented, or you decide the note is not durable enough. Always include a compact `outcome` plus `resolution` saying what you did, what already covered it, or why you skipped it.
 <!-- /socrates:section -->

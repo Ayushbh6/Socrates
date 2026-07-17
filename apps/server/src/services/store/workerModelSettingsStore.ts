@@ -40,9 +40,17 @@ export const DEFAULT_WORKER_MODEL_SETTINGS: Record<WorkerModelRole, Omit<WorkerM
     modelId: "deepseek/deepseek-v4-flash",
     thinkingEnabled: false,
   },
+  frontier: {
+    workerId: "frontier",
+    providerId: "openrouter",
+    authMode: "api_key",
+    modelId: "x-ai/grok-4.5",
+    thinkingEnabled: true,
+    thinkingEffort: "low",
+  },
 }
 
-const workerOrder: WorkerModelRole[] = ["skill_writer", "context_compactor", "title_generator", "memory_router"]
+const workerOrder: WorkerModelRole[] = ["skill_writer", "context_compactor", "title_generator", "memory_router", "frontier"]
 
 export class WorkerModelSettingsStore extends StoreBase {
   ensureAll(): WorkerModelSettings[] {

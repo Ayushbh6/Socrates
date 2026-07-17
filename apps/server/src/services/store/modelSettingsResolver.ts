@@ -48,6 +48,11 @@ const CHATGPT_CODEX_ROLE_DEFAULTS: Record<"memory_agent" | WorkerModelRole, Omit
     thinkingEnabled: true,
     thinkingEffort: "low",
   },
+  frontier: {
+    modelId: "gpt-5.5",
+    thinkingEnabled: true,
+    thinkingEffort: "low",
+  },
   memory_agent: {
     modelId: "gpt-5.5",
     thinkingEnabled: true,
@@ -119,6 +124,8 @@ const modelRoleLabel = (role: ModelSettingsRole): string => {
       return "Title generator"
     case "memory_router":
       return "Memory router"
+    case "frontier":
+      return "Frontier"
   }
 }
 
@@ -141,7 +148,7 @@ export const resolveModelSettingsForAvailableModels = (
       model.modelId === savedSelection.modelId,
   )
   const preferred = chatGptCodexPreferredSettings(role, available.models)
-  if (preferred && (!selected || isBuiltInDefaultModelSelection(savedSelection, role))) {
+  if (preferred && (!selected || (role !== "frontier" && isBuiltInDefaultModelSelection(savedSelection, role)))) {
     return {
       status: "resolved_fallback",
       reason: `${modelRoleLabel(role)} is using the ChatGPT Codex default (${preferred.modelId}).`,
@@ -150,6 +157,19 @@ export const resolveModelSettingsForAvailableModels = (
     }
   }
   if (selected) {
+    const savedThinkingIsSupported = selected.thinkingOptions.some(
+      (option) =>
+        option.enabled === savedSelection.thinkingEnabled &&
+        (!option.enabled || savedSelection.thinkingEffort === undefined || option.effort === savedSelection.thinkingEffort),
+    )
+    if (!savedThinkingIsSupported) {
+      return {
+        status: "resolved_fallback",
+        reason: `${modelRoleLabel(role)} thinking setting is unavailable for ${selected.label}; using its supported default.`,
+        saved: savedSelection,
+        effective: modelSettingsFromOption(selected),
+      }
+    }
     return {
       status: "selected",
       saved: savedSelection,

@@ -2279,6 +2279,7 @@ describe("HTTP API", () => {
       "context_compactor",
       "title_generator",
       "memory_router",
+      "frontier",
     ])
     expect(listBody.data.settings.find((setting) => setting.workerId === "skill_writer")).toMatchObject({
       providerId: "openrouter",
@@ -2289,6 +2290,12 @@ describe("HTTP API", () => {
       providerId: "openrouter",
       modelId: "deepseek/deepseek-v4-flash",
       thinkingEnabled: false,
+    })
+    expect(listBody.data.settings.find((setting) => setting.workerId === "frontier")).toMatchObject({
+      providerId: "openrouter",
+      modelId: "x-ai/grok-4.5",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
     })
 
     await app.inject({
@@ -2373,6 +2380,13 @@ describe("HTTP API", () => {
       providerId: "openai",
       authMode: "chatgpt_subscription",
       modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
+    expect(resolutionByWorker.get("frontier")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.5",
       thinkingEnabled: true,
       thinkingEffort: "low",
     })
@@ -3620,6 +3634,303 @@ describe("WebSocket API", () => {
         expect(semantic.warnings?.join(" ")).toContain("Legacy trace-document semantic search is retired")
       } finally {
         await store.close()
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("persists a one-way Frontier handover with separate model calls and only Frontier's answer", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = path.dirname(dbPath)
+    fs.writeFileSync(path.join(socratesHome, ".env"), 'OPENAI_API_KEY="sk-test-openai"\nOPENROUTER_API_KEY="sk-or-test"\n', { mode: 0o600 })
+    const requests: Array<{ messages: unknown[]; tools?: Array<{ name: string }> }> = []
+    let handedOver = false
+    const provider: ModelProvider = {
+      countTokens: async (request) => ({
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens: 10,
+        baseTokens: 10,
+        method: "local_tiktoken",
+        safetyMarginPercent: 0,
+      }),
+      async generateStructured() {
+        return { output: {} as never }
+      },
+      async *stream(request) {
+        requests.push(request)
+        const toolNames = request.tools?.map((tool) => tool.name) ?? []
+        if (!toolNames.includes("handover_to_frontier") && (toolNames.includes("memory_search") || toolNames.includes("turn_evidence"))) {
+          const isPostEvidence = JSON.stringify(request.messages).includes("post-evidence")
+          yield {
+            type: "model.answer.delta",
+            text: JSON.stringify(
+              isPostEvidence
+                ? { actions: [], reason: "No durable update is needed." }
+                : { readTargets: [], reason: "No routed recall is needed." },
+            ),
+          }
+          yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } }
+          return
+        }
+        if (!handedOver && toolNames.includes("handover_to_frontier")) {
+          handedOver = true
+          yield { type: "model.answer.delta", text: "Discard this driver draft." }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "provider_frontier_handover",
+              toolName: "handover_to_frontier",
+              input: { focus: "Resolve the final concurrency invariant" },
+            },
+          }
+          yield { type: "model.completed", usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Frontier-only persisted answer." }
+        yield { type: "model.completed", usage: { inputTokens: 18, outputTokens: 5, totalTokens: 23 } }
+      },
+    }
+    const app = await buildTestServer(dbPath, new SocratesAgent(provider), { socratesHome })
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      const command = chatMessageCommand(project.id, conversation.id, "Solve the difficult concurrency problem without restarting your work.")
+      sendCommand(socket, {
+        ...command,
+        payload: {
+          ...command.payload,
+          runtimeConfig: {
+            providerId: "openrouter",
+            authMode: "api_key",
+            modelId: "deepseek/deepseek-v4-flash",
+            thinkingEnabled: false,
+            thinkingEffort: "none",
+            approvalMode: "manual",
+            sandboxMode: "workspace_write",
+          },
+        },
+      })
+
+      const approval = await waitForEvent(socket, "approval.requested")
+      expect(approval.payload).toMatchObject({
+        actionKind: "other",
+        title: "Call Frontier model",
+        description: expect.stringContaining("x-ai/grok-4.5 through openrouter"),
+        actionPreview: "Focus: Resolve the final concurrency invariant",
+        risk: "medium",
+      })
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "approval.decide",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { approvalId: approval.payload.approvalId, decision: "approved" },
+      })
+      await waitForEvent(socket, "approval.resolved")
+      const handover = await waitForEvent(socket, "agent.model.handover")
+      expect(handover.payload).toMatchObject({
+        fromProviderId: "openrouter",
+        fromModelId: "deepseek/deepseek-v4-flash",
+        toProviderId: "openrouter",
+        toModelId: "x-ai/grok-4.5",
+        focus: "Resolve the final concurrency invariant",
+      })
+      const messageCompleted = await waitForEvent(socket, "message.completed")
+      expect(messageCompleted.payload.message.content).toBe("Frontier-only persisted answer.")
+      await waitForEvent(socket, "turn.completed")
+
+      const driverRequest = requests.find((request) => request.tools?.some((tool) => tool.name === "handover_to_frontier"))
+      const frontierRequests = requests.filter((request) => (request as { modelId?: string }).modelId === "x-ai/grok-4.5")
+      expect(driverRequest?.tools?.map((tool) => tool.name)).toContain("handover_to_frontier")
+      expect(frontierRequests).toHaveLength(2)
+      expect(frontierRequests.every((request) => !request.tools?.some((tool) => tool.name === "handover_to_frontier"))).toBe(true)
+      expect(JSON.stringify(frontierRequests[0]?.messages)).toContain("Solve the difficult concurrency problem")
+      expect(JSON.stringify(frontierRequests[0]?.messages)).toContain("Resolve the final concurrency invariant")
+
+      const sqlite = new Database(dbPath)
+      try {
+        const calls = sqlite
+          .prepare("SELECT provider_id AS providerId, model_id AS modelId, status FROM model_calls ORDER BY started_at")
+          .all() as Array<{ providerId: string; modelId: string; status: string }>
+        expect(calls).toEqual([
+          { providerId: "openrouter", modelId: "deepseek/deepseek-v4-flash", status: "completed" },
+          { providerId: "openrouter", modelId: "x-ai/grok-4.5", status: "completed" },
+          { providerId: "openrouter", modelId: "x-ai/grok-4.5", status: "completed" },
+        ])
+        const handoverEvents = sqlite.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'agent.model.handover'").get() as { count: number }
+        expect(handoverEvents.count).toBe(1)
+      } finally {
+        sqlite.close()
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("persists a rejected Frontier approval and lets Socrates finish without offering the tool again", async () => {
+    const dbPath = tempDbPath()
+    const socratesHome = path.dirname(dbPath)
+    fs.writeFileSync(path.join(socratesHome, ".env"), 'OPENAI_API_KEY="sk-test-openai"\nOPENROUTER_API_KEY="sk-or-test"\n', { mode: 0o600 })
+    const requests: Array<{ modelId?: string; messages: unknown[]; tools?: Array<{ name: string }> }> = []
+    let requestedHandover = false
+    const provider: ModelProvider = {
+      countTokens: async (request) => ({
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens: 10,
+        baseTokens: 10,
+        method: "local_tiktoken",
+        safetyMarginPercent: 0,
+      }),
+      async generateStructured() {
+        return { output: {} as never }
+      },
+      async *stream(request) {
+        requests.push(request)
+        const toolNames = request.tools?.map((tool) => tool.name) ?? []
+        if (!requestedHandover && toolNames.includes("handover_to_frontier")) {
+          requestedHandover = true
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "provider_frontier_rejected",
+              toolName: "handover_to_frontier",
+              input: { focus: "Resolve the final lifecycle conflict" },
+            },
+          }
+          yield { type: "model.completed", usage: { inputTokens: 10, outputTokens: 3, totalTokens: 13 } }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Socrates finished after the declined Frontier request." }
+        yield { type: "model.completed", usage: { inputTokens: 12, outputTokens: 5, totalTokens: 17 } }
+      },
+    }
+    const app = await buildTestServer(dbPath, new SocratesAgent(provider), { socratesHome })
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Resolve the lifecycle conflict and report the result."))
+
+      const approval = await waitForEvent(socket, "approval.requested")
+      expect(approval.payload.title).toBe("Call Frontier model")
+      expect(approval.payload.actionPreview).toBe("Focus: Resolve the final lifecycle conflict")
+      sendCommand(socket, {
+        id: createId("evt"),
+        type: "approval.decide",
+        schemaVersion: 1,
+        timestamp: nowIso(),
+        projectId: project.id,
+        conversationId: conversation.id,
+        actor: { type: "user" },
+        payload: { approvalId: approval.payload.approvalId, decision: "rejected" },
+      })
+      const resolved = await waitForEvent(socket, "approval.resolved")
+      expect(resolved.payload.decision).toBe("rejected")
+      const messageCompleted = await waitForEvent(socket, "message.completed")
+      expect(messageCompleted.payload.message.content).toBe("Socrates finished after the declined Frontier request.")
+      await waitForEvent(socket, "turn.completed")
+
+      const handoverRequestIndex = requests.findIndex((request) =>
+        request.tools?.some((tool) => tool.name === "handover_to_frontier"),
+      )
+      const continuedRequests = requests.slice(handoverRequestIndex + 1)
+      expect(continuedRequests.length).toBeGreaterThan(0)
+      expect(continuedRequests.some((request) => JSON.stringify(request.messages).includes("The user declined the Frontier handover"))).toBe(true)
+      expect(continuedRequests.every((request) => !request.tools?.some((tool) => tool.name === "handover_to_frontier"))).toBe(true)
+
+      const sqlite = new Database(dbPath)
+      try {
+        const handoverEvents = sqlite.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'agent.model.handover'").get() as { count: number }
+        expect(handoverEvents.count).toBe(0)
+        const rejectedTool = sqlite
+          .prepare("SELECT status FROM tool_calls WHERE provider_tool_call_id = ?")
+          .get("provider_frontier_rejected") as { status: string } | undefined
+        expect(rejectedTool?.status).toBe("rejected")
+      } finally {
+        sqlite.close()
+      }
+    } finally {
+      socket.close()
+    }
+  })
+
+  it("continues the user task while persisting failed Memory Router errors and usage", async () => {
+    const dbPath = tempDbPath()
+    let mainCalls = 0
+    const provider: ModelProvider = {
+      countTokens: async (request) => ({
+        providerId: request.providerId,
+        modelId: request.modelId,
+        inputTokens: 10,
+        baseTokens: 10,
+        method: "local_tiktoken",
+        safetyMarginPercent: 0,
+      }),
+      async *stream(request) {
+        if (request.system.includes("Memory Router Agent")) {
+          yield { type: "model.usage", usage: { inputTokens: 4, outputTokens: 1, totalTokens: 5 } }
+          yield { type: "model.completed" }
+          return
+        }
+        mainCalls += 1
+        yield { type: "model.answer.delta", text: mainCalls === 1 ? "Suppressed draft." : "The ordinary task still completed." }
+        yield { type: "model.completed", usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } }
+      },
+      async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
+        return {
+          output: { readTargets: [], reason: "" } as TOutput,
+          usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
+        }
+      },
+    }
+    const app = await buildTestServer(dbPath, new SocratesAgent(provider))
+    await onboard(app)
+    const { project } = await createProject(app)
+    const conversation = await createConversation(app, project.id)
+    const socket = await connectWebSocket(app)
+    try {
+      await waitForEvent(socket, "connection.ready")
+      sendCommand(socket, chatMessageCommand(project.id, conversation.id, "Complete this ordinary task even if memory routing fails."))
+      const completed = await waitForEvent(socket, "message.completed")
+      expect(completed.payload.message.content).toBe("The ordinary task still completed.")
+      await waitForEvent(socket, "turn.completed")
+
+      const sqlite = new Database(dbPath)
+      try {
+        const errors = sqlite
+          .prepare("SELECT code, recoverable, details_json AS detailsJson FROM errors WHERE source = 'memory_router' ORDER BY created_at")
+          .all() as Array<{ code: string; recoverable: number; detailsJson: string }>
+        expect(errors).toHaveLength(2)
+        expect(errors.map((error) => error.code)).toEqual(["structured_agent_output_invalid", "structured_agent_output_invalid"])
+        expect(errors.map((error) => JSON.parse(error.detailsJson).phase)).toEqual(["pre_turn", "post_evidence"])
+
+        const usageRows = sqlite
+          .prepare("SELECT status, metadata_json AS metadataJson FROM ai_usage_events WHERE source_kind = 'memory_router' ORDER BY created_at")
+          .all() as Array<{ status: string; metadataJson: string }>
+        expect(usageRows).toHaveLength(6)
+        expect(usageRows.every((row) => row.status === "failed")).toBe(true)
+        expect(usageRows.map((row) => JSON.parse(row.metadataJson).phase)).toEqual([
+          "pre_turn",
+          "pre_turn",
+          "pre_turn",
+          "post_evidence",
+          "post_evidence",
+          "post_evidence",
+        ])
+        expect(usageRows.every((row) => Boolean(JSON.parse(row.metadataJson).errorId))).toBe(true)
+      } finally {
+        sqlite.close()
       }
     } finally {
       socket.close()
@@ -4933,6 +5244,7 @@ describe("WebSocket API", () => {
 	    const memoryNotesToolDoc = expectStructuredToolDoc(socratesHome, path.join("memory_agent", "memory_notes.md"))
 	    expect(memoryNotesToolDoc).toContain("inspect the exact full Q&A parent")
 	    expect(memoryNotesToolDoc).toContain("Interpret intent semantically")
+	    expect(memoryNotesToolDoc).toContain("ordinary workspace-artifact restrictions")
 	    const memoryTraceToolDoc = expectStructuredToolDoc(socratesHome, path.join("memory_agent", "trace_retrieve.md"))
 	    expect(memoryTraceToolDoc).toContain("cross-project scope")
 	    expect(memoryTraceToolDoc).toContain("Legacy `exact`")
