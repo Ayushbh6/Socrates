@@ -4,7 +4,7 @@ This document is the handshake between the frontend and backend workstreams.
 
 Both sides must build against this contract. The backend owns persistence, agent execution, providers, tools, approvals, and WebSocket event emission. The frontend owns routes, screens, user interactions, rendering, local view state, and event presentation.
 
-The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the V1 frontend/backend contract in human-readable form and must stay aligned with those schemas.
+The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the V1 Classic frontend/backend contract in human-readable form and records the implemented V2 Seamless Flow boundary. The complete V2 schemas live in the standalone `packages/contracts/src/v2Flow.ts` module; lifecycle policy lives in `V2_FLOW_ARCHITECTURE.md`.
 
 ## Contract Goals
 
@@ -36,6 +36,80 @@ The contract must also stay expandable for later:
 7. Future planner, worker, and sub-agent events should extend this event model, not replace it.
 8. Only one active turn may run per conversation at a time in V1. Different conversations may run active turns concurrently.
 
+## V1/V2 Contract Boundary
+
+Everything below remains the V1 Classic contract unless a section explicitly says otherwise.
+
+V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to V1 payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned persistence. Existing V1 clients continue to function without knowing V2 exists.
+
+`SOCRATES_V2_FLOW_ENABLED` is false for a directly constructed source server unless its value is exactly `true`. Direct source-server development must set it explicitly. The ordinary NPM/runtime-archive `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the Seamless welcome choice and retains an explicit rollback override.
+
+The implemented V2 families include:
+
+```text
+v2.flow.*
+v2.goal.*
+v2.turn.*
+v2.routing.*
+v2.context.*
+v2.evidence.*
+v2.speech.*
+```
+
+The exact entities, HTTP bodies, socket commands, socket events, and speech unions are in `packages/contracts/src/v2Flow.ts`. That module is not merged into the V1 command or event unions, so a V2 payload cannot be accidentally accepted by a Classic handler.
+
+V2 reuses the same normalized provider, tool semantics, approvals, Terminal supervisor, artifacts, usage normalization, errors, workspace `.socrates/`, global `~/.Socrates/`, MCP/skills, Memory Router implementation, and global Memory Agent. Conversation-owned records are persisted through V2 contracts and 29 `v2_*` tables. Ordinary V2 execution never creates a shadow Classic runtime merely to reuse an endpoint. The explicit bridge alone maps each focus to at most one Classic conversation/session and mirrors visible Q&A idempotently; tools, evidence, usage, and events remain V2-owned. Canonical V2 Q&A parents enter the shared retrieval index with `runtimeKind = "v2_flow"` and `flowId`; lexical/semantic/combined searches use that shared index, while queryless/inspect/audit resolve through V2-owned raw evidence.
+
+The implemented V2 Voice V1 configuration is:
+
+```ts
+type V2SpeechToTextProviderId = "local_whisper" | "openrouter"
+
+type V2LocalWhisperModelId = "small.en" | "base.en"
+
+type V2OpenRouterTranscriptionModelId =
+  | "nvidia/parakeet-tdt-0.6b-v3"
+  | "microsoft/mai-transcribe-1.5"
+  | "mistralai/voxtral-mini-transcribe"
+
+type V2TextToSpeechProviderId = "local_kokoro"
+type V2LocalTtsModelId = "kokoro-82m"
+```
+
+These are V2-only payloads, not V1 payload changes. The contracts carry engine/model ids, language, duration, status, errors, artifact references, transcript text, voice/speed, and hosted usage/cost metadata where available. Backend schema checks and route validation accept only the three hosted model ids above. There is no automatic cloud fallback after a local failure. Granite Speech and Ollama speech ids are invalid for this contract.
+
+### V2 HTTP And WebSocket Surface
+
+`GET /api/v2/capabilities` is always mounted so the frontend can render a truthful disabled state. Every mutating/read Flow and speech route plus `/v2/ws` is mounted only when V2 is enabled.
+
+```text
+POST /api/v2/projects/:projectId/flow
+GET  /api/v2/projects/:projectId/flow
+POST /api/v2/projects/:projectId/flows/:flowId/goals/:goalId/open-in-classic
+POST /api/v2/projects/:projectId/bridge/classic/:conversationId/continue
+GET  /api/v2/projects/:projectId/flows/:flowId/events
+GET  /api/v2/projects/:projectId/flows/:flowId/messages
+GET  /api/v2/projects/:projectId/flows/:flowId/context
+POST /api/v2/projects/:projectId/flows/:flowId/evidence/retrieve
+POST /api/v2/projects/:projectId/flows/:flowId/attachments/upload
+GET  /api/v2/projects/:projectId/flows/:flowId/attachments/:attachmentId/content
+
+GET    /api/v2/speech/packs
+GET    /api/v2/speech/packs/:packId
+POST   /api/v2/speech/packs/:packId/install
+DELETE /api/v2/speech/packs/:packId
+POST   /api/v2/projects/:projectId/flows/:flowId/speech/artifacts
+POST   /api/v2/projects/:projectId/flows/:flowId/speech/jobs
+GET    /api/v2/projects/:projectId/flows/:flowId/speech/jobs/:jobId
+GET    /api/v2/projects/:projectId/flows/:flowId/speech/artifacts/:artifactId/content
+
+WS /v2/ws
+```
+
+V2 client commands are `v2.flow.subscribe`, `v2.flow.unsubscribe`, `v2.message.send`, `v2.routing.clarification.respond`, `v2.focus.update`, `v2.turn.cancel`, `v2.approval.decide`, `v2.feedback.submit`, `v2.credential.input.submit`, and the `v2.terminal.stop/input/resize/rename` family. Focus actions are `switch`, `pause`, `finish`, `reopen`, `archive`, `pin`, and `unpin`. The live server emits connection/snapshot hydration, turns/messages, goal routing/clarification/capsules/transitions, context dispositions/compaction, tool/approval/credential/Terminal/error lifecycle, feedback, and Frontier handover. The contract also reserves typed `v2.artifact.created` and `v2.speech.job.updated` events; artifact/speech jobs are currently handled through HTTP. All envelopes carry schema version 2 plus project/Flow scope; runtime events use a `v2.` prefix.
+
+The V2 frontend routes are `/seamless` and `/seamless/projects/:projectId`. The Classic route family below is unchanged. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router may reuse the configured fast structured `title_generator` worker model selection, but it calls the strict V2 routing schema and is not a title rewrite.
+
 ## Route Contract
 
 Frontend routes:
@@ -53,7 +127,7 @@ Route meanings:
 
 | Route | Purpose | Primary data |
 | --- | --- | --- |
-| `/welcome` | Entry screen and onboarding redirect | `GET /api/me` |
+| `/welcome` | Entry/onboarding gate; Classic/Seamless chooser for an onboarded user | `GET /api/me`, `GET /api/v2/capabilities` |
 | `/onboarding` | Create local user profile | `POST /api/onboarding` |
 | `/projects` | List projects | `GET /api/projects` |
 | `/projects/new` | Create project and attach required workspace folder | `POST /api/projects` |
@@ -340,7 +414,7 @@ type SetProviderCredentialSessionRequest = {
 }
 ```
 
-`POST /api/provider-credentials/session` stores a secret in the running backend process so newly saved credentials are immediately usable. With `source = "local_file"`, the backend also writes the key to `~/.Socrates/.env`. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback. Keychain source remains compatibility-only while the desktop shell is dormant.
+`POST /api/provider-credentials/session` stores a secret in the running backend process so newly saved credentials are immediately usable. With `source = "local_file"`, the backend also writes the key to `~/.Socrates/.env`. It does not persist secrets to SQLite. Dev mode may use environment variables as fallback.
 
 `POST /api/provider-credentials/openai/chatgpt/oauth/start` starts the experimental ChatGPT Codex subscription auth flow and returns an authorization URL, state, redirect URI, and expiry. The local callback server completes the PKCE code exchange and stores token metadata under local credential storage. `DELETE /api/provider-credentials/openai/chatgpt` removes the stored ChatGPT Codex token metadata. OpenAI API keys and ChatGPT Codex tokens are separate auth modes.
 
@@ -2872,6 +2946,8 @@ Backend must not:
 ## Contract Change Rule
 
 The current frontend is wired to real backend APIs and WebSocket events. Do not reintroduce frontend-only mock shapes or route-specific duplicate payload types.
+
+V2 work follows the same contract-first rule inside its namespace. It must also add a V1 regression assertion: with the V2 feature flag disabled, existing V1 HTTP responses, WebSocket commands/events, persistence writes, and frontend behavior remain unchanged.
 
 When a field, endpoint, command, or event changes:
 

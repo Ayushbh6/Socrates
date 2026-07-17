@@ -22,7 +22,8 @@
   "dependencies": {
     "@socrates/contracts": "workspace:*",
     "@socrates/providers": "workspace:*",
-    "@socrates/shared": "workspace:*"
+    "@socrates/shared": "workspace:*",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^20",

@@ -1,7 +1,7 @@
 import type { ChatMessageSendPayload, Message } from "@socrates/contracts"
 import { createId, nowIso, SocratesError } from "@socrates/shared"
 import { and, eq } from "drizzle-orm"
-import { conversations, messages, sessions, turns } from "../../db/schema"
+import { conversations, messages, sessions, turns, v2ClassicConversationBridges } from "../../db/schema"
 import { mapMessage } from "../../db/mappers"
 import { activeTurnStatuses, defaultConversationTitle, deriveConversationTitle, StoreBase } from "./shared"
 import type { CreatedTurn } from "./types"
@@ -19,6 +19,15 @@ export class TurnStore extends StoreBase {
 
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
     const conversation = this.mustGetConversationRow(projectId, conversationId)
+    const seamlessBridge = this.handle.db.select().from(v2ClassicConversationBridges)
+      .where(eq(v2ClassicConversationBridges.conversationId, conversationId)).limit(1).get()
+    if (seamlessBridge?.activeOwner === "v2") {
+      throw new SocratesError(
+        "classic_focus_owned_by_seamless",
+        "This bridged focus is currently owned by Seamless View. Use Open in Classic from its Focus ledger before sending here.",
+        { recoverable: true },
+      )
+    }
     const content = payload.content.trim()
     const attachmentIds = payload.attachmentIds ?? []
     if (!content && attachmentIds.length === 0) {

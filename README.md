@@ -33,6 +33,11 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 - Runtime release milestone: **v0.1.18**.
 - Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.18** for npm publish.
 - Runtime availability for macOS (arm64/x64) and Windows x64.
+- The welcome chooser keeps **Classic View (V1)** intact and opens **Seamless View (V2)** as a separate web experience.
+- Seamless View provides one persistent Flow per project, bounded foreground/parked goals, versioned capsules, pruned working context, and immutable retrievable evidence.
+- Each Seamless focus maps explicitly to one Classic conversation, so **Open in Classic** and **Continue in Seamless** preserve the same visible Q&A without merging the two runtimes.
+- V2 inherits the same providers, Socrates agent, tools, approvals, Terminals, MCP servers, skills, Memory Router, Global Memory Agent, workspace `.socrates/`, and global `~/.Socrates/` foundation as Classic.
+- Voice V1 provides explicit local Whisper `base.en`/`small.en` STT, local Kokoro read-aloud, or the three allowlisted OpenRouter transcription models; local failures never silently upload audio.
 - Ollama can serve local chat models from the normal model picker when the local Ollama runtime is reachable.
 - Trace retrieval upgraded for broader match windows and exact quote context.
 - Duplicate tool-call handling added to avoid repeated identical retrieval passes in one turn.
@@ -62,13 +67,13 @@ node apps/cli/bin/socrates.mjs --version
 
 ## Local Development
 
-For browser-based dev testing, run the backend and frontend directly. Do not use the desktop/Tauri command for normal app testing.
+Run the normal backend and web frontend directly. Native desktop/Tauri delivery has been discarded and is not a supported development or release path.
 
 Terminal 1:
 
 ```bash
 pnpm install
-pnpm --filter @socrates/server dev
+SOCRATES_V2_FLOW_ENABLED=true pnpm --filter @socrates/server dev
 ```
 
 Terminal 2:
@@ -80,13 +85,9 @@ pnpm --filter web dev
 Useful build targets:
 
 ```bash
-pnpm desktop:dev        # desktop/Tauri shell only; not the normal dev-test path
-pnpm desktop:runtime    # build runtime payload
+pnpm runtime:build      # build the normal backend/frontend runtime
 pnpm runtime:archive    # generate runtime zip
-pnpm desktop:bundle     # local bundling artifacts
-pnpm desktop:release:local
-pnpm desktop:bundle:mac
-pnpm desktop:bundle:windows
+pnpm runtime:smoke      # verify packaged runtime retrieval dependencies
 ```
 
 ## Runtime Location
@@ -105,7 +106,6 @@ Use `SOCRATES_HOME` to point the workspace to a custom root or `SOCRATES_DB_PATH
 apps/
   web/       Next.js interface, conversations, project views, settings
   server/    Fastify APIs, WebSockets, tool coordination, persistence
-  desktop/   Tauri host shell and runtime packaging
 
 packages/
   core/      agent orchestration and context logic

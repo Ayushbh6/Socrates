@@ -4,31 +4,24 @@ This document is the source of truth for the current Socrates repo structure. So
 
 ## Current Shape
 
-Current product distribution is the NPM CLI launching the packaged web/server runtime. `apps/desktop` is retained as dormant historical/future shell code; runtime packaging is owned by root `scripts/runtime/`, and no current feature depends on Tauri or Rust.
+Current product and supported distribution are the normal web frontend plus backend, with the NPM CLI launching the packaged web/server runtime. Runtime packaging is owned by root `scripts/runtime/`.
 
 ```text
 Socrates/
   apps/
-    desktop/
-      package.json
-      scripts/
-        dev-services.mjs
-      src-tauri/
-        Cargo.toml
-        tauri.conf.json
-        src/
-      static/
-
     web/
       src/
         app/
           welcome/
           onboarding/
           projects/
+          seamless/
         components/
           chat/
+          v2/
         hooks/
         lib/
+          v2/
 
     server/
       scripts/
@@ -41,10 +34,15 @@ Socrates/
         http/
         routes/
           httpRoutes.ts
+          v2FlowRoutes.ts
+          v2SpeechRoutes.ts
         services/
           store.ts
           store/
+          v2/
         test/
+          v2*.test.ts
+        v2/
         ws/
           websocket.ts
           activeTurns.ts
@@ -60,6 +58,7 @@ Socrates/
         prompts/
         tools/
         test/
+        v2/
 
     workspace/
       src/
@@ -89,6 +88,7 @@ Socrates/
         http.ts
         models.ts
         websocket.ts
+        v2Flow.ts
         contracts.test.ts
 
     shared/
@@ -105,6 +105,7 @@ Socrates/
     PROVIDER_USAGE.md
     REPO_STRCUTURE.md
     REPO_RULES.md
+    V2_FLOW_ARCHITECTURE.md
 
   scripts/
     runtime/
@@ -117,6 +118,36 @@ Socrates/
 ```
 
 Root `scripts/` owns opt-in maintenance, packaging, benchmark, and evaluation entrypoints that are not application runtime modules; a package-specific runner may live under that package's `scripts/` directory when it needs package-owned dependencies. Evaluation fixtures and durable summarized findings live under a matching `evals/<name>/` directory. The Memory Router gate experiment follows this boundary: its runner lives outside server `src`, is invoked only by `pnpm eval:memory-router-gate`, uses a synthetic dataset, and records the rejected production decision in a report while raw provider result JSON is ignored. Nothing under that experiment is imported by the server, web app, CLI, or runtime archive.
+
+## Implemented V2 Flow Isolation
+
+`V2_FLOW_ARCHITECTURE.md` defines the experimental product path that is implemented separately from V1 Classic while respecting the existing package boundaries.
+
+The implementation uses namespaced modules inside the owning packages:
+
+```text
+apps/web/src/app/seamless + components/v2 + lib/v2
+  -> separate Flow routes, UI, reducer, API/socket, and voice hooks
+
+apps/server/src/routes/v2* + src/v2 + services/v2
+  -> V2 HTTP/WebSocket transport, Flow/Terminal runtime, stores, context maintenance, speech, feature flag
+
+packages/core/src/v2
+  -> V2 Goal Router, Flow orchestrator, context ledger, Context Distiller integration
+
+packages/contracts/src/v2Flow.ts
+  -> V2-only schemas, commands, events, and entity types
+
+packages/providers
+  -> shared provider and embedding adapters, no V2 fork
+
+packages/workspace
+  -> shared tools and workspace operations, no V2 fork
+```
+
+There is no second provider layer, workspace layer, duplicate low-level tool set, or duplicate semantic index. V2 calls the same Socrates agent, provider/model catalog, workspace `.socrates/`, global `~/.Socrates/`, Memory Router/Memory Agent, tools, ZIP skill import, MCP registry, workspace operations, and LanceDB retrieval foundation through adapters. Canonical Flow Q&A rows carry `runtimeKind = "v2_flow"` plus `flowId`; raw inspect/audit remains V2-owned. The separate orchestration and contract path keeps V2 policy out of the V1 chat runtime; conversation-owned state uses the 29-table `v2_*` namespace. The only Classic write is the explicit one-focus/one-conversation bridge, which mirrors visible messages without duplicating runtime evidence. Goal titles and materiality-gated rich capsules are deterministic; the Goal Router may reuse the configured fast `title_generator` worker model selection, but V2 never invokes the Classic title-rewrite service or adds a capsule-writing model.
+
+A directly constructed source server resolves `SOCRATES_V2_FLOW_ENABLED` to false unless it is exactly `true`; only `/api/v2/capabilities` remains mounted to report availability. The ordinary NPM/runtime `scripts/runtime/launcher.mjs` passes an explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes Classic/Seamless and retains a rollback override. V1 behavior must continue to be regression-tested whenever V2 code changes.
 
 ## Package Responsibilities
 
@@ -202,29 +233,6 @@ useApprovals()
 useContextUsage()
 ```
 
-### `apps/desktop`
-
-The native desktop shell.
-
-It owns:
-
-- Tauri configuration.
-- Desktop window metadata.
-- Desktop development launch scripts.
-- Desktop bundling glue.
-- Static placeholder shell assets used by Tauri when the web dev URL is not active.
-- Release packaging glue for signed DMG/NSIS artifacts, updater metadata, install scripts, and OS keychain commands.
-
-It must not own:
-
-- Agent decision logic.
-- Provider adapters.
-- Workspace filesystem or shell operations.
-- HTTP/WebSocket contract definitions.
-- Independent Socrates persistence.
-
-The desktop shell is dormant and wraps the existing `apps/web` and `apps/server` runtime only when explicitly reactivated. Durable app data remains server-owned. Current packaged runtime assembly and archives come from root `scripts/runtime/`; the compatibility desktop wrapper delegates there instead of maintaining a second builder.
-
 ### `apps/cli`
 
 The npm launcher package.
@@ -237,7 +245,7 @@ It owns:
 
 It must not own agent logic, provider logic, workspace operations, persistence, or frontend UI behavior.
 
-The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Runtime asset lookup should prefer direct GitHub Release download URLs and use REST release metadata only as a fallback, because public `npx` installs may hit unauthenticated GitHub API rate limits. Windows extraction should use `tar.exe` first and PowerShell `Expand-Archive` only as a fallback. Runtime zip creation must archive direct root entries such as `launcher.mjs` and `manifest.json`, not `.` or a wrapper directory, so older npm launchers can extract the latest GitHub runtime reliably. Keep installer/extraction optimization inside the CLI/desktop packaging layer, not in agent/workspace packages.
+The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>` pins a specific tag. Runtime asset lookup should prefer direct GitHub Release download URLs and use REST release metadata only as a fallback, because public `npx` installs may hit unauthenticated GitHub API rate limits. Windows extraction should use `tar.exe` first and PowerShell `Expand-Archive` only as a fallback. Runtime zip creation must archive direct root entries such as `launcher.mjs` and `manifest.json`, not `.` or a wrapper directory, so older npm launchers can extract the latest GitHub runtime reliably. Keep installer/extraction optimization inside the CLI/runtime packaging layer, not in agent/workspace packages.
 
 Release/package-manager tooling is pinned to the proven `pnpm@9.15.1` runtime-build path. Runtime release publishing recreates the tag release and uploads each archive explicitly so stale partial drafts are discarded. Runtime archives still bundle Node v20.20.2. Local runtime archive builds support pnpm 10+ by adding legacy deploy and native build-script allowance only when the builder detects a newer pnpm major. GitHub Windows shell/runtime jobs should use `windows-2022`; `windows-latest` currently maps to Windows Server 2025 / VS 2026 and breaks `node-gyp` Visual Studio detection for native dependencies. Shell Tooling keeps Windows install/typecheck plus contracts/workspace/core tests, and runs server PTY/WebSocket tests on Ubuntu only because they assume POSIX bash/PTY behavior.
 
@@ -524,6 +532,7 @@ It owns:
 - Internal embedding provider interface.
 - Vercel AI SDK adapter.
 - Native Ollama chat adapter and dynamic local model discovery.
+- Shared OpenRouter credential resolution used by the V2 speech service; speech adapters themselves remain in `apps/server/src/services/v2/speech.ts` for this first cut and do not enter `ModelProvider`.
 - Provider/model registry, including auth-mode-specific catalog entries.
 - Provider config loading and credential-auth resolution.
 - Provider-aware request token counting with local tokenizer fallback, safety-margin metadata, and provider-exact counting where available.
@@ -534,6 +543,8 @@ The agent core should call only the internal provider interface. Runtime model i
 Ollama chat model discovery is dynamic and server-owned. The backend refreshes `/api/models` from installed local Ollama metadata, filters out embedding-only models, exposes discovered chat-capable models to the composer, worker model settings, title generation, Memory Router, and Global Memory Agent, and never pulls or installs models during discovery.
 
 Embedding generation for trace documents stays behind provider abstractions. Chat turns do not import or call embedding SDKs directly. The semantic phase added a provider-agnostic `EmbeddingProvider` boundary in `packages/providers`, separate from the chat `ModelProvider`.
+
+V2 speech uses another independent boundary rather than forcing audio through `ModelProvider` or Ollama. The first implementations are `local_whisper`, OpenRouter transcription, and `local_kokoro`. Local Whisper exposes `small.en` plus optional `base.en`; OpenRouter accepts only `nvidia/parakeet-tdt-0.6b-v3`, `microsoft/mai-transcribe-1.5`, and `mistralai/voxtral-mini-transcribe`; local Kokoro uses Kokoro-82M through `sherpa-onnx`. Provider discovery, local runtime details, and raw provider responses stay behind the adapter. `apps/web` receives normalized model availability and job state and must never call OpenRouter or local speech runtimes directly. Granite Speech and Ollama speech are not V2 Voice V1 implementations.
 
 The first embedding phase supports two first-class choices:
 
@@ -790,3 +801,5 @@ New work should extend the existing packages rather than creating parallel paths
 6. Keep `apps/web` as route, component, hook, and rendering code only.
 7. Keep trace indexing, trace document persistence, inspect-handle resolution, and conversation-history retrieval in `apps/server/src/services/store/` or focused server-side indexing modules.
 8. Keep embedding generation behind `packages/providers`; do not call embedding provider SDKs directly from routes, WebSocket handlers, or frontend code.
+9. Treat V2 Flow as the explicit exception to "no parallel paths" only at the orchestration, contract, transport, and state-ownership layers. It must remain separate from V1 while reusing the existing low-level providers, tools, Terminal, workspace, retrieval, artifacts, validation, and usage plumbing.
+10. Keep all V2 modules, tables, endpoints, events, and tests clearly namespaced and feature-flagged. Do not migrate existing V1 conversations or insert V2 state into V1 conversation fields.

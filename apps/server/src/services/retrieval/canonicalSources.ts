@@ -10,6 +10,8 @@ const SKIPPED_MEMORY_SECTION_IDS = new Set(["always_apply_rules", "global_always
 const LOW_PRIORITY_MEMORY_SECTION_IDS = new Set(["runtime_context", "legacy_content", "scratch_notes", "completed_archive"])
 
 type CanonicalTurnRow = {
+  runtimeKind: "classic" | "v2_flow"
+  flowId: string
   projectId: string
   conversationId: string
   conversationTitle: string | null
@@ -38,7 +40,7 @@ type CanonicalMemorySectionRow = {
 export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string, turnId?: string): RetrievalIndexRow[] => {
   const placeholders = INDEXED_TURN_STATUSES.map(() => "?").join(",")
   const conversationPlaceholders = VISIBLE_CONVERSATION_STATUSES.map(() => "?").join(",")
-  const rows = handle.sqlite
+  const classicRows = handle.sqlite
     .prepare(
       `WITH numbered_turns AS (
          SELECT t.id AS turnId,
@@ -59,7 +61,9 @@ export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string
            AND c.status IN (${conversationPlaceholders})
            AND t.status IN (${placeholders})
        )
-       SELECT nt.*,
+       SELECT 'classic' AS runtimeKind,
+              '' AS flowId,
+              nt.*,
               um.content AS userContent,
               am.content AS assistantContent
        FROM numbered_turns nt
@@ -70,7 +74,44 @@ export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string
     )
     .all(projectId, ...VISIBLE_CONVERSATION_STATUSES, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[]
 
-  return rows.flatMap((row) => traceChunksForTurn(row))
+  const v2Rows = handle.sqlite
+    .prepare(
+      `WITH numbered_v2_turns AS (
+         SELECT t.id AS turnId,
+                t.flow_id AS flowId,
+                t.status AS turnStatus,
+                t.started_at AS startedAt,
+                t.completed_at AS completedAt,
+                t.failed_at AS failedAt,
+                t.cancelled_at AS cancelledAt,
+                COALESCE(t.user_message_id, root_turn.user_message_id) AS userMessageId,
+                t.assistant_message_id AS assistantMessageId,
+                f.project_id AS projectId,
+                COALESCE('Seamless Flow · ' || NULLIF(TRIM(g.title), ''), 'Seamless Flow') AS conversationTitle,
+                ROW_NUMBER() OVER (PARTITION BY t.flow_id ORDER BY t.ordinal ASC, t.started_at ASC, t.id ASC) AS turnNumber
+         FROM v2_turns t
+         INNER JOIN v2_flows f ON f.id = t.flow_id
+         LEFT JOIN v2_goals g ON g.id = t.goal_id
+         LEFT JOIN v2_agent_tasks task ON task.current_turn_id = t.id
+         LEFT JOIN v2_turns root_turn ON root_turn.id = task.root_turn_id
+         WHERE f.project_id = ?
+           AND f.status IN ('active', 'archived')
+           AND t.status IN (${placeholders})
+       )
+       SELECT 'v2_flow' AS runtimeKind,
+              '' AS conversationId,
+              nt.*,
+              um.content AS userContent,
+              am.content AS assistantContent
+       FROM numbered_v2_turns nt
+       LEFT JOIN v2_messages um ON um.id = nt.userMessageId AND um.role = 'user'
+       LEFT JOIN v2_messages am ON am.id = nt.assistantMessageId AND am.role = 'assistant'
+       ${turnId ? "WHERE nt.turnId = ?" : ""}
+       ORDER BY nt.startedAt ASC`,
+    )
+    .all(projectId, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[]
+
+  return [...classicRows, ...v2Rows].flatMap((row) => traceChunksForTurn(row))
 }
 
 export const loadCanonicalMemoryRows = (handle: DatabaseHandle, projectId: string): RetrievalIndexRow[] => {
@@ -108,6 +149,8 @@ const traceChunksForTurn = (row: CanonicalTurnRow): RetrievalIndexRow[] => {
     occurredAt,
     priority: 1,
     scope: "project" as const,
+    runtimeKind: row.runtimeKind,
+    flowId: row.flowId,
     surface: "" as const,
     fileName: "" as const,
     sectionId: "" as const,
@@ -154,6 +197,8 @@ const memoryChunksForSection = (activeProjectId: string, row: CanonicalMemorySec
     occurredAt: row.updatedAt,
     priority: LOW_PRIORITY_MEMORY_SECTION_IDS.has(row.sectionId) ? 0.65 : 1,
     scope,
+    runtimeKind: "memory" as const,
+    flowId: "",
     surface: mapped.surface,
     fileName: mapped.fileName,
     sectionId: row.sectionId as MemoryRetrievalSection,

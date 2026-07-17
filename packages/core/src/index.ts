@@ -1,4 +1,4 @@
-export { createDefaultSocratesAgent, findModelOption, listModels } from "./agent/createDefaultSocratesAgent"
+export { createDefaultSocratesAgent, createV2SocratesAgent, findModelOption, listModels } from "./agent/createDefaultSocratesAgent"
 export {
   SocratesAgent,
   type SocratesAgentContextPrecomputeInput,
@@ -58,7 +58,8 @@ export {
   renderMemoryCompactionMarkdown,
   type MemoryAgentCompressorUserPromptInput,
 } from "./prompts/memoryAgentCompressorPrompt"
-export { createDefaultToolRegistry, createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, ToolRegistry } from "./tools/registry"
+export { createDefaultToolRegistry, createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, createV2ToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"
 export * from "./retrieval"
+export * from "./v2"
 export { SOCRATES_SURFACES, renderSocratesSurfaceMap, socratesSurface, type SocratesSurface } from "@socrates/contracts"

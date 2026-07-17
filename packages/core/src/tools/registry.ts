@@ -5,6 +5,7 @@ import { currentTimeTool } from "./currentTimeTool"
 import { editTool } from "./editTool"
 import { editFilesTool } from "./editFilesTool"
 import { frontierHandoverTool } from "./frontierHandoverTool"
+import { focusLedgerTool } from "./focusLedgerTool"
 import { listProjectResourcesTool } from "./listProjectResourcesTool"
 import { memoryNoteTool } from "./memoryNoteTool"
 import { memoryNotesTool } from "./memoryNotesTool"
@@ -78,6 +79,8 @@ export class ToolRegistry {
 }
 
 export const createDefaultToolRegistry = (): ToolRegistry => new ToolRegistry()
+
+export const createV2ToolRegistry = (): ToolRegistry => new ToolRegistry([...tools, focusLedgerTool])
 
 const memoryTools = [currentTimeTool, globalTraceRetrieveTool, projectsTool, toolDocsTool, skillsReadOnlyTool, memoryNotesTool, readMemoryJournalTool, soulTool, userProfileTool, editFilesTool] as const
 

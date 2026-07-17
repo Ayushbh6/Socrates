@@ -25,7 +25,7 @@ import { canonicalMemoryParentId, loadCanonicalMemoryRows, loadCanonicalTraceRow
 import { LanceDbIndex } from "./lanceDbIndex"
 import type { RetrievalIndexRow, RetrievalSearchFilters, RetrievalSearchMode } from "./types"
 
-const RETRIEVAL_INDEX_VERSION = 1
+const RETRIEVAL_INDEX_VERSION = 2
 const EMBEDDING_BATCH_SIZE = 16
 
 type RetrievalStateRow = typeof retrievalIndexStates.$inferSelect
@@ -89,6 +89,10 @@ export class RetrievalStore {
   }
 
   enqueueTurn(projectId: string, turnId: string): void {
+    this.enqueue(projectId, () => this.upsertTurn(projectId, turnId))
+  }
+
+  enqueueV2Turn(projectId: string, turnId: string): void {
     this.enqueue(projectId, () => this.upsertTurn(projectId, turnId))
   }
 
@@ -217,6 +221,43 @@ export class RetrievalStore {
     return { results, totalMatches: results.length }
   }
 
+  async retrieveV2FlowTrace(
+    projectId: string,
+    flowId: string,
+    input: TraceRetrieveMainToolInput,
+  ): Promise<TraceRetrieveMainToolOutput> {
+    if (input.operation === "inspect" || input.mode === "audit" || !input.query) {
+      throw new SocratesError("v2_trace_local_operation_required", "This Seamless trace operation must use the V2 evidence store.", { recoverable: true })
+    }
+    const mode = input.mode ?? "lexical"
+    const ranked = await this.search({
+      projectId,
+      query: input.query,
+      mode,
+      filters: {
+        corpusKind: "trace_turn",
+        runtimeKind: "v2_flow",
+        flowId,
+        ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.createdAfter ? { createdAfter: input.createdAfter } : {}),
+        ...(input.createdBefore ? { createdBefore: input.createdBefore } : {}),
+      },
+      ...(input.limit ? { limit: input.limit } : {}),
+    })
+    const results = ranked.map((result) => ({
+      resultNumber: result.rank,
+      content: result.content,
+      turnId: result.metadata.turnId,
+      conversationTitle: result.metadata.conversationTitle,
+      turnNumber: result.metadata.turnNumber,
+      matchedRole: result.metadata.matchedRole as "user" | "assistant",
+      status: result.metadata.status as TraceRetrieveVisibleStatus,
+      occurredAt: result.metadata.occurredAt,
+    }))
+    return { results, totalMatches: results.length }
+  }
+
   async searchMemory(projectId: string, input: MemorySearchInput, automaticFallback = false): Promise<MemorySearchOutput> {
     const ranked = await this.search({
       projectId,
@@ -246,6 +287,15 @@ export class RetrievalStore {
 
   deleteConversation(projectId: string, conversationId: string): void {
     this.enqueue(projectId, () => this.deleteConversationNow(projectId, conversationId))
+  }
+
+  deleteV2Flow(projectId: string, flowId: string): void {
+    this.enqueue(projectId, async () => {
+      const state = this.state(projectId)
+      if (state?.tableName) await this.lance.deleteFlow(state.tableName, flowId)
+      this.context.handle.sqlite.prepare("DELETE FROM retrieval_result_diagnostics WHERE run_id IN (SELECT id FROM retrieval_runs WHERE project_id = ? AND json_extract(filters_json, '$.flowId') = ?)").run(projectId, flowId)
+      this.context.handle.sqlite.prepare("DELETE FROM retrieval_runs WHERE project_id = ? AND json_extract(filters_json, '$.flowId') = ?").run(projectId, flowId)
+    })
   }
 
   private async deleteConversationNow(projectId: string, conversationId: string): Promise<void> {
@@ -562,7 +612,12 @@ export class RetrievalStore {
 
   private async refreshCounts(projectId: string, tableName: string): Promise<void> {
     const counts = await this.lance.counts(tableName)
-    const traceParents = this.context.handle.sqlite.prepare("SELECT COUNT(DISTINCT id) AS count FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled')").get(projectId) as { count: number }
+    const traceParents = this.context.handle.sqlite.prepare(
+      `SELECT
+         (SELECT COUNT(DISTINCT id) FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled'))
+         +
+         (SELECT COUNT(DISTINCT id) FROM v2_turns WHERE project_id = ? AND status IN ('completed','failed','cancelled')) AS count`,
+    ).get(projectId, projectId) as { count: number }
     const memoryParents = new Set(loadCanonicalMemoryRows(this.context.handle, projectId).map((row) => row.parentId)).size
     this.writeState(projectId, { traceParents: traceParents.count, traceChunks: counts.traceChunks, memoryParents, memoryChunks: counts.memoryChunks })
   }
@@ -579,10 +634,11 @@ export class RetrievalStore {
     }
     this.context.handle.sqlite.prepare(
       `UPDATE retrieval_index_states SET
-        table_name = ?, status = ?, embedding_fingerprint = ?, lexical_ready = ?, vector_ready = ?,
+        index_version = ?, table_name = ?, status = ?, embedding_fingerprint = ?, lexical_ready = ?, vector_ready = ?,
         trace_parents = ?, trace_chunks = ?, memory_parents = ?, memory_chunks = ?, last_error = ?,
         rebuild_started_at = ?, rebuild_completed_at = ?, updated_at = ? WHERE project_id = ?`,
     ).run(
+      RETRIEVAL_INDEX_VERSION,
       patch.tableName === undefined ? existing.tableName : patch.tableName,
       patch.status ?? existing.status,
       patch.embeddingFingerprint === undefined ? existing.embeddingFingerprint : patch.embeddingFingerprint,

@@ -22,6 +22,8 @@ import type {
   ModelToolDefinition,
   EditFilesToolInput,
   EditFilesToolOutput,
+  FocusLedgerToolInput,
+  FocusLedgerToolOutput,
   ProjectDocsToolInput,
   ProjectDocsToolOutput,
   ProjectsToolInput,
@@ -115,6 +117,7 @@ export type ToolExecutors = {
     resolvedSecretEnv?: Readonly<Record<string, string>>,
   ) => Promise<McpRegistryToolOutput>
   mcp_dynamic?: (input: { dynamicName: string; input: unknown }, context: ToolExecutorContext) => Promise<unknown>
+  focus_ledger?: (input: FocusLedgerToolInput, context: ToolExecutorContext) => Promise<FocusLedgerToolOutput>
 }
 
 export type ApprovalRequest = {

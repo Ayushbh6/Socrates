@@ -568,7 +568,7 @@ describe("context compression", () => {
     expect(packed).toContain("contextCompacted")
     expect(packed).not.toContain("result 1 " + "x".repeat(900))
     expect(String(provider.structuredRequests[0]?.messages[0]?.content)).toContain("older tool result read")
-  })
+  }, SLOW_COMPRESSION_TEST_TIMEOUT_MS)
 
   it("precomputes at the same 170k trigger", async () => {
     const provider = structuredProvider({ counts: [170_000, 70_000], outputs: [validChat()] })

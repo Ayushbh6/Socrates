@@ -10,7 +10,12 @@ if (dataDirectoryResult.imported) {
   )
 }
 
-const app = await buildServer({ dbPath: config.dbPath, logger: true, socratesHome: config.socratesHome })
+const app = await buildServer({
+  dbPath: config.dbPath,
+  logger: true,
+  socratesHome: config.socratesHome,
+  v2FlowEnabled: config.v2FlowEnabled,
+})
 
 try {
   await app.listen({ host: config.host, port: config.port })

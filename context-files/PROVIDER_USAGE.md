@@ -10,21 +10,73 @@ V1:
   Use native provider adapters when direct control is required.
   Do not use Vercel AI Gateway as the default path.
 
-V1.5:
-  Add Ollama/local model support.
+V1.5 foundation, implemented:
+  Ollama/local chat and embedding support behind Socrates provider interfaces.
 
-V1.6:
-  Add official DeepSeek API support through a native adapter, not the AI SDK.
+V1.6 foundation, implemented:
+  Official DeepSeek API support through a native adapter, not the AI SDK.
 
-V2:
+Later provider-adapter roadmap, historically called "V2" in this file:
   Add our own direct wrappers for major providers where we need deeper control.
 ```
+
+This provider-adapter roadmap is independent of the implemented experimental V2 Flow product. `V2 Flow` always means the separate never-ending, goal-routed product described in `V2_FLOW_ARCHITECTURE.md`; it does not mean that all direct provider wrappers must be completed first.
 
 The non-negotiable architecture rule:
 
 ```text
 The rest of Socrates must never depend directly on Vercel AI SDK.
 ```
+
+## V2 Flow Provider Reuse Boundary
+
+V2 Flow reuses `packages/providers`, credential-aware model resolution, normalized usage, token counting, Ollama chat, the existing embedding boundary, the same Socrates agent, Memory Router worker setting, and Context Compactor worker setting. It does not fork provider adapters merely because its orchestration is separate from V1.
+
+V2 Flow Q&A parents also reuse the shared per-project LanceDB retrieval lifecycle. Rows are scoped with `runtimeKind = "v2_flow"` and exact `flowId`, so lexical, semantic, and combined trace retrieval use the configured shared embedding provider without fake Classic conversations; raw inspect/audit and immutable evidence remain V2-owned.
+
+The separation point is above the provider layer:
+
+```text
+V1 Classic orchestration ─┐
+                         ├── shared ModelProvider and EmbeddingProvider plumbing
+V2 Flow orchestration ───┘
+```
+
+Each concurrent V1 conversation or V2 Flow turn produces its own provider/LLM call and request context. A single backend process may multiplex those independent calls, but it never concatenates unrelated projects or goals into one Socrates prompt. Goal Router, Memory Router attempt, main/Frontier, context-distiller, and context-compactor calls are individually persisted in `v2_model_calls` with matching V2 usage/error telemetry where available.
+
+The V2 Goal Router is a bounded structured call with thinking disabled and a conservative timeout/fallback. Post-turn distillation/compaction uses the configured `context_compactor` worker selection rather than silently spending the foreground model; model-window budgeting still comes from the selected foreground model. The same Memory Router implementation and global Memory Agent are shared, while their Flow source references and runtime telemetry remain V2-scoped.
+
+Ollama support exists to make local capability available to users with suitable models and hardware. It is not expected to make a small local model match a frontier hosted model in reasoning, tools, speed, or context size. V2 must preserve honest model-specific limits and graceful failure. Ollama remains the local chat/embedding runtime, not an assumed TTS engine; V2 speech uses separate replaceable STT/TTS adapters.
+
+## V2 Voice V1 Speech Providers
+
+Speech providers are independent from `ModelProvider` and `EmbeddingProvider`. A user may chat through Ollama while transcribing through OpenRouter, or chat through a hosted model while keeping both speech directions offline.
+
+The implemented provider set is:
+
+```text
+SpeechToTextProvider
+  local_whisper
+    small.en, recommended
+    base.en, optional lightweight profile
+
+  openrouter
+    nvidia/parakeet-tdt-0.6b-v3
+    microsoft/mai-transcribe-1.5
+    mistralai/voxtral-mini-transcribe
+
+TextToSpeechProvider
+  local_kokoro
+    Kokoro-82M through sherpa-onnx
+```
+
+OpenRouter discovery may supply availability, pricing, and capability metadata, but V2 Voice V1 exposes only the three accepted transcription model ids. It reuses the user's existing OpenRouter credential through `https://openrouter.ai/api/v1/audio/transcriptions`; it does not pretend that a chat-completions call is transcription.
+
+Local STT is exact-pinned `@fugood/whisper.node@1.0.22` over `whisper.cpp` and defaults to the native Node binding. `SOCRATES_WHISPER_CPP_BINARY` is an explicit compatible-CLI override, and a packaged `whisper-cli` may serve only as recovery when the native addon cannot load. Runtime construction checks native-package lock coverage and smoke-loads the binding with the bundled Node executable.
+
+Local read aloud is exact-pinned `sherpa-onnx-node@1.13.4` running Kokoro-82M natively when available, with a compatible `sherpa-onnx-offline-tts` fallback. The runtime dependencies may be bundled, but Whisper and Kokoro weights are explicit user-installed packs with expected byte counts, SHA-256 verification, receipts, status, and removal APIs. A failed local call never falls through to OpenRouter unless the user explicitly chooses the cloud route.
+
+On the tested M3 Mac, the first native Whisper initialization took roughly 19-20 seconds because of cold model/Metal setup; later speed varies with model, platform, and hardware. This is an observed packaging check, not a latency guarantee. Granite Speech, Ollama audio models, hosted TTS, and direct Deepgram/OpenAI/Google speech adapters are outside V2 Voice V1.
 
 Vercel AI SDK is an implementation detail inside `packages/providers`. Native providers such as Ollama and official DeepSeek also live inside `packages/providers` behind the same Socrates `ModelProvider` interface.
 
@@ -426,7 +478,7 @@ Anthropic is intentionally skipped in the current V1 implementation. It can be a
 
 ## Provider Credentials
 
-The npm CLI/browser app stores user provider keys in `~/.Socrates/.env` through the local backend. The backend receives newly saved keys through a session credential endpoint immediately after save. Development still supports `.env`/server environment fallback. Desktop keychain handling is dormant compatibility code, not the supported distribution path.
+The NPM CLI/browser app stores user provider keys in `~/.Socrates/.env` through the local backend. The backend receives newly saved keys through a session credential endpoint immediately after save. Development still supports `.env`/server environment fallback.
 
 Credential policy:
 
@@ -605,9 +657,9 @@ gateway -> AiGatewayProvider
 
 It must not replace the direct provider strategy.
 
-## V1.5 Provider Plan
+## V1.5 Ollama Provider Foundation
 
-V1.5 should add local model support.
+V1.5 added local model support.
 
 Primary target:
 
@@ -615,14 +667,10 @@ Primary target:
 ollama
 ```
 
-Implementation options:
+Implemented approach:
 
 ```text
-Option A:
-  Use a Vercel AI SDK compatible Ollama provider if it handles our needs cleanly.
-
-Option B:
-  Build our own direct OllamaProvider if we need tighter control.
+Native direct OllamaProvider behind the Socrates ModelProvider interface.
 ```
 
 Ollama may need custom handling because local model behavior can differ from hosted APIs:
@@ -632,11 +680,11 @@ Ollama may need custom handling because local model behavior can differ from hos
 - Token usage may be estimated instead of provider-reported.
 - Streaming payloads may need custom parsing.
 
-For this reason, Ollama is explicitly allowed to become the first direct provider wrapper if needed.
+For this reason, Ollama became the first direct local provider wrapper.
 
-## V2 Provider Plan
+## Later Direct Provider Adapter Roadmap
 
-After the main app works, Socrates can add direct wrappers for major providers.
+This section was historically called the `V2 Provider Plan`. It is a provider-layer migration roadmap, not the experimental V2 Flow product. After the main app works, Socrates can add direct wrappers for major providers independently of Flow work.
 
 Likely order:
 
@@ -866,7 +914,7 @@ The chat composer may switch provider, model, and thinking mode between turns in
 3. Provider-specific request/response details must not leak into the agent loop.
 4. Provider-specific raw metadata should be stored in the DB for auditability.
 5. OpenRouter should use the AI SDK provider in V1.
-6. Ollama should be added in V1.5, either through an AI SDK-compatible provider or a direct wrapper.
+6. Ollama remains a first-class direct local provider behind the same Socrates provider interface.
 7. Direct wrappers for big providers should be added only after the main app works.
 8. Provider routing must be centralized in `ProviderRouter`.
 9. The code must be written from day one as if Vercel AI SDK may be replaced later.

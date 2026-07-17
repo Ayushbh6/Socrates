@@ -177,6 +177,7 @@ type GlobalMemoryAgentRunInput = {
 }
 
 type GlobalTurnManifestRow = {
+  runtimeKind: "classic" | "v2_flow"
   sequence: number
   projectId: string
   projectName: string
@@ -186,6 +187,8 @@ type GlobalTurnManifestRow = {
   turnId: string
   createdAt: string
   workspacePath: string | null
+  goalId?: string
+  goalTitle?: string | null
 }
 
 type GlobalTurnManifestEntry = GlobalTurnManifestRow & {
@@ -549,7 +552,16 @@ export class MemoryStore extends StoreBase {
     throw new SocratesError("skill_import_operation_invalid", "Expected preview_import or commit_import.", { recoverable: true })
   }
 
-  createMemoryNote(input: MemoryNoteToolInput, source: { projectId: string; conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
+  createMemoryNote(input: MemoryNoteToolInput, source: {
+    projectId: string
+    conversationId: string
+    sessionId: string
+    turnId: string
+    messageId?: string
+    messageExcerpt?: string
+    sourceRuntime?: "classic" | "v2_flow"
+    appendClassicEvent?: boolean
+  }): MemoryNoteToolOutput {
     this.ensureGlobalKnowledge()
     const note = input.note.trim()
     const normalizedNoteKey = normalizedMemoryNoteKey(note)
@@ -598,9 +610,14 @@ export class MemoryStore extends StoreBase {
         })
       }
 
-      const turn = this.handle.db.select().from(turns).where(eq(turns.id, source.turnId)).get()
-      const userMessageId = turn?.userMessageId
-      const userMessage = userMessageId ? this.handle.db.select().from(messages).where(eq(messages.id, userMessageId)).get() : undefined
+      const turn = source.messageId || source.messageExcerpt
+        ? undefined
+        : this.handle.db.select().from(turns).where(eq(turns.id, source.turnId)).get()
+      const userMessageId = source.messageId ?? turn?.userMessageId
+      const userMessage = source.messageExcerpt || !userMessageId
+        ? undefined
+        : this.handle.db.select().from(messages).where(eq(messages.id, userMessageId)).get()
+      const messageExcerpt = source.messageExcerpt ?? (userMessage?.content ? truncateInline(userMessage.content, 600) : undefined)
       const sourceProject = this.handle.db.select().from(projects).where(eq(projects.id, source.projectId)).limit(1).get()
       const sourceWorkspace = this.handle.db
         .select()
@@ -627,12 +644,13 @@ export class MemoryStore extends StoreBase {
           sessionId: source.sessionId,
           turnId: source.turnId,
           messageId: userMessageId,
-          messageExcerpt: userMessage?.content ? truncateInline(userMessage.content, 600) : undefined,
+          messageExcerpt,
           createdByAgent: "socrates",
           createdAt: now,
           metadataJson: JSON.stringify({
             attachedSource: "current_user_message",
             defaultSkillScope,
+            sourceRuntime: source.sourceRuntime ?? "classic",
             ...(sourceProject?.name ? { projectName: sourceProject.name } : {}),
             ...(sourceWorkspace?.path ? { workspacePath: sourceWorkspace.path } : {}),
           }),
@@ -651,10 +669,12 @@ export class MemoryStore extends StoreBase {
         } as const,
       }
     })()
-    if ("createdEvent" in result) {
-      this.appendEvent(result.createdEvent)
-    } else if ("deduplicatedEvent" in result) {
-      this.appendEvent(result.deduplicatedEvent)
+    if (source.appendClassicEvent !== false) {
+      if ("createdEvent" in result) {
+        this.appendEvent(result.createdEvent)
+      } else if ("deduplicatedEvent" in result) {
+        this.appendEvent(result.deduplicatedEvent)
+      }
     }
     return result.output
   }
@@ -694,15 +714,18 @@ export class MemoryStore extends StoreBase {
     const completedAt = nowIso()
     this.handle.db.update(memoryNotes).set({ status: "done", completedAt, outcome, resolution }).where(eq(memoryNotes.id, row.id)).run()
     const updated = this.mustGetMemoryNote(input.noteNumber as number)
-    this.appendEvent({
-      ...(updated.projectId ? { projectId: updated.projectId } : {}),
-      ...(updated.conversationId ? { conversationId: updated.conversationId } : {}),
-      ...(updated.sessionId ? { sessionId: updated.sessionId } : {}),
-      ...(updated.turnId ? { turnId: updated.turnId } : {}),
-      type: "memory.note.completed",
-      source: "server",
-      payload: { noteNumber: updated.noteNumber, outcome: updated.outcome, resolution: updated.resolution },
-    })
+    const sourceMetadata = parseJsonObject(updated.metadataJson)
+    if (sourceMetadata.sourceRuntime !== "v2_flow") {
+      this.appendEvent({
+        ...(updated.projectId ? { projectId: updated.projectId } : {}),
+        ...(updated.conversationId ? { conversationId: updated.conversationId } : {}),
+        ...(updated.sessionId ? { sessionId: updated.sessionId } : {}),
+        ...(updated.turnId ? { turnId: updated.turnId } : {}),
+        type: "memory.note.completed",
+        source: "server",
+        payload: { noteNumber: updated.noteNumber, outcome: updated.outcome, resolution: updated.resolution },
+      })
+    }
     const notes = [this.memoryNoteToolRow(updated, true)]
     return { operation: "mark_done", notes, totalMatches: 1, truncation: truncationFor(JSON.stringify(notes), DEFAULT_CHAR_LIMIT) }
   }
@@ -1826,7 +1849,7 @@ export class MemoryStore extends StoreBase {
   }
 
   private buildGlobalManifest(lastProcessedEventSequence: number): { entries: GlobalTurnManifestEntry[]; manifest: string; sequenceFrom: number; sequenceTo: number } {
-    const rows = this.handle.sqlite
+    const classicRows = this.handle.sqlite
       .prepare(
         `SELECT e.sequence, e.project_id AS projectId, p.name AS projectName,
                 e.conversation_id AS conversationId, c.title AS conversationTitle,
@@ -1845,7 +1868,51 @@ export class MemoryStore extends StoreBase {
           ORDER BY e.sequence ASC
           LIMIT ?`,
       )
-      .all(lastProcessedEventSequence, GLOBAL_MEMORY_AGENT_MAX_TURNS) as GlobalTurnManifestRow[]
+      .all(lastProcessedEventSequence, GLOBAL_MEMORY_AGENT_MAX_TURNS) as Array<Omit<GlobalTurnManifestRow, "runtimeKind">>
+    const v2Rows = this.handle.sqlite
+      .prepare(
+        `SELECT COALESCE(MAX(re.sequence), t.ordinal) AS sequence,
+                t.project_id AS projectId,
+                p.name AS projectName,
+                t.flow_id AS conversationId,
+                CASE WHEN g.title IS NULL OR trim(g.title) = ''
+                     THEN 'Seamless Flow'
+                     ELSE 'Seamless Flow · ' || g.title END AS conversationTitle,
+                t.id AS sessionId,
+                t.id AS turnId,
+                COALESCE(t.completed_at, t.updated_at, t.started_at) AS createdAt,
+                pw.path AS workspacePath,
+                t.goal_id AS goalId,
+                g.title AS goalTitle
+           FROM v2_turns t
+           JOIN v2_flows f ON f.id = t.flow_id AND f.project_id = t.project_id
+           JOIN projects p ON p.id = t.project_id
+           LEFT JOIN v2_goals g ON g.id = t.goal_id
+           LEFT JOIN project_workspaces pw ON pw.project_id = t.project_id AND pw.is_primary = 1
+           LEFT JOIN v2_runtime_events re ON re.turn_id = t.id
+          WHERE t.status = 'completed'
+            AND NOT EXISTS (
+              SELECT 1
+                FROM memory_agent_jobs completed_job,
+                     json_each(COALESCE(completed_job.evidence_turn_ids_json, '[]')) processed_turn
+               WHERE completed_job.status = 'completed'
+                 AND processed_turn.value = t.id
+            )
+          GROUP BY t.id, t.project_id, p.name, t.flow_id, g.title, t.ordinal,
+                   t.completed_at, t.updated_at, t.started_at, pw.path, t.goal_id
+          ORDER BY createdAt ASC, t.id ASC
+          LIMIT ?`,
+      )
+      .all(GLOBAL_MEMORY_AGENT_MAX_TURNS) as Array<Omit<GlobalTurnManifestRow, "runtimeKind">>
+    const rows: GlobalTurnManifestRow[] = [
+      ...classicRows.map((row) => ({ ...row, runtimeKind: "classic" as const })),
+      ...v2Rows.map((row) => ({ ...row, runtimeKind: "v2_flow" as const })),
+    ].sort((left, right) => {
+      const time = Date.parse(left.createdAt) - Date.parse(right.createdAt)
+      if (time !== 0) return time
+      if (left.runtimeKind !== right.runtimeKind) return left.runtimeKind.localeCompare(right.runtimeKind)
+      return left.sequence - right.sequence || left.turnId.localeCompare(right.turnId)
+    })
     const entries: GlobalTurnManifestEntry[] = []
     const renderedEntries: string[] = []
     let packedTokensEstimate = estimateTextTokens(this.renderGlobalManifest(lastProcessedEventSequence, [], [])).inputTokens
@@ -1855,7 +1922,7 @@ export class MemoryStore extends StoreBase {
       }
       const entry: GlobalTurnManifestEntry = {
         ...row,
-        counts: this.countTurnArtifacts(row.turnId),
+        counts: row.runtimeKind === "v2_flow" ? this.countV2TurnArtifacts(row.turnId) : this.countTurnArtifacts(row.turnId),
       }
       const renderedEntry = this.renderGlobalManifestEntry(entry, entries.length + 1)
       const entryTokensEstimate = estimateTextTokens(`\n${renderedEntry}`).inputTokens
@@ -1866,8 +1933,9 @@ export class MemoryStore extends StoreBase {
       renderedEntries.push(renderedEntry)
       packedTokensEstimate += entryTokensEstimate
     }
-    const sequenceFrom = entries[0]?.sequence ?? lastProcessedEventSequence + 1
-    const sequenceTo = entries[entries.length - 1]?.sequence ?? lastProcessedEventSequence
+    const classicEntries = entries.filter((entry) => entry.runtimeKind === "classic")
+    const sequenceFrom = classicEntries[0]?.sequence ?? lastProcessedEventSequence + 1
+    const sequenceTo = classicEntries[classicEntries.length - 1]?.sequence ?? lastProcessedEventSequence
     const manifest = this.renderGlobalManifest(lastProcessedEventSequence, entries, renderedEntries)
     return { entries, manifest, sequenceFrom, sequenceTo }
   }
@@ -2079,8 +2147,25 @@ export class MemoryStore extends StoreBase {
   }
 
   private renderGlobalManifestEntry(entry: GlobalTurnManifestEntry, index: number): string {
+    if (entry.runtimeKind === "v2_flow") {
+      return [
+        `## ${index}. Seamless Flow turn ${entry.sequence}`,
+        "runtime: V2 Seamless Flow",
+        `project: ${entry.projectName} (${entry.projectId})`,
+        `flow: ${entry.conversationTitle ?? "Seamless Flow"} (${entry.conversationId})`,
+        entry.goalId ? `goal: ${entry.goalTitle ?? "Current goal"} (${entry.goalId})` : "goal: Current goal",
+        `turnId: ${entry.turnId}`,
+        `completedAt: ${entry.createdAt}`,
+        entry.workspacePath ? `workspace: ${entry.workspacePath}` : undefined,
+        `counts: messages=${entry.counts.messages}, toolCalls=${entry.counts.toolCalls}, failedToolCalls=${entry.counts.failedToolCalls}, fileOps=${entry.counts.fileOperations}, patches=${entry.counts.patches}, shell=${entry.counts.shellCommands}, errors=${entry.counts.errors}`,
+        `trace_retrieve: inspect with turnId="${entry.turnId}" or exact search with projectId="${entry.projectId}" and conversationId="${entry.conversationId}"`,
+      ]
+        .filter(Boolean)
+        .join("\n")
+    }
     return [
       `## ${index}. event sequence ${entry.sequence}`,
+      "runtime: Classic",
       `project: ${entry.projectName} (${entry.projectId})`,
       `conversation: ${entry.conversationTitle ?? "Untitled"} (${entry.conversationId})`,
       `turnId: ${entry.turnId}`,
@@ -2110,6 +2195,23 @@ export class MemoryStore extends StoreBase {
     }
   }
 
+  private countV2TurnArtifacts(turnId: string): GlobalTurnManifestEntry["counts"] {
+    const count = (tableName: string, extraWhere = ""): number => {
+      const row = this.handle.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE turn_id = ? ${extraWhere}`).get(turnId) as { count: number }
+      return row.count
+    }
+    const mutationTools = "AND tool_name IN ('edit','apply_patch','project_docs','repo_docs') AND status = 'completed'"
+    return {
+      messages: count("v2_messages"),
+      toolCalls: count("v2_tool_calls"),
+      failedToolCalls: count("v2_tool_calls", "AND status = 'failed'"),
+      fileOperations: count("v2_tool_calls", mutationTools),
+      patches: count("v2_tool_calls", "AND tool_name IN ('edit','apply_patch') AND status = 'completed'"),
+      shellCommands: count("v2_terminal_sessions"),
+      errors: count("v2_errors"),
+    }
+  }
+
   private signalForManifest(manifest: { entries: GlobalTurnManifestEntry[]; sequenceFrom: number; sequenceTo: number }): MemoryAgentSignalSnapshot {
     const openNotes = this.openMemoryNoteCount()
     if (manifest.entries.length === 0) {
@@ -2128,8 +2230,7 @@ export class MemoryStore extends StoreBase {
         displayReason: `Memory note inbox has ${openNotes} open/processing ${openNotes === 1 ? "note" : "notes"}.`,
       }
     }
-    const turnIds = manifest.entries.map((entry) => entry.turnId)
-    const fileStats = this.changedFileStats(turnIds)
+    const fileStats = this.changedFileStats(manifest.entries)
     const signal = scoreMemoryAgentSignal({
       sequenceFrom: manifest.sequenceFrom,
       sequenceTo: manifest.sequenceTo,
@@ -2137,7 +2238,7 @@ export class MemoryStore extends StoreBase {
       toolCalls: manifest.entries.reduce((total, entry) => total + entry.counts.toolCalls, 0),
       fileChangeEvents: fileStats.fileChangeEvents,
       distinctChangedFiles: fileStats.distinctChangedFiles,
-      totalTokens: this.totalTokensForTurns(turnIds),
+      totalTokens: this.totalTokensForTurns(manifest.entries),
     })
     if (openNotes === 0) {
       return signal
@@ -2153,21 +2254,23 @@ export class MemoryStore extends StoreBase {
     }
   }
 
-  private changedFileStats(turnIds: string[]): { fileChangeEvents: number; distinctChangedFiles: number } {
-    if (turnIds.length === 0) {
+  private changedFileStats(entries: GlobalTurnManifestEntry[]): { fileChangeEvents: number; distinctChangedFiles: number } {
+    if (entries.length === 0) {
       return { fileChangeEvents: 0, distinctChangedFiles: 0 }
     }
-    const placeholders = turnIds.map(() => "?").join(",")
+    const classicTurnIds = entries.filter((entry) => entry.runtimeKind === "classic").map((entry) => entry.turnId)
+    const v2TurnIds = entries.filter((entry) => entry.runtimeKind === "v2_flow").map((entry) => entry.turnId)
     const changedFiles = new Set<string>()
-    const fileRows = this.handle.sqlite
+    const classicPlaceholders = classicTurnIds.map(() => "?").join(",")
+    const fileRows = classicTurnIds.length === 0 ? [] : this.handle.sqlite
       .prepare(
         `SELECT path, operation, status
            FROM file_operations
-          WHERE turn_id IN (${placeholders})
+          WHERE turn_id IN (${classicPlaceholders})
             AND status != 'failed'
             AND lower(operation) NOT IN ('read', 'search', 'list', 'glob')`,
       )
-      .all(...turnIds) as Array<{ path: string; operation: string; status: string }>
+      .all(...classicTurnIds) as Array<{ path: string; operation: string; status: string }>
     for (const row of fileRows) {
       if (row.path.trim()) {
         changedFiles.add(row.path)
@@ -2175,9 +2278,9 @@ export class MemoryStore extends StoreBase {
     }
 
     let patchFileEvents = 0
-    const patchRows = this.handle.sqlite
-      .prepare(`SELECT files_json AS filesJson FROM patches WHERE turn_id IN (${placeholders}) AND status = 'applied'`)
-      .all(...turnIds) as Array<{ filesJson: string | null }>
+    const patchRows = classicTurnIds.length === 0 ? [] : this.handle.sqlite
+      .prepare(`SELECT files_json AS filesJson FROM patches WHERE turn_id IN (${classicPlaceholders}) AND status = 'applied'`)
+      .all(...classicTurnIds) as Array<{ filesJson: string | null }>
     for (const row of patchRows) {
       const files = parseJsonArray(row.filesJson).filter((item): item is string => typeof item === "string" && item.trim().length > 0)
       patchFileEvents += files.length
@@ -2186,21 +2289,40 @@ export class MemoryStore extends StoreBase {
       }
     }
 
+    const v2Placeholders = v2TurnIds.map(() => "?").join(",")
+    const v2MutationRows = v2TurnIds.length === 0 ? [] : this.handle.sqlite
+      .prepare(
+        `SELECT tool_name AS toolName, result_json AS resultJson
+           FROM v2_tool_calls
+          WHERE turn_id IN (${v2Placeholders})
+            AND status = 'completed'
+            AND tool_name IN ('edit','apply_patch','project_docs','repo_docs')`,
+      )
+      .all(...v2TurnIds) as Array<{ toolName: string; resultJson: string | null }>
+    for (const row of v2MutationRows) {
+      const result = parseJsonObject(row.resultJson)
+      for (const file of mutationPathsFromResult(result)) changedFiles.add(file)
+    }
+
     return {
-      fileChangeEvents: fileRows.length + patchFileEvents,
+      fileChangeEvents: fileRows.length + patchFileEvents + v2MutationRows.length,
       distinctChangedFiles: changedFiles.size,
     }
   }
 
-  private totalTokensForTurns(turnIds: string[]): number {
-    if (turnIds.length === 0) {
+  private totalTokensForTurns(entries: GlobalTurnManifestEntry[]): number {
+    if (entries.length === 0) {
       return 0
     }
-    const placeholders = turnIds.map(() => "?").join(",")
-    const row = this.handle.sqlite
-      .prepare(`SELECT COALESCE(SUM(total_tokens), 0) AS totalTokens FROM turn_usage_reports WHERE turn_id IN (${placeholders})`)
-      .get(...turnIds) as { totalTokens: number | null }
-    return Math.max(0, Math.floor(row.totalTokens ?? 0))
+    const classicTurnIds = entries.filter((entry) => entry.runtimeKind === "classic").map((entry) => entry.turnId)
+    const v2TurnIds = entries.filter((entry) => entry.runtimeKind === "v2_flow").map((entry) => entry.turnId)
+    const classic = classicTurnIds.length === 0 ? 0 : (this.handle.sqlite
+      .prepare(`SELECT COALESCE(SUM(total_tokens), 0) AS totalTokens FROM turn_usage_reports WHERE turn_id IN (${classicTurnIds.map(() => "?").join(",")})`)
+      .get(...classicTurnIds) as { totalTokens: number | null }).totalTokens ?? 0
+    const v2 = v2TurnIds.length === 0 ? 0 : (this.handle.sqlite
+      .prepare(`SELECT COALESCE(SUM(total_tokens), 0) AS totalTokens FROM v2_usage_events WHERE turn_id IN (${v2TurnIds.map(() => "?").join(",")})`)
+      .get(...v2TurnIds) as { totalTokens: number | null }).totalTokens ?? 0
+    return Math.max(0, Math.floor(classic + v2))
   }
 
   private recordMemoryAgentCheck(
@@ -4394,6 +4516,19 @@ const parseJsonArray = (text: string | null | undefined): unknown[] => {
   } catch {
     return []
   }
+}
+
+const mutationPathsFromResult = (result: Record<string, unknown>): string[] => {
+  const paths = new Set<string>()
+  const collect = (value: unknown): void => {
+    if (typeof value === "string" && value.trim()) paths.add(value.trim())
+    if (Array.isArray(value)) value.forEach(collect)
+  }
+  collect(result.path)
+  collect(result.paths)
+  collect(result.changedFiles)
+  collect(result.files)
+  return [...paths]
 }
 
 const isMemoryAgentSummary = (value: unknown): value is MemoryAgentRunDetail["summary"] => {

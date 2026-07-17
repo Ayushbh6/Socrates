@@ -99,6 +99,10 @@ start("server", [serverEntry], {
     HOST: host,
     PORT: String(backendPort),
     SOCRATES_HOME: socratesHome,
+    // The supported product is this ordinary server + web runtime. Seamless
+    // ships alongside Classic here and can still be disabled explicitly for
+    // rollback or isolation checks.
+    SOCRATES_V2_FLOW_ENABLED: process.env.SOCRATES_V2_FLOW_ENABLED ?? "true",
   },
 });
 

@@ -37,6 +37,9 @@ importers:
       '@fastify/websocket':
         specifier: ^11.2.0
         version: 11.2.0
+      '@fugood/whisper.node':
+        specifier: 1.0.22
+        version: 1.0.22
       '@lancedb/lancedb':
         specifier: 0.22.3
         version: 0.22.3(apache-arrow@18.1.0)
@@ -70,6 +73,9 @@ importers:
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
+      sherpa-onnx-node:
+        specifier: 1.13.4
+        version: 1.13.4
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -216,6 +222,9 @@ importers:
       '@socrates/shared':
         specifier: workspace:*
         version: link:../shared
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^20
@@ -1064,6 +1073,78 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
+
+  '@fugood/node-whisper-darwin-arm64@1.0.22':
+    resolution: {integrity: sha512-BYraZHJF5Pkdt4PpEUTSGWAVlqw3hspmlWNNduxQzviIwQbB0QZdBP8PBjFnYh85lsGlXV1gLKuuAkfCnwNoDA==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@fugood/node-whisper-darwin-x64@1.0.22':
+    resolution: {integrity: sha512-1SKvsasM82JH8BTE1z8d5zK27bo7/kNcOoyVe5xXQuvQzCWvF+1v64OIgSD+Hl6iWxQzQ0Y8XzCmkKYlZGHn4A==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@fugood/node-whisper-linux-arm64-cuda@1.0.22':
+    resolution: {integrity: sha512-8xKqllr+cQW01vzNdNinpZ6MTuw6dzUNhBrZbI2F5vT++jg2X7n2G4d/KeH+z08aGssJzpRqanEImuGM9dA0Xg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@fugood/node-whisper-linux-arm64-vulkan@1.0.22':
+    resolution: {integrity: sha512-5Yy+ZK97SfLAiyEhLUvbZhUVC99r0uL32XLzWZGNFy+XcSYZCpoBG8MQ09RFENmPmBtAqrkflr8tMqycgm2RWA==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@fugood/node-whisper-linux-arm64@1.0.22':
+    resolution: {integrity: sha512-9D7y5ehRAWrG82q7NbgKMziGBL8oyOLY82iM6oIAuo9YZX01oqDCrTGRDptLoN5gdMW/50bLSRB/cY+V53I0GQ==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@fugood/node-whisper-linux-x64-cuda@1.0.22':
+    resolution: {integrity: sha512-CaRXUUP6wh5BRTIs2Kl8hHLa6feMafuStmt5l2aZPaqFFrX5tbBWKx9uY1z//yB/Y5kbAFK+ryfSa69w/dwApw==}
+    cpu: [x64]
+    os: [linux]
+
+  '@fugood/node-whisper-linux-x64-vulkan@1.0.22':
+    resolution: {integrity: sha512-Mi51kR9JgYouHYTP8Y/2O0sWWwdOOo86ws0EKR6hhMOrrO9IMDUjAe9TwL9de6Fbc+GmkS3iHIwiGGwE+6GpZA==}
+    cpu: [x64]
+    os: [linux]
+
+  '@fugood/node-whisper-linux-x64@1.0.22':
+    resolution: {integrity: sha512-vARvAWqT0vBp/O7Gl2VNd2/AGjALUfJfN0HC6A+qkXfLYCVqyIVPbzxU90NmAdo3cjBSO0/f6Jtp4HhQv9nJ8w==}
+    cpu: [x64]
+    os: [linux]
+
+  '@fugood/node-whisper-wasm@1.0.22':
+    resolution: {integrity: sha512-hvQFMOn3kDHsQHz6L0f/8x45/y8wsRAAn9QiOoIgF3LRL1BuqeCGRMXweu+gIDRJRnQpQ+KdvnxsISMOa4kLAA==}
+
+  '@fugood/node-whisper-win32-arm64-vulkan@1.0.22':
+    resolution: {integrity: sha512-J2UeZ7LrdhiUGF5/m1WTWLQNXnE5ReDA/Q+o9jnXjrQiHHgthFxYDJjbVWyJhTqhjx+4aChBMBjHTlgPvtRwbQ==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@fugood/node-whisper-win32-arm64@1.0.22':
+    resolution: {integrity: sha512-KVY2xROPf2h27aA2rjNp/LRM1AscgumYT6N2buAOgIMufTcpqFpwT301j8SbEpNTJTWog/FvTk+FN45bs/qZyw==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@fugood/node-whisper-win32-x64-cuda@1.0.22':
+    resolution: {integrity: sha512-1p3DMG/KXp0f5FE1kKnO1jke7XLpsFvOkF1vUdAebWrk1g2P3P2DoK6v5YuABA+J3tBpJ7SRApvjIu0BLQjpLQ==}
+    cpu: [x64]
+    os: [win32]
+
+  '@fugood/node-whisper-win32-x64-vulkan@1.0.22':
+    resolution: {integrity: sha512-85c5My02d9ehUS+RM7UtnS13YXbQ6DS5hmp+AihoBQ/mGD2HQKcjCkN2kf/VBcT2W1bAmYguve6rBBgRMJBfvQ==}
+    cpu: [x64]
+    os: [win32]
+
+  '@fugood/node-whisper-win32-x64@1.0.22':
+    resolution: {integrity: sha512-dxCQhRbGtPCO9kdZ48leZUSvDQUP7s9Pd4to5g0H5xE2enHhfik/qc9e8seK9FRdaoa89BoiUbXdM9uzlMhefg==}
+    cpu: [x64]
+    os: [win32]
+
+  '@fugood/whisper.node@1.0.22':
+    resolution: {integrity: sha512-xy1kEpR2O70b5NoG2AeaYugRVST0US3jQjmoULFZc54WSgrhvYM81v29XVceAZwT8UHRynHoZaXWInUuSYd/2w==}
+    engines: {node: '>=16.0.0'}
 
   '@homebridge/node-pty-prebuilt-multiarch@0.13.1':
     resolution: {integrity: sha512-ccQ60nMcbEGrQh0U9E6x0ajW9qJNeazpcM/9CH6J8leyNtJgb+gu24WTBAfBUVeO486ZhscnaxLEITI2HXwhow==}
@@ -4589,6 +4670,39 @@ packages:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
 
+  sherpa-onnx-darwin-arm64@1.13.4:
+    resolution: {integrity: sha512-QcYKzyrTzGSx6aKCD6hUODgRS1LetqfG57Z/+i5LCyfMlrgCvDc1lRcl9cdB+TozBsLha9QwLTlI0vmDcf5JKg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  sherpa-onnx-darwin-x64@1.13.4:
+    resolution: {integrity: sha512-6RGeis9K9gV/UQWOgd6Rf3iqXr2/YsBQswxHaCR4hrYkHfEIpHMfFmRWLt6nJJCOWgYW2xFxEd9yzjrafAV/Pw==}
+    cpu: [x64]
+    os: [darwin]
+
+  sherpa-onnx-linux-arm64@1.13.4:
+    resolution: {integrity: sha512-RMjMRqT82BgTXypNNGmLe6ZFYhc3WEvnAGl3DdkK7qB/kuXwkL3iHhV31wAecbnWPsnEpUoD+8cFovWSBzsCuw==}
+    cpu: [arm64]
+    os: [linux]
+
+  sherpa-onnx-linux-x64@1.13.4:
+    resolution: {integrity: sha512-WZh5NCkGPFHHpYSd78iN4OnmxQeSTGyt9uZskH+im/NFHQ7elQ7B0sLzCMeRpvJxiIKvd9C6WxIJ4hYaxClfsQ==}
+    cpu: [x64]
+    os: [linux]
+
+  sherpa-onnx-node@1.13.4:
+    resolution: {integrity: sha512-jHWWdY9f0dbvJpdsfR/C4WNhM57+jT9Os2RyC4/qUz8HKCtj2VYFmJ9s7tue9OCFRAmdoGBkgkqD6aBZ3I8BKw==}
+
+  sherpa-onnx-win-ia32@1.13.4:
+    resolution: {integrity: sha512-/JbPjldrfNv+t+uIS3MlkuhfIf5l3FHUGkRC2oRXgjRqOaVmEyP3vLlQ7dTa4J7raG5oB8c3GoPjuSWSqT9GOQ==}
+    cpu: [ia32]
+    os: [win32]
+
+  sherpa-onnx-win-x64@1.13.4:
+    resolution: {integrity: sha512-R0PWby1VxC14TDZPq7GcfSyXSY6SAFO8Y4JwdCdqouFmeXkZ1L7Is9m98C9KxQ0dN7ZtDzhAmE/43FUs/elXRQ==}
+    cpu: [x64]
+    os: [win32]
+
   side-channel-list@1.0.1:
     resolution: {integrity: sha512-mjn/0bi/oUURjc5Xl7IaWi/OJJJumuoJFQJfDDyO46+hBWsfaVM65TBHq2eoZBhzl9EchxOijpkbRC8SVBQU0w==}
     engines: {node: '>= 0.4'}
@@ -5877,6 +5991,65 @@ snapshots:
       react-dom: 19.2.4(react@19.2.4)
 
   '@floating-ui/utils@0.2.11': {}
+
+  '@fugood/node-whisper-darwin-arm64@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-darwin-x64@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-linux-arm64-cuda@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-linux-arm64-vulkan@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-linux-arm64@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-linux-x64-cuda@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-linux-x64-vulkan@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-linux-x64@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-wasm@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-win32-arm64-vulkan@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-win32-arm64@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-win32-x64-cuda@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-win32-x64-vulkan@1.0.22':
+    optional: true
+
+  '@fugood/node-whisper-win32-x64@1.0.22':
+    optional: true
+
+  '@fugood/whisper.node@1.0.22':
+    optionalDependencies:
+      '@fugood/node-whisper-darwin-arm64': 1.0.22
+      '@fugood/node-whisper-darwin-x64': 1.0.22
+      '@fugood/node-whisper-linux-arm64': 1.0.22
+      '@fugood/node-whisper-linux-arm64-cuda': 1.0.22
+      '@fugood/node-whisper-linux-arm64-vulkan': 1.0.22
+      '@fugood/node-whisper-linux-x64': 1.0.22
+      '@fugood/node-whisper-linux-x64-cuda': 1.0.22
+      '@fugood/node-whisper-linux-x64-vulkan': 1.0.22
+      '@fugood/node-whisper-wasm': 1.0.22
+      '@fugood/node-whisper-win32-arm64': 1.0.22
+      '@fugood/node-whisper-win32-arm64-vulkan': 1.0.22
+      '@fugood/node-whisper-win32-x64': 1.0.22
+      '@fugood/node-whisper-win32-x64-cuda': 1.0.22
+      '@fugood/node-whisper-win32-x64-vulkan': 1.0.22
 
   '@homebridge/node-pty-prebuilt-multiarch@0.13.1':
     dependencies:
@@ -9686,6 +9859,33 @@ snapshots:
       shebang-regex: 3.0.0
 
   shebang-regex@3.0.0: {}
+
+  sherpa-onnx-darwin-arm64@1.13.4:
+    optional: true
+
+  sherpa-onnx-darwin-x64@1.13.4:
+    optional: true
+
+  sherpa-onnx-linux-arm64@1.13.4:
+    optional: true
+
+  sherpa-onnx-linux-x64@1.13.4:
+    optional: true
+
+  sherpa-onnx-node@1.13.4:
+    optionalDependencies:
+      sherpa-onnx-darwin-arm64: 1.13.4
+      sherpa-onnx-darwin-x64: 1.13.4
+      sherpa-onnx-linux-arm64: 1.13.4
+      sherpa-onnx-linux-x64: 1.13.4
+      sherpa-onnx-win-ia32: 1.13.4
+      sherpa-onnx-win-x64: 1.13.4
+
+  sherpa-onnx-win-ia32@1.13.4:
+    optional: true
+
+  sherpa-onnx-win-x64@1.13.4:
+    optional: true
 
   side-channel-list@1.0.1:
     dependencies:

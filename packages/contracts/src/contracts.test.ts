@@ -193,6 +193,7 @@ import {
   conversationToolRunSchema,
   editToolOutputSchema,
 } from "./index"
+import * as v2Flow from "./v2Flow"
 
 const timestamp = "2026-05-13T21:30:00.000Z"
 
@@ -2136,6 +2137,311 @@ describe("tool contracts", () => {
       memorySearchOutputSchema.safeParse({
         results: [{ resultNumber: 1, content: "Slow Mode", surface: "user_profile", fileName: "user_profile.md", sectionId: "collaboration_style", sectionHeading: "Collaboration Style", scope: "global" }],
         totalMatches: 1,
+      }).success,
+    ).toBe(true)
+  })
+})
+
+describe("V2 Flow standalone contracts", () => {
+  const flow = {
+    id: "v2flow_1",
+    projectId: "proj_1",
+    status: "active",
+    foregroundGoalId: "v2goal_1",
+    revision: 3,
+    lastEventSequence: 12,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+
+  const goal = {
+    id: "v2goal_1",
+    flowId: flow.id,
+    projectId: flow.projectId,
+    ordinal: 1,
+    title: "Build the seamless view",
+    kind: "work",
+    status: "foreground",
+    origin: "router",
+    priority: 50,
+    pinned: false,
+    lastActiveAt: timestamp,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+
+  const runtimeConfig = {
+    providerId: "openrouter",
+    modelId: "openai/gpt-5.6",
+    thinkingEnabled: true,
+    thinkingEffort: "medium",
+    approvalMode: "manual",
+    sandboxMode: "workspace_write",
+    contextWindowTokens: 120_000,
+  }
+
+  it("keeps V2 commands isolated from the V1 command union", () => {
+    const command = {
+      id: "v2cmd_1",
+      schemaVersion: 2,
+      timestamp,
+      projectId: flow.projectId,
+      flowId: flow.id,
+      type: "v2.message.send",
+      payload: {
+        clientMessageId: "v2msg_client_1",
+        content: "Continue the seamless Flow implementation.",
+        foregroundGoalIdAtCompose: goal.id,
+        runtimeConfig,
+      },
+    }
+
+    expect(v2Flow.v2ClientCommandSchema.safeParse(command).success).toBe(true)
+    expect(clientCommandSchema.safeParse(command).success).toBe(false)
+    expect(
+      v2Flow.v2MessageSendCommandSchema.safeParse({
+        ...command,
+        payload: { ...command.payload, content: "x".repeat(10_001) },
+      }).success,
+    ).toBe(false)
+  })
+
+  it("validates the one-flow snapshot and strict goal-routing shapes", () => {
+    expect(v2Flow.v2FlowSchema.safeParse(flow).success).toBe(true)
+    expect(v2Flow.v2FlowSchema.safeParse({ ...flow, conversationId: "classic_1" }).success).toBe(false)
+    expect(v2Flow.v2GoalSchema.safeParse(goal).success).toBe(true)
+    expect(
+      v2Flow.v2GoalRoutingRunSchema.safeParse({
+        id: "v2route_1",
+        flowId: flow.id,
+        projectId: flow.projectId,
+        turnId: "v2turn_1",
+        messageId: "v2msg_1",
+        foregroundGoalId: goal.id,
+        candidateGoalIds: [goal.id],
+        clarificationCandidateGoalIds: [],
+        selectedGoalId: goal.id,
+        decision: "continue_foreground",
+        confidence: 0.94,
+        status: "completed",
+        startedAt: timestamp,
+        completedAt: timestamp,
+      }).success,
+    ).toBe(true)
+    expect(
+      v2Flow.v2GoalRoutingRunSchema.safeParse({
+        id: "v2route_2",
+        flowId: flow.id,
+        projectId: flow.projectId,
+        turnId: "v2turn_2",
+        messageId: "v2msg_2",
+        candidateGoalIds: [],
+        clarificationCandidateGoalIds: [],
+        decision: "create_goal",
+        status: "completed",
+        startedAt: timestamp,
+      }).success,
+    ).toBe(false)
+  })
+
+  it("requires an explicit cursor only while earlier Flow messages remain", () => {
+    const message = {
+      id: "v2msg_1",
+      flowId: flow.id,
+      projectId: flow.projectId,
+      goalId: goal.id,
+      ordinal: 101,
+      role: "user",
+      kind: "standard",
+      content: "Newest bounded window message",
+      status: "completed",
+      createdAt: timestamp,
+      completedAt: timestamp,
+    }
+    const snapshot = {
+      flow,
+      foregroundGoal: goal,
+      goals: [goal],
+      latestCapsules: [],
+      messages: [message],
+      messageWindow: { hasEarlier: true, beforeOrdinal: 101 },
+      activeTerminals: [],
+      pendingApprovals: [],
+      lastEventSequence: 12,
+    }
+    expect(v2Flow.v2FlowSnapshotSchema.safeParse(snapshot).success).toBe(true)
+    expect(v2Flow.v2FlowSnapshotSchema.safeParse({
+      ...snapshot,
+      messageWindow: { hasEarlier: true },
+    }).success).toBe(false)
+    expect(v2Flow.v2ListFlowMessagesResponseSchema.safeParse({
+      messages: [message],
+      messageWindow: { hasEarlier: false },
+    }).success).toBe(true)
+    expect(v2Flow.v2ListFlowMessagesResponseSchema.safeParse({
+      messages: [message],
+      messageWindow: { hasEarlier: false, beforeOrdinal: 101 },
+    }).success).toBe(false)
+  })
+
+  it("represents durable Terminal suspension and restart-safe ready tasks honestly", () => {
+    expect(v2Flow.v2TurnStatusSchema.safeParse("suspended").success).toBe(true)
+    expect(v2Flow.v2AgentTaskStatusSchema.safeParse("ready").success).toBe(true)
+  })
+
+  it("namespaces Flow worker telemetry and compaction lifecycle events", () => {
+    expect(v2Flow.v2ModelCallRoleSchema.safeParse("memory_router").success).toBe(true)
+    expect(v2Flow.v2ModelCallRoleSchema.safeParse("frontier_agent").success).toBe(true)
+    const envelope = {
+      id: "v2evt_compaction_1",
+      schemaVersion: 2,
+      timestamp,
+      projectId: flow.projectId,
+      flowId: flow.id,
+      goalId: goal.id,
+      turnId: "v2turn_1",
+    }
+    expect(v2Flow.v2ServerEventSchema.safeParse({
+      ...envelope,
+      type: "v2.context.compaction.completed",
+      payload: {
+        snapshotId: "ctxcmp_1",
+        inputTokensEstimate: 80_000,
+        outputTokensEstimate: 20_000,
+        contextUsedTokensEstimate: 90_000,
+        sizeClass: "preferred",
+      },
+    }).success).toBe(true)
+    expect(v2Flow.v2ServerEventSchema.safeParse({
+      ...envelope,
+      type: "v2.agent.handover",
+      payload: {
+        toolCallId: "v2tcall_1",
+        stepIndex: 2,
+        fromProviderId: "openai",
+        fromModelId: "gpt-test",
+        toProviderId: "openrouter",
+        toModelId: "frontier-test",
+      },
+    }).success).toBe(true)
+  })
+
+  it("bounds unresolved context and requires a focused distillation instruction", () => {
+    const baseDisposition = {
+      id: "v2disp_1",
+      flowId: flow.id,
+      goalId: goal.id,
+      turnId: "v2turn_3",
+      contextItemId: "v2ctx_1",
+      version: 1,
+      reason: "The next tool result decides whether this evidence is needed.",
+      decidedBy: "main_agent",
+      createdAt: timestamp,
+    }
+
+    expect(
+      v2Flow.v2ContextDispositionSchema.safeParse({
+        ...baseDisposition,
+        disposition: "unresolved",
+        unresolvedAgeTurns: 2,
+        unresolvedMaxAgeTurns: 3,
+      }).success,
+    ).toBe(true)
+    expect(
+      v2Flow.v2ContextDispositionSchema.safeParse({
+        ...baseDisposition,
+        disposition: "unresolved",
+        unresolvedAgeTurns: 4,
+        unresolvedMaxAgeTurns: 3,
+      }).success,
+    ).toBe(false)
+    expect(
+      v2Flow.v2ContextDispositionSchema.safeParse({
+        ...baseDisposition,
+        disposition: "keep_exact",
+        unresolvedAgeTurns: 1,
+        unresolvedMaxAgeTurns: 3,
+      }).success,
+    ).toBe(false)
+    expect(
+      v2Flow.v2ContextDispositionSchema.safeParse({
+        ...baseDisposition,
+        disposition: "distill",
+      }).success,
+    ).toBe(false)
+  })
+
+  it("locks speech to the accepted offline engines and OpenRouter STT allowlist", () => {
+    for (const modelId of v2Flow.V2_OPENROUTER_STT_MODEL_IDS) {
+      expect(
+        v2Flow.v2CreateSpeechJobRequestSchema.safeParse({
+          kind: "transcription",
+          engine: "openrouter",
+          modelId,
+          inputArtifactId: "v2artifact_audio_1",
+        }).success,
+      ).toBe(true)
+    }
+    expect(
+      v2Flow.v2CreateSpeechJobRequestSchema.safeParse({
+        kind: "transcription",
+        engine: "openrouter",
+        modelId: "openai/whisper-1",
+        inputArtifactId: "v2artifact_audio_1",
+      }).success,
+    ).toBe(false)
+    expect(
+      v2Flow.v2CreateSpeechJobRequestSchema.safeParse({
+        kind: "transcription",
+        engine: "local_whisper",
+        modelId: "tiny.en",
+        inputArtifactId: "v2artifact_audio_1",
+      }).success,
+    ).toBe(false)
+    expect(
+      v2Flow.v2CreateSpeechJobRequestSchema.safeParse({
+        kind: "synthesis",
+        engine: "local_kokoro",
+        modelId: "kokoro-82m",
+        inputText: "A calmer spoken version of the answer.",
+        voiceId: "af_heart",
+      }).success,
+    ).toBe(true)
+  })
+
+  it("validates first-class feedback and secret-safe credential commands", () => {
+    const envelope = {
+      id: "v2cmd_credential_1",
+      schemaVersion: 2,
+      timestamp,
+      projectId: flow.projectId,
+      flowId: flow.id,
+      turnId: "v2turn_4",
+    }
+    expect(
+      v2Flow.v2CredentialInputSubmitCommandSchema.safeParse({
+        ...envelope,
+        type: "v2.credential.input.submit",
+        payload: {
+          credentialRequestId: "v2credential_1",
+          turnId: "v2turn_4",
+          decision: "submitted",
+          value: "secret-value-that-is-never-an-entity-field",
+        },
+      }).success,
+    ).toBe(true)
+    expect(
+      v2Flow.v2CredentialInputSubmitCommandSchema.safeParse({
+        ...envelope,
+        type: "v2.credential.input.submit",
+        payload: { credentialRequestId: "v2credential_1", turnId: "v2turn_4", decision: "cancelled", value: "nope" },
+      }).success,
+    ).toBe(false)
+    expect(
+      v2Flow.v2FeedbackSubmitCommandSchema.safeParse({
+        ...envelope,
+        type: "v2.feedback.submit",
+        payload: { messageId: "v2msg_assistant_1", turnId: "v2turn_4", rating: "thumbs_up" },
       }).success,
     ).toBe(true)
   })

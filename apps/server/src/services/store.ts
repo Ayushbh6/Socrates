@@ -372,16 +372,21 @@ export class SocratesStore {
   runSkillsImportTool(
     projectId: string,
     input: SkillsToolInput,
-    source: { conversationId: string; turnId: string; signal?: AbortSignal },
+    source: {
+      conversationId: string
+      turnId: string
+      signal?: AbortSignal
+      attachedArchive?: { filename: string; data: Buffer }
+    },
   ): Promise<SkillsToolOutput> {
-    const attachedArchive = input.operation === "preview_import" && input.attachmentPath
+    const attachedArchive = source.attachedArchive ?? (input.operation === "preview_import" && input.attachmentPath
       ? this.attachments.readCurrentTurnSkillZip({
           projectId,
           conversationId: source.conversationId,
           turnId: source.turnId,
           attachmentPath: input.attachmentPath,
         })
-      : undefined
+      : undefined)
     return this.memory.runSkillsImportTool(
       projectId,
       this.primaryWorkspacePathOrUndefined(projectId),
@@ -391,7 +396,19 @@ export class SocratesStore {
     )
   }
 
-  createMemoryNote(projectId: string, input: MemoryNoteToolInput, source: { conversationId: string; sessionId: string; turnId: string }): MemoryNoteToolOutput {
+  createMemoryNote(
+    projectId: string,
+    input: MemoryNoteToolInput,
+    source: {
+      conversationId: string
+      sessionId: string
+      turnId: string
+      messageId?: string
+      messageExcerpt?: string
+      sourceRuntime?: "classic" | "v2_flow"
+      appendClassicEvent?: boolean
+    },
+  ): MemoryNoteToolOutput {
     return this.memory.createMemoryNote(input, { projectId, ...source })
   }
 
@@ -1092,6 +1109,18 @@ export class SocratesStore {
     this.retrieval.enqueueTurn(projectId, turnId)
   }
 
+  indexV2TurnRetrieval(projectId: string, turnId: string): void {
+    this.retrieval.enqueueV2Turn(projectId, turnId)
+  }
+
+  retrieveV2FlowTraces(projectId: string, flowId: string, input: TraceRetrieveMainToolInput) {
+    return this.retrieval.retrieveV2FlowTrace(projectId, flowId, input)
+  }
+
+  deleteV2FlowRetrieval(projectId: string, flowId: string): void {
+    this.retrieval.deleteV2Flow(projectId, flowId)
+  }
+
   retrieveToolTraces(projectId: string, conversationId: string, input: TraceRetrieveToolInput) {
     return this.traces.retrieve(projectId, conversationId, input)
   }
@@ -1103,6 +1132,13 @@ export class SocratesStore {
       const projectId = previous?.projectId ?? input.projectId ?? this.resolveGlobalInspectProjectId(input, turnId)
       if (!projectId) {
         throw new SocratesError("trace_result_not_found", "The requested trace result could not be resolved to a visible project.", { recoverable: true })
+      }
+      if (turnId) {
+        const v2Result = this.retrieveV2GlobalTraceTurn(projectId, turnId, input.charLimit ?? 80_000)
+        if (v2Result) {
+          this.globalTraceRefs = [{ projectId, turnId }]
+          return { results: [{ ...v2Result, resultNumber: 1 }], totalMatches: 1 }
+        }
       }
       const inspected = await this.retrieval.retrieveMainTrace(projectId, "", {
         operation: "inspect",
@@ -1142,10 +1178,20 @@ export class SocratesStore {
         } catch (error) {
           warnings.push(`${this.projectTitle(projectId)}: ${error instanceof Error ? error.message : String(error)}`)
         }
+        try {
+          for (const candidate of this.searchV2GlobalTraceTurns(projectId, input)) {
+            collected.push({ projectId, result: candidate.result, rawScore: candidate.rawScore })
+          }
+        } catch (error) {
+          warnings.push(`${this.projectTitle(projectId)} Seamless Flow: ${error instanceof Error ? error.message : String(error)}`)
+        }
       }
     } else {
       for (const projectId of projectIds) {
         try {
+          const selectedV2Flow = input.conversationId
+            ? Boolean(this.handle.sqlite.prepare("SELECT 1 FROM v2_flows WHERE id = ? AND project_id = ? LIMIT 1").get(input.conversationId, projectId))
+            : false
           const ranked = await this.retrieval.search({
             projectId,
             query,
@@ -1153,7 +1199,11 @@ export class SocratesStore {
             filters: {
               corpusKind: "trace_turn",
               scope: "project",
-              ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+              ...(input.conversationId
+                ? selectedV2Flow
+                  ? { runtimeKind: "v2_flow" as const, flowId: input.conversationId }
+                  : { conversationId: input.conversationId }
+                : {}),
               ...(input.conversationTitle ? { conversationTitle: input.conversationTitle } : {}),
               ...(input.role ? { role: input.role } : {}),
               ...(input.createdAfter ? { createdAfter: input.createdAfter } : {}),
@@ -1268,7 +1318,11 @@ export class SocratesStore {
     const requestedIds = traceSelectorValues(input.projectId)
     if (requestedIds.length > 0) return requestedIds
     if (input.conversationId) {
-      const rows = this.handle.sqlite.prepare("SELECT DISTINCT project_id AS projectId FROM conversations WHERE id = ?").all(input.conversationId) as Array<{ projectId: string }>
+      const rows = this.handle.sqlite.prepare(
+        `SELECT project_id AS projectId FROM conversations WHERE id = ?
+         UNION
+         SELECT project_id AS projectId FROM v2_flows WHERE id = ?`,
+      ).all(input.conversationId, input.conversationId) as Array<{ projectId: string }>
       return rows.map((row) => row.projectId)
     }
     const titles = traceSelectorValues(input.projectTitle)
@@ -1283,12 +1337,234 @@ export class SocratesStore {
     return (this.handle.sqlite.prepare("SELECT name FROM projects WHERE id = ?").get(projectId) as { name: string } | undefined)?.name ?? projectId
   }
 
+  /**
+   * Complements the shared canonical Q&A index with bounded exact search over
+   * V2-owned tool, Terminal, error, and immutable-evidence rows. It never
+   * manufactures Classic conversations/turns or writes Classic trace tables.
+   */
+  private searchV2GlobalTraceTurns(
+    projectId: string,
+    input: TraceRetrieveGlobalSearchInput,
+  ): Array<{ result: Omit<TraceRetrieveGlobalResult, "resultNumber">; rawScore: number }> {
+    const where = ["t.project_id = ?", "t.status IN ('completed','failed','cancelled')", "f.status IN ('active','archived')"]
+    const params: unknown[] = [projectId]
+    if (input.conversationId) {
+      where.push("t.flow_id = ?")
+      params.push(input.conversationId)
+    }
+    if (input.conversationTitle) {
+      where.push("LOWER(CASE WHEN g.title IS NULL OR trim(g.title) = '' THEN 'Seamless Flow' ELSE 'Seamless Flow · ' || g.title END) = LOWER(?)")
+      params.push(input.conversationTitle)
+    }
+    if ("turnNo" in input && input.turnNo) {
+      where.push("t.ordinal = ?")
+      params.push(input.turnNo)
+    }
+    if (input.createdAfter) {
+      where.push("COALESCE(t.completed_at,t.failed_at,t.cancelled_at,t.started_at) >= ?")
+      params.push(input.createdAfter)
+    }
+    if (input.createdBefore) {
+      where.push("COALESCE(t.completed_at,t.failed_at,t.cancelled_at,t.started_at) <= ?")
+      params.push(input.createdBefore)
+    }
+    const query = input.query?.trim()
+    if (query) {
+      const clauses = [
+        "EXISTS (SELECT 1 FROM v2_messages vm WHERE (vm.turn_id = t.id OR vm.id = root_turn.user_message_id) AND instr(lower(vm.content), lower(?)) > 0)",
+        "EXISTS (SELECT 1 FROM v2_tool_calls vc WHERE vc.turn_id = t.id AND (instr(lower(vc.tool_name), lower(?)) > 0 OR instr(lower(vc.arguments_json), lower(?)) > 0 OR instr(lower(COALESCE(vc.result_json,'')), lower(?)) > 0))",
+        "EXISTS (SELECT 1 FROM v2_evidence_items ve WHERE ve.turn_id = t.id AND (instr(lower(ve.title), lower(?)) > 0 OR instr(lower(COALESCE(ve.content,'')), lower(?)) > 0 OR instr(lower(ve.handle), lower(?)) > 0))",
+        "EXISTS (SELECT 1 FROM v2_terminal_sessions vs LEFT JOIN v2_terminal_output_chunks vo ON vo.terminal_session_id = vs.id WHERE vs.turn_id = t.id AND (instr(lower(vs.command), lower(?)) > 0 OR instr(lower(COALESCE(vo.text,'')), lower(?)) > 0))",
+        "EXISTS (SELECT 1 FROM v2_errors vx WHERE vx.turn_id = t.id AND (instr(lower(vx.code), lower(?)) > 0 OR instr(lower(vx.message), lower(?)) > 0 OR instr(lower(COALESCE(vx.details_json,'')), lower(?)) > 0))",
+        "instr(lower(COALESCE(g.title,'')), lower(?)) > 0",
+      ]
+      where.push(`(${clauses.join(" OR ")})`)
+      params.push(query, query, query, query, query, query, query, query, query, query, query, query, query)
+    }
+    const rows = this.handle.sqlite.prepare(
+      `SELECT t.id AS turnId,
+              t.ordinal,
+              (SELECT group_concat(vm.content, char(10)) FROM v2_messages vm WHERE (vm.turn_id = t.id OR vm.id = root_turn.user_message_id) AND vm.role = 'user') AS userContent,
+              (SELECT group_concat(vm.content, char(10)) FROM v2_messages vm WHERE vm.turn_id = t.id AND vm.role = 'assistant') AS assistantContent
+         FROM v2_turns t
+         JOIN v2_flows f ON f.id = t.flow_id AND f.project_id = t.project_id
+         LEFT JOIN v2_goals g ON g.id = t.goal_id
+         LEFT JOIN v2_agent_tasks task ON task.current_turn_id = t.id
+         LEFT JOIN v2_turns root_turn ON root_turn.id = task.root_turn_id
+        WHERE ${where.join(" AND ")}
+        ORDER BY COALESCE(t.completed_at,t.failed_at,t.cancelled_at,t.started_at) DESC, t.id DESC
+        LIMIT 128`,
+    ).all(...params) as Array<{ turnId: string; ordinal: number; userContent: string | null; assistantContent: string | null }>
+
+    const candidates: Array<{ result: Omit<TraceRetrieveGlobalResult, "resultNumber">; rawScore: number }> = []
+    for (const row of rows) {
+      const inspected = this.retrieveV2GlobalTraceTurn(projectId, row.turnId, 80_000)
+      if (!inspected) continue
+      const searchable = inspected.content.toLowerCase()
+      const auditInput = input.mode === "audit" ? input : undefined
+      if (auditInput?.paths?.some((value) => !searchable.includes(value.toLowerCase()))) continue
+      if (auditInput?.command && !searchable.includes(auditInput.command.toLowerCase())) continue
+      if (auditInput?.toolNames?.some((value) => !searchable.includes(value.toLowerCase()))) continue
+      if (auditInput?.include?.length) {
+        const selected = auditInput.include.some((kind) => {
+          if (kind === "tool_calls") return searchable.includes("[tool calls]")
+          if (kind === "shell") return searchable.includes("[terminal evidence]")
+          if (kind === "files") return searchable.includes("[immutable evidence]") || searchable.includes("changedfiles")
+          return searchable.includes("[errors]")
+        })
+        if (!selected) continue
+      }
+      const normalizedQuery = query?.toLowerCase()
+      const userMatched = Boolean(normalizedQuery && row.userContent?.toLowerCase().includes(normalizedQuery))
+      const assistantMatched = Boolean(normalizedQuery && row.assistantContent?.toLowerCase().includes(normalizedQuery))
+      if (input.role === "user" && normalizedQuery && !userMatched) continue
+      if (input.role === "assistant" && normalizedQuery && !assistantMatched && !searchable.includes(normalizedQuery)) continue
+      const matchedRole = input.role === "user" || input.role === "assistant"
+        ? input.role
+        : assistantMatched || (!userMatched && inspected.matchedRole === "assistant") ? "assistant" : "user"
+      candidates.push({
+        result: { ...inspected, matchedRole },
+        rawScore: normalizedQuery ? 1 + exactOccurrenceCount(searchable, normalizedQuery) : 1 / (60 + row.ordinal),
+      })
+    }
+    return candidates.slice(0, 32)
+  }
+
+  private retrieveV2GlobalTraceTurn(
+    projectId: string,
+    turnId: string,
+    charLimit: number,
+  ): Omit<TraceRetrieveGlobalResult, "resultNumber"> | undefined {
+    const turn = this.handle.sqlite.prepare(
+      `SELECT t.id, t.ordinal, t.status, t.started_at AS startedAt,
+              t.completed_at AS completedAt, t.failed_at AS failedAt, t.cancelled_at AS cancelledAt,
+              t.goal_id AS goalId,
+              g.title AS goalTitle,
+              COALESCE(t.user_message_id, root_turn.user_message_id) AS effectiveUserMessageId
+       FROM v2_turns t
+       LEFT JOIN v2_goals g ON g.id = t.goal_id
+       LEFT JOIN v2_agent_tasks task ON task.current_turn_id = t.id
+       LEFT JOIN v2_turns root_turn ON root_turn.id = task.root_turn_id
+       WHERE t.id = ? AND t.project_id = ?
+       LIMIT 1`,
+    ).get(turnId, projectId) as {
+      id: string
+      ordinal: number
+      status: string
+      startedAt: string
+      completedAt: string | null
+      failedAt: string | null
+      cancelledAt: string | null
+      goalId: string | null
+      goalTitle: string | null
+      effectiveUserMessageId: string | null
+    } | undefined
+    if (!turn) return undefined
+
+    const messages = this.handle.sqlite.prepare(
+      `SELECT role, content, status, created_at AS createdAt
+       FROM v2_messages
+       WHERE turn_id = ? OR id = ?
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, ordinal ASC`,
+    ).all(turnId, turn.effectiveUserMessageId, turn.effectiveUserMessageId) as Array<{ role: string; content: string; status: string; createdAt: string }>
+    const tools = this.handle.sqlite.prepare(
+      `SELECT tool_name AS toolName, status, arguments_json AS argumentsJson,
+              result_json AS resultJson, error_id AS errorId
+       FROM v2_tool_calls
+       WHERE turn_id = ?
+       ORDER BY started_at ASC
+       LIMIT 80`,
+    ).all(turnId) as Array<{
+      toolName: string
+      status: string
+      argumentsJson: string
+      resultJson: string | null
+      errorId: string | null
+    }>
+    const evidence = this.handle.sqlite.prepare(
+      `SELECT handle, source_kind AS sourceKind, title, content
+       FROM v2_evidence_items
+       WHERE turn_id = ?
+       ORDER BY created_at ASC
+       LIMIT 80`,
+    ).all(turnId) as Array<{ handle: string; sourceKind: string; title: string; content: string | null }>
+    const terminalOutput = this.handle.sqlite.prepare(
+      `SELECT s.name, s.command, s.status, s.exit_code AS exitCode,
+              o.sequence, o.stream, o.text, o.redacted
+       FROM v2_terminal_sessions s
+       LEFT JOIN v2_terminal_output_chunks o ON o.terminal_session_id = s.id
+       WHERE s.turn_id = ?
+       ORDER BY s.started_at ASC, o.sequence ASC
+       LIMIT 500`,
+    ).all(turnId) as Array<{
+      name: string
+      command: string
+      status: string
+      exitCode: number | null
+      sequence: number | null
+      stream: string | null
+      text: string | null
+      redacted: number | null
+    }>
+    const errors = this.handle.sqlite.prepare(
+      `SELECT source, code, message, details_json AS detailsJson
+       FROM v2_errors
+       WHERE turn_id = ?
+       ORDER BY created_at ASC
+       LIMIT 80`,
+    ).all(turnId) as Array<{ source: string; code: string; message: string; detailsJson: string | null }>
+
+    const sections = [
+      `[Seamless Flow goal: ${turn.goalTitle ?? "Current goal"}]`,
+      messages.map((message) => `${message.role}: ${message.content}`).join("\n\n"),
+      tools.length > 0
+        ? `[Tool calls]\n${tools.map((tool) => [
+            `${tool.toolName} (${tool.status})`,
+            `arguments: ${tool.argumentsJson}`,
+            ...(tool.resultJson ? [`result: ${tool.resultJson}`] : []),
+            ...(tool.errorId ? [`error: ${tool.errorId}`] : []),
+          ].join("\n")).join("\n\n")}`
+        : "",
+      evidence.length > 0
+        ? `[Immutable evidence]\n${evidence.map((item) => `${item.sourceKind} ${item.title} (${item.handle})${item.content ? `\n${item.content}` : ""}`).join("\n\n")}`
+        : "",
+      terminalOutput.length > 0
+        ? `[Terminal evidence]\n${terminalOutput.map((item) => {
+            const header = `${item.name} (${item.status}${item.exitCode === null ? "" : `, exit ${item.exitCode}`}): ${item.command}`
+            if (item.sequence === null) return header
+            return `${header}\n${item.stream ?? "output"}: ${item.redacted ? "[redacted user input]" : item.text ?? ""}`
+          }).join("\n\n")}`
+        : "",
+      errors.length > 0
+        ? `[Errors]\n${errors.map((item) => `${item.source} ${item.code}: ${item.message}${item.detailsJson ? `\n${item.detailsJson}` : ""}`).join("\n\n")}`
+        : "",
+    ].filter(Boolean)
+    const raw = sections.join("\n\n")
+    const assistant = messages.find((message) => message.role === "assistant" && message.status === "completed")
+    const cancelled = turn.status === "cancelled"
+    const status: TraceRetrieveGlobalResult["status"] = assistant
+      ? cancelled ? "cancelled_partial" : "complete"
+      : cancelled ? "cancelled_user_only" : "failed_user_only"
+    return {
+      content: raw.slice(0, Math.max(1, Math.min(80_000, charLimit))),
+      turnId,
+      conversationTitle: turn.goalTitle ? `Seamless Flow · ${turn.goalTitle}` : "Seamless Flow",
+      turnNumber: Math.max(1, turn.ordinal),
+      matchedRole: assistant ? "assistant" : "user",
+      status,
+      occurredAt: turn.completedAt ?? turn.cancelledAt ?? turn.failedAt ?? messages[0]?.createdAt ?? turn.startedAt,
+      projectTitle: this.projectTitle(projectId),
+    }
+  }
+
   private resolveGlobalInspectProjectId(
     input: Extract<TraceRetrieveGlobalToolInput, { operation: "inspect" }>,
     turnId?: string,
   ): string | undefined {
     if (turnId) {
-      return (this.handle.sqlite.prepare("SELECT c.project_id AS projectId FROM turns t INNER JOIN conversations c ON c.id = t.conversation_id WHERE t.id = ?").get(turnId) as { projectId: string } | undefined)?.projectId
+      const classic = this.handle.sqlite.prepare("SELECT c.project_id AS projectId FROM turns t INNER JOIN conversations c ON c.id = t.conversation_id WHERE t.id = ?").get(turnId) as { projectId: string } | undefined
+      if (classic?.projectId) return classic.projectId
+      return (this.handle.sqlite.prepare("SELECT project_id AS projectId FROM v2_turns WHERE id = ?").get(turnId) as { projectId: string } | undefined)?.projectId
     }
     if (input.projectTitle) {
       return (this.handle.sqlite.prepare("SELECT id FROM projects WHERE status <> 'deleted' AND LOWER(name) = LOWER(?) ORDER BY updated_at DESC LIMIT 1").get(input.projectTitle) as { id: string } | undefined)?.id
@@ -1333,6 +1609,19 @@ const mergeModelOptions = (primary: ModelOption[], secondary: ModelOption[]): Mo
 
 const traceSelectorValues = (value: string | string[] | undefined): string[] =>
   (Array.isArray(value) ? value : value ? [value] : []).map((item) => item.trim()).filter(Boolean)
+
+const exactOccurrenceCount = (text: string, query: string): number => {
+  if (!query) return 0
+  let count = 0
+  let offset = 0
+  while (count < 100) {
+    const next = text.indexOf(query, offset)
+    if (next < 0) break
+    count += 1
+    offset = next + Math.max(1, query.length)
+  }
+  return count
+}
 
 const toMainTraceSearchInput = (
   input: TraceRetrieveGlobalSearchInput,

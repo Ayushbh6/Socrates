@@ -1,6 +1,6 @@
 # Socrates DB Structure
 
-This document defines the initial SQLite database design for Socrates.
+This document defines the detailed V1 Classic SQLite database design for Socrates and records the implemented V2 Seamless Flow persistence boundary. V2 architecture and lifecycle semantics are documented separately in `V2_FLOW_ARCHITECTURE.md`; executable V2 columns and constraints live in `apps/server/src/db/schema.ts` and migrations `0026_outgoing_typhoid_mary.sql` plus `0027_long_terror.sql`.
 
 The database is the source of truth for conversations, runtime state, model calls, tool calls, approvals, usage, errors, and replayable event history. The goal is that any single user query can be reconstructed later from the database:
 
@@ -36,11 +36,47 @@ Structured tables like `messages`, `model_calls`, `tool_calls`, and `errors` mak
 ```text
 events = complete timeline
 other tables = indexed structured views of important entities
+
+v2_runtime_events = ordered Seamless agent/socket timeline
+other v2_* tables = scoped structured views and durable HTTP/runtime ownership records
 ```
+
+## V1/V2 Persistence Boundary
+
+The detailed table inventory below remains the V1 Classic persistence contract. V2 does not reinterpret V1 `conversations`, `sessions`, `turns`, or `messages`, and it does not create hidden V1 conversation rows as foreign-key shims for a V2 Flow.
+
+Migrations `0026_outgoing_typhoid_mary.sql` and `0027_long_terror.sql` create exactly 29 namespaced V2 tables in the same user-owned SQLite database. Sharing the database file does not share runtime ownership: all Flow lifecycle, timeline, context, audit, Terminal, artifact, feedback, credential-request, speech, and bridge-control rows remain under `v2_*` names.
+
+| V2 family | Implemented tables |
+| --- | --- |
+| Flow and goals | `v2_flows`, `v2_goals`, `v2_goal_transitions`, `v2_goal_routing_runs`, `v2_goal_capsules`, `v2_goal_message_links` |
+| Timeline and durable execution | `v2_turns`, `v2_turn_runtime_configs`, `v2_messages`, `v2_message_attachments`, `v2_agent_tasks` |
+| Evidence and active context | `v2_evidence_items`, `v2_context_items`, `v2_context_item_sources`, `v2_context_dispositions` |
+| Runtime audit and interaction | `v2_runtime_events`, `v2_model_calls`, `v2_usage_events`, `v2_tool_calls`, `v2_approvals`, `v2_terminal_sessions`, `v2_terminal_output_chunks`, `v2_errors`, `v2_artifacts`, `v2_feedback`, `v2_credential_input_requests` |
+| Speech | `v2_speech_jobs` |
+| Explicit Classic bridge | `v2_classic_conversation_bridges`, `v2_classic_message_links` |
+
+The V2 storage rule is:
+
+```text
+V2 may reuse shared files and services only when ownership, replay, deletion, and project scoping are explicit
+conversation-owned runtime persistence stays namespaced
+V1 query semantics and behavior remain unchanged either way
+```
+
+Shared application-level learning state is intentionally not duplicated. V2 `memory_note` entries use the existing `memory_notes` inbox with `sourceRuntime = "v2_flow"` plus exact Flow/turn/message coordinates, and the same Global Memory Agent writes the existing `memory_agent_*`, profile, identity, and skill surfaces. Completed Memory Agent jobs record processed V2 turn ids in the shared job receipt without creating Classic `events`, conversations, sessions, turns, or messages. This is shared global capability state, not shared conversation ownership.
+
+The database enforces one Flow per project and one foreground goal per Flow through unique indexes. V2 evidence rows are append-only: migration triggers reject `UPDATE` and `DELETE` on `v2_evidence_items`; pruning mutates only the active context projection and appends disposition/derived-evidence rows. Focused tests also assert that V2 turns, attachments, compaction, tools, Memory Router telemetry, and speech do not create Classic runtime rows. The explicit focus bridge is the narrow exception: one mapped Classic conversation/session and its visible messages may be created or reused only through bridge ownership, while tool/evidence/usage/event rows stay V2-owned.
+
+See `V2_FLOW_ARCHITECTURE.md` for table responsibilities, state-reconstruction requirements, and the immutable-evidence contract.
+
+`v2_speech_jobs` implements the accepted V2 Voice V1 lifecycle without changing V1 `voice_inputs` or `audio_outputs`. Its database check allows local Whisper `base.en`/`small.en`, OpenRouter `nvidia/parakeet-tdt-0.6b-v3`/`microsoft/mai-transcribe-1.5`/`mistralai/voxtral-mini-transcribe`, and local Kokoro `kokoro-82m` only. It stores Flow/project ownership, input/output artifacts or source text, finalized transcript, model/voice/speed/language, duration, status, error link, and metadata for provider response/usage where available. Granite and Ollama speech are outside this contract.
 
 ## Semantic Retrieval Storage Contract
 
 SQLite remains authoritative for projects, conversations, messages, tool/audit records, memory-document section metadata, embedding configuration, retrieval jobs/state, and lifecycle-bound retrieval diagnostics. LanceDB under `${SOCRATES_HOME}/retrieval/lance` stores only reproducible lexical/vector/hybrid search rows.
+
+This is the implemented Classic/shared retrieval foundation. V2 Flow turns enter the same canonical per-project LanceDB corpus as role-separated Q&A parents marked with `runtimeKind = "v2_flow"` and exact `flowId`; this gives V2 lexical, semantic, and combined search the shared chunking, embedding, ranking, rebuild, and diagnostic lifecycle without creating Classic conversation rows. V2 queryless recall, exact inspect, and audit resolve from V2-owned messages, tool calls, Terminal chunks, immutable evidence, and errors. A resumed durable Terminal turn resolves its root task's user message for canonical/global exact trace output. Exact immutable-evidence retrieval by V2 id/handle remains a separate authoritative path.
 
 The shared retrieval corpus has two canonical parent kinds:
 
@@ -1690,6 +1726,8 @@ WHERE turn_id = ?;
 ## Current Created Schema
 
 The current server schema creates the full table set below. Earlier planning split these into minimum and follow-up groups; that split is no longer accurate for the current repo state.
+
+This long-form inventory remains V1-specific. The implemented 29-table V2 inventory is intentionally summarized at the top rather than interleaved with Classic tables; use `apps/server/src/db/schema.ts` and migrations `0026_outgoing_typhoid_mary.sql` plus `0027_long_terror.sql` for exact V2 columns, indexes, checks, and triggers.
 
 ```text
 users

@@ -1,10 +1,18 @@
 # Socrates App Flow
 
-This document defines the initial product flow, route structure, and page responsibilities for Socrates.
+This document defines the V1 Classic product flow, route structure, and page responsibilities for Socrates. The implemented, feature-flagged V2 Seamless Flow first cut lives in `V2_FLOW_ARCHITECTURE.md` and must not be inferred from or inserted into the V1 routes below.
 
 Socrates is project-first. Users do not start with a floating global chat. They enter a project, use project resources and instructions, then create or resume conversations inside that project.
 
-## Route Summary
+## V1/V2 Product Boundary
+
+V1 Classic remains the default standalone product. It keeps project-scoped user-created conversations and `/projects/:projectId/chats/:conversationId` exactly as documented here.
+
+V2 Flow is a separate experimental Seamless web window/mode in the normal frontend/backend product. It has one persistent Flow per project, backend-managed goals, one foreground goal, parked goal capsules, self-pruning working context, and text/voice entry through the same bounded Goal Router. Its backend routes remain unmounted unless `SOCRATES_V2_FLOW_ENABLED=true`. The ordinary NPM/runtime launcher defaults that flag to `true`, while a direct source-server run must opt in explicitly. V2 uses namespaced routes/contracts/state and never silently reinterprets existing V1 chats.
+
+Both views use the same projects, primary workspace, workspace `.socrates/`, global `~/.Socrates/`, Socrates tools, MCP/skills/provider settings, Memory Router implementation, and global Memory Agent. V2 owns the Flow/goal router, goal-aware context policy, runtime transport, and `v2_*` persistence. See `V2_FLOW_ARCHITECTURE.md` for the complete inheritance boundary and current limitations.
+
+## V1 Route Summary
 
 ```text
 /welcome
@@ -31,7 +39,9 @@ open app
   -> /welcome
   -> check local database
   -> if no onboarded user exists, go to /onboarding
-  -> if onboarded user exists, go to /projects
+  -> if onboarded user exists, show Classic/Seamless chooser
+       -> Classic opens /projects
+       -> enabled Seamless opens /seamless
 ```
 
 The first-run check should use local SQLite state, not browser-only local storage.
@@ -40,14 +50,12 @@ The local SQLite file defaults to `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME`
 
 ## Browser Development Launch Flow
 
-The current dev-test path is the browser app, not the desktop/Tauri shell.
-
-The supported packaged-product path is also browser UI plus backend, launched through the NPM CLI and downloaded runtime archive. Tauri is not part of current implementation, release verification, or retrieval work. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and three release targets.
+The primary dev-test and product path is the browser app plus normal backend. The supported packaged-product path is the same web frontend/backend, launched through the NPM CLI and downloaded runtime archive. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and supported release targets. Direct source-server development must set `SOCRATES_V2_FLOW_ENABLED=true` to expose Seamless; the packaged NPM/runtime launcher defaults it to `true` and accepts an explicit environment override for rollback.
 
 Development launch:
 
 ```text
-terminal 1: pnpm --filter @socrates/server dev
+terminal 1: SOCRATES_V2_FLOW_ENABLED=true pnpm --filter @socrates/server dev
   -> starts Fastify APIs and WebSockets on 127.0.0.1:4000
 
 terminal 2: pnpm --filter web dev
@@ -60,7 +68,7 @@ The server still owns the SQLite path. By default it stores durable data at `~/.
 
 ## Packaged Browser Launch Flow
 
-The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. `apps/desktop` is dormant compatibility code and must not own release runtime assembly.
+The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. `launcher.mjs` passes `SOCRATES_V2_FLOW_ENABLED = process.env.SOCRATES_V2_FLOW_ENABLED ?? "true"` to the backend, so Classic/Seamless is the normal packaged product default and an explicit value can disable it for rollback.
 
 npm CLI release flow:
 
@@ -1187,6 +1195,49 @@ useMessageFeedback()
 ```
 
 Do not make `@ai-sdk/react` the core chat state engine in V1. Socrates needs typed events richer than a normal chat stream.
+
+## Implemented V2 Seamless Flow Summary
+
+The V2 UI is intentionally not another V1 chat route with hidden goal fields.
+
+```text
+Project
+  ├── V1 Classic
+  │     └── user-created conversations
+  └── V2 Seamless Flow, feature flagged
+        └── one persistent visible timeline
+              ├── one foreground goal
+              ├── parked goal capsules
+              ├── pruned working context
+              └── immutable retrievable evidence
+```
+
+The implemented surface uses `/welcome` as a Classic/Seamless chooser for onboarded users, `/seamless` as the project directory, and `/seamless/projects/:projectId` as the one persistent project Flow. When V2 is disabled, the chooser leaves Classic available, disables the Seamless choice, and `/seamless` renders an explicit disabled state. Each focus has one explicit Classic bridge conversation: **Open in Classic** and **Continue in Seamless** flip the active writer and preserve visible Q&A without migrating unrelated chats or duplicating tool/evidence/usage rows.
+
+The Seamless project view is a separate calm, dark, ocean-like workspace with a restrained living sphere, one chronological timeline, a **Current Focus / Current Task** ribbon, a Current/Paused/Finished/Archived focus ledger, a goals/context inspector, and expandable tool/approval/credential/Terminal activity. It renders assistant Markdown/GFM, sparse same-turn routing clarification, streamed reasoning disclosure, message attachments, and tool results, and retains model/thinking controls, stop, feedback, Agent Skill ZIPs, the 10,000-character large-paste attachment rule, push-to-talk transcription, and per-response read aloud. Users do not create chats or manually organize goal boundaries, though direct switch/pause/finish/reopen/archive/pin controls remain available.
+
+V2 uses the same Socrates agent, tools, providers, workspace `.socrates/`, global `~/.Socrates/`, Memory Router implementation, and global Memory Agent as Classic. It does not use the Classic conversation-title rewriter or a capsule-writing LLM: deterministic goal titles and materiality-gated rich capsule versions provide the Seamless navigation/resume labels. The Goal Router reuses the configured fast structured `title_generator` worker model selection without calling the title-rewrite service. V2 turn, tool, approval, Terminal, evidence, context, usage, and event persistence remains `v2_*`-owned. Canonical V2 Q&A parents reuse shared LanceDB lexical/semantic/combined retrieval under explicit `runtimeKind = "v2_flow"` and `flowId` filters; queryless/inspect/audit continue to resolve through V2-owned raw evidence.
+
+The first voice slice is called V2 Voice V1, not V1 Classic voice. Its implemented picker exposes two transcription modes and one read-aloud mode:
+
+```text
+Speech input
+  Offline
+    Whisper small.en, recommended
+    Whisper base.en, optional lightweight profile
+
+  OpenRouter
+    nvidia/parakeet-tdt-0.6b-v3
+    microsoft/mai-transcribe-1.5
+    mistralai/voxtral-mini-transcribe
+
+Read aloud
+  Offline Kokoro-82M through sherpa-onnx
+```
+
+The OpenRouter list is an explicit allowlist even if discovery returns other transcription models. The UI shows Local versus OpenRouter before recording is submitted and never switches from local to cloud automatically. Local model packs install only after an explicit user action with byte/checksum verification and then run offline. Granite Speech, Ollama speech, hosted TTS, and full-duplex realtime voice are outside this first slice.
+
+Full routing, context, voice, concurrency, recovery, and validation boundaries are in `V2_FLOW_ARCHITECTURE.md`. The current implementation still needs final whole-repo regression/packaging and extended soak evidence; the existence of the UI must not be described as proof of 24-hour unattended reliability.
 
 ## Design Notes
 

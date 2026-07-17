@@ -9,7 +9,6 @@ Each package has one job.
 ```text
 apps/web          -> user interface
 apps/server       -> API and WebSocket transport
-apps/desktop      -> native desktop shell and app launch/bundling glue
 packages/core     -> agent runtime and orchestration
 packages/workspace -> local file, shell, search, git, and patch operations
 packages/providers -> model provider abstraction and adapters
@@ -17,9 +16,9 @@ packages/contracts -> shared schemas, event types, tool contracts
 packages/shared   -> generic reusable utilities
 ```
 
-Do not place logic in a package just because it is convenient. Put it where it belongs. The desktop shell can launch or bundle the existing web/server runtime, but it must not fork agent logic, provider logic, workspace filesystem logic, or API contracts.
+Do not place logic in a package just because it is convenient. Put it where it belongs.
 
-The current supported distribution boundary is the NPM CLI plus packaged backend/frontend runtime archives. New runtime packaging logic belongs in a neutral runtime/release script surface, not `apps/desktop`; Tauri and Rust are dormant and out of scope unless a task explicitly reactivates them.
+The current product and supported distribution boundary are the normal web frontend plus backend, delivered through the NPM CLI and packaged backend/frontend runtime archives. New runtime packaging logic belongs in the neutral root runtime/release script surface. Legacy `apps/desktop`/Tauri is discarded and unsupported; do not modify or use it for V1 or V2 unless the user explicitly reverses this decision.
 
 LanceDB is pinned to `0.22.3` because that release publishes native packages for every supported runtime target (`darwin-arm64`, `darwin-x64`, and `win32-x64-msvc`). Lance SQL predicates over camel-case schema fields must quote identifiers, and server shutdown must close the shared native connection explicitly.
 
@@ -564,3 +563,32 @@ Global memory must stay global. User profile `active_context` stores only curren
 Skill writing follows the same rule. The Memory Agent may decide that an approved skill create/update should happen, chooses project/global scope, and uses human-facing skill names. Repeated subject matter is not a skill; repeated ordered work with triggers, phases, decision gates, corrections, and verification is. Socrates-originated notes default to project scope unless cross-project evidence or a global collaboration procedure justifies global scope. Every proposal must carry inspected source-turn evidence. Final `SKILL.md` authoring belongs to the Skill Writer Agent. `skill_write` is a narrow scoped save/validation tool, not another model or hidden fourth agent; it must reject no-op updates and unsafe supporting-file paths. The backend determines proposal operation from canonical target existence, so an existing skill is always an update even if the model mistakenly asks to create it. Main Socrates must run `skills list` and describe the best exact match before domain tools for ordered multi-step, verification/review, and closure/handoff workflows; generic tool knowledge is not a substitute for checking learned user-specific gates.
 
 Pre-made skill import is not skill writing and must not invoke the Skill Writer. Accept one portable ZIP only through staged preview and explicit user commit; parse standards-compatible YAML, preserve package files, never execute during inspection/install, never honor `allowed-tools` as approval, cap archive/extracted/file counts and sizes, reject traversal/symlinks/encryption/multiple roots/reserved provenance files, and install through atomic same-root replacement with rollback. Disabled skills must be excluded from model discovery while remaining visible to management UI.
+
+## 24. V1 Classic And V2 Flow Must Never Blur
+
+V1 Classic is the stable chat product. V2 Flow is a separately implemented, feature-flagged experimental product path defined by `context-files/V2_FLOW_ARCHITECTURE.md`.
+
+Required boundary:
+
+- Do not add V2 Goal Router, goals, goal capsules, goal state transitions, context dispositions, self-pruning policy, seamless Flow behavior, or V2 voice orchestration to the V1 chat path.
+- Do not migrate or reinterpret existing V1 conversations as V2 Flows.
+- Do not create hidden V1 conversation rows as foreign-key shims or put V2 ids into V1 conversation fields. The only allowed Classic write is the explicit one-focus/one-conversation bridge: V2-owned bridge/link rows may create or reuse one Classic conversation/session and mirror visible Q&A idempotently, while tools, evidence, usage, events, and orchestration remain V2-owned.
+- Keep V2 contracts, transport handlers, services, persistence, events, UI modules, and tests namespaced. A directly started source server is off unless `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary NPM/runtime launcher defaults the packaged web/backend product to enabled and preserves an explicit environment rollback override.
+- Add V1 regression coverage with every V2 vertical slice so V2-off reads, writes, events, and behavior remain identical to current V1.
+- Reuse the same workspace `.socrates/`, global `~/.Socrates/`, Socrates agent, Memory Router, global Memory Agent, providers, embeddings, tools, ZIP skill import, MCP registry, Terminal, artifacts, runner, validation, usage, errors, and speech-engine plumbing where ownership remains safe.
+- Never reuse V1 orchestration policy as V2 policy merely to avoid a separate V2 module.
+- Keep Flow/goal routing, goal-aware context policy, V2 runtime events, and all conversation-owned persistence in the V2 path. Shared memory-note or Memory Agent work must retain exact V2 source coordinates without appending Classic runtime events.
+- Canonical V2 user/assistant Q&A may reuse the shared LanceDB retrieval foundation only with explicit `runtimeKind = "v2_flow"` and `flowId` scoping. Keep queryless recall, exact inspect, audit evidence, and deletion ownership V2-native; never create Classic conversations merely to make retrieval work or add a second semantic pipeline.
+- Do not invoke the Classic conversation-title rewriter or add a capsule-writing LLM for V2. V2 navigation/resume state comes from deterministic goal titles and materiality-gated rich capsule versions built from authoritative V2 state. The Goal Router may reuse the configured fast `title_generator` worker model selection, but it must invoke the strict V2 routing contract rather than the Classic title-rewrite service.
+- Call the first V2 speech slice `V2 Voice V1`; never shorten it to V1 in code or docs where it could be confused with V1 Classic.
+- Keep V2 Voice V1 STT limited to local Whisper (`small.en`, with optional `base.en`) and the accepted OpenRouter ids `nvidia/parakeet-tdt-0.6b-v3`, `microsoft/mai-transcribe-1.5`, and `mistralai/voxtral-mini-transcribe`.
+- Keep V2 Voice V1 TTS local through Kokoro-82M and `sherpa-onnx`. Do not add Granite Speech, Ollama speech, hosted TTS, or a separate speech-writing agent to the first slice.
+- Never convert a local speech failure into an implicit cloud upload. OpenRouter transcription requires an explicit user-selected cloud route.
+
+The shorthand is:
+
+```text
+separate product orchestration and state
+shared proven infrastructure
+no migration or replacement without explicit user authorization
+```

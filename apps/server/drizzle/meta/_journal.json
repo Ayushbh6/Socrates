@@ -183,6 +183,20 @@
       "when": 1783878000000,
       "tag": "0025_terminal_state_versions",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1784287637533,
+      "tag": "0026_outgoing_typhoid_mary",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1784310101392,
+      "tag": "0027_long_terror",
+      "breakpoints": true
     }
   ]
 }

@@ -33,6 +33,15 @@ const nodeArchivePath = path.join(cacheDir, nodeArchiveName);
 const nodeDownloadUrl = `https://nodejs.org/dist/${nodeVersion}/${nodeArchiveName}`;
 const cliPackageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "apps", "cli", "package.json"), "utf8"));
 const runtimeVersion = process.env.SOCRATES_RUNTIME_VERSION ?? process.env.GITHUB_REF_NAME?.replace(/^v/, "") ?? cliPackageJson.version;
+const whisperNodeVersion = "1.0.22";
+const whisperNodeCpuTargets = [
+  "darwin-arm64",
+  "darwin-x64",
+  "linux-arm64",
+  "linux-x64",
+  "win32-arm64",
+  "win32-x64",
+];
 
 const run = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
@@ -224,6 +233,35 @@ const assertPackagedServerDependencies = () => {
       `Packaged @socrates/${packageName} dist entry`,
     );
   }
+  assertFile(
+    path.join(runtimeDir, "server", "node_modules", "@fugood", "whisper.node", "package.json"),
+    "Packaged Whisper Node adapter",
+  );
+  assertFile(
+    path.join(runtimeDir, "server", "node_modules", "sherpa-onnx-node", "package.json"),
+    "Packaged sherpa-onnx Node adapter",
+  );
+};
+
+const assertWhisperPlatformLockCoverage = () => {
+  const serverPackageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "apps", "server", "package.json"), "utf8"));
+  if (serverPackageJson.dependencies?.["@fugood/whisper.node"] !== whisperNodeVersion) {
+    throw new Error(`@fugood/whisper.node must remain exact-pinned to ${whisperNodeVersion}.`);
+  }
+  const lockfile = fs.readFileSync(path.join(repoRoot, "pnpm-lock.yaml"), "utf8");
+  for (const target of whisperNodeCpuTargets) {
+    const packageKey = `@fugood/node-whisper-${target}@${whisperNodeVersion}`;
+    if (!lockfile.includes(packageKey)) {
+      throw new Error(`Whisper native package is missing from pnpm-lock.yaml: ${packageKey}`);
+    }
+  }
+};
+
+const smokePackagedSpeechRuntime = async (nodeExecutable) => {
+  await run(nodeExecutable, [
+    path.join(runtimeScriptsRoot, "speech-native-smoke.mjs"),
+    path.join(runtimeDir, "server"),
+  ]);
 };
 
 const extractNodeRuntime = async (target) => {
@@ -279,6 +317,8 @@ const rebuildPackagedNativeServerDependencies = async () => {
   });
 };
 
+assertWhisperPlatformLockCoverage();
+
 fs.rmSync(runtimeDir, { recursive: true, force: true });
 fs.mkdirSync(runtimeDir, { recursive: true });
 
@@ -325,6 +365,10 @@ if (includeNodeRuntime) {
   await rebuildPackagedNativeServerDependencies();
 }
 
+await smokePackagedSpeechRuntime(
+  includeNodeRuntime ? bundledNodeExecutable(path.join(runtimeDir, "node")) : process.execPath,
+);
+
 fs.writeFileSync(path.join(runtimeDir, ".gitkeep"), "");
 
 fs.writeFileSync(
@@ -339,6 +383,10 @@ fs.writeFileSync(
       launcher: "launcher.mjs",
       serverEntry: "server/dist/index.js",
       webEntry: "web/apps/web/server.js",
+      speechRuntimes: {
+        stt: `@fugood/whisper.node@${whisperNodeVersion}`,
+        tts: "sherpa-onnx-node@1.13.4",
+      },
       generatedAt: new Date().toISOString(),
     },
     null,

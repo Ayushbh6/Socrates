@@ -29,6 +29,7 @@ export const baseToolNameSchema = z.enum([
   "turn_evidence",
   "read_memory_journal",
   "skill_write",
+  "focus_ledger",
 ])
 export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
 export const toolNameSchema = z.union([baseToolNameSchema, dynamicMcpToolNameSchema])
@@ -54,6 +55,56 @@ export const frontierHandoverToolOutputSchema = z
   })
   .strict()
 export type FrontierHandoverToolOutput = z.infer<typeof frontierHandoverToolOutputSchema>
+
+export const focusLedgerOperationSchema = z.enum(["list", "inspect", "update_current", "record_blocker", "complete_current"])
+
+export const focusLedgerToolInputSchema = z
+  .object({
+    operation: focusLedgerOperationSchema,
+    goalId: z.string().min(1).optional().describe("Required only for inspect. The active focus is implicit for mutations."),
+    summary: z.string().trim().min(1).max(4_000).optional(),
+    blocker: z.string().trim().min(1).max(2_000).optional(),
+    outcome: z.string().trim().min(1).max(4_000).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.operation === "inspect" && !value.goalId) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["goalId"], message: "inspect requires goalId." })
+    }
+    if (value.operation === "update_current" && !value.summary) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["summary"], message: "update_current requires summary." })
+    }
+    if (value.operation === "record_blocker" && !value.blocker) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["blocker"], message: "record_blocker requires blocker." })
+    }
+    if (value.operation === "complete_current" && !value.outcome) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["outcome"], message: "complete_current requires outcome." })
+    }
+  })
+export type FocusLedgerToolInput = z.infer<typeof focusLedgerToolInputSchema>
+
+export const focusLedgerGoalSchema = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    kind: z.enum(["general", "work"]),
+    status: z.enum(["foreground", "parked", "blocked", "completed", "archived"]),
+    summary: z.string().optional(),
+    pinned: z.boolean(),
+    lastActiveAt: z.string().min(1),
+  })
+  .strict()
+
+export const focusLedgerToolOutputSchema = z
+  .object({
+    operation: focusLedgerOperationSchema,
+    currentGoalId: z.string().min(1),
+    goals: z.array(focusLedgerGoalSchema).max(100),
+    pendingCompletion: z.boolean(),
+    message: z.string().min(1),
+  })
+  .strict()
+export type FocusLedgerToolOutput = z.infer<typeof focusLedgerToolOutputSchema>
 
 export const providerMetadataSchema = z.record(z.string(), z.record(z.string(), z.unknown()))
 export type ProviderMetadata = z.infer<typeof providerMetadataSchema>
