@@ -1495,7 +1495,16 @@ describe("workspace tools", () => {
 
   it("does not reuse a destroyed shell after startup failure", async () => {
     const workspacePath = tempDir()
-    const session = createWorkspaceShellSession(workspacePath, { platform: "win32", env: { COMSPEC: "definitely-missing-cmd.exe" } })
+    const missingBinPath = path.join(workspacePath, "missing-bin")
+    const session = createWorkspaceShellSession(workspacePath, {
+      platform: "win32",
+      env: {
+        COMSPEC: "definitely-missing-cmd.exe",
+        ComSpec: "definitely-missing-cmd.exe",
+        PATH: missingBinPath,
+        Path: missingBinPath,
+      },
+    })
     try {
       await expect(session.run({ command: "Write-Output ok" })).rejects.toMatchObject({ code: "shell_start_failed" })
       await expect(session.run({ command: "Write-Output ok" })).rejects.toMatchObject({ code: "shell_start_failed" })
