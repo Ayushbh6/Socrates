@@ -32,7 +32,7 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 
 - Runtime release milestone: **v0.1.19**.
 - Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.19** for npm publish.
-- Runtime availability for macOS (arm64/x64) and Windows x64.
+- Runtime availability for macOS 15+ (arm64/x64) and Windows x64.
 - The original cream **Classic View (V1)** welcome, projects, and project dashboard remain the default path. A project-scoped **Go to Flow View** control opens that same project's isolated V2 Flow; there is no global view chooser or second project directory.
 - Seamless View provides one persistent Flow per project, bounded foreground/parked goals, versioned capsules, pruned working context, and immutable retrievable evidence.
 - Each Flow focus maps explicitly to one Classic conversation, so **Open in Classic** and **Continue in Flow View** preserve the same visible Q&A without merging the two runtimes.

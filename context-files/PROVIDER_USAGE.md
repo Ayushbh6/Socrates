@@ -78,7 +78,7 @@ TextToSpeechProvider
 
 OpenRouter discovery may supply availability, pricing, and capability metadata, but Socrates exposes only the three accepted transcription model ids. It reuses the user's existing OpenRouter credential through `https://openrouter.ai/api/v1/audio/transcriptions`; it does not pretend that a chat-completions call is transcription.
 
-Local STT is exact-pinned `@fugood/whisper.node@1.0.22` over `whisper.cpp` and defaults to the native Node binding. `SOCRATES_WHISPER_CPP_BINARY` is an explicit compatible-CLI override, and a packaged `whisper-cli` may serve only as recovery when the native addon cannot load. Runtime construction checks native-package lock coverage and smoke-loads the binding with the bundled Node executable.
+Local STT is exact-pinned `@fugood/whisper.node@1.0.22` over `whisper.cpp` and defaults to the native Node binding. Its published macOS native packages require macOS 15 or newer. `SOCRATES_WHISPER_CPP_BINARY` is an explicit compatible-CLI override, and a packaged `whisper-cli` may serve only as recovery when the native addon cannot load. Runtime construction checks native-package lock coverage and smoke-loads the binding with the bundled Node executable.
 
 Local read aloud is exact-pinned `sherpa-onnx-node@1.13.4` running Kokoro-82M natively when available, with a compatible `sherpa-onnx-offline-tts` fallback. The runtime dependencies may be bundled, but Whisper and Kokoro weights are explicit user-installed packs with expected byte counts, SHA-256 verification, receipts, status, and removal APIs. A failed local call never falls through to OpenRouter unless the user explicitly chooses the cloud route.
 

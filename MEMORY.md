@@ -437,7 +437,7 @@ node scripts/runtime/build-runtime-archive.mjs release-artifacts
   -> packaged LanceDB FTS/vector/hybrid smoke passed
   -> release-artifacts/socrates-runtime-darwin-arm64.zip, 519.9 MB
   -> SHA-256 17f804b55221360e4bb2ba09d179d3b50a7963c3c689a493bc8beeec8a3231c0
-registry/lock matrix -> @lancedb/lancedb 0.22.3 publishes darwin-arm64, darwin-x64, and win32-x64-msvc native packages; runtime-release.yml executes the same archive smoke natively on macos-14, macos-15-intel, and windows-2022
+registry/lock matrix -> @lancedb/lancedb 0.22.3 publishes darwin-arm64, darwin-x64, and win32-x64-msvc native packages; runtime-release.yml executes the same archive smoke natively on macos-15, macos-15-intel, and windows-2022; macOS 15+ is required by the exact-pinned Whisper 1.0.22 native addon
 ```
 
 Real packaged Test-Workspace verification:

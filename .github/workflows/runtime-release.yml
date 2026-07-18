@@ -16,7 +16,8 @@ jobs:
       matrix:
         include:
           - platformArch: darwin-arm64
-            os: macos-14
+            # Whisper 1.0.22's native addon targets macOS 15 or newer.
+            os: macos-15
           - platformArch: darwin-x64
             os: macos-15-intel
           - platformArch: win32-x64
@@ -25,11 +26,11 @@ jobs:
     env:
       SOCRATES_RUNTIME_PLATFORM_ARCH: ${{ matrix.platformArch }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
         with:
           version: 9.15.1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 20
           cache: pnpm
@@ -37,7 +38,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build runtime archive
         run: pnpm runtime:archive
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.platformArch }}
           path: release-artifacts/socrates-runtime-${{ matrix.platformArch }}.zip
@@ -47,8 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-runtime]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true
