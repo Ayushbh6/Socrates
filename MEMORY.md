@@ -242,9 +242,9 @@ Tool routing:
 
 ## Release State
 
-- Current release target is `v0.1.19`; pushing its tag publishes the three GitHub runtime archives, and the npm launcher source is prepared as `@socrates-ai/cli@0.1.19` for the user's security-key-authenticated publish. Until that manual npm step completes, the public registry continues to serve `0.1.18`; existing launchers still resolve the newest GitHub runtime by default.
-- `v0.1.19` preserves the `v0.1.18` provider, retrieval, model-catalog, memory-opt-out, MCP credential, standing-context, and runtime-packaging foundation. It adds bounded Memory Router failure telemetry, explicit one-way Frontier handover, hardened Terminal supervisor lifecycle cleanup, and the isolated V2 Seamless Flow first product cut: one project Flow, bounded Goal Router, 29 namespaced tables, self-pruning context backed by immutable evidence, V2 trace retrieval, focus lifecycle/Classic bridge, the shared Classic/Flow shell and composer, draggable Flow notes/inspector, Classic draft-only speech transcription, and V2 local/OpenRouter transcription plus local Kokoro read-aloud. Runtime packaging now removes the deployed server's self-link back to the checkout, recursively strips environment files, rejects server links outside the runtime root, and fails archive validation if any `.env*` entry remains. The packaged launcher enables Flow by default with an explicit rollback flag. The release evidence is accelerated rather than a measured 24-hour unattended soak; full cross-platform archives, large speech-pack runs, accessibility automation, and extended soak evidence remain release follow-ups.
-- Release tooling remains pinned to the proven `pnpm@9.15.1` path for GitHub runtime builds. The runtime release workflow recreates the tag release and uploads each runtime asset explicitly (`darwin-arm64`, `darwin-x64`, `win32-x64`, then `SHA256SUMS`) so a stale partial draft cannot be reused. The produced runtime archive still bundles Node v20.20.2.
+- Current GitHub runtime release is `v0.1.19`, published non-draft and non-prerelease with the three runtime archives plus `SHA256SUMS`. The npm launcher source is prepared as `@socrates-ai/cli@0.1.19` for the user's security-key-authenticated publish. Until that manual npm step completes, the public registry continues to serve `0.1.18`; that existing launcher still resolves the newest GitHub runtime by default.
+- `v0.1.19` preserves the `v0.1.18` provider, retrieval, model-catalog, memory-opt-out, MCP credential, standing-context, and runtime-packaging foundation. It adds bounded Memory Router failure telemetry, explicit one-way Frontier handover, hardened Terminal supervisor lifecycle cleanup, and the isolated V2 Seamless Flow first product cut: one project Flow, bounded Goal Router, 29 namespaced tables, self-pruning context backed by immutable evidence, V2 trace retrieval, focus lifecycle/Classic bridge, the shared Classic/Flow shell and composer, draggable Flow notes/inspector, Classic draft-only speech transcription, and V2 local/OpenRouter transcription plus local Kokoro read-aloud. Runtime packaging now removes the deployed server's self-link back to the checkout, recursively strips environment files, rejects server links outside the runtime root, and fails archive validation if any `.env*` entry remains. The packaged launcher enables Flow by default with an explicit rollback flag. All three supported runtime archives passed their native release builders and smoke checks. The evidence is still accelerated rather than a measured 24-hour unattended soak; large speech-pack runs, accessibility automation, and extended soak evidence remain release follow-ups.
+- Release tooling remains pinned to the proven `pnpm@9.15.1` path for GitHub runtime builds. The active workflows use the current Node-24-based Action majors (`actions/checkout@v7`, `actions/setup-node@v7`, `pnpm/action-setup@v6`, `actions/upload-artifact@v7`, and `actions/download-artifact@v8`). The runtime release workflow recreates the tag release and uploads each runtime asset explicitly (`darwin-arm64`, `darwin-x64`, `win32-x64`, then `SHA256SUMS`) so a stale partial draft cannot be reused. The produced runtime archive still bundles Node v20.20.2. The ARM builder uses `macos-15` because exact-pinned Whisper 1.0.22 targets macOS 15 or newer.
 - Shell Tooling pins its Windows leg to `windows-2022`; `windows-latest` moved to Windows Server 2025 / VS 2026, where `node-gyp` cannot identify Visual Studio 18 while building native dependencies such as `better-sqlite3`. Windows still runs install/typecheck plus contracts/workspace/core tests, while the server PTY/WebSocket test suite runs on Ubuntu only because it assumes POSIX bash/PTY behavior.
 - `user_profile.evidence_index` should now store compact source anchors for important profile claims, including date, project/conversation title or id, turn/message/event id when available, the supported claim, and the profile section using that claim.
 - Product stabilization commit `2756e97 Stabilize extension discovery context` is pushed to `origin/main`. It removes per-turn wake context from main chat, moves stable recall/extension routing into the base prompt, and keeps skills/MCPs behind on-demand `list`/`describe` tools.
@@ -256,7 +256,7 @@ Tool routing:
 
 ## Next Major Work
 
-- Continue V2 release validation without widening its scope: formal accessibility automation, release archives on every supported target, accelerated concurrency/restart stress, real `small.en`/Kokoro pack runs, and a measured extended soak. Do not describe the current implementation as proven for 24-hour unattended operation until that soak has actually run.
+- Continue V2 release validation without widening its scope: formal accessibility automation, accelerated concurrency/restart stress, real `small.en`/Kokoro pack runs, and a measured extended soak. Supported-target v0.1.19 release archives are complete, but do not describe the current implementation as proven for 24-hour unattended operation until that soak has actually run.
 - Finish release-level validation of V2 retrieval rebuild/upsert/delete behavior, exact continuation-turn inspection, and Global Memory Agent recall across restarts; keep the shared `runtimeKind = "v2_flow"` corpus isolated from Classic conversation rows.
 - Keep strengthening Socrates' investigation harness based on real Gemini/GPT/OpenRouter runs, especially around overbroad mutations and respecting user-scoped constraints.
 - Extend the checked-in repeated-compaction harness with more corpora and provider runs; the first sanitized 36-turn golden dataset, five-round DeepSeek baseline, final 8/8 improved DeepSeek confirmation, two-round GLM run, downstream trace/attachment/project-memory/fresh-conversation checks, and cost ledger now live under `evals/memory-harness/` (private generated corpora/results stay gitignored).
@@ -264,6 +264,24 @@ Tool routing:
 - The completed 2026-07-10/11 skill-learning evaluation hardened evidence handoff, canonical skill ids, write validation/supporting files, no-op rejection, bounded Writer repair, cross-run structured Memory Agent journaling, backend-authoritative create/update classification, and main-agent discovery for ordered verification/closure workflows. The composed isolated official-DeepSeek E2E passed: an earlier full run proved behavioral pattern proposal -> approved Writer creation -> v1 held-out use, and a deterministic seeded continuation proved a cross-project handoff refinement -> update proposal -> Writer v2 -> actual main-agent `skills list` + `describe` -> 6/6 held-out behavior signals. Use Memory Pro/high plus Writer Flash/off as the experimental default, keep manual proposal approval, and do not claim production-scale reliability from one passing chain.
 
 ## Verification
+
+Latest verified for the published v0.1.19 runtime release on 2026-07-18:
+
+```text
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm runtime:archive
+  -> local darwin-arm64 archive passed bundled Node, SQLite, LanceDB, Whisper, Kokoro, archive-layout, and packaged-launch smoke checks
+Shell Tooling run 29647193881
+  -> current Action majors passed on ubuntu-latest and windows-2022
+Release npm Runtime run 29647367894
+  -> darwin-arm64, darwin-x64, win32-x64, and publish jobs all passed
+gh release view v0.1.19
+  -> published, non-draft, non-prerelease release with three runtime archives and SHA256SUMS
+npm view @socrates-ai/cli dist-tags version --json
+  -> public npm latest remains 0.1.18 pending the user's security-key-authenticated 0.1.19 publish
+```
 
 Latest verified for Terminal lifecycle hardening, bounded Memory Router failure telemetry, one-way Frontier handover, and explicit Frontier approval on 2026-07-17:
 

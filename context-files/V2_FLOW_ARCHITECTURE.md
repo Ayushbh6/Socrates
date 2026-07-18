@@ -737,7 +737,7 @@ pnpm runtime:build
   -> packaged server/web runtime prepared; native Whisper/Kokoro binding smoke passed
 ```
 
-That evidence is not a substitute for release-archive verification on every supported target, a formal automated accessibility audit, a real `small.en`/Kokoro pack run, or an extended unattended soak. In particular, do not claim 24-hour reliability until it has actually been measured.
+The v0.1.19 release subsequently passed archive construction and native runtime smoke checks on every supported target. That evidence is not a substitute for a formal automated accessibility audit, a real `small.en`/Kokoro pack run, or an extended unattended soak. In particular, do not claim 24-hour reliability until it has actually been measured.
 
 ## Remaining Decisions And Explicit Limits
 
