@@ -33,11 +33,12 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 - Runtime release milestone: **v0.1.18**.
 - Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.18** for npm publish.
 - Runtime availability for macOS (arm64/x64) and Windows x64.
-- The welcome chooser keeps **Classic View (V1)** intact and opens **Seamless View (V2)** as a separate web experience.
+- The original cream **Classic View (V1)** welcome, projects, and project dashboard remain the default path. A project-scoped **Go to Flow View** control opens that same project's isolated V2 Flow; there is no global view chooser or second project directory.
 - Seamless View provides one persistent Flow per project, bounded foreground/parked goals, versioned capsules, pruned working context, and immutable retrievable evidence.
-- Each Seamless focus maps explicitly to one Classic conversation, so **Open in Classic** and **Continue in Seamless** preserve the same visible Q&A without merging the two runtimes.
+- Each Flow focus maps explicitly to one Classic conversation, so **Open in Classic** and **Continue in Flow View** preserve the same visible Q&A without merging the two runtimes.
 - V2 inherits the same providers, Socrates agent, tools, approvals, Terminals, MCP servers, skills, Memory Router, Global Memory Agent, workspace `.socrates/`, and global `~/.Socrates/` foundation as Classic.
-- Voice V1 provides explicit local Whisper `base.en`/`small.en` STT, local Kokoro read-aloud, or the three allowlisted OpenRouter transcription models; local failures never silently upload audio.
+- The shared Classic composer now includes click-to-record STT. It defaults to local Whisper `small.en`, appends the transcript to the unsent draft, never auto-sends, and creates no V2 Flow state.
+- V2 Voice V1 additionally exposes local Whisper `base.en`/`small.en`, the three allowlisted OpenRouter transcription models, and local Kokoro read-aloud; local failures never silently upload audio.
 - Ollama can serve local chat models from the normal model picker when the local Ollama runtime is reachable.
 - Trace retrieval upgraded for broader match windows and exact quote context.
 - Duplicate tool-call handling added to avoid repeated identical retrieval passes in one turn.

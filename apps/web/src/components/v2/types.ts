@@ -1,5 +1,3 @@
-import type { Project } from "@socrates/contracts";
-
 export type FlowPresenceState =
   | "offline"
   | "idle"
@@ -82,36 +80,24 @@ export interface FlowVoiceOption {
   label: string;
 }
 
-export interface FlowProjectNavItem {
-  project: Project;
-  workspaceLabel?: string;
-  lastActivityAt?: string;
-}
-
-export interface FlowModelOption {
+export interface FlowContextItemView {
   id: string;
   label: string;
-  providerLabel?: string;
-}
-
-export interface FlowThinkingOption {
-  id: string;
-  label: string;
-  enabled: boolean;
-}
-
-export interface FlowDraftAttachment {
-  id: string;
-  fileName: string;
-  kind: "image" | "text" | "skill_zip" | "other";
-  sizeBytes?: number;
-  previewUrl?: string;
+  sourceType: string;
+  disposition: "keep_exact" | "distill" | "release" | "unresolved";
+  representation: "exact" | "distilled";
+  distilledText?: string;
+  tokenEstimate?: number;
+  priority: number;
 }
 
 export interface FlowContextSummary {
+  items?: FlowContextItemView[];
   exactEvidenceCount?: number;
   distilledEvidenceCount?: number;
   unresolvedEvidenceCount?: number;
+  preservedEvidenceCount?: number;
+  releasedItemCount?: number;
   contextUsageLabel?: string;
   lastCompactedAt?: string;
   unavailableReason?: string;

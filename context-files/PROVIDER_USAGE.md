@@ -48,9 +48,15 @@ The V2 Goal Router is a bounded structured call with thinking disabled and a con
 
 Ollama support exists to make local capability available to users with suitable models and hardware. It is not expected to make a small local model match a frontier hosted model in reasoning, tools, speed, or context size. V2 must preserve honest model-specific limits and graceful failure. Ollama remains the local chat/embedding runtime, not an assumed TTS engine; V2 speech uses separate replaceable STT/TTS adapters.
 
-## V2 Voice V1 Speech Providers
+## Shared Speech Providers And V2 Voice V1
 
-Speech providers are independent from `ModelProvider` and `EmbeddingProvider`. A user may chat through Ollama while transcribing through OpenRouter, or chat through a hosted model while keeping both speech directions offline.
+Speech providers are independent from `ModelProvider` and `EmbeddingProvider`. A user may chat through Ollama while transcribing through OpenRouter, or chat through a hosted model while keeping speech offline.
+
+Classic and V2 share the lower-level Local Whisper and OpenRouter transcription adapters, but not their orchestration or persistence:
+
+- Classic currently presents one push-to-talk mic in the shared composer, defaults to local Whisper `small.en`, sends a temporary WAV to the conversation-scoped transcription endpoint, appends the result to the unsent draft, and never creates V2 Flow/artifact/job state or auto-sends the text.
+- V2 exposes the explicit Local/OpenRouter transcriber picker, stores V2 speech artifacts/jobs, passes finalized transcripts through the Goal Router, and owns local Kokoro read-aloud.
+- Neither path silently switches from local to hosted transcription. Classic does not expose the hosted picker in its current UI even though its backend contract validates the same explicit allowlist for future selection.
 
 The implemented provider set is:
 
@@ -70,7 +76,7 @@ TextToSpeechProvider
     Kokoro-82M through sherpa-onnx
 ```
 
-OpenRouter discovery may supply availability, pricing, and capability metadata, but V2 Voice V1 exposes only the three accepted transcription model ids. It reuses the user's existing OpenRouter credential through `https://openrouter.ai/api/v1/audio/transcriptions`; it does not pretend that a chat-completions call is transcription.
+OpenRouter discovery may supply availability, pricing, and capability metadata, but Socrates exposes only the three accepted transcription model ids. It reuses the user's existing OpenRouter credential through `https://openrouter.ai/api/v1/audio/transcriptions`; it does not pretend that a chat-completions call is transcription.
 
 Local STT is exact-pinned `@fugood/whisper.node@1.0.22` over `whisper.cpp` and defaults to the native Node binding. `SOCRATES_WHISPER_CPP_BINARY` is an explicit compatible-CLI override, and a packaged `whisper-cli` may serve only as recovery when the native addon cannot load. Runtime construction checks native-package lock coverage and smoke-loads the binding with the bundled Node executable.
 

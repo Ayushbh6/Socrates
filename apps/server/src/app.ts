@@ -4,6 +4,7 @@ import multipart from "@fastify/multipart"
 import path from "node:path"
 import { openDatabase, runMigrations, type DatabaseHandle } from "./db/client"
 import { registerHttpRoutes } from "./routes/httpRoutes"
+import { registerClassicSpeechRoutes } from "./routes/classicSpeechRoutes"
 import { SocratesStore } from "./services/store"
 import { registerWebSocketRoutes } from "./ws/websocket"
 import { ConversationTerminalManager } from "./ws/conversationTerminals"
@@ -61,6 +62,19 @@ export const buildServer = async (options: BuildServerOptions) => {
   await terminals.reconcilePersistedTerminals()
   const app = Fastify({ logger: options.logger ?? false })
   const v2FlowEnabled = options.v2FlowEnabled ?? false
+  const speechHome = socratesHome ?? path.dirname(options.dbPath)
+  const speechPacks = new SpeechPackManager(speechHome)
+  const runtimeRoot = process.env.SOCRATES_RUNTIME_DIR ?? path.join(speechHome, "runtime")
+  const executableName = (name: string): string => process.platform === "win32" ? `${name}.exe` : name
+  const speechBinary = (environmentName: string, defaultName: string): string =>
+    process.env[environmentName] ?? path.join(runtimeRoot, "speech", "bin", executableName(defaultName))
+  const whisperCliOverride = process.env.SOCRATES_WHISPER_CPP_BINARY
+  const openRouterTranscriber = new OpenRouterTranscriber(credentials)
+  const localWhisperTranscriber = new LocalWhisperTranscriber({
+    binaryPath: speechBinary("SOCRATES_WHISPER_CPP_BINARY", "whisper-cli"),
+    modelPath: (model) => speechPacks.status(model === "base.en" ? "whisper-base.en" : "whisper-small.en").path,
+    preferCli: Boolean(whisperCliOverride),
+  })
 
   app.get("/api/v2/capabilities", async () => ({
     ok: true,
@@ -96,6 +110,13 @@ export const buildServer = async (options: BuildServerOptions) => {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),
   })
+  await registerClassicSpeechRoutes(app, {
+    requireConversationScope: ({ projectId, conversationId }) => {
+      store.getConversation(projectId, conversationId)
+    },
+    localWhisper: localWhisperTranscriber,
+    openRouter: openRouterTranscriber,
+  })
 
   let shutdownV2 = async (): Promise<void> => undefined
   if (v2FlowEnabled) {
@@ -111,23 +132,11 @@ export const buildServer = async (options: BuildServerOptions) => {
       ...(titleProvider ? { routerProvider: titleProvider } : {}),
     })
 
-    const speechHome = socratesHome ?? path.dirname(options.dbPath)
-    const speechPacks = new SpeechPackManager(speechHome)
-    const runtimeRoot = process.env.SOCRATES_RUNTIME_DIR ?? path.join(speechHome, "runtime")
-    const executableName = (name: string): string => process.platform === "win32" ? `${name}.exe` : name
-    const speechBinary = (environmentName: string, defaultName: string): string =>
-      process.env[environmentName] ?? path.join(runtimeRoot, "speech", "bin", executableName(defaultName))
-    const whisperCliOverride = process.env.SOCRATES_WHISPER_CPP_BINARY
-
     await registerV2SpeechRoutes(app, {
       persistence: flowStore,
       packs: speechPacks,
-      openRouter: new OpenRouterTranscriber(credentials),
-      localWhisper: new LocalWhisperTranscriber({
-        binaryPath: speechBinary("SOCRATES_WHISPER_CPP_BINARY", "whisper-cli"),
-        modelPath: (model) => speechPacks.status(model === "base.en" ? "whisper-base.en" : "whisper-small.en").path,
-        preferCli: Boolean(whisperCliOverride),
-      }),
+      openRouter: openRouterTranscriber,
+      localWhisper: localWhisperTranscriber,
       kokoro: new LocalKokoroSynthesizer({
         binaryPath: speechBinary("SOCRATES_SHERPA_ONNX_TTS_BINARY", "sherpa-onnx-offline-tts"),
         modelDirectory: path.dirname(speechPacks.status("kokoro-en-v0_19").path),

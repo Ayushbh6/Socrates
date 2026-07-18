@@ -127,7 +127,10 @@ The implementation uses namespaced modules inside the owning packages:
 
 ```text
 apps/web/src/app/seamless + components/v2 + lib/v2
-  -> separate Flow routes, UI, reducer, API/socket, and voice hooks
+  -> separate Flow routes, living-sphere workspace, draggable notes/inspector, reducer, API/socket, and V2 voice hooks
+
+apps/web/src/components/chat + hooks/useClassicVoiceTranscription.ts + lib/speech
+  -> shared Classic/Flow shell and composer, Classic draft-only STT, and shared browser audio normalization
 
 apps/server/src/routes/v2* + src/v2 + services/v2
   -> V2 HTTP/WebSocket transport, Flow/Terminal runtime, stores, context maintenance, speech, feature flag
@@ -196,6 +199,7 @@ components/chat/
   ChatWorkspace
   ChatTranscript
   ChatComposer
+  WorkspaceTopbar
   ToolDetails
   DiffView
   EmptyChatState
@@ -216,6 +220,7 @@ Rules for chat UI files:
 - Shared display helpers belong in `apps/web/src/lib/` only when reused.
 - Do not introduce frontend-only API payload types that duplicate `packages/contracts`.
 - The composer owns text entry, send/stop controls, and presentation of backend-owned model/thinking choices. It must not own provider SDK mappings or agent runtime decisions.
+- `ChatComposer`, `WorkspaceTopbar`, and `ProjectChatSidebar` are shared presentation components. Classic uses conversation content in the sidebar; Flow uses project-only content and overlay layout. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
 
 Initial frontend hooks:
 
@@ -532,7 +537,7 @@ It owns:
 - Internal embedding provider interface.
 - Vercel AI SDK adapter.
 - Native Ollama chat adapter and dynamic local model discovery.
-- Shared OpenRouter credential resolution used by the V2 speech service; speech adapters themselves remain in `apps/server/src/services/v2/speech.ts` for this first cut and do not enter `ModelProvider`.
+- Shared OpenRouter credential resolution used by the speech service; speech adapters remain in `apps/server/src/services/v2/speech.ts` for this first cut and do not enter `ModelProvider`. Classic's `routes/classicSpeechRoutes.ts` and V2 routes both call those adapters, but only V2 owns speech artifact/job persistence.
 - Provider/model registry, including auth-mode-specific catalog entries.
 - Provider config loading and credential-auth resolution.
 - Provider-aware request token counting with local tokenizer fallback, safety-margin metadata, and provider-exact counting where available.
@@ -544,7 +549,7 @@ Ollama chat model discovery is dynamic and server-owned. The backend refreshes `
 
 Embedding generation for trace documents stays behind provider abstractions. Chat turns do not import or call embedding SDKs directly. The semantic phase added a provider-agnostic `EmbeddingProvider` boundary in `packages/providers`, separate from the chat `ModelProvider`.
 
-V2 speech uses another independent boundary rather than forcing audio through `ModelProvider` or Ollama. The first implementations are `local_whisper`, OpenRouter transcription, and `local_kokoro`. Local Whisper exposes `small.en` plus optional `base.en`; OpenRouter accepts only `nvidia/parakeet-tdt-0.6b-v3`, `microsoft/mai-transcribe-1.5`, and `mistralai/voxtral-mini-transcribe`; local Kokoro uses Kokoro-82M through `sherpa-onnx`. Provider discovery, local runtime details, and raw provider responses stay behind the adapter. `apps/web` receives normalized model availability and job state and must never call OpenRouter or local speech runtimes directly. Granite Speech and Ollama speech are not V2 Voice V1 implementations.
+Speech uses another independent boundary rather than forcing audio through `ModelProvider` or Ollama. The first implementations are `local_whisper`, OpenRouter transcription, and `local_kokoro`. Local Whisper exposes `small.en` plus optional `base.en`; OpenRouter accepts only `nvidia/parakeet-tdt-0.6b-v3`, `microsoft/mai-transcribe-1.5`, and `mistralai/voxtral-mini-transcribe`; local Kokoro uses Kokoro-82M through `sherpa-onnx`. Provider discovery, local runtime details, and raw provider responses stay behind the adapter. `apps/web` must never call OpenRouter or local speech runtimes directly. Classic uses `useClassicVoiceTranscription` plus `/api/projects/:projectId/conversations/:conversationId/speech/transcribe` for temporary draft-only STT; V2 uses its own artifact/job API and read-aloud. Granite Speech and Ollama speech are not current implementations.
 
 The first embedding phase supports two first-class choices:
 

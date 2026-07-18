@@ -1,5 +1,5 @@
-import { SeamlessProjectDirectory } from "@/components/v2/SeamlessProjectDirectory";
+import { redirect } from "next/navigation";
 
 export default function SeamlessPage() {
-  return <SeamlessProjectDirectory />;
+  redirect("/projects");
 }

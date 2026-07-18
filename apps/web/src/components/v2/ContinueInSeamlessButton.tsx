@@ -24,7 +24,7 @@ export function ContinueInSeamlessButton({ projectId, conversationId }: { projec
             });
         }}
       >
-        {busy ? "Bridging…" : "Continue in Seamless ↗"}
+        {busy ? "Bridging…" : "Continue in Flow View ↗"}
       </button>
       {error && <p className="max-w-72 rounded bg-red-50 px-2 py-1 text-[11px] text-red-700" role="alert">{error}</p>}
     </div>

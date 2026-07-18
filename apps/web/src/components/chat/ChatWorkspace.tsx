@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientCommand, Conversation, ConversationCostUsage, ConversationTerminal, GetConversationResponse, Message, MessageAttachment, ModelOption, ModelThinkingOption, Notification as SocratesNotification, ServerEvent, TurnUsageReport } from "@socrates/contracts";
 import { api } from "@/lib/api";
 import { useSocratesSocket } from "@/hooks/useSocratesSocket";
+import { useClassicVoiceTranscription } from "@/hooks/useClassicVoiceTranscription";
 import { ChatComposer } from "./ChatComposer";
 import { ChatTranscript, type LiveActivityStep } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
@@ -13,6 +14,7 @@ import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
 import { TerminalDockPanel } from "./TerminalPanel";
 import { type PendingApproval, type PendingCredentialInput, type ToolTimelineItem } from "./ToolTimelineTypes";
 import { ActivityCenter } from "./ActivityCenter";
+import { WorkspaceTopbar } from "./WorkspaceTopbar";
 
 interface ChatWorkspaceProps {
   projectId: string;
@@ -178,6 +180,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [approvingSkillActionId, setApprovingSkillActionId] = useState<string | null>(null);
   const [rejectingSkillActionId, setRejectingSkillActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [draftText, setDraftText] = useState("");
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
   const previousAwaitingTerminalInputRef = useRef(false);
@@ -692,6 +695,15 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     },
   });
 
+  const appendVoiceTranscript = useCallback((transcript: string) => {
+    setDraftText((current) => current.trim() ? `${current.trimEnd()} ${transcript}` : transcript);
+  }, []);
+  const voice = useClassicVoiceTranscription({
+    projectId,
+    conversationId,
+    onTranscript: appendVoiceTranscript,
+  });
+
   useEffect(() => {
     let isMounted = true;
 
@@ -1109,6 +1121,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const clampedTerminalDockHeight = Math.min(Math.max(terminalDockHeight, MIN_TERMINAL_DOCK_HEIGHT), MAX_TERMINAL_DOCK_HEIGHT);
 
   const messages: Message[] = conversationData?.messages ?? [];
+  const composerError = voice.error ?? error;
   const toolRuns = conversationData?.toolRuns ?? [];
   const partialTurns = conversationData?.partialTurns ?? [];
   const conversationTitle = conversationData?.conversation.title ?? "New conversation";
@@ -1176,11 +1189,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
         onStartChat={handleStartChat}
       />
       <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-white">
-        <header
-          className={`flex h-14 min-w-0 shrink-0 items-center border-b border-gray-200 ${
-            isSidebarCollapsed ? "pl-16 pr-6" : "px-6"
-          }`}
-        >
+        <WorkspaceTopbar isSidebarCollapsed={isSidebarCollapsed}>
           <button
             type="button"
             className="mr-4 inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
@@ -1230,7 +1239,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               {awaitingTerminalInputCount > 0 ? <span className="size-2 rounded-full bg-amber-500" title="Terminal awaiting input" /> : null}
             </button>
           ) : null}
-        </header>
+        </WorkspaceTopbar>
         <div className={workspaceBodyClass}>
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {isLoading ? (
@@ -1239,17 +1248,23 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
               <div className="flex flex-1 items-center justify-center px-6 text-sm text-red-600">{error}</div>
             ) : messages.length === 0 ? (
               <EmptyChatState
-                error={error}
+                error={composerError}
                 isSending={isSending}
                 isConnected={isConnected}
                 models={models}
                 selectedModel={selectedModel}
                 selectedThinkingOption={selectedThinkingOption}
                 warningResetKey={conversationId}
+                value={draftText}
+                onValueChange={setDraftText}
+                voiceAvailable={voice.isAvailable}
+                voiceRecording={voice.status === "recording"}
+                voiceBusy={voice.status === "transcribing"}
                 onModelChange={handleModelChange}
                 onThinkingChange={handleThinkingChange}
                 onSend={handleSend}
                 onUploadAttachments={handleUploadAttachments}
+                onVoiceToggle={voice.toggleRecording}
                 onStop={handleStop}
               />
             ) : (
@@ -1271,7 +1286,7 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 />
                 <div className="min-w-0 border-t border-gray-100 bg-white px-6 py-3">
                   <div className="mx-auto max-w-3xl min-w-0">
-                    {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+                    {composerError && <p className="mb-3 text-sm text-red-600">{composerError}</p>}
                     <ChatComposer
                       isSending={isSending}
                       isConnected={isConnected}
@@ -1279,10 +1294,16 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                       selectedModel={selectedModel}
                       selectedThinkingOption={selectedThinkingOption}
                       warningResetKey={conversationId}
+                      value={draftText}
+                      onValueChange={setDraftText}
+                      voiceAvailable={voice.isAvailable}
+                      voiceRecording={voice.status === "recording"}
+                      voiceBusy={voice.status === "transcribing"}
                       onModelChange={handleModelChange}
                       onThinkingChange={handleThinkingChange}
                       onSend={handleSend}
                       onUploadAttachments={handleUploadAttachments}
+                      onVoiceToggle={voice.toggleRecording}
                       onStop={handleStop}
                     />
                   </div>

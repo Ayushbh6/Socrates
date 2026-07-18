@@ -17,7 +17,7 @@ V1 means the current project chat product and its current behavior:
 - The current Classic conversation persistence, Classic context policy, Classic agent-task/tool/Terminal audit rows, Classic retrieval semantics/scoping, voice-input/read-aloud records, and title behavior.
 - Existing HTTP, WebSocket, persistence, replay, and frontend contracts.
 
-V1 must remain behaviorally untouched while V2 is built. Do not retrofit V2 goals, Flow routing, capsules, context dispositions, self-pruning, automatic topic separation, or V2 voice orchestration into V1. Existing V1 conversations must not be migrated, reinterpreted, or silently written into V2 state.
+V1 must remain behaviorally untouched by Flow orchestration while V2 is built. Do not retrofit V2 goals, Flow routing, capsules, context dispositions, self-pruning, automatic topic separation, V2 speech jobs/read-aloud, or other V2 persistence into V1. Existing V1 conversations must not be migrated, reinterpreted, or silently written into V2 state. The explicitly approved shared composer microphone is a bounded exception: Classic may transcribe temporary conversation audio into its unsent draft, but that path creates no V2 goal, artifact, job, event, or Flow state.
 
 ### V2 Flow
 
@@ -32,7 +32,7 @@ V2 is a separate experimental product surface and execution path:
 - V2-namespaced contracts, persistence, events, services, and tests.
 - A source-server feature flag that is off unless `SOCRATES_V2_FLOW_ENABLED=true`, plus an ordinary packaged NPM/runtime launcher that defaults the flag to `true` for the normal product.
 
-`GET /api/v2/capabilities` remains mounted so the UI can report availability. When V2 is off, the Flow/speech HTTP routes and `/v2/ws` are not mounted, and V1 reads, writes, routes, and runtime behavior remain identical to Classic. Direct source-server development must set `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the Seamless welcome choice.
+`GET /api/v2/capabilities` remains mounted so the UI can report availability. When V2 is off, the Flow/speech HTTP routes and `/v2/ws` are not mounted, and V1 goal/routing/persistence behavior remains identical to Classic. Direct source-server development must set `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the project-scoped **Go to Flow View** action. Classic's separate conversation-scoped STT route is intentionally available independently of that feature flag and still creates no V2 state.
 
 ### Allowed Shared Foundation
 
@@ -458,7 +458,7 @@ The goal router should operate on finalized text. Provider-specific partial tran
 
 ### Accepted V2 Voice V1 STT Stack
 
-`V2 Voice V1` means the first voice slice inside experimental V2 Flow. It does not mean V1 Classic and must not add voice orchestration to the existing V1 chat path.
+`V2 Voice V1` means the first speech-job/read-aloud slice inside experimental V2 Flow. Classic now shares the push-to-talk composer affordance and lower-level transcriber adapters, but not this orchestration: Classic defaults to local `small.en`, appends the transcript to its unsent draft, deletes the temporary WAV, and creates no `v2_*` state. V2 alone owns speech artifacts/jobs, the provider picker, Goal Router entry, and Kokoro read-aloud.
 
 The accepted speech-to-text choices are deliberately narrow:
 
@@ -565,7 +565,7 @@ V2 persistent Flow
   └── General Conversation <-> Classic conversation General Conversation
 ```
 
-Completed visible V2 user/assistant messages mirror idempotently into the focus conversation. Tool calls, model calls, usage, evidence, context dispositions, approvals, Terminals, and runtime events remain V2-owned and are never duplicated into Classic. Existing unrelated Classic conversations are not auto-imported; **Continue in Seamless** is an explicit user action that creates or reuses one goal bridge and imports visible Classic Q&A with `bridge_import` provenance. While Seamless owns the bridge, Classic sending is disabled for that conversation to avoid divergent simultaneous writers. **Open in Classic** flips ownership and routes to the mapped Classic chat; **Continue in Seamless** flips it back and returns to the same persistent Flow.
+Completed visible V2 user/assistant messages mirror idempotently into the focus conversation. Tool calls, model calls, usage, evidence, context dispositions, approvals, Terminals, and runtime events remain V2-owned and are never duplicated into Classic. Existing unrelated Classic conversations are not auto-imported; **Continue in Flow View** is an explicit user action that creates or reuses one goal bridge and imports visible Classic Q&A with `bridge_import` provenance. While Flow owns the bridge, Classic sending is disabled for that conversation to avoid divergent simultaneous writers. **Open in Classic** flips ownership and routes to the mapped Classic chat; **Continue in Flow View** flips it back and returns to the same persistent Flow.
 
 ## V2 Persistence Implementation
 
@@ -619,24 +619,24 @@ final turn and goal state
 
 ## Frontend Implementation
 
-V1 Classic and V2 Flow are visibly separate choices. An onboarded `/welcome` page renders the mode chooser; `/projects` and `/projects/:projectId/chats/:conversationId` remain Classic, while `/seamless` and `/seamless/projects/:projectId` are the namespaced Seamless route tree.
+V1 Classic remains the visible default. `/welcome`, `/projects`, the project dashboard, and `/projects/:projectId/chats/:conversationId` keep the established cream Classic experience. The project dashboard exposes a small capability-aware **Go to Flow View** control in its always-visible top row; it opens `/seamless/projects/:projectId` for that same project. `/seamless` redirects to `/projects`, so there is no global mode chooser or duplicate Flow project directory.
 
 The implemented V2 surface has:
 
 - One persistent project Flow rather than a New Chat list.
-- One composer accepting text or finalized voice transcripts.
+- The actual shared Classic `ChatComposer`, not a V2 lookalike: the same textarea, grouped model menu, thinking menu, send/stop behavior, image/text/Agent Skill ZIP picker, image paste, drag/drop, preview tray, vision warning, attachment limits, 10,000-character large-paste conversion, and optional microphone presentation. Classic routes the mic through temporary conversation-scoped STT and appends the transcript to the draft; V2 routes it through V2 speech and the Goal Router. V2 must not add a separate Tools toggle to the composer.
 - One seamless chronological timeline.
 - Normal streamed Socrates activity, tools, approvals, Terminal, artifacts, and final answers.
-- Optional subtle goal indicators or a goal drawer for inspection; users should not have to manage goals manually.
-- A **Current Focus / Current Task** ribbon that explains what Socrates is working on without exposing router internals.
+- Two lightweight draggable clipped notes on the calm center surface: Live Context and Current Focus/Task. Their complete circular paperclip handles are the only pointer drag targets; the same handles support arrow-key nudging. Coordinates are clamped responsively and persisted per project.
+- A larger Context/Focuses/Activity inspector opened from either note. It provides exact working-evidence state, the focus ledger, approvals, tools, credentials, Terminals, and voice settings, and may be pinned or dismissed without cluttering the default surface.
 - A bounded focus ledger grouped into Current, Paused, Finished, and Archived, with direct lifecycle controls and a protected pinned General Conversation.
-- Explicit **Open in Classic** and **Continue in Seamless** bridge controls; neither view silently migrates unrelated chats.
+- Explicit **Open in Classic** and **Continue in Flow View** bridge controls; neither view silently migrates unrelated chats.
 - A voice entry/read-aloud control that uses the same Flow.
 - A way to inspect context/evidence state for debugging in experimental mode without cluttering the normal experience.
-- A calm dark ocean composition with one restrained living sphere, reduced-motion support, responsive project rail, and a Classic View switch.
+- The actual shared Classic `ProjectChatSidebar` shell and `WorkspaceTopbar`, including the same dimensions, full-collapse behavior, spacing, hover bounds, and dashboard header treatment. Sidebar content is mode-specific: Classic renders projects with conversations and New Chat actions; Flow renders exactly one project-only link per persistent project Flow, with no conversations and no New Chat controls. V2 uses the shared sidebar's overlay mode, so the 320px drawer covers the canvas instead of pushing/reflowing notes or the composer. Flow does not maintain a second compact rail or duplicate shell controls. Its other V2-specific UI begins inside the center workspace, plus the same-project Classic View and working-notes actions in the shared header.
 - Model/thinking selection, stop, thumbs feedback, attachment drag/drop/paste, Agent Skill ZIPs, and the inherited 10,000-character large-paste-to-attachment rule.
 
-The welcome chooser queries `/api/v2/capabilities`. When the backend flag is off, Seamless is visibly disabled and Classic remains usable. Direct source-server development opts in with `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary NPM/runtime launcher defaults the packaged web/backend product to enabled and accepts an explicit rollback override. No route migrates or rewrites existing Classic chats.
+The project-dashboard Seamless switch queries `/api/v2/capabilities`. When the backend flag is off, that switch is visibly disabled and Classic remains usable. Direct source-server development opts in with `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary NPM/runtime launcher defaults the packaged web/backend product to enabled and accepts an explicit rollback override. No route migrates or rewrites existing Classic chats.
 
 ## Mood And Tone Experiment
 
@@ -722,7 +722,7 @@ The first useful V2 is accepted when:
 - V2-off behavior is indistinguishable from current V1 Classic.
 - Ordinary V2 execution never creates or mutates Classic runtime state; the explicit focus bridge alone creates/reuses its mapped Classic conversation/session and mirrors visible Q&A without duplicating runtime evidence.
 
-Contracts/core/server tests cover bounded 30-goal routing, timeout fallback, recent-turn clarification, focus lifecycle and staged completion, one-to-one bridge ownership/idempotence, invalid provider tool recovery, unresolved limits, evidence immutability, model-aware context budgets, V2-only attachments/tools/Memory Router and Goal Router telemetry, same-Flow exclusion with cross-project concurrency, credential redaction, shared Memory Agent V2 receipts, canonical/global trace retrieval, durable Terminal restart continuation, feature-flag isolation, speech allowlists, native runtime adapters, pack integrity, and a 652-message/600-evidence bounded-load proof. On 2026-07-17, the whole workspace test run and typecheck passed; the server result was 19 files and 200/200 tests, with 89/89 core tests. Four focused web V2 API tests, server/Next production builds, and the normal runtime build passed.
+Contracts/core/server tests cover bounded 30-goal routing, timeout fallback, recent-turn clarification, focus lifecycle and staged completion, one-to-one bridge ownership/idempotence, invalid provider tool recovery, unresolved limits, evidence immutability, model-aware context budgets, V2-only attachments/tools/Memory Router and Goal Router telemetry, same-Flow exclusion with cross-project concurrency, credential redaction, shared Memory Agent V2 receipts, canonical/global trace retrieval, durable Terminal restart continuation, feature-flag isolation, speech allowlists, native runtime adapters, pack integrity, and a 652-message/600-evidence bounded-load proof. On 2026-07-17, the whole workspace test run and typecheck passed; the server result was 19 files and 200/200 tests, with 89/89 core tests. Four focused web V2 API tests, server/Next production builds, and the normal runtime build passed. On 2026-07-18, focused contract/server/web typechecks, server and Next production builds, the Classic temporary-STT route test, visible Classic mic/Flow-view browser checks, responsive Flow layout checks, and the critical note/sidebar overlay interaction passed. Opening the 320px drawer did not change the measured viewport coordinates of either the composer or a note; the drawer covered the note as intended.
 
 A disposable real-browser E2E used OpenRouter `deepseek/deepseek-v4-pro` with thinking off as the main Socrates driver and approved OpenRouter `x-ai/grok-4.5` with low reasoning as Frontier. It proved General Conversation, model-backed `resume_parked` and `continue_foreground` routing, exact README evidence, `focus_ledger` completion with a substantive final, active/released context changes, an approved text-to-vision Frontier handoff, and both directions of the Classic bridge. Persisted V2 usage for the run was `$0.196472`, below the `$0.80` test ceiling.
 

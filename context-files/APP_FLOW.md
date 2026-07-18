@@ -39,9 +39,9 @@ open app
   -> /welcome
   -> check local database
   -> if no onboarded user exists, go to /onboarding
-  -> if onboarded user exists, show Classic/Seamless chooser
-       -> Classic opens /projects
-       -> enabled Seamless opens /seamless
+  -> if onboarded user exists, Open Workspace goes to /projects
+  -> open one Classic project dashboard
+  -> optionally use Go to Flow View for that same project
 ```
 
 The first-run check should use local SQLite state, not browser-only local storage.
@@ -567,6 +567,7 @@ Composer controls:
 - Stop while a turn is active.
 - Compact model selector rendered from `GET /api/models`.
 - Compact thinking selector rendered from the selected model's backend-owned thinking options.
+- Push-to-talk speech transcription. Click once to record and again to stop; the normalized WAV is sent to the conversation-scoped speech endpoint and the transcript is appended to the unsent draft.
 
 Composer behavior:
 
@@ -577,6 +578,16 @@ Composer behavior:
 - The chat page subscribes its WebSocket to the active conversation with `chat.conversation.subscribe` on initial connect and reconnect.
 - The frontend sends `chat.message.send` over WebSocket for the real AI path.
 - The older no-AI HTTP message endpoint remains available but is not the normal chat UI send path.
+- Classic STT defaults to `engine=local_whisper&modelId=small.en`. It never auto-sends the transcript, never routes through the V2 Goal Router, and never creates V2 Flow, artifact, or speech-job state. The backend deletes its temporary WAV after the transcription attempt.
+
+Classic conversation transcription uses:
+
+```text
+POST /api/projects/:projectId/conversations/:conversationId/speech/transcribe
+  multipart field: file (normalized WAV)
+  query: engine=local_whisper|openrouter
+         modelId=small.en|base.en|one accepted OpenRouter transcription id
+```
 
 Composer run-state behavior:
 
@@ -1212,13 +1223,17 @@ Project
               └── immutable retrievable evidence
 ```
 
-The implemented surface uses `/welcome` as a Classic/Seamless chooser for onboarded users, `/seamless` as the project directory, and `/seamless/projects/:projectId` as the one persistent project Flow. When V2 is disabled, the chooser leaves Classic available, disables the Seamless choice, and `/seamless` renders an explicit disabled state. Each focus has one explicit Classic bridge conversation: **Open in Classic** and **Continue in Seamless** flip the active writer and preserve visible Q&A without migrating unrelated chats or duplicating tool/evidence/usage rows.
+The implemented surface preserves the original cream `/welcome` and `/projects` path. Users first open a Classic project dashboard, where a small **Go to Flow View** control in the always-visible project header opens `/seamless/projects/:projectId` for that same project. `/seamless` itself redirects to `/projects`; there is no global view chooser or duplicate project-directory page. The project switch checks V2 capability and becomes unavailable when the backend flag is off. Each focus has one explicit Classic bridge conversation: **Open in Classic** and **Continue in Flow View** flip the active writer and preserve visible Q&A without migrating unrelated chats or duplicating tool/evidence/usage rows.
 
-The Seamless project view is a separate calm, dark, ocean-like workspace with a restrained living sphere, one chronological timeline, a **Current Focus / Current Task** ribbon, a Current/Paused/Finished/Archived focus ledger, a goals/context inspector, and expandable tool/approval/credential/Terminal activity. It renders assistant Markdown/GFM, sparse same-turn routing clarification, streamed reasoning disclosure, message attachments, and tool results, and retains model/thinking controls, stop, feedback, Agent Skill ZIPs, the 10,000-character large-paste attachment rule, push-to-talk transcription, and per-response read aloud. Users do not create chats or manually organize goal boundaries, though direct switch/pause/finish/reopen/archive/pin controls remain available.
+The Flow project view uses the same warm cream Socrates surface as Classic, with a restrained low-contrast living sphere and one chronological timeline. Two lightweight clipped notes float on that surface: **Live Context** and **Current Focus / Current Task**. They can be dragged only by their complete circular paperclip handles, moved precisely with the arrow keys, clamped into the responsive workspace, and persisted per project. Opening either note reveals the larger Context/Focuses/Activity inspector; that inspector can be pinned or dismissed, and keeps detailed evidence, focus lifecycle, approvals, tools, credentials, Terminals, and speech settings out of the calm default surface.
+
+The outer shell is not a V2 imitation: both views render the shared `ProjectChatSidebar` shell and `WorkspaceTopbar`, so full collapse, hover bounds, dimensions, and dashboard treatment stay identical. Their sidebar content deliberately differs: Classic shows projects, conversations, and New Chat actions; Flow shows project-only links, one per persistent project Flow, and never displays conversations or New Chat controls. In Flow the shared sidebar is an overlay drawer: opening it covers the canvas instead of shifting, shrinking, or reflowing the notes and composer. **Classic View** returns to the exact source project. Flow renders assistant Markdown/GFM, sparse same-turn routing clarification, streamed reasoning disclosure, message attachments, and tool results.
+
+The composer is the actual shared Classic `ChatComposer`, preserving the exact model/thinking menus, send/stop behavior, file picker, image paste, image/file preview tray, drag/drop, vision warning, Agent Skill ZIP support, attachment limits, and 10,000-character large-paste attachment rule. Both Classic and Flow now receive the same optional push-to-talk microphone presentation. Classic sends the normalized recording to its temporary conversation-scoped STT endpoint and appends the transcript to its draft without auto-sending or creating V2 state. Flow uses the V2 speech path and sends a finalized transcript through the Goal Router. Neither view adds a separate Tools control. Per-response read aloud remains outside the composer. Users do not create chats or manually organize goal boundaries, though direct switch/pause/finish/reopen/archive/pin controls remain available.
 
 V2 uses the same Socrates agent, tools, providers, workspace `.socrates/`, global `~/.Socrates/`, Memory Router implementation, and global Memory Agent as Classic. It does not use the Classic conversation-title rewriter or a capsule-writing LLM: deterministic goal titles and materiality-gated rich capsule versions provide the Seamless navigation/resume labels. The Goal Router reuses the configured fast structured `title_generator` worker model selection without calling the title-rewrite service. V2 turn, tool, approval, Terminal, evidence, context, usage, and event persistence remains `v2_*`-owned. Canonical V2 Q&A parents reuse shared LanceDB lexical/semantic/combined retrieval under explicit `runtimeKind = "v2_flow"` and `flowId` filters; queryless/inspect/audit continue to resolve through V2-owned raw evidence.
 
-The first voice slice is called V2 Voice V1, not V1 Classic voice. Its implemented picker exposes two transcription modes and one read-aloud mode:
+The shared speech foundation has two deliberately different orchestration surfaces. Classic offers one simple composer mic and currently defaults to offline Whisper `small.en`; the transcript stays in the draft until the user sends it. V2 Voice V1 exposes two transcription modes and one read-aloud mode:
 
 ```text
 Speech input
@@ -1237,7 +1252,7 @@ Read aloud
 
 The OpenRouter list is an explicit allowlist even if discovery returns other transcription models. The UI shows Local versus OpenRouter before recording is submitted and never switches from local to cloud automatically. Local model packs install only after an explicit user action with byte/checksum verification and then run offline. Granite Speech, Ollama speech, hosted TTS, and full-duplex realtime voice are outside this first slice.
 
-Full routing, context, voice, concurrency, recovery, and validation boundaries are in `V2_FLOW_ARCHITECTURE.md`. The current implementation still needs final whole-repo regression/packaging and extended soak evidence; the existence of the UI must not be described as proof of 24-hour unattended reliability.
+Full routing, context, voice, concurrency, recovery, and validation boundaries are in `V2_FLOW_ARCHITECTURE.md`. Whole-repo regression, production builds, and focused browser interaction verification have passed for this milestone; extended soak and supported-platform release evidence remain outstanding. The existence of the UI must not be described as proof of 24-hour unattended reliability.
 
 ## Design Notes
 

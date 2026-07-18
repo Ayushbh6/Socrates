@@ -12,6 +12,7 @@ import {
   checkProviderCredentialResponseSchema,
   checkMcpServerResponseSchema,
   completeOnboardingResponseSchema,
+  conversationTranscriptionResponseSchema,
   configureProjectEmbeddingsResponseSchema,
   createConversationMessageResponseSchema,
   createConversationResponseSchema,
@@ -78,6 +79,7 @@ import {
   type CheckProviderCredentialResponse,
   type CompleteOnboardingRequest,
   type CompleteOnboardingResponse,
+  type ConversationTranscriptionResponse,
   type ConfigureProjectEmbeddingsRequest,
   type ConfigureProjectEmbeddingsResponse,
   type CreateConversationMessageRequest,
@@ -673,6 +675,25 @@ export const api = {
       uploadConversationAttachmentsResponseSchema,
       body,
     ) as Promise<UploadConversationAttachmentsResponse>;
+  },
+
+  transcribeConversationRecording: (
+    projectId: string,
+    conversationId: string,
+    recording: Blob,
+    preference: { engine: "local_whisper" | "openrouter"; modelId: string } = {
+      engine: "local_whisper",
+      modelId: "small.en",
+    },
+  ) => {
+    const body = new FormData();
+    body.append("file", recording, "recording.wav");
+    const query = new URLSearchParams({ engine: preference.engine, modelId: preference.modelId });
+    return uploadRequest(
+      `/api/projects/${encodeURIComponent(projectId)}/conversations/${encodeURIComponent(conversationId)}/speech/transcribe?${query}`,
+      conversationTranscriptionResponseSchema,
+      body,
+    ) as Promise<ConversationTranscriptionResponse>;
   },
 
   upsertProjectInstructions: (projectId: string, input: UpsertProjectInstructionsRequest) =>

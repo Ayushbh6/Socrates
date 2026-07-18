@@ -36,8 +36,8 @@ export function LivingSphere({ state, size = "full", statusLabel }: LivingSphere
           reduceMotion || !active
             ? undefined
             : {
-                opacity: [0.25, 0.52, 0.25],
-                scale: [0.94, 1.06, 0.94],
+                opacity: [0.16, 0.28, 0.16],
+                scale: [0.98, 1.035, 0.98],
               }
         }
         transition={{ duration: state === "working" ? 2.2 : 4.8, ease: "easeInOut", repeat: Infinity }}
@@ -51,10 +51,10 @@ export function LivingSphere({ state, size = "full", statusLabel }: LivingSphere
             : state === "routing"
               ? { rotate: 360 }
               : state === "listening"
-                ? { scale: [1, 1.035, 1] }
+                ? { scale: [1, 1.02, 1] }
                 : state === "complete"
-                  ? { scale: [1, 1.08, 1] }
-                  : { y: [0, -4, 0] }
+                  ? { scale: [1, 1.04, 1] }
+                  : { y: [0, -2, 0] }
         }
         transition={{
           duration: state === "routing" ? 7 : state === "complete" ? 1.4 : 5.5,
@@ -62,6 +62,7 @@ export function LivingSphere({ state, size = "full", statusLabel }: LivingSphere
           repeat: state === "complete" ? 0 : Infinity,
         }}
       >
+        <span className={styles.sphereRim} />
         <span className={styles.sphereTexture} />
         <span className={styles.sphereWave} data-wave="one" />
         <span className={styles.sphereWave} data-wave="two" />

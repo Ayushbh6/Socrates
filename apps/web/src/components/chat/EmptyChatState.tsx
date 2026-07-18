@@ -11,10 +11,16 @@ interface EmptyChatStateProps {
   selectedModel: ModelOption | null;
   selectedThinkingOption: ModelThinkingOption | null;
   warningResetKey?: string;
+  value?: string;
+  onValueChange?: (value: string) => void;
+  voiceAvailable?: boolean;
+  voiceRecording?: boolean;
+  voiceBusy?: boolean;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
   onSend: (content: string, attachments: MessageAttachment[]) => Promise<void>;
   onUploadAttachments: (files: File[]) => Promise<MessageAttachment[]>;
+  onVoiceToggle?: () => void;
   onStop: () => void;
 }
 
@@ -26,10 +32,16 @@ export function EmptyChatState({
   selectedModel,
   selectedThinkingOption,
   warningResetKey,
+  value,
+  onValueChange,
+  voiceAvailable,
+  voiceRecording,
+  voiceBusy,
   onModelChange,
   onThinkingChange,
   onSend,
   onUploadAttachments,
+  onVoiceToggle,
   onStop,
 }: EmptyChatStateProps) {
   return (
@@ -42,10 +54,16 @@ export function EmptyChatState({
         selectedModel={selectedModel}
         selectedThinkingOption={selectedThinkingOption}
         warningResetKey={warningResetKey}
+        value={value}
+        onValueChange={onValueChange}
+        voiceAvailable={voiceAvailable}
+        voiceRecording={voiceRecording}
+        voiceBusy={voiceBusy}
         onModelChange={onModelChange}
         onThinkingChange={onThinkingChange}
         onSend={onSend}
         onUploadAttachments={onUploadAttachments}
+        onVoiceToggle={onVoiceToggle}
         onStop={onStop}
       />
     </div>

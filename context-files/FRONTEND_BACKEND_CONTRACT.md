@@ -40,9 +40,9 @@ The contract must also stay expandable for later:
 
 Everything below remains the V1 Classic contract unless a section explicitly says otherwise.
 
-V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to V1 payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned persistence. Existing V1 clients continue to function without knowing V2 exists.
+V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to V1 payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned persistence. Existing V1 clients continue to function without knowing V2 exists. The explicitly approved Classic microphone is a small conversation-scoped STT contract, not a V2 contract leak: it returns text for the existing unsent draft and creates no goal, Flow, V2 speech job, or V2 artifact.
 
-`SOCRATES_V2_FLOW_ENABLED` is false for a directly constructed source server unless its value is exactly `true`. Direct source-server development must set it explicitly. The ordinary NPM/runtime-archive `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the Seamless welcome choice and retains an explicit rollback override.
+`SOCRATES_V2_FLOW_ENABLED` is false for a directly constructed source server unless its value is exactly `true`. Direct source-server development must set it explicitly. The ordinary NPM/runtime-archive `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the project-scoped Seamless switch and retains an explicit rollback override.
 
 The implemented V2 families include:
 
@@ -60,6 +60,12 @@ The exact entities, HTTP bodies, socket commands, socket events, and speech unio
 
 V2 reuses the same normalized provider, tool semantics, approvals, Terminal supervisor, artifacts, usage normalization, errors, workspace `.socrates/`, global `~/.Socrates/`, MCP/skills, Memory Router implementation, and global Memory Agent. Conversation-owned records are persisted through V2 contracts and 29 `v2_*` tables. Ordinary V2 execution never creates a shadow Classic runtime merely to reuse an endpoint. The explicit bridge alone maps each focus to at most one Classic conversation/session and mirrors visible Q&A idempotently; tools, evidence, usage, and events remain V2-owned. Canonical V2 Q&A parents enter the shared retrieval index with `runtimeKind = "v2_flow"` and `flowId`; lexical/semantic/combined searches use that shared index, while queryless/inspect/audit resolve through V2-owned raw evidence.
 
+V2 also renders the same shared web `ChatComposer` used by Classic. The component owns identical model/thinking menus, send/stop behavior, attachment picker, pasted and drag/dropped images, previews, vision warning, Agent Skill ZIP support, large-paste conversion, and optional microphone presentation in both views. V2 supplies V2-scoped attachment upload/send and voice callbacks; Classic supplies its existing attachment/send callbacks plus its conversation-scoped transcription callback. There is no V2-specific Tools toggle or second composer implementation.
+
+The web shell follows the same rule: Classic and Flow both render the `ProjectChatSidebar` shell and `WorkspaceTopbar`. `ProjectChatSidebar` has two data modes: Classic renders nested conversations and New Chat actions; Flow renders project-only links targeting `/seamless/projects/:projectId`, with no conversation rows or chat-creation controls. V2 sets the shared sidebar to overlay mode so its 320px drawer covers the Flow canvas instead of changing canvas/composer coordinates. V2 may supply different center-workspace content and header actions, but it must not implement a parallel project rail, collapsed icon strip, or separate header geometry. Collapsing the shared sidebar removes it completely and leaves only the shared expand button.
+
+The V2 center workspace uses two movable clipped notes rather than a fixed focus ribbon: one summarizes Live Context and one summarizes Current Focus/Task. Their circular paperclip buttons are the only drag handles, also support keyboard arrow movement, and store clamped per-project coordinates locally. Selecting a note opens the larger typed Context/Focuses/Activity inspector, whose pinned/open state is presentation-only local state.
+
 The implemented V2 Voice V1 configuration is:
 
 ```ts
@@ -76,7 +82,28 @@ type V2TextToSpeechProviderId = "local_kokoro"
 type V2LocalTtsModelId = "kokoro-82m"
 ```
 
-These are V2-only payloads, not V1 payload changes. The contracts carry engine/model ids, language, duration, status, errors, artifact references, transcript text, voice/speed, and hosted usage/cost metadata where available. Backend schema checks and route validation accept only the three hosted model ids above. There is no automatic cloud fallback after a local failure. Granite Speech and Ollama speech ids are invalid for this contract.
+These V2 speech-job/artifact payloads remain V2-only. The V2 contracts carry engine/model ids, language, duration, status, errors, artifact references, transcript text, voice/speed, and hosted usage/cost metadata where available. Backend schema checks and route validation accept only the three hosted model ids above. There is no automatic cloud fallback after a local failure. Granite Speech and Ollama speech ids are invalid for this contract.
+
+Classic reuses the same lower-level transcriber adapters through a separate small HTTP response contract:
+
+```ts
+type ConversationTranscriptionResponse = {
+  transcriptText: string
+  engine: "local_whisper" | "openrouter"
+  modelId: string
+  durationSeconds?: number
+}
+```
+
+Its current UI sends `engine=local_whisper&modelId=small.en`, appends `transcriptText` to the controlled composer draft, and never auto-sends it. The route may also validate the existing Whisper `base.en` and three OpenRouter transcription ids for future explicit selection, but it never silently switches engine.
+
+```text
+POST /api/projects/:projectId/conversations/:conversationId/speech/transcribe
+  multipart field: file (audio/wav, maximum 50 MiB)
+  query: engine, modelId
+```
+
+The server validates both project and conversation scope, writes the local Whisper input only to a mode-`0600` temporary directory, removes that directory in `finally`, and persists no raw audio or `v2_*` record.
 
 ### V2 HTTP And WebSocket Surface
 
@@ -108,7 +135,7 @@ WS /v2/ws
 
 V2 client commands are `v2.flow.subscribe`, `v2.flow.unsubscribe`, `v2.message.send`, `v2.routing.clarification.respond`, `v2.focus.update`, `v2.turn.cancel`, `v2.approval.decide`, `v2.feedback.submit`, `v2.credential.input.submit`, and the `v2.terminal.stop/input/resize/rename` family. Focus actions are `switch`, `pause`, `finish`, `reopen`, `archive`, `pin`, and `unpin`. The live server emits connection/snapshot hydration, turns/messages, goal routing/clarification/capsules/transitions, context dispositions/compaction, tool/approval/credential/Terminal/error lifecycle, feedback, and Frontier handover. The contract also reserves typed `v2.artifact.created` and `v2.speech.job.updated` events; artifact/speech jobs are currently handled through HTTP. All envelopes carry schema version 2 plus project/Flow scope; runtime events use a `v2.` prefix.
 
-The V2 frontend routes are `/seamless` and `/seamless/projects/:projectId`. The Classic route family below is unchanged. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router may reuse the configured fast structured `title_generator` worker model selection, but it calls the strict V2 routing schema and is not a title rewrite.
+The V2 project route is `/seamless/projects/:projectId`; `/seamless` redirects to the Classic `/projects` directory. The Classic project dashboard owns the capability-aware **Go to Flow View** link into its matching Flow; a mapped Classic chat uses **Continue in Flow View**. These labels do not rename the internal route namespace. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router may reuse the configured fast structured `title_generator` worker model selection, but it calls the strict V2 routing schema and is not a title rewrite.
 
 ## Route Contract
 
@@ -121,18 +148,22 @@ Frontend routes:
 /projects/new
 /projects/:projectId
 /projects/:projectId/chats/:conversationId
+/seamless
+/seamless/projects/:projectId
 ```
 
 Route meanings:
 
 | Route | Purpose | Primary data |
 | --- | --- | --- |
-| `/welcome` | Entry/onboarding gate; Classic/Seamless chooser for an onboarded user | `GET /api/me`, `GET /api/v2/capabilities` |
+| `/welcome` | Original cream entry/onboarding gate; Open Workspace returns an onboarded user to Classic projects | `GET /api/me` |
 | `/onboarding` | Create local user profile | `POST /api/onboarding` |
 | `/projects` | List projects | `GET /api/projects` |
 | `/projects/new` | Create project and attach required workspace folder | `POST /api/projects` |
-| `/projects/:projectId` | Project dashboard | `GET /api/projects/:projectId` |
+| `/projects/:projectId` | Project dashboard plus capability-aware switch into the same project's Seamless Flow | `GET /api/projects/:projectId`, `GET /api/v2/capabilities` |
 | `/projects/:projectId/chats/:conversationId` | Chat workspace | HTTP load plus WebSocket stream |
+| `/seamless` | Redirect to `/projects`; no second project directory | None |
+| `/seamless/projects/:projectId` | One persistent Seamless Flow for the selected Classic project | V2 Flow HTTP plus `WS /v2/ws` |
 
 There is no dashboard id in V1. The project page is the dashboard.
 

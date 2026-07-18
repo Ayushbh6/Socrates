@@ -3,32 +3,27 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ArrowUpRight,
-  Check,
-  ChevronLeft,
-  ChevronRight,
-  CircleDashed,
-  Folder,
-  Menu,
+  LayoutDashboard,
   PanelRightClose,
   PanelRightOpen,
-  ShieldCheck,
   ThumbsDown,
   ThumbsUp,
   Volume2,
-  Wrench,
   X,
 } from "lucide-react";
-import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { V2MessageAttachment } from "@socrates/contracts";
+import { ChatComposer, type ChatComposerProps } from "@/components/chat/ChatComposer";
+import { ProjectChatSidebar, type SidebarProject } from "@/components/chat/ProjectChatSidebar";
+import { WorkspaceTopbar } from "@/components/chat/WorkspaceTopbar";
 import { LivingSphere } from "./LivingSphere";
-import { V2FlowComposer, type V2FlowComposerProps } from "./V2FlowComposer";
-import { V2CredentialPrompt } from "./V2CredentialPrompt";
 import { V2ViewLink } from "./V2ViewLink";
-import { V2TerminalActivity } from "./V2TerminalActivity";
 import { V2SpeechPackManager } from "./V2SpeechPackManager";
+import { FlowWorkspaceNotes } from "./FlowWorkspaceNotes";
+import { FlowWorkspaceInspector, type FlowInspectorView } from "./FlowWorkspaceInspector";
 import styles from "./seamless.module.css";
 import type {
   FlowContextSummary,
@@ -36,7 +31,6 @@ import type {
   FlowCredentialRequestView,
   FlowGoalView,
   FlowPresenceState,
-  FlowProjectNavItem,
   FlowTimelineItemView,
   FlowTerminalActivityView,
   FlowToolActivityView,
@@ -46,8 +40,7 @@ import type {
 export interface FlowWorkspaceProps {
   projectId: string;
   projectName: string;
-  workspaceLabel?: string;
-  projects: FlowProjectNavItem[];
+  sidebarProjects: SidebarProject[];
   timeline?: FlowTimelineItemView[];
   goals?: FlowGoalView[];
   activeGoalId?: string;
@@ -66,7 +59,7 @@ export interface FlowWorkspaceProps {
   hasEarlierMessages?: boolean;
   isLoadingEarlierMessages?: boolean;
   earlierMessagesError?: string;
-  composer: V2FlowComposerProps;
+  composer: ChatComposerProps<V2MessageAttachment>;
   onReadAloud?: (itemId: string) => void;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
   onCredentialResolve?: (request: FlowCredentialRequestView, decision: "submitted" | "cancelled", value?: string) => void;
@@ -80,19 +73,10 @@ export interface FlowWorkspaceProps {
   onOpenInClassic?: (goalId: string) => void;
 }
 
-const goalStatusLabel: Record<FlowGoalView["status"], string> = {
-  foreground: "Current",
-  parked: "Paused",
-  blocked: "Paused",
-  completed: "Finished",
-  archived: "Archived",
-};
-
 export function FlowWorkspace({
   projectId,
   projectName,
-  workspaceLabel,
-  projects,
+  sidebarProjects,
   timeline = [],
   goals = [],
   activeGoalId,
@@ -124,9 +108,10 @@ export function FlowWorkspace({
   onFocusAction,
   onOpenInClassic,
 }: FlowWorkspaceProps) {
-  const [isRailCollapsed, setIsRailCollapsed] = useState(false);
-  const [isMobileRailOpen, setIsMobileRailOpen] = useState(false);
-  const [isInspectorOpen, setIsInspectorOpen] = useState(true);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
+  const [isInspectorPinned, setIsInspectorPinned] = useState(false);
+  const [inspectorView, setInspectorView] = useState<FlowInspectorView>("context");
   const [isSpeechPacksOpen, setIsSpeechPacksOpen] = useState(false);
   const speechPackDialogRef = useRef<HTMLDivElement>(null);
   const speechPackCloseRef = useRef<HTMLButtonElement>(null);
@@ -135,14 +120,15 @@ export function FlowWorkspace({
     () => goals.find((goal) => goal.id === activeGoalId) ?? goals.find((goal) => goal.status === "foreground"),
     [activeGoalId, goals],
   );
-  const pendingApprovals = useMemo(
-    () => approvals.filter((approval) => !approval.status || approval.status === "pending"),
-    [approvals],
+  const pausedGoalCount = useMemo(
+    () => goals.filter((goal) => goal.status === "parked" || goal.status === "blocked").length,
+    [goals],
   );
-  const [isActivityOpen, setIsActivityOpen] = useState(
-    pendingApprovals.length > 0 || terminalActivity.some((terminal) => terminal.awaitingInput),
-  );
-  const activityCount = toolActivity.length + approvals.length + terminalActivity.length;
+
+  const openInspector = (view: FlowInspectorView) => {
+    setInspectorView(view);
+    setIsInspectorOpen(true);
+  };
 
   useEffect(() => {
     if (!isSpeechPacksOpen) return;
@@ -179,157 +165,95 @@ export function FlowWorkspace({
     };
   }, [isSpeechPacksOpen]);
 
-  const rail = (
-    <aside className={styles.projectRail} data-collapsed={isRailCollapsed || undefined} aria-label="Seamless projects">
-      <div className={styles.railHeader}>
-        <Link className={styles.railBrand} href="/seamless" aria-label="Socrates Seamless projects">
-          <span className={styles.railMark} aria-hidden="true" />
-          {!isRailCollapsed && <span>Socrates</span>}
-        </Link>
-        <button
-          className={styles.railCollapse}
-          type="button"
-          onClick={() => setIsRailCollapsed((current) => !current)}
-          aria-label={isRailCollapsed ? "Expand project rail" : "Collapse project rail"}
-        >
-          {isRailCollapsed ? <ChevronRight aria-hidden="true" /> : <ChevronLeft aria-hidden="true" />}
-        </button>
-        <button
-          className={styles.mobileRailClose}
-          type="button"
-          onClick={() => setIsMobileRailOpen(false)}
-          aria-label="Close project navigation"
-        >
-          <X aria-hidden="true" />
-        </button>
-      </div>
-
-      {!isRailCollapsed && <p className={styles.railLabel}>Projects</p>}
-      <nav className={styles.railProjects} aria-label="Project flows">
-        {projects.map(({ project, workspaceLabel: projectWorkspace }) => {
-          const isCurrent = project.id === projectId;
-          return (
-            <Link
-              key={project.id}
-              className={styles.railProject}
-              data-current={isCurrent || undefined}
-              href={`/seamless/projects/${encodeURIComponent(project.id)}`}
-              aria-current={isCurrent ? "page" : undefined}
-              title={isRailCollapsed ? project.name : undefined}
-              onClick={() => setIsMobileRailOpen(false)}
-            >
-              <span className={styles.railProjectGlyph} aria-hidden="true">
-                {project.name.slice(0, 1).toUpperCase()}
-              </span>
-              {!isRailCollapsed && (
-                <span className={styles.railProjectCopy}>
-                  <span>{project.name}</span>
-                  <span>{projectWorkspace ?? "No workspace folder"}</span>
-                </span>
-              )}
-            </Link>
-          );
-        })}
-      </nav>
-
-      <div className={styles.railFooter}>
-        <Link href="/projects/new" className={styles.railNewProject} title={isRailCollapsed ? "Create project in Classic View" : undefined}>
-          <Folder aria-hidden="true" />
-          {!isRailCollapsed && <span>Create project in Classic</span>}
-        </Link>
-      </div>
-    </aside>
-  );
+  useEffect(() => {
+    if (!isInspectorOpen) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !isSpeechPacksOpen) setIsInspectorOpen(false);
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [isInspectorOpen, isSpeechPacksOpen]);
 
   return (
     <main className={styles.flowPage}>
       <div className={styles.oceanNoise} aria-hidden="true" />
 
-      <div className={styles.desktopRail}>{rail}</div>
-      <AnimatePresence>
-        {isMobileRailOpen && (
-          <>
-            <motion.button
-              type="button"
-              className={styles.mobileScrim}
-              aria-label="Close project navigation"
-              onClick={() => setIsMobileRailOpen(false)}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            />
-            <motion.div
-              className={styles.mobileRail}
-              initial={reduceMotion ? false : { x: -28, opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={reduceMotion ? { opacity: 0 } : { x: -28, opacity: 0 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-            >
-              {rail}
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+      <ProjectChatSidebar
+        projects={sidebarProjects}
+        currentProjectId={projectId}
+        isCollapsed={isSidebarCollapsed}
+        onCollapse={() => setIsSidebarCollapsed(true)}
+        onExpand={() => setIsSidebarCollapsed(false)}
+        mode="projects"
+        overlay
+        projectHref={(targetProjectId) => `/seamless/projects/${encodeURIComponent(targetProjectId)}`}
+      />
 
       <section className={styles.flowShell} data-inspector={isInspectorOpen ? "open" : "closed"}>
-        <header className={styles.flowTopbar}>
-          <div className={styles.flowProjectHeading}>
+        <WorkspaceTopbar isSidebarCollapsed={isSidebarCollapsed}>
+          <V2ViewLink
+            view="classic"
+            href={`/projects/${encodeURIComponent(projectId)}`}
+            className="mr-4 inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+            title="Project dashboard"
+            aria-label="Project dashboard"
+          >
+            <LayoutDashboard className="size-4" />
+            <span className="hidden sm:inline">Dashboard</span>
+          </V2ViewLink>
+          <h1 className="min-w-0 truncate text-sm font-medium text-brand-text-dark">{projectName}</h1>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <button
               type="button"
-              className={styles.mobileMenuButton}
-              onClick={() => setIsMobileRailOpen(true)}
-              aria-label="Open project navigation"
-            >
-              <Menu aria-hidden="true" />
-            </button>
-            <div>
-              <h1>{projectName}</h1>
-              <p>{workspaceLabel ?? "No workspace folder connected"}</p>
-            </div>
-          </div>
-
-          <div className={styles.flowTopbarActions}>
-            <button
-              type="button"
-              className={styles.inspectorToggle}
-              onClick={() => setIsInspectorOpen((current) => !current)}
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+              onClick={() => isInspectorOpen ? setIsInspectorOpen(false) : openInspector("context")}
               aria-controls="v2-goal-inspector"
               aria-expanded={isInspectorOpen}
             >
               {isInspectorOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
-              <span>{isInspectorOpen ? "Hide context" : "View context"}</span>
+              <span>{isInspectorOpen ? "Hide notes" : "Working notes"}</span>
             </button>
-            <V2ViewLink view="classic" href={`/projects/${encodeURIComponent(projectId)}`} className={styles.classicSwitch}>
+            <V2ViewLink
+              view="classic"
+              href={`/projects/${encodeURIComponent(projectId)}`}
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+            >
               <span>Classic View</span>
-              <ArrowUpRight aria-hidden="true" />
+              <ArrowUpRight className="size-4" aria-hidden="true" />
             </V2ViewLink>
           </div>
-        </header>
+        </WorkspaceTopbar>
 
         <div className={styles.flowBody}>
-          <section className={styles.flowCanvas} aria-label="Seamless conversation">
-            <div className={styles.goalRibbon}>
-              <span className={styles.goalRibbonLabel}>Current focus</span>
-              <span className={styles.goalRibbonTitle}>{activeGoal?.title ?? "No current focus"}</span>
-              {activeGoal && <span className={styles.goalRibbonState}>{goalStatusLabel[activeGoal.status]}</span>}
-              <span className={styles.goalRibbonTaskLabel}>Current task</span>
-              <span className={styles.goalRibbonTask}>{currentTaskLabel}</span>
-            </div>
-
+          <section
+            className={styles.flowCanvas}
+            aria-label="Seamless conversation"
+            onPointerDown={() => {
+              if (isInspectorOpen && !isInspectorPinned) setIsInspectorOpen(false);
+            }}
+          >
             <div className={styles.timelineScroller}>
               <div className={clsx(styles.timeline, timeline.length > 0 && styles.timelineHasItems)}>
                 <div className={styles.presenceStage}>
-                  <LivingSphere
-                    state={presenceState}
-                    size={timeline.length > 0 ? "compact" : "full"}
-                    statusLabel={statusLabel}
-                  />
-                  {timeline.length === 0 && (
-                    <div className={styles.emptyFlowCopy}>
-                      <h2>Your project flow will live here.</h2>
-                      <p>Messages remain visually continuous while goals and context are managed behind the scenes.</p>
+                  <div className={styles.assistantDesk}>
+                    <FlowWorkspaceNotes
+                      projectId={projectId}
+                      activeGoal={activeGoal}
+                      currentTaskLabel={currentTaskLabel}
+                      contextSummary={contextSummary}
+                      pausedGoalCount={pausedGoalCount}
+                      compact={timeline.length > 0}
+                      onOpenContext={() => openInspector("context")}
+                      onOpenFocuses={() => openInspector("focuses")}
+                    />
+                    <div className={styles.deskSphere}>
+                      <LivingSphere
+                        state={presenceState}
+                        size={timeline.length > 0 ? "compact" : "full"}
+                        statusLabel={statusLabel}
+                      />
                     </div>
-                  )}
+                  </div>
                 </div>
 
                 {(hasEarlierMessages || earlierMessagesError) && (
@@ -427,271 +351,49 @@ export function FlowWorkspace({
             </div>
 
             <div className={styles.composerDock}>
-              <V2FlowComposer {...composer} />
+              <div className={styles.sharedComposerFrame}>
+                <ChatComposer {...composer} />
+              </div>
             </div>
           </section>
 
           <AnimatePresence initial={false}>
             {isInspectorOpen && (
-              <motion.aside
-                id="v2-goal-inspector"
-                className={styles.goalInspector}
-                aria-label="Goals and working context"
+              <motion.div
+                className={styles.inspectorMotionShell}
                 initial={reduceMotion ? false : { opacity: 0, x: 20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: 20 }}
-                transition={{ duration: 0.2, ease: "easeOut" }}
+                transition={{ duration: 0.24, ease: "easeOut" }}
               >
-                <div className={styles.inspectorHeader}>
-                  <div>
-                    <p>Current focus</p>
-                    <h2>{activeGoal?.title ?? "No active goal"}</h2>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsInspectorOpen(false)}
-                    aria-label="Close context inspector"
-                  >
-                    <X aria-hidden="true" />
-                  </button>
-                </div>
-
-                {activeGoal?.summary && <p className={styles.activeGoalSummary}>{activeGoal.summary}</p>}
-                {activeGoal && (onFocusAction || onOpenInClassic) && (
-                  <div className={styles.currentFocusActions}>
-                    {activeGoal.kind === "work" && onFocusAction && (
-                      <>
-                        <button type="button" onClick={() => onFocusAction(activeGoal.id, "pause")}>Pause</button>
-                        <button type="button" onClick={() => onFocusAction(activeGoal.id, "finish")}>Finish</button>
-                      </>
-                    )}
-                    {onOpenInClassic && <button type="button" onClick={() => onOpenInClassic(activeGoal.id)}>Open in Classic</button>}
-                  </div>
-                )}
-
-                {pendingApprovals.length > 0 && (
-                  <section className={styles.inspectorSection} aria-labelledby="approval-heading">
-                    <div className={styles.inspectorSectionHeading}>
-                      <h3 id="approval-heading">Needs approval</h3>
-                      <span>{pendingApprovals.length}</span>
-                    </div>
-                    <div className={styles.approvalList}>
-                      {pendingApprovals.map((approval) => (
-                        <div key={approval.id} className={styles.approvalPrompt}>
-                          <div>
-                            <ShieldCheck aria-hidden="true" />
-                            <span>
-                              <strong>{approval.actionKind}</strong>
-                              {approval.actionSummary && <small>{approval.actionSummary}</small>}
-                            </span>
-                          </div>
-                          <div>
-                            <button type="button" onClick={() => onApprovalDecision?.(approval.id, "rejected")}>Reject</button>
-                            <button type="button" onClick={() => onApprovalDecision?.(approval.id, "approved")}>
-                              <Check aria-hidden="true" /> Approve
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {credentialRequests.length > 0 && onCredentialResolve && (
-                  <section className={styles.inspectorSection} aria-labelledby="credential-heading">
-                    <div className={styles.inspectorSectionHeading}>
-                      <h3 id="credential-heading">Secure input</h3>
-                      <span>{credentialRequests.length}</span>
-                    </div>
-                    <div className={styles.credentialList}>
-                      {credentialRequests.map((request) => (
-                        <V2CredentialPrompt key={request.id} request={request} onResolve={onCredentialResolve} />
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                <details
-                  className={styles.activityDisclosure}
-                  open={isActivityOpen}
-                  onToggle={(event) => setIsActivityOpen(event.currentTarget.open)}
-                >
-                  <summary>
-                    <span>Runtime activity</span>
-                    <span>{activityCount}</span>
-                  </summary>
-                  <div className={styles.activityBody}>
-                    {activityCount === 0 && (
-                      <p className={styles.inspectorEmpty}>Tool, approval, and Terminal activity will appear here.</p>
-                    )}
-
-                    {toolActivity.length > 0 && (
-                      <div className={styles.activityGroup}>
-                        <p>Tools</p>
-                        {toolActivity.map((tool) => (
-                          <div className={styles.activityRow} key={tool.id}>
-                            <Wrench aria-hidden="true" />
-                            <span>
-                              <strong>{tool.name}</strong>
-                              {tool.summary && <small>{tool.summary}</small>}
-                              {tool.resultSummary && (
-                                <small className={styles.toolResult}>Result · {tool.resultSummary}</small>
-                              )}
-                            </span>
-                            <em>{tool.status.replaceAll("_", " ")}</em>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {approvals.length > 0 && (
-                      <div className={styles.activityGroup}>
-                        <p>Approvals</p>
-                        {approvals.map((approval) => (
-                          <div className={styles.activityRow} key={approval.id}>
-                            <ShieldCheck aria-hidden="true" />
-                            <span>
-                              <strong>{approval.actionKind}</strong>
-                              {approval.actionSummary && <small>{approval.actionSummary}</small>}
-                            </span>
-                            <em>{approval.status ?? "pending"}</em>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {terminalActivity.length > 0 && (
-                      <div className={styles.activityGroup}>
-                        <p>Terminals</p>
-                        {terminalActivity.map((terminal) => (
-                          <V2TerminalActivity
-                            key={`${terminal.id}:${terminal.name}`}
-                            terminal={terminal}
-                            onInput={onTerminalInput}
-                            onStop={onTerminalStop}
-                            onRename={onTerminalRename}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </details>
-
-                <section className={styles.inspectorSection} aria-labelledby="goal-list-heading">
-                  <div className={styles.inspectorSectionHeading}>
-                    <h3 id="goal-list-heading">Goals</h3>
-                    <span>{goals.length}</span>
-                  </div>
-                  {goals.length === 0 ? (
-                    <p className={styles.inspectorEmpty}>No goals have been loaded for this flow.</p>
-                  ) : (
-                    <div className={styles.focusLedger}>
-                      {([
-                        ["Current", goals.filter((goal) => goal.status === "foreground")],
-                        ["Paused", goals.filter((goal) => goal.status === "parked" || goal.status === "blocked")],
-                        ["Finished", goals.filter((goal) => goal.status === "completed")],
-                        ["Archived", goals.filter((goal) => goal.status === "archived")],
-                      ] as const).map(([label, groupedGoals]) => groupedGoals.length > 0 && (
-                        <section key={label} className={styles.focusGroup} aria-label={`${label} focuses`}>
-                          <p>{label}<span>{groupedGoals.length}</span></p>
-                          <ul className={styles.goalList}>
-                            {groupedGoals.map((goal) => (
-                              <li key={goal.id} data-status={goal.status}>
-                                <span className={styles.goalStatusDot} aria-hidden="true" />
-                                <span className={styles.goalListCopy}>
-                                  <strong>{goal.title}</strong>
-                                  <small>{goal.kind === "general" ? "Always open" : goalStatusLabel[goal.status]}{goal.pinned ? " · pinned" : ""}</small>
-                                </span>
-                                {onFocusAction && (
-                                  <span className={styles.goalListActions}>
-                                    {goal.status !== "foreground" && goal.status !== "archived" && (
-                                      <button type="button" onClick={() => onFocusAction(goal.id, goal.status === "completed" ? "reopen" : "switch")}>{goal.status === "completed" ? "Reopen" : "Switch"}</button>
-                                    )}
-                                    {goal.status === "archived" && <button type="button" onClick={() => onFocusAction(goal.id, "reopen")}>Reopen</button>}
-                                    {goal.kind === "work" && goal.status !== "foreground" && goal.status !== "archived" && (
-                                      <button type="button" onClick={() => onFocusAction(goal.id, "archive")}>Archive</button>
-                                    )}
-                                    <button type="button" onClick={() => onFocusAction(goal.id, goal.pinned ? "unpin" : "pin")}>{goal.pinned ? "Unpin" : "Pin"}</button>
-                                  </span>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        </section>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                <section className={styles.inspectorSection} aria-labelledby="context-heading">
-                  <div className={styles.inspectorSectionHeading}>
-                    <h3 id="context-heading">Working context</h3>
-                  </div>
-                  {!contextSummary ? (
-                    <p className={styles.inspectorEmpty}>No context snapshot has been loaded.</p>
-                  ) : contextSummary.unavailableReason ? (
-                    <p className={styles.inspectorEmpty}>{contextSummary.unavailableReason}</p>
-                  ) : (
-                    <dl className={styles.contextFacts}>
-                      {contextSummary.contextUsageLabel && (
-                        <div>
-                          <dt>Active window</dt>
-                          <dd>{contextSummary.contextUsageLabel}</dd>
-                        </div>
-                      )}
-                      {contextSummary.exactEvidenceCount !== undefined && (
-                        <div>
-                          <dt>Exact</dt>
-                          <dd>{contextSummary.exactEvidenceCount}</dd>
-                        </div>
-                      )}
-                      {contextSummary.distilledEvidenceCount !== undefined && (
-                        <div>
-                          <dt>Distilled</dt>
-                          <dd>{contextSummary.distilledEvidenceCount}</dd>
-                        </div>
-                      )}
-                      {contextSummary.unresolvedEvidenceCount !== undefined && (
-                        <div>
-                          <dt>Unresolved</dt>
-                          <dd>{contextSummary.unresolvedEvidenceCount}</dd>
-                        </div>
-                      )}
-                    </dl>
-                  )}
-                </section>
-
-                {voiceOptions.length > 0 && (
-                  <section className={styles.inspectorSection} aria-labelledby="voice-heading">
-                    <div className={styles.inspectorSectionHeading}>
-                      <h3 id="voice-heading">Voice input</h3>
-                    </div>
-                    <label className={styles.voiceOptionLabel} htmlFor="v2-transcriber">Transcriber</label>
-                    <select
-                      id="v2-transcriber"
-                      className={styles.voiceOptionSelect}
-                      value={selectedVoiceOptionId}
-                      disabled={!onVoiceOptionChange}
-                      onChange={(event) => onVoiceOptionChange?.(event.target.value)}
-                    >
-                      {voiceOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                    </select>
-                    <p className={styles.voiceStatus}>{voiceStatusLabel ?? "Speech never switches from local to hosted without your selection."}</p>
-                    <button
-                      type="button"
-                      className={styles.voicePacksControl}
-                      onClick={() => setIsSpeechPacksOpen(true)}
-                    >
-                      Manage offline voice packs
-                    </button>
-                  </section>
-                )}
-
-                <footer className={styles.inspectorFooter}>
-                  <CircleDashed aria-hidden="true" />
-                  <span>Evidence remains preserved outside the active model context.</span>
-                </footer>
-              </motion.aside>
+                <FlowWorkspaceInspector
+                  view={inspectorView}
+                  isPinned={isInspectorPinned}
+                  activeGoal={activeGoal}
+                  currentTaskLabel={currentTaskLabel}
+                  goals={goals}
+                  contextSummary={contextSummary}
+                  approvals={approvals}
+                  toolActivity={toolActivity}
+                  terminalActivity={terminalActivity}
+                  credentialRequests={credentialRequests}
+                  voiceOptions={voiceOptions}
+                  selectedVoiceOptionId={selectedVoiceOptionId}
+                  voiceStatusLabel={voiceStatusLabel}
+                  onViewChange={setInspectorView}
+                  onPinnedChange={setIsInspectorPinned}
+                  onClose={() => setIsInspectorOpen(false)}
+                  onApprovalDecision={onApprovalDecision}
+                  onCredentialResolve={onCredentialResolve}
+                  onVoiceOptionChange={onVoiceOptionChange}
+                  onOpenVoiceSettings={() => setIsSpeechPacksOpen(true)}
+                  onTerminalInput={onTerminalInput}
+                  onTerminalStop={onTerminalStop}
+                  onTerminalRename={onTerminalRename}
+                  onFocusAction={onFocusAction}
+                  onOpenInClassic={onOpenInClassic}
+                />
+              </motion.div>
             )}
           </AnimatePresence>
         </div>

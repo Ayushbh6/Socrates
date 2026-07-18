@@ -43,7 +43,7 @@ other v2_* tables = scoped structured views and durable HTTP/runtime ownership r
 
 ## V1/V2 Persistence Boundary
 
-The detailed table inventory below remains the V1 Classic persistence contract. V2 does not reinterpret V1 `conversations`, `sessions`, `turns`, or `messages`, and it does not create hidden V1 conversation rows as foreign-key shims for a V2 Flow.
+The detailed table inventory below remains the V1 Classic persistence contract. V2 does not reinterpret V1 `conversations`, `sessions`, `turns`, or `messages`, and it does not create hidden V1 conversation rows as foreign-key shims for a V2 Flow. Classic's composer microphone is also not V2 persistence: its conversation-scoped endpoint uses a temporary WAV and returns transcript text for the unsent draft without inserting `v2_*`, `voice_inputs`, or message rows. If the user sends that draft later, it follows the ordinary Classic message path.
 
 Migrations `0026_outgoing_typhoid_mary.sql` and `0027_long_terror.sql` create exactly 29 namespaced V2 tables in the same user-owned SQLite database. Sharing the database file does not share runtime ownership: all Flow lifecycle, timeline, context, audit, Terminal, artifact, feedback, credential-request, speech, and bridge-control rows remain under `v2_*` names.
 

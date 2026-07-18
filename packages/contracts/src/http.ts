@@ -958,6 +958,19 @@ export const uploadConversationAttachmentsResponseSchema = z
   })
   .strict()
 
+export const speechTranscriberEngineSchema = z.enum(["local_whisper", "openrouter"])
+export type SpeechTranscriberEngine = z.infer<typeof speechTranscriberEngineSchema>
+
+export const conversationTranscriptionResponseSchema = z
+  .object({
+    transcriptText: z.string().min(1),
+    engine: speechTranscriberEngineSchema,
+    modelId: z.string().min(1),
+    durationSeconds: z.number().nonnegative().optional(),
+  })
+  .strict()
+export type ConversationTranscriptionResponse = z.infer<typeof conversationTranscriptionResponseSchema>
+
 export const deleteProjectResourceResponseSchema = z
   .object({
     deletedResourceId: idSchema,

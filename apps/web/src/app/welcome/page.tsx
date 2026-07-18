@@ -3,7 +3,6 @@
 import { useRouter } from "next/navigation";
 import { useCurrentUser } from "@/hooks/useCurrentUser";
 import { Button } from "@/components/ui/Button";
-import { V2ModeChooser } from "@/components/v2/V2ModeChooser";
 import { ArrowRight, RefreshCw } from "lucide-react";
 
 export default function WelcomePage() {
@@ -22,10 +21,6 @@ export default function WelcomePage() {
     }
   };
 
-  if (!isLoading && user?.onboardingCompleted) {
-    return <V2ModeChooser displayName={user.displayName} />;
-  }
-
   return (
     <main className="min-h-screen bg-background bg-dot-pattern flex flex-col items-center justify-center p-6 text-center font-sans">
       <div className="max-w-2xl w-full flex flex-col items-center">
@@ -42,7 +37,13 @@ export default function WelcomePage() {
             Think clearly. Ask well. Live examined.
           </p>
           <p className="text-sm sm:text-base text-gray-500 font-light">
-            {error ? "Socrates could not check this workspace." : isLoading ? "Checking your workspace…" : "A short setup comes first."}
+            {error
+              ? "Socrates could not check this workspace."
+              : isLoading
+                ? "Checking your workspace…"
+                : user?.onboardingCompleted
+                  ? "Your workspace is ready. Return to your projects."
+                  : "A short setup comes first."}
           </p>
         </div>
         {error ? (
@@ -56,7 +57,7 @@ export default function WelcomePage() {
             disabled={isLoading}
             className="group rounded-full pl-6 pr-5 py-6 text-base"
           >
-            {isLoading ? "Checking Workspace" : "Set Up Socrates"}
+            {isLoading ? "Checking Workspace" : user?.onboardingCompleted ? "Open Workspace" : "Set Up Socrates"}
             <ArrowRight className="ml-2 size-4 transition-transform duration-200 group-hover:translate-x-1" />
           </Button>
         )}

@@ -7,7 +7,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { V2_STORAGE_KEYS } from "./storageKeys";
 import { v2Api } from "./api";
-import { mediaRecordingToMonoWav, preferredRecordingMimeType } from "./audio";
+import { mediaRecordingToMonoWav, preferredRecordingMimeType } from "@/lib/speech/audio";
 
 export type V2VoiceStatus = "idle" | "recording" | "transcribing" | "synthesizing" | "speaking" | "error";
 

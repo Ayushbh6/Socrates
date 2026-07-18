@@ -9,10 +9,12 @@ import { SemanticSearchPanel } from "@/components/dashboard/SemanticSearchPanel"
 import { SkillsPanel } from "@/components/dashboard/SkillsPanel";
 import { WorkspacePanel } from "@/components/dashboard/WorkspacePanel";
 import { McpServersPanel } from "@/components/mcp/McpServersPanel";
+import { V2ViewLink } from "@/components/v2/V2ViewLink";
 import { api } from "@/lib/api";
 import { truncatePreview } from "@/lib/format";
 import type { CommitSkillImportResponse, GetProjectResponse, SkillImportPreview } from "@socrates/contracts";
 import type { BuildSkillInput } from "@/components/dashboard/BuildSkillDialog";
+import { ArrowUpRight, Waypoints } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { use, useEffect, useState } from "react";
 
@@ -281,7 +283,19 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
   return (
     <main className="flex min-h-screen justify-center overflow-y-auto bg-brand-bg px-6 py-10 md:h-screen md:overflow-hidden">
       <div className="w-full max-w-6xl md:flex md:min-h-0 md:flex-col">
-        <BackLink href="/projects" label="All projects" />
+        <div className="flex shrink-0 items-center justify-between gap-4">
+          <BackLink href="/projects" label="All projects" />
+          <V2ViewLink
+            view="seamless"
+            href={`/seamless/projects/${encodeURIComponent(projectId)}`}
+            className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[#b9ddd8] bg-[#f4fbf9] px-4 text-sm font-medium text-brand-text-dark shadow-sm transition-colors hover:border-[#74c8c1] hover:bg-[#eaf7f4] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-teal-dark/30 data-[v2-availability=checking]:cursor-wait data-[v2-availability=disabled]:cursor-not-allowed data-[v2-availability=disabled]:opacity-50"
+          >
+            <Waypoints className="size-4 text-brand-teal-dark" aria-hidden="true" />
+            <span className="hidden sm:inline">Go to Flow View</span>
+            <span className="sm:hidden">Flow View</span>
+            <ArrowUpRight className="size-3.5 text-brand-text-light" aria-hidden="true" />
+          </V2ViewLink>
+        </div>
         
         <div className="mt-4 grid grid-cols-1 gap-10 md:min-h-0 md:flex-1 md:grid-cols-[minmax(0,1fr)_360px]">
           {/* Main Column - Left (2/3 width) */}

@@ -63,6 +63,12 @@ const summarizeAction = (action: unknown): string | undefined => {
   }
 };
 
+const contextItemLabel = (sourceLocator: string, sourceType: string): string => {
+  const normalized = sourceLocator.replaceAll("\\", "/").replace(/\/$/, "");
+  const tail = normalized.split("/").filter(Boolean).at(-1);
+  return tail?.trim() || sourceLocator.trim() || sourceType.replaceAll("_", " ");
+};
+
 const timelineFromMessages = (
   messages: V2Message[],
   streams: Record<string, { answer: string; reasoning?: string }>,
@@ -309,10 +315,22 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     const activeItems = runtime.contextState.items.filter((item) => item.active);
     const releasedCount = runtime.contextState.counts.releasedItemCount;
     return {
-      contextUsageLabel: `${runtime.contextState.counts.activeItemCount} active · ${releasedCount} released`,
+      items: activeItems.map((item) => ({
+        id: item.id,
+        label: contextItemLabel(item.evidenceRef.sourceLocator, item.evidenceRef.sourceType),
+        sourceType: item.evidenceRef.sourceType.replaceAll("_", " "),
+        disposition: item.disposition,
+        representation: item.representation,
+        ...(item.distilledText ? { distilledText: item.distilledText } : {}),
+        ...(item.tokenEstimate !== undefined ? { tokenEstimate: item.tokenEstimate } : {}),
+        priority: item.priority,
+      })),
+      contextUsageLabel: `${activeItems.length} active for this focus`,
       exactEvidenceCount: activeItems.filter((item) => item.disposition === "keep_exact").length,
       distilledEvidenceCount: activeItems.filter((item) => item.disposition === "distill").length,
       unresolvedEvidenceCount: activeItems.filter((item) => item.disposition === "unresolved").length,
+      preservedEvidenceCount: runtime.contextState.counts.immutableEvidenceCount,
+      releasedItemCount: releasedCount,
     };
   })() : runtime.contextError ? { unavailableReason: runtime.contextError } : undefined;
   const toolActivity = Object.values(runtime.state.toolCalls)
@@ -369,12 +387,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     <FlowWorkspace
       projectId={projectId}
       projectName={projectData.project.name}
-      workspaceLabel={projectData.primaryWorkspace.path}
-      projects={projectsData.map(({ project, primaryWorkspace, lastActivityAt }) => ({
-        project,
-        workspaceLabel: primaryWorkspace.path,
-        lastActivityAt,
-      }))}
+      sidebarProjects={projectsData.map(({ project }) => ({ project, conversations: [] }))}
       timeline={timeline}
       goals={snapshot.goals.map((goal) => ({
         id: goal.id,
@@ -444,34 +457,25 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       composer={{
         isConnected: composerConnected,
         isSending,
-        draftText,
-        onDraftTextChange: setDraftText,
-        models: (modelsData?.models ?? []).map((model) => ({
-          id: modelKey(model),
-          label: model.label,
-          providerLabel: model.providerLabel,
-        })),
-        selectedModelId,
-        thinkingOptions: selectedModel?.thinkingOptions.map((option) => ({
-          id: option.id,
-          label: option.label,
-          enabled: option.enabled,
-        })) ?? [],
-        selectedThinkingOptionId: selectedThinkingOption?.id,
-        toolsEnabled: true,
+        models: modelsData?.models ?? [],
+        selectedModel: selectedModel ?? null,
+        selectedThinkingOption: selectedThinkingOption ?? null,
+        warningResetKey: snapshot.flow.id,
+        value: draftText,
+        onValueChange: setDraftText,
         voiceAvailable: voice.isAvailable,
         voiceRecording: voice.status === "recording",
         voiceBusy: voice.status === "transcribing" || voice.status === "synthesizing" || voice.status === "speaking",
-        connectionLabel: visibleError ?? (!runtime.isConnected ? "Reconnecting…" : !runtimeConfig ? "Choose a model" : isClarifying ? "Answer once to route the waiting thought" : "Enter to send · Shift + Enter for a new line"),
-        onModelChange: (nextModelId) => {
+        onModelChange: (nextModel) => {
+          const nextModelId = modelKey(nextModel);
           setSelectedModelId(nextModelId);
           window.localStorage.setItem(`${V2_STORAGE_KEYS.composerModel}:${projectId}`, nextModelId);
-          const nextModel = modelsData?.models.find((model) => modelKey(model) === nextModelId);
-          setSelectedThinkingOptionId(nextModel ? chooseInitialThinkingOption(nextModel, projectId) : undefined);
+          setSelectedThinkingOptionId(chooseInitialThinkingOption(nextModel, projectId));
           setModelError(null);
         },
-        onThinkingChange: (nextThinkingOptionId) => {
+        onThinkingChange: (nextThinkingOption) => {
           if (!selectedModel) return;
+          const nextThinkingOptionId = nextThinkingOption.id;
           setSelectedThinkingOptionId(nextThinkingOptionId);
           window.localStorage.setItem(
             thinkingStorageKey(projectId, modelKey(selectedModel)),
@@ -480,16 +484,10 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         },
         onVoiceToggle: voice.toggleRecording,
         onUploadAttachments: isClarifying ? undefined : async (files) => {
-          const attachments = await v2Api.uploadAttachments(projectId, snapshot.flow.id, files);
-          return attachments.map((attachment) => ({
-            id: attachment.id,
-            fileName: attachment.fileName,
-            kind: attachment.kind === "audio" ? "other" : attachment.kind,
-            sizeBytes: attachment.sizeBytes,
-            ...(attachment.url ? { previewUrl: attachment.url } : {}),
-          }));
+          return v2Api.uploadAttachments(projectId, snapshot.flow.id, files);
         },
-        onSend: runtimeConfig ? async (content, attachments) => {
+        onSend: async (content, attachments) => {
+          if (!runtimeConfig) return;
           if (isClarifying) {
             runtime.respondToClarification(content);
           } else {
@@ -501,7 +499,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
           }
           setDraftText("");
           setActionError(null);
-        } : undefined,
+        },
         onStop: runtime.cancelActiveTurn,
       }}
     />

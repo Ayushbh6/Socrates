@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Brain, ChevronDown, EyeOff, FileText, ImagePlus, Square, Sparkles, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, EyeOff, FileText, ImagePlus, Mic, Square, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   MAX_INLINE_MESSAGE_CHARS,
@@ -11,35 +11,55 @@ import {
 } from "@socrates/contracts";
 import { socratesApiBaseUrl } from "@/lib/api";
 
-interface ChatComposerProps {
+export interface ComposerAttachment {
+  id: string;
+  kind: string;
+  fileName: string;
+  uri: string;
+  url?: string;
+}
+
+export interface ChatComposerProps<TAttachment extends ComposerAttachment = MessageAttachment> {
   isSending: boolean;
   isConnected: boolean;
   models: ModelOption[];
   selectedModel: ModelOption | null;
   selectedThinkingOption: ModelThinkingOption | null;
   warningResetKey?: string;
+  value?: string;
+  onValueChange?: (value: string) => void;
+  voiceAvailable?: boolean;
+  voiceRecording?: boolean;
+  voiceBusy?: boolean;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
-  onSend: (content: string, attachments: MessageAttachment[]) => Promise<void>;
-  onUploadAttachments: (files: File[]) => Promise<MessageAttachment[]>;
+  onSend: (content: string, attachments: TAttachment[]) => Promise<void>;
+  onUploadAttachments?: (files: File[]) => Promise<TAttachment[]>;
+  onVoiceToggle?: () => void;
   onStop: () => void;
 }
 
-export function ChatComposer({
+export function ChatComposer<TAttachment extends ComposerAttachment = MessageAttachment>({
   isSending,
   isConnected,
   models,
   selectedModel,
   selectedThinkingOption,
   warningResetKey,
+  value,
+  onValueChange,
+  voiceAvailable = false,
+  voiceRecording = false,
+  voiceBusy = false,
   onModelChange,
   onThinkingChange,
   onSend,
   onUploadAttachments,
+  onVoiceToggle,
   onStop,
-}: ChatComposerProps) {
-  const [content, setContent] = useState("");
-  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
+}: ChatComposerProps<TAttachment>) {
+  const [internalContent, setInternalContent] = useState("");
+  const [attachments, setAttachments] = useState<TAttachment[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
@@ -48,6 +68,14 @@ export function ChatComposer({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const thinkingMenuRef = useRef<HTMLDivElement | null>(null);
+  const content = value ?? internalContent;
+  const setContent = (nextValue: string) => {
+    if (value !== undefined) {
+      onValueChange?.(nextValue);
+      return;
+    }
+    setInternalContent(nextValue);
+  };
   const canSend = (content.trim().length > 0 || attachments.length > 0) && !isSending && !isUploading && isConnected && Boolean(selectedModel);
   const selectedModelHasNoVision = selectedModel?.capabilities?.vision === false;
   const selectedModelKey = selectedModel ? modelKey(selectedModel) : "none";
@@ -89,6 +117,9 @@ export function ChatComposer({
   }, [isModelMenuOpen, isThinkingMenuOpen]);
 
   const uploadFiles = async (fileList: File[] | FileList) => {
+    if (!onUploadAttachments) {
+      return;
+    }
     const availableSlots = Math.max(0, MAX_MESSAGE_ATTACHMENTS - attachments.length);
     const files = Array.from(fileList)
       .filter((file) => file.type.startsWith("image/") || file.type === "text/plain" || file.type === "application/zip" || file.name.toLowerCase().endsWith(".zip"))
@@ -196,7 +227,7 @@ export function ChatComposer({
               return;
             }
             const pastedText = event.clipboardData.getData("text/plain");
-            if (pastedText.length > MAX_INLINE_MESSAGE_CHARS) {
+            if (pastedText.length > MAX_INLINE_MESSAGE_CHARS && onUploadAttachments) {
               event.preventDefault();
               const file = new File(
                 [pastedText],
@@ -230,7 +261,7 @@ export function ChatComposer({
           <button
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-full border border-gray-200 bg-gray-50 text-brand-text-light transition-colors hover:bg-gray-100 hover:text-brand-text-dark disabled:opacity-60"
-            disabled={isSending || isUploading}
+            disabled={isSending || isUploading || !onUploadAttachments}
             aria-label="Attach image, text file, or Agent Skill ZIP"
             title="Attach image, text file, or Agent Skill ZIP"
             onClick={() => fileInputRef.current?.click()}
@@ -240,7 +271,7 @@ export function ChatComposer({
           <div ref={modelMenuRef} className="relative">
             <button
               type="button"
-              className="inline-flex h-9 max-w-72 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
+              className="inline-flex h-9 max-w-28 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100 sm:max-w-72"
               title={selectedModelLabel}
               onClick={() => {
                 setIsModelMenuOpen((current) => !current);
@@ -321,6 +352,24 @@ export function ChatComposer({
               </div>
             )}
           </div>
+
+          {onVoiceToggle && (
+            <button
+              type="button"
+              className={`inline-flex size-9 items-center justify-center rounded-full border text-brand-text-light transition-colors hover:text-brand-text-dark disabled:opacity-60 ${
+                voiceRecording
+                  ? "border-brand-teal-dark bg-teal-50 text-brand-teal-dark ring-2 ring-teal-100"
+                  : "border-gray-200 bg-gray-50 hover:bg-gray-100"
+              }`}
+              disabled={!isConnected || !voiceAvailable || (voiceBusy && !voiceRecording)}
+              aria-label={voiceRecording ? "Stop voice recording" : "Start voice recording"}
+              aria-pressed={voiceRecording}
+              title={voiceAvailable ? "Voice input" : "Voice input unavailable"}
+              onClick={onVoiceToggle}
+            >
+              <Mic className="size-4" />
+            </button>
+          )}
         </div>
         <button
           type={isSending ? "button" : "submit"}
