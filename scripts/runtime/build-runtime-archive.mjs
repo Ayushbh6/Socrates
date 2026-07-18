@@ -120,6 +120,15 @@ async function assertArchiveLayout(archivePath) {
       );
     }
   }
+
+  const environmentEntries = entries.filter((entry) =>
+    entry.split("/").some((segment) => segment === ".env" || segment.startsWith(".env.")),
+  );
+  if (environmentEntries.length > 0) {
+    throw new Error(
+      `Runtime archive must not contain environment files; found ${environmentEntries.slice(0, 5).join(", ")}`,
+    );
+  }
 }
 
 async function listArchiveEntries(archivePath) {

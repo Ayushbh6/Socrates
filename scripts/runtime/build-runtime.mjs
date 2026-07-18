@@ -103,12 +103,51 @@ const assertFile = (filePath, label) => {
   }
 };
 
+const isEnvironmentFileName = (name) => name === ".env" || name.startsWith(".env.");
+
 const removePackagedEnvFiles = (target) => {
-  for (const entry of fs.readdirSync(target)) {
-    if (entry === ".env" || entry.startsWith(".env.")) {
-      fs.rmSync(path.join(target, entry), { recursive: true, force: true });
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    const entryPath = path.join(target, entry.name);
+    if (isEnvironmentFileName(entry.name)) {
+      fs.rmSync(entryPath, { recursive: true, force: true });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      removePackagedEnvFiles(entryPath);
     }
   }
+};
+
+const removePackagedServerSelfReference = (serverRoot) => {
+  for (const selfReference of [
+    path.join(serverRoot, "node_modules", "@socrates", "server"),
+    path.join(serverRoot, "node_modules", ".pnpm", "node_modules", "@socrates", "server"),
+  ]) {
+    fs.rmSync(selfReference, { recursive: true, force: true });
+  }
+};
+
+const assertNoExternalRuntimeLinks = (target) => {
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        const resolvedTarget = fs.realpathSync(entryPath);
+        const relativeTarget = path.relative(target, resolvedTarget);
+        const pointsInsideRuntime =
+          relativeTarget === "" ||
+          (!path.isAbsolute(relativeTarget) && relativeTarget !== ".." && !relativeTarget.startsWith(`..${path.sep}`));
+        if (!pointsInsideRuntime) {
+          throw new Error(`Packaged runtime link escapes the runtime root: ${entryPath}`);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) {
+        visit(entryPath);
+      }
+    }
+  };
+  visit(target);
 };
 
 const pruneUnusedLanceDbEmbeddingExtras = (serverRoot) => {
@@ -330,10 +369,12 @@ await run(pnpmCommand, ["--filter", "web", "build"], {
   },
 });
 
-await run(pnpmCommand, pnpmDeployArgs(path.join(runtimeDir, "server")));
-removePackagedEnvFiles(path.join(runtimeDir, "server"));
-pruneUnusedLanceDbEmbeddingExtras(path.join(runtimeDir, "server"));
-exposePnpmHoistedDependencies(path.join(runtimeDir, "server"));
+const packagedServerRoot = path.join(runtimeDir, "server");
+await run(pnpmCommand, pnpmDeployArgs(packagedServerRoot));
+removePackagedServerSelfReference(packagedServerRoot);
+removePackagedEnvFiles(packagedServerRoot);
+pruneUnusedLanceDbEmbeddingExtras(packagedServerRoot);
+exposePnpmHoistedDependencies(packagedServerRoot);
 assertPackagedServerDependencies();
 
 copy(path.join(repoRoot, "apps", "server", "dist"), path.join(runtimeDir, "server", "dist"));
@@ -368,6 +409,9 @@ if (includeNodeRuntime) {
 await smokePackagedSpeechRuntime(
   includeNodeRuntime ? bundledNodeExecutable(path.join(runtimeDir, "node")) : process.execPath,
 );
+
+removePackagedEnvFiles(runtimeDir);
+assertNoExternalRuntimeLinks(packagedServerRoot);
 
 fs.writeFileSync(path.join(runtimeDir, ".gitkeep"), "");
 

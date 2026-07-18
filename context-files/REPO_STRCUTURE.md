@@ -254,6 +254,8 @@ The CLI defaults to the latest GitHub Release runtime; `--runtime-version <tag>`
 
 Release/package-manager tooling is pinned to the proven `pnpm@9.15.1` runtime-build path. Runtime release publishing recreates the tag release and uploads each archive explicitly so stale partial drafts are discarded. Runtime archives still bundle Node v20.20.2. Local runtime archive builds support pnpm 10+ by adding legacy deploy and native build-script allowance only when the builder detects a newer pnpm major. GitHub Windows shell/runtime jobs should use `windows-2022`; `windows-latest` currently maps to Windows Server 2025 / VS 2026 and breaks `node-gyp` Visual Studio detection for native dependencies. Shell Tooling keeps Windows install/typecheck plus contracts/workspace/core tests, and runs server PTY/WebSocket tests on Ubuntu only because they assume POSIX bash/PTY behavior.
 
+Runtime construction also owns the secret/self-containment boundary. It removes the deploy-created `@socrates/server` self-link back to the checkout, recursively strips `.env*` files from physical packaged directories, rejects server-tree links that resolve outside the runtime root, and scans the final zip entry list for environment files. These checks must remove only packaged links/copies and must never follow a link to delete the user's ignored source credential file.
+
 ### `apps/server`
 
 The backend application.

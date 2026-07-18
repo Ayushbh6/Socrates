@@ -20,6 +20,8 @@ Do not place logic in a package just because it is convenient. Put it where it b
 
 The current product and supported distribution boundary are the normal web frontend plus backend, delivered through the NPM CLI and packaged backend/frontend runtime archives. New runtime packaging logic belongs in the neutral root runtime/release script surface. Legacy `apps/desktop`/Tauri is discarded and unsupported; do not modify or use it for V1 or V2 unless the user explicitly reverses this decision.
 
+Runtime archives must be self-contained and secret-free. Packaging must remove deploy-created links back into the source checkout, recursively exclude `.env` and `.env.*` files without mutating their source targets, reject deployed server links whose resolved target escapes the runtime root, and inspect the final archive entry list before publication. A local ignored credential file must never be reachable through a packaged workspace self-link.
+
 LanceDB is pinned to `0.22.3` because that release publishes native packages for every supported runtime target (`darwin-arm64`, `darwin-x64`, and `win32-x64-msvc`). Lance SQL predicates over camel-case schema fields must quote identifiers, and server shutdown must close the shared native connection explicitly.
 
 Retrieval has one shared ownership chain:
