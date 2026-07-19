@@ -681,10 +681,7 @@ export const api = {
     projectId: string,
     conversationId: string,
     recording: Blob,
-    preference: { engine: "local_whisper" | "openrouter"; modelId: string } = {
-      engine: "local_whisper",
-      modelId: "small.en",
-    },
+    preference: { engine: "local_whisper" | "openrouter"; modelId: string },
   ) => {
     const body = new FormData();
     body.append("file", recording, "recording.wav");

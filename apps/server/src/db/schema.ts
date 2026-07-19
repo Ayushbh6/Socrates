@@ -1540,10 +1540,11 @@ export const v2GoalMessageLinks = sqliteTable(
   }),
 )
 
-// The bridge projects one V2 Focus into exactly one Classic conversation. It
-// mirrors only user-visible turns; tool/evidence ownership stays with the
-// runtime that produced it and remains retrievable through the shared project
-// trace index.
+// A bridge owns one Classic conversation's projection into the project Flow.
+// Its `goalId` is the conversation's most recently selected goal, not a
+// permanent one-to-one assignment. Per-turn links below preserve the canonical
+// many-to-many conversation <-> goal history. Tool/evidence ownership stays
+// with the runtime that produced it.
 export const v2ClassicConversationBridges = sqliteTable(
   "v2_classic_conversation_bridges",
   {
@@ -1563,10 +1564,59 @@ export const v2ClassicConversationBridges = sqliteTable(
     metadataJson: text("metadata_json"),
   },
   (table) => ({
-    goalIdx: uniqueIndex("v2_classic_bridges_goal_idx").on(table.goalId),
+    goalIdx: index("v2_classic_bridges_goal_idx").on(table.goalId),
     conversationIdx: uniqueIndex("v2_classic_bridges_conversation_idx").on(table.conversationId),
     flowStatusIdx: index("v2_classic_bridges_flow_status_idx").on(table.flowId, table.status),
     ownerCheck: check("v2_classic_bridges_owner_check", sql`${table.activeOwner} IN ('v2', 'classic')`),
+  }),
+)
+
+// Flow -> Classic is deterministic without making the relationship one-to-one:
+// a goal has at most one preferred Classic home, while that conversation may
+// contain turns belonging to any number of goals.
+export const v2GoalClassicHomes = sqliteTable(
+  "v2_goal_classic_homes",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    flowId: text("flow_id").notNull(),
+    goalId: text("goal_id").notNull(),
+    bridgeId: text("bridge_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => ({
+    goalIdx: uniqueIndex("v2_goal_classic_homes_goal_idx").on(table.goalId),
+    conversationIdx: index("v2_goal_classic_homes_conversation_idx").on(table.conversationId),
+    flowIdx: index("v2_goal_classic_homes_flow_idx").on(table.flowId),
+  }),
+)
+
+// Classic turns are assigned to exactly one canonical project goal by the
+// pre-turn Memory Router. This compact ledger is sufficient to reconstruct a
+// multi-goal Classic conversation without replaying its full token history.
+export const v2ClassicTurnGoalLinks = sqliteTable(
+  "v2_classic_turn_goal_links",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    flowId: text("flow_id").notNull(),
+    goalId: text("goal_id").notNull(),
+    bridgeId: text("bridge_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    turnId: text("turn_id").notNull(),
+    userMessageId: text("user_message_id").notNull(),
+    assistantMessageId: text("assistant_message_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => ({
+    turnIdx: uniqueIndex("v2_classic_turn_goal_links_turn_idx").on(table.turnId),
+    goalCreatedIdx: index("v2_classic_turn_goal_links_goal_created_idx").on(table.goalId, table.createdAt),
+    conversationCreatedIdx: index("v2_classic_turn_goal_links_conversation_created_idx").on(table.conversationId, table.createdAt),
   }),
 )
 

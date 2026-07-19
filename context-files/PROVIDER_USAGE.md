@@ -54,9 +54,9 @@ Speech providers are independent from `ModelProvider` and `EmbeddingProvider`. A
 
 Classic and V2 share the lower-level Local Whisper and OpenRouter transcription adapters, but not their orchestration or persistence:
 
-- Classic currently presents one push-to-talk mic in the shared composer, defaults to local Whisper `small.en`, sends a temporary WAV to the conversation-scoped transcription endpoint, appends the result to the unsent draft, and never creates V2 Flow/artifact/job state or auto-sends the text.
-- V2 exposes the explicit Local/OpenRouter transcriber picker, stores V2 speech artifacts/jobs, passes finalized transcripts through the Goal Router, and owns local Kokoro read-aloud.
-- Neither path silently switches from local to hosted transcription. Classic does not expose the hosted picker in its current UI even though its backend contract validates the same explicit allowlist for future selection.
+- Classic and Flow read one shared explicit voice preference. It defaults to **Not configured**; the microphone guides the user to Settings until they choose a transcriber.
+- Classic sends a temporary WAV to the conversation-scoped transcription endpoint, appends the result to the unsent draft, and never creates V2 Flow/artifact/job state or auto-sends the text. V2 stores V2 speech artifacts/jobs, passes finalized transcripts through the Goal Router, and owns local Kokoro read-aloud.
+- Neither path silently switches from local to hosted transcription. Hosted selection requires the user's OpenRouter credential. Offline weights download only after the user presses Install in Settings, where exact sizes, verification status, paths, and removal are visible.
 
 The implemented provider set is:
 

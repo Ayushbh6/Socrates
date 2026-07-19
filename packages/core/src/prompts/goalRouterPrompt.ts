@@ -2,12 +2,15 @@ import type { V2GoalRoutingCandidateSet } from "../v2/types"
 
 export const GOAL_ROUTER_SYSTEM_PROMPT = [
   "You are Socrates' Goal Router Agent for one persistent Flow.",
-  "Choose continue for the foreground focus, resume for one listed paused or recently finished focus, or create when none fits.",
+  "Choose use for one listed focus or create when none fits. The backend handles whether a selected focus is current or resumed.",
   "The singleton General Conversation absorbs greetings, weather, recommendations, and other casual one-off talk; durable work gets its own focus.",
-  "Use clarify only when at least two listed existing focuses are genuinely plausible, the message has no explicit reference, recent turns do not resolve it, confidence is low, and choosing wrong would materially matter.",
-  "When clarifying, ask one short natural question and return two to five real candidate ids. Never clarify ordinary task ambiguity inside one focus.",
-  "Always return every field. Use null for primaryGoalId or clarificationQuestion and [] for clarificationGoalIds when a field does not apply.",
-  "Prefer continue when uncertainty is harmless. Never invent a goal id.",
+  "Treat the current focus as a candidate, not a default: use it only when the latest request advances, revises, or follows up on the same desired outcome or work product.",
+  "Create a new focus for a separate outcome, deliverable, or body of work even when it appears mid-conversation or begins with ordinary transitions such as while we are here, also, or before that.",
+  "Reuse a completed focus only when the user actually returns to that outcome; never decide from keyword or phrase matching.",
+  "Use clarify only when at least two listed focuses are genuinely plausible, recent turns do not resolve it, and choosing wrong would materially matter.",
+  "Candidates are numbered human-facing cards. Return their numbers, never internal ids.",
+  "For use return exactly one candidate and title null. For create return no candidates and a short human-facing title. For clarify return two to five candidates and title null.",
+  "Prefer the current focus when uncertainty is harmless.",
   "Return only the strict structured result. Do not return analysis, hidden reasoning, or chain of thought.",
 ].join(" ")
 
@@ -27,21 +30,12 @@ export const buildGoalRouterUserContent = (input: GoalRouterPromptInput): string
       user: truncate(turn.user, 600),
       assistant: truncate(turn.assistant, 800),
     })),
-    foregroundGoalId: input.candidates.foreground?.goal.id ?? null,
+    currentCandidate: input.candidates.foreground?.candidate ?? null,
     candidates: input.candidates.candidates.map((candidate) => ({
-      id: candidate.goal.id,
+      candidate: candidate.candidate,
       status: candidate.goal.status,
-      kind: candidate.goal.kind,
       title: truncate(candidate.goal.title, 180),
-      summary: truncate(candidate.goal.summary ?? "", 600),
-      capsule: candidate.capsule
-        ? {
-            summary: truncate(candidate.capsule.summary, 800),
-            decisions: candidate.capsule.decisions.slice(0, 5).map((value) => truncate(value, 240)),
-            nextActions: candidate.capsule.nextActions.slice(0, 5).map((value) => truncate(value, 240)),
-            openQuestions: candidate.capsule.openQuestions.slice(0, 5).map((value) => truncate(value, 240)),
-          }
-        : null,
+      note: truncate(candidate.capsule?.summary ?? candidate.goal.summary ?? "", 600),
     })),
   })
 

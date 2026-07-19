@@ -238,7 +238,7 @@ A context item is not necessarily one whole tool result. It may represent one pa
 
 ### Routing Run
 
-The auditable result of the Goal Router. It records bounded candidate goals, the selected action, confidence or uncertainty, the chosen foreground goal, secondary links, and the reason for the decision. It must not store hidden chain-of-thought.
+The auditable result of the Goal Router. The model-facing contract stays deliberately small: `action`, numbered `candidates`, and a new human-facing `title` only when creation is selected. The backend resolves ids, generates any clarification copy, and records runtime effects without asking the model for confidence, rationale, secondary links, or hidden chain-of-thought.
 
 ## Bounded Goal Router
 
@@ -247,14 +247,12 @@ The router decides how each new text or voice message relates to the existing Fl
 Its implemented action vocabulary stays small:
 
 ```text
-continue the foreground goal
-resume a parked goal
-create a new goal
-ask one bounded clarification between real candidate goals
-link the message to at most three secondary goals
+use one numbered existing goal
+create one new goal with a short human title
+ask one bounded clarification between real numbered candidates
 ```
 
-The Goal Router Agent receives the foreground goal plus at most five ranked parked candidates by default, the latest three focus-tagged Q&A turns, and any explicit clarification answer. Its dedicated `goal_router` worker setting controls model and thinking, it has an eight-second bounded timeout, validates the strict Zod contract with one bounded repair attempt, and falls back deterministically when the provider fails, times out, or remains invalid. Its production prompt lives under `packages/core/src/prompts`, it runs through the shared structured-agent runner with an explicitly empty tool registry/executor mapping, and its model attempt, usage, errors, and routing effects persist through V2 telemetry. Explicit resume language with a lexical parked-goal match wins before the fallback considers creating new durable work. Goal merging is not performed.
+The Goal Router Agent receives the foreground goal plus at most five goals narrowed by the shared goal-card retrieval index, a short recent-turn window, and any explicit clarification answer. Its dedicated `goal_router` worker setting controls model and thinking, it has an eight-second bounded timeout, validates the strict Zod contract with one bounded repair attempt, and uses only a structural fallback when the provider fails, times out, or remains invalid: continue the current goal when one exists, otherwise create. There is no keyword, regex, or phrase-matching topic router. Its production prompt lives under `packages/core/src/prompts`, it runs through the shared structured-agent runner with an explicitly empty tool registry/executor mapping, and its model attempt, usage, errors, and routing effects persist through typed telemetry. Goal merging is not performed.
 
 ### Router Inputs
 
@@ -264,7 +262,6 @@ The router should receive only bounded metadata:
 - The current foreground goal header and latest capsule.
 - A short recent-turn window.
 - A small retrieved set of likely parked-goal headers or capsules.
-- Explicit user references such as "back to the database idea."
 - Project identity and stable routing rules.
 
 It must not receive every full goal history. Retrieval should narrow candidates before full capsule loading.
@@ -275,10 +272,9 @@ The backend needs enough structured output to:
 
 - Select exactly one foreground goal for execution.
 - Create or resume that goal.
-- Attach primary and secondary goal-message links.
+- Attach one exact turn/message goal link.
 - Park the previous foreground goal when appropriate.
-- Request relevant capsules/evidence for context assembly.
-- Persist an auditable routing result.
+- Persist an auditable routing result and backend-owned lifecycle effects.
 - Ask one short clarification only when at least two real candidate goals remain genuinely plausible and choosing incorrectly would materially matter.
 
 Clarification is same-turn routing, not a new user task: the original user request remains durable, the router question is a typed `routing_clarification` message, attachments are held, and the answer resolves the existing routing run before Socrates executes the original request. Ordinary ambiguity inside one focus does not trigger the router clarifier.
@@ -296,7 +292,7 @@ parked capsules on demand
 all other goals absent from the current model request
 ```
 
-If one message contains many unrelated requests, the first version may choose one foreground objective, preserve secondary links, and either answer the bounded set sequentially or ask one natural clarification when execution order materially matters. It should not spawn dozens of full active contexts.
+If one message contains many unrelated requests, the first version chooses one foreground objective and either answers the bounded set sequentially or asks one natural clarification when execution order materially matters. It does not ask the router to manufacture secondary links or spawn dozens of full active contexts.
 
 ## Self-Pruning Working Context
 
@@ -458,7 +454,7 @@ The goal router should operate on finalized text. Provider-specific partial tran
 
 ### Accepted V2 Voice V1 STT Stack
 
-`V2 Voice V1` means the first speech-job/read-aloud slice inside experimental V2 Flow. Classic now shares the push-to-talk composer affordance and lower-level transcriber adapters, but not this orchestration: Classic defaults to local `small.en`, appends the transcript to its unsent draft, deletes the temporary WAV, and creates no `v2_*` state. V2 alone owns speech artifacts/jobs, the provider picker, Goal Router entry, and Kokoro read-aloud.
+`V2 Voice V1` means the first speech-job/read-aloud slice inside experimental V2 Flow. Classic shares the push-to-talk composer affordance, lower-level transcriber adapters, and the explicit global selection, which defaults to **Not configured**. Classic appends the transcript to its unsent draft, deletes the temporary WAV, and creates no V2 speech state. Flow alone owns speech artifacts/jobs, Goal Router entry, and Kokoro read-aloud. Offline models download only after an explicit size-labelled Install action.
 
 The accepted speech-to-text choices are deliberately narrow:
 
@@ -554,22 +550,27 @@ If the backend stays alive, a durable V2 task may keep working or waiting while 
 
 Long-running work therefore remains inspectable and recoverable without stuffing every hour of raw execution into one prompt.
 
-## V1/V2 Focus Bridge
+## V1/V2 Goal Bridge
 
-Each V2 focus is also the bridge unit presented to Classic: one focus maps to at most one Classic conversation and one active Classic session. This makes the relationship explicit without pretending the whole Seamless Flow is one Classic chat.
+The persistent project Flow is the Flow-side counterpart of a Classic conversation session, while canonical goals are the shared units inside it. One Classic conversation may contain many goals, each Classic user turn links to exactly one goal, and each goal may have at most one preferred Classic home. This preserves both directions without pretending that a Flow must split into one conversation per goal.
 
 ```text
 V2 persistent Flow
-  ├── Focus A <-> Classic conversation A
-  ├── Focus B <-> Classic conversation B
-  └── General Conversation <-> Classic conversation General Conversation
+  ├── Goal A <- Classic conversation 1 turns 1-4
+  ├── Goal B <- Classic conversation 1 turns 5-8
+  └── Goal C <- Classic conversation 2 turns 1-3
+
+Preferred Classic homes
+  Goal A -> Classic conversation 1
+  Goal B -> Classic conversation 1
+  Goal C -> Classic conversation 2
 ```
 
-Completed visible V2 user/assistant messages mirror idempotently into the focus conversation. Tool calls, model calls, usage, evidence, context dispositions, approvals, Terminals, and runtime events remain V2-owned and are never duplicated into Classic. Existing unrelated Classic conversations are not auto-imported; **Continue in Flow View** is an explicit user action that creates or reuses one goal bridge and imports visible Classic Q&A with `bridge_import` provenance. While Flow owns the bridge, Classic sending is disabled for that conversation to avoid divergent simultaneous writers. **Open in Classic** flips ownership and routes to the mapped Classic chat; **Continue in Flow View** flips it back and returns to the same persistent Flow.
+Completed visible V2 user/assistant messages mirror idempotently only when that goal already has an explicit Classic home. Tool calls, model calls, usage, evidence, context dispositions, approvals, Terminals, and runtime events remain source-runtime-owned and are never duplicated. **Continue in Flow View** transfers the Classic draft through a one-time browser handoff and activates the goal linked to the latest Classic turn; historical linked turns import goal-by-goal with `bridge_import` provenance. **Open in Classic** reuses the goal's preferred home or creates one conversation only after the explicit click. It never guesses how many conversations to create. View ownership prevents divergent simultaneous writers.
 
 ## V2 Persistence Implementation
 
-Migrations `0026_outgoing_typhoid_mary.sql` and `0027_long_terror.sql`, together with `apps/server/src/db/schema.ts`, implement exactly 29 namespaced tables. They live in the same user-owned SQLite database as Classic. The two bridge tables reference explicit Classic conversations only for the user-invoked focus bridge; ordinary V2 execution has no fake Classic foreign-key shim.
+Migrations through `0029_slimy_fallen_one.sql`, together with `apps/server/src/db/schema.ts`, implement the namespaced Flow tables plus the canonical Classic-home and exact Classic-turn goal links. They live in the same user-owned SQLite database as Classic. Bridge tables reference explicit Classic conversations only for user-invoked navigation or routed Classic turns; ordinary V2 execution has no fake Classic foreign-key shim.
 
 ### Implemented V2 Tables
 
@@ -580,7 +581,7 @@ Migrations `0026_outgoing_typhoid_mary.sql` and `0027_long_terror.sql`, together
 | Evidence and context | `v2_evidence_items`, `v2_context_items`, `v2_context_item_sources`, and `v2_context_dispositions` separate immutable sources from mutable active-context projections and append-only decisions. |
 | Runtime audit | `v2_runtime_events`, `v2_model_calls`, `v2_usage_events`, `v2_tool_calls`, `v2_approvals`, `v2_terminal_sessions`, `v2_terminal_output_chunks`, `v2_errors`, `v2_artifacts`, `v2_feedback`, and `v2_credential_input_requests` reconstruct live execution without Classic rows. |
 | Speech | `v2_speech_jobs` owns transcription and one-off read-aloud jobs and enforces the accepted engine/model allowlist in SQLite. |
-| Classic bridge | `v2_classic_conversation_bridges` enforces one focus to one Classic conversation and records the current writer; `v2_classic_message_links` makes visible-message mirroring/import idempotent and auditable. |
+| Classic bridge | `v2_classic_conversation_bridges` records the current writer and latest goal for a conversation; `v2_classic_message_links` makes visible-message mirroring/import idempotent; `v2_goal_classic_homes` gives a goal at most one preferred Classic home; `v2_classic_turn_goal_links` records exact per-turn membership. |
 
 Migration triggers reject `UPDATE` and `DELETE` on `v2_evidence_items`. A release or distillation changes only `v2_context_items` and appends `v2_context_dispositions` plus any newly derived immutable evidence. Exact evidence remains addressable by id/handle.
 
@@ -605,7 +606,7 @@ For any V2 turn, the database must be able to reconstruct:
 ```text
 user text or voice transcript
 router candidates and decision
-foreground and secondary goals
+foreground goal
 goal transition history
 assembled context manifest
 exact evidence sources
@@ -744,7 +745,7 @@ The v0.1.19 release subsequently passed archive construction and native runtime 
 The following remain intentionally open or incomplete:
 
 - Conservative destructive merge semantics; merge is not implemented.
-- Goal Router evaluation corpus and confidence tuning beyond the current strict contract, bounded repair, and dedicated worker setting.
+- Continued Goal Router evaluation across human request patterns and model/thinking selections beyond the current strict contract, bounded repair, and dedicated worker setting.
 - Distiller/compactor local-model structured-output requirements beyond the shared worker setting.
 - Model-aware proactive and hard context thresholds after measurement.
 - Capsule refresh quality/cadence beyond the deterministic first cut.

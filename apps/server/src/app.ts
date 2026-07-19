@@ -62,6 +62,8 @@ export const buildServer = async (options: BuildServerOptions) => {
   await terminals.reconcilePersistedTerminals()
   const app = Fastify({ logger: options.logger ?? false })
   const v2FlowEnabled = options.v2FlowEnabled ?? false
+  const flowStore = v2FlowEnabled ? new V2FlowStore(handle) : undefined
+  flowStore?.recoverInterruptedTurns()
   const speechHome = socratesHome ?? path.dirname(options.dbPath)
   const speechPacks = new SpeechPackManager(speechHome)
   const runtimeRoot = process.env.SOCRATES_RUNTIME_DIR ?? path.join(speechHome, "runtime")
@@ -105,7 +107,7 @@ export const buildServer = async (options: BuildServerOptions) => {
     methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   })
 
-  const websocketRuntime = await registerWebSocketRoutes(app, store, terminals, subscriptions, agent, mcpRuntime, titleProvider)
+  const websocketRuntime = await registerWebSocketRoutes(app, store, terminals, subscriptions, agent, mcpRuntime, titleProvider, flowStore)
   await registerHttpRoutes(app, store, credentials, mcpRuntime, {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),
@@ -119,9 +121,7 @@ export const buildServer = async (options: BuildServerOptions) => {
   })
 
   let shutdownV2 = async (): Promise<void> => undefined
-  if (v2FlowEnabled) {
-    const flowStore = new V2FlowStore(handle)
-    flowStore.recoverInterruptedTurns()
+  if (flowStore) {
     await registerV2FlowRoutes(app, flowStore)
     const v2WebSocketRuntime = await registerV2WebSocketRoutes(app, {
       store: flowStore,

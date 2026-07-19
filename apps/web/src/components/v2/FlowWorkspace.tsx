@@ -213,14 +213,17 @@ export function FlowWorkspace({
               {isInspectorOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
               <span>{isInspectorOpen ? "Hide notes" : "Working notes"}</span>
             </button>
-            <V2ViewLink
-              view="classic"
-              href={`/projects/${encodeURIComponent(projectId)}`}
-              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+            <button
+              type="button"
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!activeGoal || !onOpenInClassic}
+              onClick={() => {
+                if (activeGoal) onOpenInClassic?.(activeGoal.id);
+              }}
             >
               <span>Classic View</span>
               <ArrowUpRight className="size-4" aria-hidden="true" />
-            </V2ViewLink>
+            </button>
           </div>
         </WorkspaceTopbar>
 

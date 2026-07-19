@@ -36,7 +36,7 @@ describe("V2 Flow goal routing", () => {
     expect(createGoalRouterToolRegistry().list()).toEqual([])
   })
 
-  it("bounds a 30-goal Flow to the foreground plus the configured parked candidates", () => {
+  it("bounds a 30-goal Flow to five cards and honors retrieved goal ids without deciding semantically", () => {
     const goals: V2Goal[] = [goal("goal_0", "foreground", "Current implementation")]
     for (let index = 1; index < 30; index += 1) {
       goals.push(goal(`goal_${index}`, "parked", index === 27 ? "Vienna travel itinerary" : `Parked topic ${index}`))
@@ -46,10 +46,11 @@ describe("V2 Flow goal routing", () => {
       userMessage: "resume the Vienna travel itinerary",
       goals,
       parkedCandidateLimit: 5,
+      candidateGoalIds: ["goal_27"],
     })
 
-    expect(selected.candidates).toHaveLength(6)
-    expect(selected.parked).toHaveLength(5)
+    expect(selected.candidates).toHaveLength(5)
+    expect(selected.parked).toHaveLength(4)
     expect(selected.totalEligibleParked).toBe(29)
     expect(selected.parked[0]?.goal.id).toBe("goal_27")
     expect(selected.foreground?.goal.id).toBe("goal_0")
@@ -99,11 +100,8 @@ describe("V2 Flow goal routing", () => {
       return {
         output: ({
           action: "clarify",
-          primaryGoalId: null,
-          secondaryGoalIds: [],
-          confidence: 0.34,
-          clarificationQuestion: "Do you mean the API work or the presentation?",
-          clarificationGoalIds: ["api", "slides"],
+          candidates: [1, 2],
+          title: null,
         }) as unknown as TOutput,
       }
     })
@@ -126,7 +124,7 @@ describe("V2 Flow goal routing", () => {
     expect(result.decision).toMatchObject({
       action: "clarify",
       clarificationGoalIds: ["api", "slides"],
-      clarificationQuestion: "Do you mean the API work or the presentation?",
+      clarificationQuestion: "Should I continue “API work” or “Presentation”?",
     })
     expect(routedPayload?.recentTurns).toHaveLength(3)
   })
@@ -140,24 +138,18 @@ describe("V2 Flow goal routing", () => {
       if (attempts === 1) {
         return {
           output: {
-            action: "resume",
-            primaryGoalId: "invented",
-            secondaryGoalIds: [],
-            confidence: 0.8,
-            clarificationQuestion: null,
-            clarificationGoalIds: [],
+            action: "use",
+            candidates: [99],
+            title: null,
           } as TOutput,
           usage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
         }
       }
       return {
         output: {
-          action: "continue",
-          primaryGoalId: "active",
-          secondaryGoalIds: [],
-          confidence: 0.82,
-          clarificationQuestion: null,
-          clarificationGoalIds: [],
+          action: "use",
+          candidates: [1],
+          title: null,
         } as TOutput,
         usage: { inputTokens: 9, outputTokens: 2, totalTokens: 11 },
       }
@@ -181,16 +173,13 @@ describe("V2 Flow goal routing", () => {
     expect(result.modelAttempt?.usage).toMatchObject({ inputTokens: 17, outputTokens: 4, totalTokens: 21 })
   })
 
-  it("plans exactly one foreground when resuming and preserves bounded secondary links", () => {
+  it("plans exactly one foreground when resuming", () => {
     const plan = planV2GoalRoutingTransition({
       flowId,
       goals: [goal("active", "foreground", "Build V2"), goal("travel", "parked", "Travel"), goal("voice", "parked", "Voice")],
       decision: {
         action: "resume",
         primaryGoalId: "travel",
-        secondaryGoalIds: ["active", "voice", "unknown"],
-        confidence: 0.9,
-        reasonCode: "model_match",
       },
     })
 
@@ -199,7 +188,6 @@ describe("V2 Flow goal routing", () => {
       { goalId: "active", from: "foreground", to: "parked" },
       { goalId: "travel", from: "parked", to: "foreground" },
     ])
-    expect(plan.secondaryGoalIds).toEqual(["active", "voice"])
   })
 })
 

@@ -5,6 +5,7 @@ import {
   waitToolOutputSchema,
   type MemoryRouterPostTurnResult,
   type MemoryRouterPreTurnResult,
+  type GoalFinalization,
   type MemoryReconciliationAction,
   type MemorySearchInput,
   type MemorySearchOutput,
@@ -16,6 +17,7 @@ import {
   type ToolName,
   type WaitToolOutput,
   type WorkerModelSettings,
+  type V2GoalRouterOutput,
 } from "@socrates/contracts"
 import fs from "node:fs"
 import path from "node:path"
@@ -31,7 +33,12 @@ import { buildSocratesDynamicContext, buildSocratesSystemPrompt, type SocratesPr
 import { renderSocratesSurfaceMap } from "@socrates/contracts"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, CredentialInputDecision, CredentialInputRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
-import { MemoryRouterAgent, type MemoryRouterRunRecord } from "./MemoryRouterAgent"
+import {
+  MemoryRouterAgent,
+  type ActiveGoalCard,
+  type GoalCandidateCard,
+  type MemoryRouterRunRecord,
+} from "./MemoryRouterAgent"
 
 export type SocratesAgentTurnInput = {
   projectId?: string
@@ -64,6 +71,11 @@ export type SocratesAgentTurnInput = {
   stableCachePreludeSnapshot?: StableCachePreludeSnapshot
   recordMemoryRouterRun?: (input: MemoryRouterRunRecord) => void | Promise<void>
   automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
+  goalCandidates?: readonly GoalCandidateCard[]
+  currentGoalCandidate?: number
+  activeGoal?: ActiveGoalCard
+  applyGoalRoute?: (route: V2GoalRouterOutput) => Promise<ActiveGoalCard>
+  applyGoalFinalization?: (finalization: GoalFinalization) => Promise<void>
   contextCompression?: ContextCompressionRuntime
   maxToolCallsPerTurn?: number
   maxConfirmedToolErrorsPerTurn?: number
@@ -158,6 +170,7 @@ export class SocratesAgent {
     let docsSyncCheckpointSent = false
     let pendingInteractiveTerminalName: string | undefined
     let preTurnMemoryLoopSummary: string | undefined
+    let activeGoal: ActiveGoalCard | undefined = input.activeGoal
     let finalReconciliationSent = false
     let accumulatedAnswerText = ""
     let currentProviderId = input.providerId
@@ -171,6 +184,7 @@ export class SocratesAgent {
 
     const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger)
     preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
+    activeGoal = preTurnMemoryLoop.activeGoal ?? activeGoal
     for (const event of preTurnMemoryLoop.events) {
       yield event
     }
@@ -469,6 +483,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
               })
             : "No structured task evidence was available.",
           assistantDraft: stepText || accumulatedAnswerText,
+          ...(activeGoal ? { activeGoal } : {}),
         })
         finalReconciliationSent = true
         reconciliationVerification.require(finalMemoryLoop.reconciliationActions ?? [])
@@ -785,9 +800,11 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       : renderStableCachePrelude(records)
 
     if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
+      const activeGoal = await applyFallbackGoalRoute(input, messages)
       return {
         events: [],
         records,
+        ...(activeGoal ? { activeGoal, developerMessage: renderActiveGoalDeveloperMessage(activeGoal) } : {}),
         ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
       }
     }
@@ -802,24 +819,41 @@ You are Frontier and now own this task for the rest of the current turn. Continu
         records.push(record)
       }
 
+      let activeGoal: ActiveGoalCard | undefined
+      if (input.applyGoalRoute) {
+        const goalRoute = route.goalRoute ?? fallbackGoalRoute(input.goalCandidates ?? [], input.currentGoalCandidate, latestUserText(messages))
+        try {
+          activeGoal = await input.applyGoalRoute(goalRoute)
+        } catch (error) {
+          const normalized = normalizeError(error)
+          skipped.push(`goal route was not persisted: ${normalized.code}`)
+        }
+      }
       const summary = summarizeMemoryLoop("pre_turn", route, records, skipped)
       const dynamicRecords = records.filter((record) => !isStableCachePreludeRecord(record))
+      const memoryDeveloperMessage = renderMemoryLoopDeveloperMessage("pre_turn", route, dynamicRecords, skipped, {
+        stableCachePreludeApplied: Boolean(stableCachePreludeMessage),
+      })
       return {
         events,
         summary,
         records,
+        ...(activeGoal ? { activeGoal } : {}),
         ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
-        developerMessage: renderMemoryLoopDeveloperMessage("pre_turn", route, dynamicRecords, skipped, {
-          stableCachePreludeApplied: Boolean(stableCachePreludeMessage),
-        }),
+        developerMessage: activeGoal ? `${memoryDeveloperMessage}\n${renderActiveGoalDeveloperMessage(activeGoal)}` : memoryDeveloperMessage,
       }
     } catch (error) {
       const normalized = normalizeError(error)
       const warning = memoryLoopWarning("pre_turn", `${normalized.code}: ${normalized.message}`)
+      const activeGoal = await applyFallbackGoalRoute(input, messages)
       return {
         ...warning,
         events: [...events, ...warning.events],
         records,
+        ...(activeGoal ? {
+          activeGoal,
+          developerMessage: `${warning.developerMessage ?? ""}\n${renderActiveGoalDeveloperMessage(activeGoal)}`.trim(),
+        } : {}),
         ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
       }
     }
@@ -828,7 +862,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
   private async runPostEvidenceMemoryLoop(
     input: SocratesAgentTurnInput,
     messages: ModelMessage[],
-    context: { preflightSummary?: string; toolSummary: string; assistantDraft: string },
+    context: { preflightSummary?: string; toolSummary: string; assistantDraft: string; activeGoal?: ActiveGoalCard },
   ): Promise<MemoryLoopRunResult> {
     if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
@@ -840,7 +874,16 @@ You are Frontier and now own this task for the rest of the current turn. Continu
         ...(context.preflightSummary ? { preflightSummary: context.preflightSummary } : {}),
         toolSummary: context.toolSummary,
         assistantDraft: context.assistantDraft,
+        ...(context.activeGoal ? { activeGoal: context.activeGoal } : {}),
       })
+      if (context.activeGoal && route.goalFinalization && input.applyGoalFinalization) {
+        try {
+          await input.applyGoalFinalization(route.goalFinalization)
+        } catch {
+          // Goal-ledger finalization is useful telemetry, but it must never
+          // block the ordinary Socrates answer or memory reconciliation.
+        }
+      }
       const summary = summarizeMemoryLoop("post_evidence", route, [], [])
       return {
         events: [],
@@ -1202,6 +1245,7 @@ type MemoryLoopRunResult = {
   stableCachePreludeMessage?: string
   developerMessage?: string
   reconciliationActions?: MemoryReconciliationAction[]
+  activeGoal?: ActiveGoalCard
 }
 
 type MemoryLoopToolRecord = {
@@ -1260,6 +1304,39 @@ const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRout
     thinkingEffort: "none",
   }
 
+const fallbackGoalRoute = (
+  candidates: readonly GoalCandidateCard[],
+  currentGoalCandidate: number | undefined,
+  userMessage: string,
+): V2GoalRouterOutput => {
+  if (currentGoalCandidate && candidates.some((candidate) => candidate.candidate === currentGoalCandidate)) {
+    return { action: "use", candidates: [currentGoalCandidate], title: null }
+  }
+  const title = userMessage.replace(/\s+/g, " ").trim()
+  return { action: "create", candidates: [], title: clipText(title || "New focus", 120) }
+}
+
+const applyFallbackGoalRoute = async (
+  input: SocratesAgentTurnInput,
+  messages: readonly ModelMessage[],
+): Promise<ActiveGoalCard | undefined> => {
+  if (!input.applyGoalRoute) return undefined
+  try {
+    return await input.applyGoalRoute(fallbackGoalRoute(input.goalCandidates ?? [], input.currentGoalCandidate, latestUserText(messages)))
+  } catch {
+    return undefined
+  }
+}
+
+const renderActiveGoalDeveloperMessage = (goal: ActiveGoalCard): string => [
+  '<socrates_active_goal source="project_goal_ledger">',
+  `title: ${goal.title}`,
+  `state: ${goal.state}`,
+  `note: ${goal.note}`,
+  "Treat this as the primary goal for the current turn. Do not expose internal goal ids.",
+  "</socrates_active_goal>",
+].join("\n")
+
 const isSameModelSelection = (runtimeConfig: RuntimeConfig, settings: FrontierModelSettings | undefined): boolean =>
   Boolean(
     settings &&
@@ -1297,6 +1374,8 @@ const memoryRouterBaseInput = (input: SocratesAgentTurnInput, messages: ModelMes
     ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
     userMessage: latestUserText(messages),
     recentMessages: messages,
+    ...(input.goalCandidates ? { goalCandidates: input.goalCandidates } : {}),
+    ...(input.currentGoalCandidate ? { currentGoalCandidate: input.currentGoalCandidate } : {}),
     toolExecutors: input.toolExecutors,
     ...(input.automaticMemorySearch ? { automaticMemorySearch: input.automaticMemorySearch } : {}),
     ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
@@ -1349,7 +1428,7 @@ const routedPreTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ 
   return requests
 }
 
-const latestUserText = (messages: ModelMessage[]): string => {
+const latestUserText = (messages: readonly ModelMessage[]): string => {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== "user") {

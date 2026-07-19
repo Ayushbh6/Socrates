@@ -14,6 +14,7 @@ export type FlowGoalStatus =
   | "parked"
   | "blocked"
   | "completed"
+  | "discarded"
   | "archived";
 
 export interface FlowGoalView {

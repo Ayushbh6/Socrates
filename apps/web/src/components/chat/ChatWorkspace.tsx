@@ -15,6 +15,12 @@ import { TerminalDockPanel } from "./TerminalPanel";
 import { type PendingApproval, type PendingCredentialInput, type ToolTimelineItem } from "./ToolTimelineTypes";
 import { ActivityCenter } from "./ActivityCenter";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
+import { ContinueInSeamlessButton } from "@/components/v2/ContinueInSeamlessButton";
+import {
+  consumeViewHandoff,
+  handoffAttachmentsToFiles,
+  type ViewHandoffEnvelope,
+} from "@/lib/v2/viewHandoff";
 
 interface ChatWorkspaceProps {
   projectId: string;
@@ -181,6 +187,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [rejectingSkillActionId, setRejectingSkillActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
+  const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([]);
+  const [pendingViewHandoff, setPendingViewHandoff] = useState<ViewHandoffEnvelope | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
   const previousAwaitingTerminalInputRef = useRef(false);
@@ -830,6 +838,39 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
     }
   };
 
+  useEffect(() => {
+    const handoff = consumeViewHandoff("classic", projectId, conversationId);
+    if (!handoff) return;
+    setDraftText(handoff.text);
+    setPendingViewHandoff(handoff);
+    if (handoff.attachments.length > 0) {
+      void handoffAttachmentsToFiles(handoff.attachments)
+        .then((files) => api.uploadConversationAttachments(projectId, conversationId, files))
+        .then((result) => setDraftAttachments(result.attachments))
+        .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not transfer draft attachments."));
+    }
+  }, [conversationId, projectId]);
+
+  useEffect(() => {
+    if (!pendingViewHandoff?.model || models.length === 0) return;
+    const model = findModelSelection(
+      models,
+      pendingViewHandoff.model.providerId,
+      pendingViewHandoff.model.modelId,
+      pendingViewHandoff.model.authMode ?? "api_key",
+    );
+    if (!model) {
+      setPendingViewHandoff(null);
+      return;
+    }
+    const thinking = model.thinkingOptions.find((option) => option.id === pendingViewHandoff.thinkingOptionId)
+      ?? selectDefaultThinkingOption(model);
+    setSelectedModel(model);
+    setSelectedThinkingOption(thinking);
+    writeComposerModelPreference(composerModelKey, model, thinking);
+    setPendingViewHandoff(null);
+  }, [composerModelKey, models, pendingViewHandoff]);
+
   const handleSend = async (content: string, attachments: MessageAttachment[]) => {
     if (!selectedModel || !selectedThinkingOption) {
       setError("Choose a model before sending.");
@@ -1179,6 +1220,15 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
   return (
     <main className="flex h-screen overflow-hidden bg-brand-bg">
+      <ContinueInSeamlessButton
+        projectId={projectId}
+        conversationId={conversationId}
+        hasPersistedTurns={(conversationData?.messages.length ?? 0) > 0}
+        draftText={draftText}
+        attachments={draftAttachments}
+        selectedModel={selectedModel}
+        selectedThinkingOption={selectedThinkingOption}
+      />
       <ProjectChatSidebar
         projects={sidebarProjects}
         currentProjectId={projectId}
@@ -1257,6 +1307,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 warningResetKey={conversationId}
                 value={draftText}
                 onValueChange={setDraftText}
+                attachments={draftAttachments}
+                onAttachmentsChange={setDraftAttachments}
                 voiceAvailable={voice.isAvailable}
                 voiceRecording={voice.status === "recording"}
                 voiceBusy={voice.status === "transcribing"}
@@ -1296,6 +1348,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                       warningResetKey={conversationId}
                       value={draftText}
                       onValueChange={setDraftText}
+                      attachments={draftAttachments}
+                      onAttachmentsChange={setDraftAttachments}
                       voiceAvailable={voice.isAvailable}
                       voiceRecording={voice.status === "recording"}
                       voiceBusy={voice.status === "transcribing"}

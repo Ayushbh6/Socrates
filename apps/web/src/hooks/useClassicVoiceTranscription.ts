@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { mediaRecordingToMonoWav, preferredRecordingMimeType } from "@/lib/speech/audio";
+import {
+  configuredTranscriber,
+  readSpeechTranscriberId,
+  subscribeToSpeechPreferences,
+  type SpeechTranscriberId,
+} from "@/lib/speech/preferences";
 
 export type ClassicVoiceStatus = "idle" | "recording" | "transcribing" | "error";
 
@@ -19,6 +25,7 @@ export function useClassicVoiceTranscription({
 }: UseClassicVoiceTranscriptionInput) {
   const [status, setStatus] = useState<ClassicVoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [transcriberId, setTranscriberId] = useState<SpeechTranscriberId>(readSpeechTranscriberId);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -39,16 +46,28 @@ export function useClassicVoiceTranscription({
     setError(null);
     try {
       const wav = await mediaRecordingToMonoWav(recording);
-      const result = await api.transcribeConversationRecording(projectId, conversationId, wav);
+      const preference = configuredTranscriber(transcriberId);
+      if (!preference) {
+        throw new Error("Choose a transcriber in Settings before using voice input.");
+      }
+      const result = await api.transcribeConversationRecording(projectId, conversationId, wav, {
+        engine: preference.engine,
+        modelId: preference.modelId,
+      });
       transcriptHandlerRef.current(result.transcriptText.trim());
       setStatus("idle");
     } catch (processingError) {
       setError(processingError instanceof Error ? processingError.message : "Voice transcription failed.");
       setStatus("error");
     }
-  }, [conversationId, projectId]);
+  }, [conversationId, projectId, transcriberId]);
 
   const startRecording = useCallback(async () => {
+    if (!configuredTranscriber(transcriberId)) {
+      setError("Choose a transcriber in Settings before using voice input.");
+      setStatus("error");
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("Voice recording is not supported by this browser.");
       setStatus("error");
@@ -83,7 +102,7 @@ export function useClassicVoiceTranscription({
       setError(recordingError instanceof Error ? recordingError.message : "Microphone access failed.");
       setStatus("error");
     }
-  }, [processRecording, releaseRecordingStream]);
+  }, [processRecording, releaseRecordingStream, transcriberId]);
 
   const toggleRecording = useCallback(() => {
     if (status === "recording") {
@@ -104,6 +123,10 @@ export function useClassicVoiceTranscription({
     }
     releaseRecordingStream();
   }, [releaseRecordingStream]);
+
+  useEffect(() => subscribeToSpeechPreferences(() => {
+    setTranscriberId(readSpeechTranscriberId());
+  }), []);
 
   return {
     status,

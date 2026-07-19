@@ -2118,12 +2118,14 @@ describe("tool contracts", () => {
       memoryRouterPreTurnResultSchema.safeParse({
         readTargets: [{ surface: "user_profile", fileName: "user_profile.md", sectionId: "collaboration_style", reason: "Slow mode is a collaboration preference." }],
         reason: "Read the precise preference and preserve the contract.",
+        goalRoute: null,
       }).success,
     ).toBe(true)
     expect(
       memoryRouterPreTurnResultSchema.safeParse({
         readTargets: [{ surface: "identity", fileName: "user_profile.md", sectionId: "collaboration_style", reason: "wrong owner" }],
         reason: "invalid",
+        goalRoute: null,
       }).success,
     ).toBe(false)
     expect(memoryRouterPreTurnResultSchema.safeParse({ readTargets: [], memoryWrites: [], reason: "writes are forbidden" }).success).toBe(false)
@@ -2131,12 +2133,14 @@ describe("tool contracts", () => {
       memoryRouterPostTurnResultSchema.safeParse({
         actions: [{ operation: "replace", surface: "repo_docs", fileName: "CONTRACTS.md", sectionId: "tool_contracts", instruction: "Replace the stale contract.", reason: "Verified runtime evidence supersedes it.", evidenceReferences: ["evd_abc123"], capabilityId: "terminal.interactive_input", verifiedRuntime: "bash start accepts user PTY input", verifiedAt: "2026-07-12T10:00:00.000Z" }],
         reason: "One stale capability claim requires reconciliation.",
+        goalFinalization: null,
       }).success,
     ).toBe(true)
     expect(
       memoryRouterPostTurnResultSchema.safeParse({
         actions: [{ operation: "replace", surface: "project_notes", fileName: "PROJECT_NOTES.md", sectionId: "state_ledger", instruction: "Rewrite backend state.", reason: "stale", evidenceReferences: [] }],
         reason: "invalid backend-owned target",
+        goalFinalization: null,
       }).success,
     ).toBe(false)
     expect(turnEvidenceToolInputSchema.safeParse({ operation: "inspect", limit: 21, charLimit: 8_000 }).success).toBe(false)

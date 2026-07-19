@@ -144,8 +144,8 @@ const frontierProofProvider = () => {
         yield {
           type: "model.answer.delta",
           text: JSON.stringify(postEvidence
-            ? { actions: [], reason: "No durable update is needed." }
-            : { readTargets: [], reason: "No routed recall is needed." }),
+            ? { actions: [], reason: "No durable update is needed.", goalFinalization: null }
+            : { readTargets: [], reason: "No routed recall is needed.", goalRoute: null }),
         }
         yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } }
         return
@@ -190,8 +190,8 @@ const repairedMemoryRouterProvider = (): ModelProvider => {
       const usage = { inputTokens: 10 + attempt, outputTokens: 2, totalTokens: 12 + attempt }
       if (attempt === 1) return { output: { invalid: true } as TOutput, usage }
       const output = phase === "post_evidence"
-        ? { actions: [], reason: "No reconciliation needed." }
-        : { readTargets: [], reason: "No memory recall needed." }
+        ? { actions: [], reason: "No reconciliation needed.", goalFinalization: null }
+        : { readTargets: [], reason: "No memory recall needed.", goalRoute: null }
       return { output: output as TOutput, usage }
     },
   }
@@ -206,11 +206,8 @@ const goalRouterProvider = (): ModelProvider => ({
     return {
       output: {
         action: "create",
-        primaryGoalId: null,
-        secondaryGoalIds: [],
-        confidence: 0.93,
-        clarificationQuestion: null,
-        clarificationGoalIds: [],
+        candidates: [],
+        title: "Continue the requested work",
       } as TOutput,
       usage: { inputTokens: 17, outputTokens: 3, totalTokens: 20 },
     }
@@ -448,8 +445,11 @@ describe("V2ExecutionRuntime", () => {
     const usage = testRuntime.handle.sqlite.prepare(
       "SELECT input_tokens AS inputTokens, output_tokens AS outputTokens, total_tokens AS totalTokens FROM v2_usage_events WHERE model_call_id = ?",
     ).get(call.id) as { inputTokens: number; outputTokens: number; totalTokens: number }
+    const routerErrors = testRuntime.handle.sqlite.prepare(
+      "SELECT code, message, details_json AS detailsJson FROM v2_errors WHERE source = 'goal_router'",
+    ).all()
     const routerModel = testRuntime.sharedStore.getWorkerModelSetting("goal_router")
-    expect(call).toMatchObject({ status: "completed", providerId: routerModel.providerId, modelId: routerModel.modelId })
+    expect({ call, routerErrors }).toMatchObject({ call: { status: "completed", providerId: routerModel.providerId, modelId: routerModel.modelId }, routerErrors: [] })
     expect(usage).toEqual({ inputTokens: 17, outputTokens: 3, totalTokens: 20 })
     expect(testRuntime.flowStore.countV1Rows().model_calls).toBe(0)
   })

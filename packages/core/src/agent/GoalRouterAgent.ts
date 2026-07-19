@@ -26,7 +26,6 @@ export type GoalRouterAgentInput = Readonly<{
   candidates: V2GoalRoutingCandidateSet
   recentTurns?: readonly Readonly<{ goalId?: string; user: string; assistant: string }>[]
   clarificationAnswer?: string
-  maxSecondaryGoalLinks: number
   cacheKey?: string
   abortSignal?: AbortSignal
   onUsage?: (usage: ModelUsage) => void
@@ -50,7 +49,7 @@ export class GoalRouterAgent {
         ...(input.recentTurns ? { recentTurns: input.recentTurns } : {}),
         ...(input.clarificationAnswer ? { clarificationAnswer: input.clarificationAnswer } : {}),
       }),
-      schema: createValidatedGoalRouterOutputSchema(input.candidates, input.maxSecondaryGoalLinks),
+      schema: createValidatedGoalRouterOutputSchema(input.candidates),
       toolRegistry: createGoalRouterToolRegistry(),
       toolExecutors: {},
       maxToolCalls: 0,
@@ -67,40 +66,11 @@ export class GoalRouterAgent {
   }
 }
 
-const createValidatedGoalRouterOutputSchema = (
-  candidates: V2GoalRoutingCandidateSet,
-  maxSecondaryGoalLinks: number,
-) => {
-  const candidateById = new Map(candidates.candidates.map((candidate) => [candidate.goal.id, candidate]))
+const createValidatedGoalRouterOutputSchema = (candidates: V2GoalRoutingCandidateSet) => {
+  const candidateNumbers = new Set(candidates.candidates.map((candidate) => candidate.candidate))
   return v2GoalRouterOutputSchema.superRefine((value, context) => {
-    const primaryGoalId = value.primaryGoalId ?? undefined
-    if (value.action === "continue" && (!primaryGoalId || candidates.foreground?.goal.id !== primaryGoalId)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["primaryGoalId"], message: "Continue must target the foreground goal." })
-    }
-    if (value.action === "resume" && (!primaryGoalId || !candidates.parked.some((candidate) => candidate.goal.id === primaryGoalId))) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["primaryGoalId"], message: "Resume must target one listed parked goal." })
-    }
-    if (value.action === "create" && primaryGoalId) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["primaryGoalId"], message: "Create cannot target an existing goal." })
-    }
-    if (value.action === "clarify") {
-      if (!value.clarificationQuestion?.trim()) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationQuestion"], message: "Clarify requires one question." })
-      }
-      const ids = uniqueStrings(value.clarificationGoalIds).filter((id) => candidateById.has(id))
-      if (ids.length < 2 || ids.length !== value.clarificationGoalIds.length) {
-        context.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationGoalIds"], message: "Clarify requires two to five unique listed goal ids." })
-      }
-    } else if (value.clarificationQuestion !== null || value.clarificationGoalIds.length > 0) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationQuestion"], message: "Non-clarify actions must clear clarification fields." })
-    }
-    const secondaryIds = uniqueStrings(value.secondaryGoalIds)
-    if (
-      secondaryIds.length !== value.secondaryGoalIds.length ||
-      secondaryIds.length > maxSecondaryGoalLinks ||
-      secondaryIds.some((id) => id === primaryGoalId || !candidateById.has(id))
-    ) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["secondaryGoalIds"], message: "Secondary goal ids must be unique listed non-primary goals within the configured limit." })
+    if (value.candidates.some((candidate) => !candidateNumbers.has(candidate))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Candidates must be unique numbers from the provided list." })
     }
   })
 }
@@ -114,5 +84,3 @@ const routerRuntimeConfig = (settings: GoalRouterAgentModelSettings): RuntimeCon
   approvalMode: "read_only_auto",
   sandboxMode: "read_only",
 })
-
-const uniqueStrings = (values: readonly string[]): string[] => [...new Set(values)]

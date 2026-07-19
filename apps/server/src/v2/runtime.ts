@@ -405,6 +405,7 @@ export class V2ExecutionRuntime {
         )
       } else {
         const goalRouterSetting = this.deps.sharedStore.getWorkerModelSetting("goal_router")
+        const retrievedGoalIds = await this.deps.sharedStore.searchGoalCards(command.projectId, command.payload.content, 4).catch(() => [] as string[])
         const goalRouterModel = {
           providerId: goalRouterSetting.providerId,
           ...(goalRouterSetting.authMode ? { authMode: goalRouterSetting.authMode } : {}),
@@ -422,6 +423,7 @@ export class V2ExecutionRuntime {
           goals: this.deps.store.getSnapshot(command.projectId, command.flowId).goals,
           capsules: this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules,
           recentTurns: this.deps.store.listRecentRoutingTurns(command.flowId, 3),
+          candidateGoalIds: retrievedGoalIds,
           ...(clarificationAnswer ? { clarificationAnswer } : {}),
           ...(this.deps.routerProvider ? { provider: this.deps.routerProvider, model: goalRouterModel } : {}),
         })
@@ -447,13 +449,20 @@ export class V2ExecutionRuntime {
                   : routing.modelAttempt.errorCode === "invalid_output"
                     ? "The Flow goal router returned invalid structured output after one repair attempt."
                     : "The Flow goal router provider failed.",
-                details: { fallbackReason: routing.fallbackReason },
+                details: { fallbackReason: routing.fallbackReason, errorMessage: routing.modelAttempt.errorMessage },
                 recoverable: true,
               })
             : undefined
           this.deps.store.completeModelCall({
             modelCallId: routerCallId,
-            response: { source: routing.source, fallbackReason: routing.fallbackReason, decision: routing.decision.action },
+            response: {
+              source: routing.source,
+              fallbackReason: routing.fallbackReason,
+              decision: routing.decision.action,
+              startedAt: routing.modelAttempt.startedAt,
+              completedAt: routing.modelAttempt.completedAt,
+              durationMs: routing.modelAttempt.durationMs,
+            },
             ...(routerError ? { errorId: routerError.id } : {}),
           })
           if (routing.modelAttempt.usage) this.recordUsage(routerCallId, routing.modelAttempt.usage)
@@ -485,6 +494,7 @@ export class V2ExecutionRuntime {
               goals: this.deps.store.getSnapshot(command.projectId, command.flowId).goals,
               capsules: this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules,
               recentTurns: this.deps.store.listRecentRoutingTurns(command.flowId, 3),
+              candidateGoalIds: retrievedGoalIds,
             })
           : routing
         const applied = this.deps.store.applyRouting({
@@ -497,6 +507,7 @@ export class V2ExecutionRuntime {
           ...(this.deps.routerProvider ? { providerId: goalRouterModel.providerId, modelId: goalRouterModel.modelId } : {}),
         })
         activeGoalId = applied.goal.id
+        this.deps.sharedStore.indexGoalRetrieval(command.projectId, activeGoalId)
         this.deps.store.assertV2FocusOwnership(command.projectId, command.flowId, activeGoalId)
         this.emit(
           "v2.goal.routed",
@@ -555,6 +566,9 @@ export class V2ExecutionRuntime {
       })
       const streamMessageId = `${created.turn.id}_assistant`
       const fileFreshness = this.activeTurns.getFileFreshness(created.turn.id)
+      const activeGoalSnapshot = this.deps.store.getSnapshot(command.projectId, command.flowId)
+      const activeGoal = activeGoalSnapshot.goals.find((goal) => goal.id === activeGoalId)
+      const activeCapsule = activeGoalSnapshot.latestCapsules.find((capsule) => capsule.goalId === activeGoalId)
       for await (const event of this.deps.agent.streamTurn({
         projectId: command.projectId,
         // V2 owns execution. The bridge mirrors only completed visible turns
@@ -573,6 +587,18 @@ export class V2ExecutionRuntime {
         workspacePath,
         stableCachePreludeSnapshot,
         automaticMemorySearch: (memoryInput) => this.deps.sharedStore.searchMemory(command.projectId, memoryInput, true),
+        ...(activeGoal ? {
+          activeGoal: {
+            goalId: activeGoal.id,
+            title: activeGoal.title,
+            state: activeGoal.status,
+            note: activeCapsule?.summary ?? activeGoal.summary ?? "Work is active.",
+          },
+          applyGoalFinalization: async (finalization) => {
+            this.deps.store.finalizeGoal(command.projectId, command.flowId, activeGoalId, created.turn.id, finalization)
+            this.deps.sharedStore.indexGoalRetrieval(command.projectId, activeGoalId)
+          },
+        } : {}),
         recordMemoryRouterRun: async (run) => {
           const error = run.error
             ? this.deps.store.recordError({

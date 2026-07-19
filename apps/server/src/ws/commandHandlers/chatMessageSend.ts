@@ -34,6 +34,7 @@ import type { ConversationSubscriptions } from "../conversationSubscriptions"
 import { appendAndEmit, makeEvent, type EventSink } from "../eventSender"
 import { currentRuntimeTime } from "../../services/store/runtimeContext"
 import { fetchUrlForTool } from "../urlFetch"
+import type { V2FlowStore } from "../../services/v2/flowStore"
 
 const requireCommandScope = (command: ClientCommand): { projectId: string; conversationId: string } => {
   if (!command.projectId || !command.conversationId) {
@@ -94,6 +95,7 @@ export const handleChatMessageSend = async (
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
   continuation?: TerminalTaskContinuation,
+  flowStore?: V2FlowStore,
 ): Promise<void> => {
   if (!command && !continuation) {
     throw new SocratesError("missing_chat_command", "A chat message or continuation is required.")
@@ -246,6 +248,12 @@ export const handleChatMessageSend = async (
   let suspended = false
   let suspendedWait: Extract<SocratesAgentEvent, { type: "agent.suspended" }>["wait"] | undefined
   const exposedMcpServers = new Set<string>()
+  const goalQuery = created.userMessage?.content.trim() ?? ""
+  const retrievedGoalIds = flowStore && goalQuery
+    ? await store.searchGoalCards(projectId, goalQuery, 4).catch(() => [] as string[])
+    : []
+  const goalRoutingContext = flowStore?.prepareClassicGoalRouting(projectId, conversationId, retrievedGoalIds)
+  const classicFlowStore = flowStore && goalRoutingContext ? flowStore : undefined
 
   try {
     for await (const agentEvent of agent.streamTurn({
@@ -264,6 +272,35 @@ export const handleChatMessageSend = async (
       workspacePath,
       stableCachePreludeSnapshot,
       automaticMemorySearch: (input) => store.searchMemory(projectId, input, true),
+      ...(goalRoutingContext && classicFlowStore ? {
+        goalCandidates: goalRoutingContext.candidates,
+        ...(goalRoutingContext.currentGoalCandidate ? { currentGoalCandidate: goalRoutingContext.currentGoalCandidate } : {}),
+        applyGoalRoute: async (route) => {
+          if (continuation) {
+            const activeGoal = classicFlowStore.getClassicGoalForTurn(created.turnId)
+            if (!activeGoal) throw new SocratesError("classic_goal_link_missing", "The continued task no longer has a goal link.", { recoverable: true })
+            return activeGoal
+          }
+          if (!created.userMessage) throw new SocratesError("classic_goal_message_missing", "The Classic turn has no user message to route.")
+          const activeGoal = classicFlowStore.applyClassicGoalRoute({
+            projectId,
+            conversationId,
+            sessionId: created.sessionId,
+            turnId: created.turnId,
+            userMessageId: created.userMessage.id,
+            userMessage: created.userMessage.content,
+            context: goalRoutingContext,
+            route,
+          })
+          store.indexGoalRetrieval(projectId, activeGoal.goalId)
+          return activeGoal
+        },
+        applyGoalFinalization: async (finalization) => {
+          classicFlowStore.finalizeClassicGoal(created.turnId, finalization)
+          const activeGoal = classicFlowStore.getClassicGoalForTurn(created.turnId)
+          if (activeGoal) store.indexGoalRetrieval(projectId, activeGoal.goalId)
+        },
+      } : {}),
       toolExecutors: createToolExecutors(store, projectId, created.turnId, activeTurns, terminals, mcpRuntime, {
         exposeMcpServer: (serverId) => exposedMcpServers.add(serverId),
       }),
@@ -867,6 +904,7 @@ export const handleChatMessageSend = async (
       content: answerText,
       reasoning: reasoningText,
     })
+    flowStore?.attachClassicGoalAssistantMessage(created.turnId, assistantMessage.id)
     for (const modelCallId of modelCallIds) {
       store.completeModelCall({
         modelCallId,
@@ -974,6 +1012,7 @@ export const resumeTerminalTask = async (
   task: ReturnType<SocratesStore["claimTerminalTaskWake"]>[number],
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
+  flowStore?: V2FlowStore,
 ): Promise<void> => {
   const continued = store.beginTerminalTaskContinuation(task)
   if (!continued) {
@@ -1021,7 +1060,7 @@ export const resumeTerminalTask = async (
     runtimeConfigId: continued.runtimeConfigId,
     runtimeConfig: continued.runtimeConfig,
     wakeContext,
-  })
+  }, flowStore)
 }
 
 const createToolExecutors = (

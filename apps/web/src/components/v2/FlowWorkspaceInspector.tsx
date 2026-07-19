@@ -65,6 +65,7 @@ const goalStatusLabel: Record<FlowGoalView["status"], string> = {
   parked: "Paused",
   blocked: "Paused",
   completed: "Finished",
+  discarded: "Discarded",
   archived: "Archived",
 };
 
@@ -240,6 +241,7 @@ export function FlowWorkspaceInspector({
                   ["Current", goals.filter((goal) => goal.status === "foreground")],
                   ["Paused", goals.filter((goal) => goal.status === "parked" || goal.status === "blocked")],
                   ["Finished", goals.filter((goal) => goal.status === "completed")],
+                  ["Discarded", goals.filter((goal) => goal.status === "discarded")],
                   ["Archived", goals.filter((goal) => goal.status === "archived")],
                 ] as const).map(([label, groupedGoals]) => groupedGoals.length > 0 && (
                   <section key={label} className={styles.focusGroup} aria-label={`${label} focuses`}>
@@ -254,7 +256,7 @@ export function FlowWorkspaceInspector({
                           </span>
                           <span className={styles.goalListActions}>
                             {onFocusAction && goal.status !== "foreground" && goal.status !== "archived" && (
-                              <button type="button" onClick={() => onFocusAction(goal.id, goal.status === "completed" ? "reopen" : "switch")}>{goal.status === "completed" ? "Reopen" : "Switch"}</button>
+                              <button type="button" onClick={() => onFocusAction(goal.id, goal.status === "completed" || goal.status === "discarded" ? "reopen" : "switch")}>{goal.status === "completed" || goal.status === "discarded" ? "Reopen" : "Switch"}</button>
                             )}
                             {onFocusAction && goal.status === "archived" && <button type="button" onClick={() => onFocusAction(goal.id, "reopen")}>Reopen</button>}
                             {onFocusAction && goal.kind === "work" && goal.status !== "foreground" && goal.status !== "archived" && (

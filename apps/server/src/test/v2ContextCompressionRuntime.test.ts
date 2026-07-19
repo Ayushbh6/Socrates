@@ -71,9 +71,9 @@ const setup = () => {
 
 const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterResult => {
   const foregroundGoal = store.listGoalsForRouter(flowId).find((goal) => goal.status === "foreground")
-  const foreground = foregroundGoal ? { goal: foregroundGoal, lexicalScore: 0 } : undefined
+  const foreground = foregroundGoal ? { goal: foregroundGoal, candidate: 1 } : undefined
   return {
-    decision: { action: "create", secondaryGoalIds: [], confidence: 0.9, reasonCode: "new_goal" },
+    decision: { action: "create", title: "Test goal" },
     candidates: {
       ...(foreground ? { foreground } : {}),
       parked: [],

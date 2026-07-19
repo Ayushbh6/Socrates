@@ -16,7 +16,6 @@ import { providerAuthModeSchema, providerIdSchema, thinkingEffortSchema } from "
 export const V2_FLOW_SCHEMA_VERSION = 2 as const
 export const V2_CONTEXT_UNRESOLVED_MAX_AGE_TURNS = 3 as const
 export const V2_CONTEXT_UNRESOLVED_MAX_ITEMS = 5 as const
-export const V2_GOAL_ROUTER_MAX_SECONDARY_GOALS = 3 as const
 
 export const V2_OPENROUTER_STT_MODEL_IDS = [
   "nvidia/parakeet-tdt-0.6b-v3",
@@ -45,7 +44,7 @@ export const v2FlowSchema = z
   })
   .strict()
 
-export const v2GoalStatusSchema = z.enum(["foreground", "parked", "blocked", "completed", "archived"])
+export const v2GoalStatusSchema = z.enum(["foreground", "parked", "blocked", "completed", "discarded", "archived"])
 export const v2GoalOriginSchema = z.enum(["router", "user", "recovery", "system"])
 export const v2GoalKindSchema = z.enum(["general", "work"])
 
@@ -78,6 +77,7 @@ export const v2GoalTransitionReasonSchema = z.enum([
   "blocked",
   "resumed",
   "completed",
+  "discarded",
   "archived",
   "reopened",
   "auto_archived",
@@ -110,14 +110,26 @@ export const v2GoalRoutingStatusSchema = z.enum(["running", "awaiting_clarificat
 
 export const v2GoalRouterOutputSchema = z
   .object({
-    action: z.enum(["continue", "resume", "create", "clarify"]),
-    primaryGoalId: z.string().min(1).nullable(),
-    secondaryGoalIds: z.array(z.string().min(1)).max(V2_GOAL_ROUTER_MAX_SECONDARY_GOALS),
-    confidence: z.number().min(0).max(1),
-    clarificationQuestion: z.string().max(1_000).nullable(),
-    clarificationGoalIds: z.array(z.string().min(1)).max(5),
+    action: z.enum(["use", "create", "clarify"]),
+    candidates: z.array(z.number().int().min(1).max(5)).max(5),
+    title: z.string().min(1).max(200).nullable(),
   })
   .strict()
+  .superRefine((value, context) => {
+    const candidates = [...new Set(value.candidates)]
+    if (candidates.length !== value.candidates.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Candidate numbers must be unique." })
+    }
+    if (value.action === "use" && (candidates.length !== 1 || value.title !== null)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Use requires one candidate and a null title." })
+    }
+    if (value.action === "create" && (candidates.length !== 0 || !value.title?.trim())) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "Create requires a short title and no candidates." })
+    }
+    if (value.action === "clarify" && (candidates.length < 2 || value.title !== null)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Clarify requires two to five candidates and a null title." })
+    }
+  })
 export type V2GoalRouterOutput = z.infer<typeof v2GoalRouterOutputSchema>
 
 export const v2GoalRoutingRunSchema = z

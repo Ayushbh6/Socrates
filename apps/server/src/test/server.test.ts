@@ -3691,8 +3691,8 @@ describe("WebSocket API", () => {
             type: "model.answer.delta",
             text: JSON.stringify(
               isPostEvidence
-                ? { actions: [], reason: "No durable update is needed." }
-                : { readTargets: [], reason: "No routed recall is needed." },
+                ? { actions: [], reason: "No durable update is needed.", goalFinalization: null }
+                : { readTargets: [], reason: "No routed recall is needed.", goalRoute: null },
             ),
           }
           yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } }
@@ -3913,7 +3913,7 @@ describe("WebSocket API", () => {
       },
       async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
         return {
-          output: { readTargets: [], reason: "" } as TOutput,
+          output: { readTargets: [], reason: "", goalRoute: null } as TOutput,
           usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
         }
       },

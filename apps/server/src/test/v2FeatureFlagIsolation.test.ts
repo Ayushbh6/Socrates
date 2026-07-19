@@ -222,8 +222,8 @@ describe("V2 app feature flag and Classic isolation", () => {
     })
     const flowId = flowBody.data.snapshot.flow.id
     const classicBridgeBaseline = tableCounts(runtime.dbPath, classicRuntimeTables)
-    expect(classicBridgeBaseline.conversations).toBe((classicRuntimeBaseline.conversations ?? 0) + 1)
-    expect(classicBridgeBaseline.sessions).toBe((classicRuntimeBaseline.sessions ?? 0) + 1)
+    expect(classicBridgeBaseline.conversations).toBe(classicRuntimeBaseline.conversations ?? 0)
+    expect(classicBridgeBaseline.sessions).toBe(classicRuntimeBaseline.sessions ?? 0)
 
     const packList = await runtime.app.inject({ method: "GET", url: "/api/v2/speech/packs" })
     expect(packList.statusCode).toBe(200)

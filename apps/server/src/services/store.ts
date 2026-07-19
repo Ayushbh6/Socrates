@@ -1113,6 +1113,10 @@ export class SocratesStore {
     this.retrieval.enqueueV2Turn(projectId, turnId)
   }
 
+  indexGoalRetrieval(projectId: string, goalId: string): void {
+    this.retrieval.enqueueGoal(projectId, goalId)
+  }
+
   retrieveV2FlowTraces(projectId: string, flowId: string, input: TraceRetrieveMainToolInput) {
     return this.retrieval.retrieveV2FlowTrace(projectId, flowId, input)
   }
@@ -1259,6 +1263,10 @@ export class SocratesStore {
 
   searchMemory(projectId: string, input: MemorySearchInput, automaticFallback = false) {
     return this.retrieval.searchMemory(projectId, input, automaticFallback)
+  }
+
+  searchGoalCards(projectId: string, query: string, limit = 4) {
+    return this.retrieval.searchGoalCards(projectId, query, limit)
   }
 
   getProjectEmbeddingStatus(projectId: string) {

@@ -35,9 +35,9 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 - Runtime availability for macOS 15+ (arm64/x64) and Windows x64.
 - The original cream **Classic View (V1)** welcome, projects, and project dashboard remain the default path. A project-scoped **Go to Flow View** control opens that same project's isolated V2 Flow; there is no global view chooser or second project directory.
 - Seamless View provides one persistent Flow per project, bounded foreground/parked goals, versioned capsules, pruned working context, and immutable retrievable evidence.
-- Each Flow focus maps explicitly to one Classic conversation, so **Open in Classic** and **Continue in Flow View** preserve the same visible Q&A without merging the two runtimes.
+- Classic and Flow share one canonical per-project goal ledger. A Classic conversation may contain many goals; each routed turn links to one goal, and **Open in Classic** gives an individual goal at most one preferred Classic home without splitting a Flow into surprise conversations.
 - V2 inherits the same providers, Socrates agent, tools, approvals, Terminals, MCP servers, skills, Memory Router, Global Memory Agent, workspace `.socrates/`, and global `~/.Socrates/` foundation as Classic.
-- The shared Classic composer now includes click-to-record STT. It defaults to local Whisper `small.en`, appends the transcript to the unsent draft, never auto-sends, and creates no V2 Flow state.
+- The shared voice setting defaults to **Not configured**. Classic and Flow use the same explicit offline/OpenRouter choice; offline packs download only after the user presses Install. Transcripts append to the unsent draft and never auto-send.
 - V2 Voice V1 additionally exposes local Whisper `base.en`/`small.en`, the three allowlisted OpenRouter transcription models, and local Kokoro read-aloud; local failures never silently upload audio.
 - Ollama can serve local chat models from the normal model picker when the local Ollama runtime is reachable.
 - Trace retrieval upgraded for broader match windows and exact quote context.

@@ -578,7 +578,7 @@ Composer behavior:
 - The chat page subscribes its WebSocket to the active conversation with `chat.conversation.subscribe` on initial connect and reconnect.
 - The frontend sends `chat.message.send` over WebSocket for the real AI path.
 - The older no-AI HTTP message endpoint remains available but is not the normal chat UI send path.
-- Classic STT defaults to `engine=local_whisper&modelId=small.en`. It never auto-sends the transcript, never routes through the V2 Goal Router, and never creates V2 Flow, artifact, or speech-job state. The backend deletes its temporary WAV after the transcription attempt.
+- Classic STT reads the shared explicit voice preference, which defaults to **Not configured**. Choosing local Whisper requires a separate explicit pack installation; choosing OpenRouter requires the user's credential. It never auto-sends the transcript or creates V2 artifact/speech-job state. The backend deletes its temporary WAV after the transcription attempt.
 
 Classic conversation transcription uses:
 
@@ -1223,7 +1223,7 @@ Project
               └── immutable retrievable evidence
 ```
 
-The implemented surface preserves the original cream `/welcome` and `/projects` path. Users first open a Classic project dashboard, where a small **Go to Flow View** control in the always-visible project header opens `/seamless/projects/:projectId` for that same project. `/seamless` itself redirects to `/projects`; there is no global view chooser or duplicate project-directory page. The project switch checks V2 capability and becomes unavailable when the backend flag is off. Each focus has one explicit Classic bridge conversation: **Open in Classic** and **Continue in Flow View** flip the active writer and preserve visible Q&A without migrating unrelated chats or duplicating tool/evidence/usage rows.
+The implemented surface preserves the original cream `/welcome` and `/projects` path. Users first open a Classic project dashboard, where a small **Go to Flow View** control in the always-visible project header opens `/seamless/projects/:projectId` for that same project. `/seamless` itself redirects to `/projects`; there is no global view chooser or duplicate project-directory page. The project switch checks V2 capability and becomes unavailable when the backend flag is off. **Open in Classic** and **Continue in Flow View** flip the active writer around one canonical goal ledger. A Classic conversation may contain many goal-linked turns, and a goal gets a preferred Classic home only after an explicit open; the bridge never invents a conversation split.
 
 The Flow project view uses the same warm cream Socrates surface as Classic, with a restrained low-contrast living sphere and one chronological timeline. Two lightweight clipped notes float on that surface: **Live Context** and **Current Focus / Current Task**. They can be dragged only by their complete circular paperclip handles, moved precisely with the arrow keys, clamped into the responsive workspace, and persisted per project. Opening either note reveals the larger Context/Focuses/Activity inspector; that inspector can be pinned or dismissed, and keeps detailed evidence, focus lifecycle, approvals, tools, credentials, Terminals, and speech settings out of the calm default surface.
 
@@ -1233,7 +1233,7 @@ The composer is the actual shared Classic `ChatComposer`, preserving the exact m
 
 V2 uses the same Socrates agent, tools, providers, workspace `.socrates/`, global `~/.Socrates/`, Memory Router implementation, and global Memory Agent as Classic. It does not use the Classic conversation-title rewriter or a capsule-writing LLM: deterministic goal titles and materiality-gated rich capsule versions provide the Seamless navigation/resume labels. The Goal Router has its own model/thinking setting and runs its strict structured contract through the shared agent runner without calling the title-rewrite service. V2 turn, tool, approval, Terminal, evidence, context, usage, and event persistence remains `v2_*`-owned. Canonical V2 Q&A parents reuse shared LanceDB lexical/semantic/combined retrieval under explicit `runtimeKind = "v2_flow"` and `flowId` filters; queryless/inspect/audit continue to resolve through V2-owned raw evidence.
 
-The shared speech foundation has two deliberately different orchestration surfaces. Classic offers one simple composer mic and currently defaults to offline Whisper `small.en`; the transcript stays in the draft until the user sends it. V2 Voice V1 exposes two transcription modes and one read-aloud mode:
+The shared speech foundation has two deliberately different orchestration surfaces but one explicit preference. Voice defaults to **Not configured** in both views; the transcript stays in the draft until the user sends it. Settings offers two transcription modes and one read-aloud mode:
 
 ```text
 Speech input

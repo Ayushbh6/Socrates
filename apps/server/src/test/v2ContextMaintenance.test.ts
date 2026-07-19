@@ -86,9 +86,9 @@ const createRoutedTurn = (store: V2FlowStore, flowId: string, content: string, g
 
 const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterResult => {
   const foregroundGoal = store.listGoalsForRouter(flowId).find((goal) => goal.status === "foreground")
-  const foreground = foregroundGoal ? { goal: foregroundGoal, lexicalScore: 0 } : undefined
+  const foreground = foregroundGoal ? { goal: foregroundGoal, candidate: 1 } : undefined
   return {
-    decision: { action: "create", secondaryGoalIds: [], confidence: 0.9, reasonCode: "new_goal" },
+    decision: { action: "create", title: "Test goal" },
     candidates: {
       ...(foreground ? { foreground } : {}),
       parked: [],
@@ -104,14 +104,11 @@ const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterRes
 const forcedContinueResult = (store: V2FlowStore, flowId: string, goalId: string): V2GoalRouterResult => {
   const goal = store.listGoalsForRouter(flowId).find((candidate) => candidate.id === goalId)
   if (!goal) throw new Error("Goal not found")
-  const foreground = { goal, lexicalScore: 1 }
+  const foreground = { goal, candidate: 1 }
   return {
     decision: {
       action: "continue",
       primaryGoalId: goalId,
-      secondaryGoalIds: [],
-      confidence: 1,
-      reasonCode: "foreground_continuation",
     },
     candidates: {
       foreground,

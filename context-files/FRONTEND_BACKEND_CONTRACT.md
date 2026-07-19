@@ -40,7 +40,7 @@ The contract must also stay expandable for later:
 
 Everything below remains the V1 Classic contract unless a section explicitly says otherwise.
 
-V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to V1 payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned persistence. Existing V1 clients continue to function without knowing V2 exists. The explicitly approved Classic microphone is a small conversation-scoped STT contract, not a V2 contract leak: it returns text for the existing unsent draft and creates no goal, Flow, V2 speech job, or V2 artifact.
+V2 does not add goal ids, Flow state, context dispositions, or Flow routing semantics to V1 wire payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned execution persistence. Existing V1 clients continue to function without knowing V2 exists. Behind that wire boundary, Classic pre/post Memory Router phases may select/finalize the canonical project goal ledger and persist exact turn-goal links. The Classic microphone is a small conversation-scoped STT contract: it returns text for the existing unsent draft and creates no Flow speech job or artifact.
 
 `SOCRATES_V2_FLOW_ENABLED` is false for a directly constructed source server unless its value is exactly `true`. Direct source-server development must set it explicitly. The ordinary NPM/runtime-archive `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the project-scoped Seamless switch and retains an explicit rollback override.
 
@@ -58,7 +58,7 @@ v2.speech.*
 
 The exact entities, HTTP bodies, socket commands, socket events, and speech unions are in `packages/contracts/src/v2Flow.ts`. That module is not merged into the V1 command or event unions, so a V2 payload cannot be accidentally accepted by a Classic handler.
 
-V2 reuses the same normalized provider, tool semantics, approvals, Terminal supervisor, artifacts, usage normalization, errors, workspace `.socrates/`, global `~/.Socrates/`, MCP/skills, Memory Router implementation, and global Memory Agent. Conversation-owned records are persisted through V2 contracts and 29 `v2_*` tables. Ordinary V2 execution never creates a shadow Classic runtime merely to reuse an endpoint. The explicit bridge alone maps each focus to at most one Classic conversation/session and mirrors visible Q&A idempotently; tools, evidence, usage, and events remain V2-owned. Canonical V2 Q&A parents enter the shared retrieval index with `runtimeKind = "v2_flow"` and `flowId`; lexical/semantic/combined searches use that shared index, while queryless/inspect/audit resolve through V2-owned raw evidence.
+V2 reuses the same normalized provider, tool semantics, approvals, Terminal supervisor, artifacts, usage normalization, errors, workspace `.socrates/`, global `~/.Socrates/`, MCP/skills, Memory Router implementation, and global Memory Agent. Ordinary V2 execution never creates a shadow Classic runtime merely to reuse an endpoint. The explicit bridge keeps one canonical goal ledger: a Classic conversation can contain many goals, each routed Classic turn links to one goal, and each goal has at most one preferred Classic home. Visible Q&A mirrors idempotently only across an established home; tools, evidence, usage, and events stay source-runtime-owned. Canonical V2 Q&A parents enter the shared retrieval index with `runtimeKind = "v2_flow"` and `flowId`; lexical/semantic/combined searches use that shared index, while queryless/inspect/audit resolve through V2-owned raw evidence.
 
 V2 also renders the same shared web `ChatComposer` used by Classic. The component owns identical model/thinking menus, send/stop behavior, attachment picker, pasted and drag/dropped images, previews, vision warning, Agent Skill ZIP support, large-paste conversion, and optional microphone presentation in both views. V2 supplies V2-scoped attachment upload/send and voice callbacks; Classic supplies its existing attachment/send callbacks plus its conversation-scoped transcription callback. There is no V2-specific Tools toggle or second composer implementation.
 
@@ -95,7 +95,7 @@ type ConversationTranscriptionResponse = {
 }
 ```
 
-Its current UI sends `engine=local_whisper&modelId=small.en`, appends `transcriptText` to the controlled composer draft, and never auto-sends it. The route may also validate the existing Whisper `base.en` and three OpenRouter transcription ids for future explicit selection, but it never silently switches engine.
+Classic and Flow read the same explicit browser preference, which defaults to `disabled`. Choosing an offline Whisper model never installs it; the user must press a size-labelled, checksum-verified Install action in Settings. Choosing one of the three OpenRouter models requires the user's configured OpenRouter credential. Classic appends `transcriptText` to the controlled composer draft and never auto-sends it or silently switches engines.
 
 ```text
 POST /api/projects/:projectId/conversations/:conversationId/speech/transcribe

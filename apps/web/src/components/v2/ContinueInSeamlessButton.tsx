@@ -1,9 +1,29 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import type { MessageAttachment, ModelOption, ModelThinkingOption } from "@socrates/contracts";
 import { v2Api } from "@/lib/v2/api";
+import { appendViewHandoff, createViewHandoff } from "@/lib/v2/viewHandoff";
 
-export function ContinueInSeamlessButton({ projectId, conversationId }: { projectId: string; conversationId: string }) {
+export function ContinueInSeamlessButton({
+  projectId,
+  conversationId,
+  hasPersistedTurns,
+  draftText,
+  attachments,
+  selectedModel,
+  selectedThinkingOption,
+}: {
+  projectId: string;
+  conversationId: string;
+  hasPersistedTurns: boolean;
+  draftText: string;
+  attachments: MessageAttachment[];
+  selectedModel: ModelOption | null;
+  selectedThinkingOption: ModelThinkingOption | null;
+}) {
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,8 +36,22 @@ export function ContinueInSeamlessButton({ projectId, conversationId }: { projec
         onClick={() => {
           setBusy(true);
           setError(null);
-          void v2Api.continueClassicInSeamless(projectId, conversationId)
-            .then(({ href }) => { window.location.href = href; })
+          const navigation = hasPersistedTurns
+            ? v2Api.continueClassicInSeamless(projectId, conversationId).then(({ href }) => href)
+            : v2Api.ensureFlow(projectId).then(() => `/seamless/projects/${encodeURIComponent(projectId)}`);
+          void navigation
+            .then((href) => {
+              const nonce = createViewHandoff({
+                target: "flow",
+                projectId,
+                conversationId,
+                text: draftText,
+                attachments,
+                model: selectedModel,
+                thinking: selectedThinkingOption,
+              });
+              router.push(appendViewHandoff(href, nonce));
+            })
             .catch((reason: unknown) => {
               setError(reason instanceof Error ? reason.message : "Could not continue this chat in Seamless View.");
               setBusy(false);

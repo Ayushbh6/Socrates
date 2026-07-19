@@ -72,6 +72,70 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("always pauses for explicit user approval")
   })
 
+  it("persists a created goal when goal tracking is active but no candidates exist yet", async () => {
+    const appliedRoutes: unknown[] = []
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async generateStructured(request) {
+        if (request.system.includes("post-evidence")) {
+          return {
+            output: {
+              actions: [],
+              reason: "The requested update was delivered.",
+              goalFinalization: { state: "completed", note: "The update is complete." },
+            } as never,
+          }
+        }
+        return {
+          output: {
+            readTargets: [],
+            reason: "No additional recall is needed.",
+            goalRoute: { action: "create", candidates: [], title: "Review AIDPA report status" },
+          } as never,
+        }
+      },
+      async *stream() {
+        yield { type: "model.answer.delta", text: "The report update is ready." }
+        yield { type: "model.completed" }
+      },
+    }
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      projectId: "proj_1",
+      conversationId: "conv_1",
+      sessionId: "sess_1",
+      turnId: "turn_1",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-pro",
+      runtimeConfig: {
+        providerId: "deepseek",
+        authMode: "api_key",
+        modelId: "deepseek-v4-pro",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Could you check where the AIDPA report stands?" }],
+      workspacePath: "/tmp",
+      stableCachePreludeSnapshot: { identitySections: {} },
+      toolExecutors: emptyToolExecutors(),
+      goalCandidates: [],
+      applyGoalRoute: async (route) => {
+        appliedRoutes.push(route)
+        return { goalId: "v2goal_1", title: "Review AIDPA report status", state: "foreground", note: "Review the report." }
+      },
+      applyGoalFinalization: async () => undefined,
+    })) {
+      // Drain the turn.
+    }
+
+    expect(appliedRoutes).toHaveLength(1)
+    expect(appliedRoutes[0]).toMatchObject({ action: "create", candidates: [] })
+    expect(String((appliedRoutes[0] as { title?: unknown }).title)).toContain("AIDPA report")
+  })
+
   it("hands the full current task one way to Frontier and suppresses the driver's provisional answer", async () => {
     const requests: Array<Parameters<ModelProvider["stream"]>[0]> = []
     let handedOver = false
@@ -90,8 +154,8 @@ describe("SocratesAgent", () => {
               type: "model.answer.delta",
               text: JSON.stringify(
                 isPostEvidence
-                  ? { actions: [], reason: "No durable update is needed." }
-                  : { readTargets: [], reason: "No routed recall is needed." },
+                  ? { actions: [], reason: "No durable update is needed.", goalFinalization: null }
+                  : { readTargets: [], reason: "No routed recall is needed.", goalRoute: null },
               ),
             }
             yield { type: "model.completed" }
@@ -401,7 +465,7 @@ describe("SocratesAgent", () => {
       countTokens: fakeCountTokens,
       async generateStructured(request) {
         if (request.system.includes("post-evidence")) {
-          return { output: { actions: [], reason: "No durable update." } as never }
+          return { output: { actions: [], reason: "No durable update.", goalFinalization: null } as never }
         }
         return {
           output: {
@@ -415,6 +479,7 @@ describe("SocratesAgent", () => {
               { surface: "project_notes", fileName: "PROJECT_NOTES.md", sectionId: "active_context", reason: "Exact duplicate." },
             ],
             reason: "Load only dynamic context beyond the standing snapshot.",
+            goalRoute: null,
           } as never,
         }
       },
@@ -1015,7 +1080,7 @@ describe("SocratesAgent", () => {
         structuredRequests.push(request)
         structuredSystems.push(request.system)
         if (request.system.includes("post-evidence")) {
-          return { output: { actions: [], reason: "No durable reconciliation is needed." } as never }
+          return { output: { actions: [], reason: "No durable reconciliation is needed.", goalFinalization: null } as never }
         }
         return {
           output: {
@@ -1040,6 +1105,7 @@ describe("SocratesAgent", () => {
               },
             ],
             reason: "The user gave project-local guidance before asking for repo work.",
+            goalRoute: null,
           } as never,
           usage: { inputTokens: 12, outputTokens: 4, totalTokens: 16, costUsd: 0.0001 },
         }
@@ -1213,6 +1279,7 @@ describe("SocratesAgent", () => {
             output: {
               readTargets: [],
               reason: "No pre-turn recall needed.",
+              goalRoute: null,
             } as never,
           }
         }
@@ -1230,6 +1297,7 @@ describe("SocratesAgent", () => {
               },
             ],
             reason: "A read tool produced a durable project fact.",
+            goalFinalization: null,
           } as never,
         }
       },
@@ -1366,6 +1434,7 @@ describe("SocratesAgent", () => {
             output: {
               readTargets: [],
               reason: "No pre-turn recall needed.",
+              goalRoute: null,
             } as never,
           }
         }
@@ -1373,6 +1442,7 @@ describe("SocratesAgent", () => {
           output: {
             actions: [],
             reason: "No durable reconciliation is needed.",
+            goalFinalization: null,
           } as never,
         }
       },

@@ -23,6 +23,8 @@ export {
   type MemoryRouterAgentModelSettings,
   type MemoryRouterPostTurnInput,
   type MemoryRouterPreTurnInput,
+  type ActiveGoalCard,
+  type GoalCandidateCard,
 } from "./agent/MemoryRouterAgent"
 export {
   GoalRouterAgent,

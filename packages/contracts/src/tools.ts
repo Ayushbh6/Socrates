@@ -88,7 +88,7 @@ export const focusLedgerGoalSchema = z
     id: z.string().min(1),
     title: z.string().min(1),
     kind: z.enum(["general", "work"]),
-    status: z.enum(["foreground", "parked", "blocked", "completed", "archived"]),
+    status: z.enum(["foreground", "parked", "blocked", "completed", "discarded", "archived"]),
     summary: z.string().optional(),
     pinned: z.boolean(),
     lastActiveAt: z.string().min(1),

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { v2GoalRouterOutputSchema } from "./v2Flow"
 
 export const memoryRetrievalSurfaceSchema = z.enum(["project_notes", "project_memory", "repo_docs", "user_profile", "identity"])
 export type MemoryRetrievalSurface = z.infer<typeof memoryRetrievalSurfaceSchema>
@@ -124,6 +125,7 @@ export const memoryRouterPreTurnResultSchema = z
   .object({
     readTargets: z.array(memoryReadTargetSchema).max(8),
     reason: z.string().min(1).max(500),
+    goalRoute: v2GoalRouterOutputSchema.nullable(),
   })
   .strict()
 export type MemoryRouterPreTurnResult = z.infer<typeof memoryRouterPreTurnResultSchema>
@@ -149,8 +151,20 @@ export const memoryReconciliationActionSchema = z
   })
 export type MemoryReconciliationAction = z.infer<typeof memoryReconciliationActionSchema>
 
+export const goalFinalizationSchema = z
+  .object({
+    state: z.enum(["active", "completed", "blocked", "discarded"]),
+    note: z.string().min(1).max(600),
+  })
+  .strict()
+export type GoalFinalization = z.infer<typeof goalFinalizationSchema>
+
 export const memoryRouterPostTurnResultSchema = z
-  .object({ actions: z.array(memoryReconciliationActionSchema).max(5), reason: z.string().min(1).max(500) })
+  .object({
+    actions: z.array(memoryReconciliationActionSchema).max(5),
+    reason: z.string().min(1).max(500),
+    goalFinalization: goalFinalizationSchema.nullable(),
+  })
   .strict()
 export type MemoryRouterPostTurnResult = z.infer<typeof memoryRouterPostTurnResultSchema>
 

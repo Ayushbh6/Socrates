@@ -5,29 +5,22 @@ import {
   type V2CreateSpeechJobRequest,
 } from "@socrates/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { V2_STORAGE_KEYS } from "./storageKeys";
 import { v2Api } from "./api";
 import { mediaRecordingToMonoWav, preferredRecordingMimeType } from "@/lib/speech/audio";
+import {
+  configuredTranscriber,
+  readSpeechReadAloudId,
+  readSpeechTranscriberId,
+  SPEECH_TRANSCRIBER_OPTIONS,
+  subscribeToSpeechPreferences,
+  writeSpeechTranscriberId,
+  type SpeechTranscriberId,
+} from "@/lib/speech/preferences";
 
 export type V2VoiceStatus = "idle" | "recording" | "transcribing" | "synthesizing" | "speaking" | "error";
 
-export const V2_TRANSCRIBER_OPTIONS = [
-  { id: "local_whisper:small.en", label: "Whisper small.en · Local", engine: "local_whisper", modelId: "small.en" },
-  { id: "local_whisper:base.en", label: "Whisper base.en · Local", engine: "local_whisper", modelId: "base.en" },
-  { id: "openrouter:nvidia/parakeet-tdt-0.6b-v3", label: "Parakeet TDT 0.6B · OpenRouter", engine: "openrouter", modelId: "nvidia/parakeet-tdt-0.6b-v3" },
-  { id: "openrouter:microsoft/mai-transcribe-1.5", label: "MAI Transcribe 1.5 · OpenRouter", engine: "openrouter", modelId: "microsoft/mai-transcribe-1.5" },
-  { id: "openrouter:mistralai/voxtral-mini-transcribe", label: "Voxtral Mini · OpenRouter", engine: "openrouter", modelId: "mistralai/voxtral-mini-transcribe" },
-] as const;
-
-export type V2TranscriberId = (typeof V2_TRANSCRIBER_OPTIONS)[number]["id"];
-
-const readTranscriber = (): V2TranscriberId => {
-  if (typeof window === "undefined") return "local_whisper:small.en";
-  const stored = window.localStorage.getItem(V2_STORAGE_KEYS.speechTranscriber);
-  return V2_TRANSCRIBER_OPTIONS.some((option) => option.id === stored)
-    ? stored as V2TranscriberId
-    : "local_whisper:small.en";
-};
+export const V2_TRANSCRIBER_OPTIONS = SPEECH_TRANSCRIBER_OPTIONS;
+export type V2TranscriberId = SpeechTranscriberId;
 
 interface UseV2VoiceInput {
   projectId: string;
@@ -39,7 +32,7 @@ interface UseV2VoiceInput {
 export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2VoiceInput) {
   const [status, setStatus] = useState<V2VoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcriberId, setTranscriberIdState] = useState<V2TranscriberId>(readTranscriber);
+  const [transcriberId, setTranscriberIdState] = useState<V2TranscriberId>(readSpeechTranscriberId);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -64,7 +57,10 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
     try {
       const wav = await mediaRecordingToMonoWav(recording);
       const artifact = await v2Api.uploadSpeechArtifact(projectId, flowId, wav);
-      const preference = V2_TRANSCRIBER_OPTIONS.find((option) => option.id === transcriberId) ?? V2_TRANSCRIBER_OPTIONS[0];
+      const preference = configuredTranscriber(transcriberId);
+      if (!preference) {
+        throw new Error("Choose a transcriber in Settings before using voice input.");
+      }
       const request = {
         kind: "transcription",
         engine: preference.engine,
@@ -86,6 +82,11 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
 
   const startRecording = useCallback(async () => {
     if (!flowId) throw new Error("The project flow is still loading.");
+    if (!configuredTranscriber(transcriberId)) {
+      setError("Choose a transcriber in Settings before using voice input.");
+      setStatus("error");
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       throw new Error("Voice recording is not supported by this browser.");
     }
@@ -118,7 +119,7 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
       setError(recordingError instanceof Error ? recordingError.message : "Microphone access failed.");
       setStatus("error");
     }
-  }, [flowId, processRecording, releaseRecordingStream]);
+  }, [flowId, processRecording, releaseRecordingStream, transcriberId]);
 
   const toggleRecording = useCallback(() => {
     if (status === "recording") {
@@ -140,6 +141,11 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
 
   const readAloud = useCallback(async (input: { messageId: string; text: string }) => {
     if (!flowId) throw new Error("The project flow is still loading.");
+    if (readSpeechReadAloudId() === "disabled") {
+      setError("Choose and install a read-aloud voice in Settings first.");
+      setStatus("error");
+      return;
+    }
     stopPlayback();
     setError(null);
     setStatus("synthesizing");
@@ -149,7 +155,7 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
         engine: "local_kokoro",
         modelId: V2_LOCAL_KOKORO_MODEL_ID,
         inputText: input.text,
-        voiceId: window.localStorage.getItem(V2_STORAGE_KEYS.speechVoice) ?? "speaker-0",
+        voiceId: "speaker-0",
         speed: 1,
         messageId: input.messageId,
         ...(goalId ? { goalId } : {}),
@@ -182,8 +188,12 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
 
   const setTranscriberId = useCallback((next: V2TranscriberId) => {
     setTranscriberIdState(next);
-    window.localStorage.setItem(V2_STORAGE_KEYS.speechTranscriber, next);
+    writeSpeechTranscriberId(next);
   }, []);
+
+  useEffect(() => subscribeToSpeechPreferences(() => {
+    setTranscriberIdState(readSpeechTranscriberId());
+  }), []);
 
   useEffect(() => () => {
     const recorder = recorderRef.current;

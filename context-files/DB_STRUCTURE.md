@@ -45,7 +45,7 @@ other v2_* tables = scoped structured views and durable HTTP/runtime ownership r
 
 The detailed table inventory below remains the V1 Classic persistence contract. V2 does not reinterpret V1 `conversations`, `sessions`, `turns`, or `messages`, and it does not create hidden V1 conversation rows as foreign-key shims for a V2 Flow. Classic's composer microphone is also not V2 persistence: its conversation-scoped endpoint uses a temporary WAV and returns transcript text for the unsent draft without inserting `v2_*`, `voice_inputs`, or message rows. If the user sends that draft later, it follows the ordinary Classic message path.
 
-Migrations `0026_outgoing_typhoid_mary.sql` and `0027_long_terror.sql` create exactly 29 namespaced V2 tables in the same user-owned SQLite database. Sharing the database file does not share runtime ownership: all Flow lifecycle, timeline, context, audit, Terminal, artifact, feedback, credential-request, speech, and bridge-control rows remain under `v2_*` names.
+Migrations through `0029_slimy_fallen_one.sql` create the namespaced Flow tables plus canonical Classic-home and exact Classic-turn goal links in the same user-owned SQLite database. Sharing the database file does not share runtime ownership: Flow lifecycle, timeline, context, audit, Terminal, artifact, feedback, credential-request, and speech rows remain under `v2_*` names; only compact goal navigation metadata crosses the view boundary.
 
 | V2 family | Implemented tables |
 | --- | --- |
@@ -54,7 +54,7 @@ Migrations `0026_outgoing_typhoid_mary.sql` and `0027_long_terror.sql` create ex
 | Evidence and active context | `v2_evidence_items`, `v2_context_items`, `v2_context_item_sources`, `v2_context_dispositions` |
 | Runtime audit and interaction | `v2_runtime_events`, `v2_model_calls`, `v2_usage_events`, `v2_tool_calls`, `v2_approvals`, `v2_terminal_sessions`, `v2_terminal_output_chunks`, `v2_errors`, `v2_artifacts`, `v2_feedback`, `v2_credential_input_requests` |
 | Speech | `v2_speech_jobs` |
-| Explicit Classic bridge | `v2_classic_conversation_bridges`, `v2_classic_message_links` |
+| Explicit Classic bridge | `v2_classic_conversation_bridges`, `v2_classic_message_links`, `v2_goal_classic_homes`, `v2_classic_turn_goal_links` |
 
 The V2 storage rule is:
 
@@ -66,7 +66,7 @@ V1 query semantics and behavior remain unchanged either way
 
 Shared application-level learning state is intentionally not duplicated. V2 `memory_note` entries use the existing `memory_notes` inbox with `sourceRuntime = "v2_flow"` plus exact Flow/turn/message coordinates, and the same Global Memory Agent writes the existing `memory_agent_*`, profile, identity, and skill surfaces. Completed Memory Agent jobs record processed V2 turn ids in the shared job receipt without creating Classic `events`, conversations, sessions, turns, or messages. This is shared global capability state, not shared conversation ownership.
 
-The database enforces one Flow per project and one foreground goal per Flow through unique indexes. V2 evidence rows are append-only: migration triggers reject `UPDATE` and `DELETE` on `v2_evidence_items`; pruning mutates only the active context projection and appends disposition/derived-evidence rows. Focused tests also assert that V2 turns, attachments, compaction, tools, Memory Router telemetry, and speech do not create Classic runtime rows. The explicit focus bridge is the narrow exception: one mapped Classic conversation/session and its visible messages may be created or reused only through bridge ownership, while tool/evidence/usage/event rows stay V2-owned.
+The database enforces one Flow per project and one foreground goal per Flow through unique indexes. V2 evidence rows are append-only: migration triggers reject `UPDATE` and `DELETE` on `v2_evidence_items`; pruning mutates only the active context projection and appends disposition/derived-evidence rows. Focused tests also assert that V2 turns, attachments, compaction, tools, Memory Router telemetry, and speech do not create Classic runtime rows. The explicit bridge is narrow: each Classic user turn links to one canonical goal, one Classic conversation may contain many goals, and each goal has at most one preferred Classic home; tool/evidence/usage/event rows stay source-runtime-owned.
 
 See `V2_FLOW_ARCHITECTURE.md` for table responsibilities, state-reconstruction requirements, and the immutable-evidence contract.
 
@@ -1727,7 +1727,7 @@ WHERE turn_id = ?;
 
 The current server schema creates the full table set below. Earlier planning split these into minimum and follow-up groups; that split is no longer accurate for the current repo state.
 
-This long-form inventory remains V1-specific. The implemented 29-table V2 inventory is intentionally summarized at the top rather than interleaved with Classic tables; use `apps/server/src/db/schema.ts` and migrations `0026_outgoing_typhoid_mary.sql` plus `0027_long_terror.sql` for exact V2 columns, indexes, checks, and triggers.
+This long-form inventory remains V1-specific. The implemented V2 inventory is intentionally summarized at the top rather than interleaved with Classic tables; use `apps/server/src/db/schema.ts` and migrations through `0029_slimy_fallen_one.sql` for exact V2 columns, indexes, checks, and triggers.
 
 ```text
 users

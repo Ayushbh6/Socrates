@@ -21,11 +21,11 @@ import {
 } from "../../db/schema"
 import type { EmbeddingStore } from "../store/embeddingStore"
 import type { StoreContext } from "../store/shared"
-import { canonicalMemoryParentId, loadCanonicalMemoryRows, loadCanonicalTraceRows } from "./canonicalSources"
+import { canonicalMemoryParentId, loadCanonicalGoalRows, loadCanonicalMemoryRows, loadCanonicalTraceRows } from "./canonicalSources"
 import { LanceDbIndex } from "./lanceDbIndex"
 import type { RetrievalIndexRow, RetrievalSearchFilters, RetrievalSearchMode } from "./types"
 
-const RETRIEVAL_INDEX_VERSION = 2
+const RETRIEVAL_INDEX_VERSION = 3
 const EMBEDDING_BATCH_SIZE = 16
 
 type RetrievalStateRow = typeof retrievalIndexStates.$inferSelect
@@ -94,6 +94,10 @@ export class RetrievalStore {
 
   enqueueV2Turn(projectId: string, turnId: string): void {
     this.enqueue(projectId, () => this.upsertTurn(projectId, turnId))
+  }
+
+  enqueueGoal(projectId: string, goalId: string): void {
+    this.enqueue(projectId, () => this.upsertGoal(projectId, goalId))
   }
 
   onMemoryDocIndexed(index: MemoryDocIndex, changedSectionIds: string[], removedSectionIds: string[]): void {
@@ -281,6 +285,18 @@ export class RetrievalStore {
     }
   }
 
+  async searchGoalCards(projectId: string, query: string, limit = 4): Promise<string[]> {
+    const ranked = await this.search({
+      projectId,
+      query,
+      mode: "combined",
+      filters: { corpusKind: "goal_card", scope: "project" },
+      limit: Math.max(1, Math.min(4, limit)),
+      automaticFallback: true,
+    })
+    return ranked.map((result) => result.parentId)
+  }
+
   status(projectId: string): RetrievalStateRow | undefined {
     return this.state(projectId)
   }
@@ -334,7 +350,8 @@ export class RetrievalStore {
     try {
       const traceRows = loadCanonicalTraceRows(this.context.handle, projectId)
       const memoryRows = loadCanonicalMemoryRows(this.context.handle, projectId)
-      const embedded = await this.attachVectors(projectId, [...traceRows, ...memoryRows])
+      const goalRows = loadCanonicalGoalRows(this.context.handle, projectId)
+      const embedded = await this.attachVectors(projectId, [...traceRows, ...memoryRows, ...goalRows])
       if (embedded.configFingerprint !== this.activeEmbeddingFingerprint(projectId)) {
         const completedAt = nowIso()
         this.writeState(projectId, { status: "rebuilding", vectorReady: false, lastError: null })
@@ -555,6 +572,24 @@ export class RetrievalStore {
       return
     }
     await this.lance.upsertParents(state.tableName, [turnId], embedded.rows)
+    await this.refreshCounts(projectId, state.tableName)
+  }
+
+  private async upsertGoal(projectId: string, goalId: string): Promise<void> {
+    const state = this.state(projectId)
+    if (!state?.tableName || state.status !== "ready") {
+      if (!state || (state.status !== "rebuilding" && state.status !== "pending")) {
+        this.enqueueRebuild(projectId, "goal_without_ready_index")
+      }
+      return
+    }
+    const rows = loadCanonicalGoalRows(this.context.handle, projectId, goalId)
+    const embedded = await this.attachVectors(projectId, rows)
+    if ((state.embeddingFingerprint ?? undefined) !== embedded.configFingerprint) {
+      this.enqueueRebuild(projectId, "embedding_configuration_changed")
+      return
+    }
+    await this.lance.upsertParents(state.tableName, [goalId], embedded.rows)
     await this.refreshCounts(projectId, state.tableName)
   }
 

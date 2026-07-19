@@ -14,7 +14,7 @@ export type RetrievalIndexRow = {
   occurredAt: string
   priority: number
   scope: "global" | "project"
-  runtimeKind: "classic" | "v2_flow" | "memory"
+  runtimeKind: "classic" | "v2_flow" | "memory" | "goal"
   flowId: string
   surface: MemoryRetrievalSurface | ""
   fileName: MemoryRetrievalFile | ""
@@ -34,7 +34,7 @@ export type RetrievalSearchMode = "lexical" | "semantic" | "combined"
 export type RetrievalSearchFilters = {
   corpusKind: RetrievalCorpusKind
   scope?: "current_conversation" | "recent_conversations" | "project" | "global" | "all"
-  runtimeKind?: "classic" | "v2_flow" | "memory"
+  runtimeKind?: "classic" | "v2_flow" | "memory" | "goal"
   flowId?: string
   conversationId?: string
   conversationTitle?: string

@@ -28,6 +28,8 @@ export interface ChatComposerProps<TAttachment extends ComposerAttachment = Mess
   warningResetKey?: string;
   value?: string;
   onValueChange?: (value: string) => void;
+  attachments?: TAttachment[];
+  onAttachmentsChange?: (attachments: TAttachment[]) => void;
   voiceAvailable?: boolean;
   voiceRecording?: boolean;
   voiceBusy?: boolean;
@@ -48,6 +50,8 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
   warningResetKey,
   value,
   onValueChange,
+  attachments: controlledAttachments,
+  onAttachmentsChange,
   voiceAvailable = false,
   voiceRecording = false,
   voiceBusy = false,
@@ -59,7 +63,7 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
   onStop,
 }: ChatComposerProps<TAttachment>) {
   const [internalContent, setInternalContent] = useState("");
-  const [attachments, setAttachments] = useState<TAttachment[]>([]);
+  const [internalAttachments, setInternalAttachments] = useState<TAttachment[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
@@ -69,6 +73,15 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const thinkingMenuRef = useRef<HTMLDivElement | null>(null);
   const content = value ?? internalContent;
+  const attachments = controlledAttachments ?? internalAttachments;
+  const setAttachments = (update: TAttachment[] | ((current: TAttachment[]) => TAttachment[])) => {
+    const next = typeof update === "function" ? update(attachments) : update;
+    if (controlledAttachments !== undefined) {
+      onAttachmentsChange?.(next);
+    } else {
+      setInternalAttachments(next);
+    }
+  };
   const setContent = (nextValue: string) => {
     if (value !== undefined) {
       onValueChange?.(nextValue);

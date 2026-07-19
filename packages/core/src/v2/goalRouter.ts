@@ -1,4 +1,4 @@
-import { V2_GOAL_ROUTER_MAX_SECONDARY_GOALS, type ProviderAuthMode, type ProviderId, type ThinkingEffort, type V2GoalRouterOutput } from "@socrates/contracts"
+import { type ProviderAuthMode, type ProviderId, type ThinkingEffort, type V2GoalRouterOutput } from "@socrates/contracts"
 import type { ModelProvider, ModelUsage } from "@socrates/providers"
 import { normalizeError } from "@socrates/shared"
 import { GoalRouterAgent } from "../agent/GoalRouterAgent"
@@ -13,8 +13,7 @@ import type {
 } from "./types"
 
 export const DEFAULT_V2_PARKED_GOAL_CANDIDATE_LIMIT = 5
-export const MAX_V2_PARKED_GOAL_CANDIDATE_LIMIT = 8
-export const MAX_V2_SECONDARY_GOAL_LINKS = V2_GOAL_ROUTER_MAX_SECONDARY_GOALS
+export const MAX_V2_PARKED_GOAL_CANDIDATE_LIMIT = 5
 export const DEFAULT_V2_GOAL_ROUTER_TIMEOUT_MS = 8_000
 
 export type V2GoalRouterModelSettings = Readonly<{
@@ -37,7 +36,7 @@ export type V2GoalRouterInput = Readonly<{
   recentTurns?: readonly Readonly<{ goalId?: string; user: string; assistant: string }>[]
   clarificationAnswer?: string
   parkedCandidateLimit?: number
-  maxSecondaryGoalLinks?: number
+  candidateGoalIds?: readonly string[]
   provider?: ModelProvider
   model?: V2GoalRouterModelSettings
 }>
@@ -51,8 +50,12 @@ export type V2GoalRouterResult = Readonly<{
     providerId: ProviderId
     modelId: string
     status: "completed" | "failed"
+    startedAt: string
+    completedAt: string
+    durationMs: number
     usage?: ModelUsage
     errorCode?: "timeout" | "provider_error" | "invalid_output"
+    errorMessage?: string
   }>
 }>
 
@@ -62,6 +65,7 @@ export const selectV2GoalRoutingCandidates = (input: {
   goals: readonly V2Goal[]
   capsules?: readonly V2GoalCapsule[]
   parkedCandidateLimit?: number
+  candidateGoalIds?: readonly string[]
 }): V2GoalRoutingCandidateSet => {
   const goals = input.goals.filter((goal) => goal.flowId === input.flowId)
   const foregroundGoals = goals.filter((goal) => goal.status === "foreground").sort(compareGoalIdentity)
@@ -70,23 +74,32 @@ export const selectV2GoalRoutingCandidates = (input: {
   }
 
   const capsulesByGoal = latestCapsuleByGoal(input.capsules ?? [])
-  const toCandidate = (goal: V2Goal): V2GoalRoutingCandidate => {
+  const toCandidate = (goal: V2Goal, candidate: number): V2GoalRoutingCandidate => {
     const capsule = capsulesByGoal.get(goal.id)
-    const lexicalScore = lexicalRoutingScore(input.userMessage, routingText(goal, capsule))
-    return { goal, ...(capsule ? { capsule } : {}), lexicalScore }
+    return { goal, ...(capsule ? { capsule } : {}), candidate }
   }
-  const foreground = foregroundGoals[0] ? toCandidate(foregroundGoals[0]) : undefined
   const parkedCandidateLimit = clampInteger(
     input.parkedCandidateLimit ?? DEFAULT_V2_PARKED_GOAL_CANDIDATE_LIMIT,
     0,
     MAX_V2_PARKED_GOAL_CANDIDATE_LIMIT,
   )
   const eligibleParked = goals
-    .filter((goal) => goal.status === "parked" || goal.status === "blocked" || goal.status === "completed")
-    .map(toCandidate)
-    .sort(compareRoutingCandidates)
-  const parked = eligibleParked.slice(0, parkedCandidateLimit)
-  const candidates = [...(foreground ? [foreground] : []), ...parked]
+    .filter((goal) => goal.status === "parked" || goal.status === "blocked" || goal.status === "completed" || goal.status === "discarded")
+    .sort(compareRecentGoals)
+  const parkedById = new Map(eligibleParked.map((goal) => [goal.id, goal]))
+  const retrieved = uniqueStrings(input.candidateGoalIds ?? []).flatMap((goalId) => {
+    const goal = parkedById.get(goalId)
+    return goal ? [goal] : []
+  })
+  const orderedParked = [...retrieved, ...eligibleParked.filter((goal) => !retrieved.some((item) => item.id === goal.id))]
+  const foregroundGoal = foregroundGoals[0]
+  const totalLimit = Math.min(5, parkedCandidateLimit)
+  const selectedGoals = [...(foregroundGoal ? [foregroundGoal] : []), ...orderedParked]
+    .filter((goal, index, all) => all.findIndex((candidate) => candidate.id === goal.id) === index)
+    .slice(0, totalLimit)
+  const candidates = selectedGoals.map((goal, index) => toCandidate(goal, index + 1))
+  const foreground = foregroundGoal ? candidates.find((candidate) => candidate.goal.id === foregroundGoal.id) : undefined
+  const parked = candidates.filter((candidate) => candidate.goal.id !== foregroundGoal?.id)
   return {
     ...(foreground ? { foreground } : {}),
     parked,
@@ -98,12 +111,7 @@ export const selectV2GoalRoutingCandidates = (input: {
 
 export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRouterResult> => {
   const candidates = selectV2GoalRoutingCandidates(input)
-  const maxSecondaryGoalLinks = clampInteger(
-    input.maxSecondaryGoalLinks ?? MAX_V2_SECONDARY_GOAL_LINKS,
-    0,
-    MAX_V2_SECONDARY_GOAL_LINKS,
-  )
-  const fallback = deterministicV2GoalRoutingFallback(input.userMessage, candidates, maxSecondaryGoalLinks)
+  const fallback = deterministicV2GoalRoutingFallback(input.userMessage, candidates)
   if (!input.provider?.generateStructured || !input.model) {
     return {
       decision: fallback,
@@ -115,6 +123,8 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
 
   const observedUsages: ModelUsage[] = []
   const controller = new AbortController()
+  const startedAt = new Date().toISOString()
+  const startedAtMs = Date.now()
   try {
     const output = await runWithTimeout(
       new GoalRouterAgent(input.provider).route({
@@ -125,7 +135,6 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
         workspacePath: input.workspacePath,
         userMessage: input.userMessage,
         candidates,
-        maxSecondaryGoalLinks,
         ...(input.recentTurns ? { recentTurns: input.recentTurns } : {}),
         ...(input.clarificationAnswer ? { clarificationAnswer: input.clarificationAnswer } : {}),
         cacheKey: `v2:${input.flowId}:goal-router:${input.turnId}`,
@@ -136,14 +145,18 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
       controller,
     )
     const usage = aggregateUsages(observedUsages)
+    const completedAt = new Date().toISOString()
     return {
-      decision: toRoutingDecision(output),
+      decision: toRoutingDecision(output, candidates),
       candidates,
       source: "model",
       modelAttempt: {
         providerId: input.model.providerId,
         modelId: input.model.modelId,
         status: "completed",
+        startedAt,
+        completedAt,
+        durationMs: Date.now() - startedAtMs,
         ...(usage ? { usage } : {}),
       },
     }
@@ -155,6 +168,7 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
         ? "invalid_output" as const
         : "provider_error" as const
     const usage = aggregateUsages(observedUsages)
+    const completedAt = new Date().toISOString()
     return {
       decision: fallback,
       candidates,
@@ -164,8 +178,12 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
         providerId: input.model.providerId,
         modelId: input.model.modelId,
         status: "failed",
+        startedAt,
+        completedAt,
+        durationMs: Date.now() - startedAtMs,
         ...(usage ? { usage } : {}),
         errorCode,
+        errorMessage: normalized.message,
       },
     }
   }
@@ -174,63 +192,14 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
 export const deterministicV2GoalRoutingFallback = (
   userMessage: string,
   candidates: V2GoalRoutingCandidateSet,
-  maxSecondaryGoalLinks: number = MAX_V2_SECONDARY_GOAL_LINKS,
 ): V2GoalRoutingDecision => {
-  const explicitResume = /\b(?:resume|return to|go back to|continue with|switch to)\b/i.test(userMessage)
-  const durableWork = /\b(?:implement|build|fix|change|update|refactor|review|analy[sz]e|research|prepare|inspect|report|presentation|deadline|project|repository|repo|code|files?|documents?|attachments?|images?|database|schema|test|deploy)\b/i.test(userMessage)
-  const casualQuestion = /\b(?:hello|hi|hey|weather|restaurant|recommend|how are you|what'?s up|joke|chat)\b/i.test(userMessage)
-  const generalCandidate = candidates.candidates.find((candidate) => candidate.goal.kind === "general")
-  const bestParked = candidates.parked[0]
-  if (bestParked && explicitResume && bestParked.lexicalScore > 0) {
-    return {
-      action: "resume",
-      primaryGoalId: bestParked.goal.id,
-      secondaryGoalIds: secondaryMatches(candidates, bestParked.goal.id, maxSecondaryGoalLinks),
-      confidence: Math.max(0.55, bestParked.lexicalScore),
-      reasonCode: "explicit_parked_match",
-    }
-  }
-  if (candidates.foreground?.goal.kind === "general" && durableWork) {
-    return { action: "create", secondaryGoalIds: [], confidence: 0.64, reasonCode: "new_goal" }
-  }
-  if (generalCandidate && candidates.foreground?.goal.kind !== "general" && casualQuestion && !durableWork) {
-    return {
-      action: "resume",
-      primaryGoalId: generalCandidate.goal.id,
-      secondaryGoalIds: [],
-      confidence: 0.68,
-      reasonCode: "explicit_parked_match",
-    }
-  }
-  const strongParkedMatch = bestParked && bestParked.lexicalScore >= 0.5
-  if (bestParked && !candidates.foreground && strongParkedMatch) {
-    return {
-      action: "resume",
-      primaryGoalId: bestParked.goal.id,
-      secondaryGoalIds: secondaryMatches(candidates, bestParked.goal.id, maxSecondaryGoalLinks),
-      confidence: Math.max(0.55, bestParked.lexicalScore),
-      reasonCode: "explicit_parked_match",
-    }
-  }
   if (candidates.foreground) {
     return {
       action: "continue",
       primaryGoalId: candidates.foreground.goal.id,
-      secondaryGoalIds: secondaryMatches(candidates, candidates.foreground.goal.id, maxSecondaryGoalLinks),
-      confidence: 0.5,
-      reasonCode: "conservative_fallback",
     }
   }
-  if (bestParked && strongParkedMatch) {
-    return {
-      action: "resume",
-      primaryGoalId: bestParked.goal.id,
-      secondaryGoalIds: secondaryMatches(candidates, bestParked.goal.id, maxSecondaryGoalLinks),
-      confidence: bestParked.lexicalScore,
-      reasonCode: "no_foreground",
-    }
-  }
-  return { action: "create", secondaryGoalIds: [], confidence: 0.5, reasonCode: "new_goal" }
+  return { action: "create", title: fallbackGoalTitle(userMessage) }
 }
 
 export const planV2GoalRoutingTransition = (input: {
@@ -238,7 +207,6 @@ export const planV2GoalRoutingTransition = (input: {
   goals: readonly V2Goal[]
   decision: V2GoalRoutingDecision
   createdGoalId?: string
-  maxSecondaryGoalLinks?: number
 }): V2GoalRoutingPlan => {
   if (input.decision.action === "clarify") {
     throw new Error("A clarification decision must be resolved before planning a foreground transition.")
@@ -259,7 +227,7 @@ export const planV2GoalRoutingTransition = (input: {
   }
   if (input.decision.action === "resume") {
     const selected = goalsById.get(selectedId)
-    if (!selected || (selected.status !== "parked" && selected.status !== "blocked" && selected.status !== "completed")) {
+    if (!selected || (selected.status !== "parked" && selected.status !== "blocked" && selected.status !== "completed" && selected.status !== "discarded")) {
       throw new Error("A resume decision must target a paused or completed focus.")
     }
   }
@@ -274,37 +242,33 @@ export const planV2GoalRoutingTransition = (input: {
     transitions.push({ goalId: selected.id, from: selected.status, to: "foreground" })
   }
 
-  const maxSecondary = clampInteger(input.maxSecondaryGoalLinks ?? MAX_V2_SECONDARY_GOAL_LINKS, 0, MAX_V2_SECONDARY_GOAL_LINKS)
-  const secondaryGoalIds = uniqueStrings(input.decision.secondaryGoalIds)
-    .filter((id) => id !== selectedId && goalsById.has(id))
-    .slice(0, maxSecondary)
   return {
     action: input.decision.action,
     foregroundGoalId: selectedId,
     createGoal: input.decision.action === "create",
     transitions,
-    secondaryGoalIds,
   }
 }
 
-const toRoutingDecision = (value: V2GoalRouterOutput): V2GoalRoutingDecision => {
-  const primaryGoalId = value.primaryGoalId ?? undefined
+const toRoutingDecision = (value: V2GoalRouterOutput, candidates: V2GoalRoutingCandidateSet): V2GoalRoutingDecision => {
+  const candidateByNumber = new Map(candidates.candidates.map((candidate) => [candidate.candidate, candidate]))
   if (value.action === "clarify") {
+    const selected = value.candidates.flatMap((candidate) => {
+      const match = candidateByNumber.get(candidate)
+      return match ? [match] : []
+    })
     return {
       action: "clarify",
-      secondaryGoalIds: [],
-      confidence: value.confidence,
-      clarificationQuestion: value.clarificationQuestion?.trim() ?? "",
-      clarificationGoalIds: value.clarificationGoalIds,
-      reasonCode: "ambiguous_focus",
+      clarificationQuestion: buildClarificationQuestion(selected),
+      clarificationGoalIds: selected.map((candidate) => candidate.goal.id),
     }
   }
+  if (value.action === "create") return { action: "create", title: value.title?.trim() || "New focus" }
+  const selected = candidateByNumber.get(value.candidates[0] ?? -1)
+  if (!selected) throw new Error("The Goal Router selected an unavailable candidate.")
   return {
-    action: value.action,
-    ...(primaryGoalId ? { primaryGoalId } : {}),
-    secondaryGoalIds: value.secondaryGoalIds,
-    confidence: value.confidence,
-    reasonCode: value.action === "create" ? "new_goal" : "model_match",
+    action: selected.goal.id === candidates.foreground?.goal.id ? "continue" : "resume",
+    primaryGoalId: selected.goal.id,
   }
 }
 
@@ -366,40 +330,10 @@ const aggregateUsages = (usages: readonly ModelUsage[]): ModelUsage | undefined 
   }
 }
 
-const routingText = (goal: V2Goal, capsule?: V2GoalCapsule): string =>
-  [
-    goal.title,
-    goal.summary,
-    capsule?.summary,
-    ...(capsule?.decisions ?? []),
-    ...(capsule?.nextActions ?? []),
-    ...(capsule?.openQuestions ?? []),
-  ]
-    .filter((value): value is string => Boolean(value))
-    .join(" ")
-
-const lexicalRoutingScore = (query: string, candidateText: string): number => {
-  const queryTokens = contentTokens(query)
-  if (queryTokens.length === 0) return 0
-  const candidateTokens = new Set(contentTokens(candidateText))
-  const overlap = queryTokens.filter((token) => candidateTokens.has(token)).length
-  return Number((overlap / queryTokens.length).toFixed(6))
-}
-
-const contentTokens = (value: string): string[] =>
-  uniqueStrings(
-    value
-      .toLocaleLowerCase()
-      .normalize("NFKC")
-      .match(/[\p{L}\p{N}_-]{3,}/gu) ?? [],
-  ).filter((token) => !STOP_WORDS.has(token))
-
-const STOP_WORDS = new Set(["about", "again", "could", "from", "have", "into", "please", "that", "this", "what", "when", "where", "with", "would"])
-
-const compareRoutingCandidates = (left: V2GoalRoutingCandidate, right: V2GoalRoutingCandidate): number =>
-  right.lexicalScore - left.lexicalScore ||
-  Date.parse(right.goal.updatedAt) - Date.parse(left.goal.updatedAt) ||
-  left.goal.id.localeCompare(right.goal.id)
+const compareRecentGoals = (left: V2Goal, right: V2Goal): number =>
+  Date.parse(right.lastActiveAt) - Date.parse(left.lastActiveAt) ||
+  Date.parse(right.updatedAt) - Date.parse(left.updatedAt) ||
+  left.id.localeCompare(right.id)
 
 const compareGoalIdentity = (left: V2Goal, right: V2Goal): number => left.id.localeCompare(right.id)
 
@@ -414,11 +348,16 @@ const latestCapsuleByGoal = (capsules: readonly V2GoalCapsule[]): Map<string, V2
   return latest
 }
 
-const secondaryMatches = (candidates: V2GoalRoutingCandidateSet, primaryGoalId: string, limit: number): string[] =>
-  candidates.candidates
-    .filter((candidate) => candidate.goal.id !== primaryGoalId && candidate.lexicalScore >= 0.35)
-    .slice(0, clampInteger(limit, 0, MAX_V2_SECONDARY_GOAL_LINKS))
-    .map((candidate) => candidate.goal.id)
+const buildClarificationQuestion = (candidates: readonly V2GoalRoutingCandidate[]): string => {
+  const titles = candidates.map((candidate) => `“${truncate(candidate.goal.title, 80)}”`)
+  if (titles.length === 2) return `Should I continue ${titles[0]} or ${titles[1]}?`
+  return `Which focus should I continue: ${titles.join(", ")}?`
+}
+
+const fallbackGoalTitle = (userMessage: string): string => {
+  const oneLine = userMessage.replace(/\s+/g, " ").trim()
+  return truncate(oneLine || "New focus", 120)
+}
 
 const uniqueStrings = (values: readonly string[]): string[] => [...new Set(values)]
 const truncate = (value: string, max: number): string => (value.length <= max ? value : `${value.slice(0, Math.max(0, max - 1))}…`)

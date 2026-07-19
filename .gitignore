@@ -20,6 +20,7 @@ frontend/.next/
 frontend/out/
 .playwright-cli/
 .playwright-mcp/
+/output/playwright/
 photos/
 test_material/
 app-data/

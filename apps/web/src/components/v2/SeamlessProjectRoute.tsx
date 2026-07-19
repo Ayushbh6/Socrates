@@ -15,14 +15,23 @@ import type {
   ListProjectsResponse,
   ModelOption,
   V2Message,
+  V2MessageAttachment,
   V2RuntimeConfig,
 } from "@socrates/contracts";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { FlowWorkspace } from "./FlowWorkspace";
 import { LivingSphere } from "./LivingSphere";
 import styles from "./seamless.module.css";
 import type { FlowPresenceState, FlowTimelineItemView } from "./types";
+import {
+  appendViewHandoff,
+  consumeViewHandoff,
+  createViewHandoff,
+  handoffAttachmentsToFiles,
+  type ViewHandoffEnvelope,
+} from "@/lib/v2/viewHandoff";
 
 interface SeamlessProjectRouteProps {
   projectId: string;
@@ -129,6 +138,7 @@ const timelineFromMessages = (
 };
 
 export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
+  const router = useRouter();
   const runtime = useV2FlowRuntime({ projectId });
   const [projectData, setProjectData] = useState<GetProjectResponse | null>(null);
   const [projectsData, setProjectsData] = useState<ListProjectsResponse["projects"]>([]);
@@ -140,6 +150,44 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
   const [modelError, setModelError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
+  const [draftAttachments, setDraftAttachments] = useState<V2MessageAttachment[]>([]);
+  const [pendingViewHandoff, setPendingViewHandoff] = useState<ViewHandoffEnvelope | null>(null);
+  const appliedHandoffModelRef = useRef(false);
+  const appliedHandoffAttachmentsRef = useRef(false);
+
+  useEffect(() => {
+    const handoff = consumeViewHandoff("flow", projectId);
+    if (!handoff) return;
+    setDraftText(handoff.text);
+    setPendingViewHandoff(handoff);
+    appliedHandoffModelRef.current = false;
+    appliedHandoffAttachmentsRef.current = false;
+  }, [projectId]);
+
+  useEffect(() => {
+    if (appliedHandoffModelRef.current || !pendingViewHandoff?.model || !modelsData) return;
+    const model = modelsData.models.find((candidate) =>
+      candidate.providerId === pendingViewHandoff.model?.providerId &&
+      candidate.modelId === pendingViewHandoff.model.modelId &&
+      (candidate.authMode ?? "api_key") === (pendingViewHandoff.model.authMode ?? "api_key"));
+    appliedHandoffModelRef.current = true;
+    if (!model) return;
+    setSelectedModelId(modelKey(model));
+    const thinking = model.thinkingOptions.find((option) => option.id === pendingViewHandoff.thinkingOptionId)
+      ?? model.thinkingOptions.find((option) => option.id === model.defaultThinkingOptionId)
+      ?? model.thinkingOptions[0];
+    setSelectedThinkingOptionId(thinking?.id);
+  }, [modelsData, pendingViewHandoff]);
+
+  useEffect(() => {
+    const snapshot = runtime.state?.snapshot;
+    if (appliedHandoffAttachmentsRef.current || !pendingViewHandoff || !snapshot || pendingViewHandoff.attachments.length === 0) return;
+    appliedHandoffAttachmentsRef.current = true;
+    void handoffAttachmentsToFiles(pendingViewHandoff.attachments)
+      .then((files) => v2Api.uploadAttachments(projectId, snapshot.flow.id, files))
+      .then(setDraftAttachments)
+      .catch((reason: unknown) => setActionError(reason instanceof Error ? reason.message : "Could not transfer draft attachments."));
+  }, [pendingViewHandoff, projectId, runtime.state?.snapshot]);
 
   const loadProjectShell = useCallback(async () => {
     setIsLoadingProject(true);
@@ -447,7 +495,18 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       onOpenInClassic={(goalId) => {
         setActionError(null);
         void v2Api.openFocusInClassic(projectId, snapshot.flow.id, goalId)
-          .then(({ href }) => { window.location.href = href; })
+          .then(({ href, bridge }) => {
+            const nonce = createViewHandoff({
+              target: "classic",
+              projectId,
+              conversationId: bridge.conversationId,
+              text: draftText,
+              attachments: draftAttachments,
+              model: selectedModel,
+              thinking: selectedThinkingOption,
+            });
+            router.push(appendViewHandoff(href, nonce));
+          })
           .catch((error: unknown) => setActionError(error instanceof Error ? error.message : "Could not open this focus in Classic View."));
       }}
       onReadAloud={(messageId) => {
@@ -463,6 +522,8 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         warningResetKey: snapshot.flow.id,
         value: draftText,
         onValueChange: setDraftText,
+        attachments: draftAttachments,
+        onAttachmentsChange: setDraftAttachments,
         voiceAvailable: voice.isAvailable,
         voiceRecording: voice.status === "recording",
         voiceBusy: voice.status === "transcribing" || voice.status === "synthesizing" || voice.status === "speaking",

@@ -84,6 +84,7 @@ describe("MemoryRouterAgent", () => {
               reason: "The prompt explicitly invokes the stored slow-mode collaboration behavior.",
             }],
             reason: "Recall the exact collaboration section before Socrates plans the work.",
+            goalRoute: null,
           } as never,
         }
       },
@@ -120,7 +121,7 @@ describe("MemoryRouterAgent", () => {
       },
       async generateStructured() {
         structuredCalls += 1
-        return { output: { readTargets: [{ surface: "user_profile", fileName: "MEMORY.md", sectionId: "collaboration_style", reason: "invalid ownership" }], reason: "invalid" } as never }
+        return { output: { readTargets: [{ surface: "user_profile", fileName: "MEMORY.md", sectionId: "collaboration_style", reason: "invalid ownership" }], reason: "invalid", goalRoute: null } as never }
       },
     }
     await expect(new MemoryRouterAgent(provider).routePreTurn({
@@ -140,7 +141,7 @@ describe("MemoryRouterAgent", () => {
       },
       async generateStructured() {
         return {
-          output: { readTargets: [], reason: "" } as never,
+          output: { readTargets: [], reason: "", goalRoute: null } as never,
           usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7 },
         }
       },
@@ -183,15 +184,15 @@ describe("MemoryRouterAgent", () => {
       async generateStructured(request) {
         structuredCalls += 1
         repairMessages.push(request.messages)
-        if (structuredCalls === 1) return { output: { readTargets: [], reason: "" } as never }
-        return { output: { readTargets: [], reason: "No project context is needed." } as never }
+        if (structuredCalls === 1) return { output: { readTargets: [], reason: "", goalRoute: null } as never }
+        return { output: { readTargets: [], reason: "No project context is needed.", goalRoute: null } as never }
       },
     }
     const output = await new MemoryRouterAgent(provider).routePreTurn({
       ...context,
       toolExecutors: {} as ToolExecutors,
     })
-    expect(output).toEqual({ readTargets: [], reason: "No project context is needed." })
+    expect(output).toEqual({ readTargets: [], reason: "No project context is needed.", goalRoute: null })
     expect(structuredCalls).toBe(2)
     expect(JSON.stringify(repairMessages[1])).toContain("failed validation")
   })

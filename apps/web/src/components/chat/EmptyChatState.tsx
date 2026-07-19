@@ -13,6 +13,8 @@ interface EmptyChatStateProps {
   warningResetKey?: string;
   value?: string;
   onValueChange?: (value: string) => void;
+  attachments?: MessageAttachment[];
+  onAttachmentsChange?: (attachments: MessageAttachment[]) => void;
   voiceAvailable?: boolean;
   voiceRecording?: boolean;
   voiceBusy?: boolean;
@@ -34,6 +36,8 @@ export function EmptyChatState({
   warningResetKey,
   value,
   onValueChange,
+  attachments,
+  onAttachmentsChange,
   voiceAvailable,
   voiceRecording,
   voiceBusy,
@@ -56,6 +60,8 @@ export function EmptyChatState({
         warningResetKey={warningResetKey}
         value={value}
         onValueChange={onValueChange}
+        attachments={attachments}
+        onAttachmentsChange={onAttachmentsChange}
         voiceAvailable={voiceAvailable}
         voiceRecording={voiceRecording}
         voiceBusy={voiceBusy}

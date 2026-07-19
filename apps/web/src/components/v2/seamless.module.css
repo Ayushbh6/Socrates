@@ -38,12 +38,15 @@
 .directoryPage a,
 .routeStatePage button,
 .routeStatePage a,
-.flowPage button,
 .flowPage a,
 .flowPage input,
 .flowPage select,
 .flowPage textarea {
   color: inherit;
+  font: inherit;
+}
+
+.flowPage button {
   font: inherit;
 }
 
