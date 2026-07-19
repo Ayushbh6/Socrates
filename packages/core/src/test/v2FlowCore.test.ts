@@ -273,17 +273,13 @@ describe("V2 Flow context disposition policy", () => {
   })
 })
 
-describe("V2 Flow model-aware context", () => {
-  it("derives pressure thresholds from the actual selected model window", () => {
-    const small = deriveV2ContextBudget({ contextWindowTokens: 8_192 })
-    const frontier = deriveV2ContextBudget({ contextWindowTokens: 200_000 })
+describe("V2 Flow Socrates context policy", () => {
+  it("keeps one fixed 170k/180k policy regardless of selected model metadata", () => {
+    const budget = deriveV2ContextBudget()
 
-    expect(small.contextWindowTokens).toBe(8_192)
-    expect(frontier.contextWindowTokens).toBe(200_000)
-    expect(frontier.compactionTriggerTokens).toBeGreaterThan(small.compactionTriggerTokens * 10)
-    expect(small.postCompactionTargetTokens).toBeLessThan(small.postPruneTargetTokens)
-    expect(small.softPruneTriggerTokens).toBeLessThan(small.compactionTriggerTokens)
-    expect(frontier.hardInputLimitTokens + frontier.reservedOutputTokens + frontier.systemAndToolReserveTokens).toBe(200_000)
+    expect(budget.compactionTriggerTokens).toBe(170_000)
+    expect(budget.hardInputLimitTokens).toBe(180_000)
+    expect(budget.recentGoalTailTokens).toBe(50_000)
   })
 
   it("assembles only foreground-linked or Flow-global history and bounds exact retrieval", async () => {
@@ -364,7 +360,7 @@ describe("V2 Flow model-aware context", () => {
       query: "bounded evidence",
       messages: [],
       contextItems,
-      budget: deriveV2ContextBudget({ contextWindowTokens: 8_192 }),
+      budget: deriveV2ContextBudget(),
       evidenceTokenLimit: 250,
       exactRetriever: (refs) => {
         retrievedBatches.push(refs.map((candidate) => candidate.evidenceId))

@@ -80,7 +80,7 @@ owned only by Seamless
   persistent Flow and goals
   bounded Goal Router and goal-message links
   deterministic goal titles and versioned capsules
-  goal-aware context assembly, dispositions, distiller/compactor policy
+  goal-aware context projection and evidence dispositions around shared Socrates
   v2.* contracts/events and /api/v2/* plus /v2/ws
   v2_* turns, tools, approvals, Terminals, evidence, usage, speech, recovery
 ```
@@ -89,7 +89,7 @@ V2 passes Flow/turn ids into shared runner primitives only as scoped runtime han
 
 The Global Memory Agent is one application-level learner across both experiences. Its manifest includes unprocessed completed V2 turns with project/Flow/goal labels, it resolves their Q&A and raw evidence through the shared retrieval facade, and a completed shared Memory Agent job records the processed V2 turn ids in its evidence receipt. V2 does not fork profile, identity, memory-agent journal, or skill-learning state merely to preserve conversation isolation.
 
-V2 uses the same Memory Router behavior around Socrates turns, but its routing attempts, errors, and usage are persisted in V2 telemetry. The V2 Goal Router is an additional, separate bounded router above the turn. V2 reuses the shared context-compactor worker configuration while applying V2-owned model-aware thresholds and goal/evidence policy.
+V2 uses the same Memory Router behavior around Socrates turns, but its routing attempts, errors, and usage are persisted in V2 telemetry. The V2 Goal Router is an additional, separate bounded router above the turn. Classic and Flow are two views of the same Socrates runtime: both use the same Context Compactor worker and the exact shared 170k trigger, 120k acceptance ceiling, and 180k hard pre-provider limit. Selected-model context-window metadata must not create a V2-only compaction policy.
 
 V2 does not invoke the Classic conversation-title rewriter and does not make a separate capsule-writing model call. New goal titles and rich capsule snapshots are derived deterministically from authoritative V2 state, and capsule versions provide the resumable semantic label/state. The Goal Router uses its own configurable `goal_router` worker selection and calls its strict V2 routing schema through the shared structured-agent runner rather than the Classic title-rewrite service.
 
@@ -307,9 +307,9 @@ After Socrates has inspected a substantial tool or retrieval result, the result 
 | `release` | Remove it from active context. | Raw source remains retrievable. |
 | `unresolved` | Keep it provisionally because its value cannot yet be judged. | Raw source remains and the item receives a mandatory review deadline. |
 
-The implemented first cut runs one bounded post-turn structured Context Distiller over eligible new/due items, then normalizes its proposal through deterministic policy. The policy enforces unresolved limits/deadlines, evidence safety, pressure targets, and a non-fatal fallback if the worker times out or fails. The worker uses the configured `socrates_context_compactor` model selection; the foreground model's actual context window still controls budgets.
+The implemented first cut runs one bounded post-turn structured Context Distiller over eligible new/due evidence items, then normalizes its proposal through deterministic evidence-safety policy. It does not compact the conversation. Conversation compaction before provider calls and post-turn precomputation both run through the same core `SocratesAgent.precomputeContext`/`CompressorAgent` path used by Classic, with the configured `socrates_context_compactor` model selection and the shared fixed thresholds. The selected foreground model's advertised context window is telemetry and compatibility metadata only.
 
-This does not add a full foreground Socrates call after every tool output. Within-turn emergency pressure uses the shared compressor through a V2 persistence adapter, while post-turn maintenance handles the finer dispositions. Tiny outputs do not need ceremony; a future main-agent disposition signal may augment the worker, but it is not required for the implemented first cut.
+This does not add a full foreground Socrates call after every tool output. Within-turn pressure and post-turn precomputation use the shared compressor through a V2 persistence adapter, while post-turn evidence maintenance handles only the finer dispositions. Tiny outputs do not need ceremony; a future main-agent disposition signal may augment the worker, but it is not required for the implemented first cut.
 
 ### Distillation Contract
 
@@ -386,9 +386,9 @@ When the foreground goal changes or its working set grows, rebuild context from 
 
 When a goal is parked or a large phase finishes, create a new capsule version. Future routing can use the capsule before deciding whether exact goal evidence must be retrieved.
 
-### Level 4: Flow-Level Pressure Review
+### Level 4: Flow-Level Working-Set Review
 
-The implementation derives pressure from the selected model window rather than hard-coding 80k. After reserving bounded output and system/tool space, it soft-prunes at 65% of usable input, compacts at 80%, targets 55% after pruning and 40% after compaction, and bounds the recent foreground-goal tail to 25%. The ratios are first-cut evaluation defaults and still require field tuning.
+Flow may select goal-relevant evidence and omit unrelated goals, but it must not invent a separate percentage-based conversation-pressure policy. The full active-goal Q&A history is handed to the shared Socrates runner. The same fixed policy used by Classic then compacts at 170k estimated model-visible input, accepts a compacted request only at or below 120k, and enforces the 180k hard pre-provider ceiling.
 
 The review should ask:
 
@@ -400,9 +400,9 @@ The review should ask:
 
 The correct result is a newly assembled goal-aware request, not a vague summary of the entire Flow.
 
-### Level 5: Emergency Provider-Boundary Compression
+### Level 5: Shared Socrates Provider-Boundary Compression
 
-A last-resort compactor protects the provider ceiling. V2 reuses the proven core compressor machinery through a V2-only adapter: snapshots, model calls, errors, usage, and immutable summary evidence are written only to V2 state. It uses the `socrates_context_compactor` worker setting but V2-owned model-aware thresholds, goal scoping, and tests; Classic compaction rows and policies are not reused.
+The shared Socrates compactor protects the provider boundary in both views. Flow uses a V2 persistence adapter so its snapshots, model calls, errors, usage, and immutable summary evidence remain namespaced, but the agent, compressor prompt/schema, worker setting, 170k trigger, rebuilt-request targets, and 180k hard ceiling are exactly the Classic Socrates policy.
 
 ## Context Assembly For A V2 Turn
 
@@ -723,7 +723,7 @@ The first useful V2 is accepted when:
 - V2-off behavior is indistinguishable from current V1 Classic.
 - Ordinary V2 execution never creates or mutates Classic runtime state; the explicit focus bridge alone creates/reuses its mapped Classic conversation/session and mirrors visible Q&A without duplicating runtime evidence.
 
-Contracts/core/server tests cover bounded 30-goal routing, timeout fallback, recent-turn clarification, focus lifecycle and staged completion, one-to-one bridge ownership/idempotence, invalid provider tool recovery, unresolved limits, evidence immutability, model-aware context budgets, V2-only attachments/tools/Memory Router and Goal Router telemetry, same-Flow exclusion with cross-project concurrency, credential redaction, shared Memory Agent V2 receipts, canonical/global trace retrieval, durable Terminal restart continuation, feature-flag isolation, speech allowlists, native runtime adapters, pack integrity, and a 652-message/600-evidence bounded-load proof. On 2026-07-17, the whole workspace test run and typecheck passed; the server result was 19 files and 200/200 tests, with 89/89 core tests. Four focused web V2 API tests, server/Next production builds, and the normal runtime build passed. On 2026-07-18, focused contract/server/web typechecks, server and Next production builds, the Classic temporary-STT route test, visible Classic mic/Flow-view browser checks, responsive Flow layout checks, and the critical note/sidebar overlay interaction passed. Opening the 320px drawer did not change the measured viewport coordinates of either the composer or a note; the drawer covered the note as intended.
+Contracts/core/server tests cover bounded 30-goal routing, timeout fallback, recent-turn clarification, focus lifecycle and staged completion, bridge ownership/idempotence, invalid provider tool recovery, unresolved limits, evidence immutability, the shared fixed 170k/180k Socrates context policy, V2-only attachments/tools/Memory Router and Goal Router telemetry, same-Flow exclusion with cross-project concurrency, credential redaction, shared Memory Agent V2 receipts, canonical/global trace retrieval, durable Terminal restart continuation, feature-flag isolation, speech allowlists, native runtime adapters, pack integrity, and a 652-message/600-evidence bounded-load proof. On 2026-07-17, the whole workspace test run and typecheck passed; the server result was 19 files and 200/200 tests, with 89/89 core tests. Four focused web V2 API tests, server/Next production builds, and the normal runtime build passed. On 2026-07-18, focused contract/server/web typechecks, server and Next production builds, the Classic temporary-STT route test, visible Classic mic/Flow-view browser checks, responsive Flow layout checks, and the critical note/sidebar overlay interaction passed. Opening the 320px drawer did not change the measured viewport coordinates of either the composer or a note; the drawer covered the note as intended.
 
 A disposable real-browser E2E used OpenRouter `deepseek/deepseek-v4-pro` with thinking off as the main Socrates driver and approved OpenRouter `x-ai/grok-4.5` with low reasoning as Frontier. It proved General Conversation, model-backed `resume_parked` and `continue_foreground` routing, exact README evidence, `focus_ledger` completion with a substantive final, active/released context changes, an approved text-to-vision Frontier handoff, and both directions of the Classic bridge. Persisted V2 usage for the run was `$0.196472`, below the `$0.80` test ceiling.
 

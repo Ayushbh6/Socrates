@@ -6,8 +6,8 @@ import type {
   FailCompactionSnapshotInput,
   StartCompactionSnapshotInput,
 } from "@socrates/core"
-import { deriveV2ContextBudget } from "@socrates/core"
-import type { V2RuntimeConfig, WorkerModelSettings } from "@socrates/contracts"
+import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS } from "@socrates/core"
+import type { WorkerModelSettings } from "@socrates/contracts"
 import type { ModelUsage } from "@socrates/providers"
 import type { SocratesStore } from "../store"
 import type { V2FlowStore } from "./flowStore"
@@ -26,7 +26,6 @@ export type CreateV2ContextCompressionRuntimeInput = Readonly<{
   goalId: string
   turnId: string
   workspacePath: string
-  runtimeConfig: V2RuntimeConfig
 }>
 
 /**
@@ -38,7 +37,7 @@ export const createV2ContextCompressionRuntime = (
 ): ContextCompressionRuntime => {
   const compressor = input.sharedStore.getWorkerModelSetting("socrates_context_compactor")
   const fallback = contextCompressorFallback(input.sharedStore, compressor)
-  const thresholds = v2WithinTurnCompressionThresholds(input.runtimeConfig.contextWindowTokens ?? 128_000)
+  const thresholds = v2WithinTurnCompressionThresholds()
   const modelCalls = new Map<string, string>()
 
   return {
@@ -175,25 +174,9 @@ export const createV2ContextCompressionRuntime = (
   }
 }
 
-export const v2WithinTurnCompressionThresholds = (
-  contextWindowTokens: number,
-): ContextCompressionThresholds => {
-  const budget = deriveV2ContextBudget({ contextWindowTokens: Math.max(2_048, Math.floor(contextWindowTokens)) })
-  return {
-    triggerTokens: budget.compactionTriggerTokens,
-    excellentTargetTokens: budget.postCompactionTargetTokens,
-    preferredTargetTokens: budget.postCompactionTargetTokens,
-    postCompactionTargetTokens: budget.postCompactionTargetTokens,
-    hardLimitTokens: budget.hardInputLimitTokens,
-    minimumReductionTokens: Math.max(
-      1_024,
-      Math.min(20_000, budget.compactionTriggerTokens - budget.postCompactionTargetTokens),
-    ),
-    recentTailTargetTokens: budget.recentGoalTailTokens,
-    currentTurnToolTailTargetTokens: Math.max(4_096, Math.min(50_000, budget.recentGoalTailTokens)),
-    currentTurnToolResultFloor: 5,
-  }
-}
+export const v2WithinTurnCompressionThresholds = (): ContextCompressionThresholds => ({
+  ...DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
+})
 
 const latestCompletedSnapshot = (
   store: V2FlowStore,

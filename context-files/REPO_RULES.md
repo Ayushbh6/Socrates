@@ -579,9 +579,9 @@ Skill writing follows the same rule. The Memory Agent may decide that an approve
 
 Pre-made skill import is not skill writing and must not invoke the Skill Writer. Accept one portable ZIP only through staged preview and explicit user commit; parse standards-compatible YAML, preserve package files, never execute during inspection/install, never honor `allowed-tools` as approval, cap archive/extracted/file counts and sizes, reject traversal/symlinks/encryption/multiple roots/reserved provenance files, and install through atomic same-root replacement with rollback. Disabled skills must be excluded from model discovery while remaining visible to management UI.
 
-## 24. V1 Classic And V2 Flow Must Never Blur
+## 24. Classic And Flow Share One Socrates Runtime While Persistence Stays Explicit
 
-V1 Classic is the stable chat product. V2 Flow is a separately implemented, feature-flagged experimental product path defined by `context-files/V2_FLOW_ARCHITECTURE.md`.
+Classic is the stable chat presentation. Flow is a feature-flagged alternate presentation and goal-navigation layer defined by `context-files/V2_FLOW_ARCHITECTURE.md`. They are not different Socrates agents.
 
 Required boundary:
 
@@ -591,8 +591,9 @@ Required boundary:
 - Keep V2 contracts, transport handlers, services, persistence, events, UI modules, and tests namespaced. A directly started source server is off unless `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary NPM/runtime launcher defaults the packaged web/backend product to enabled and preserves an explicit environment rollback override.
 - Add V1 regression coverage with every V2 vertical slice so V2-off reads, writes, events, and behavior remain identical to current V1.
 - Reuse the same workspace `.socrates/`, global `~/.Socrates/`, Socrates agent, Memory Router, global Memory Agent, providers, embeddings, tools, ZIP skill import, MCP registry, Terminal, artifacts, runner, validation, usage, errors, and speech-engine plumbing where ownership remains safe.
-- Never reuse V1 orchestration policy as V2 policy merely to avoid a separate V2 module.
-- Keep goal-aware Flow context policy, V2 runtime events, and all conversation-owned execution persistence in the V2 path. The canonical goal ledger and exact Classic turn-goal links are the bounded shared navigation seam; shared memory-note or Memory Agent work must retain exact source coordinates without appending events to the other runtime.
+- Never fork the core Socrates turn policy merely because the UI is Flow. After Flow selects the active goal and assembles its goal-relevant conversation, it must invoke the same `SocratesAgent`, tool registry, approvals, Terminal behavior, Memory Router lifecycle, provider loop, and context compressor as Classic.
+- Context compression is one hard shared invariant: compact at 170,000 estimated model-visible input tokens, accept no compacted request above 120,000, and enforce the 180,000 pre-provider ceiling. Flow must not calculate a separate trigger from the selected model's context window, usable-window percentages, or a V2-only recent-message tail. Model window metadata is compatibility/telemetry data only.
+- Keep goal-aware Flow projection, V2 runtime events, and all conversation-owned execution persistence in the V2 path. Those layers may choose the active goal, attach capsules/evidence, and store namespaced audit rows, but they wrap rather than replace the shared Socrates execution loop. The canonical goal ledger and exact Classic turn-goal links are the bounded shared navigation seam; shared memory-note or Memory Agent work must retain exact source coordinates without appending events to the other runtime.
 - Canonical V2 user/assistant Q&A may reuse the shared LanceDB retrieval foundation only with explicit `runtimeKind = "v2_flow"` and `flowId` scoping. Keep queryless recall, exact inspect, audit evidence, and deletion ownership V2-native; never create Classic conversations merely to make retrieval work or add a second semantic pipeline.
 - Do not invoke the Classic conversation-title rewriter or add a capsule-writing LLM for V2. V2 navigation/resume state comes from deterministic goal titles and materiality-gated rich capsule versions built from authoritative V2 state. The Goal Router has its own `goal_router` worker model and thinking selection, and it must run the strict V2 routing contract through the shared structured-agent pattern.
 - Call the first V2 speech slice `V2 Voice V1`; never shorten it to V1 in code or docs where it could be confused with V1 Classic.
@@ -604,7 +605,8 @@ Required boundary:
 The shorthand is:
 
 ```text
-separate product orchestration and state
-shared proven infrastructure
+one Socrates agent and execution policy
+two presentation/navigation projections
+explicitly namespaced runtime persistence
 no migration or replacement without explicit user authorization
 ```

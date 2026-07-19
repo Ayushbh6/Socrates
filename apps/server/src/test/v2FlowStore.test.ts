@@ -463,7 +463,7 @@ describe("V2FlowStore isolation and lifecycle", () => {
       query: "long Flow evidence",
       messages: [],
       contextItems: lightItems,
-      budget: deriveV2ContextBudget({ contextWindowTokens: 8_192 }),
+      budget: deriveV2ContextBudget(),
       evidenceTokenLimit: 1_000,
       exactRetriever: (refs) => {
         retrievedBatches.push(refs.map((ref) => ref.evidenceId))

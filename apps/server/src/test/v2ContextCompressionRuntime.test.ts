@@ -3,7 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import type { ChatCompaction, V2RuntimeConfig } from "@socrates/contracts"
-import type { V2GoalRouterResult } from "@socrates/core"
+import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, type V2GoalRouterResult } from "@socrates/core"
 import { createId, nowIso } from "@socrates/shared"
 import { openDatabase, runMigrations, type DatabaseHandle } from "../db/client"
 import type { SocratesStore } from "../services/store"
@@ -114,13 +114,11 @@ const summary: ChatCompaction = {
 }
 
 describe("V2 within-turn context compression runtime", () => {
-  it("derives model-aware bounds from the selected context window", () => {
-    const small = v2WithinTurnCompressionThresholds(32_000)
-    const large = v2WithinTurnCompressionThresholds(256_000)
-    expect(small.triggerTokens).toBeLessThan(small.hardLimitTokens)
-    expect(small.postCompactionTargetTokens).toBeLessThan(small.triggerTokens)
-    expect(large.triggerTokens).toBeGreaterThan(small.triggerTokens)
-    expect(large.currentTurnToolResultFloor).toBe(5)
+  it("uses the exact shared Socrates 170k/180k compression policy", () => {
+    const thresholds = v2WithinTurnCompressionThresholds()
+    expect(thresholds).toEqual(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS)
+    expect(thresholds.triggerTokens).toBe(170_000)
+    expect(thresholds.hardLimitTokens).toBe(180_000)
   })
 
   it("stores immutable V2-only snapshot evidence and restores the latest goal snapshot", async () => {
@@ -133,7 +131,6 @@ describe("V2 within-turn context compression runtime", () => {
       goalId,
       turnId,
       workspacePath: "/tmp/socrates-v2-context-test",
-      runtimeConfig,
     })
     await runtime.startSnapshot?.({
       snapshotId: "ctxcmp_v2_exact",
@@ -197,7 +194,6 @@ describe("V2 within-turn context compression runtime", () => {
       goalId,
       turnId,
       workspacePath: "/tmp/socrates-v2-context-test",
-      runtimeConfig,
     })
     await runtime.startSnapshot?.({
       snapshotId: "ctxcmp_v2_failed",

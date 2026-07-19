@@ -102,10 +102,6 @@ export type V2ContextState = Readonly<{
 }>
 
 export type V2ContextBudget = Readonly<{
-  contextWindowTokens: number
-  reservedOutputTokens: number
-  systemAndToolReserveTokens: number
-  usableInputTokens: number
   softPruneTriggerTokens: number
   compactionTriggerTokens: number
   postPruneTargetTokens: number

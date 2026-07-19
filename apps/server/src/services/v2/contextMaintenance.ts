@@ -28,18 +28,12 @@ const dispositionOutputSchema = z.object({
   }).strict()).max(64),
 }).strict()
 
-const compactionOutputSchema = z.object({
-  summary: z.string().min(1).max(12_000),
-  sourceContextItemIds: z.array(z.string().min(1)).max(64),
-}).strict()
-
 const DEFAULT_MODEL_TIMEOUT_MS = 3_000
 const DEFAULT_MAX_MODEL_CANDIDATES = 24
 const MAX_ITEM_EXCERPT_CHARS = 2_000
 const MAX_DISTILLED_CHARS = 6_000
-const MAX_COMPACTION_SOURCE_ITEMS = 64
 
-type MaintenanceSource = "context_distiller" | "context_compactor" | "policy"
+type MaintenanceSource = "context_distiller" | "policy"
 
 export type V2ContextMaintenanceEvent = Readonly<{
   type: "v2.context.disposition.updated"
@@ -53,7 +47,6 @@ export type V2ContextMaintenanceResult = Readonly<{
   usedTokensBefore: number
   usedTokensAfter: number
   dispositionCount: number
-  compactionPerformed: boolean
   deterministicFallbackUsed: boolean
   failureCodes: readonly string[]
   events: readonly V2ContextMaintenanceEvent[]
@@ -62,10 +55,9 @@ export type V2ContextMaintenanceResult = Readonly<{
 /**
  * Provider/model selection for the bounded post-turn context worker.
  *
- * This is deliberately separate from the foreground V2 runtime config: the
- * latter remains authoritative for context-window budgeting and execution
- * policy, while this selection is authoritative for every distiller/compactor
- * model call.
+ * This is deliberately separate from the foreground runtime model selection,
+ * while the shared Socrates 170k/180k constants remain authoritative for
+ * context pressure in both Classic and Flow.
  */
 export type V2ContextMaintenanceWorkerRuntime = Readonly<{
   providerId: RuntimeConfig["providerId"]
@@ -84,7 +76,6 @@ export type V2ContextMaintenanceInput = Readonly<{
   query: string
   runtimeConfig: V2RuntimeConfig
   workerRuntime?: V2ContextMaintenanceWorkerRuntime
-  contextWindowTokens?: number
 }>
 
 export type V2ContextMaintenanceDeps = Readonly<{
@@ -134,9 +125,7 @@ export class V2ContextMaintenanceService {
     const failureCodes: string[] = []
     let fallbackUsed = false
     try {
-      const budget = deriveV2ContextBudget({
-        contextWindowTokens: Math.max(2_048, input.contextWindowTokens ?? input.runtimeConfig.contextWindowTokens ?? 128_000),
-      })
+      const budget = deriveV2ContextBudget()
       let state = this.deps.store.getActiveCoreContextState(input.flowId)
       const scoped = scopedActiveItems(state, input.goalId)
       usedTokensBefore = estimateActiveTokens(state, scoped.map((item) => item.id))
@@ -166,70 +155,6 @@ export class V2ContextMaintenanceService {
         ...(distillerCall.output ? { modelOutput: distillerCall.output } : {}),
       })
       fallbackUsed ||= decisions.some((decision) => decision.source === "policy")
-
-      let compactionPerformed = false
-      if (pressure === "compact" || pressure === "hard_limit") {
-        const compactionSources = selectCompactionSources({
-          state,
-          goalId: input.goalId,
-          query: input.query,
-          usedTokens: usedTokensBefore,
-          targetTokens: budget.postCompactionTargetTokens,
-        })
-        if (compactionSources.length > 0) {
-          const compactorCall = await this.callCompactor(input, pressure, compactionSources)
-          if (compactorCall.failureCode) {
-            failureCodes.push(compactorCall.failureCode)
-            fallbackUsed = true
-          }
-          const summary = normalizeCompactionSummary(
-            compactorCall.output?.summary,
-            compactionSources,
-            input.query,
-          )
-          const sourceIds = normalizeCompactionSourceIds(compactorCall.output?.sourceContextItemIds, compactionSources)
-          const recorded = this.deps.store.recordEvidence({
-            projectId: input.projectId,
-            flowId: input.flowId,
-            goalId: input.goalId,
-            turnId: input.turnId,
-            sourceKind: "model_output",
-            ...(compactorCall.modelCallId ? { sourceId: compactorCall.modelCallId } : {}),
-            title: `Flow context compaction after turn ${input.completedTurnOrdinal}`,
-            content: summary,
-            locator: {
-              kind: "v2_context_compaction",
-              sourceContextItemIds: sourceIds,
-              sourceEvidenceHandles: compactionSources.map((candidate) => candidate.evidence.ref.sourceLocator),
-              completedTurnOrdinal: input.completedTurnOrdinal,
-            },
-            rank: 10,
-          })
-          if (recorded.contextItem) {
-            const byId = new Map(decisions.map((decision) => [decision.contextItemId, decision]))
-            for (const sourceId of sourceIds) {
-              byId.set(sourceId, {
-                contextItemId: sourceId,
-                disposition: "release",
-                decidedBy: "distiller",
-                reason: "Replaced by an immutable V2 context compaction.",
-                replacementContextItemId: recorded.contextItem.id,
-                source: "context_compactor",
-              })
-            }
-            byId.set(recorded.contextItem.id, {
-              contextItemId: recorded.contextItem.id,
-              disposition: "keep_exact",
-              decidedBy: "distiller",
-              reason: "Immutable V2 context compaction retained in active context.",
-              source: "context_compactor",
-            })
-            decisions = [...byId.values()]
-            compactionPerformed = true
-            state = this.deps.store.getActiveCoreContextState(input.flowId)
-          }
-        }
-      }
 
       decisions = enforcePressureTarget({
         state,
@@ -300,7 +225,6 @@ export class V2ContextMaintenanceService {
         usedTokensBefore,
         usedTokensAfter: estimateActiveTokens(finalState, finalScopedIds),
         dispositionCount: persisted.length,
-        compactionPerformed,
         deterministicFallbackUsed: fallbackUsed,
         failureCodes: unique(failureCodes),
         events,
@@ -316,7 +240,6 @@ export class V2ContextMaintenanceService {
         usedTokensBefore,
         usedTokensAfter: usedTokensBefore,
         dispositionCount: 0,
-        compactionPerformed: false,
         deterministicFallbackUsed: true,
         failureCodes: unique(failureCodes),
         events: [],
@@ -368,50 +291,9 @@ export class V2ContextMaintenanceService {
     })
   }
 
-  private async callCompactor(
-    input: V2ContextMaintenanceInput,
-    pressure: V2ContextPressure,
-    sources: readonly Candidate[],
-  ): Promise<StructuredCallResult<z.infer<typeof compactionOutputSchema>>> {
-    return this.structuredCall({
-      input,
-      role: "context_compactor",
-      schema: compactionOutputSchema,
-      system: [
-        "You are the Socrates V2 context compactor.",
-        "Produce a compact working summary for the current goal from the supplied items.",
-        "Preserve exact evidence handles, concrete facts, decisions, constraints, and unresolved questions.",
-        "The source evidence remains immutable and retrievable; do not claim it was deleted.",
-        "Return only the compact summary and covered context item ids. Do not return rationale or chain of thought.",
-      ].join("\n"),
-      user: JSON.stringify({
-        currentQuery: input.query,
-        pressure,
-        completedTurnOrdinal: input.completedTurnOrdinal,
-        items: sources.slice(0, this.maxModelCandidates).map((candidate) => ({
-          contextItemId: candidate.item.id,
-          evidenceHandle: candidate.evidence.ref.sourceLocator,
-          contentExcerpt: excerpt(candidate.content, MAX_ITEM_EXCERPT_CHARS),
-        })),
-        allSourceContextItemIds: sources.map((candidate) => candidate.item.id),
-        allSourceEvidenceHandles: sources.map((candidate) => candidate.evidence.ref.sourceLocator),
-      }),
-      requestAudit: {
-        phase: "post_turn_context_compaction",
-        pressure,
-        completedTurnOrdinal: input.completedTurnOrdinal,
-        sourceItems: sources.map((candidate) => ({
-          contextItemId: candidate.item.id,
-          evidenceHandle: candidate.evidence.ref.sourceLocator,
-          tokenEstimate: candidate.tokens,
-        })),
-      },
-    })
-  }
-
   private async structuredCall<T>(input: {
     input: V2ContextMaintenanceInput
-    role: "context_distiller" | "context_compactor"
+    role: "context_distiller"
     schema: z.ZodType<T>
     system: string
     user: string
@@ -516,45 +398,6 @@ const selectCandidates = (input: {
       right.tokens - left.tokens ||
       left.item.id.localeCompare(right.item.id))
     .slice(0, Math.max(input.limit, dueIds.size))
-}
-
-const selectCompactionSources = (input: {
-  state: V2ContextState
-  goalId: string
-  query: string
-  usedTokens: number
-  targetTokens: number
-}): Candidate[] => {
-  const evidenceById = new Map(input.state.evidence.map((evidence) => [evidence.ref.evidenceId, evidence]))
-  const candidates = scopedActiveItems(input.state, input.goalId)
-    .flatMap((item): Candidate[] => {
-      const evidence = evidenceById.get(item.evidenceRef.evidenceId)
-      if (!evidence) return []
-      const content = item.distilledText ?? evidence.exactContent
-      return [{
-        item,
-        evidence,
-        content,
-        tokens: estimateTextTokens(content),
-        relevance: lexicalRelevance(input.query, content),
-        due: false,
-        isNew: false,
-      }]
-    })
-    .sort((left, right) =>
-      left.relevance - right.relevance ||
-      left.item.createdAtCompletedTurn - right.item.createdAtCompletedTurn ||
-      right.tokens - left.tokens ||
-      left.item.id.localeCompare(right.item.id))
-  const requiredReduction = Math.max(1, input.usedTokens - input.targetTokens + Math.min(2_000, Math.floor(input.targetTokens * 0.05)))
-  const selected: Candidate[] = []
-  let selectedTokens = 0
-  for (const candidate of candidates) {
-    selected.push(candidate)
-    selectedTokens += candidate.tokens
-    if (selectedTokens >= requiredReduction || selected.length >= MAX_COMPACTION_SOURCE_ITEMS) break
-  }
-  return selected
 }
 
 const normalizeDispositionDecisions = (input: {
@@ -668,8 +511,6 @@ const enforcePressureTarget = (input: {
     })
     const projectedIds = scopedActiveItems(projected, input.goalId).map((item) => item.id)
     if (estimateActiveTokens(projected, projectedIds) <= input.targetTokens) break
-    const existing = byId.get(candidate.item.id)
-    if (existing?.source === "context_compactor" && existing.disposition === "keep_exact") continue
     const preferred = candidate.relevance > 0 && candidate.tokens > 320
       ? distillDecision(candidate, input.query)
       : undefined
@@ -685,27 +526,6 @@ const enforcePressureTarget = (input: {
     })
   }
   return [...byId.values()]
-}
-
-const normalizeCompactionSummary = (
-  modelSummary: string | undefined,
-  sources: readonly Candidate[],
-  query: string,
-): string => {
-  const handles = sources.map((candidate) => candidate.evidence.ref.sourceLocator)
-  const body = modelSummary?.trim()
-    ? excerpt(modelSummary.trim(), 8_000)
-    : sources.map((candidate) => extractiveSummary(candidate.content, query)).filter(Boolean).join("\n")
-  const handleLine = `Exact evidence: ${handles.join(", ")}`
-  return excerpt(`${body || "Compacted context is available from the exact evidence handles below."}\n\n${handleLine}`, 12_000)
-}
-
-const normalizeCompactionSourceIds = (modelIds: readonly string[] | undefined, sources: readonly Candidate[]): string[] => {
-  const allowed = new Set(sources.map((candidate) => candidate.item.id))
-  const selected = unique((modelIds ?? []).filter((id) => allowed.has(id)))
-  // The deterministic source selection is the coverage boundary. A model may
-  // omit an id, but omission must not make the pressure target nondeterministic.
-  return selected.length === sources.length ? selected : sources.map((candidate) => candidate.item.id)
 }
 
 const normalizeDistilledText = (value: string | undefined, candidate: Candidate): string | undefined => {
@@ -832,7 +652,6 @@ const emptyResult = (pressure: V2ContextPressure, usedTokens: number): V2Context
   usedTokensBefore: usedTokens,
   usedTokensAfter: usedTokens,
   dispositionCount: 0,
-  compactionPerformed: false,
   deterministicFallbackUsed: false,
   failureCodes: [],
   events: [],

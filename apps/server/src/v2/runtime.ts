@@ -528,7 +528,6 @@ export class V2ExecutionRuntime {
         flowId: command.flowId,
         goalId: activeGoalId,
         query: command.payload.content,
-        contextWindowTokens: runtimeConfig.contextWindowTokens ?? selectedModel?.contextWindowTokens ?? 128_000,
         includeImages: selectedModel?.capabilities?.vision === true,
         ...(continuation ? { lateDeveloperContext: continuation.wakeContext } : {}),
       })
@@ -642,7 +641,6 @@ export class V2ExecutionRuntime {
           goalId: activeGoalId,
           turnId: created.turn.id,
           workspacePath,
-          runtimeConfig,
         }),
         toolExecutors,
         dynamicTools: () => this.deps.mcpRuntime
@@ -817,6 +815,29 @@ export class V2ExecutionRuntime {
         ...(reasoningText ? { reasoning: reasoningText } : {}),
       })
       this.deps.sharedStore.indexV2TurnRetrieval(command.projectId, created.turn.id)
+      const postTurnMessages = await this.buildWorkingMessages({
+        projectId: command.projectId,
+        flowId: command.flowId,
+        goalId: activeGoalId,
+        query: command.payload.content,
+        includeImages: selectedModel?.capabilities?.vision === true,
+      })
+      await this.deps.agent.precomputeContext({
+        providerId: runtimeConfig.providerId,
+        modelId: runtimeConfig.modelId,
+        runtimeConfig,
+        messages: postTurnMessages,
+        promptContext,
+        contextCompression: createV2ContextCompressionRuntime({
+          store: this.deps.store,
+          sharedStore: this.deps.sharedStore,
+          projectId: command.projectId,
+          flowId: command.flowId,
+          goalId: activeGoalId,
+          turnId: created.turn.id,
+          workspacePath,
+        }),
+      })
       const refreshedCapsule = this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules
         .find((capsule) => capsule.goalId === activeGoalId)
       if (refreshedCapsule) {
@@ -903,13 +924,15 @@ export class V2ExecutionRuntime {
     flowId: string
     goalId: string
     query: string
-    contextWindowTokens: number
     includeImages: boolean
     lateDeveloperContext?: string
   }) {
-    const budget = deriveV2ContextBudget({ contextWindowTokens: Math.max(2_048, input.contextWindowTokens) })
+    const budget = deriveV2ContextBudget()
     const history = this.deps.store.getModelMessages(input.flowId, input.goalId, input.includeImages)
-    const retained = retainNewestMessages(history, budget.recentGoalTailTokens)
+    // Flow supplies the full active-goal conversation to the same Socrates
+    // runtime as Classic. The shared 170k/180k compactor owns history
+    // reduction; this view layer must not silently truncate a separate tail.
+    const retained = history
     const snapshot = this.deps.store.getSnapshot(input.projectId, input.flowId)
     const capsule = snapshot.latestCapsules.find((item) => item.goalId === input.goalId)
     const fixedContextTokens = estimateRuntimeContextTokens([
@@ -1075,21 +1098,6 @@ const actorForSource = (source: string): { type: "user" | "main_agent" | "worker
   if (source === "memory_router") return { type: "worker", label: "Memory Router" }
   if (source === "context_compactor" || source === "context_distiller") return { type: "worker", label: source === "context_compactor" ? "Context Compactor" : "Context Distiller" }
   return { type: "system" }
-}
-
-const retainNewestMessages = <T extends { content: unknown }>(messages: T[], tokenLimit: number): T[] => {
-  const retained: T[] = []
-  let used = 0
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (!message) continue
-    const tokens = Math.max(1, Math.ceil(safeStringify(message.content).length / 4))
-    if (retained.length > 0 && used + tokens > tokenLimit) continue
-    retained.push(message)
-    used += tokens
-    if (used >= tokenLimit) break
-  }
-  return retained.reverse()
 }
 
 const estimateRuntimeContextTokens = (parts: readonly string[]): number =>

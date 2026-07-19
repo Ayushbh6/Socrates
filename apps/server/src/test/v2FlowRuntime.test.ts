@@ -4,7 +4,7 @@ import path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { WebSocket } from "ws"
 import { type V2ClientCommand, type V2RuntimeConfig, type V2ServerEvent } from "@socrates/contracts"
-import { createDefaultToolRegistry, routeV2Goal, SocratesAgent } from "@socrates/core"
+import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, createDefaultToolRegistry, routeV2Goal, SocratesAgent } from "@socrates/core"
 import type { EmbeddingProvider, ModelProvider, StructuredModelRequest } from "@socrates/providers"
 import { createId, nowIso } from "@socrates/shared"
 import { openDatabase, runMigrations, type DatabaseHandle } from "../db/client"
@@ -24,6 +24,7 @@ type TestRuntime = {
   handle: DatabaseHandle
   sharedStore: SocratesStore
   flowStore: V2FlowStore
+  agent: SocratesAgent
   runtime: V2ExecutionRuntime
 }
 
@@ -251,13 +252,14 @@ const setup = (provider: ModelProvider, projectId = "proj_one", routerProvider?:
   const sharedStore = new SocratesStore(handle, fakeEmbeddings(), undefined, { socratesHome: path.join(root, "home") })
   vi.spyOn(sharedStore, "resolveRuntimeConfig").mockImplementation((config) => config)
   const flowStore = new V2FlowStore(handle)
+  const agent = new SocratesAgent(provider)
   const runtime = new V2ExecutionRuntime({
     store: flowStore,
     sharedStore,
-    agent: new SocratesAgent(provider),
+    agent,
     ...(routerProvider ? { routerProvider } : {}),
   })
-  const result = { root, workspace, handle, sharedStore, flowStore, runtime }
+  const result = { root, workspace, handle, sharedStore, flowStore, agent, runtime }
   runtimes.push(result)
   return result
 }
@@ -312,6 +314,21 @@ const waitUntil = async (predicate: () => boolean, message: string, timeoutMs = 
 }
 
 describe("V2ExecutionRuntime", () => {
+  it("uses the same Socrates post-turn precompute path and fixed thresholds as Classic", async () => {
+    const testRuntime = setup(toolProofProvider())
+    const precompute = vi.spyOn(testRuntime.agent, "precomputeContext")
+    const flow = testRuntime.flowStore.ensureFlow("proj_one").flow
+
+    await testRuntime.runtime.startTurn(asWebSocket(new FakeSocket()), messageCommand("proj_one", flow.id, "Keep the shared Socrates compactor invariant"))
+    await waitUntil(() => testRuntime.flowStore.getSnapshot("proj_one", flow.id).activeTurn === undefined, "the shared precompute turn to complete")
+
+    expect(precompute).toHaveBeenCalledTimes(1)
+    const input = precompute.mock.calls[0]?.[0]
+    expect(input?.contextCompression.thresholds).toEqual(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS)
+    expect(JSON.stringify(input?.messages)).toContain("Keep the shared Socrates compactor invariant")
+    expect(JSON.stringify(input?.messages)).toContain("Read V2 evidence successfully.")
+  })
+
   it("provides an executor for every shared Socrates tool that is not core-internal", async () => {
     const testRuntime = setup(toolProofProvider())
     const flow = testRuntime.flowStore.ensureFlow("proj_one").flow

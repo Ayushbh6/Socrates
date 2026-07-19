@@ -335,7 +335,7 @@ describe("V2ContextMaintenanceService", () => {
     expect(handle.sqlite.prepare("SELECT status FROM v2_turns WHERE id = ?").get(turn.turn.id)).toMatchObject({ status: "completed" })
   })
 
-  it("uses model-aware pressure to append a compact summary and release only active copies", async () => {
+  it("uses the shared fixed Socrates pressure threshold and preserves immutable evidence", async () => {
     const { handle, store, flowId } = setup()
     const turn = createRoutedTurn(store, flowId, "Summarize architecture evidence")
     const evidenceIds: string[] = []
@@ -347,7 +347,7 @@ describe("V2ContextMaintenanceService", () => {
         turnId: turn.turn.id,
         sourceKind: "tool_output",
         title: `Architecture output ${index + 1}`,
-        content: `Architecture fact ${index + 1}. ${"Detailed implementation evidence. ".repeat(100)}`,
+        content: `Architecture fact ${index + 1}. ${"Detailed implementation evidence. ".repeat(5_000)}`,
       })
       evidenceIds.push(recorded.evidence.id)
     }
@@ -356,12 +356,6 @@ describe("V2ContextMaintenanceService", () => {
     const provider = structuredProvider((request) => {
       requests.push(request)
       const body = requestBody(request)
-      if (request.system.includes("context compactor")) {
-        return {
-          summary: "Architecture facts were compacted; consult every exact evidence handle.",
-          sourceContextItemIds: body.allSourceContextItemIds,
-        }
-      }
       const items = body.items as Array<{ contextItemId: string }>
       return { decisions: items.map((item) => ({ contextItemId: item.contextItemId, disposition: "keep_exact" })) }
     })
@@ -377,14 +371,13 @@ describe("V2ContextMaintenanceService", () => {
       workerRuntime,
     })
 
-    // The small foreground context window controls pressure/budget even though
-    // every maintenance call uses the separately configured worker model.
+    // Selected-model metadata must not change the shared 170k/180k Socrates
+    // pressure policy. The worker selection remains independently configurable.
     expect(workerRuntime.providerId).not.toBe(runtimeConfig.providerId)
     expect(workerRuntime.modelId).not.toBe(runtimeConfig.modelId)
     expect(["compact", "hard_limit"]).toContain(result.pressure)
-    expect(result.compactionPerformed).toBe(true)
     expect(result.usedTokensAfter).toBeLessThan(result.usedTokensBefore)
-    expect(requests).toHaveLength(2)
+    expect(requests).toHaveLength(1)
     for (const request of requests) {
       expect(request.providerId).toBe(workerRuntime.providerId)
       expect(request.modelId).toBe(workerRuntime.modelId)
@@ -399,7 +392,7 @@ describe("V2ContextMaintenanceService", () => {
     const calls = handle.sqlite.prepare(
       "SELECT role, provider_id AS providerId, model_id AS modelId, request_json AS requestJson FROM v2_model_calls ORDER BY started_at",
     ).all() as Array<{ role: string; providerId: string; modelId: string; requestJson: string }>
-    expect(calls.map((call) => call.role)).toEqual(["context_distiller", "context_compactor"])
+    expect(calls.map((call) => call.role)).toEqual(["context_distiller"])
     for (const call of calls) {
       expect(call.providerId).toBe(workerRuntime.providerId)
       expect(call.modelId).toBe(workerRuntime.modelId)
@@ -412,12 +405,10 @@ describe("V2ContextMaintenanceService", () => {
         },
       })
     }
-    const state = store.getCoreContextState(flowId)
-    expect(state.items.some((item) => item.active && store.retrieveExactEvidence(flowId, [item.evidenceRef.evidenceId])[0]?.exactContent.includes("compacted"))).toBe(true)
     for (const evidenceId of evidenceIds) {
       expect(store.retrieveExactEvidence(flowId, [evidenceId])[0]?.exactContent).toContain("Detailed implementation evidence")
     }
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_evidence_items WHERE source_kind = 'model_output'").get()).toMatchObject({ count: 1 })
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_model_calls WHERE role = 'context_compactor'").get()).toMatchObject({ count: 0 })
   })
 
   it("never falls back to the foreground model when no context worker selection is supplied", async () => {
