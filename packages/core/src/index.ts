@@ -25,6 +25,17 @@ export {
   type MemoryRouterPreTurnInput,
 } from "./agent/MemoryRouterAgent"
 export {
+  GoalRouterAgent,
+  type GoalRouterAgentInput,
+  type GoalRouterAgentModelSettings,
+} from "./agent/GoalRouterAgent"
+export {
+  TitleGeneratorAgent,
+  type TitleGeneratorAgentInput,
+  type TitleGeneratorAgentModelSettings,
+  type TitleGeneratorAgentResult,
+} from "./agent/TitleGeneratorAgent"
+export {
   DEFAULT_COMPRESSOR_MODEL,
   DEFAULT_COMPRESSOR_FALLBACK_MODEL,
   DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
@@ -45,6 +56,7 @@ export {
 export { buildSocratesDynamicContext, buildSocratesSystemPrompt, socratesBasePrompt, type SocratesPromptContext } from "./prompts/socratesPrompt"
 export { buildMemoryAgentSystemPrompt, memoryAgentBasePrompt, type MemoryAgentPromptContext } from "./prompts/memoryPrompt"
 export { buildSkillWriterSystemPrompt, skillWriterBasePrompt, type SkillWriterPromptContext } from "./prompts/skillWriterPrompt"
+export { TITLE_GENERATOR_SYSTEM_PROMPT } from "./prompts/titleGeneratorPrompt"
 export {
   SOCRATES_COMPRESSOR_SYSTEM_PROMPT,
   buildSocratesCompressorUserContent,
@@ -58,7 +70,7 @@ export {
   renderMemoryCompactionMarkdown,
   type MemoryAgentCompressorUserPromptInput,
 } from "./prompts/memoryAgentCompressorPrompt"
-export { createDefaultToolRegistry, createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, createV2ToolRegistry, ToolRegistry } from "./tools/registry"
+export { createCompressorToolRegistry, createDefaultToolRegistry, createGoalRouterToolRegistry, createMemoryFinalizationToolRegistry, createMemoryRouterToolRegistry, createMemoryToolRegistry, createSkillWriterToolRegistry, createTitleGeneratorToolRegistry, createV2ToolRegistry, ToolRegistry } from "./tools/registry"
 export type { ApprovalDecision, ApprovalRequest, ToolExecutorContext, ToolExecutors, ToolLifecycleEvent } from "./tools/types"
 export * from "./retrieval"
 export * from "./v2"

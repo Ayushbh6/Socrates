@@ -90,6 +90,12 @@ export const createMemoryRouterToolRegistry = (): ToolRegistry => new ToolRegist
 
 export const createMemoryFinalizationToolRegistry = (): ToolRegistry => new ToolRegistry([memorySearchTool, turnEvidenceTool])
 
+export const createGoalRouterToolRegistry = (): ToolRegistry => new ToolRegistry([])
+
+export const createTitleGeneratorToolRegistry = (): ToolRegistry => new ToolRegistry([])
+
+export const createCompressorToolRegistry = (): ToolRegistry => new ToolRegistry([])
+
 const skillWriterTools = [currentTimeTool, globalTraceRetrieveTool, skillsReadOnlyTool, userProfileTool, soulTool, projectDocsTool, repoDocsTool, skillWriteTool] as const
 
 export const createSkillWriterToolRegistry = (): ToolRegistry => new ToolRegistry(skillWriterTools)

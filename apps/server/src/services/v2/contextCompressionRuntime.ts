@@ -25,6 +25,7 @@ export type CreateV2ContextCompressionRuntimeInput = Readonly<{
   flowId: string
   goalId: string
   turnId: string
+  workspacePath: string
   runtimeConfig: V2RuntimeConfig
 }>
 
@@ -35,7 +36,7 @@ export type CreateV2ContextCompressionRuntimeInput = Readonly<{
 export const createV2ContextCompressionRuntime = (
   input: CreateV2ContextCompressionRuntimeInput,
 ): ContextCompressionRuntime => {
-  const compressor = input.sharedStore.getWorkerModelSetting("context_compactor")
+  const compressor = input.sharedStore.getWorkerModelSetting("socrates_context_compactor")
   const fallback = contextCompressorFallback(input.sharedStore, compressor)
   const thresholds = v2WithinTurnCompressionThresholds(input.runtimeConfig.contextWindowTokens ?? 128_000)
   const modelCalls = new Map<string, string>()
@@ -47,6 +48,9 @@ export const createV2ContextCompressionRuntime = (
     // The core compactor uses this only as an exact trace handle. Flow is the
     // V2 conversation boundary; no Classic conversation row is created.
     conversationId: input.flowId,
+    sessionId: input.flowId,
+    turnId: input.turnId,
+    workspacePath: input.workspacePath,
     thresholds,
     compressorProviderId: compressor.providerId,
     compressorAuthMode: compressor.authMode ?? "api_key",

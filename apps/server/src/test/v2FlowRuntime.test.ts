@@ -204,7 +204,14 @@ const goalRouterProvider = (): ModelProvider => ({
   },
   async generateStructured<TOutput>() {
     return {
-      output: { action: "create", secondaryGoalIds: [], confidence: 0.93 } as TOutput,
+      output: {
+        action: "create",
+        primaryGoalId: null,
+        secondaryGoalIds: [],
+        confidence: 0.93,
+        clarificationQuestion: null,
+        clarificationGoalIds: [],
+      } as TOutput,
       usage: { inputTokens: 17, outputTokens: 3, totalTokens: 20 },
     }
   },
@@ -318,7 +325,14 @@ describe("V2ExecutionRuntime", () => {
       content: "Verify the shared Socrates tool surface.",
       runtimeConfig,
     })
-    const routing = await routeV2Goal({ flowId: flow.id, userMessage: created.userMessage.content, goals: [] })
+    const routing = await routeV2Goal({
+      projectId: "proj_one",
+      flowId: flow.id,
+      turnId: created.turn.id,
+      workspacePath: testRuntime.workspace,
+      userMessage: created.userMessage.content,
+      goals: [],
+    })
     const applied = testRuntime.flowStore.applyRouting({
       projectId: "proj_one",
       flowId: flow.id,
@@ -434,7 +448,7 @@ describe("V2ExecutionRuntime", () => {
     const usage = testRuntime.handle.sqlite.prepare(
       "SELECT input_tokens AS inputTokens, output_tokens AS outputTokens, total_tokens AS totalTokens FROM v2_usage_events WHERE model_call_id = ?",
     ).get(call.id) as { inputTokens: number; outputTokens: number; totalTokens: number }
-    const routerModel = testRuntime.sharedStore.getWorkerModelSetting("title_generator")
+    const routerModel = testRuntime.sharedStore.getWorkerModelSetting("goal_router")
     expect(call).toMatchObject({ status: "completed", providerId: routerModel.providerId, modelId: routerModel.modelId })
     expect(usage).toEqual({ inputTokens: 17, outputTokens: 3, totalTokens: 20 })
     expect(testRuntime.flowStore.countV1Rows().model_calls).toBe(0)
@@ -478,7 +492,14 @@ describe("V2ExecutionRuntime", () => {
       content: "Remember that I prefer exact restart evidence.",
       runtimeConfig,
     })
-    const routing = await routeV2Goal({ flowId: flow.id, userMessage: created.userMessage.content, goals: [] })
+    const routing = await routeV2Goal({
+      projectId: "proj_one",
+      flowId: flow.id,
+      turnId: created.turn.id,
+      workspacePath: testRuntime.workspace,
+      userMessage: created.userMessage.content,
+      goals: [],
+    })
     const applied = testRuntime.flowStore.applyRouting({
       projectId: "proj_one",
       flowId: flow.id,
@@ -760,7 +781,14 @@ describe("V2ExecutionRuntime", () => {
       content: "Connect a credentialed tool",
       runtimeConfig,
     })
-    const routing = await routeV2Goal({ flowId: flow.id, userMessage: created.userMessage.content, goals: [] })
+    const routing = await routeV2Goal({
+      projectId: "proj_one",
+      flowId: flow.id,
+      turnId: created.turn.id,
+      workspacePath: testRuntime.workspace,
+      userMessage: created.userMessage.content,
+      goals: [],
+    })
     const applied = testRuntime.flowStore.applyRouting({
       projectId: "proj_one",
       flowId: flow.id,

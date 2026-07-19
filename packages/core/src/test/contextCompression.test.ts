@@ -345,8 +345,9 @@ describe("context compression", () => {
       },
     })
 
-    expect(countedMessages).toHaveLength(2)
-    expect(JSON.stringify(countedMessages[1])).toContain("socrates_internal_context_compaction")
+    expect(countedMessages).toHaveLength(3)
+    expect(JSON.stringify(countedMessages[1])).toContain("Finish now")
+    expect(JSON.stringify(countedMessages[2])).toContain("socrates_internal_context_compaction")
     expect(prepared.estimatedTokens).toBe(4)
     expect(prepared.tokenCount.inputTokens).toBe(4)
   })

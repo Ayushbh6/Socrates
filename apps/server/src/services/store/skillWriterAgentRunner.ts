@@ -92,6 +92,11 @@ export const runSkillWriterTurn = async (input: SkillWriterRunInput): Promise<st
     contextCompression: {
       enabled: true,
       mode: "memory",
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      workspacePath: input.workspacePath ?? input.socratesHome,
       ...(input.contextCompressorSettings
         ? {
             compressorProviderId: input.contextCompressorSettings.providerId,

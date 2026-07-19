@@ -16,6 +16,7 @@ import { providerAuthModeSchema, providerIdSchema, thinkingEffortSchema } from "
 export const V2_FLOW_SCHEMA_VERSION = 2 as const
 export const V2_CONTEXT_UNRESOLVED_MAX_AGE_TURNS = 3 as const
 export const V2_CONTEXT_UNRESOLVED_MAX_ITEMS = 5 as const
+export const V2_GOAL_ROUTER_MAX_SECONDARY_GOALS = 3 as const
 
 export const V2_OPENROUTER_STT_MODEL_IDS = [
   "nvidia/parakeet-tdt-0.6b-v3",
@@ -106,6 +107,18 @@ export const v2GoalRoutingDecisionSchema = z.enum([
   "clarify",
 ])
 export const v2GoalRoutingStatusSchema = z.enum(["running", "awaiting_clarification", "completed", "failed", "fallback"])
+
+export const v2GoalRouterOutputSchema = z
+  .object({
+    action: z.enum(["continue", "resume", "create", "clarify"]),
+    primaryGoalId: z.string().min(1).nullable(),
+    secondaryGoalIds: z.array(z.string().min(1)).max(V2_GOAL_ROUTER_MAX_SECONDARY_GOALS),
+    confidence: z.number().min(0).max(1),
+    clarificationQuestion: z.string().max(1_000).nullable(),
+    clarificationGoalIds: z.array(z.string().min(1)).max(5),
+  })
+  .strict()
+export type V2GoalRouterOutput = z.infer<typeof v2GoalRouterOutputSchema>
 
 export const v2GoalRoutingRunSchema = z
   .object({

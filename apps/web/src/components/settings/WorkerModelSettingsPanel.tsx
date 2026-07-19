@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Route, Sparkles, Type } from "lucide-react";
+import { Bot, BrainCircuit, CheckCircle2, Loader2, PencilLine, Route, Sparkles, Target, Type } from "lucide-react";
 import type { ModelOption, ModelSettingsResolution, ModelThinkingOption, WorkerModelRole, WorkerModelSettings } from "@socrates/contracts";
 import { Button } from "@/components/ui/Button";
 import { api } from "@/lib/api";
@@ -19,9 +19,15 @@ const workers: Array<{
     icon: PencilLine,
   },
   {
-    id: "context_compactor",
-    title: "Context Compactor",
-    description: "Compresses long chat and worker context.",
+    id: "socrates_context_compactor",
+    title: "Socrates Context Compactor",
+    description: "Compresses long Classic and Flow chat context.",
+    icon: BrainCircuit,
+  },
+  {
+    id: "memory_context_compactor",
+    title: "Memory Context Compactor",
+    description: "Compresses long Memory Agent and Skill Writer context.",
     icon: BrainCircuit,
   },
   {
@@ -29,6 +35,12 @@ const workers: Array<{
     title: "Title Generator",
     description: "Creates short names for new conversations.",
     icon: Type,
+  },
+  {
+    id: "goal_router",
+    title: "Goal Router",
+    description: "Chooses whether Flow continues, resumes, creates, or clarifies a focus.",
+    icon: Target,
   },
   {
     id: "memory_router",

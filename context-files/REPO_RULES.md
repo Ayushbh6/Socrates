@@ -550,7 +550,20 @@ prompt
   -> typed events and persistence
 ```
 
-This applies to Socrates, the Global Memory Agent, the Skill Writer Agent, and future reusable subagents. Backend stores may coordinate, persist, validate, and apply approved effects, but they must not own private model orchestration for agent-like work.
+This applies to Socrates, the Global Memory Agent, the Skill Writer Agent, the Title Generator Agent, both modes of the Compressor Agent, and future reusable subagents. Backend stores may coordinate, persist, validate, and apply approved effects, but they must not own private model orchestration for agent-like work.
+
+This is a non-negotiable creation invariant for every new model-driven agent, router, or worker. Before implementation or review can be considered complete, all of the following must be true:
+
+- The prompt lives in the owning package's designated `prompts/` folder; do not leave production system prompts inline in routes, stores, runtimes, or orchestration helpers.
+- The capability has a clearly named agent/router module owned by the correct package and initialized through the shared runner. Do not call `provider.generateStructured()` directly from a feature runtime as a substitute for an agent.
+- Input, output, and cross-boundary contracts use strict Zod schemas in `packages/contracts` when shared between packages or persisted; package-private schemas must still be strict, named, and reusable.
+- The runner receives an explicitly scoped `ToolRegistry` plus executor mapping. A router that needs no tools uses an intentionally empty scoped registry; it does not invent tools or bypass the runner.
+- Structured output gets strict validation, one bounded repair attempt where recovery is safe, and an explicit bounded fallback or typed failure policy.
+- Provider, auth mode, model, and thinking settings resolve through a dedicated worker role whenever the capability is independently configurable. Do not alias an unrelated worker's setting to avoid adding the role.
+- Model calls, usage, failures, and durable effects use the repository's typed telemetry, event, persistence, and error paths.
+- Focused tests cover the prompt/runner contract, strict invalid-output behavior and repair/fallback path, worker settings API, and any settings UI row.
+
+Search for and reuse the closest compliant agent before creating any of these pieces. An existing non-compliant component is technical debt to correct, never precedent for another shortcut. Reviewers must reject a new agent/router/worker that does not satisfy this checklist.
 
 Agent-to-agent communication should start simple and reusable. The accepted first protocol is a backend-backed notepad:
 
@@ -581,7 +594,7 @@ Required boundary:
 - Never reuse V1 orchestration policy as V2 policy merely to avoid a separate V2 module.
 - Keep Flow/goal routing, goal-aware context policy, V2 runtime events, and all conversation-owned persistence in the V2 path. Shared memory-note or Memory Agent work must retain exact V2 source coordinates without appending Classic runtime events.
 - Canonical V2 user/assistant Q&A may reuse the shared LanceDB retrieval foundation only with explicit `runtimeKind = "v2_flow"` and `flowId` scoping. Keep queryless recall, exact inspect, audit evidence, and deletion ownership V2-native; never create Classic conversations merely to make retrieval work or add a second semantic pipeline.
-- Do not invoke the Classic conversation-title rewriter or add a capsule-writing LLM for V2. V2 navigation/resume state comes from deterministic goal titles and materiality-gated rich capsule versions built from authoritative V2 state. The Goal Router may reuse the configured fast `title_generator` worker model selection, but it must invoke the strict V2 routing contract rather than the Classic title-rewrite service.
+- Do not invoke the Classic conversation-title rewriter or add a capsule-writing LLM for V2. V2 navigation/resume state comes from deterministic goal titles and materiality-gated rich capsule versions built from authoritative V2 state. The Goal Router has its own `goal_router` worker model and thinking selection, and it must run the strict V2 routing contract through the shared structured-agent pattern.
 - Call the first V2 speech slice `V2 Voice V1`; never shorten it to V1 in code or docs where it could be confused with V1 Classic.
 - Keep V2 Voice V1 STT limited to local Whisper (`small.en`, with optional `base.en`) and the accepted OpenRouter ids `nvidia/parakeet-tdt-0.6b-v3`, `microsoft/mai-transcribe-1.5`, and `mistralai/voxtral-mini-transcribe`.
 - Keep V2 Voice V1 TTS local through Kokoro-82M and `sherpa-onnx`. Do not add Granite Speech, Ollama speech, hosted TTS, or a separate speech-writing agent to the first slice.

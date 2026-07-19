@@ -83,7 +83,15 @@ export const modelSettingsResolutionSchema = z
   .strict()
 export type ModelSettingsResolution = z.infer<typeof modelSettingsResolutionSchema>
 
-export const workerModelRoleSchema = z.enum(["skill_writer", "context_compactor", "title_generator", "memory_router", "frontier"])
+export const workerModelRoleSchema = z.enum([
+  "skill_writer",
+  "socrates_context_compactor",
+  "memory_context_compactor",
+  "title_generator",
+  "goal_router",
+  "memory_router",
+  "frontier",
+])
 export type WorkerModelRole = z.infer<typeof workerModelRoleSchema>
 
 export const workerModelSettingsSchema = z

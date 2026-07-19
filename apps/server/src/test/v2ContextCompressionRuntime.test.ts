@@ -88,7 +88,7 @@ const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterRes
 
 const sharedStore = {
   getWorkerModelSetting: (_workerId: Parameters<SocratesStore["getWorkerModelSetting"]>[0]) => ({
-    workerId: "context_compactor" as const,
+    workerId: "socrates_context_compactor" as const,
     providerId: "openrouter" as const,
     authMode: "api_key" as const,
     modelId: "deepseek/deepseek-v4-flash",
@@ -132,6 +132,7 @@ describe("V2 within-turn context compression runtime", () => {
       flowId,
       goalId,
       turnId,
+      workspacePath: "/tmp/socrates-v2-context-test",
       runtimeConfig,
     })
     await runtime.startSnapshot?.({
@@ -195,6 +196,7 @@ describe("V2 within-turn context compression runtime", () => {
       flowId,
       goalId,
       turnId,
+      workspacePath: "/tmp/socrates-v2-context-test",
       runtimeConfig,
     })
     await runtime.startSnapshot?.({

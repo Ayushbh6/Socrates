@@ -33,6 +33,7 @@ import {
   contextCompactionStartedEventSchema,
   contextUsageSnapshotEventSchema,
   conversationSchema,
+  conversationTitleAgentOutputSchema,
   conversationUpdatedEventSchema,
   credentialInputRequestedEventSchema,
   credentialInputResolvedEventSchema,
@@ -189,6 +190,7 @@ import {
   triggerMemoryAgentRunResponseSchema,
   listWorkerModelSettingsResponseSchema,
   workerModelSettingsParamsSchema,
+  workerModelRoleSchema,
   agentModelHandoverEventSchema,
   conversationToolRunSchema,
   editToolOutputSchema,
@@ -1893,6 +1895,12 @@ describe("tool contracts", () => {
     }
     expect(listWorkerModelSettingsResponseSchema.safeParse({ settings: [workerSetting] }).success).toBe(true)
     expect(updateWorkerModelSettingsResponseSchema.safeParse({ settings: workerSetting }).success).toBe(true)
+    expect(workerModelRoleSchema.safeParse("goal_router").success).toBe(true)
+    expect(workerModelRoleSchema.safeParse("socrates_context_compactor").success).toBe(true)
+    expect(workerModelRoleSchema.safeParse("memory_context_compactor").success).toBe(true)
+    expect(workerModelRoleSchema.safeParse("context_compactor").success).toBe(false)
+    expect(conversationTitleAgentOutputSchema.safeParse({ title: "Agent Architecture" }).success).toBe(true)
+    expect(conversationTitleAgentOutputSchema.safeParse({ title: "Agent Architecture", prose: "extra" }).success).toBe(false)
     expect(
       skillWriteToolInputSchema.safeParse({
         scope: "global",

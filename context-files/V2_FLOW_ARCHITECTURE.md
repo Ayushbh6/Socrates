@@ -91,7 +91,7 @@ The Global Memory Agent is one application-level learner across both experiences
 
 V2 uses the same Memory Router behavior around Socrates turns, but its routing attempts, errors, and usage are persisted in V2 telemetry. The V2 Goal Router is an additional, separate bounded router above the turn. V2 reuses the shared context-compactor worker configuration while applying V2-owned model-aware thresholds and goal/evidence policy.
 
-V2 does not invoke the Classic conversation-title rewriter and does not make a separate capsule-writing model call. New goal titles and rich capsule snapshots are derived deterministically from authoritative V2 state, and capsule versions provide the resumable semantic label/state. The Goal Router reuses the configured fast structured `title_generator` worker model selection, but calls a separate strict V2 routing schema rather than the Classic title-rewrite service.
+V2 does not invoke the Classic conversation-title rewriter and does not make a separate capsule-writing model call. New goal titles and rich capsule snapshots are derived deterministically from authoritative V2 state, and capsule versions provide the resumable semantic label/state. The Goal Router uses its own configurable `goal_router` worker selection and calls its strict V2 routing schema through the shared structured-agent runner rather than the Classic title-rewrite service.
 
 ## Product North Star
 
@@ -254,7 +254,7 @@ ask one bounded clarification between real candidate goals
 link the message to at most three secondary goals
 ```
 
-The structured call receives the foreground goal plus at most five ranked parked candidates by default, the latest three focus-tagged Q&A turns, and any explicit clarification answer. It uses the configured `title_generator` worker model with thinking disabled, has an eight-second bounded timeout, and falls back deterministically when the provider fails, times out, or returns invalid output. Explicit resume language with a lexical parked-goal match wins before the fallback considers creating new durable work. Goal merging is not performed.
+The Goal Router Agent receives the foreground goal plus at most five ranked parked candidates by default, the latest three focus-tagged Q&A turns, and any explicit clarification answer. Its dedicated `goal_router` worker setting controls model and thinking, it has an eight-second bounded timeout, validates the strict Zod contract with one bounded repair attempt, and falls back deterministically when the provider fails, times out, or remains invalid. Its production prompt lives under `packages/core/src/prompts`, it runs through the shared structured-agent runner with an explicitly empty tool registry/executor mapping, and its model attempt, usage, errors, and routing effects persist through V2 telemetry. Explicit resume language with a lexical parked-goal match wins before the fallback considers creating new durable work. Goal merging is not performed.
 
 ### Router Inputs
 
@@ -311,7 +311,7 @@ After Socrates has inspected a substantial tool or retrieval result, the result 
 | `release` | Remove it from active context. | Raw source remains retrievable. |
 | `unresolved` | Keep it provisionally because its value cannot yet be judged. | Raw source remains and the item receives a mandatory review deadline. |
 
-The implemented first cut runs one bounded post-turn structured Context Distiller over eligible new/due items, then normalizes its proposal through deterministic policy. The policy enforces unresolved limits/deadlines, evidence safety, pressure targets, and a non-fatal fallback if the worker times out or fails. The worker uses the configured `context_compactor` model selection; the foreground model's actual context window still controls budgets.
+The implemented first cut runs one bounded post-turn structured Context Distiller over eligible new/due items, then normalizes its proposal through deterministic policy. The policy enforces unresolved limits/deadlines, evidence safety, pressure targets, and a non-fatal fallback if the worker times out or fails. The worker uses the configured `socrates_context_compactor` model selection; the foreground model's actual context window still controls budgets.
 
 This does not add a full foreground Socrates call after every tool output. Within-turn emergency pressure uses the shared compressor through a V2 persistence adapter, while post-turn maintenance handles the finer dispositions. Tiny outputs do not need ceremony; a future main-agent disposition signal may augment the worker, but it is not required for the implemented first cut.
 
@@ -406,7 +406,7 @@ The correct result is a newly assembled goal-aware request, not a vague summary 
 
 ### Level 5: Emergency Provider-Boundary Compression
 
-A last-resort compactor protects the provider ceiling. V2 reuses the proven core compressor machinery through a V2-only adapter: snapshots, model calls, errors, usage, and immutable summary evidence are written only to V2 state. It uses the shared `context_compactor` worker setting but V2-owned model-aware thresholds, goal scoping, and tests; Classic compaction rows and policies are not reused.
+A last-resort compactor protects the provider ceiling. V2 reuses the proven core compressor machinery through a V2-only adapter: snapshots, model calls, errors, usage, and immutable summary evidence are written only to V2 state. It uses the `socrates_context_compactor` worker setting but V2-owned model-aware thresholds, goal scoping, and tests; Classic compaction rows and policies are not reused.
 
 ## Context Assembly For A V2 Turn
 
@@ -744,7 +744,7 @@ The v0.1.19 release subsequently passed archive construction and native runtime 
 The following remain intentionally open or incomplete:
 
 - Conservative destructive merge semantics; merge is not implemented.
-- Goal Router evaluation corpus, confidence tuning, and whether routing should eventually receive a dedicated worker setting rather than reusing the fast structured `title_generator` selection.
+- Goal Router evaluation corpus and confidence tuning beyond the current strict contract, bounded repair, and dedicated worker setting.
 - Distiller/compactor local-model structured-output requirements beyond the shared worker setting.
 - Model-aware proactive and hard context thresholds after measurement.
 - Capsule refresh quality/cadence beyond the deterministic first cut.

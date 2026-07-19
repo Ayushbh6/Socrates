@@ -57,6 +57,7 @@ export type {
   EmbeddingUsage,
   ModelEvent,
   ModelMessage,
+  ModelMessageContent,
   ModelMessagePart,
   ModelProvider,
   ModelRequest,

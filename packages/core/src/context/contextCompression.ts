@@ -132,6 +132,9 @@ export type ContextCompressionRuntime = {
   mode?: ContextCompressionMode
   projectId?: string
   conversationId?: string
+  sessionId?: string
+  turnId?: string
+  workspacePath?: string
   thresholds?: Partial<ContextCompressionThresholds>
   compressorProviderId?: ProviderId
   compressorAuthMode?: ProviderAuthMode
@@ -468,6 +471,11 @@ const runContextCompaction = async (
       fallbacks: compression.compressorFallbacks ?? legacyCompressorFallbacks(compression, compressorFallbackProviderId, compressorFallbackAuthMode, compressorFallbackModelId),
       system: compressorSystemPrompt(mode),
       userContent,
+      projectId: compression.projectId ?? "context_compaction",
+      conversationId: compression.conversationId ?? "context_compaction",
+      sessionId: compression.sessionId ?? compression.conversationId ?? snapshotId,
+      turnId: compression.turnId ?? snapshotId,
+      workspacePath: compression.workspacePath ?? ".",
       allowedTurnNumbers: allowedAnchorTurnNumbers(selection.headTurns, latestSnapshot?.renderedSummary),
     })
     if (compressorResult.mode !== mode) {

@@ -1,6 +1,7 @@
 export * from "./api"
 export * from "./attachments"
 export * from "./contextCompression"
+export * from "./conversationTitle"
 export * from "./entities"
 export * from "./http"
 export * from "./memoryRouting"

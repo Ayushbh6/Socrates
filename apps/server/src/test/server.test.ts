@@ -416,11 +416,10 @@ const createTestAgent = (): SocratesAgent => {
 
 const createTitleProvider = (title: string, requestedModelIds: string[] = []): ModelProvider => ({
   countTokens: fakeCountTokens,
-  async *stream(request) {
+  async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>) {
     requestedModelIds.push(request.modelId)
-    yield { type: "model.answer.delta", text: title }
-    yield {
-      type: "model.completed",
+    return {
+      output: { title } as TOutput,
       usage: {
         inputTokens: 8,
         outputTokens: 4,
@@ -428,25 +427,29 @@ const createTitleProvider = (title: string, requestedModelIds: string[] = []): M
       },
     }
   },
+  async *stream() {
+    yield { type: "model.failed", error: new Error("Title Generator must use structured generation") }
+  },
 })
 
 const createFallbackTitleProvider = (title: string, requestedModelIds: string[]): ModelProvider => ({
   countTokens: fakeCountTokens,
-  async *stream(request) {
+  async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>) {
     requestedModelIds.push(request.modelId)
     if (request.modelId === "meta-llama/llama-4-maverick") {
-      yield { type: "model.failed", error: new Error("Primary title model unavailable") }
-      return
+      throw new Error("Primary title model unavailable")
     }
-    yield { type: "model.answer.delta", text: title }
-    yield {
-      type: "model.completed",
+    return {
+      output: { title } as TOutput,
       usage: {
         inputTokens: 8,
         outputTokens: 4,
         totalTokens: 12,
       },
     }
+  },
+  async *stream() {
+    yield { type: "model.failed", error: new Error("Title Generator must use structured generation") }
   },
 })
 
@@ -2276,8 +2279,10 @@ describe("HTTP API", () => {
     }
     expect(listBody.data.settings.map((setting) => setting.workerId)).toEqual([
       "skill_writer",
-      "context_compactor",
+      "socrates_context_compactor",
+      "memory_context_compactor",
       "title_generator",
+      "goal_router",
       "memory_router",
       "frontier",
     ])
@@ -2289,6 +2294,11 @@ describe("HTTP API", () => {
     expect(listBody.data.settings.find((setting) => setting.workerId === "memory_router")).toMatchObject({
       providerId: "openrouter",
       modelId: "deepseek/deepseek-v4-flash",
+      thinkingEnabled: false,
+    })
+    expect(listBody.data.settings.find((setting) => setting.workerId === "goal_router")).toMatchObject({
+      providerId: "openrouter",
+      modelId: "meta-llama/llama-4-maverick",
       thinkingEnabled: false,
     })
     expect(listBody.data.settings.find((setting) => setting.workerId === "frontier")).toMatchObject({
@@ -2306,7 +2316,7 @@ describe("HTTP API", () => {
 
     const updateResponse = await app.inject({
       method: "PATCH",
-      url: "/api/worker-model-settings/title_generator",
+      url: "/api/worker-model-settings/goal_router",
       payload: {
         providerId: "google",
         authMode: "api_key",
@@ -2321,7 +2331,7 @@ describe("HTTP API", () => {
       throw new Error("Expected worker model settings update success")
     }
     expect(updateBody.data.settings).toMatchObject({
-      workerId: "title_generator",
+      workerId: "goal_router",
       providerId: "google",
       authMode: "api_key",
       modelId: "gemini-3.5-flash",
@@ -2362,7 +2372,14 @@ describe("HTTP API", () => {
       thinkingEnabled: true,
       thinkingEffort: "low",
     })
-    expect(resolutionByWorker.get("context_compactor")?.effective).toMatchObject({
+    expect(resolutionByWorker.get("socrates_context_compactor")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
+    expect(resolutionByWorker.get("memory_context_compactor")?.effective).toMatchObject({
       providerId: "openai",
       authMode: "chatgpt_subscription",
       modelId: "gpt-5.4-mini",
@@ -2370,6 +2387,13 @@ describe("HTTP API", () => {
       thinkingEffort: "low",
     })
     expect(resolutionByWorker.get("title_generator")?.effective).toMatchObject({
+      providerId: "openai",
+      authMode: "chatgpt_subscription",
+      modelId: "gpt-5.4-mini",
+      thinkingEnabled: true,
+      thinkingEffort: "low",
+    })
+    expect(resolutionByWorker.get("goal_router")?.effective).toMatchObject({
       providerId: "openai",
       authMode: "chatgpt_subscription",
       modelId: "gpt-5.4-mini",

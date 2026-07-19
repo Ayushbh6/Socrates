@@ -1,5 +1,5 @@
 import type { RuntimeConfig } from "@socrates/contracts"
-import type { ModelEvent, ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
+import type { ModelEvent, ModelMessage, ModelMessageContent, ModelMessagePart, ModelProvider, ModelRequest, ModelUsage } from "@socrates/providers"
 import { createId, SocratesError } from "@socrates/shared"
 import { prepareContextForModelCall, type ContextCompressionRuntime } from "../context/contextCompression"
 import type { ToolExecutors } from "../tools/types"
@@ -11,17 +11,19 @@ export type StructuredToolAgentRunInput<TOutput> = {
   modelId: string
   runtimeConfig: RuntimeConfig
   system: string
-  userContent: string
+  userContent: ModelMessageContent
   schema: StructuredOutputSchema<TOutput>
   toolRegistry: ToolRegistry
-  toolExecutors: ToolExecutors
+  toolExecutors: ToolExecutors | Record<string, never>
   maxToolCalls: number
+  maxOutputRepairAttempts?: number
   projectId: string
   conversationId: string
   sessionId: string
   turnId: string
   workspacePath: string
   cacheKey?: string
+  providerRouting?: ModelRequest["providerRouting"]
   abortSignal?: AbortSignal
   contextCompression?: ContextCompressionRuntime
   onModelEvent?: (event: ModelEvent) => void
@@ -74,7 +76,9 @@ export class StructuredToolAgentRunner {
         runtimeConfig: input.runtimeConfig,
         tools,
         modelCallId: createId("mcall"),
+        sessionId: input.sessionId,
         ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
+        ...(input.providerRouting ? { providerRouting: input.providerRouting } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       })) {
         input.onModelEvent?.(event)
@@ -122,7 +126,8 @@ export class StructuredToolAgentRunner {
     messages.push({ role: "developer", content: "Finish now. Return only the strict structured result requested by the system contract. Do not call tools." })
     let lastValidation: unknown
     let lastOutput: unknown
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    const maxOutputRepairAttempts = input.maxOutputRepairAttempts ?? 1
+    for (let attempt = 0; attempt <= maxOutputRepairAttempts; attempt += 1) {
       const finalPrepared = await prepareContextForModelCall({
         provider: input.provider,
         providerId: input.providerId,
@@ -140,7 +145,9 @@ export class StructuredToolAgentRunner {
         runtimeConfig: input.runtimeConfig,
         schema: input.schema,
         modelCallId: createId("mcall"),
+        sessionId: input.sessionId,
         ...(input.cacheKey ? { cacheKey: `${input.cacheKey}:structured-final:${attempt + 1}` } : {}),
+        ...(input.providerRouting ? { providerRouting: input.providerRouting } : {}),
         ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       })
       if (generated.usage) {
@@ -153,7 +160,7 @@ export class StructuredToolAgentRunner {
       }
       lastValidation = parsed.error.flatten()
       lastOutput = generated.output
-      if (attempt === 0) {
+      if (attempt < maxOutputRepairAttempts) {
         messages.push({ role: "assistant", content: boundedJson(generated.output, 4_000) })
         messages.push({
           role: "developer",
@@ -161,7 +168,7 @@ export class StructuredToolAgentRunner {
         })
       }
     }
-    throw new SocratesError("structured_agent_output_invalid", "Structured agent output did not match its schema after one bounded repair attempt.", {
+    throw new SocratesError("structured_agent_output_invalid", `Structured agent output did not match its schema after ${maxOutputRepairAttempts} bounded repair attempt${maxOutputRepairAttempts === 1 ? "" : "s"}.`, {
       details: { validation: boundedJson(lastValidation, 4_000), outputPreview: boundedJson(lastOutput, 2_000) },
       recoverable: true,
     })
@@ -198,7 +205,7 @@ const executeTool = async <TOutput>(
       turnId: input.turnId,
       workspacePath: input.workspacePath,
       runtimeConfig: input.runtimeConfig,
-      executors: input.toolExecutors,
+      executors: input.toolExecutors as ToolExecutors,
       requestApproval: async () => ({ decision: "rejected", reason: "This backend agent may only use its explicitly scoped automatic tools." }),
       onOutput: () => undefined,
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),

@@ -393,6 +393,7 @@ export class V2ExecutionRuntime {
     let suspended = false
     let frontierHandoverActive = false
     try {
+      const workspacePath = this.deps.sharedStore.getPrimaryWorkspacePath(command.projectId)
       let activeGoalId: string
       if (continuation) {
         activeGoalId = continuation.goalId
@@ -403,7 +404,7 @@ export class V2ExecutionRuntime {
           "main_agent",
         )
       } else {
-        const goalRouterSetting = this.deps.sharedStore.getWorkerModelSetting("title_generator")
+        const goalRouterSetting = this.deps.sharedStore.getWorkerModelSetting("goal_router")
         const goalRouterModel = {
           providerId: goalRouterSetting.providerId,
           ...(goalRouterSetting.authMode ? { authMode: goalRouterSetting.authMode } : {}),
@@ -413,7 +414,10 @@ export class V2ExecutionRuntime {
           timeoutMs: 8_000,
         }
         const routing = await routeV2Goal({
+          projectId: command.projectId,
           flowId: command.flowId,
+          turnId: created.turn.id,
+          workspacePath,
           userMessage: command.payload.content,
           goals: this.deps.store.getSnapshot(command.projectId, command.flowId).goals,
           capsules: this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules,
@@ -438,7 +442,11 @@ export class V2ExecutionRuntime {
                 turnId: created.turn.id,
                 source: "goal_router",
                 code: `v2_goal_router_${routing.modelAttempt.errorCode ?? "failed"}`,
-                message: routing.modelAttempt.errorCode === "timeout" ? "The Flow goal router timed out." : "The Flow goal router provider failed.",
+                message: routing.modelAttempt.errorCode === "timeout"
+                  ? "The Flow goal router timed out."
+                  : routing.modelAttempt.errorCode === "invalid_output"
+                    ? "The Flow goal router returned invalid structured output after one repair attempt."
+                    : "The Flow goal router provider failed.",
                 details: { fallbackReason: routing.fallbackReason },
                 recoverable: true,
               })
@@ -469,7 +477,10 @@ export class V2ExecutionRuntime {
         }
         const effectiveRouting = routing.decision.action === "clarify"
           ? await routeV2Goal({
+              projectId: command.projectId,
               flowId: command.flowId,
+              turnId: created.turn.id,
+              workspacePath,
               userMessage: `${command.payload.content}\n\nClarification answer: ${clarificationAnswer ?? ""}`,
               goals: this.deps.store.getSnapshot(command.projectId, command.flowId).goals,
               capsules: this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules,
@@ -498,7 +509,6 @@ export class V2ExecutionRuntime {
       }
       goalId = activeGoalId
 
-      const workspacePath = this.deps.sharedStore.getPrimaryWorkspacePath(command.projectId)
       const selectedModel =
         this.deps.sharedStore.findAvailableModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key") ??
         findModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key")
@@ -605,6 +615,7 @@ export class V2ExecutionRuntime {
           flowId: command.flowId,
           goalId: activeGoalId,
           turnId: created.turn.id,
+          workspacePath,
           runtimeConfig,
         }),
         toolExecutors,
@@ -790,7 +801,7 @@ export class V2ExecutionRuntime {
           turnId: created.turn.id,
         }, "main_agent")
       }
-      const contextWorker = this.deps.sharedStore.getWorkerModelSetting("context_compactor")
+      const contextWorker = this.deps.sharedStore.getWorkerModelSetting("socrates_context_compactor")
       const maintenance = await this.contextMaintenance.runAfterTurn({
         projectId: command.projectId,
         flowId: command.flowId,

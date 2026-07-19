@@ -1636,7 +1636,7 @@ export class MemoryStore extends StoreBase {
     const toolEvents: unknown[] = []
     let latestUsage: unknown
     try {
-      const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
+      const contextCompressorSettings = this.options.getWorkerModelSettings?.("memory_context_compactor")
       const runResult = await runMemoryAgentTurn({
         provider: this.options.provider,
         modelSettings,
@@ -3296,7 +3296,7 @@ export class MemoryStore extends StoreBase {
     const inspectedTurnIds = new Set<string>()
     let existingSkillRead = input.operation === "create"
     try {
-      const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
+      const contextCompressorSettings = this.options.getWorkerModelSettings?.("memory_context_compactor")
       let answer = ""
       let attemptCount = 0
       for (; attemptCount < 2 && !written; attemptCount += 1) {

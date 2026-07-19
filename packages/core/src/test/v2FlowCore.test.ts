@@ -21,7 +21,7 @@ import {
   type V2FlowContextMessage,
   type V2Goal,
 } from "../v2"
-import { createDefaultToolRegistry, createV2ToolRegistry } from "../tools/registry"
+import { createDefaultToolRegistry, createGoalRouterToolRegistry, createV2ToolRegistry } from "../tools/registry"
 
 const flowId = "flow_1"
 
@@ -33,6 +33,7 @@ describe("V2 Flow goal routing", () => {
     expect(seamless).toContain("handover_to_frontier")
     expect(seamless).toContain("trace_retrieve")
     expect(classic).not.toContain("focus_ledger")
+    expect(createGoalRouterToolRegistry().list()).toEqual([])
   })
 
   it("bounds a 30-goal Flow to the foreground plus the configured parked candidates", () => {
@@ -59,11 +60,14 @@ describe("V2 Flow goal routing", () => {
       throw new Error("provider unavailable")
     })
     const result = await routeV2Goal({
+      projectId: "project_1",
       flowId,
+      turnId: "turn_1",
+      workspacePath: "/workspace",
       userMessage: "Can you take another look?",
       goals: [goal("active", "foreground", "Build V2"), goal("parked", "parked", "Travel")],
       provider,
-      model: { providerId: "openrouter", modelId: "router-model" },
+      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false },
     })
 
     expect(result.source).toBe("fallback")
@@ -74,11 +78,14 @@ describe("V2 Flow goal routing", () => {
   it("falls back on timeout even when a provider ignores abort", async () => {
     const provider = providerWithStructured(async () => new Promise(() => undefined))
     const result = await routeV2Goal({
+      projectId: "project_1",
       flowId,
+      turnId: "turn_1",
+      workspacePath: "/workspace",
       userMessage: "keep going",
       goals: [goal("active", "foreground", "Build V2")],
       provider,
-      model: { providerId: "openrouter", modelId: "router-model", timeoutMs: 50 },
+      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false, timeoutMs: 50 },
     })
 
     expect(result.fallbackReason).toBe("timeout")
@@ -101,7 +108,10 @@ describe("V2 Flow goal routing", () => {
       }
     })
     const result = await routeV2Goal({
+      projectId: "project_1",
       flowId,
+      turnId: "turn_1",
+      workspacePath: "/workspace",
       userMessage: "What about the second one?",
       goals: [goal("api", "foreground", "API work"), goal("slides", "parked", "Presentation")],
       recentTurns: [
@@ -110,7 +120,7 @@ describe("V2 Flow goal routing", () => {
         { goalId: "slides", user: "Compare two openings", assistant: "The second is calmer." },
       ],
       provider,
-      model: { providerId: "openrouter", modelId: "router-model" },
+      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false },
     })
 
     expect(result.decision).toMatchObject({
@@ -119,6 +129,56 @@ describe("V2 Flow goal routing", () => {
       clarificationQuestion: "Do you mean the API work or the presentation?",
     })
     expect(routedPayload?.recentTurns).toHaveLength(3)
+  })
+
+  it("runs through the shared structured agent and repairs one invalid result", async () => {
+    let attempts = 0
+    let systemPrompt = ""
+    const provider = providerWithStructured(async <TOutput>(request: StructuredModelRequest<TOutput>) => {
+      attempts += 1
+      systemPrompt = request.system
+      if (attempts === 1) {
+        return {
+          output: {
+            action: "resume",
+            primaryGoalId: "invented",
+            secondaryGoalIds: [],
+            confidence: 0.8,
+            clarificationQuestion: null,
+            clarificationGoalIds: [],
+          } as TOutput,
+          usage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
+        }
+      }
+      return {
+        output: {
+          action: "continue",
+          primaryGoalId: "active",
+          secondaryGoalIds: [],
+          confidence: 0.82,
+          clarificationQuestion: null,
+          clarificationGoalIds: [],
+        } as TOutput,
+        usage: { inputTokens: 9, outputTokens: 2, totalTokens: 11 },
+      }
+    })
+
+    const result = await routeV2Goal({
+      projectId: "project_1",
+      flowId,
+      turnId: "turn_repair",
+      workspacePath: "/workspace",
+      userMessage: "keep going",
+      goals: [goal("active", "foreground", "Build V2")],
+      provider,
+      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false },
+    })
+
+    expect(attempts).toBe(2)
+    expect(systemPrompt).toContain("Goal Router Agent")
+    expect(result.source).toBe("model")
+    expect(result.decision).toMatchObject({ action: "continue", primaryGoalId: "active" })
+    expect(result.modelAttempt?.usage).toMatchObject({ inputTokens: 17, outputTokens: 4, totalTokens: 21 })
   })
 
   it("plans exactly one foreground when resuming and preserves bounded secondary links", () => {

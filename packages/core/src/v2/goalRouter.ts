@@ -1,6 +1,7 @@
-import type { ProviderAuthMode, ProviderId, RuntimeConfig, ThinkingEffort } from "@socrates/contracts"
-import type { ModelProvider, ModelUsage, StructuredModelRequest, StructuredModelResult } from "@socrates/providers"
-import { z } from "zod"
+import { V2_GOAL_ROUTER_MAX_SECONDARY_GOALS, type ProviderAuthMode, type ProviderId, type ThinkingEffort, type V2GoalRouterOutput } from "@socrates/contracts"
+import type { ModelProvider, ModelUsage } from "@socrates/providers"
+import { normalizeError } from "@socrates/shared"
+import { GoalRouterAgent } from "../agent/GoalRouterAgent"
 import type {
   V2Goal,
   V2GoalCapsule,
@@ -13,20 +14,23 @@ import type {
 
 export const DEFAULT_V2_PARKED_GOAL_CANDIDATE_LIMIT = 5
 export const MAX_V2_PARKED_GOAL_CANDIDATE_LIMIT = 8
-export const MAX_V2_SECONDARY_GOAL_LINKS = 3
+export const MAX_V2_SECONDARY_GOAL_LINKS = V2_GOAL_ROUTER_MAX_SECONDARY_GOALS
 export const DEFAULT_V2_GOAL_ROUTER_TIMEOUT_MS = 8_000
 
 export type V2GoalRouterModelSettings = Readonly<{
   providerId: ProviderId
   authMode?: ProviderAuthMode
   modelId: string
-  thinkingEnabled?: boolean
+  thinkingEnabled: boolean
   thinkingEffort?: ThinkingEffort
   timeoutMs?: number
 }>
 
 export type V2GoalRouterInput = Readonly<{
+  projectId: string
   flowId: string
+  turnId: string
+  workspacePath: string
   userMessage: string
   goals: readonly V2Goal[]
   capsules?: readonly V2GoalCapsule[]
@@ -51,30 +55,6 @@ export type V2GoalRouterResult = Readonly<{
     errorCode?: "timeout" | "provider_error" | "invalid_output"
   }>
 }>
-
-const ROUTER_SCHEMA = z
-  .object({
-    action: z.enum(["continue", "resume", "create", "clarify"]),
-    primaryGoalId: z.string().nullable(),
-    secondaryGoalIds: z.array(z.string()).max(MAX_V2_SECONDARY_GOAL_LINKS),
-    confidence: z.number().min(0).max(1),
-    clarificationQuestion: z.string().max(1_000).nullable(),
-    clarificationGoalIds: z.array(z.string()).max(5),
-  })
-  .strict()
-
-type StructuredRouterOutput = z.infer<typeof ROUTER_SCHEMA>
-
-const ROUTER_SYSTEM_PROMPT = [
-  "Route one user message inside a persistent Socrates Flow.",
-  "Choose continue for the foreground focus, resume for one listed paused or recently finished focus, or create when none fits.",
-  "The singleton General Conversation absorbs greetings, weather, recommendations, and other casual one-off talk; durable work gets its own focus.",
-  "Use clarify only when at least two listed existing focuses are genuinely plausible, the message has no explicit reference, recent turns do not resolve it, confidence is low, and choosing wrong would materially matter.",
-  "When clarifying, ask one short natural question and return two to five real candidate ids. Never clarify ordinary task ambiguity inside one focus.",
-  "Always return every field. Use null for primaryGoalId or clarificationQuestion and [] for clarificationGoalIds when a field does not apply.",
-  "Prefer continue when uncertainty is harmless. Never invent a goal id.",
-  "Return only the structured fields. Do not return analysis, hidden reasoning, or chain of thought.",
-].join(" ")
 
 export const selectV2GoalRoutingCandidates = (input: {
   flowId: string
@@ -118,7 +98,12 @@ export const selectV2GoalRoutingCandidates = (input: {
 
 export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRouterResult> => {
   const candidates = selectV2GoalRoutingCandidates(input)
-  const fallback = deterministicV2GoalRoutingFallback(input.userMessage, candidates, input.maxSecondaryGoalLinks)
+  const maxSecondaryGoalLinks = clampInteger(
+    input.maxSecondaryGoalLinks ?? MAX_V2_SECONDARY_GOAL_LINKS,
+    0,
+    MAX_V2_SECONDARY_GOAL_LINKS,
+  )
+  const fallback = deterministicV2GoalRoutingFallback(input.userMessage, candidates, maxSecondaryGoalLinks)
   if (!input.provider?.generateStructured || !input.model) {
     return {
       decision: fallback,
@@ -128,45 +113,48 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
     }
   }
 
+  const observedUsages: ModelUsage[] = []
+  const controller = new AbortController()
   try {
-    const generated = await generateWithTimeout(
-      input.provider,
-      buildStructuredRequest({ ...input, model: input.model }, candidates),
-      input.model.timeoutMs ?? DEFAULT_V2_GOAL_ROUTER_TIMEOUT_MS,
-    )
-    const decision = validateStructuredDecision(
-      generated.output,
-      candidates,
-      input.maxSecondaryGoalLinks ?? MAX_V2_SECONDARY_GOAL_LINKS,
-    )
-    if (!decision) {
-      return {
-        decision: fallback,
+    const output = await runWithTimeout(
+      new GoalRouterAgent(input.provider).route({
+        modelSettings: input.model,
+        projectId: input.projectId,
+        flowId: input.flowId,
+        turnId: input.turnId,
+        workspacePath: input.workspacePath,
+        userMessage: input.userMessage,
         candidates,
-        source: "fallback",
-        fallbackReason: "invalid_output",
-        modelAttempt: {
-          providerId: input.model.providerId,
-          modelId: input.model.modelId,
-          status: "completed",
-          ...(generated.usage ? { usage: generated.usage } : {}),
-          errorCode: "invalid_output",
-        },
-      }
-    }
+        maxSecondaryGoalLinks,
+        ...(input.recentTurns ? { recentTurns: input.recentTurns } : {}),
+        ...(input.clarificationAnswer ? { clarificationAnswer: input.clarificationAnswer } : {}),
+        cacheKey: `v2:${input.flowId}:goal-router:${input.turnId}`,
+        abortSignal: controller.signal,
+        onUsage: (usage) => observedUsages.push(usage),
+      }),
+      input.model.timeoutMs ?? DEFAULT_V2_GOAL_ROUTER_TIMEOUT_MS,
+      controller,
+    )
+    const usage = aggregateUsages(observedUsages)
     return {
-      decision,
+      decision: toRoutingDecision(output),
       candidates,
       source: "model",
       modelAttempt: {
         providerId: input.model.providerId,
         modelId: input.model.modelId,
         status: "completed",
-        ...(generated.usage ? { usage: generated.usage } : {}),
+        ...(usage ? { usage } : {}),
       },
     }
   } catch (error) {
-    const errorCode = isTimeoutError(error) ? "timeout" as const : "provider_error" as const
+    const normalized = normalizeError(error)
+    const errorCode = isTimeoutError(error)
+      ? "timeout" as const
+      : normalized.code === "structured_agent_output_invalid"
+        ? "invalid_output" as const
+        : "provider_error" as const
+    const usage = aggregateUsages(observedUsages)
     return {
       decision: fallback,
       candidates,
@@ -176,6 +164,7 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
         providerId: input.model.providerId,
         modelId: input.model.modelId,
         status: "failed",
+        ...(usage ? { usage } : {}),
         errorCode,
       },
     }
@@ -185,7 +174,7 @@ export const routeV2Goal = async (input: V2GoalRouterInput): Promise<V2GoalRoute
 export const deterministicV2GoalRoutingFallback = (
   userMessage: string,
   candidates: V2GoalRoutingCandidateSet,
-  maxSecondaryGoalLinks = MAX_V2_SECONDARY_GOAL_LINKS,
+  maxSecondaryGoalLinks: number = MAX_V2_SECONDARY_GOAL_LINKS,
 ): V2GoalRoutingDecision => {
   const explicitResume = /\b(?:resume|return to|go back to|continue with|switch to)\b/i.test(userMessage)
   const durableWork = /\b(?:implement|build|fix|change|update|refactor|review|analy[sz]e|research|prepare|inspect|report|presentation|deadline|project|repository|repo|code|files?|documents?|attachments?|images?|database|schema|test|deploy)\b/i.test(userMessage)
@@ -298,111 +287,33 @@ export const planV2GoalRoutingTransition = (input: {
   }
 }
 
-const buildStructuredRequest = (
-  input: V2GoalRouterInput & { model: V2GoalRouterModelSettings },
-  candidates: V2GoalRoutingCandidateSet,
-): StructuredModelRequest<StructuredRouterOutput> => ({
-  providerId: input.model.providerId,
-  modelId: input.model.modelId,
-  system: ROUTER_SYSTEM_PROMPT,
-  messages: [{ role: "user", content: JSON.stringify(routerPayload(input, candidates)) }],
-  runtimeConfig: routerRuntimeConfig(input.model),
-  schema: ROUTER_SCHEMA,
-})
-
-const routerPayload = (input: V2GoalRouterInput, candidates: V2GoalRoutingCandidateSet) => ({
-  userMessage: truncate(input.userMessage, 6_000),
-  ...(input.clarificationAnswer ? { clarificationAnswer: truncate(input.clarificationAnswer, 2_000) } : {}),
-  recentTurns: (input.recentTurns ?? []).slice(-3).map((turn) => ({
-    ...(turn.goalId ? { goalId: turn.goalId } : {}),
-    user: truncate(turn.user, 600),
-    assistant: truncate(turn.assistant, 800),
-  })),
-  foregroundGoalId: candidates.foreground?.goal.id ?? null,
-  candidates: candidates.candidates.map((candidate) => ({
-    id: candidate.goal.id,
-    status: candidate.goal.status,
-    kind: candidate.goal.kind,
-    title: truncate(candidate.goal.title, 180),
-    summary: truncate(candidate.goal.summary ?? "", 600),
-    capsule: candidate.capsule
-      ? {
-          summary: truncate(candidate.capsule.summary, 800),
-          decisions: candidate.capsule.decisions.slice(0, 5).map((value) => truncate(value, 240)),
-          nextActions: candidate.capsule.nextActions.slice(0, 5).map((value) => truncate(value, 240)),
-          openQuestions: candidate.capsule.openQuestions.slice(0, 5).map((value) => truncate(value, 240)),
-        }
-      : null,
-  })),
-})
-
-const routerRuntimeConfig = (model: V2GoalRouterModelSettings): RuntimeConfig => ({
-  providerId: model.providerId,
-  authMode: model.authMode ?? "api_key",
-  modelId: model.modelId,
-  thinkingEnabled: model.thinkingEnabled ?? false,
-  ...(model.thinkingEffort ? { thinkingEffort: model.thinkingEffort } : model.thinkingEnabled ? {} : { thinkingEffort: "none" }),
-  approvalMode: "read_only_auto",
-  sandboxMode: "read_only",
-})
-
-const validateStructuredDecision = (
-  output: unknown,
-  candidates: V2GoalRoutingCandidateSet,
-  maxSecondaryGoalLinks: number,
-): V2GoalRoutingDecision | undefined => {
-  if (!output || typeof output !== "object") return undefined
-  const parsed = ROUTER_SCHEMA.safeParse(output)
-  if (!parsed.success) return undefined
-  const value = parsed.data
-  if (value.action !== "continue" && value.action !== "resume" && value.action !== "create" && value.action !== "clarify") return undefined
-  if (typeof value.confidence !== "number" || !Number.isFinite(value.confidence) || value.confidence < 0 || value.confidence > 1) return undefined
-  if (!Array.isArray(value.secondaryGoalIds) || !value.secondaryGoalIds.every((id) => typeof id === "string")) return undefined
-  const candidateById = new Map(candidates.candidates.map((candidate) => [candidate.goal.id, candidate]))
-  const primaryGoalId = typeof value.primaryGoalId === "string" ? value.primaryGoalId : undefined
+const toRoutingDecision = (value: V2GoalRouterOutput): V2GoalRoutingDecision => {
+  const primaryGoalId = value.primaryGoalId ?? undefined
   if (value.action === "clarify") {
-    if (typeof value.clarificationQuestion !== "string" || !value.clarificationQuestion.trim()) return undefined
-    if (!Array.isArray(value.clarificationGoalIds) || !value.clarificationGoalIds.every((id) => typeof id === "string")) return undefined
-    const clarificationGoalIds = uniqueStrings(value.clarificationGoalIds as string[])
-      .filter((id) => candidateById.has(id))
-      .slice(0, 5)
-    if (clarificationGoalIds.length < 2) return undefined
     return {
       action: "clarify",
       secondaryGoalIds: [],
       confidence: value.confidence,
-      clarificationQuestion: truncate(value.clarificationQuestion.trim(), 1_000),
-      clarificationGoalIds,
+      clarificationQuestion: value.clarificationQuestion?.trim() ?? "",
+      clarificationGoalIds: value.clarificationGoalIds,
       reasonCode: "ambiguous_focus",
     }
   }
-  if (value.action === "continue" && (!primaryGoalId || candidates.foreground?.goal.id !== primaryGoalId)) return undefined
-  if (value.action === "resume" && (!primaryGoalId || !candidates.parked.some((candidate) => candidate.goal.id === primaryGoalId))) return undefined
-  if (value.action === "create" && primaryGoalId) return undefined
-  const maxSecondary = clampInteger(maxSecondaryGoalLinks, 0, MAX_V2_SECONDARY_GOAL_LINKS)
-  const secondaryGoalIds = uniqueStrings(value.secondaryGoalIds as string[])
-    .filter((id) => id !== primaryGoalId && candidateById.has(id))
-    .slice(0, maxSecondary)
   return {
     action: value.action,
     ...(primaryGoalId ? { primaryGoalId } : {}),
-    secondaryGoalIds,
+    secondaryGoalIds: value.secondaryGoalIds,
     confidence: value.confidence,
     reasonCode: value.action === "create" ? "new_goal" : "model_match",
   }
 }
 
-const generateWithTimeout = async <TOutput>(
-  provider: ModelProvider,
-  request: StructuredModelRequest<TOutput>,
+const runWithTimeout = async <TOutput>(
+  run: Promise<TOutput>,
   requestedTimeoutMs: number,
-): Promise<StructuredModelResult<TOutput>> => {
-  const generateStructured = provider.generateStructured
-  if (!generateStructured) throw new Error("structured_generation_unavailable")
+  controller: AbortController,
+): Promise<TOutput> => {
   const timeoutMs = clampInteger(requestedTimeoutMs, 50, 30_000)
-  const controller = new AbortController()
-  const bound = generateStructured.bind(provider) as <T>(request: StructuredModelRequest<T>) => Promise<StructuredModelResult<T>>
-  const providerPromise = bound<TOutput>({ ...request, abortSignal: controller.signal })
   let timeout: ReturnType<typeof setTimeout> | undefined
   let timedOut = false
   const timeoutPromise = new Promise<never>((_resolve, reject) => {
@@ -414,19 +325,46 @@ const generateWithTimeout = async <TOutput>(
   })
   try {
     try {
-      return await Promise.race([providerPromise, timeoutPromise])
+      return await Promise.race([run, timeoutPromise])
     } catch (error) {
       if (timedOut) throw new V2GoalRouterTimeoutError()
       throw error
     }
   } finally {
     if (timeout) clearTimeout(timeout)
-    void providerPromise.catch(() => undefined)
+    void run.catch(() => undefined)
   }
 }
 
 class V2GoalRouterTimeoutError extends Error {}
 const isTimeoutError = (error: unknown): boolean => error instanceof V2GoalRouterTimeoutError
+
+const aggregateUsages = (usages: readonly ModelUsage[]): ModelUsage | undefined => {
+  if (usages.length === 0) return undefined
+  const sum = (field: keyof ModelUsage): number | undefined => {
+    const values = usages.map((usage) => usage[field]).filter((value): value is number => typeof value === "number")
+    return values.length ? values.reduce((total, value) => total + value, 0) : undefined
+  }
+  const inputTokens = sum("inputTokens")
+  const outputTokens = sum("outputTokens")
+  const reasoningTokens = sum("reasoningTokens")
+  const cachedInputTokens = sum("cachedInputTokens")
+  const cacheWriteTokens = sum("cacheWriteTokens")
+  const uncachedInputTokens = sum("uncachedInputTokens")
+  const totalTokens = sum("totalTokens")
+  const costUsd = sum("costUsd")
+  return {
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+    ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+    ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+    ...(uncachedInputTokens === undefined ? {} : { uncachedInputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
+    ...(costUsd === undefined ? {} : { costUsd }),
+    raw: { attempts: usages.map((usage) => usage.raw ?? usage.providerMetadata ?? null) },
+  }
+}
 
 const routingText = (goal: V2Goal, capsule?: V2GoalCapsule): string =>
   [

@@ -167,6 +167,9 @@ export const handleChatMessageSend = async (
       provider: titleProvider,
       projectId,
       conversationId,
+      sessionId: created.sessionId,
+      turnId: created.turnId,
+      workspacePath: store.getPrimaryWorkspacePath(projectId),
       message: created.userMessage,
       fallbackTitle: created.fallbackTitle,
       modelSettings: store.getWorkerModelSetting("title_generator"),
@@ -1330,12 +1333,15 @@ const createContextCompressionRuntime = (
   sessionId: string,
   turnId: string,
 ): ContextCompressionRuntime => {
-  const compressor = store.getWorkerModelSetting("context_compactor")
+  const compressor = store.getWorkerModelSetting("socrates_context_compactor")
   const fallback = contextCompressorFallback(store, compressor)
   return {
     enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
     projectId,
     conversationId,
+    sessionId,
+    turnId,
+    workspacePath: store.getPrimaryWorkspacePath(projectId),
     compressorProviderId: compressor.providerId,
     compressorAuthMode: compressor.authMode ?? "api_key",
     compressorModelId: compressor.modelId,

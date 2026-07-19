@@ -171,7 +171,10 @@ describe("V2FlowStore isolation and lifecycle", () => {
       runtimeConfig,
     })
     const routed = await routeV2Goal({
+      projectId: "proj_one",
       flowId: first.flow.id,
+      turnId: created.turn.id,
+      workspacePath: path.join(root, "one"),
       userMessage: created.userMessage.content,
       goals: store.listGoalsForRouter(first.flow.id),
       capsules: store.listCapsulesForRouter(first.flow.id),
@@ -205,7 +208,21 @@ describe("V2FlowStore isolation and lifecycle", () => {
     const { root, handle, store } = setup()
     const flow = store.ensureFlow("proj_one").flow
     const first = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "First goal", runtimeConfig })
-    store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, messageId: first.userMessage.id, messageContent: first.userMessage.content, result: await routeV2Goal({ flowId: flow.id, userMessage: first.userMessage.content, goals: [] }) })
+    store.applyRouting({
+      projectId: "proj_one",
+      flowId: flow.id,
+      turnId: first.turn.id,
+      messageId: first.userMessage.id,
+      messageContent: first.userMessage.content,
+      result: await routeV2Goal({
+        projectId: "proj_one",
+        flowId: flow.id,
+        turnId: first.turn.id,
+        workspacePath: path.join(root, "one"),
+        userMessage: first.userMessage.content,
+        goals: [],
+      }),
+    })
     store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, content: "First response" })
 
     const second = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "A completely different second goal", runtimeConfig })

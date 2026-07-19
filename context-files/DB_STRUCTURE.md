@@ -937,7 +937,7 @@ Stores user-configurable model choices for background workers that do not have a
 | Column | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `id` | `TEXT` | yes | Primary key, stable id like `wms_...`. |
-| `worker_id` | `TEXT` | yes | Unique worker role: `skill_writer`, `context_compactor`, `title_generator`, or `memory_router`. |
+| `worker_id` | `TEXT` | yes | Unique worker role: `skill_writer`, `socrates_context_compactor`, `memory_context_compactor`, `title_generator`, `goal_router`, `memory_router`, or `frontier`. Migration 0028 copies the legacy shared `context_compactor` selection into both compactor roles and removes that legacy row. |
 | `provider_id` | `TEXT` | yes | Provider id from the normal model registry. |
 | `auth_mode` | `TEXT` | yes | Provider auth source, defaulting to `api_key`; `chatgpt_subscription` is valid only for OpenAI ChatGPT Codex worker selections. Local Ollama chat uses `api_key` with no stored secret. |
 | `model_id` | `TEXT` | yes | Provider model id from the normal model registry. |

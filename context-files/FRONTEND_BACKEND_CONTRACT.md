@@ -135,7 +135,7 @@ WS /v2/ws
 
 V2 client commands are `v2.flow.subscribe`, `v2.flow.unsubscribe`, `v2.message.send`, `v2.routing.clarification.respond`, `v2.focus.update`, `v2.turn.cancel`, `v2.approval.decide`, `v2.feedback.submit`, `v2.credential.input.submit`, and the `v2.terminal.stop/input/resize/rename` family. Focus actions are `switch`, `pause`, `finish`, `reopen`, `archive`, `pin`, and `unpin`. The live server emits connection/snapshot hydration, turns/messages, goal routing/clarification/capsules/transitions, context dispositions/compaction, tool/approval/credential/Terminal/error lifecycle, feedback, and Frontier handover. The contract also reserves typed `v2.artifact.created` and `v2.speech.job.updated` events; artifact/speech jobs are currently handled through HTTP. All envelopes carry schema version 2 plus project/Flow scope; runtime events use a `v2.` prefix.
 
-The V2 project route is `/seamless/projects/:projectId`; `/seamless` redirects to the Classic `/projects` directory. The Classic project dashboard owns the capability-aware **Go to Flow View** link into its matching Flow; a mapped Classic chat uses **Continue in Flow View**. These labels do not rename the internal route namespace. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router may reuse the configured fast structured `title_generator` worker model selection, but it calls the strict V2 routing schema and is not a title rewrite.
+The V2 project route is `/seamless/projects/:projectId`; `/seamless` redirects to the Classic `/projects` directory. The Classic project dashboard owns the capability-aware **Go to Flow View** link into its matching Flow; a mapped Classic chat uses **Continue in Flow View**. These labels do not rename the internal route namespace. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router has a dedicated `goal_router` model/thinking setting and calls the strict V2 routing schema through the shared structured-agent runner; it is not a title rewrite.
 
 ## Route Contract
 
@@ -1180,6 +1180,7 @@ normal chat send uses WebSocket chat.message.send
 after the first user message is saved, emit conversation.updated with the placeholder title
 generate a personalized title from the first text/image message
 title model: resolved Title Generator worker model setting
+execution: no-tool TitleGeneratorAgent through StructuredToolAgentRunner with the prompt in packages/core/src/prompts/titleGeneratorPrompt.ts and strict conversationTitleAgentOutputSchema validation
 OpenRouter built-in default: openrouter meta-llama/llama-4-maverick with thinking off
 ChatGPT Codex effective default, when connected and the saved setting is built-in/default unavailable: openai chatgpt_subscription gpt-5.4-mini with low reasoning
 if a generated title is returned and the title is still the placeholder, update the conversation and emit conversation.updated
@@ -2541,12 +2542,19 @@ Rules:
 
 ### Worker Model Settings
 
-Skill Writer, Context Compactor, Title Generator, Memory Router, and Frontier model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these workers while preserving the default models already used by the app. Memory Router controls the structured pre-turn and post-evidence routing calls. Frontier controls the one-way same-task takeover target.
+Skill Writer, Socrates Context Compactor, Memory Context Compactor, Title Generator, Goal Router, Memory Router, and Frontier model settings are independently user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for all seven workers while preserving the default models already used by the app. Socrates Context Compactor controls Classic/Flow chat compression and V2 context maintenance; Memory Context Compactor controls Global Memory Agent and Skill Writer compression. Memory Router controls the structured pre-turn and post-evidence routing calls. Frontier controls the one-way same-task takeover target.
 
 All model settings are auth-mode-aware. `authMode = "api_key"` means normal provider API credentials or a local direct provider path such as Ollama. `authMode = "chatgpt_subscription"` is currently valid only for OpenAI ChatGPT Codex subscription auth. Saved unavailable settings are preserved, and runtime/UI resolution returns an effective fallback without overwriting the saved row. Ollama settings are valid when the exact discovered local model is still available; Ollama thinking options are intentionally just Off and On.
 
 ```ts
-type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator" | "memory_router" | "frontier"
+type WorkerModelRole =
+  | "skill_writer"
+  | "socrates_context_compactor"
+  | "memory_context_compactor"
+  | "title_generator"
+  | "goal_router"
+  | "memory_router"
+  | "frontier"
 
 type WorkerModelSettings = {
   workerId: WorkerModelRole
@@ -2880,7 +2888,7 @@ new user query
 current-turn tool calls only
 ```
 
-When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. The rebuilt request has an 80k preferred soft target, with at most 60k classified `excellent`, 60-80k `preferred`, 80-120k `acceptable`, and anything above the 120k post-compaction ceiling rejected. The 180k limit remains the hard pre-provider ceiling. Tail selection keeps recent whole turns only within the remaining preferred budget after reserving fixed prompt/tool context, the active turn, and the maximum summary allowance; it does not spend another model call solely to improve the size class. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with validated source-turn handles and targeted lexical/semantic/audit retrieval hints. Active snapshots replace represented raw turns in the model request without deleting SQLite history. Bounded deterministic carryover writes exact `.socrates/attachments/...` paths to `relevantFiles`, exact shell commands to `toolState`, and explicit unresolved/do-not-complete user instructions to `blocked`. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. The compressor model comes from the resolved Context Compactor worker setting; built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
+When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. The rebuilt request has an 80k preferred soft target, with at most 60k classified `excellent`, 60-80k `preferred`, 80-120k `acceptable`, and anything above the 120k post-compaction ceiling rejected. The 180k limit remains the hard pre-provider ceiling. Tail selection keeps recent whole turns only within the remaining preferred budget after reserving fixed prompt/tool context, the active turn, and the maximum summary allowance; it does not spend another model call solely to improve the size class. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with validated source-turn handles and targeted lexical/semantic/audit retrieval hints. Active snapshots replace represented raw turns in the model request without deleting SQLite history. Bounded deterministic carryover writes exact `.socrates/attachments/...` paths to `relevantFiles`, exact shell commands to `toolState`, and explicit unresolved/do-not-complete user instructions to `blocked`. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. All compressor calls run through the no-tool `CompressorAgent` and shared structured runner. Classic/Flow uses the resolved Socrates Context Compactor setting; Global Memory Agent and Skill Writer compression use the Memory Context Compactor setting. Built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
 
 Inline `chat.message.send.content` is capped at 10,000 characters and one message may contain at most 15 attachment ids. Oversized pasted text is uploaded as a `text/plain` attachment under `.socrates/attachments/`; the provider sees a compact name/path/hash/size provenance manifest, not the full bytes, until Socrates explicitly reads or searches that source. Image and text attachments are each capped at 5 MB and the combined message attachment payload is capped at 20 MB.
 
