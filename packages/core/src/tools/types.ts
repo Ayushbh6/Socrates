@@ -5,6 +5,8 @@ import type {
   BashToolOutput,
   CurrentTimeToolInput,
   CurrentTimeToolOutput,
+  ContextDispositionToolInput,
+  ContextDispositionToolOutput,
   EditToolInput,
   EditToolOutput,
   ListProjectResourcesToolInput,
@@ -162,6 +164,7 @@ export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
   }
   modelCallId?: string | undefined
   stepIndex?: number | undefined
+  applyContextDisposition?: (input: ContextDispositionToolInput) => Promise<ContextDispositionToolOutput>
 }
 
 export type ToolPolicyDecision =

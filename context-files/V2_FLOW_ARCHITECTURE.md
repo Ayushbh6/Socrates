@@ -307,38 +307,27 @@ After Socrates has inspected a substantial tool or retrieval result, the result 
 | `release` | Remove it from active context. | Raw source remains retrievable. |
 | `unresolved` | Keep it provisionally because its value cannot yet be judged. | Raw source remains and the item receives a mandatory review deadline. |
 
-The implemented first cut runs one bounded post-turn structured Context Distiller over eligible new/due evidence items, then normalizes its proposal through deterministic evidence-safety policy. It does not compact the conversation. Conversation compaction before provider calls and post-turn precomputation both run through the same core `SocratesAgent.precomputeContext`/`CompressorAgent` path used by Classic, with the configured `socrates_context_compactor` model selection and the shared fixed thresholds. The selected foreground model's advertised context window is telemetry and compatibility metadata only.
+The implemented path is owned by the shared `SocratesAgent` loop used by Classic and Flow. Substantial successful tool outputs receive compact handles only after the main model has inspected their exact content. When Socrates needs another functional tool, it calls `context_disposition` in the same parallel response and chooses `keep_exact`, `distill`, `release`, or `unresolved`. There is no separate Context Distiller request and no post-turn disposition worker. Tiny outputs need no ceremony, and a final answer needs no disposition because intermediate tool results are not carried into the next visible conversation turn.
 
-This does not add a full foreground Socrates call after every tool output. Within-turn pressure and post-turn precomputation use the shared compressor through a V2 persistence adapter, while post-turn evidence maintenance handles only the finer dispositions. Tiny outputs do not need ceremony; a future main-agent disposition signal may augment the worker, but it is not required for the implemented first cut.
+Conversation compaction before provider calls and post-turn precomputation both run through the same core `SocratesAgent.precomputeContext`/`CompressorAgent` path used by Classic, with the configured `socrates_context_compactor` model selection and shared fixed thresholds. The selected foreground model's advertised context window is telemetry and compatibility metadata only. Flow persists exact tool evidence for audit/retrieval with `includeInContext = false`; it does not automatically project old exact or distilled evidence into later turns.
 
 ### Distillation Contract
 
-The Context Distiller does:
+Main Socrates does the following in its ordinary tool loop:
 
 - Receive exact evidence references, not a contextless copy with lost provenance.
 - Receive a narrow question such as "retain the clauses relevant to termination liability."
 - Produce a bounded structured brief with source anchors.
 - Separate direct source facts from inference.
 - Preserve exact quotations only when required and within source limits.
-- Record its provider/model, focus, output, and source links for audit.
+- Record exact provider/tool evidence and the typed control result for audit.
 - Never delete or overwrite source evidence.
 
-It should use the shared model-runner, structured-validation, usage, and error patterns. Its model may be small and fast. Local operation is allowed when the configured model can satisfy the structured contract; hosted-model parity is not required.
+The control input is deliberately small: result handle, action, and an optional summary required only for `distill`. The stable tool schema is shared across providers and avoids changing the provider cache prefix between calls.
 
 ### Unresolved Guardrails
 
-Models tend to preserve too much when uncertainty has no cost. `unresolved` therefore cannot become a permanent parking lot.
-
-The initial V2 guardrail to implement and evaluate is:
-
-```text
-maximum unresolved active items per foreground goal: 5
-maximum age before mandatory disposition review: 3 subsequent Socrates turns
-```
-
-The user originally framed this as roughly four or five items and two or three turns. Five and three are the initial explicit defaults, not eternal constants.
-
-Before the deadline, Socrates must choose `keep_exact`, `distill`, or `release`. An item may remain open only by creating a new explicitly justified decision event; silent rollover is forbidden. Parking a goal should convert genuine unresolved work into an explicit capsule blocker or resolve the active context item rather than leaving it globally active.
+`unresolved` keeps the exact result visible only within the current turn so the next functional result can clarify its value. It is never a cross-turn parking state. The shared 170k compactor and hard pre-provider ceiling remain the bounded fallback if Socrates retains too much exact evidence in one turn.
 
 ### Mandatory Safety Rules
 
@@ -656,7 +645,7 @@ If added:
 ## Failure And Recovery Principles
 
 - A Goal Router failure must not corrupt the Flow. Use a conservative fallback, persist the error, and keep the user's message visible.
-- A Context Distiller failure leaves exact evidence available and may temporarily keep the source exact or force a bounded main-agent review.
+- A malformed or unavailable `context_disposition` call leaves the exact current-turn result visible; the ordinary Socrates loop may retry only with another real tool call or continue to a final answer.
 - Restart recovery must distinguish an unfinished V2 turn from a parked goal and from an active durable Terminal/task.
 - Capsule creation failure must not erase the prior capsule version.
 - Retrieval failure must not pretend released evidence no longer exists.
@@ -673,9 +662,9 @@ The first cut was built in isolated vertical slices:
 1. V2 feature flag, separate UI entry, V2 contracts, and namespaced persistence foundation.
 2. One persistent Flow per project with V2 messages/turns and restart-safe timeline hydration.
 3. Bounded Goal Router, one foreground goal, goal-message links, state transitions, and parked capsules.
-4. Immutable evidence records plus context items and auditable dispositions.
-5. Context Distiller, unresolved deadlines, goal-aware context assembly, and proactive pressure review.
-6. Retrieval/re-entry for released evidence and long-flow reliability evaluation.
+4. Immutable V2 evidence records for audit/retrieval without automatic later-turn projection.
+5. Shared main-Socrates within-turn dispositions plus the fixed shared 170k compactor.
+6. Explicit retrieval/re-entry for older exact evidence and long-flow reliability evaluation.
 7. V2 Voice V1: local Whisper or the three-model OpenRouter STT allowlist, plus one-off local Kokoro read-aloud.
 8. Experimental UI polish and optional goal/context inspection. Ephemeral mood-aware tone remains later work.
 9. Goal completion/archival, sparse same-turn clarification, and the one-focus/one-Classic-conversation bridge.

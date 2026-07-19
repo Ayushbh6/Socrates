@@ -133,10 +133,13 @@ apps/web/src/components/chat + hooks/useClassicVoiceTranscription.ts + lib/speec
   -> shared Classic/Flow shell and composer, Classic draft-only STT, and shared browser audio normalization
 
 apps/server/src/routes/v2* + src/v2 + services/v2
-  -> V2 HTTP/WebSocket transport, Flow/Terminal runtime, stores, context maintenance, speech, feature flag
+  -> V2 HTTP/WebSocket transport, Flow/Terminal runtime, stores, exact evidence audit, speech, feature flag
+
+packages/core/src/agent + context + tools
+  -> shared Socrates loop, within-turn tool-output disposition, fixed 170k compaction
 
 packages/core/src/v2
-  -> V2 Goal Router, Flow orchestrator, context ledger, Context Distiller integration
+  -> V2 Goal Router, Flow orchestration, context-ledger compatibility primitives
 
 packages/contracts/src/v2Flow.ts
   -> V2-only schemas, commands, events, and entity types

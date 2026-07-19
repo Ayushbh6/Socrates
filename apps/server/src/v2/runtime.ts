@@ -9,8 +9,6 @@ import {
   type V2Turn,
 } from "@socrates/contracts"
 import {
-  assembleV2GoalWorkingContext,
-  deriveV2ContextBudget,
   findModelOption,
   routeV2Goal,
   type SocratesAgent,
@@ -22,7 +20,6 @@ import { createId, normalizeError, nowIso, SocratesError } from "@socrates/share
 import { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue } from "@socrates/workspace"
 import type { SocratesStore } from "../services/store"
 import { createV2ContextCompressionRuntime } from "../services/v2/contextCompressionRuntime"
-import { V2ContextMaintenanceService } from "../services/v2/contextMaintenance"
 import type { V2ContinuedTerminalTask, V2FlowStore, V2ReadyTerminalTask } from "../services/v2/flowStore"
 import { ActiveTurns } from "../ws/activeTurns"
 import { makeV2Event } from "./eventSender"
@@ -48,7 +45,6 @@ export class V2ExecutionRuntime {
   readonly activeTurns: ActiveTurns
   readonly terminals: V2TerminalRuntime
   private readonly inFlight = new Map<string, Promise<void>>()
-  private readonly contextMaintenance: V2ContextMaintenanceService
   private initialized = false
 
   constructor(private readonly deps: V2ExecutionRuntimeDeps) {
@@ -57,10 +53,6 @@ export class V2ExecutionRuntime {
     this.terminals = new V2TerminalRuntime(deps.store, (type, payload, scope, source) => {
       this.emitUntyped(type, payload, scope, source ?? "terminal")
     }, { ...(deps.supervisorScope ? { supervisorScope: deps.supervisorScope } : {}) })
-    this.contextMaintenance = new V2ContextMaintenanceService({
-      store: deps.store,
-      ...(deps.routerProvider ? { provider: deps.routerProvider } : {}),
-    })
   }
 
   async initialize(): Promise<void> {
@@ -848,31 +840,6 @@ export class V2ExecutionRuntime {
           turnId: created.turn.id,
         }, "main_agent")
       }
-      const contextWorker = this.deps.sharedStore.getWorkerModelSetting("socrates_context_compactor")
-      const maintenance = await this.contextMaintenance.runAfterTurn({
-        projectId: command.projectId,
-        flowId: command.flowId,
-        goalId: activeGoalId,
-        turnId: created.turn.id,
-        completedTurnOrdinal: created.turn.ordinal,
-        query: command.payload.content,
-        runtimeConfig,
-        workerRuntime: {
-          providerId: contextWorker.providerId,
-          ...(contextWorker.authMode ? { authMode: contextWorker.authMode } : {}),
-          modelId: contextWorker.modelId,
-          thinkingEnabled: contextWorker.thinkingEnabled,
-          ...(contextWorker.thinkingEffort ? { thinkingEffort: contextWorker.thinkingEffort } : {}),
-        },
-      })
-      for (const event of maintenance.events) {
-        this.emit(event.type, event.payload, {
-          projectId: command.projectId,
-          flowId: command.flowId,
-          goalId: activeGoalId,
-          turnId: created.turn.id,
-        }, event.source)
-      }
       for (const modelCallId of modelCallIds) {
         if (completedModelCalls.has(modelCallId)) continue
         this.deps.store.completeModelCall({
@@ -927,7 +894,6 @@ export class V2ExecutionRuntime {
     includeImages: boolean
     lateDeveloperContext?: string
   }) {
-    const budget = deriveV2ContextBudget()
     const history = this.deps.store.getModelMessages(input.flowId, input.goalId, input.includeImages)
     // Flow supplies the full active-goal conversation to the same Socrates
     // runtime as Classic. The shared 170k/180k compactor owns history
@@ -935,37 +901,9 @@ export class V2ExecutionRuntime {
     const retained = history
     const snapshot = this.deps.store.getSnapshot(input.projectId, input.flowId)
     const capsule = snapshot.latestCapsules.find((item) => item.goalId === input.goalId)
-    const fixedContextTokens = estimateRuntimeContextTokens([
-      snapshot.foregroundGoal?.title ?? "Current Flow goal",
-      capsule?.summary ?? "",
-      input.lateDeveloperContext ?? "",
-    ])
-    const retainedHistoryTokens = retained.reduce(
-      (sum, message) => sum + Math.max(1, Math.ceil(safeStringify(message.content).length / 4)),
-      0,
-    )
-    const evidenceTokenLimit = Math.max(
-      0,
-      budget.postPruneTargetTokens - retainedHistoryTokens - fixedContextTokens,
-    )
-    const contextItems = this.deps.store.getActiveContextItems(input.flowId, input.goalId)
-    const assembled = await assembleV2GoalWorkingContext({
-      foregroundGoalId: input.goalId,
-      query: input.query,
-      messages: [],
-      contextItems,
-      budget,
-      evidenceTokenLimit,
-      exactRetriever: (refs) => this.deps.store.retrieveExactEvidence(input.flowId, refs.map((ref) => ref.evidenceId)).map((record) => ({
-        evidenceRef: record.ref,
-        exactContent: record.exactContent,
-      })),
-    })
     const sections = [
       `<active_goal id="${input.goalId}">${snapshot.foregroundGoal?.title ?? "Current Flow goal"}</active_goal>`,
       capsule ? `<goal_capsule version="${capsule.version}">${capsule.summary}</goal_capsule>` : "",
-      ...assembled.distilledItems.map((item) => `<distilled_evidence ref="${item.evidenceRef.sourceLocator}">${item.text}</distilled_evidence>`),
-      ...assembled.exactEvidence.map((item) => `<exact_evidence ref="${item.evidenceRef.sourceLocator}">${item.exactContent}</exact_evidence>`),
       input.lateDeveloperContext ? `<terminal_wake_context>${input.lateDeveloperContext}</terminal_wake_context>` : "",
     ].filter(Boolean)
     if (sections.length <= 1) return retained
@@ -991,14 +929,17 @@ export class V2ExecutionRuntime {
     }
     if (event.type === "tool.call.completed") {
       const toolCall = this.deps.store.completeToolCall(event.toolCallId, event.output)
-      this.deps.store.recordEvidence({
-        ...scope,
-        sourceKind: event.toolName === "bash" ? "terminal_output" : "tool_output",
-        sourceId: event.toolCallId,
-        title: `${event.toolName}: ${event.summary}`.slice(0, 1_000),
-        content: safeStringify(event.output),
-        rank: 30,
-      })
+      if (event.toolName !== "context_disposition") {
+        this.deps.store.recordEvidence({
+          ...scope,
+          sourceKind: event.toolName === "bash" ? "terminal_output" : "tool_output",
+          sourceId: event.toolCallId,
+          title: `${event.toolName}: ${event.summary}`.slice(0, 1_000),
+          content: safeStringify(event.output),
+          rank: 30,
+          includeInContext: false,
+        })
+      }
       this.emit("v2.tool.call.updated", { toolCall }, scope, "tool")
       return
     }
@@ -1099,9 +1040,6 @@ const actorForSource = (source: string): { type: "user" | "main_agent" | "worker
   if (source === "context_compactor" || source === "context_distiller") return { type: "worker", label: source === "context_compactor" ? "Context Compactor" : "Context Distiller" }
   return { type: "system" }
 }
-
-const estimateRuntimeContextTokens = (parts: readonly string[]): number =>
-  parts.reduce((sum, part) => sum + (part ? Math.max(1, Math.ceil(part.length / 4)) : 0), 0)
 
 const safeStringify = (value: unknown): string => {
   try {

@@ -2,6 +2,7 @@ import type { ModelToolDefinition, ToolName } from "@socrates/contracts"
 import { applyPatchTool } from "./applyPatchTool"
 import { bashTool } from "./bashTool"
 import { currentTimeTool } from "./currentTimeTool"
+import { contextDispositionTool } from "./contextDispositionTool"
 import { editTool } from "./editTool"
 import { editFilesTool } from "./editFilesTool"
 import { frontierHandoverTool } from "./frontierHandoverTool"
@@ -48,6 +49,7 @@ const tools = [
   listProjectResourcesTool,
   mcpRegistryTool,
   memoryNoteTool,
+  contextDispositionTool,
 ] as const
 
 export type RegisteredTool = SocratesTool<any, any>

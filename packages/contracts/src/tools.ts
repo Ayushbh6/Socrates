@@ -29,6 +29,7 @@ export const baseToolNameSchema = z.enum([
   "turn_evidence",
   "read_memory_journal",
   "skill_write",
+  "context_disposition",
   "focus_ledger",
 ])
 export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
@@ -55,6 +56,63 @@ export const frontierHandoverToolOutputSchema = z
   })
   .strict()
 export type FrontierHandoverToolOutput = z.infer<typeof frontierHandoverToolOutputSchema>
+
+export const contextDispositionActionSchema = z.enum(["keep_exact", "distill", "release", "unresolved"])
+export type ContextDispositionAction = z.infer<typeof contextDispositionActionSchema>
+
+export const contextDispositionDecisionSchema = z
+  .object({
+    result: z.string().regex(/^result_[1-9]\d*$/),
+    action: contextDispositionActionSchema,
+    summary: z.string().trim().min(1).max(1_200).optional(),
+  })
+  .strict()
+  .superRefine((decision, context) => {
+    if (decision.action === "distill" && !decision.summary) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["summary"],
+        message: "summary is required when action is distill",
+      })
+    }
+    if (decision.action !== "distill" && decision.summary) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["summary"],
+        message: "summary is allowed only when action is distill",
+      })
+    }
+  })
+
+export const contextDispositionToolInputSchema = z
+  .object({
+    decisions: z.array(contextDispositionDecisionSchema).min(1).max(8),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    const seen = new Set<string>()
+    for (const [index, decision] of input.decisions.entries()) {
+      if (seen.has(decision.result)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["decisions", index, "result"],
+          message: "each result may be classified only once per call",
+        })
+      }
+      seen.add(decision.result)
+    }
+  })
+export type ContextDispositionToolInput = z.infer<typeof contextDispositionToolInputSchema>
+
+export const contextDispositionToolOutputSchema = z
+  .object({
+    applied: z.array(z.object({ result: z.string(), action: contextDispositionActionSchema }).strict()).max(8),
+    ignored: z.array(z.string()).max(8),
+    piggybacked: z.boolean(),
+    summary: z.string().min(1),
+  })
+  .strict()
+export type ContextDispositionToolOutput = z.infer<typeof contextDispositionToolOutputSchema>
 
 export const focusLedgerOperationSchema = z.enum(["list", "inspect", "update_current", "record_blocker", "complete_current"])
 

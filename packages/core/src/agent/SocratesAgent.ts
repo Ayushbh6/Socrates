@@ -29,6 +29,7 @@ import {
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
 } from "../context/contextCompression"
+import { ToolOutputDispositionLedger } from "../context/toolOutputDisposition"
 import { buildSocratesDynamicContext, buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { renderSocratesSurfaceMap } from "@socrates/contracts"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
@@ -150,6 +151,7 @@ export class SocratesAgent {
   async *streamTurn(input: SocratesAgentTurnInput): AsyncIterable<SocratesAgentEvent> {
     const system = input.systemPromptOverride ?? buildSocratesSystemPrompt()
     const messages: ModelMessage[] = [...input.messages]
+    const toolOutputDispositions = new ToolOutputDispositionLedger(messages)
     const maxToolCallsPerTurn = input.maxToolCallsPerTurn ?? 80
     const maxConfirmedToolErrorsPerTurn = input.maxConfirmedToolErrorsPerTurn ?? 10
     const maxParallelToolCalls = input.maxParallelToolCalls ?? 5
@@ -384,11 +386,13 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         if (modelEvent.type === "model.tool_call.completed") {
           const parsed = normalizedToolCallSchema.safeParse(modelEvent.toolCall)
           if (parsed.success) {
-            const inputKey = stableToolInputKey(parsed.data.toolName, parsed.data.input)
-            const nextCount = (toolInputCounts.get(inputKey) ?? 0) + 1
-            toolInputCounts.set(inputKey, nextCount)
-            if (nextCount >= 3) {
-              repeatedToolInputsThisStep.add(`${parsed.data.toolName} ${JSON.stringify(parsed.data.input)}`)
+            if (parsed.data.toolName !== "context_disposition") {
+              const inputKey = stableToolInputKey(parsed.data.toolName, parsed.data.input)
+              const nextCount = (toolInputCounts.get(inputKey) ?? 0) + 1
+              toolInputCounts.set(inputKey, nextCount)
+              if (nextCount >= 3) {
+                repeatedToolInputsThisStep.add(`${parsed.data.toolName} ${JSON.stringify(parsed.data.input)}`)
+              }
             }
             toolCalls.push({
               ...parsed.data,
@@ -559,6 +563,11 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           stepIndex: step,
           ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          applyContextDisposition: async (dispositionInput) =>
+            toolOutputDispositions.apply(
+              dispositionInput,
+              toolCalls.some((toolCall) => toolCall.toolName !== "context_disposition"),
+            ),
         },
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,
         maxParallelToolCalls,
@@ -583,16 +592,12 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         yield { type: "agent.suspended", wait: waitResult.output }
         return
       }
-      const nextUsedToolCalls = usedToolCalls + execution.countedToolCalls
-      if (nextUsedToolCalls >= 10) {
-        compactPriorToolHistoryForModel(messages)
-      }
       usedToolCalls += execution.countedToolCalls
       const confirmedToolErrorResults = execution.results.filter(isConfirmedToolErrorResult)
       confirmedToolErrors += confirmedToolErrorResults.length
 
       messages.push({ role: "assistant", content: assistantParts })
-      messages.push({
+      const toolResultMessage: ModelMessage = {
         role: "tool",
         content: execution.results.map((result) => ({
           type: "tool-result",
@@ -600,7 +605,8 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           toolName: result.toolName,
           output: sanitizeToolExecutionResultForModel(result, result.providerToolCallId ?? result.toolCallId),
         })),
-      })
+      }
+      messages.push(toolResultMessage)
       const rejectedHandover = execution.results.find(
         (result) =>
           result.ok === false &&
@@ -649,11 +655,13 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       }
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
-      docsLedger.recordBatch({ toolCalls, results: execution.results })
-      reconciliationVerification.recordBatch(toolCalls, execution.results)
+      const operationalToolCalls = toolCalls.filter((toolCall) => toolCall.toolName !== "context_disposition")
+      const operationalResults = execution.results.filter((result) => result.toolName !== "context_disposition")
+      docsLedger.recordBatch({ toolCalls: operationalToolCalls, results: operationalResults })
+      reconciliationVerification.recordBatch(operationalToolCalls, operationalResults)
       const ledgerUpdate = actionLedger.recordBatch({
-        toolCalls,
-        results: execution.results,
+        toolCalls: operationalToolCalls,
+        results: operationalResults,
         estimatedTokens: preparedContext.estimatedTokens,
         currentTurnTokenGrowth,
       })
@@ -661,7 +669,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       for (const warning of ledgerUpdate.warnings) {
         messages.push({ role: "developer", content: warning })
       }
-      memorySaveLedger.recordBatch({ toolCalls, results: execution.results })
+      memorySaveLedger.recordBatch({ toolCalls: operationalToolCalls, results: operationalResults })
       const memoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
       if (memoryLedgerMessage) {
         messages.push({ role: "developer", content: memoryLedgerMessage })
@@ -679,6 +687,11 @@ You are Frontier and now own this task for the rest of the current turn. Continu
           content: `You have repeated the same exact tool call input at least 3 times this turn (${[...repeatedToolInputsThisStep].slice(0, 3).join("; ")}). Stop repeating identical calls. Either answer from the evidence already gathered, inspect a different target, or ask the user for more information.`,
         })
       }
+      toolOutputDispositions.recordBatch({
+        message: toolResultMessage,
+        providerId: currentProviderId,
+        modelId: currentModelId,
+      })
       if (!totalToolCountNudgeSent && usedToolCalls >= 50) {
         messages.push({
           role: "user",
@@ -728,7 +741,8 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       const runnable: NormalizedToolCall[] = []
 
       for (const toolCall of input.toolCalls) {
-        if (countedToolCalls >= input.remainingBudget) {
+        const countsTowardBudget = toolCall.toolName !== "context_disposition"
+        if (countsTowardBudget && countedToolCalls >= input.remainingBudget) {
           budgetExhausted = true
           const error = new SocratesError("tool_budget_exhausted", "The per-turn tool-call budget was exhausted.")
           queue.push({
@@ -741,7 +755,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
           results.set(toolCall.toolCallId, toolErrorResult(toolCall, error))
           continue
         }
-        countedToolCalls += 1
+        if (countsTowardBudget) countedToolCalls += 1
         runnable.push(toolCall)
       }
 
@@ -1691,64 +1705,6 @@ const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__
 
 const isConfirmedToolErrorResult = (result: ToolExecutionResult): boolean =>
   result.ok === false && typeof result.error?.code === "string" && result.error.code.length > 0 && typeof result.error.message === "string" && result.error.message.length > 0
-
-const compactPriorToolHistoryForModel = (messages: ModelMessage[]): void => {
-  for (const message of messages) {
-    if (message.role !== "tool" || !Array.isArray(message.content)) {
-      continue
-    }
-    for (const part of message.content) {
-      if (!part || typeof part !== "object" || (part as { type?: unknown }).type !== "tool-result") {
-        continue
-      }
-      const record = part as { output?: unknown; toolName?: unknown }
-      record.output = compactModelVisibleToolOutput(record.output, typeof record.toolName === "string" ? record.toolName : undefined)
-    }
-  }
-}
-
-const compactModelVisibleToolOutput = (output: unknown, toolName: string | undefined): unknown => {
-  if (!output || typeof output !== "object" || Array.isArray(output)) {
-    return output
-  }
-  const record = output as Record<string, unknown>
-  if (record.contextCompacted === true) {
-    return output
-  }
-  if (record.ok === false) {
-    const error = record.error && typeof record.error === "object" && !Array.isArray(record.error) ? (record.error as Record<string, unknown>) : undefined
-    return {
-      toolName,
-      ok: false,
-      contextCompacted: true,
-      message: `Earlier failed ${toolName ?? "tool"} result omitted for context cleanliness after 10+ tool calls.`,
-      ...(typeof error?.code === "string" ? { code: error.code } : {}),
-      ...(typeof error?.message === "string" ? { errorMessage: error.message } : {}),
-    }
-  }
-  const serialized = safeJsonPreview(output, 4_001)
-  if (serialized.length <= 4_000) {
-    return output
-  }
-  return {
-    toolName,
-    ok: record.ok === true,
-    contextCompacted: true,
-    message:
-      "Earlier large tool result compacted after 10+ tool calls. Re-read the file, rerun a targeted search, or use trace_retrieve audit/inspect if exact older evidence is needed.",
-    preview: safeJsonPreview(output, 2_000),
-  }
-}
-
-const safeJsonPreview = (value: unknown, limit: number): string => {
-  let text: string
-  try {
-    text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
-  } catch {
-    text = String(value)
-  }
-  return text.length > limit ? `${text.slice(0, limit)}...` : text
-}
 
 const DOCS_PREFLIGHT_CHECKPOINT = `<runtime_socrates_docs_preflight>
 This turn has workspace tools. Read-only/chat work does not require project docs. Before any bash, edit, or apply_patch call, first call project_docs with area="notes" and call repo_docs in this same turn using read, search, read_index, or read_section. After any successful bash, edit, or apply_patch call, read/search project_docs area="memory" before final answer; update memory only if there is durable project value. The active state ledger lives in project notes and must be fetched with project_docs, not assumed from the prompt. Use tool_docs before unfamiliar, failed, complex, or edge-case tool use.

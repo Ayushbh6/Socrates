@@ -366,7 +366,7 @@ describe("V2ExecutionRuntime", () => {
       turnId: created.turn.id,
       workspacePath: testRuntime.workspace,
     })
-    const coreInternalTools = new Set(["handover_to_frontier"])
+    const coreInternalTools = new Set(["handover_to_frontier", "context_disposition"])
     const sharedExecutorTools = createDefaultToolRegistry()
       .list()
       .map((tool) => tool.name)
@@ -429,6 +429,32 @@ describe("V2ExecutionRuntime", () => {
     if (finalReplayEvent?.type === "v2.flow.snapshot") {
       expect(finalReplayEvent.payload.snapshot.lastEventSequence).toBe(snapshot.lastEventSequence)
     }
+  })
+
+  it("keeps exact Flow tool evidence auditable without injecting it into the next Socrates turn", async () => {
+    const testRuntime = setup(toolProofProvider())
+    fs.writeFileSync(path.join(testRuntime.workspace, "note.txt"), "IMMUTABLE-V2-EXACT-EVIDENCE-42")
+    const streamTurn = vi.spyOn(testRuntime.agent, "streamTurn")
+    const flow = testRuntime.flowStore.ensureFlow("proj_one").flow
+
+    await testRuntime.runtime.startTurn(asWebSocket(new FakeSocket()), messageCommand("proj_one", flow.id, "read proof from note.txt"))
+    await waitUntil(() => testRuntime.flowStore.getSnapshot("proj_one", flow.id).activeTurn === undefined, "the evidence turn to complete")
+
+    const firstSnapshot = testRuntime.flowStore.getSnapshot("proj_one", flow.id)
+    const goalId = firstSnapshot.foregroundGoal?.id
+    expect(goalId).toBeTruthy()
+    expect(testRuntime.flowStore.getCoreContextState(flow.id).evidence.some((item) => item.exactContent.includes("IMMUTABLE-V2-EXACT-EVIDENCE-42"))).toBe(true)
+    expect(testRuntime.flowStore.getActiveContextItems(flow.id, goalId)).toEqual([])
+
+    await testRuntime.runtime.startTurn(asWebSocket(new FakeSocket()), messageCommand("proj_one", flow.id, "What was the main point?"))
+    await waitUntil(() => testRuntime.flowStore.getSnapshot("proj_one", flow.id).activeTurn === undefined, "the follow-up turn to complete")
+
+    expect(streamTurn).toHaveBeenCalledTimes(2)
+    const nextTurnMessages = JSON.stringify(streamTurn.mock.calls[1]?.[0].messages)
+    expect(nextTurnMessages).toContain("Read V2 evidence successfully.")
+    expect(nextTurnMessages).not.toContain("IMMUTABLE-V2-EXACT-EVIDENCE-42")
+    expect(nextTurnMessages).not.toContain("<exact_evidence")
+    expect(nextTurnMessages).not.toContain("<distilled_evidence")
   })
 
   it("persists each repaired Memory Router attempt as its own V2 model call and usage row", async () => {
