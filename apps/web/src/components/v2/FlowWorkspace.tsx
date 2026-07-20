@@ -2,7 +2,10 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
+  ArrowDown,
   ArrowUpRight,
+  Eye,
+  EyeOff,
   LayoutDashboard,
   PanelRightClose,
   PanelRightOpen,
@@ -13,12 +16,15 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import type { V2MessageAttachment } from "@socrates/contracts";
+import type { ConversationTerminal, ConversationToolRun, Message, V2MessageAttachment } from "@socrates/contracts";
 import { ChatComposer, type ChatComposerProps } from "@/components/chat/ChatComposer";
+import { ChatTranscript, type LiveActivityStep } from "@/components/chat/ChatTranscript";
 import { ProjectChatSidebar, type SidebarProject } from "@/components/chat/ProjectChatSidebar";
+import { TerminalDockPanel } from "@/components/chat/TerminalPanel";
+import type { PendingApproval, PendingCredentialInput } from "@/components/chat/ToolTimelineTypes";
+import { toolRunToTimelineItem } from "@/components/chat/ToolTimelineTypes";
 import { WorkspaceTopbar } from "@/components/chat/WorkspaceTopbar";
+import { countFlowTurns, sliceLatestFlowTurns } from "@/lib/v2/flowTranscriptWindow";
 import { LivingSphere } from "./LivingSphere";
 import { V2ViewLink } from "./V2ViewLink";
 import { V2SpeechPackManager } from "./V2SpeechPackManager";
@@ -27,13 +33,8 @@ import { FlowWorkspaceInspector, type FlowInspectorView } from "./FlowWorkspaceI
 import styles from "./seamless.module.css";
 import type {
   FlowContextSummary,
-  FlowApprovalView,
-  FlowCredentialRequestView,
   FlowGoalView,
   FlowPresenceState,
-  FlowTimelineItemView,
-  FlowTerminalActivityView,
-  FlowToolActivityView,
   FlowVoiceOption,
 } from "./types";
 
@@ -41,17 +42,19 @@ export interface FlowWorkspaceProps {
   projectId: string;
   projectName: string;
   sidebarProjects: SidebarProject[];
-  timeline?: FlowTimelineItemView[];
+  messages?: Message[];
+  activeTurnId?: string;
+  messageGoalIds?: Record<string, string>;
   goals?: FlowGoalView[];
   activeGoalId?: string;
   currentTaskLabel?: string;
   presenceState?: FlowPresenceState;
   statusLabel?: string;
   contextSummary?: FlowContextSummary;
-  approvals?: FlowApprovalView[];
-  toolActivity?: FlowToolActivityView[];
-  terminalActivity?: FlowTerminalActivityView[];
-  credentialRequests?: FlowCredentialRequestView[];
+  approvals?: PendingApproval[];
+  toolRuns?: ConversationToolRun[];
+  terminalActivity?: ConversationTerminal[];
+  credentialRequests?: PendingCredentialInput[];
   feedbackByMessageId?: Record<string, "thumbs_up" | "thumbs_down">;
   voiceOptions?: FlowVoiceOption[];
   selectedVoiceOptionId?: string;
@@ -64,10 +67,11 @@ export interface FlowWorkspaceProps {
   activeReadAloudMessageId?: string | undefined;
   readAloudStatus?: "synthesizing" | "speaking" | undefined;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialResolve?: (request: FlowCredentialRequestView, decision: "submitted" | "cancelled", value?: string) => void;
+  onCredentialResolve?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
   onFeedback?: (messageId: string, rating: "thumbs_up" | "thumbs_down") => void;
   onVoiceOptionChange?: (optionId: string) => void;
-  onTerminalInput?: (terminalId: string, text: string) => void;
+  onTerminalInput?: (terminalId: string, input: { data?: string; text?: string; key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"; submit?: boolean }) => void;
+  onTerminalResize?: (terminalId: string, size: { cols: number; rows: number }) => void;
   onTerminalStop?: (terminalId: string) => void;
   onTerminalRename?: (terminalId: string, name: string) => void;
   onLoadEarlierMessages?: () => void;
@@ -75,11 +79,16 @@ export interface FlowWorkspaceProps {
   onOpenInClassic?: (goalId: string) => void;
 }
 
+const FLOW_TURN_BATCH_SIZE = 10;
+const FLOW_FOLLOW_THRESHOLD_PX = 96;
+
 export function FlowWorkspace({
   projectId,
   projectName,
   sidebarProjects,
-  timeline = [],
+  messages = [],
+  activeTurnId,
+  messageGoalIds = {},
   goals = [],
   activeGoalId,
   currentTaskLabel = "Ready for your next thought",
@@ -87,7 +96,7 @@ export function FlowWorkspace({
   statusLabel = "Seamless runtime disconnected",
   contextSummary,
   approvals = [],
-  toolActivity = [],
+  toolRuns = [],
   terminalActivity = [],
   credentialRequests = [],
   feedbackByMessageId = {},
@@ -106,6 +115,7 @@ export function FlowWorkspace({
   onFeedback,
   onVoiceOptionChange,
   onTerminalInput,
+  onTerminalResize,
   onTerminalStop,
   onTerminalRename,
   onLoadEarlierMessages,
@@ -117,9 +127,31 @@ export function FlowWorkspace({
   const [isInspectorPinned, setIsInspectorPinned] = useState(false);
   const [inspectorView, setInspectorView] = useState<FlowInspectorView>("context");
   const [isSpeechPacksOpen, setIsSpeechPacksOpen] = useState(false);
+  const [visibleTurnCount, setVisibleTurnCount] = useState(FLOW_TURN_BATCH_SIZE);
+  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const [unseenMessageCount, setUnseenMessageCount] = useState(0);
+  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
+  const [activeTerminalId, setActiveTerminalId] = useState<string | undefined>();
+  const [terminalDockHeight, setTerminalDockHeight] = useState(320);
+  const [isMobileView, setIsMobileView] = useState(false);
   const speechPackDialogRef = useRef<HTMLDivElement>(null);
   const speechPackCloseRef = useRef<HTMLButtonElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const initialScrollCompleteRef = useRef(false);
+  const previousLastMessageIdRef = useRef<string | undefined>(undefined);
+  const previousContentVersionRef = useRef<string>("");
+  const pendingScrollRestoreRef = useRef<{ scrollHeight: number; scrollTop: number; firstMessageId?: string } | null>(null);
+  const pendingServerHistoryRef = useRef<{ messageCount: number } | null>(null);
   const reduceMotion = useReducedMotion();
+  const visibleMessages = useMemo(
+    () => sliceLatestFlowTurns(messages, visibleTurnCount),
+    [messages, visibleTurnCount],
+  );
+  const loadedTurnCount = useMemo(
+    () => countFlowTurns(messages),
+    [messages],
+  );
+  const hasHiddenLoadedTurns = loadedTurnCount > visibleTurnCount;
   const activeGoal = useMemo(
     () => goals.find((goal) => goal.id === activeGoalId) ?? goals.find((goal) => goal.status === "foreground"),
     [activeGoalId, goals],
@@ -128,6 +160,36 @@ export function FlowWorkspace({
     () => goals.filter((goal) => goal.status === "parked" || goal.status === "blocked").length,
     [goals],
   );
+  const liveSteps = useMemo<LiveActivityStep[]>(() => {
+    const assistantTurnIds = new Set(
+      messages.filter((message) => message.role === "assistant" && message.turnId).map((message) => message.turnId as string),
+    );
+    const toolsByStep = new Map<string, ConversationToolRun[]>();
+    for (const tool of toolRuns) {
+      if (!activeTurnId || tool.turnId !== activeTurnId) continue;
+      if (assistantTurnIds.has(tool.turnId)) continue;
+      const stepKey = `${tool.turnId}:${tool.modelCallId ?? "intent"}`;
+      const grouped = toolsByStep.get(stepKey) ?? [];
+      grouped.push(tool);
+      toolsByStep.set(stepKey, grouped);
+    }
+    return [...toolsByStep.entries()].map(([stepKey, runs], index) => ({
+      key: `flow-live-${stepKey}`,
+      turnId: runs[0]?.turnId,
+      ...(runs[0]?.modelCallId
+        ? { modelCallId: runs[0].modelCallId, kind: "agent" as const }
+        : { kind: "intent" as const }),
+      stepIndex: index,
+      reasoning: "",
+      answer: "",
+      tools: runs.map(toolRunToTimelineItem),
+    }));
+  }, [activeTurnId, messages, toolRuns]);
+  const contentVersion = useMemo(() => {
+    const last = messages.at(-1);
+    const toolVersion = toolRuns.map((tool) => `${tool.toolCallId}:${tool.status}:${tool.resultPreview?.length ?? 0}`).join("|");
+    return `${last?.id ?? "none"}:${last?.content.length ?? 0}:${last?.reasoning?.length ?? 0}:${toolVersion}`;
+  }, [messages, toolRuns]);
 
   const openInspector = (view: FlowInspectorView) => {
     setInspectorView(view);
@@ -178,6 +240,97 @@ export function FlowWorkspace({
     return () => window.removeEventListener("keydown", handleEscape);
   }, [isInspectorOpen, isSpeechPacksOpen]);
 
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const update = () => setIsMobileView(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    if (!terminalActivity.some((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input")) return;
+    const timeout = window.setTimeout(() => setIsTerminalDockOpen(true), 0);
+    return () => window.clearTimeout(timeout);
+  }, [terminalActivity]);
+
+  useEffect(() => {
+    const pending = pendingServerHistoryRef.current;
+    if (!pending || messages.length <= pending.messageCount) return;
+    pendingServerHistoryRef.current = null;
+    setVisibleTurnCount((current) => current + FLOW_TURN_BATCH_SIZE);
+  }, [messages.length]);
+
+  useEffect(() => {
+    if (!earlierMessagesError) return;
+    pendingServerHistoryRef.current = null;
+    pendingScrollRestoreRef.current = null;
+  }, [earlierMessagesError]);
+
+  useEffect(() => {
+    const pending = pendingScrollRestoreRef.current;
+    const container = transcriptRef.current;
+    if (!pending || !container || pending.firstMessageId === visibleMessages[0]?.id) return;
+    const frame = window.requestAnimationFrame(() => {
+      container.scrollTop = pending.scrollTop + (container.scrollHeight - pending.scrollHeight);
+      pendingScrollRestoreRef.current = null;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [visibleMessages]);
+
+  useEffect(() => {
+    const container = transcriptRef.current;
+    if (!container || visibleMessages.length === 0 || pendingScrollRestoreRef.current) return;
+    const lastMessageId = visibleMessages.at(-1)?.id;
+    if (!initialScrollCompleteRef.current) {
+      const frame = window.requestAnimationFrame(() => {
+        container.scrollTop = container.scrollHeight;
+        initialScrollCompleteRef.current = true;
+        previousLastMessageIdRef.current = lastMessageId;
+        previousContentVersionRef.current = contentVersion;
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (previousContentVersionRef.current === contentVersion) return;
+    const isNewMessage = previousLastMessageIdRef.current !== lastMessageId;
+    previousLastMessageIdRef.current = lastMessageId;
+    previousContentVersionRef.current = contentVersion;
+    if (isFollowingLatest) {
+      const frame = window.requestAnimationFrame(() => {
+        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (isNewMessage) setUnseenMessageCount((current) => current + 1);
+  }, [contentVersion, isFollowingLatest, visibleMessages]);
+
+  const revealEarlierTurns = () => {
+    const container = transcriptRef.current;
+    if (container) {
+      pendingScrollRestoreRef.current = {
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+        firstMessageId: visibleMessages[0]?.id,
+      };
+    }
+    if (hasHiddenLoadedTurns) {
+      setVisibleTurnCount((current) => current + FLOW_TURN_BATCH_SIZE);
+      return;
+    }
+    if (hasEarlierMessages && onLoadEarlierMessages) {
+      pendingServerHistoryRef.current = { messageCount: messages.length };
+      onLoadEarlierMessages();
+    }
+  };
+
+  const jumpToLatest = () => {
+    const container = transcriptRef.current;
+    if (!container) return;
+    setIsFollowingLatest(true);
+    setUnseenMessageCount(0);
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
+  };
+
   return (
     <main className={styles.flowPage}>
       <div className={styles.oceanNoise} aria-hidden="true" />
@@ -213,19 +366,35 @@ export function FlowWorkspace({
               onClick={() => isInspectorOpen ? setIsInspectorOpen(false) : openInspector("context")}
               aria-controls="v2-goal-inspector"
               aria-expanded={isInspectorOpen}
+              aria-label={isInspectorOpen ? "Hide working notes" : "Working notes"}
             >
               {isInspectorOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
-              <span>{isInspectorOpen ? "Hide notes" : "Working notes"}</span>
+              <span className="hidden sm:inline">{isInspectorOpen ? "Hide notes" : "Working notes"}</span>
             </button>
+            {terminalActivity.length > 0 && (
+              <button
+                type="button"
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
+                onClick={() => setIsTerminalDockOpen((current) => !current)}
+                aria-pressed={isTerminalDockOpen}
+              >
+                {isTerminalDockOpen ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
+                <span className="hidden sm:inline">Terminal</span>
+                <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] text-brand-teal-dark">
+                  {terminalActivity.length}
+                </span>
+              </button>
+            )}
             <button
               type="button"
               className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!activeGoal || !onOpenInClassic}
+              aria-label="Open in Classic View"
               onClick={() => {
                 if (activeGoal) onOpenInClassic?.(activeGoal.id);
               }}
             >
-              <span>Classic View</span>
+              <span className="hidden sm:inline">Classic View</span>
               <ArrowUpRight className="size-4" aria-hidden="true" />
             </button>
           </div>
@@ -239,7 +408,7 @@ export function FlowWorkspace({
               if (isInspectorOpen && !isInspectorPinned) setIsInspectorOpen(false);
             }}
           >
-            <div className={styles.flowConversation} data-has-items={timeline.length > 0 || undefined}>
+            <div className={styles.flowConversation} data-has-items={messages.length > 0 || undefined}>
               <div className={styles.presenceStage}>
                 <div className={styles.assistantDesk}>
                   <FlowWorkspaceNotes
@@ -248,122 +417,115 @@ export function FlowWorkspace({
                     currentTaskLabel={currentTaskLabel}
                     contextSummary={contextSummary}
                     pausedGoalCount={pausedGoalCount}
-                    compact={timeline.length > 0}
+                    compact={messages.length > 0}
                     onOpenContext={() => openInspector("context")}
                     onOpenFocuses={() => openInspector("focuses")}
                   />
                   <div className={styles.deskSphere}>
                     <LivingSphere
                       state={presenceState}
-                      size={timeline.length > 0 ? "compact" : "full"}
+                      size={messages.length > 0 ? "compact" : "full"}
                       statusLabel={statusLabel}
                     />
                   </div>
                 </div>
               </div>
 
-              {(timeline.length > 0 || hasEarlierMessages || earlierMessagesError) && (
-                <div className={styles.timelineScroller}>
-                  <div className={styles.timeline}>
-                {(hasEarlierMessages || earlierMessagesError) && (
-                  <div className={styles.earlierMessagesControl}>
-                    {hasEarlierMessages && onLoadEarlierMessages && (
-                      <button
-                        type="button"
-                        onClick={onLoadEarlierMessages}
-                        disabled={isLoadingEarlierMessages}
-                      >
-                        {isLoadingEarlierMessages ? "Loading earlier messages…" : "Load earlier messages"}
-                      </button>
-                    )}
-                    {earlierMessagesError && <p role="alert">{earlierMessagesError}</p>}
-                  </div>
-                )}
-
-                {timeline.length > 0 && (
-                  <ol className={styles.timelineList} aria-label="Flow timeline">
-                    {timeline.map((item, index) => (
-                      <motion.li
-                        key={item.id}
-                        className={styles.timelineItem}
-                        data-role={item.role}
-                        initial={reduceMotion ? false : { opacity: 0, y: 12 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.24, delay: Math.min(index, 4) * 0.035 }}
-                      >
-                        <div className={styles.timelineItemMeta}>
-                          <span>{item.role === "assistant" ? "Socrates" : item.role === "user" ? "You" : "Flow"}</span>
-                          {item.status === "streaming" && <span>Writing…</span>}
-                        </div>
-                        {item.reasoning && (
-                          <details className={styles.messageReasoning}>
-                            <summary>Thinking</summary>
-                            <p>{item.reasoning}</p>
-                          </details>
+              {(messages.length > 0 || hasEarlierMessages || earlierMessagesError) && (
+                <div className={styles.timelineFrame}>
+                  <ChatTranscript
+                    messages={visibleMessages}
+                    toolRuns={toolRuns}
+                    liveSteps={liveSteps}
+                    approvals={approvals}
+                    credentialRequests={credentialRequests}
+                    isStreaming={composer.isSending}
+                    scrollContainerRef={transcriptRef}
+                    scrollContainerClassName={styles.timelineScroller}
+                    contentClassName={styles.sharedTranscriptContent}
+                    beforeMessages={(hasHiddenLoadedTurns || hasEarlierMessages || earlierMessagesError) ? (
+                      <div className={styles.earlierMessagesControl}>
+                        {(hasHiddenLoadedTurns || hasEarlierMessages) && (
+                          <button
+                            type="button"
+                            onClick={revealEarlierTurns}
+                            disabled={isLoadingEarlierMessages}
+                          >
+                            {isLoadingEarlierMessages
+                              ? "Loading earlier turns…"
+                              : `Show ${FLOW_TURN_BATCH_SIZE} earlier turns`}
+                          </button>
                         )}
-                        <div className={styles.messageMarkdown}>
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+                        {earlierMessagesError && <p role="alert">{earlierMessagesError}</p>}
+                      </div>
+                    ) : undefined}
+                    renderBeforeMessage={(message, index) => {
+                      const goalId = messageGoalIds[message.id];
+                      if (!goalId) return null;
+                      const previousGoalId = index > 0 ? messageGoalIds[visibleMessages[index - 1]!.id] : undefined;
+                      if (previousGoalId === goalId) return null;
+                      const title = goals.find((goal) => goal.id === goalId)?.title ?? "Current focus";
+                      return (
+                        <div className={styles.flowFocusDivider}>
+                          <span>{index === 0 ? "Focus" : "Focus shifted"}</span>
+                          <strong>{title}</strong>
                         </div>
-                        {item.attachments && item.attachments.length > 0 && (
-                          <ul className={styles.messageAttachments} aria-label="Message attachments">
-                            {item.attachments.map((attachment) => (
-                              <li key={attachment.id}>
-                                {attachment.url ? (
-                                  <a href={attachment.url} target="_blank" rel="noreferrer">
-                                    {attachment.fileName}
-                                  </a>
-                                ) : (
-                                  <span>{attachment.fileName}</span>
-                                )}
-                                <small>{attachment.kind.replaceAll("_", " ")}</small>
-                              </li>
-                            ))}
-                          </ul>
+                      );
+                    }}
+                    renderAfterMessage={(message) => message.role === "assistant" && message.status === "completed" && message.content.trim() ? (
+                      <div className={styles.messageActions}>
+                        {onReadAloud && (
+                          <button
+                            type="button"
+                            className={styles.readAloudControl}
+                            onClick={() => onReadAloud(message.id)}
+                            disabled={Boolean(activeReadAloudMessageId && activeReadAloudMessageId !== message.id)}
+                            data-active={activeReadAloudMessageId === message.id || undefined}
+                            aria-label={activeReadAloudMessageId === message.id ? "Stop reading response" : "Read response aloud"}
+                            title={activeReadAloudMessageId === message.id
+                              ? readAloudStatus === "synthesizing" ? "Preparing speech — click to stop" : "Stop reading"
+                              : "Read aloud"}
+                          >
+                            {activeReadAloudMessageId === message.id ? <Square aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
+                          </button>
                         )}
-                        {item.role === "assistant" && item.readAloudAvailable && onReadAloud && (
-                          <div className={styles.messageActions}>
+                        {onFeedback && (
+                          <>
                             <button
                               type="button"
-                              className={styles.readAloudControl}
-                              onClick={() => onReadAloud(item.id)}
-                              disabled={Boolean(activeReadAloudMessageId && activeReadAloudMessageId !== item.id)}
-                              data-active={activeReadAloudMessageId === item.id || undefined}
-                              aria-label={activeReadAloudMessageId === item.id ? "Stop reading response" : "Read response aloud"}
-                              title={activeReadAloudMessageId === item.id
-                                ? readAloudStatus === "synthesizing" ? "Preparing speech — click to stop" : "Stop reading"
-                                : "Read aloud"}
+                              data-selected={feedbackByMessageId[message.id] === "thumbs_up" || undefined}
+                              onClick={() => onFeedback(message.id, "thumbs_up")}
+                              aria-label="Helpful response"
                             >
-                              {activeReadAloudMessageId === item.id
-                                ? <Square aria-hidden="true" />
-                                : <Volume2 aria-hidden="true" />}
+                              <ThumbsUp aria-hidden="true" />
                             </button>
-                            {onFeedback && (
-                              <>
-                                <button
-                                  type="button"
-                                  data-selected={feedbackByMessageId[item.id] === "thumbs_up" || undefined}
-                                  onClick={() => onFeedback(item.id, "thumbs_up")}
-                                  aria-label="Helpful response"
-                                >
-                                  <ThumbsUp aria-hidden="true" />
-                                </button>
-                                <button
-                                  type="button"
-                                  data-selected={feedbackByMessageId[item.id] === "thumbs_down" || undefined}
-                                  onClick={() => onFeedback(item.id, "thumbs_down")}
-                                  aria-label="Unhelpful response"
-                                >
-                                  <ThumbsDown aria-hidden="true" />
-                                </button>
-                              </>
-                            )}
-                          </div>
+                            <button
+                              type="button"
+                              data-selected={feedbackByMessageId[message.id] === "thumbs_down" || undefined}
+                              onClick={() => onFeedback(message.id, "thumbs_down")}
+                              aria-label="Unhelpful response"
+                            >
+                              <ThumbsDown aria-hidden="true" />
+                            </button>
+                          </>
                         )}
-                      </motion.li>
-                    ))}
-                  </ol>
-                )}
-                  </div>
+                      </div>
+                    ) : null}
+                    onApprovalDecision={onApprovalDecision}
+                    onCredentialInput={onCredentialResolve}
+                    onScroll={(event) => {
+                      const container = event.currentTarget;
+                      const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= FLOW_FOLLOW_THRESHOLD_PX;
+                      setIsFollowingLatest(nearBottom);
+                      if (nearBottom) setUnseenMessageCount(0);
+                    }}
+                  />
+                  {!isFollowingLatest && (
+                    <button type="button" className={styles.jumpToLatest} onClick={jumpToLatest}>
+                      <ArrowDown aria-hidden="true" />
+                      <span>{unseenMessageCount > 0 ? `${unseenMessageCount} new · Jump to latest` : "Jump to latest"}</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -373,6 +535,20 @@ export function FlowWorkspace({
                 <ChatComposer {...composer} />
               </div>
             </div>
+            <TerminalDockPanel
+              terminals={terminalActivity}
+              isOpen={isTerminalDockOpen}
+              isMobile={isMobileView}
+              activeTerminalId={activeTerminalId}
+              onActiveTerminalIdChange={setActiveTerminalId}
+              onClose={() => setIsTerminalDockOpen(false)}
+              onStop={(terminalId) => onTerminalStop?.(terminalId)}
+              onRename={(terminalId, name) => onTerminalRename?.(terminalId, name)}
+              onInput={(terminalId, input) => onTerminalInput?.(terminalId, input)}
+              onResize={(terminalId, size) => onTerminalResize?.(terminalId, size)}
+              dockHeight={terminalDockHeight}
+              onResizeDock={setTerminalDockHeight}
+            />
           </section>
 
           <AnimatePresence initial={false}>
@@ -391,23 +567,14 @@ export function FlowWorkspace({
                   currentTaskLabel={currentTaskLabel}
                   goals={goals}
                   contextSummary={contextSummary}
-                  approvals={approvals}
-                  toolActivity={toolActivity}
-                  terminalActivity={terminalActivity}
-                  credentialRequests={credentialRequests}
                   voiceOptions={voiceOptions}
                   selectedVoiceOptionId={selectedVoiceOptionId}
                   voiceStatusLabel={voiceStatusLabel}
                   onViewChange={setInspectorView}
                   onPinnedChange={setIsInspectorPinned}
                   onClose={() => setIsInspectorOpen(false)}
-                  onApprovalDecision={onApprovalDecision}
-                  onCredentialResolve={onCredentialResolve}
                   onVoiceOptionChange={onVoiceOptionChange}
                   onOpenVoiceSettings={() => setIsSpeechPacksOpen(true)}
-                  onTerminalInput={onTerminalInput}
-                  onTerminalStop={onTerminalStop}
-                  onTerminalRename={onTerminalRename}
                   onFocusAction={onFocusAction}
                   onOpenInClassic={onOpenInClassic}
                 />

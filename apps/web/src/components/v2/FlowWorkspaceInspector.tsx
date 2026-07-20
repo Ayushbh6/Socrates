@@ -1,9 +1,7 @@
 "use client";
 
 import {
-  Activity,
   AudioLines,
-  Check,
   CircleDashed,
   CircleHelp,
   FileText,
@@ -11,26 +9,18 @@ import {
   ListTodo,
   LockKeyhole,
   Paperclip,
-  ShieldCheck,
   Sparkles,
-  Wrench,
   X,
 } from "lucide-react";
-import { V2CredentialPrompt } from "./V2CredentialPrompt";
-import { V2TerminalActivity } from "./V2TerminalActivity";
 import type {
-  FlowApprovalView,
   FlowContextItemView,
   FlowContextSummary,
-  FlowCredentialRequestView,
   FlowGoalView,
-  FlowTerminalActivityView,
-  FlowToolActivityView,
   FlowVoiceOption,
 } from "./types";
 import styles from "./seamless.module.css";
 
-export type FlowInspectorView = "context" | "focuses" | "activity";
+export type FlowInspectorView = "context" | "focuses";
 
 interface FlowWorkspaceInspectorProps {
   view: FlowInspectorView;
@@ -39,23 +29,14 @@ interface FlowWorkspaceInspectorProps {
   currentTaskLabel: string;
   goals: FlowGoalView[];
   contextSummary?: FlowContextSummary;
-  approvals: FlowApprovalView[];
-  toolActivity: FlowToolActivityView[];
-  terminalActivity: FlowTerminalActivityView[];
-  credentialRequests: FlowCredentialRequestView[];
   voiceOptions: FlowVoiceOption[];
   selectedVoiceOptionId?: string;
   voiceStatusLabel?: string;
   onViewChange: (view: FlowInspectorView) => void;
   onPinnedChange: (pinned: boolean) => void;
   onClose: () => void;
-  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialResolve?: (request: FlowCredentialRequestView, decision: "submitted" | "cancelled", value?: string) => void;
   onVoiceOptionChange?: (optionId: string) => void;
   onOpenVoiceSettings: () => void;
-  onTerminalInput?: (terminalId: string, text: string) => void;
-  onTerminalStop?: (terminalId: string) => void;
-  onTerminalRename?: (terminalId: string, name: string) => void;
   onFocusAction?: (goalId: string, action: "switch" | "pause" | "finish" | "reopen" | "archive" | "pin" | "unpin") => void;
   onOpenInClassic?: (goalId: string) => void;
 }
@@ -88,28 +69,17 @@ export function FlowWorkspaceInspector({
   currentTaskLabel,
   goals,
   contextSummary,
-  approvals,
-  toolActivity,
-  terminalActivity,
-  credentialRequests,
   voiceOptions,
   selectedVoiceOptionId,
   voiceStatusLabel,
   onViewChange,
   onPinnedChange,
   onClose,
-  onApprovalDecision,
-  onCredentialResolve,
   onVoiceOptionChange,
   onOpenVoiceSettings,
-  onTerminalInput,
-  onTerminalStop,
-  onTerminalRename,
   onFocusAction,
   onOpenInClassic,
 }: FlowWorkspaceInspectorProps) {
-  const pendingApprovals = approvals.filter((approval) => !approval.status || approval.status === "pending");
-  const activityCount = toolActivity.length + approvals.length + terminalActivity.length;
   const contextItems = contextSummary?.items ?? [];
 
   return (
@@ -148,10 +118,6 @@ export function FlowWorkspaceInspector({
         </button>
         <button type="button" data-active={view === "focuses" || undefined} onClick={() => onViewChange("focuses")}>
           <ListTodo aria-hidden="true" /> Focuses
-        </button>
-        <button type="button" data-active={view === "activity" || undefined} onClick={() => onViewChange("activity")}>
-          <Activity aria-hidden="true" /> Activity
-          {activityCount > 0 && <span>{activityCount}</span>}
         </button>
       </nav>
 
@@ -288,74 +254,6 @@ export function FlowWorkspaceInspector({
           </div>
         )}
 
-        {view === "activity" && (
-          <div className={styles.inspectorPane}>
-            {pendingApprovals.length > 0 && (
-              <section className={styles.inspectorSection} aria-labelledby="approval-heading">
-                <div className={styles.inspectorSectionHeading}>
-                  <h3 id="approval-heading">Needs approval</h3>
-                  <span>{pendingApprovals.length}</span>
-                </div>
-                <div className={styles.approvalList}>
-                  {pendingApprovals.map((approval) => (
-                    <div key={approval.id} className={styles.approvalPrompt}>
-                      <div>
-                        <ShieldCheck aria-hidden="true" />
-                        <span><strong>{approval.actionKind}</strong>{approval.actionSummary && <small>{approval.actionSummary}</small>}</span>
-                      </div>
-                      <div>
-                        <button type="button" onClick={() => onApprovalDecision?.(approval.id, "rejected")}>Reject</button>
-                        <button type="button" onClick={() => onApprovalDecision?.(approval.id, "approved")}><Check aria-hidden="true" /> Approve</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {credentialRequests.length > 0 && onCredentialResolve && (
-              <section className={styles.inspectorSection} aria-labelledby="credential-heading">
-                <div className={styles.inspectorSectionHeading}>
-                  <h3 id="credential-heading">Secure input</h3>
-                  <span>{credentialRequests.length}</span>
-                </div>
-                <div className={styles.credentialList}>
-                  {credentialRequests.map((request) => <V2CredentialPrompt key={request.id} request={request} onResolve={onCredentialResolve} />)}
-                </div>
-              </section>
-            )}
-
-            {activityCount === 0 && credentialRequests.length === 0 ? (
-              <div className={styles.contextEmptyState}>
-                <Activity aria-hidden="true" />
-                <div><strong>The workspace is quiet.</strong><p>Tool, approval, and Terminal activity will appear here when Socrates begins working.</p></div>
-              </div>
-            ) : (
-              <div className={styles.activityBody}>
-                {toolActivity.length > 0 && (
-                  <div className={styles.activityGroup}>
-                    <p>Tools</p>
-                    {toolActivity.map((tool) => (
-                      <div className={styles.activityRow} key={tool.id}>
-                        <Wrench aria-hidden="true" />
-                        <span><strong>{tool.name}</strong>{tool.summary && <small>{tool.summary}</small>}{tool.resultSummary && <small className={styles.toolResult}>Result · {tool.resultSummary}</small>}</span>
-                        <em>{tool.status.replaceAll("_", " ")}</em>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {terminalActivity.length > 0 && (
-                  <div className={styles.activityGroup}>
-                    <p>Terminals</p>
-                    {terminalActivity.map((terminal) => (
-                      <V2TerminalActivity key={`${terminal.id}:${terminal.name}`} terminal={terminal} onInput={onTerminalInput} onStop={onTerminalStop} onRename={onTerminalRename} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
       </div>
 
       <footer className={styles.inspectorFooter}>

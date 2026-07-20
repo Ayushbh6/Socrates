@@ -13,6 +13,7 @@ import type {
   GetProjectResponse,
   ListModelsHttpResponse,
   ListProjectsResponse,
+  Message,
   ModelOption,
   V2Message,
   V2MessageAttachment,
@@ -24,7 +25,14 @@ import { useRouter } from "next/navigation";
 import { FlowWorkspace } from "./FlowWorkspace";
 import { LivingSphere } from "./LivingSphere";
 import styles from "./seamless.module.css";
-import type { FlowPresenceState, FlowTimelineItemView } from "./types";
+import type { FlowPresenceState } from "./types";
+import {
+  flowApprovalToClassicApproval,
+  flowCredentialToClassicCredential,
+  flowMessageToClassicMessage,
+  flowTerminalToClassicTerminal,
+  flowToolToClassicToolRun,
+} from "@/lib/v2/classicPresentation";
 import {
   appendViewHandoff,
   clearCurrentViewHandoff,
@@ -90,79 +98,47 @@ const chooseComposerSelection = (
   };
 };
 
-const summarizeAction = (action: unknown): string | undefined => {
-  if (typeof action === "string") return action.slice(0, 180);
-  try {
-    const serialized = JSON.stringify(action);
-    return serialized && serialized !== "{}" ? serialized.slice(0, 180) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 const contextItemLabel = (sourceLocator: string, sourceType: string): string => {
   const normalized = sourceLocator.replaceAll("\\", "/").replace(/\/$/, "");
   const tail = normalized.split("/").filter(Boolean).at(-1);
   return tail?.trim() || sourceLocator.trim() || sourceType.replaceAll("_", " ");
 };
 
-const timelineFromMessages = (
+const presentationFromMessages = (
   messages: V2Message[],
-  streams: Record<string, { answer: string; reasoning?: string }>,
-  goalTitles: Map<string, string>,
-): FlowTimelineItemView[] => {
-  const base: FlowTimelineItemView[] = messages
+  streams: Record<string, { answer: string; reasoning?: string; turnId?: string }>,
+): { messages: Message[]; goalIdByMessageId: Record<string, string> } => {
+  const goalIdByMessageId: Record<string, string> = {};
+  const visibleMessages = messages
     .filter((message): message is V2Message & { role: "user" | "assistant" | "system" } =>
       message.role === "user" || message.role === "assistant" || message.role === "system")
-    .map((message) => ({
-      id: message.id,
-      role: message.role,
-      content: `${message.content}${streams[message.id]?.answer ?? ""}`,
-      ...(`${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}`
-        ? { reasoning: `${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}` }
-        : {}),
-      ...(message.attachments?.length ? {
-        attachments: message.attachments.map((attachment) => ({
-          id: attachment.id,
-          fileName: attachment.fileName,
-          kind: attachment.kind,
-          ...(attachment.url ? { url: attachment.url } : {}),
-        })),
-      } : {}),
-      status: message.status,
-      createdAt: message.createdAt,
-      ...(message.goalId ? { goalId: message.goalId } : {}),
-      readAloudAvailable: message.role === "assistant" && message.status === "completed" && Boolean(message.content.trim()),
-    }));
-
-  const visible: FlowTimelineItemView[] = [];
-  let previousGoalId: string | undefined;
-  for (const item of base) {
-    if (item.goalId && previousGoalId && item.goalId !== previousGoalId) {
-      visible.push({
-        id: `focus-shift-${item.id}`,
-        role: "system",
-        content: `Focus shifted to ${goalTitles.get(item.goalId) ?? "another thread"}`,
-        status: "completed",
-        goalId: item.goalId,
+    .map((message) => {
+      if (message.goalId) goalIdByMessageId[message.id] = message.goalId;
+      return flowMessageToClassicMessage({
+        ...message,
+        content: `${message.content}${streams[message.id]?.answer ?? ""}`,
+        ...(`${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}`
+          ? { reasoning: `${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}` }
+          : {}),
       });
-    }
-    if (item.goalId) previousGoalId = item.goalId;
-    visible.push(item);
-  }
+    });
   const messageIds = new Set(messages.map((message) => message.id));
   for (const [messageId, stream] of Object.entries(streams)) {
     if (!messageIds.has(messageId) && stream.answer) {
-      visible.push({
+      visibleMessages.push({
         id: messageId,
+        conversationId: messages[0]?.flowId ?? "flow",
+        sessionId: messages[0]?.flowId ?? "flow",
+        ...(stream.turnId ? { turnId: stream.turnId } : {}),
         role: "assistant",
         content: stream.answer,
         ...(stream.reasoning ? { reasoning: stream.reasoning } : {}),
         status: "streaming",
+        createdAt: new Date().toISOString(),
       });
     }
   }
-  return visible;
+  return { messages: visibleMessages, goalIdByMessageId };
 };
 
 export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
@@ -363,10 +339,9 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     statusLabel = visibleError;
   }
 
-  const timeline = timelineFromMessages(
+  const presentation = presentationFromMessages(
     snapshot.messages,
     runtime.state.streams,
-    new Map(snapshot.goals.map((goal) => [goal.id, goal.title])),
   );
   const messageById = new Map(snapshot.messages.map((message) => [message.id, message]));
   const isClarifying = Boolean(runtime.state.pendingClarification && snapshot.activeTurn?.status === "awaiting_clarification");
@@ -394,46 +369,29 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       releasedItemCount: releasedCount,
     };
   })() : runtime.contextError ? { unavailableReason: runtime.contextError } : undefined;
-  const toolActivity = Object.values(runtime.state.toolCalls)
-    .sort((left, right) => (right.startedAt ?? "").localeCompare(left.startedAt ?? ""))
-    .slice(0, 12)
-    .map((tool) => ({
-      id: tool.id,
-      name: tool.toolName,
-      status: tool.status,
-      ...(summarizeAction(tool.arguments) ? { summary: summarizeAction(tool.arguments) } : {}),
-      ...(tool.result !== undefined && summarizeAction(tool.result)
-        ? { resultSummary: summarizeAction(tool.result) }
-        : {}),
-    }));
+  const approvalsByToolCallId = new Map(
+    Object.values(runtime.state.approvals)
+      .filter((approval) => approval.toolCallId)
+      .map((approval) => [approval.toolCallId as string, approval]),
+  );
+  const toolRuns = Object.values(runtime.state.toolCalls)
+    .sort((left, right) => (left.startedAt ?? "").localeCompare(right.startedAt ?? ""))
+    .map((tool) => flowToolToClassicToolRun(tool, approvalsByToolCallId.get(tool.id)));
   const approvalActivity = Object.values(runtime.state.approvals)
-    .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt))
-    .slice(0, 12)
-    .map((approval) => ({
-      id: approval.id,
-      actionKind: approval.actionKind.replaceAll("_", " "),
-      status: approval.status,
-      ...(summarizeAction(approval.action) ? { actionSummary: summarizeAction(approval.action) } : {}),
-    }));
+    .filter((approval) => approval.status === "pending" && (
+      !approval.toolCallId
+      || runtime.state?.toolCalls[approval.toolCallId]?.status === "awaiting_approval"
+    ))
+    .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt))
+    .map(flowApprovalToClassicApproval);
   const terminalOutputsById = runtime.state.terminalOutputs;
   const terminalActivity = Object.values(runtime.state.terminals)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, 8)
-    .map((terminal) => {
-      const output = (terminalOutputsById[terminal.id] ?? []).map((chunk) => {
-        if (chunk.stream === "input") return chunk.redacted ? "› [input hidden]\n" : `› ${chunk.text}\n`;
-        return chunk.text;
-      }).join("");
-      return {
-        id: terminal.id,
-        name: terminal.name,
-        command: terminal.command,
-        cwd: terminal.cwd,
-        status: terminal.status,
-        awaitingInput: terminal.awaitingInput,
-        output: output.slice(-12_000),
-      };
-    });
+    .map((terminal) => flowTerminalToClassicTerminal(
+      terminal,
+      terminalOutputsById[terminal.id] ?? [],
+      projectData.primaryWorkspace.path ?? terminal.cwd,
+    ));
 
   const guardAction = (action: () => void) => {
     setActionError(null);
@@ -449,7 +407,9 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       projectId={projectId}
       projectName={projectData.project.name}
       sidebarProjects={projectsData.map(({ project }) => ({ project, conversations: [] }))}
-      timeline={timeline}
+      messages={presentation.messages}
+      activeTurnId={isSending ? snapshot.activeTurn?.id : undefined}
+      messageGoalIds={presentation.goalIdByMessageId}
       goals={snapshot.goals.map((goal) => ({
         id: goal.id,
         title: goal.title,
@@ -469,14 +429,9 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       statusLabel={statusLabel}
       contextSummary={contextSummary}
       approvals={approvalActivity}
-      toolActivity={toolActivity}
+      toolRuns={toolRuns}
       terminalActivity={terminalActivity}
-      credentialRequests={Object.values(runtime.state.credentialRequests).map((request) => ({
-        id: request.id,
-        turnId: request.turnId,
-        serverLabel: request.serverLabel ?? request.serverId,
-        envKey: request.envKey,
-      }))}
+      credentialRequests={Object.values(runtime.state.credentialRequests).map(flowCredentialToClassicCredential)}
       feedbackByMessageId={Object.fromEntries(
         Object.entries(runtime.state.feedbackByMessageId).map(([messageId, feedback]) => [messageId, feedback.rating]),
       )}
@@ -495,13 +450,14 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       }}
       onApprovalDecision={(approvalId, decision) => guardAction(() => runtime.decideApproval(approvalId, decision))}
       onCredentialResolve={(request, decision, value) => guardAction(() => runtime.resolveCredential({
-        credentialRequestId: request.id,
+        credentialRequestId: request.credentialRequestId,
         turnId: request.turnId,
         decision,
         ...(value !== undefined ? { value } : {}),
       }))}
       onFeedback={(messageId, rating) => guardAction(() => runtime.submitFeedback(messageId, rating))}
-      onTerminalInput={(terminalId, text) => guardAction(() => runtime.sendTerminalInput(terminalId, text))}
+      onTerminalInput={(terminalId, input) => guardAction(() => runtime.sendTerminalInput(terminalId, input))}
+      onTerminalResize={(terminalId, size) => guardAction(() => runtime.resizeTerminal(terminalId, size))}
       onTerminalStop={(terminalId) => guardAction(() => runtime.stopTerminal(terminalId))}
       onTerminalRename={(terminalId, name) => guardAction(() => runtime.renameTerminal(terminalId, name))}
       onFocusAction={(goalId, action) => guardAction(() => runtime.updateFocus(goalId, action))}

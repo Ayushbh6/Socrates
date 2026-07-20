@@ -716,7 +716,7 @@
 }
 
 .flowConversation[data-has-items="true"] {
-  grid-template-rows: clamp(19rem, 38vh, 23rem) minmax(0, 1fr);
+  grid-template-rows: clamp(12.5rem, 26vh, 16rem) minmax(0, 1fr);
 }
 
 .timelineScroller {
@@ -727,6 +727,92 @@
   scrollbar-width: thin;
   scrollbar-color: var(--v2-line-strong) transparent;
   overscroll-behavior: contain;
+}
+
+.timelineFrame {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--v2-line);
+}
+
+.timelineFrame .timelineScroller {
+  height: 100%;
+  border-top: 0;
+  padding: 0;
+}
+
+.sharedTranscriptContent {
+  width: min(50rem, calc(100% - 2rem));
+  min-width: 0;
+  margin: 0 auto;
+  padding: 1rem 0 1.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.sharedTranscriptContent > .messageActions {
+  width: min(48rem, 100%);
+  margin-top: -0.7rem;
+}
+
+.flowFocusDivider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--v2-faint);
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.flowFocusDivider::before,
+.flowFocusDivider::after {
+  content: "";
+  height: 1px;
+  flex: 1 1 auto;
+  background: var(--v2-line);
+}
+
+.flowFocusDivider strong {
+  max-width: min(24rem, 55vw);
+  overflow: hidden;
+  color: var(--v2-muted);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: none;
+}
+
+.jumpToLatest {
+  position: absolute;
+  z-index: 4;
+  right: max(1rem, calc((100% - 50rem) / 2));
+  bottom: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--v2-line-strong);
+  border-radius: 999px;
+  color: var(--v2-text);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 0.65rem 1.8rem rgba(45, 55, 72, 0.1);
+  font-size: 0.68rem;
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+}
+
+.jumpToLatest:hover,
+.jumpToLatest:focus-visible {
+  border-color: rgba(90, 181, 168, 0.45);
+  outline: none;
+}
+
+.jumpToLatest svg {
+  width: 0.85rem;
+  height: 0.85rem;
 }
 
 .timeline {
@@ -765,7 +851,7 @@
 }
 
 .flowConversation[data-has-items="true"] .assistantDesk {
-  min-height: 19rem;
+  min-height: 12.5rem;
 }
 
 .ambientNotes {
@@ -2224,7 +2310,7 @@
 .inspectorTabs {
   min-height: 3.4rem;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.25rem;
   padding: 0.55rem 0.7rem;
   border-bottom: 1px solid var(--v2-line);
@@ -2795,7 +2881,7 @@
   }
 
   .flowConversation[data-has-items="true"] {
-    grid-template-rows: minmax(24rem, 42%) minmax(0, 1fr);
+    grid-template-rows: minmax(21rem, 40%) minmax(0, 1fr);
   }
 
   .assistantDesk {
@@ -2804,7 +2890,7 @@
   }
 
   .flowConversation[data-has-items="true"] .assistantDesk {
-    min-height: 24rem;
+    min-height: 21rem;
   }
 
   .deskSphere {
@@ -2820,12 +2906,12 @@
   }
 
   .clippedNote[data-note="context"] {
-    top: 14.6rem;
+    top: 10.25rem;
     left: 0.5rem;
   }
 
   .clippedNote[data-note="focus"] {
-    top: 13.15rem;
+    top: 10.25rem;
     right: 0.5rem;
   }
 

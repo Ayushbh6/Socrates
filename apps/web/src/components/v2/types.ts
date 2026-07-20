@@ -27,55 +27,6 @@ export interface FlowGoalView {
   updatedAt?: string;
 }
 
-export interface FlowTimelineItemView {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  reasoning?: string;
-  attachments?: Array<{
-    id: string;
-    fileName: string;
-    kind: "image" | "text" | "skill_zip" | "audio";
-    url?: string;
-  }>;
-  status?: "streaming" | "completed" | "failed" | "cancelled";
-  createdAt?: string;
-  goalId?: string;
-  readAloudAvailable?: boolean;
-}
-
-export interface FlowApprovalView {
-  id: string;
-  actionKind: string;
-  actionSummary?: string;
-  status?: "pending" | "approved" | "rejected" | "expired" | "cancelled";
-}
-
-export interface FlowToolActivityView {
-  id: string;
-  name: string;
-  status: "pending" | "awaiting_approval" | "running" | "completed" | "failed" | "cancelled";
-  summary?: string;
-  resultSummary?: string;
-}
-
-export interface FlowTerminalActivityView {
-  id: string;
-  name: string;
-  command: string;
-  cwd: string;
-  status: "starting" | "running" | "awaiting_input" | "detached" | "exited" | "stopped" | "stale" | "missing";
-  awaitingInput: boolean;
-  output: string;
-}
-
-export interface FlowCredentialRequestView {
-  id: string;
-  turnId: string;
-  serverLabel: string;
-  envKey: string;
-}
-
 export interface FlowVoiceOption {
   id: string;
   label: string;

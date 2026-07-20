@@ -253,13 +253,22 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     }, { ...scope, turnId: input.turnId }));
   }, [requireScope, socket]);
 
-  const sendTerminalInput = useCallback((terminalId: string, text: string) => {
+  const sendTerminalInput = useCallback((terminalId: string, input: {
+    data?: string;
+    text?: string;
+    key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C";
+    submit?: boolean;
+  }) => {
     const scope = requireScope();
     socket.send(makeV2Command("v2.terminal.input", {
       terminalId,
-      text,
-      submit: true,
+      ...input,
     }, scope));
+  }, [requireScope, socket]);
+
+  const resizeTerminal = useCallback((terminalId: string, size: { cols: number; rows: number }) => {
+    const scope = requireScope();
+    socket.send(makeV2Command("v2.terminal.resize", { terminalId, ...size }, scope));
   }, [requireScope, socket]);
 
   const stopTerminal = useCallback((terminalId: string) => {
@@ -301,6 +310,7 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     submitFeedback,
     resolveCredential,
     sendTerminalInput,
+    resizeTerminal,
     stopTerminal,
     renameTerminal,
     clearRuntimeError,
