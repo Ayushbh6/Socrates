@@ -29,6 +29,7 @@ export const baseToolNameSchema = z.enum([
   "turn_evidence",
   "read_memory_journal",
   "skill_write",
+  "skill_manager",
   "context_disposition",
   "focus_ledger",
 ])
@@ -1801,6 +1802,27 @@ export const skillWriteToolOutputSchema = z
   })
   .strict()
 export type SkillWriteToolOutput = z.infer<typeof skillWriteToolOutputSchema>
+
+export const skillManagerToolInputSchema = z.discriminatedUnion("operation", [
+  z.object({
+    operation: z.literal("create"),
+    name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    request: z.string().trim().min(1).max(4_000),
+  }).strict(),
+  z.object({
+    operation: z.literal("delete"),
+    name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  }).strict(),
+])
+export type SkillManagerToolInput = z.infer<typeof skillManagerToolInputSchema>
+
+export const skillManagerToolOutputSchema = z.object({
+  operation: z.enum(["create", "delete"]),
+  name: z.string().min(1),
+  scope: z.literal("project"),
+  status: z.enum(["created", "deleted"]),
+}).strict()
+export type SkillManagerToolOutput = z.infer<typeof skillManagerToolOutputSchema>
 
 export const projectsToolInputSchema = z
   .object({

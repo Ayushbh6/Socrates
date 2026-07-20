@@ -19,7 +19,7 @@ import type {
   V2RuntimeConfig,
 } from "@socrates/contracts";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { FlowWorkspace } from "./FlowWorkspace";
 import { LivingSphere } from "./LivingSphere";
@@ -27,9 +27,11 @@ import styles from "./seamless.module.css";
 import type { FlowPresenceState, FlowTimelineItemView } from "./types";
 import {
   appendViewHandoff,
-  consumeViewHandoff,
+  clearCurrentViewHandoff,
   createViewHandoff,
   handoffAttachmentsToFiles,
+  parseViewHandoffSnapshot,
+  readViewHandoffSnapshot,
   type ViewHandoffEnvelope,
 } from "@/lib/v2/viewHandoff";
 
@@ -60,6 +62,32 @@ const chooseInitialThinkingOption = (model: ModelOption, projectId: string): str
   if (stored && model.thinkingOptions.some((option) => option.id === stored)) return stored;
   return model.thinkingOptions.find((option) => option.id === model.defaultThinkingOptionId)?.id
     ?? model.thinkingOptions[0]!.id;
+};
+
+const chooseComposerSelection = (
+  data: ListModelsHttpResponse,
+  projectId: string,
+  handoff: ViewHandoffEnvelope | null,
+): { modelId?: string; thinkingOptionId?: string } => {
+  const handoffModelPreference = handoff?.model;
+  const handoffModel = handoffModelPreference
+    ? data.models.find((candidate) =>
+      candidate.providerId === handoffModelPreference.providerId &&
+      candidate.modelId === handoffModelPreference.modelId &&
+      (candidate.authMode ?? "api_key") === (handoffModelPreference.authMode ?? "api_key"))
+    : undefined;
+  if (handoffModel) {
+    const thinking = handoffModel.thinkingOptions.find((option) => option.id === handoff?.thinkingOptionId)
+      ?? handoffModel.thinkingOptions.find((option) => option.id === handoffModel.defaultThinkingOptionId)
+      ?? handoffModel.thinkingOptions[0];
+    return { modelId: modelKey(handoffModel), thinkingOptionId: thinking?.id };
+  }
+  const modelId = chooseInitialModel(data, projectId);
+  const model = data.models.find((candidate) => modelKey(candidate) === modelId);
+  return {
+    modelId,
+    thinkingOptionId: model ? chooseInitialThinkingOption(model, projectId) : undefined,
+  };
 };
 
 const summarizeAction = (action: unknown): string | undefined => {
@@ -149,35 +177,19 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
   const [projectError, setProjectError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [draftText, setDraftText] = useState("");
+  const handoffSnapshot = useSyncExternalStore(
+    () => () => undefined,
+    readViewHandoffSnapshot,
+    () => null,
+  );
+  const pendingViewHandoff = useMemo(
+    () => parseViewHandoffSnapshot(handoffSnapshot, "flow", projectId),
+    [handoffSnapshot, projectId],
+  );
+  const [draftTextOverride, setDraftTextOverride] = useState<string | null>(null);
+  const draftText = draftTextOverride ?? pendingViewHandoff?.text ?? "";
   const [draftAttachments, setDraftAttachments] = useState<V2MessageAttachment[]>([]);
-  const [pendingViewHandoff, setPendingViewHandoff] = useState<ViewHandoffEnvelope | null>(null);
-  const appliedHandoffModelRef = useRef(false);
   const appliedHandoffAttachmentsRef = useRef(false);
-
-  useEffect(() => {
-    const handoff = consumeViewHandoff("flow", projectId);
-    if (!handoff) return;
-    setDraftText(handoff.text);
-    setPendingViewHandoff(handoff);
-    appliedHandoffModelRef.current = false;
-    appliedHandoffAttachmentsRef.current = false;
-  }, [projectId]);
-
-  useEffect(() => {
-    if (appliedHandoffModelRef.current || !pendingViewHandoff?.model || !modelsData) return;
-    const model = modelsData.models.find((candidate) =>
-      candidate.providerId === pendingViewHandoff.model?.providerId &&
-      candidate.modelId === pendingViewHandoff.model.modelId &&
-      (candidate.authMode ?? "api_key") === (pendingViewHandoff.model.authMode ?? "api_key"));
-    appliedHandoffModelRef.current = true;
-    if (!model) return;
-    setSelectedModelId(modelKey(model));
-    const thinking = model.thinkingOptions.find((option) => option.id === pendingViewHandoff.thinkingOptionId)
-      ?? model.thinkingOptions.find((option) => option.id === model.defaultThinkingOptionId)
-      ?? model.thinkingOptions[0];
-    setSelectedThinkingOptionId(thinking?.id);
-  }, [modelsData, pendingViewHandoff]);
 
   useEffect(() => {
     const snapshot = runtime.state?.snapshot;
@@ -199,10 +211,9 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       try {
         const models = await api.listModels();
         setModelsData(models);
-        const initialModelId = chooseInitialModel(models, projectId);
-        setSelectedModelId(initialModelId);
-        const initialModel = models.models.find((model) => modelKey(model) === initialModelId);
-        setSelectedThinkingOptionId(initialModel ? chooseInitialThinkingOption(initialModel, projectId) : undefined);
+        const selection = chooseComposerSelection(models, projectId, pendingViewHandoff);
+        setSelectedModelId(selection.modelId);
+        setSelectedThinkingOptionId(selection.thinkingOptionId);
         setModelError(null);
       } catch (modelsError) {
         setModelError(modelsError instanceof Error ? modelsError.message : "Models are unavailable.");
@@ -212,7 +223,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     } finally {
       setIsLoadingProject(false);
     }
-  }, [projectId]);
+  }, [pendingViewHandoff, projectId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -227,10 +238,9 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
           const models = await api.listModels();
           if (isMounted) {
             setModelsData(models);
-            const initialModelId = chooseInitialModel(models, projectId);
-            setSelectedModelId(initialModelId);
-            const initialModel = models.models.find((model) => modelKey(model) === initialModelId);
-            setSelectedThinkingOptionId(initialModel ? chooseInitialThinkingOption(initialModel, projectId) : undefined);
+            const selection = chooseComposerSelection(models, projectId, pendingViewHandoff);
+            setSelectedModelId(selection.modelId);
+            setSelectedThinkingOptionId(selection.thinkingOptionId);
             setModelError(null);
           }
         } catch (modelsError) {
@@ -246,7 +256,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     return () => {
       isMounted = false;
     };
-  }, [projectId]);
+  }, [pendingViewHandoff, projectId]);
 
   const selectedModel = useMemo(
     () => modelsData?.models.find((model) => modelKey(model) === selectedModelId),
@@ -272,8 +282,11 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
   }, [selectedModel, selectedThinkingOption]);
 
   const appendTranscript = useCallback((transcript: string) => {
-    setDraftText((current) => current.trim() ? `${current.trimEnd()} ${transcript}` : transcript);
-  }, []);
+    setDraftTextOverride((current) => {
+      const existing = current ?? pendingViewHandoff?.text ?? "";
+      return existing.trim() ? `${existing.trimEnd()} ${transcript}` : transcript;
+    });
+  }, [pendingViewHandoff?.text]);
   const snapshot = runtime.state?.snapshot;
   const voice = useV2Voice({
     projectId,
@@ -505,6 +518,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
               model: selectedModel,
               thinking: selectedThinkingOption,
             });
+            clearCurrentViewHandoff();
             router.push(appendViewHandoff(href, nonce));
           })
           .catch((error: unknown) => setActionError(error instanceof Error ? error.message : "Could not open this focus in Classic View."));
@@ -513,6 +527,8 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         const message = messageById.get(messageId);
         if (message?.content) void voice.readAloud({ messageId, text: message.content });
       }}
+      activeReadAloudMessageId={voice.activeReadAloudMessageId ?? undefined}
+      readAloudStatus={voice.status === "synthesizing" || voice.status === "speaking" ? voice.status : undefined}
       composer={{
         isConnected: composerConnected,
         isSending,
@@ -521,7 +537,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         selectedThinkingOption: selectedThinkingOption ?? null,
         warningResetKey: snapshot.flow.id,
         value: draftText,
-        onValueChange: setDraftText,
+        onValueChange: setDraftTextOverride,
         attachments: draftAttachments,
         onAttachmentsChange: setDraftAttachments,
         voiceAvailable: voice.isAvailable,
@@ -558,7 +574,8 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
               runtimeConfig,
             });
           }
-          setDraftText("");
+          clearCurrentViewHandoff();
+          setDraftTextOverride("");
           setActionError(null);
         },
         onStop: runtime.cancelActiveTurn,

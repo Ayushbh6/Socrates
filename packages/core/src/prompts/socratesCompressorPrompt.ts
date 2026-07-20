@@ -72,7 +72,7 @@ Field meaning:
 <writing_rules>
 - Use concise operational lines, not paragraphs.
 - Prefer concrete nouns, paths, command names, error names, and exact user wording when important.
-- Preserve exact file paths, commands, model IDs, thresholds, dates, numbers, and error text when available.
+- Preserve exact file paths, commands, model IDs, thresholds, dates, numbers, error text, opaque identifiers, verification codes, and user-defined marker names when available; never replace an exact identifier with only a paraphrase.
 - Preserve \`.socrates/attachments/...\` paths when a future answer or task depends on the attached source. Put the path and read/search requirement in criticalContext or relevantFiles; do not replace it with a vague note that an attachment existed.
 - If previous summary conflicts with newer turns, prefer the newer turns and note the correction if it matters.
 - Keep done, inProgress, and blocked mutually exclusive. The same work item must not appear as both completed and failed.
@@ -149,6 +149,7 @@ Before finalizing, verify mentally:
 - There are no contradictions across done, inProgress, blocked, decisions, and nextSteps.
 - Empty sections are arrays with zero items, not filler text.
 - Anchors cover every genuinely anchor-worthy fact without padding, duplicates, or vague "inspect everything" phrasing.
+- Exact opaque identifiers, verification codes, and user-defined marker names that future turns may reference remain verbatim in the summary or in a granular anchor.
 - Any source attachment needed by future work remains named by exact path with its read/search requirement.
 - Old or possibly stale facts are labeled as historical/source-scoped.
 - constraints and decisions do not contain unverified historical code-state claims as current truth.

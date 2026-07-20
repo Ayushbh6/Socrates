@@ -226,7 +226,7 @@ type ApprovedSkillWriterTask = {
   sessionId?: string
   turnId?: string
   sourceTurnIds?: string[]
-  sourceKind: "dashboard" | "memory_agent_action"
+  sourceKind: "dashboard" | "memory_agent_action" | "socrates_tool"
   sourceId?: string
 }
 
@@ -851,7 +851,13 @@ export class MemoryStore extends StoreBase {
     return setSkillEnabled({ target: { scope: "project", projectId, root: path.join(workspacePath, ".socrates", "skills") }, name, enabled })
   }
 
-  async buildProjectSkill(projectId: string, workspacePath: string, request: string, explicitName?: string): Promise<SkillSummary> {
+  async buildProjectSkill(
+    projectId: string,
+    workspacePath: string,
+    request: string,
+    explicitName?: string,
+    source?: { conversationId: string; sessionId: string; turnId: string },
+  ): Promise<SkillSummary> {
     this.ensureProjectMemory(projectId, workspacePath)
     const skillRoot = path.join(workspacePath, ".socrates", "skills")
     fs.mkdirSync(skillRoot, { recursive: true })
@@ -863,7 +869,8 @@ export class MemoryStore extends StoreBase {
       request,
       projectId,
       workspacePath,
-      sourceKind: "dashboard",
+      sourceKind: source ? "socrates_tool" : "dashboard",
+      ...(source ?? {}),
     })
   }
 

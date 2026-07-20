@@ -25,7 +25,7 @@ export function useClassicVoiceTranscription({
 }: UseClassicVoiceTranscriptionInput) {
   const [status, setStatus] = useState<ClassicVoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcriberId, setTranscriberId] = useState<SpeechTranscriberId>(readSpeechTranscriberId);
+  const [transcriberId, setTranscriberId] = useState<SpeechTranscriberId>("disabled");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -124,9 +124,11 @@ export function useClassicVoiceTranscription({
     releaseRecordingStream();
   }, [releaseRecordingStream]);
 
-  useEffect(() => subscribeToSpeechPreferences(() => {
-    setTranscriberId(readSpeechTranscriberId());
-  }), []);
+  useEffect(() => {
+    const syncTranscriber = () => setTranscriberId(readSpeechTranscriberId());
+    syncTranscriber();
+    return subscribeToSpeechPreferences(syncTranscriber);
+  }, []);
 
   return {
     status,

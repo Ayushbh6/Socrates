@@ -16,13 +16,17 @@ import {
 } from "@/lib/speech/preferences";
 
 export function VoiceSpeechSettingsPanel() {
-  const [transcriberId, setTranscriberId] = useState<SpeechTranscriberId>(readSpeechTranscriberId);
-  const [readAloudId, setReadAloudId] = useState<SpeechReadAloudId>(readSpeechReadAloudId);
+  const [transcriberId, setTranscriberId] = useState<SpeechTranscriberId>("disabled");
+  const [readAloudId, setReadAloudId] = useState<SpeechReadAloudId>("disabled");
 
-  useEffect(() => subscribeToSpeechPreferences(() => {
-    setTranscriberId(readSpeechTranscriberId());
-    setReadAloudId(readSpeechReadAloudId());
-  }), []);
+  useEffect(() => {
+    const syncPreferences = () => {
+      setTranscriberId(readSpeechTranscriberId());
+      setReadAloudId(readSpeechReadAloudId());
+    };
+    syncPreferences();
+    return subscribeToSpeechPreferences(syncPreferences);
+  }, []);
 
   const transcriber = useMemo(
     () => SPEECH_TRANSCRIBER_OPTIONS.find((option) => option.id === transcriberId) ?? SPEECH_TRANSCRIBER_OPTIONS[0],

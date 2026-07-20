@@ -7,6 +7,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { v2Api } from "./api";
 import { mediaRecordingToMonoWav, preferredRecordingMimeType } from "@/lib/speech/audio";
+import { speechChunksFromMarkdown } from "@/lib/speech/readAloud";
 import {
   configuredTranscriber,
   readSpeechReadAloudId,
@@ -32,12 +33,16 @@ interface UseV2VoiceInput {
 export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2VoiceInput) {
   const [status, setStatus] = useState<V2VoiceStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [transcriberId, setTranscriberIdState] = useState<V2TranscriberId>(readSpeechTranscriberId);
+  const [transcriberId, setTranscriberIdState] = useState<V2TranscriberId>("disabled");
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const audioFinishRef = useRef<(() => void) | null>(null);
+  const readAloudSessionRef = useRef(0);
+  const readAloudCacheRef = useRef(new Map<string, Map<number, Blob>>());
+  const [activeReadAloudMessageId, setActiveReadAloudMessageId] = useState<string | null>(null);
   const transcriptHandlerRef = useRef(onTranscript);
 
   useEffect(() => {
@@ -133,11 +138,80 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
   }, [startRecording, status]);
 
   const stopPlayback = useCallback(() => {
+    const finish = audioFinishRef.current;
+    audioFinishRef.current = null;
     audioRef.current?.pause();
     audioRef.current = null;
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     audioUrlRef.current = null;
+    finish?.();
   }, []);
+
+  const cancelReadAloud = useCallback(() => {
+    readAloudSessionRef.current += 1;
+    stopPlayback();
+    setActiveReadAloudMessageId(null);
+    setStatus("idle");
+    setError(null);
+  }, [stopPlayback]);
+
+  const synthesizeChunk = useCallback(async (input: {
+    messageId: string;
+    text: string;
+    chunkIndex: number;
+  }): Promise<Blob> => {
+    const cached = readAloudCacheRef.current.get(input.messageId)?.get(input.chunkIndex);
+    if (cached) return cached;
+    if (!flowId) throw new Error("The project flow is still loading.");
+    const job = await v2Api.createSpeechJob(projectId, flowId, {
+      kind: "synthesis",
+      engine: "local_kokoro",
+      modelId: V2_LOCAL_KOKORO_MODEL_ID,
+      inputText: input.text,
+      voiceId: "speaker-0",
+      speed: 1,
+      messageId: input.messageId,
+      ...(goalId ? { goalId } : {}),
+    });
+    if (job.engine !== "local_kokoro" || job.status !== "completed" || !job.outputArtifactId) {
+      throw new Error("Kokoro did not return an audio response.");
+    }
+    const audioBlob = await v2Api.speechArtifactContent(projectId, flowId, job.outputArtifactId);
+    const messageCache = readAloudCacheRef.current.get(input.messageId) ?? new Map<number, Blob>();
+    messageCache.set(input.chunkIndex, audioBlob);
+    readAloudCacheRef.current.set(input.messageId, messageCache);
+    return audioBlob;
+  }, [flowId, goalId, projectId]);
+
+  const playAudioBlob = useCallback((audioBlob: Blob, sessionId: number): Promise<void> => new Promise((resolve, reject) => {
+    if (readAloudSessionRef.current !== sessionId) {
+      resolve();
+      return;
+    }
+    stopPlayback();
+    const url = URL.createObjectURL(audioBlob);
+    const audio = new Audio(url);
+    audioRef.current = audio;
+    audioUrlRef.current = url;
+    audioFinishRef.current = resolve;
+    audio.onended = stopPlayback;
+    audio.onerror = () => {
+      audioFinishRef.current = null;
+      audio.pause();
+      audioRef.current = null;
+      URL.revokeObjectURL(url);
+      audioUrlRef.current = null;
+      reject(new Error("The generated audio could not be played."));
+    };
+    void audio.play().catch((playbackError: unknown) => {
+      audioFinishRef.current = null;
+      audio.pause();
+      audioRef.current = null;
+      URL.revokeObjectURL(url);
+      audioUrlRef.current = null;
+      reject(playbackError);
+    });
+  }), [stopPlayback]);
 
   const readAloud = useCallback(async (input: { messageId: string; text: string }) => {
     if (!flowId) throw new Error("The project flow is still loading.");
@@ -146,56 +220,64 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
       setStatus("error");
       return;
     }
+    if (activeReadAloudMessageId === input.messageId && (status === "synthesizing" || status === "speaking")) {
+      cancelReadAloud();
+      return;
+    }
+    const chunks = speechChunksFromMarkdown(input.text);
+    if (chunks.length === 0) return;
+    readAloudSessionRef.current += 1;
+    const sessionId = readAloudSessionRef.current;
     stopPlayback();
     setError(null);
+    setActiveReadAloudMessageId(input.messageId);
     setStatus("synthesizing");
     try {
-      const job = await v2Api.createSpeechJob(projectId, flowId, {
-        kind: "synthesis",
-        engine: "local_kokoro",
-        modelId: V2_LOCAL_KOKORO_MODEL_ID,
-        inputText: input.text,
-        voiceId: "speaker-0",
-        speed: 1,
-        messageId: input.messageId,
-        ...(goalId ? { goalId } : {}),
-      });
-      if (job.engine !== "local_kokoro" || job.status !== "completed" || !job.outputArtifactId) {
-        throw new Error("Kokoro did not return an audio response.");
+      let currentAudio = await synthesizeChunk({ messageId: input.messageId, text: chunks[0]!, chunkIndex: 0 });
+      for (let index = 0; index < chunks.length; index += 1) {
+        if (readAloudSessionRef.current !== sessionId) return;
+        const nextAudioPromise = index + 1 < chunks.length
+          ? synthesizeChunk({ messageId: input.messageId, text: chunks[index + 1]!, chunkIndex: index + 1 }).then(
+            (audio) => ({ audio } as const),
+            (nextError: unknown) => ({ error: nextError } as const),
+          )
+          : undefined;
+        setStatus("speaking");
+        await playAudioBlob(currentAudio, sessionId);
+        if (readAloudSessionRef.current !== sessionId) return;
+        if (nextAudioPromise) {
+          setStatus("synthesizing");
+          const next = await nextAudioPromise;
+          if ("error" in next) throw next.error;
+          currentAudio = next.audio;
+        }
       }
-      const audioBlob = await v2Api.speechArtifactContent(projectId, flowId, job.outputArtifactId);
-      const url = URL.createObjectURL(audioBlob);
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      audioUrlRef.current = url;
-      audio.onended = () => {
-        stopPlayback();
+      if (readAloudSessionRef.current === sessionId) {
+        setActiveReadAloudMessageId(null);
         setStatus("idle");
-      };
-      audio.onerror = () => {
-        stopPlayback();
-        setError("The generated audio could not be played.");
-        setStatus("error");
-      };
-      setStatus("speaking");
-      await audio.play();
+      }
     } catch (speechError) {
+      if (readAloudSessionRef.current !== sessionId) return;
       stopPlayback();
+      setActiveReadAloudMessageId(null);
       setError(speechError instanceof Error ? speechError.message : "Read aloud failed.");
       setStatus("error");
     }
-  }, [flowId, goalId, projectId, stopPlayback]);
+  }, [activeReadAloudMessageId, cancelReadAloud, flowId, playAudioBlob, status, stopPlayback, synthesizeChunk]);
 
   const setTranscriberId = useCallback((next: V2TranscriberId) => {
     setTranscriberIdState(next);
     writeSpeechTranscriberId(next);
   }, []);
 
-  useEffect(() => subscribeToSpeechPreferences(() => {
-    setTranscriberIdState(readSpeechTranscriberId());
-  }), []);
+  useEffect(() => {
+    const syncTranscriber = () => setTranscriberIdState(readSpeechTranscriberId());
+    syncTranscriber();
+    return subscribeToSpeechPreferences(syncTranscriber);
+  }, []);
 
   useEffect(() => () => {
+    readAloudSessionRef.current += 1;
     const recorder = recorderRef.current;
     if (recorder) {
       recorder.ondataavailable = null;
@@ -213,9 +295,11 @@ export function useV2Voice({ projectId, flowId, goalId, onTranscript }: UseV2Voi
     isAvailable: typeof window !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== "undefined",
     transcriberId,
     transcriberOptions: V2_TRANSCRIBER_OPTIONS,
+    activeReadAloudMessageId,
     setTranscriberId,
     toggleRecording,
     readAloud,
+    cancelReadAloud,
     clearError: () => {
       setError(null);
       if (status === "error") setStatus("idle");

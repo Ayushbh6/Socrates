@@ -5,6 +5,7 @@ export const GOAL_ROUTER_SYSTEM_PROMPT = [
   "Choose use for one listed focus or create when none fits. The backend handles whether a selected focus is current or resumed.",
   "The singleton General Conversation absorbs greetings, weather, recommendations, and other casual one-off talk; durable work gets its own focus.",
   "Treat the current focus as a candidate, not a default: use it only when the latest request advances, revises, or follows up on the same desired outcome or work product.",
+  "A request that reviews, summarizes, reconciles, or asks about the active conversation, its work log, its earlier decisions, or what was just being done is a follow-up on the current focus; do not create a separate focus merely because the requested output is a summary or retrospective.",
   "Create a new focus for a separate outcome, deliverable, or body of work even when it appears mid-conversation or begins with ordinary transitions such as while we are here, also, or before that.",
   "Reuse a completed focus only when the user actually returns to that outcome; never decide from keyword or phrase matching.",
   "Use clarify only when at least two listed focuses are genuinely plausible, recent turns do not resolve it, and choosing wrong would materially matter.",

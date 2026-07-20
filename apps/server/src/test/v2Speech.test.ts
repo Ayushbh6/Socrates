@@ -636,7 +636,7 @@ describe("V2 speech engine boundaries", () => {
       sampleRate: 24_000,
     })
     await synthesizer.synthesize({ text: "The model stays warm.", outputPath: secondOutput })
-    expect(createAsync).toHaveBeenCalledTimes(1)
+    expect(createAsync).toHaveBeenCalledTimes(2)
     expect(generateAsync).toHaveBeenCalledTimes(2)
     expect(nativeRuntime.writeWave).toHaveBeenCalledTimes(2)
     expect(fs.readFileSync(firstOutput, "utf8")).toBe("RIFF-native-kokoro")

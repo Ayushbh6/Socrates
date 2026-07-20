@@ -79,6 +79,47 @@ type SpeechProcessRunner = (
 
 const requireFromHere = createRequire(import.meta.url)
 
+const KOKORO_NATIVE_WORKER_SOURCE = `
+const path = require("node:path");
+const sherpa = require(process.argv[1]);
+let serialized = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { serialized += chunk; });
+process.stdin.on("end", () => {
+  try {
+    const input = JSON.parse(serialized);
+    const tts = new sherpa.OfflineTts({
+      model: {
+        kokoro: {
+          model: path.join(input.modelDirectory, "model.onnx"),
+          voices: path.join(input.modelDirectory, "voices.bin"),
+          tokens: path.join(input.modelDirectory, "tokens.txt"),
+          dataDir: path.join(input.modelDirectory, "espeak-ng-data"),
+        },
+        debug: false,
+        numThreads: 2,
+        provider: "cpu",
+      },
+      maxNumSentences: 1,
+    });
+    const generationConfig = new sherpa.GenerationConfig({
+      sid: input.speakerId,
+      speed: input.speed,
+      silenceScale: 0.2,
+    });
+    const audio = tts.generate({
+      text: input.text,
+      enableExternalBuffer: false,
+      generationConfig,
+    });
+    sherpa.writeWave(input.outputPath, audio);
+  } catch (error) {
+    console.error(error instanceof Error ? (error.stack || error.message) : String(error));
+    process.exitCode = 1;
+  }
+});
+`
+
 const openRouterSttModelSet = new Set<string>(V2_OPENROUTER_STT_MODELS)
 
 export const isAllowedOpenRouterSttModel = (modelId: string): modelId is V2OpenRouterSttModel =>
@@ -316,8 +357,6 @@ export class LocalWhisperTranscriber {
 }
 
 export class LocalKokoroSynthesizer {
-  private nativeTts: Promise<SherpaOfflineTts> | undefined
-
   constructor(
     private readonly options: {
       binaryPath: string
@@ -339,9 +378,10 @@ export class LocalKokoroSynthesizer {
       throw new SocratesError("v2_tts_text_required", "There is no response text to read aloud.", { recoverable: true })
     }
     const modelDirectory = path.resolve(this.options.modelDirectory)
-    const nativeRuntime = this.resolveNativeRuntime()
+    const nativeRuntime = this.options.nativeRuntime ?? undefined
+    const nativeModulePath = this.options.nativeRuntime === undefined ? this.resolveNativeRuntimeModule() : undefined
     const binaryPath = path.resolve(this.options.binaryPath)
-    if (!nativeRuntime) {
+    if (!nativeRuntime && !nativeModulePath) {
       requireReadableFile(binaryPath, "v2_kokoro_runtime_missing", "The local Kokoro runtime is not installed.")
     }
     for (const relative of ["model.onnx", "voices.bin", "tokens.txt"]) {
@@ -361,6 +401,22 @@ export class LocalKokoroSynthesizer {
         speed: Math.max(0.5, Math.min(2, input.speed ?? 1)),
         ...(input.signal ? { signal: input.signal } : {}),
       })
+    } else if (nativeModulePath) {
+      await runProcess(
+        process.execPath,
+        ["-e", KOKORO_NATIVE_WORKER_SOURCE, nativeModulePath],
+        {
+          input: JSON.stringify({
+            text,
+            modelDirectory,
+            outputPath: path.resolve(input.outputPath),
+            speakerId: Math.max(0, Math.min(10, input.speakerId ?? 3)),
+            speed: Math.max(0.5, Math.min(2, input.speed ?? 1)),
+          }),
+          ...(input.signal ? { signal: input.signal } : {}),
+          timeoutMs: this.options.timeoutMs ?? 180_000,
+        },
+      )
     } else {
       await runProcess(
         binaryPath,
@@ -386,10 +442,9 @@ export class LocalKokoroSynthesizer {
     }
   }
 
-  private resolveNativeRuntime(): SherpaKokoroRuntime | undefined {
-    if (this.options.nativeRuntime !== undefined) return this.options.nativeRuntime ?? undefined
+  private resolveNativeRuntimeModule(): string | undefined {
     try {
-      return requireFromHere("sherpa-onnx-node") as SherpaKokoroRuntime
+      return requireFromHere.resolve("sherpa-onnx-node")
     } catch {
       return undefined
     }
@@ -404,7 +459,7 @@ export class LocalKokoroSynthesizer {
     signal?: AbortSignal
   }): Promise<void> {
     try {
-      this.nativeTts ??= runtime.OfflineTts.createAsync({
+      const tts = await raceSpeechOperation(runtime.OfflineTts.createAsync({
         model: {
           kokoro: {
             model: path.join(input.modelDirectory, "model.onnx"),
@@ -417,8 +472,7 @@ export class LocalKokoroSynthesizer {
           provider: "cpu",
         },
         maxNumSentences: 1,
-      })
-      const tts = await raceSpeechOperation(this.nativeTts, input.signal, this.options.timeoutMs ?? 180_000)
+      }), input.signal, this.options.timeoutMs ?? 180_000)
       const generationConfig = new runtime.GenerationConfig({
         sid: input.speakerId,
         speed: input.speed,
@@ -426,9 +480,9 @@ export class LocalKokoroSynthesizer {
       })
       const audio = await raceSpeechOperation(tts.generateAsync({
         text: input.text,
-        enableExternalBuffer: true,
+        enableExternalBuffer: false,
         generationConfig,
-        onProgress: () => input.signal?.aborted ? 0 : 1,
+        ...(input.signal ? { onProgress: () => input.signal?.aborted ? 0 : 1 } : {}),
       }), input.signal, this.options.timeoutMs ?? 180_000)
       runtime.writeWave(input.outputPath, audio)
     } catch (error) {
@@ -648,17 +702,24 @@ const raceSpeechOperation = <T>(operation: Promise<T>, signal: AbortSignal | und
 const runProcess = async (
   command: string,
   args: string[],
-  options: { signal?: AbortSignal; timeoutMs: number },
+  options: { input?: string; signal?: AbortSignal; timeoutMs: number },
 ): Promise<void> =>
   new Promise((resolve, reject) => {
     let stderr = ""
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"], windowsHide: true })
+    const child = spawn(command, args, {
+      stdio: [options.input === undefined ? "ignore" : "pipe", "ignore", "pipe"],
+      windowsHide: true,
+    })
     const timeout = setTimeout(() => child.kill(), options.timeoutMs)
     const abort = () => child.kill()
     options.signal?.addEventListener("abort", abort, { once: true })
-    child.stderr.on("data", (chunk: Buffer) => {
+    child.stderr?.on("data", (chunk: Buffer) => {
       if (stderr.length < 8_000) stderr += chunk.toString("utf8")
     })
+    if (options.input !== undefined) {
+      child.stdin?.on("error", () => undefined)
+      child.stdin?.end(options.input)
+    }
     child.once("error", (error) => {
       clearTimeout(timeout)
       options.signal?.removeEventListener("abort", abort)

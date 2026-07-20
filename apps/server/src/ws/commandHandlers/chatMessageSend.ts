@@ -1195,6 +1195,18 @@ const createToolExecutors = (
     }
     return output
   },
+  skill_manager: async (input, context) => {
+    if (input.operation === "create") {
+      const { skill } = await store.buildProjectSkill(
+        projectId,
+        { name: input.name, request: input.request },
+        { conversationId: context.conversationId, sessionId: context.sessionId, turnId: context.turnId },
+      )
+      return { operation: "create", name: skill.name, scope: "project", status: "created" }
+    }
+    const deleted = store.deleteProjectSkill(projectId, input.name)
+    return { operation: "delete", name: deleted.deletedSkillName, scope: "project", status: "deleted" }
+  },
   memory_note: (input, context) =>
     Promise.resolve(store.createMemoryNote(projectId, input, {
       conversationId: context.conversationId,
@@ -1373,7 +1385,9 @@ const createContextCompressionRuntime = (
   turnId: string,
 ): ContextCompressionRuntime => {
   const compressor = store.getWorkerModelSetting("socrates_context_compactor")
-  const fallback = contextCompressorFallback(store, compressor)
+  const fallback = process.env.SOCRATES_CONTEXT_COMPRESSION_FALLBACK_ENABLED === "false"
+    ? undefined
+    : contextCompressorFallback(store, compressor)
   return {
     enabled: process.env.SOCRATES_CONTEXT_COMPRESSION_ENABLED !== "false",
     projectId,

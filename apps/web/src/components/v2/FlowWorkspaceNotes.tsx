@@ -53,6 +53,7 @@ const readStoredPositions = (storageKey: string): StickyNotePositions => {
 interface StickyNoteProps {
   id: StickyNoteId;
   position: StickyNotePosition;
+  draggable: boolean;
   surfaceRef: RefObject<HTMLDivElement | null>;
   reduceMotion: boolean | null;
   ariaLabel: string;
@@ -67,6 +68,7 @@ interface StickyNoteProps {
 function StickyNote({
   id,
   position,
+  draggable,
   surfaceRef,
   reduceMotion,
   ariaLabel,
@@ -111,7 +113,7 @@ function StickyNote({
       className={styles.clippedNote}
       data-note={id}
       data-stacked={stacked || undefined}
-      drag
+      drag={draggable}
       dragListener={false}
       dragControls={dragControls}
       dragConstraints={surfaceRef}
@@ -119,7 +121,7 @@ function StickyNote({
       dragMomentum={false}
       onDragEnd={finishDrag}
       onPointerDown={(event) => event.stopPropagation()}
-      style={{ x: position.x, y: position.y }}
+      style={draggable ? { x: position.x, y: position.y } : undefined}
       initial={reduceMotion ? false : { opacity: 0, scale: 0.985 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.24, ease: "easeOut" }}
@@ -130,9 +132,10 @@ function StickyNote({
         type="button"
         className={styles.noteClip}
         aria-label={moveLabel}
-        title={`${moveLabel}. Use the arrow keys for precise movement.`}
-        onPointerDown={startDrag}
-        onKeyDown={nudgeNote}
+        title={draggable ? `${moveLabel}. Use the arrow keys for precise movement.` : "Pinned on smaller screens"}
+        disabled={!draggable}
+        onPointerDown={draggable ? startDrag : undefined}
+        onKeyDown={draggable ? nudgeNote : undefined}
       >
         <Paperclip aria-hidden="true" />
       </button>
@@ -168,6 +171,7 @@ export function FlowWorkspaceNotes({
   const surfaceRef = useRef<HTMLDivElement>(null);
   const noteRefs = useRef<Record<StickyNoteId, HTMLElement | null>>({ context: null, focus: null });
   const [positions, setPositions] = useState<StickyNotePositions>(DEFAULT_POSITIONS);
+  const [isNarrowLayout, setIsNarrowLayout] = useState(false);
   const positionsRef = useRef<StickyNotePositions>(DEFAULT_POSITIONS);
   const storageKey = `${V2_STORAGE_KEYS.noteLayout}:${projectId}`;
   const visibleContextItems = contextSummary?.items?.slice(0, 2) ?? [];
@@ -220,6 +224,14 @@ export function FlowWorkspaceNotes({
   }, [persistPositions]);
 
   useEffect(() => {
+    const media = window.matchMedia("(max-width: 45rem)");
+    const updateLayout = () => setIsNarrowLayout(media.matches);
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     const frame = window.requestAnimationFrame(() => {
       if (cancelled) return;
@@ -258,6 +270,7 @@ export function FlowWorkspaceNotes({
       <StickyNote
         id="context"
         position={positions.context}
+        draggable={!isNarrowLayout}
         surfaceRef={surfaceRef}
         reduceMotion={reduceMotion}
         ariaLabel="Open working context"
@@ -290,6 +303,7 @@ export function FlowWorkspaceNotes({
       <StickyNote
         id="focus"
         position={positions.focus}
+        draggable={!isNarrowLayout}
         surfaceRef={surfaceRef}
         reduceMotion={reduceMotion}
         ariaLabel="Open focus ledger"

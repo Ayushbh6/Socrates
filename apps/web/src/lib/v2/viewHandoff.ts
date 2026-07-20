@@ -58,15 +58,18 @@ export const appendViewHandoff = (href: string, nonce: string): string => {
   return `${url.pathname}${url.search}${url.hash}`;
 };
 
-export const consumeViewHandoff = (target: ViewHandoffTarget, projectId: string, conversationId?: string): ViewHandoffEnvelope | null => {
-  const url = new URL(window.location.href);
-  const nonce = url.searchParams.get("handoff");
-  if (!nonce) return null;
-  url.searchParams.delete("handoff");
-  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-  const key = `${HANDOFF_KEY_PREFIX}:${nonce}`;
-  const raw = window.sessionStorage.getItem(key);
-  window.sessionStorage.removeItem(key);
+export const readViewHandoffSnapshot = (): string | null => {
+  if (typeof window === "undefined") return null;
+  const nonce = new URL(window.location.href).searchParams.get("handoff");
+  return nonce ? window.sessionStorage.getItem(`${HANDOFF_KEY_PREFIX}:${nonce}`) : null;
+};
+
+export const parseViewHandoffSnapshot = (
+  raw: string | null,
+  target: ViewHandoffTarget,
+  projectId: string,
+  conversationId?: string,
+): ViewHandoffEnvelope | null => {
   if (!raw) return null;
   try {
     const envelope = JSON.parse(raw) as ViewHandoffEnvelope;
@@ -81,6 +84,30 @@ export const consumeViewHandoff = (target: ViewHandoffTarget, projectId: string,
   } catch {
     return null;
   }
+};
+
+export const consumeViewHandoff = (target: ViewHandoffTarget, projectId: string, conversationId?: string): ViewHandoffEnvelope | null => {
+  if (typeof window === "undefined") return null;
+  const url = new URL(window.location.href);
+  const nonce = url.searchParams.get("handoff");
+  if (!nonce) return null;
+  url.searchParams.delete("handoff");
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+  const key = `${HANDOFF_KEY_PREFIX}:${nonce}`;
+  const raw = window.sessionStorage.getItem(key);
+  window.sessionStorage.removeItem(key);
+  if (!raw) return null;
+  return parseViewHandoffSnapshot(raw, target, projectId, conversationId);
+};
+
+export const clearCurrentViewHandoff = (): void => {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  const nonce = url.searchParams.get("handoff");
+  if (!nonce) return;
+  window.sessionStorage.removeItem(`${HANDOFF_KEY_PREFIX}:${nonce}`);
+  url.searchParams.delete("handoff");
+  window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
 };
 
 export const handoffAttachmentsToFiles = async (attachments: ViewHandoffEnvelope["attachments"]): Promise<File[]> => {

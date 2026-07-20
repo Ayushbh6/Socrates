@@ -708,37 +708,44 @@
   white-space: nowrap;
 }
 
+.flowConversation {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.flowConversation[data-has-items="true"] {
+  grid-template-rows: clamp(19rem, 38vh, 23rem) minmax(0, 1fr);
+}
+
 .timelineScroller {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  border-top: 1px solid var(--v2-line);
   scrollbar-width: thin;
   scrollbar-color: var(--v2-line-strong) transparent;
   overscroll-behavior: contain;
 }
 
 .timeline {
-  width: 100%;
-  min-height: 100%;
+  width: min(48rem, calc(100% - 2rem));
+  min-height: 0;
   margin: 0 auto;
   display: grid;
-  align-content: center;
-  padding: clamp(1.5rem, 4vh, 3.2rem) 1rem;
-}
-
-.timelineHasItems {
   align-content: start;
+  padding: 0.75rem 0 1.5rem;
 }
 
 .presenceStage {
+  position: relative;
+  z-index: 1;
+  min-height: 0;
   display: grid;
   justify-items: center;
   gap: 1.3rem;
-}
-
-.timelineHasItems .presenceStage {
-  padding-bottom: 2rem;
-  border-bottom: 1px solid var(--v2-line);
+  overflow: hidden;
 }
 
 .timelineList,
@@ -757,7 +764,7 @@
   place-items: center;
 }
 
-.timelineHasItems .assistantDesk {
+.flowConversation[data-has-items="true"] .assistantDesk {
   min-height: 19rem;
 }
 
@@ -838,6 +845,11 @@
 
 .noteClip:active {
   cursor: grabbing;
+}
+
+.noteClip:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .noteClip svg {
@@ -1014,6 +1026,8 @@
 .timelineList {
   margin: 0;
   padding: 0;
+  display: grid;
+  gap: 0.7rem;
   list-style: none;
 }
 
@@ -1053,8 +1067,8 @@
 }
 
 .timelineItem {
-  padding: clamp(1.25rem, 2.7vw, 2rem) 0;
-  border-bottom: 1px solid var(--v2-line);
+  min-width: 0;
+  padding: 1.15rem 0 1.45rem;
 }
 
 .timelineItem[data-role="system"] {
@@ -1093,7 +1107,28 @@
 }
 
 .timelineItem[data-role="user"] {
-  padding-left: clamp(1rem, 5vw, 4.5rem);
+  width: fit-content;
+  max-width: min(38rem, 88%);
+  margin-left: auto;
+  padding: 0.8rem 1rem 0.9rem;
+  border: 1px solid rgba(67, 94, 91, 0.12);
+  border-radius: 1rem 1rem 0.3rem 1rem;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0.55rem 1.5rem rgba(45, 55, 72, 0.035);
+}
+
+.timelineItem[data-role="assistant"] {
+  width: min(44rem, 100%);
+  margin-right: auto;
+  border-bottom: 1px solid var(--v2-line);
+}
+
+.timelineItem[data-role="user"] .timelineItemMeta {
+  justify-content: flex-end;
+}
+
+.timelineItem[data-role="user"] .timelineItemMeta > span:last-child:not(:first-child) {
+  margin-left: 0.5rem;
 }
 
 .timelineItemMeta {
@@ -1223,14 +1258,15 @@
 }
 
 .readAloudControl {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0;
+  width: 1.65rem;
+  height: 1.65rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
+  border-radius: 50%;
   color: var(--v2-muted);
   background: transparent;
-  font-size: 0.67rem;
   cursor: pointer;
 }
 
@@ -1268,9 +1304,16 @@
 }
 
 .readAloudControl:hover,
-.readAloudControl:focus-visible {
+.readAloudControl:focus-visible,
+.readAloudControl[data-active="true"] {
   color: var(--v2-text);
+  background: rgba(131, 214, 201, 0.1);
   outline: none;
+}
+
+.readAloudControl:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
 }
 
 .readAloudControl svg {
@@ -2751,12 +2794,16 @@
     padding-inline: 0.6rem;
   }
 
+  .flowConversation[data-has-items="true"] {
+    grid-template-rows: minmax(24rem, 42%) minmax(0, 1fr);
+  }
+
   .assistantDesk {
     min-height: 24rem;
     display: block;
   }
 
-  .timelineHasItems .assistantDesk {
+  .flowConversation[data-has-items="true"] .assistantDesk {
     min-height: 24rem;
   }
 
@@ -2797,7 +2844,8 @@
   }
 
   .timelineItem[data-role="user"] {
-    padding-left: 1rem;
+    max-width: 92%;
+    padding: 0.8rem 1rem 0.9rem;
   }
 
   .composerDock {

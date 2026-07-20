@@ -7,6 +7,7 @@ import type { ModelEvent, ModelMessage, ModelProvider } from "@socrates/provider
 import { bashTool } from "../tools/bashTool"
 import { frontierHandoverTool } from "../tools/frontierHandoverTool"
 import { mcpRegistryTool } from "../tools/mcpRegistryTool"
+import { skillManagerTool } from "../tools/skillManagerTool"
 import { skillsTool } from "../tools/skillsTool"
 
 describe("SocratesAgent", () => {
@@ -612,6 +613,7 @@ describe("SocratesAgent", () => {
       "trace_retrieve",
       "tool_docs",
       "skills",
+      "skill_manager",
       "project_docs",
       "repo_docs",
       "soul",
@@ -994,8 +996,8 @@ describe("SocratesAgent", () => {
     expect(streamed.some((event) => event.type === "tool.call.completed")).toBe(true)
     expect(streamed.some((event) => event.type === "model.answer.delta")).toBe(true)
     expect(countRequests).toHaveLength(2)
-    expect(countRequests[0]?.toolCount).toBe(19)
-    expect(countRequests[1]?.toolCount).toBe(19)
+    expect(countRequests[0]?.toolCount).toBe(20)
+    expect(countRequests[1]?.toolCount).toBe(20)
     expect(JSON.stringify(countRequests[0]?.messages)).not.toContain("tool-result")
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
     expect(JSON.stringify(seenMessages.at(-1))).toContain("tool-result")
@@ -1082,6 +1084,158 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(requests[2]?.messages)).toContain("The report opening establishes the central evidence.")
     expect(completedTools[0]).toBe("read")
     expect(new Set(completedTools.slice(1))).toEqual(new Set(["context_disposition", "current_time"]))
+  })
+
+  it("blocks an unclassified next functional call and retries it with a model-chosen disposition", async () => {
+    const requests: Array<{ messages: unknown }> = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        requests.push({ messages: JSON.parse(JSON.stringify(request.messages)) as unknown })
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "read_large", toolName: "read", input: { path: "report.txt" } },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 2) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "unclassified_time", toolName: "current_time", input: {} },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls === 3) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: {
+              toolCallId: "dispose_large",
+              toolName: "context_disposition",
+              input: {
+                decisions: [{ result: "result_1", action: "distill", summary: "The report contains the evidence needed for the final comparison." }],
+              },
+            },
+          }
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "classified_time", toolName: "current_time", input: {} },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Done." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async () => ({
+      path: "report.txt",
+      kind: "file",
+      content: `UNIQUE_RETRY_REPORT_MARKER ${"substantial evidence ".repeat(2_000)}`,
+      truncation: { truncated: false, charLimit: 100_000, returnedLength: 42_000 },
+    })
+
+    const completedTools: string[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      runtimeConfig: {
+        providerId: "deepseek",
+        authMode: "api_key",
+        modelId: "deepseek-v4-flash",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Read the report, check the date, then summarize it." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+      maxToolCallsPerTurn: 2,
+    })) {
+      if (event.type === "tool.call.completed") completedTools.push(event.toolName)
+    }
+
+    expect(requests).toHaveLength(4)
+    expect(JSON.stringify(requests[2]?.messages)).toContain("were not executed")
+    expect(JSON.stringify(requests[2]?.messages)).toContain("result_1")
+    expect(JSON.stringify(requests[3]?.messages)).not.toContain("UNIQUE_RETRY_REPORT_MARKER")
+    expect(completedTools[0]).toBe("read")
+    expect(new Set(completedTools.slice(1))).toEqual(new Set(["context_disposition", "current_time"]))
+    expect(completedTools.filter((toolName) => toolName === "current_time")).toHaveLength(1)
+  })
+
+  it("falls back to auditable keep-exact after two disposition omissions", async () => {
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream() {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "read_large", toolName: "read", input: { path: "report.txt" } },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        if (calls <= 4) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: `ignored_time_${calls}`, toolName: "current_time", input: {} },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Done." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.read = async () => ({
+      path: "report.txt",
+      kind: "file",
+      content: `SAFE_FALLBACK_REPORT_MARKER ${"substantial evidence ".repeat(2_000)}`,
+      truncation: { truncated: false, charLimit: 100_000, returnedLength: 42_000 },
+    })
+
+    const completedTools: string[] = []
+    const startedDispositionInputs: unknown[] = []
+    const agent = new SocratesAgent(provider)
+    for await (const event of agent.streamTurn({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      runtimeConfig: {
+        providerId: "deepseek",
+        authMode: "api_key",
+        modelId: "deepseek-v4-flash",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Read the report, check the date, then summarize it." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+      maxToolCallsPerTurn: 2,
+    })) {
+      if (event.type === "tool.call.started" && event.toolName === "context_disposition") startedDispositionInputs.push(event.input)
+      if (event.type === "tool.call.completed") completedTools.push(event.toolName)
+    }
+
+    expect(calls).toBe(5)
+    expect(completedTools[0]).toBe("read")
+    expect(new Set(completedTools.slice(1))).toEqual(new Set(["context_disposition", "current_time"]))
+    expect(completedTools.filter((toolName) => toolName === "current_time")).toHaveLength(1)
+    expect(startedDispositionInputs).toEqual([{ decisions: [{ result: "result_1", action: "keep_exact" }] }])
   })
 
   it("adds a cache-safe same-turn memory save ledger after memory_note results", async () => {
@@ -1921,7 +2075,7 @@ describe("SocratesAgent", () => {
     }
 
     expect(streamed.some((event) => event.type === "tool.call.failed")).toBe(true)
-    expect(countRequests[0]?.toolCount).toBe(19)
+    expect(countRequests[0]?.toolCount).toBe(20)
     expect(countRequests[1]?.toolCount).toBe(0)
     expect(streamRequests[1]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[1]?.messages)).toContain("tool-result")
@@ -2372,7 +2526,7 @@ describe("SocratesAgent", () => {
     const failed = streamed.filter((event) => event.type === "tool.call.failed")
     expect(failed).toHaveLength(10)
     expect(countRequests).toHaveLength(11)
-    expect(countRequests[0]?.toolCount).toBe(19)
+    expect(countRequests[0]?.toolCount).toBe(20)
     expect(countRequests[10]?.toolCount).toBe(0)
     expect(streamRequests[10]?.tools).toHaveLength(0)
     expect(JSON.stringify(countRequests[10]?.messages)).toContain("10 confirmed tool-call execution errors")
@@ -3043,6 +3197,25 @@ describe("SocratesAgent", () => {
         context,
       ),
     ).toMatchObject({ type: "approval_required", request: { risk: "medium" } })
+  })
+
+  it("requires approval for both project skill lifecycle mutations", async () => {
+    const context = {} as Parameters<typeof skillManagerTool.decidePolicy>[1]
+
+    expect(await skillManagerTool.decidePolicy(
+      { operation: "create", name: "release-auditor", request: "Check release notes for missing verification evidence." },
+      context,
+    )).toMatchObject({
+      type: "approval_required",
+      request: { actionKind: "file_write", risk: "low" },
+    })
+    expect(await skillManagerTool.decidePolicy(
+      { operation: "delete", name: "release-auditor" },
+      context,
+    )).toMatchObject({
+      type: "approval_required",
+      request: { actionKind: "file_write", risk: "medium" },
+    })
   })
 
   it("collects multiple MCP credentials sequentially and passes values only to the runtime executor", async () => {

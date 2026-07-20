@@ -36,7 +36,9 @@ export const createV2ContextCompressionRuntime = (
   input: CreateV2ContextCompressionRuntimeInput,
 ): ContextCompressionRuntime => {
   const compressor = input.sharedStore.getWorkerModelSetting("socrates_context_compactor")
-  const fallback = contextCompressorFallback(input.sharedStore, compressor)
+  const fallback = process.env.SOCRATES_CONTEXT_COMPRESSION_FALLBACK_ENABLED === "false"
+    ? undefined
+    : contextCompressorFallback(input.sharedStore, compressor)
   const thresholds = v2WithinTurnCompressionThresholds()
   const modelCalls = new Map<string, string>()
 

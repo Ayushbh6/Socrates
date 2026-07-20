@@ -168,6 +168,7 @@ describe("V2 Flow goal routing", () => {
 
     expect(attempts).toBe(2)
     expect(systemPrompt).toContain("Goal Router Agent")
+    expect(systemPrompt).toContain("asks about the active conversation")
     expect(result.source).toBe("model")
     expect(result.decision).toMatchObject({ action: "continue", primaryGoalId: "active" })
     expect(result.modelAttempt?.usage).toMatchObject({ inputTokens: 17, outputTokens: 4, totalTokens: 21 })

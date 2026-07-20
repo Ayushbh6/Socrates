@@ -167,6 +167,18 @@ export const createV2ToolExecutors = (input: V2ToolExecutorsInput): ToolExecutor
       if (["list", "describe", "search", "read"].includes(toolInput.operation)) skillsDiscoverySeen = true
       return output
     },
+    skill_manager: async (toolInput, context) => {
+      if (toolInput.operation === "create") {
+        const { skill } = await input.sharedStore.buildProjectSkill(
+          input.projectId,
+          { name: toolInput.name, request: toolInput.request },
+          { conversationId: context.conversationId, sessionId: context.sessionId, turnId: context.turnId },
+        )
+        return { operation: "create", name: skill.name, scope: "project", status: "created" }
+      }
+      const deleted = input.sharedStore.deleteProjectSkill(input.projectId, toolInput.name)
+      return { operation: "delete", name: deleted.deletedSkillName, scope: "project", status: "deleted" }
+    },
     memory_note: async (toolInput) => {
       const source = input.flowStore.getTurnMemorySource(input.projectId, input.flowId, input.turnId)
       return input.sharedStore.createMemoryNote(input.projectId, toolInput, {

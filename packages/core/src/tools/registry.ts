@@ -21,6 +21,7 @@ import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
 import { skillsReadOnlyTool, skillsTool } from "./skillsTool"
 import { skillWriteTool } from "./skillWriteTool"
+import { skillManagerTool } from "./skillManagerTool"
 import { soulTool } from "./soulTool"
 import { toolDocsTool } from "./toolDocsTool"
 import { globalTraceRetrieveTool, traceRetrieveTool } from "./traceRetrieveTool"
@@ -42,6 +43,7 @@ const tools = [
   traceRetrieveTool,
   toolDocsTool,
   skillsTool,
+  skillManagerTool,
   projectDocsTool,
   repoDocsTool,
   soulTool,

@@ -416,8 +416,12 @@ export class SocratesStore {
     return this.memory.runMemoryNotesTool(input)
   }
 
-  async buildProjectSkill(projectId: string, input: BuildProjectSkillRequest): Promise<BuildProjectSkillResponse> {
-    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request, input.name) }
+  async buildProjectSkill(
+    projectId: string,
+    input: BuildProjectSkillRequest,
+    source?: { conversationId: string; sessionId: string; turnId: string },
+  ): Promise<BuildProjectSkillResponse> {
+    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request, input.name, source) }
   }
 
   deleteProjectSkill(projectId: string, skillName: string): DeleteSkillResponse {

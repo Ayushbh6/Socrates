@@ -372,7 +372,7 @@ describe("V2ExecutionRuntime", () => {
       .map((tool) => tool.name)
       .filter((name) => !coreInternalTools.has(name))
 
-    expect(sharedExecutorTools).toHaveLength(18)
+    expect(sharedExecutorTools).toHaveLength(19)
     expect(sharedExecutorTools.filter((name) => typeof Reflect.get(executors, name) !== "function")).toEqual([])
     expect(testRuntime.flowStore.countV1Rows()).toEqual({
       conversations: 0,

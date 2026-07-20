@@ -183,6 +183,7 @@ export class SocratesAgent {
     const memoryFinalizationEnabled = canRunMemoryLoop(this.provider, input, this.toolRegistry)
     const reconciliationVerification = new ReconciliationVerificationLedger()
     let reconciliationReminderCount = 0
+    let contextDispositionComplianceReminderCount = 0
 
     const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger)
     preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
@@ -408,6 +409,45 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         }
 
         yield attachModelMetadata(modelEvent, modelCallId, step)
+      }
+
+      const pendingDispositionResults = toolOutputDispositions.pendingResults()
+      const hasFunctionalToolCall = toolCalls.some((toolCall) => toolCall.toolName !== "context_disposition")
+      const hasContextDispositionCall = toolCalls.some((toolCall) => toolCall.toolName === "context_disposition")
+      if (pendingDispositionResults.length > 0 && hasFunctionalToolCall && !hasContextDispositionCall) {
+        if (contextDispositionComplianceReminderCount >= 2) {
+          // A provider that repeatedly ignores the control contract must not
+          // deadlock the task. Conservatively retain the visible results exact
+          // and record that decision through the normal auditable tool path.
+          // This fallback makes no semantic release/distillation judgment.
+          const providerToolCallId = createId("tcall")
+          toolCalls.unshift({
+            toolCallId: toolRunIdFor(providerToolCallId),
+            providerToolCallId,
+            toolName: "context_disposition",
+            input: {
+              decisions: pendingDispositionResults.slice(0, 8).map((result) => ({ result, action: "keep_exact" as const })),
+            },
+          })
+          contextDispositionComplianceReminderCount = 0
+        } else {
+          contextDispositionComplianceReminderCount += 1
+          messages.push({
+            role: "developer",
+            content: [
+              "The previous proposed functional tool calls were not executed because they omitted the required same-response context_disposition call.",
+              `Before retrying those functional calls, classify the visible pending results (${pendingDispositionResults.slice(0, 8).join(", ")}) with one context_disposition call in the same response.`,
+              "This is a model judgment: choose keep_exact, distill, release, or unresolved for each result you classify. Do not call context_disposition alone.",
+              ...(contextDispositionComplianceReminderCount >= 2
+                ? ["This is the second compliance reminder. Include the context_disposition call now; one more omission will use the safe keep-exact fallback so the task can continue."]
+                : []),
+            ].join("\n"),
+          })
+          continue
+        }
+      }
+      if (hasContextDispositionCall) {
+        contextDispositionComplianceReminderCount = 0
       }
 
       const requestedHandover = toolCalls.find((toolCall) => toolCall.toolName === "handover_to_frontier")
@@ -1798,11 +1838,17 @@ type MemorySaveLedgerBatchInput = {
 
 class ReconciliationVerificationLedger {
   private readonly targets = new Map<string, { label: string; mutated: boolean; verified: boolean }>()
+  private readonly observed = new Map<string, { mutated: boolean; verified: boolean }>()
 
   require(actions: MemoryReconciliationAction[]): void {
     for (const action of actions) {
       const key = this.keyForAction(action)
-      this.targets.set(key, { label: `${action.fileName}/${action.sectionId}`, mutated: false, verified: false })
+      const observed = this.observed.get(key)
+      this.targets.set(key, {
+        label: `${action.fileName}/${action.sectionId}`,
+        mutated: observed?.mutated ?? false,
+        verified: observed?.verified ?? false,
+      })
     }
   }
 
@@ -1817,15 +1863,17 @@ class ReconciliationVerificationLedger {
       if (!result?.ok) continue
       const key = this.keyForCall(call)
       if (!key) continue
-      const target = this.targets.get(key)
-      if (!target) continue
       const operation = toolOperation(call)
+      const observed = this.observed.get(key) ?? { mutated: false, verified: false }
       if (operation === "edit" || operation === "patch_section") {
-        target.mutated = true
-        target.verified = false
-      } else if (target.mutated && isDocsReadOperation(operation)) {
-        target.verified = true
+        observed.mutated = true
+        observed.verified = false
+      } else if (observed.mutated && isDocsReadOperation(operation)) {
+        observed.verified = true
       }
+      this.observed.set(key, observed)
+      const target = this.targets.get(key)
+      if (target) Object.assign(target, observed)
     }
   }
 

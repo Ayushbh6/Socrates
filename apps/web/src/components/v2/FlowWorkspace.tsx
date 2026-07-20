@@ -6,13 +6,13 @@ import {
   LayoutDashboard,
   PanelRightClose,
   PanelRightOpen,
+  Square,
   ThumbsDown,
   ThumbsUp,
   Volume2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import clsx from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { V2MessageAttachment } from "@socrates/contracts";
@@ -61,6 +61,8 @@ export interface FlowWorkspaceProps {
   earlierMessagesError?: string;
   composer: ChatComposerProps<V2MessageAttachment>;
   onReadAloud?: (itemId: string) => void;
+  activeReadAloudMessageId?: string | undefined;
+  readAloudStatus?: "synthesizing" | "speaking" | undefined;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
   onCredentialResolve?: (request: FlowCredentialRequestView, decision: "submitted" | "cancelled", value?: string) => void;
   onFeedback?: (messageId: string, rating: "thumbs_up" | "thumbs_down") => void;
@@ -97,6 +99,8 @@ export function FlowWorkspace({
   earlierMessagesError,
   composer,
   onReadAloud,
+  activeReadAloudMessageId,
+  readAloudStatus,
   onApprovalDecision,
   onCredentialResolve,
   onFeedback,
@@ -235,30 +239,32 @@ export function FlowWorkspace({
               if (isInspectorOpen && !isInspectorPinned) setIsInspectorOpen(false);
             }}
           >
-            <div className={styles.timelineScroller}>
-              <div className={clsx(styles.timeline, timeline.length > 0 && styles.timelineHasItems)}>
-                <div className={styles.presenceStage}>
-                  <div className={styles.assistantDesk}>
-                    <FlowWorkspaceNotes
-                      projectId={projectId}
-                      activeGoal={activeGoal}
-                      currentTaskLabel={currentTaskLabel}
-                      contextSummary={contextSummary}
-                      pausedGoalCount={pausedGoalCount}
-                      compact={timeline.length > 0}
-                      onOpenContext={() => openInspector("context")}
-                      onOpenFocuses={() => openInspector("focuses")}
+            <div className={styles.flowConversation} data-has-items={timeline.length > 0 || undefined}>
+              <div className={styles.presenceStage}>
+                <div className={styles.assistantDesk}>
+                  <FlowWorkspaceNotes
+                    projectId={projectId}
+                    activeGoal={activeGoal}
+                    currentTaskLabel={currentTaskLabel}
+                    contextSummary={contextSummary}
+                    pausedGoalCount={pausedGoalCount}
+                    compact={timeline.length > 0}
+                    onOpenContext={() => openInspector("context")}
+                    onOpenFocuses={() => openInspector("focuses")}
+                  />
+                  <div className={styles.deskSphere}>
+                    <LivingSphere
+                      state={presenceState}
+                      size={timeline.length > 0 ? "compact" : "full"}
+                      statusLabel={statusLabel}
                     />
-                    <div className={styles.deskSphere}>
-                      <LivingSphere
-                        state={presenceState}
-                        size={timeline.length > 0 ? "compact" : "full"}
-                        statusLabel={statusLabel}
-                      />
-                    </div>
                   </div>
                 </div>
+              </div>
 
+              {(timeline.length > 0 || hasEarlierMessages || earlierMessagesError) && (
+                <div className={styles.timelineScroller}>
+                  <div className={styles.timeline}>
                 {(hasEarlierMessages || earlierMessagesError) && (
                   <div className={styles.earlierMessagesControl}>
                     {hasEarlierMessages && onLoadEarlierMessages && (
@@ -320,9 +326,16 @@ export function FlowWorkspace({
                               type="button"
                               className={styles.readAloudControl}
                               onClick={() => onReadAloud(item.id)}
+                              disabled={Boolean(activeReadAloudMessageId && activeReadAloudMessageId !== item.id)}
+                              data-active={activeReadAloudMessageId === item.id || undefined}
+                              aria-label={activeReadAloudMessageId === item.id ? "Stop reading response" : "Read response aloud"}
+                              title={activeReadAloudMessageId === item.id
+                                ? readAloudStatus === "synthesizing" ? "Preparing speech — click to stop" : "Stop reading"
+                                : "Read aloud"}
                             >
-                              <Volume2 aria-hidden="true" />
-                              Read aloud
+                              {activeReadAloudMessageId === item.id
+                                ? <Square aria-hidden="true" />
+                                : <Volume2 aria-hidden="true" />}
                             </button>
                             {onFeedback && (
                               <>
@@ -350,7 +363,9 @@ export function FlowWorkspace({
                     ))}
                   </ol>
                 )}
-              </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className={styles.composerDock}>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS,
+  SOCRATES_COMPRESSOR_SYSTEM_PROMPT,
   buildCompressorUserMessageContent,
   type CompleteCompactionSnapshotInput,
   precomputeContextSnapshot,
@@ -23,6 +24,11 @@ const runtimeConfig = {
 const SLOW_COMPRESSION_TEST_TIMEOUT_MS = 20_000
 
 describe("context compression", () => {
+  it("requires exact opaque identifiers and user-defined markers to survive compaction", () => {
+    expect(SOCRATES_COMPRESSOR_SYSTEM_PROMPT).toContain("opaque identifiers, verification codes, and user-defined marker names")
+    expect(SOCRATES_COMPRESSOR_SYSTEM_PROMPT).toContain("never replace an exact identifier with only a paraphrase")
+  })
+
   it("uses one v1 trigger and tail/tool pressure defaults", () => {
     expect(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS).toEqual({
       triggerTokens: 170_000,
@@ -482,7 +488,16 @@ describe("context compression", () => {
 
     expect(started[0]?.sourceMessageIds).toEqual(["msg_head_1u", "msg_head_1a", "msg_head_2u", "msg_head_2a"])
     expect(started[0]?.sourceTurnIds).toEqual(["turn_head_1", "turn_head_2"])
-    expect(completed[0]?.summary).toEqual(fullSummary)
+    expect(completed[0]?.summary).toEqual({
+      ...fullSummary,
+      criticalContext: [
+        ...fullSummary.criticalContext,
+        "Exact preserved source text: HEAD_OBJECTIVE_SENTINEL: user wants the compressor to preserve anchors and all fields.",
+        "Exact preserved source text: HEAD_REPLY_SENTINEL: acknowledged the compressor objective.",
+        expect.stringContaining("HEAD_FAILURE_SENTINEL"),
+        "Exact preserved source text: HEAD_FILE_SENTINEL: inspected packages/core/src/context/contextCompression.ts before patching.",
+      ],
+    })
     expect(Object.keys(completed[0]?.summary ?? {}).sort()).toEqual([
       "anchors",
       "blocked",
@@ -670,12 +685,13 @@ describe("context compression", () => {
     })
   })
 
-  it("deterministically carries exact source attachment paths when the model omits them", async () => {
+  it("deterministically carries exact source artifacts when the model omits them", async () => {
     const provider = structuredProvider({ counts: [170_000, 60_000], outputs: [validChat({ relevantFiles: [] })] })
     const completed: ContextCompactionSummary[] = []
     const attachmentPath = ".socrates/attachments/pasted-text-eval.txt"
     const exactCommand = "pnpm --filter @socrates/core test -- contextCompression.test.ts"
     const unresolvedInstruction = "The unresolved task is to prove exact trace recovery. Do not mark it completed until the original evidence is retrieved."
+    const exactIdentifiers = ["COMPACTION_CANARY_ALPHA_42", "LEDGER-VERIFIED-921", "QC-17", "v2goal_a2c3127bb8444cef9a3e14eef071ace9"]
 
     await prepareContextForModelCall({
       provider,
@@ -684,7 +700,7 @@ describe("context compression", () => {
       runtimeConfig,
       system: "system",
       messages: [
-        { role: "user", content: `Read ${attachmentPath} before answering. The failing command is ${exactCommand} and the file is packages/core/src/context/contextCompression.ts. ${unresolvedInstruction}`, id: "msg_1u", turnId: "turn_1" },
+        { role: "user", content: `Read ${attachmentPath} before answering. Preserve ${exactIdentifiers.join(", ")}. The failing command is ${exactCommand} and the file is packages/core/src/context/contextCompression.ts. ${unresolvedInstruction}`, id: "msg_1u", turnId: "turn_1" },
         { role: "assistant", content: "I will inspect the source attachment.", id: "msg_1a", turnId: "turn_1" },
         { role: "user", content: "current user", id: "msg_2u", turnId: "turn_2" },
       ],
@@ -711,6 +727,10 @@ describe("context compression", () => {
     expect(completed[0]?.renderedSummary).toContain(exactCommand)
     expect(completed[0]?.summary).toMatchObject({ blocked: [expect.stringContaining(unresolvedInstruction)] })
     expect(completed[0]?.renderedSummary).toContain(unresolvedInstruction)
+    for (const identifier of exactIdentifiers) {
+      expect(completed[0]?.summary).toMatchObject({ criticalContext: expect.arrayContaining([expect.stringContaining(identifier)]) })
+      expect(completed[0]?.renderedSummary).toContain(identifier)
+    }
   })
 
   it("refuses provider context above the hard limit when compaction is disabled", async () => {

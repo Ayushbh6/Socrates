@@ -207,8 +207,16 @@ const enforceDeterministicCarryover = <TOutput>(
   userContent: string,
   schema: { safeParse: (value: unknown) => { success: boolean; data?: unknown; error?: { flatten: () => unknown } } },
 ): TOutput => {
-  if (mode !== "chat" || !output || typeof output !== "object" || !("relevantFiles" in output) || !("toolState" in output) || !("blocked" in output)) return output
-  const record = output as TOutput & { relevantFiles: string[]; toolState: string[]; blocked: string[] }
+  if (
+    mode !== "chat" ||
+    !output ||
+    typeof output !== "object" ||
+    !("criticalContext" in output) ||
+    !("relevantFiles" in output) ||
+    !("toolState" in output) ||
+    !("blocked" in output)
+  ) return output
+  const record = output as TOutput & { criticalContext: string[]; relevantFiles: string[]; toolState: string[]; blocked: string[] }
   const paths = Array.from(userContent.matchAll(/\.socrates\/attachments\/[A-Za-z0-9._/-]+/g))
     .map((match) => match[0].replace(/[.,;:]+$/, ""))
     .filter((value, index, all) => all.indexOf(value) === index)
@@ -230,9 +238,15 @@ const enforceDeterministicCarryover = <TOutput>(
     .filter((value, index, all) => all.indexOf(value) === index)
     .slice(0, 8)
   const missingUnresolved = unresolvedInstructions.filter((instruction) => !record.blocked.some((line) => line.includes(instruction)))
-  if (missing.length === 0 && missingCommands.length === 0 && missingUnresolved.length === 0) return output
+  const exactIdentifiers = extractExactIdentifiers(userContent)
+  const missingIdentifiers = exactIdentifiers.filter(({ identifier }) => !containsExactIdentifier(record, identifier))
+  if (missing.length === 0 && missingCommands.length === 0 && missingUnresolved.length === 0 && missingIdentifiers.length === 0) return output
   const candidate = {
     ...record,
+    criticalContext: [
+      ...record.criticalContext,
+      ...missingIdentifiers.map(({ sourceText }) => `Exact preserved source text: ${sourceText}`),
+    ],
     relevantFiles: [
       ...record.relevantFiles,
       ...missing.map((attachmentPath) => `${attachmentPath}: conversation source attachment; inspect with read or search before relying on it.`),
@@ -255,6 +269,40 @@ const enforceDeterministicCarryover = <TOutput>(
   }
   return parsed.data as TOutput
 }
+
+const extractExactIdentifiers = (source: string): Array<{ identifier: string; sourceText: string }> => {
+  // Current-turn tool digests are intentionally disposable; exact carryover applies only to the durable
+  // previous summary and completed old-head turns being replaced by this snapshot.
+  const durableSource = source.split("# Current Turn Tool Digest", 1)[0] ?? source
+  const uppercaseSnakeOrKebab = durableSource.match(/\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+){2,}\b/g) ?? []
+  const shortVerificationCodes = durableSource.match(/\b[A-Z]{2,}[A-Z0-9]*-\d{2,}\b/g) ?? []
+  const prefixedOpaqueIds = durableSource.match(/\b[a-z][a-z0-9]{1,20}_[0-9a-f]{12,}\b/g) ?? []
+  return [...uppercaseSnakeOrKebab, ...shortVerificationCodes, ...prefixedOpaqueIds]
+    .filter((value, index, all) => all.indexOf(value) === index)
+    .slice(0, 24)
+    .map((identifier) => ({ identifier, sourceText: exactSourceSentence(durableSource, identifier) }))
+}
+
+const exactSourceSentence = (source: string, identifier: string): string => {
+  const identifierIndex = source.indexOf(identifier)
+  if (identifierIndex < 0) return identifier
+  const boundedStart = Math.max(0, identifierIndex - 240)
+  const before = source.slice(boundedStart, identifierIndex)
+  const boundaryOffset = Math.max(before.lastIndexOf("\n"), before.lastIndexOf(". "), before.lastIndexOf("? "), before.lastIndexOf("! "))
+  const start = boundaryOffset >= 0 ? boundedStart + boundaryOffset + 1 : boundedStart
+  const boundedEnd = Math.min(source.length, identifierIndex + identifier.length + 240)
+  const after = source.slice(identifierIndex + identifier.length, boundedEnd)
+  const nextBoundaries = [after.indexOf("\n"), after.indexOf(". "), after.indexOf("? "), after.indexOf("! ")].filter((index) => index >= 0)
+  const end = nextBoundaries.length > 0 ? identifierIndex + identifier.length + Math.min(...nextBoundaries) + 1 : boundedEnd
+  return source.slice(start, end).replace(/\s+/g, " ").trim()
+}
+
+const containsExactIdentifier = (summary: Record<string, unknown>, identifier: string): boolean =>
+  Object.values(summary).some((field) =>
+    typeof field === "string"
+      ? field.includes(identifier)
+      : Array.isArray(field) && field.some((item) => typeof item === "string" && item.includes(identifier)),
+  )
 
 const assertAnchorTurnsAllowed = (output: { anchors: string[] }, allowedTurnNumbers?: number[]): void => {
   if (!allowedTurnNumbers) return

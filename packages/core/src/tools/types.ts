@@ -41,6 +41,8 @@ import type {
   SkillsToolOutput,
   SkillWriteToolInput,
   SkillWriteToolOutput,
+  SkillManagerToolInput,
+  SkillManagerToolOutput,
   SoulToolInput,
   SoulToolOutput,
   ToolDocsToolInput,
@@ -113,6 +115,7 @@ export type ToolExecutors = {
   turn_evidence?: (input: TurnEvidenceToolInput, context: ToolExecutorContext) => Promise<TurnEvidenceToolOutput>
   read_memory_journal?: (input: ReadMemoryJournalToolInput, context: ToolExecutorContext) => Promise<ReadMemoryJournalToolOutput>
   skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
+  skill_manager?: (input: SkillManagerToolInput, context: ToolExecutorContext) => Promise<SkillManagerToolOutput>
   mcp_registry?: (
     input: McpRegistryToolInput,
     context: ToolExecutorContext,

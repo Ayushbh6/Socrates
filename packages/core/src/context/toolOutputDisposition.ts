@@ -136,7 +136,7 @@ export class ToolOutputDispositionLedger {
         ...visible.map((candidate) =>
           `- ${candidate.result}: ${candidate.toolName}, about ${candidate.estimatedTokens} tokens, ${candidate.state}`),
         ...(remaining > 0 ? [`- ${remaining} additional candidate${remaining === 1 ? " is" : "s are"} queued after these.`] : []),
-        "If you need another functional tool call, include one context_disposition call in that same response and classify the listed results that no longer need to remain exact. Do not call context_disposition alone. If you can answer now, give the final answer without calling it because the turn will end. Use unresolved only when the next tool result is genuinely needed to judge the evidence.",
+        "If you need another functional tool call, that response is invalid unless it also includes one context_disposition call classifying the visible listed results. The runtime will not execute an unclassified next functional call. Do not call context_disposition alone. If you can answer now, give the final answer without calling it because the turn will end. Use unresolved only when the next tool result is genuinely needed to judge the evidence.",
         PROMPT_CLOSE,
       ].join("\n"),
     })
