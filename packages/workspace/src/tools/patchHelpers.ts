@@ -149,9 +149,21 @@ const structuredPatchToUnifiedDiff = (patchText: string, workspacePath: string):
   const parsed = parseStructuredPatch(patchText)
   const operations = parsed.operations
   validateStructuredPatchPaths(operations, workspacePath)
-  const patches = operations
-    .map((operation) => structuredOperationToUnifiedDiff(operation, workspacePath))
-    .filter((patch) => patch.trim().length > 0)
+  const patches: string[] = []
+  for (let index = 0; index < operations.length; index += 1) {
+    const operation = operations[index]
+    const next = operations[index + 1]
+    if (operation?.kind === "delete" && next?.kind === "add" && operation.path === next.path) {
+      const before = readExistingPatchTarget(workspacePath, operation.path)
+      patches.push(createWholeFileUnifiedDiff(operation.path, operation.path, before, next.content))
+      index += 1
+      continue
+    }
+    if (operation) {
+      const patch = structuredOperationToUnifiedDiff(operation, workspacePath)
+      if (patch.trim().length > 0) patches.push(patch)
+    }
+  }
 
   if (patches.length === 0) {
     throw new SocratesError("patch_parse_failed", "Patch did not contain any file changes.", {
