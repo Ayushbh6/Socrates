@@ -10,8 +10,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Square,
-  ThumbsDown,
-  ThumbsUp,
   Volume2,
   X,
 } from "lucide-react";
@@ -44,7 +42,6 @@ export interface FlowWorkspaceProps {
   sidebarProjects: SidebarProject[];
   messages?: Message[];
   activeTurnId?: string;
-  messageGoalIds?: Record<string, string>;
   goals?: FlowGoalView[];
   activeGoalId?: string;
   currentTaskLabel?: string;
@@ -55,7 +52,6 @@ export interface FlowWorkspaceProps {
   toolRuns?: ConversationToolRun[];
   terminalActivity?: ConversationTerminal[];
   credentialRequests?: PendingCredentialInput[];
-  feedbackByMessageId?: Record<string, "thumbs_up" | "thumbs_down">;
   voiceOptions?: FlowVoiceOption[];
   selectedVoiceOptionId?: string;
   voiceStatusLabel?: string;
@@ -68,7 +64,6 @@ export interface FlowWorkspaceProps {
   readAloudStatus?: "synthesizing" | "speaking" | undefined;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
   onCredentialResolve?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
-  onFeedback?: (messageId: string, rating: "thumbs_up" | "thumbs_down") => void;
   onVoiceOptionChange?: (optionId: string) => void;
   onTerminalInput?: (terminalId: string, input: { data?: string; text?: string; key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"; submit?: boolean }) => void;
   onTerminalResize?: (terminalId: string, size: { cols: number; rows: number }) => void;
@@ -88,7 +83,6 @@ export function FlowWorkspace({
   sidebarProjects,
   messages = [],
   activeTurnId,
-  messageGoalIds = {},
   goals = [],
   activeGoalId,
   currentTaskLabel = "Ready for your next thought",
@@ -99,7 +93,6 @@ export function FlowWorkspace({
   toolRuns = [],
   terminalActivity = [],
   credentialRequests = [],
-  feedbackByMessageId = {},
   voiceOptions = [],
   selectedVoiceOptionId,
   voiceStatusLabel,
@@ -112,7 +105,6 @@ export function FlowWorkspace({
   readAloudStatus,
   onApprovalDecision,
   onCredentialResolve,
-  onFeedback,
   onVoiceOptionChange,
   onTerminalInput,
   onTerminalResize,
@@ -408,28 +400,24 @@ export function FlowWorkspace({
               if (isInspectorOpen && !isInspectorPinned) setIsInspectorOpen(false);
             }}
           >
-            <div className={styles.flowConversation} data-has-items={messages.length > 0 || undefined}>
-              <div className={styles.presenceStage}>
-                <div className={styles.assistantDesk}>
-                  <FlowWorkspaceNotes
-                    projectId={projectId}
-                    activeGoal={activeGoal}
-                    currentTaskLabel={currentTaskLabel}
-                    contextSummary={contextSummary}
-                    pausedGoalCount={pausedGoalCount}
-                    compact={messages.length > 0}
-                    onOpenContext={() => openInspector("context")}
-                    onOpenFocuses={() => openInspector("focuses")}
-                  />
-                  <div className={styles.deskSphere}>
-                    <LivingSphere
-                      state={presenceState}
-                      size={messages.length > 0 ? "compact" : "full"}
-                      statusLabel={statusLabel}
-                    />
-                  </div>
-                </div>
+            <div className={styles.flowConversation}>
+              <div className={styles.orbBackdrop}>
+                <LivingSphere
+                  state={presenceState}
+                  size="full"
+                  statusLabel={statusLabel}
+                />
               </div>
+              <FlowWorkspaceNotes
+                projectId={projectId}
+                activeGoal={activeGoal}
+                currentTaskLabel={currentTaskLabel}
+                contextSummary={contextSummary}
+                pausedGoalCount={pausedGoalCount}
+                compact={messages.length > 0}
+                onOpenContext={() => openInspector("context")}
+                onOpenFocuses={() => openInspector("focuses")}
+              />
 
               {(messages.length > 0 || hasEarlierMessages || earlierMessagesError) && (
                 <div className={styles.timelineFrame}>
@@ -459,19 +447,6 @@ export function FlowWorkspace({
                         {earlierMessagesError && <p role="alert">{earlierMessagesError}</p>}
                       </div>
                     ) : undefined}
-                    renderBeforeMessage={(message, index) => {
-                      const goalId = messageGoalIds[message.id];
-                      if (!goalId) return null;
-                      const previousGoalId = index > 0 ? messageGoalIds[visibleMessages[index - 1]!.id] : undefined;
-                      if (previousGoalId === goalId) return null;
-                      const title = goals.find((goal) => goal.id === goalId)?.title ?? "Current focus";
-                      return (
-                        <div className={styles.flowFocusDivider}>
-                          <span>{index === 0 ? "Focus" : "Focus shifted"}</span>
-                          <strong>{title}</strong>
-                        </div>
-                      );
-                    }}
                     renderAfterMessage={(message) => message.role === "assistant" && message.status === "completed" && message.content.trim() ? (
                       <div className={styles.messageActions}>
                         {onReadAloud && (
@@ -488,26 +463,6 @@ export function FlowWorkspace({
                           >
                             {activeReadAloudMessageId === message.id ? <Square aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
                           </button>
-                        )}
-                        {onFeedback && (
-                          <>
-                            <button
-                              type="button"
-                              data-selected={feedbackByMessageId[message.id] === "thumbs_up" || undefined}
-                              onClick={() => onFeedback(message.id, "thumbs_up")}
-                              aria-label="Helpful response"
-                            >
-                              <ThumbsUp aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              data-selected={feedbackByMessageId[message.id] === "thumbs_down" || undefined}
-                              onClick={() => onFeedback(message.id, "thumbs_down")}
-                              aria-label="Unhelpful response"
-                            >
-                              <ThumbsDown aria-hidden="true" />
-                            </button>
-                          </>
                         )}
                       </div>
                     ) : null}

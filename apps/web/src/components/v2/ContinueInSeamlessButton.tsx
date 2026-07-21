@@ -28,7 +28,7 @@ export function ContinueInSeamlessButton({
   const [error, setError] = useState<string | null>(null);
 
   return (
-    <div className="fixed right-5 top-[4.25rem] z-20 flex flex-col items-end gap-1">
+    <div className="relative ml-2 shrink-0">
       <button
         type="button"
         disabled={busy}
@@ -60,7 +60,14 @@ export function ContinueInSeamlessButton({
       >
         {busy ? "Bridging…" : "Continue in Flow View ↗"}
       </button>
-      {error && <p className="max-w-72 rounded bg-red-50 px-2 py-1 text-[11px] text-red-700" role="alert">{error}</p>}
+      {error ? (
+        <p
+          className="absolute right-0 top-11 z-30 w-72 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-[11px] text-red-700 shadow-lg"
+          role="alert"
+        >
+          {error}
+        </p>
+      ) : null}
     </div>
   );
 }

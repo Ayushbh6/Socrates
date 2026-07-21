@@ -1220,15 +1220,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
   return (
     <main className="flex h-screen overflow-hidden bg-brand-bg">
-      <ContinueInSeamlessButton
-        projectId={projectId}
-        conversationId={conversationId}
-        hasPersistedTurns={(conversationData?.messages.length ?? 0) > 0}
-        draftText={draftText}
-        attachments={draftAttachments}
-        selectedModel={selectedModel}
-        selectedThinkingOption={selectedThinkingOption}
-      />
       <ProjectChatSidebar
         projects={sidebarProjects}
         currentProjectId={projectId}
@@ -1271,6 +1262,15 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             approvingSkillActionId={approvingSkillActionId}
             rejectingSkillActionId={rejectingSkillActionId}
           />
+          <ContinueInSeamlessButton
+            projectId={projectId}
+            conversationId={conversationId}
+            hasPersistedTurns={(conversationData?.messages.length ?? 0) > 0}
+            draftText={draftText}
+            attachments={draftAttachments}
+            selectedModel={selectedModel}
+            selectedThinkingOption={selectedThinkingOption}
+          />
           {hasTerminals ? (
             <button
               type="button"
@@ -1310,7 +1310,13 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 attachments={draftAttachments}
                 onAttachmentsChange={setDraftAttachments}
                 voiceAvailable={voice.isAvailable}
-                voiceRecording={voice.status === "recording"}
+                voiceStatus={voice.status === "recording" || voice.status === "transcribing" ? voice.status : "idle"}
+                voiceStatusLabel={voice.status === "recording"
+                  ? "Listening… Tap the microphone when you are finished."
+                  : voice.status === "transcribing"
+                    ? `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}…`
+                    : undefined}
+                voiceError={voice.error}
                 voiceBusy={voice.status === "transcribing"}
                 onModelChange={handleModelChange}
                 onThinkingChange={handleThinkingChange}
@@ -1351,7 +1357,13 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                       attachments={draftAttachments}
                       onAttachmentsChange={setDraftAttachments}
                       voiceAvailable={voice.isAvailable}
-                      voiceRecording={voice.status === "recording"}
+                      voiceStatus={voice.status === "recording" || voice.status === "transcribing" ? voice.status : "idle"}
+                      voiceStatusLabel={voice.status === "recording"
+                        ? "Listening… Tap the microphone when you are finished."
+                        : voice.status === "transcribing"
+                          ? `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}…`
+                          : undefined}
+                      voiceError={voice.error}
                       voiceBusy={voice.status === "transcribing"}
                       onModelChange={handleModelChange}
                       onThinkingChange={handleThinkingChange}

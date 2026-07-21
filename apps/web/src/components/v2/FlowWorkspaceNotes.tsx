@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, useDragControls, useReducedMotion, type PanInfo } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { ArrowRight, Paperclip } from "lucide-react";
 import {
   useCallback,
@@ -10,7 +10,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
-  type RefObject,
 } from "react";
 import { V2_STORAGE_KEYS } from "@/lib/v2/storageKeys";
 import type { FlowContextSummary, FlowGoalView } from "./types";
@@ -54,7 +53,6 @@ interface StickyNoteProps {
   id: StickyNoteId;
   position: StickyNotePosition;
   draggable: boolean;
-  surfaceRef: RefObject<HTMLDivElement | null>;
   reduceMotion: boolean | null;
   ariaLabel: string;
   moveLabel: string;
@@ -69,7 +67,6 @@ function StickyNote({
   id,
   position,
   draggable,
-  surfaceRef,
   reduceMotion,
   ariaLabel,
   moveLabel,
@@ -79,11 +76,46 @@ function StickyNote({
   onPositionChange,
   onNoteRef,
 }: StickyNoteProps) {
-  const dragControls = useDragControls();
+  const dragState = useRef<{
+    pointerId: number;
+    pointerX: number;
+    pointerY: number;
+    position: StickyNotePosition;
+  } | null>(null);
 
   const startDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (!draggable) return;
+    event.preventDefault();
     event.stopPropagation();
-    dragControls.start(event);
+    dragState.current = {
+      pointerId: event.pointerId,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      position,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const continueDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const activeDrag = dragState.current;
+    if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onPositionChange(id, {
+      x: activeDrag.position.x + event.clientX - activeDrag.pointerX,
+      y: activeDrag.position.y + event.clientY - activeDrag.pointerY,
+    });
+  };
+
+  const finishDrag = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const activeDrag = dragState.current;
+    if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    dragState.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const nudgeNote = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -100,32 +132,17 @@ function StickyNote({
     onPositionChange(id, { x: position.x + delta.x, y: position.y + delta.y });
   };
 
-  const finishDrag = (_event: MouseEvent | TouchEvent | PointerEvent, info: PanInfo) => {
-    onPositionChange(id, {
-      x: position.x + info.offset.x,
-      y: position.y + info.offset.y,
-    });
-  };
-
   return (
     <motion.article
       ref={(element) => onNoteRef(id, element)}
       className={styles.clippedNote}
       data-note={id}
       data-stacked={stacked || undefined}
-      drag={draggable}
-      dragListener={false}
-      dragControls={dragControls}
-      dragConstraints={surfaceRef}
-      dragElastic={0.025}
-      dragMomentum={false}
-      onDragEnd={finishDrag}
       onPointerDown={(event) => event.stopPropagation()}
       style={draggable ? { x: position.x, y: position.y } : undefined}
       initial={reduceMotion ? false : { opacity: 0, scale: 0.985 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.24, ease: "easeOut" }}
-      whileDrag={reduceMotion ? undefined : { scale: 1.015, boxShadow: "0 1.9rem 4rem rgba(45, 55, 72, 0.16)" }}
     >
       <span className={styles.noteStackEdge} aria-hidden="true" />
       <button
@@ -134,7 +151,10 @@ function StickyNote({
         aria-label={moveLabel}
         title={draggable ? `${moveLabel}. Use the arrow keys for precise movement.` : "Pinned on smaller screens"}
         disabled={!draggable}
-        onPointerDown={draggable ? startDrag : undefined}
+        onPointerDown={startDrag}
+        onPointerMove={continueDrag}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
         onKeyDown={draggable ? nudgeNote : undefined}
       >
         <Paperclip aria-hidden="true" />
@@ -188,11 +208,32 @@ export function FlowWorkspaceNotes({
   }, [storageKey]);
 
   const updatePosition = useCallback((id: StickyNoteId, position: StickyNotePosition) => {
+    const current = positionsRef.current[id];
+    const surface = surfaceRef.current;
+    const note = noteRefs.current[id];
+    let nextX = position.x;
+    let nextY = position.y;
+    if (surface && note) {
+      const surfaceRect = surface.getBoundingClientRect();
+      const noteRect = note.getBoundingClientRect();
+      const requestedX = position.x - current.x;
+      const requestedY = position.y - current.y;
+      const boundedX = Math.min(
+        Math.max(requestedX, surfaceRect.left - noteRect.left),
+        surfaceRect.right - noteRect.right,
+      );
+      const boundedY = Math.min(
+        Math.max(requestedY, surfaceRect.top - noteRect.top),
+        surfaceRect.bottom - noteRect.bottom,
+      );
+      nextX = current.x + boundedX;
+      nextY = current.y + boundedY;
+    }
     persistPositions({
       ...positionsRef.current,
       [id]: {
-        x: Math.round(position.x * 100) / 100,
-        y: Math.round(position.y * 100) / 100,
+        x: Math.round(nextX * 100) / 100,
+        y: Math.round(nextY * 100) / 100,
       },
     });
   }, [persistPositions]);
@@ -271,7 +312,6 @@ export function FlowWorkspaceNotes({
         id="context"
         position={positions.context}
         draggable={!isNarrowLayout}
-        surfaceRef={surfaceRef}
         reduceMotion={reduceMotion}
         ariaLabel="Open working context"
         moveLabel="Move live context note"
@@ -304,7 +344,6 @@ export function FlowWorkspaceNotes({
         id="focus"
         position={positions.focus}
         draggable={!isNarrowLayout}
-        surfaceRef={surfaceRef}
         reduceMotion={reduceMotion}
         ariaLabel="Open focus ledger"
         moveLabel="Move current focus note"

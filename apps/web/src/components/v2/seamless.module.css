@@ -709,21 +709,18 @@
 }
 
 .flowConversation {
+  position: relative;
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
-}
-
-.flowConversation[data-has-items="true"] {
-  grid-template-rows: clamp(12.5rem, 26vh, 16rem) minmax(0, 1fr);
+  isolation: isolate;
 }
 
 .timelineScroller {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  border-top: 1px solid var(--v2-line);
   scrollbar-width: thin;
   scrollbar-color: var(--v2-line-strong) transparent;
   overscroll-behavior: contain;
@@ -731,9 +728,9 @@
 
 .timelineFrame {
   position: relative;
+  z-index: 2;
   min-height: 0;
   overflow: hidden;
-  border-top: 1px solid var(--v2-line);
 }
 
 .timelineFrame .timelineScroller {
@@ -755,34 +752,6 @@
 .sharedTranscriptContent > .messageActions {
   width: min(48rem, 100%);
   margin-top: -0.7rem;
-}
-
-.flowFocusDivider {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  color: var(--v2-faint);
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.flowFocusDivider::before,
-.flowFocusDivider::after {
-  content: "";
-  height: 1px;
-  flex: 1 1 auto;
-  background: var(--v2-line);
-}
-
-.flowFocusDivider strong {
-  max-width: min(24rem, 55vw);
-  overflow: hidden;
-  color: var(--v2-muted);
-  font-weight: 620;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-transform: none;
 }
 
 .jumpToLatest {
@@ -824,47 +793,33 @@
   padding: 0.75rem 0 1.5rem;
 }
 
-.presenceStage {
-  position: relative;
-  z-index: 1;
-  min-height: 0;
-  display: grid;
-  justify-items: center;
-  gap: 1.3rem;
-  overflow: hidden;
-}
-
 .timelineList,
 .earlierMessagesControl {
   width: min(50rem, 100%);
   margin-inline: auto;
 }
 
-/* Socrates's desk: at most two ambient working notes around the presence. */
+/* The presence is atmosphere, not layout: it sits behind the one transcript canvas. */
 
-.assistantDesk {
-  position: relative;
-  width: 100%;
-  min-height: clamp(18rem, 43vh, 27rem);
+.orbBackdrop {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
   display: grid;
   place-items: center;
-}
-
-.flowConversation[data-has-items="true"] .assistantDesk {
-  min-height: 12.5rem;
-}
-
-.ambientNotes {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  overflow: visible;
+  overflow: hidden;
+  opacity: 0.58;
   pointer-events: none;
 }
 
-.deskSphere {
-  display: grid;
-  place-items: center;
+/* At most two movable working notes float above the transcript. */
+
+.ambientNotes {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
 }
 
 .clippedNote {
@@ -886,12 +841,12 @@
 
 .clippedNote[data-note="context"] {
   left: clamp(1.5rem, 4vw, 4rem);
-  top: calc(100% - 11rem);
+  top: clamp(1.15rem, 3vh, 2rem);
   background: rgba(247, 252, 249, 0.95);
 }
 
 .clippedNote[data-note="focus"] {
-  top: 1.15rem;
+  top: 0.75rem;
   right: clamp(1rem, 7vw, 6.5rem);
   background: rgba(255, 252, 241, 0.96);
 }
@@ -2880,24 +2835,8 @@
     padding-inline: 0.6rem;
   }
 
-  .flowConversation[data-has-items="true"] {
-    grid-template-rows: minmax(21rem, 40%) minmax(0, 1fr);
-  }
-
-  .assistantDesk {
-    min-height: 24rem;
-    display: block;
-  }
-
-  .flowConversation[data-has-items="true"] .assistantDesk {
-    min-height: 21rem;
-  }
-
-  .deskSphere {
-    position: absolute;
-    top: -1.5rem;
-    left: 50%;
-    transform: translateX(-50%);
+  .orbBackdrop {
+    opacity: 0.46;
   }
 
   .clippedNote {
@@ -2906,12 +2845,12 @@
   }
 
   .clippedNote[data-note="context"] {
-    top: 10.25rem;
+    top: 0.8rem;
     left: 0.5rem;
   }
 
   .clippedNote[data-note="focus"] {
-    top: 10.25rem;
+    top: 0.8rem;
     right: 0.5rem;
   }
 

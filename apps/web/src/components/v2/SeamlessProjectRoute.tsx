@@ -107,13 +107,11 @@ const contextItemLabel = (sourceLocator: string, sourceType: string): string => 
 const presentationFromMessages = (
   messages: V2Message[],
   streams: Record<string, { answer: string; reasoning?: string; turnId?: string }>,
-): { messages: Message[]; goalIdByMessageId: Record<string, string> } => {
-  const goalIdByMessageId: Record<string, string> = {};
+): { messages: Message[] } => {
   const visibleMessages = messages
     .filter((message): message is V2Message & { role: "user" | "assistant" | "system" } =>
       message.role === "user" || message.role === "assistant" || message.role === "system")
     .map((message) => {
-      if (message.goalId) goalIdByMessageId[message.id] = message.goalId;
       return flowMessageToClassicMessage({
         ...message,
         content: `${message.content}${streams[message.id]?.answer ?? ""}`,
@@ -138,7 +136,7 @@ const presentationFromMessages = (
       });
     }
   }
-  return { messages: visibleMessages, goalIdByMessageId };
+  return { messages: visibleMessages };
 };
 
 export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
@@ -318,7 +316,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     statusLabel = "Listening · tap the microphone to stop";
   } else if (voice.status === "transcribing") {
     presenceState = "thinking";
-    statusLabel = "Transcribing locally or with your selected provider";
+    statusLabel = `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}`;
   } else if (voice.status === "synthesizing" || voice.status === "speaking") {
     presenceState = "working";
     statusLabel = voice.status === "speaking" ? "Reading aloud" : "Preparing local speech";
@@ -409,7 +407,6 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       sidebarProjects={projectsData.map(({ project }) => ({ project, conversations: [] }))}
       messages={presentation.messages}
       activeTurnId={isSending ? snapshot.activeTurn?.id : undefined}
-      messageGoalIds={presentation.goalIdByMessageId}
       goals={snapshot.goals.map((goal) => ({
         id: goal.id,
         title: goal.title,
@@ -432,9 +429,6 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       toolRuns={toolRuns}
       terminalActivity={terminalActivity}
       credentialRequests={Object.values(runtime.state.credentialRequests).map(flowCredentialToClassicCredential)}
-      feedbackByMessageId={Object.fromEntries(
-        Object.entries(runtime.state.feedbackByMessageId).map(([messageId, feedback]) => [messageId, feedback.rating]),
-      )}
       voiceOptions={V2_TRANSCRIBER_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
       selectedVoiceOptionId={voice.transcriberId}
       voiceStatusLabel={voice.error ?? "Speech never switches from local to hosted without your selection."}
@@ -455,7 +449,6 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         decision,
         ...(value !== undefined ? { value } : {}),
       }))}
-      onFeedback={(messageId, rating) => guardAction(() => runtime.submitFeedback(messageId, rating))}
       onTerminalInput={(terminalId, input) => guardAction(() => runtime.sendTerminalInput(terminalId, input))}
       onTerminalResize={(terminalId, size) => guardAction(() => runtime.resizeTerminal(terminalId, size))}
       onTerminalStop={(terminalId) => guardAction(() => runtime.stopTerminal(terminalId))}
@@ -497,7 +490,13 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         attachments: draftAttachments,
         onAttachmentsChange: setDraftAttachments,
         voiceAvailable: voice.isAvailable,
-        voiceRecording: voice.status === "recording",
+        voiceStatus: voice.status === "recording" || voice.status === "transcribing" ? voice.status : "idle",
+        voiceStatusLabel: voice.status === "recording"
+          ? "Listening… Tap the microphone when you are finished."
+          : voice.status === "transcribing"
+            ? `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}…`
+            : undefined,
+        voiceError: voice.error,
         voiceBusy: voice.status === "transcribing" || voice.status === "synthesizing" || voice.status === "speaking",
         onModelChange: (nextModel) => {
           const nextModelId = modelKey(nextModel);

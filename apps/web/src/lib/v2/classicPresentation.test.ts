@@ -31,6 +31,18 @@ const tool = (status: V2ToolCall["status"]): V2ToolCall => ({
 });
 
 describe("Flow to Classic presentation adapters", () => {
+  it("lets the shared Classic activity UI summarize tool arguments", () => {
+    const presented = flowToolToClassicToolRun({
+      ...tool("completed"),
+      toolName: "read",
+      arguments: { path: "DBMS/MEMORY.md" },
+      completedAt: "2026-07-20T00:00:01.000Z",
+    });
+
+    expect(presented.arguments).toEqual({ path: "DBMS/MEMORY.md" });
+    expect(presented).not.toHaveProperty("summary");
+  });
+
   it("keeps an unresolved approval actionable while its tool is awaiting approval", () => {
     const presented = flowToolToClassicToolRun(tool("awaiting_approval"), approval());
     expect(presented.status).toBe("awaiting_approval");

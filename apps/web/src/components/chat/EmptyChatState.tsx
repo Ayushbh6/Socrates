@@ -16,7 +16,9 @@ interface EmptyChatStateProps {
   attachments?: MessageAttachment[];
   onAttachmentsChange?: (attachments: MessageAttachment[]) => void;
   voiceAvailable?: boolean;
-  voiceRecording?: boolean;
+  voiceStatus?: "idle" | "recording" | "transcribing";
+  voiceStatusLabel?: string;
+  voiceError?: string | null;
   voiceBusy?: boolean;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
@@ -39,7 +41,9 @@ export function EmptyChatState({
   attachments,
   onAttachmentsChange,
   voiceAvailable,
-  voiceRecording,
+  voiceStatus,
+  voiceStatusLabel,
+  voiceError,
   voiceBusy,
   onModelChange,
   onThinkingChange,
@@ -63,7 +67,9 @@ export function EmptyChatState({
         attachments={attachments}
         onAttachmentsChange={onAttachmentsChange}
         voiceAvailable={voiceAvailable}
-        voiceRecording={voiceRecording}
+        voiceStatus={voiceStatus}
+        voiceStatusLabel={voiceStatusLabel}
+        voiceError={voiceError}
         voiceBusy={voiceBusy}
         onModelChange={onModelChange}
         onThinkingChange={onThinkingChange}

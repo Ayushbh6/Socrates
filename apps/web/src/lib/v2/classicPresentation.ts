@@ -108,7 +108,6 @@ export const flowToolToClassicToolRun = (
     ...(tool.result !== undefined ? { result: tool.result } : {}),
     ...(tool.errorId ? { errorId: tool.errorId } : {}),
     ...(classicApproval ? { approval: classicApproval } : {}),
-    ...(stringifyPreview(tool.arguments, 240) ? { summary: stringifyPreview(tool.arguments, 240) } : {}),
     ...(tool.result !== undefined && stringifyPreview(tool.result, 2_000)
       ? { resultPreview: stringifyPreview(tool.result, 2_000) }
       : {}),

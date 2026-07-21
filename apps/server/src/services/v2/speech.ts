@@ -121,6 +121,7 @@ process.stdin.on("end", () => {
 `
 
 const openRouterSttModelSet = new Set<string>(V2_OPENROUTER_STT_MODELS)
+const DEFAULT_OPENROUTER_STT_TIMEOUT_MS = 120_000
 
 export const isAllowedOpenRouterSttModel = (modelId: string): modelId is V2OpenRouterSttModel =>
   openRouterSttModelSet.has(modelId)
@@ -129,6 +130,7 @@ export class OpenRouterTranscriber {
   constructor(
     private readonly credentials: ProviderCredentialResolver,
     private readonly request: typeof fetch = fetch,
+    private readonly timeoutMs = DEFAULT_OPENROUTER_STT_TIMEOUT_MS,
   ) {}
 
   async transcribe(input: {
@@ -151,20 +153,33 @@ export class OpenRouterTranscriber {
       })
     }
 
-    const response = await this.request("https://openrouter.ai/api/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-        "x-title": "Socrates Flow",
-      },
-      body: JSON.stringify({
-        input_audio: { data: input.audio.toString("base64"), format: normalizeAudioFormat(input.format) },
-        model: input.modelId,
-        ...(input.language ? { language: input.language } : {}),
-      }),
-      ...(input.signal ? { signal: input.signal } : {}),
-    })
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs)
+    const signal = input.signal ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal
+    let response: Response
+    try {
+      response = await this.request("https://openrouter.ai/api/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+          "x-title": "Socrates Flow",
+        },
+        body: JSON.stringify({
+          input_audio: { data: input.audio.toString("base64"), format: normalizeAudioFormat(input.format) },
+          model: input.modelId,
+          ...(input.language ? { language: input.language } : {}),
+        }),
+        signal,
+      })
+    } catch (error) {
+      if (timeoutSignal.aborted) {
+        throw new SocratesError("v2_stt_failed", "Hosted transcription timed out. Try again or choose another OpenRouter transcriber.", {
+          details: { modelId: input.modelId, timeoutMs: this.timeoutMs },
+          recoverable: true,
+        })
+      }
+      throw error
+    }
 
     const raw = await response.json().catch(() => undefined) as
       | {
