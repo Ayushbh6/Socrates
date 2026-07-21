@@ -223,7 +223,7 @@ Rules for chat UI files:
 - Shared display helpers belong in `apps/web/src/lib/` only when reused.
 - Do not introduce frontend-only API payload types that duplicate `packages/contracts`.
 - The composer owns text entry, send/stop controls, and presentation of backend-owned model/thinking choices. It must not own provider SDK mappings or agent runtime decisions.
-- `ChatComposer`, `WorkspaceTopbar`, and `ProjectChatSidebar` are shared presentation components. Classic uses conversation content in the sidebar; Flow uses project-only content and overlay layout. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
+- `ChatComposer`, `ChatTranscript`, `WorkspaceTopbar`, `ProjectChatSidebar`, tool/activity rows, approval/credential cards, and the Terminal dock are shared presentation components. Classic uses conversation content in the sidebar; Flow uses project links plus a typed query outline and overlay layout. Flow selects one exchange through `lib/v2/flowTranscriptWindow.ts` and passes it into the shared transcript; it must not fork message, tool, approval, or Terminal renderers. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
 
 Initial frontend hooks:
 

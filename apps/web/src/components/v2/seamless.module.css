@@ -728,7 +728,7 @@
 
 .timelineFrame {
   position: relative;
-  z-index: 2;
+  z-index: 20;
   min-height: 0;
   overflow: hidden;
 }
@@ -740,13 +740,13 @@
 }
 
 .sharedTranscriptContent {
-  width: min(50rem, calc(100% - 2rem));
+  width: min(52rem, calc(100% - 2rem));
   min-width: 0;
   margin: 0 auto;
-  padding: 1rem 0 1.6rem;
+  padding: clamp(1.5rem, 5vh, 3.5rem) 0 2.25rem;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: clamp(1.15rem, 3vh, 2rem);
 }
 
 .sharedTranscriptContent > .messageActions {
@@ -799,24 +799,37 @@
   margin-inline: auto;
 }
 
-/* The presence is atmosphere, not layout: it sits behind the one transcript canvas. */
+/* The presence is atmosphere, not layout: it sits behind the one focus canvas. */
 
 .orbBackdrop {
   position: absolute;
-  z-index: 0;
+  z-index: 10;
   inset: 0;
   display: grid;
   place-items: center;
   overflow: hidden;
-  opacity: 0.58;
+  opacity: 0.72;
   pointer-events: none;
+  transform: scale(0.98);
+  transition: opacity 420ms ease, transform 520ms cubic-bezier(0.2, 0.72, 0.2, 1), filter 420ms ease;
+}
+
+.flowConversation[data-has-exchange="true"] .orbBackdrop {
+  opacity: 0.24;
+  filter: saturate(0.72);
+}
+
+.orbBackdrop[data-active="true"] {
+  opacity: 0.82 !important;
+  filter: saturate(1) !important;
+  transform: scale(1.055);
 }
 
 /* At most two movable working notes float above the transcript. */
 
 .ambientNotes {
   position: absolute;
-  z-index: 5;
+  z-index: 30;
   inset: 0;
   overflow: visible;
   pointer-events: none;
@@ -825,15 +838,15 @@
 .clippedNote {
   position: absolute;
   z-index: 2;
-  width: min(15.5rem, 100%);
+  width: min(14.75rem, 100%);
   min-height: 10.75rem;
   margin: 0;
   overflow: visible;
   border: 1px solid rgba(67, 94, 91, 0.16);
-  border-radius: 0.28rem 0.5rem 0.42rem 0.22rem;
+  border-radius: 0.42rem;
   color: var(--v2-text);
   background: rgba(255, 254, 247, 0.94);
-  box-shadow: 0 1.35rem 3.25rem rgba(45, 55, 72, 0.09), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  box-shadow: 0 1.2rem 3rem rgba(45, 55, 72, 0.085), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
   pointer-events: auto;
   isolation: isolate;
   transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
@@ -918,30 +931,28 @@
   outline-offset: 3px;
 }
 
-.noteStackEdge {
-  position: absolute;
-  z-index: -2;
-  inset: 0.45rem -0.45rem -0.45rem 0.45rem;
-  opacity: 0;
-  border: 1px solid rgba(67, 94, 91, 0.09);
-  border-radius: 0.28rem 0.5rem 0.42rem 0.22rem;
-  background: rgba(255, 252, 241, 0.48);
-  transform: rotate(0.75deg);
-  transition: opacity 180ms ease;
+.historyNotice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  color: var(--v2-faint);
+  font-size: 0.68rem;
 }
 
-.clippedNote[data-stacked="true"] .noteStackEdge {
-  opacity: 1;
+.historyNotice button {
+  padding: 0;
+  border: 0;
+  color: var(--v2-accent-strong);
+  background: transparent;
+  cursor: pointer;
 }
 
-.clippedNote[data-stacked="true"] .noteStackEdge::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 0.42rem -0.42rem -0.42rem 0.42rem;
-  border: 1px solid rgba(67, 94, 91, 0.06);
-  border-radius: inherit;
-  background: rgba(255, 252, 241, 0.3);
+.historyNotice button:hover,
+.historyNotice button:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.18rem;
+  outline: none;
 }
 
 .noteEyebrow {
@@ -959,8 +970,9 @@
   font-size: 1rem;
   font-weight: 590;
   line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .noteBody {
@@ -2748,6 +2760,17 @@
 
   .inspectorMotionShell {
     width: min(25rem, calc(100% - 1.7rem));
+  }
+
+  .sharedTranscriptContent {
+    width: min(50rem, calc(100% - 2rem));
+    padding-top: 14.5rem;
+  }
+}
+
+@media (min-width: 67.501rem) and (max-width: 80rem) {
+  .sharedTranscriptContent {
+    width: min(52rem, calc(100% - 39rem));
   }
 }
 

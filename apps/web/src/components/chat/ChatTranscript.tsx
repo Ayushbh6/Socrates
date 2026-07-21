@@ -27,6 +27,7 @@ export interface ChatTranscriptProps {
   scrollContainerClassName?: string;
   contentClassName?: string;
   beforeMessages?: ReactNode;
+  collapseLongUserMessages?: boolean;
   renderBeforeMessage?: (message: Message, index: number) => ReactNode;
   renderAfterMessage?: (message: Message, index: number) => ReactNode;
   onScroll?: UIEventHandler<HTMLDivElement>;
@@ -63,6 +64,7 @@ export function ChatTranscript({
   scrollContainerClassName,
   contentClassName,
   beforeMessages,
+  collapseLongUserMessages = false,
   renderBeforeMessage,
   renderAfterMessage,
   onScroll,
@@ -139,6 +141,7 @@ export function ChatTranscript({
                 credentialRequests={messageCredentialRequests}
                 onApprovalDecision={onApprovalDecision}
                 onCredentialInput={onCredentialInput}
+                collapseLongUserMessage={collapseLongUserMessages}
               />
               {renderAfterMessage?.(message, index)}
               {shouldRenderIncompleteTurn ? (
@@ -284,6 +287,7 @@ function MessageBubble({
   credentialRequests,
   onApprovalDecision,
   onCredentialInput,
+  collapseLongUserMessage,
 }: {
   message: Message;
   tools: ToolTimelineItem[];
@@ -293,6 +297,7 @@ function MessageBubble({
   credentialRequests: PendingCredentialInput[];
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
   onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
+  collapseLongUserMessage?: boolean;
 }) {
   const isUser = message.role === "user";
   const hasStepAnswers = steps.some((step) => step.answer);
@@ -308,7 +313,13 @@ function MessageBubble({
       >
         {isUser ? (
           <>
-            {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : null}
+            {message.content ? (
+              <ExpandableUserMessage
+                key={message.content}
+                content={message.content}
+                enabled={Boolean(collapseLongUserMessage)}
+              />
+            ) : null}
             <AttachmentGrid attachments={message.attachments ?? []} />
           </>
         ) : (
@@ -354,6 +365,55 @@ function MessageBubble({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function ExpandableUserMessage({ content, enabled }: { content: string; enabled: boolean }) {
+  const contentRef = useRef<HTMLParagraphElement>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+    const element = contentRef.current;
+    if (!element) return;
+    const measure = () => setIsOverflowing(element.scrollHeight > 98);
+    const frame = window.requestAnimationFrame(measure);
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+    };
+  }, [content, enabled]);
+
+  const isCollapsed = enabled && isOverflowing && !isExpanded;
+
+  return (
+    <div className="relative">
+      <p
+        ref={contentRef}
+        className={`whitespace-pre-wrap ${isCollapsed ? "max-h-24 overflow-hidden pr-1" : ""}`}
+      >
+        {content}
+      </p>
+      {isCollapsed ? (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-brand-button"
+        />
+      ) : null}
+      {enabled && isOverflowing ? (
+        <button
+          type="button"
+          className="relative mt-2 border-0 bg-transparent p-0 text-xs font-medium text-white/75 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/45"
+          onClick={() => setIsExpanded((current) => !current)}
+          aria-expanded={isExpanded}
+        >
+          {isExpanded ? "Show less" : "Show more"}
+        </button>
+      ) : null}
     </div>
   );
 }

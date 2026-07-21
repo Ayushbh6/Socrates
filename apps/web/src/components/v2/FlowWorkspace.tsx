@@ -2,7 +2,6 @@
 
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
-  ArrowDown,
   ArrowUpRight,
   Eye,
   EyeOff,
@@ -23,7 +22,7 @@ import { TerminalDockPanel } from "@/components/chat/TerminalPanel";
 import type { PendingApproval, PendingCredentialInput } from "@/components/chat/ToolTimelineTypes";
 import { toolRunToTimelineItem } from "@/components/chat/ToolTimelineTypes";
 import { WorkspaceTopbar } from "@/components/chat/WorkspaceTopbar";
-import { countFlowTurns, sliceLatestFlowTurns } from "@/lib/v2/flowTranscriptWindow";
+import { groupFlowExchanges, selectFlowExchange } from "@/lib/v2/flowTranscriptWindow";
 import { LivingSphere } from "./LivingSphere";
 import { V2ViewLink } from "./V2ViewLink";
 import { V2SpeechPackManager } from "./V2SpeechPackManager";
@@ -78,9 +77,6 @@ export interface FlowWorkspaceProps {
   onOpenInClassic?: (goalId: string) => void;
 }
 
-const FLOW_TURN_BATCH_SIZE = 10;
-const FLOW_FOLLOW_THRESHOLD_PX = 96;
-
 export function FlowWorkspace({
   projectId,
   projectName,
@@ -125,9 +121,7 @@ export function FlowWorkspace({
   const [isInspectorPinned, setIsInspectorPinned] = useState(false);
   const [inspectorView, setInspectorView] = useState<FlowInspectorView>("context");
   const [isSpeechPacksOpen, setIsSpeechPacksOpen] = useState(false);
-  const [visibleTurnCount, setVisibleTurnCount] = useState(FLOW_TURN_BATCH_SIZE);
-  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
-  const [unseenMessageCount, setUnseenMessageCount] = useState(0);
+  const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null);
   const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
   const [activeTerminalId, setActiveTerminalId] = useState<string | undefined>();
   const [terminalDockHeight, setTerminalDockHeight] = useState(320);
@@ -137,21 +131,20 @@ export function FlowWorkspace({
   const speechPackDialogRef = useRef<HTMLDivElement>(null);
   const speechPackCloseRef = useRef<HTMLButtonElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const initialScrollCompleteRef = useRef(false);
-  const previousLastMessageIdRef = useRef<string | undefined>(undefined);
-  const previousContentVersionRef = useRef<string>("");
-  const pendingScrollRestoreRef = useRef<{ scrollHeight: number; scrollTop: number; firstMessageId?: string } | null>(null);
-  const pendingServerHistoryRef = useRef<{ messageCount: number } | null>(null);
+  const displayedExchangeKeyRef = useRef<string | undefined>(undefined);
+  const shouldFollowCurrentRef = useRef(true);
   const reduceMotion = useReducedMotion();
-  const visibleMessages = useMemo(
-    () => sliceLatestFlowTurns(messages, visibleTurnCount),
-    [messages, visibleTurnCount],
+  const exchanges = useMemo(() => groupFlowExchanges(messages), [messages]);
+  const currentExchange = useMemo(
+    () => selectFlowExchange(messages, null, activeTurnId),
+    [activeTurnId, messages],
   );
-  const loadedTurnCount = useMemo(
-    () => countFlowTurns(messages),
-    [messages],
+  const displayedExchange = useMemo(
+    () => selectFlowExchange(messages, selectedExchangeKey, activeTurnId),
+    [activeTurnId, messages, selectedExchangeKey],
   );
-  const hasHiddenLoadedTurns = loadedTurnCount > visibleTurnCount;
+  const displayedMessages = useMemo(() => displayedExchange?.messages ?? [], [displayedExchange]);
+  const displayedIsCurrent = Boolean(displayedExchange && displayedExchange.key === currentExchange?.key);
   const activeGoal = useMemo(
     () => goals.find((goal) => goal.id === activeGoalId) ?? goals.find((goal) => goal.status === "foreground"),
     [activeGoalId, goals],
@@ -186,10 +179,10 @@ export function FlowWorkspace({
     }));
   }, [activeTurnId, messages, toolRuns]);
   const contentVersion = useMemo(() => {
-    const last = messages.at(-1);
+    const last = displayedMessages.at(-1);
     const toolVersion = toolRuns.map((tool) => `${tool.toolCallId}:${tool.status}:${tool.resultPreview?.length ?? 0}`).join("|");
     return `${last?.id ?? "none"}:${last?.content.length ?? 0}:${last?.reasoning?.length ?? 0}:${toolVersion}`;
-  }, [messages, toolRuns]);
+  }, [displayedMessages, toolRuns]);
 
   const openInspector = (view: FlowInspectorView) => {
     setInspectorView(view);
@@ -255,81 +248,25 @@ export function FlowWorkspace({
   }, [terminalActivity]);
 
   useEffect(() => {
-    const pending = pendingServerHistoryRef.current;
-    if (!pending || messages.length <= pending.messageCount) return;
-    pendingServerHistoryRef.current = null;
-    setVisibleTurnCount((current) => current + FLOW_TURN_BATCH_SIZE);
-  }, [messages.length]);
-
-  useEffect(() => {
-    if (!earlierMessagesError) return;
-    pendingServerHistoryRef.current = null;
-    pendingScrollRestoreRef.current = null;
-  }, [earlierMessagesError]);
-
-  useEffect(() => {
-    const pending = pendingScrollRestoreRef.current;
     const container = transcriptRef.current;
-    if (!pending || !container || pending.firstMessageId === visibleMessages[0]?.id) return;
+    if (!container || !displayedExchange) return;
+    if (displayedExchangeKeyRef.current === displayedExchange.key) return;
+    displayedExchangeKeyRef.current = displayedExchange.key;
+    shouldFollowCurrentRef.current = true;
     const frame = window.requestAnimationFrame(() => {
-      container.scrollTop = pending.scrollTop + (container.scrollHeight - pending.scrollHeight);
-      pendingScrollRestoreRef.current = null;
+      container.scrollTo({ top: 0, behavior: "instant" });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [visibleMessages]);
+  }, [displayedExchange]);
 
   useEffect(() => {
     const container = transcriptRef.current;
-    if (!container || visibleMessages.length === 0 || pendingScrollRestoreRef.current) return;
-    const lastMessageId = visibleMessages.at(-1)?.id;
-    if (!initialScrollCompleteRef.current) {
-      const frame = window.requestAnimationFrame(() => {
-        container.scrollTop = container.scrollHeight;
-        initialScrollCompleteRef.current = true;
-        previousLastMessageIdRef.current = lastMessageId;
-        previousContentVersionRef.current = contentVersion;
-      });
-      return () => window.cancelAnimationFrame(frame);
-    }
-    if (previousContentVersionRef.current === contentVersion) return;
-    const isNewMessage = previousLastMessageIdRef.current !== lastMessageId;
-    previousLastMessageIdRef.current = lastMessageId;
-    previousContentVersionRef.current = contentVersion;
-    if (isFollowingLatest) {
-      const frame = window.requestAnimationFrame(() => {
-        container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-      });
-      return () => window.cancelAnimationFrame(frame);
-    }
-    if (isNewMessage) setUnseenMessageCount((current) => current + 1);
-  }, [contentVersion, isFollowingLatest, visibleMessages]);
-
-  const revealEarlierTurns = () => {
-    const container = transcriptRef.current;
-    if (container) {
-      pendingScrollRestoreRef.current = {
-        scrollHeight: container.scrollHeight,
-        scrollTop: container.scrollTop,
-        firstMessageId: visibleMessages[0]?.id,
-      };
-    }
-    if (hasHiddenLoadedTurns) {
-      setVisibleTurnCount((current) => current + FLOW_TURN_BATCH_SIZE);
-      return;
-    }
-    if (hasEarlierMessages && onLoadEarlierMessages) {
-      pendingServerHistoryRef.current = { messageCount: messages.length };
-      onLoadEarlierMessages();
-    }
-  };
-
-  const jumpToLatest = () => {
-    const container = transcriptRef.current;
-    if (!container) return;
-    setIsFollowingLatest(true);
-    setUnseenMessageCount(0);
-    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
-  };
+    if (!container || !displayedIsCurrent || !composer.isSending || !shouldFollowCurrentRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      container.scrollTo({ top: container.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [composer.isSending, contentVersion, displayedIsCurrent, reduceMotion]);
 
   return (
     <main className={styles.flowPage}>
@@ -344,6 +281,26 @@ export function FlowWorkspace({
         mode="projects"
         overlay
         projectHref={(targetProjectId) => `/seamless/projects/${encodeURIComponent(targetProjectId)}`}
+        flowOutline={{
+          items: exchanges.slice().reverse().map((exchange) => ({
+            id: exchange.key,
+            label: exchange.label,
+            isCurrent: exchange.key === currentExchange?.key,
+          })),
+          selectedId: displayedExchange?.key,
+          hasEarlier: hasEarlierMessages,
+          isLoadingEarlier: isLoadingEarlierMessages,
+          error: earlierMessagesError,
+          onSelect: (exchangeKey) => {
+            setSelectedExchangeKey(exchangeKey === currentExchange?.key ? null : exchangeKey);
+            setIsSidebarCollapsed(true);
+          },
+          onReturnToCurrent: () => {
+            setSelectedExchangeKey(null);
+            setIsSidebarCollapsed(true);
+          },
+          onLoadEarlier: onLoadEarlierMessages,
+        }}
       />
 
       <section className={styles.flowShell} data-inspector={isInspectorOpen ? "open" : "closed"}>
@@ -408,8 +365,15 @@ export function FlowWorkspace({
               if (isInspectorOpen && !isInspectorPinned) setIsInspectorOpen(false);
             }}
           >
-            <div className={styles.flowConversation}>
-              <div className={styles.orbBackdrop}>
+            <div
+              className={styles.flowConversation}
+              data-presence={presenceState}
+              data-has-exchange={displayedMessages.length > 0 || undefined}
+            >
+              <div
+                className={styles.orbBackdrop}
+                data-active={composer.isSending || ["listening", "routing", "thinking", "working", "awaiting_input"].includes(presenceState) || undefined}
+              >
                 <LivingSphere
                   state={presenceState}
                   size="full"
@@ -427,32 +391,23 @@ export function FlowWorkspace({
                 onOpenFocuses={() => openInspector("focuses")}
               />
 
-              {(messages.length > 0 || hasEarlierMessages || earlierMessagesError) && (
+              {displayedMessages.length > 0 && (
                 <div className={styles.timelineFrame}>
                   <ChatTranscript
-                    messages={visibleMessages}
+                    messages={displayedMessages}
                     toolRuns={toolRuns}
-                    liveSteps={liveSteps}
+                    liveSteps={displayedIsCurrent ? liveSteps : []}
                     approvals={approvals}
                     credentialRequests={credentialRequests}
-                    isStreaming={composer.isSending}
+                    isStreaming={displayedIsCurrent && composer.isSending}
                     scrollContainerRef={transcriptRef}
                     scrollContainerClassName={styles.timelineScroller}
                     contentClassName={styles.sharedTranscriptContent}
-                    beforeMessages={(hasHiddenLoadedTurns || hasEarlierMessages || earlierMessagesError) ? (
-                      <div className={styles.earlierMessagesControl}>
-                        {(hasHiddenLoadedTurns || hasEarlierMessages) && (
-                          <button
-                            type="button"
-                            onClick={revealEarlierTurns}
-                            disabled={isLoadingEarlierMessages}
-                          >
-                            {isLoadingEarlierMessages
-                              ? "Loading earlier turns…"
-                              : `Show ${FLOW_TURN_BATCH_SIZE} earlier turns`}
-                          </button>
-                        )}
-                        {earlierMessagesError && <p role="alert">{earlierMessagesError}</p>}
+                    collapseLongUserMessages
+                    beforeMessages={!displayedIsCurrent ? (
+                      <div className={styles.historyNotice}>
+                        <span>Earlier query</span>
+                        <button type="button" onClick={() => setSelectedExchangeKey(null)}>Return to current</button>
                       </div>
                     ) : undefined}
                     renderAfterMessage={(message) => message.role === "assistant" && message.status === "completed" && message.content.trim() ? (
@@ -489,17 +444,9 @@ export function FlowWorkspace({
                     onCredentialInput={onCredentialResolve}
                     onScroll={(event) => {
                       const container = event.currentTarget;
-                      const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= FLOW_FOLLOW_THRESHOLD_PX;
-                      setIsFollowingLatest(nearBottom);
-                      if (nearBottom) setUnseenMessageCount(0);
+                      shouldFollowCurrentRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
                     }}
                   />
-                  {!isFollowingLatest && (
-                    <button type="button" className={styles.jumpToLatest} onClick={jumpToLatest}>
-                      <ArrowDown aria-hidden="true" />
-                      <span>{unseenMessageCount > 0 ? `${unseenMessageCount} new · Jump to latest` : "Jump to latest"}</span>
-                    </button>
-                  )}
                 </div>
               )}
             </div>

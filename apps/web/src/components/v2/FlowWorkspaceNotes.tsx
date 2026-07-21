@@ -56,7 +56,6 @@ interface StickyNoteProps {
   reduceMotion: boolean | null;
   ariaLabel: string;
   moveLabel: string;
-  stacked?: boolean;
   children: ReactNode;
   onOpen: () => void;
   onPositionChange: (id: StickyNoteId, position: StickyNotePosition) => void;
@@ -70,7 +69,6 @@ function StickyNote({
   reduceMotion,
   ariaLabel,
   moveLabel,
-  stacked = false,
   children,
   onOpen,
   onPositionChange,
@@ -137,14 +135,12 @@ function StickyNote({
       ref={(element) => onNoteRef(id, element)}
       className={styles.clippedNote}
       data-note={id}
-      data-stacked={stacked || undefined}
       onPointerDown={(event) => event.stopPropagation()}
       style={draggable ? { x: position.x, y: position.y } : undefined}
       initial={reduceMotion ? false : { opacity: 0, scale: 0.985 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ duration: 0.24, ease: "easeOut" }}
     >
-      <span className={styles.noteStackEdge} aria-hidden="true" />
       <button
         type="button"
         className={styles.noteClip}
@@ -347,7 +343,6 @@ export function FlowWorkspaceNotes({
         reduceMotion={reduceMotion}
         ariaLabel="Open focus ledger"
         moveLabel="Move current focus note"
-        stacked={pausedGoalCount > 0}
         onOpen={onOpenFocuses}
         onPositionChange={updatePosition}
         onNoteRef={(id, element) => { noteRefs.current[id] = element; }}
