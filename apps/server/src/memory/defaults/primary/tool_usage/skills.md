@@ -11,7 +11,7 @@ index_tags: [tool_usage]
 <!-- socrates:section id="purpose" kind="purpose" tags="tools" -->
 ## Purpose
 
-`skills` discovers and reads reusable Socrates skill instructions. It can also securely preview and install one Agent Skill ZIP from an exact user-supplied public HTTPS URL or a ZIP attached to the current user message.
+`skills` discovers and reads reusable Socrates skill instructions. It can also securely preview and install one Agent Skill ZIP from an exact user-supplied public HTTPS URL or a ZIP attached to the current user message. `skill_manager` owns approval-gated creation and deletion of project skills through the configured Skill Writer path.
 
 Skills are procedural guidance for repeatable workflows; they are not evidence for facts about the current repo or prior conversation.
 <!-- /socrates:section -->
@@ -23,6 +23,7 @@ Skills are procedural guidance for repeatable workflows; they are not evidence f
 - The user names a skill or asks for a kind of work covered by an installed skill.
 - You need to inspect project, global, or builtin skill guidance before acting.
 - The user supplies an exact Agent Skill ZIP URL or attaches a ZIP and asks to review or install it globally or for the current project.
+- The user explicitly asks Socrates to create or delete a project skill; use `skill_manager` rather than writing `.socrates/skills` directly.
 - Do not use skills as proof of current code state; inspect files or traces for evidence.
 - This tool does not search the web. If the user asks Socrates to find a skill without supplying a URL, use an explicitly configured search MCP or explain that discovery is unavailable.
 <!-- /socrates:section -->
@@ -38,6 +39,8 @@ Skills are procedural guidance for repeatable workflows; they are not evidence f
 - `n` controls list size; it defaults low and is capped by the runtime.
 - `scope` may be `builtin`, `global`, or `project` when supported by the runtime.
 - Some skills reference relative files; resolve them relative to the skill file first.
+- `skill_manager operation:"create"` requires a human-facing `name` and the user's bounded `request`; it delegates authoring to the structured Skill Writer and requires approval.
+- `skill_manager operation:"delete"` requires the exact project-skill `name`, deletes only that skill after approval, and must not target builtin or global skills.
 <!-- /socrates:section -->
 
 <!-- socrates:section id="workflow" kind="workflow" tags="tools" -->
@@ -49,6 +52,12 @@ Skills are procedural guidance for repeatable workflows; they are not evidence f
 4. When `SKILL.md` references a supporting file, use `skills read` with the same canonical id and exact relative path. Do not guess filesystem paths.
 5. Combine skill guidance with current repo evidence and higher-priority user/developer instructions.
 6. Mention if an expected skill is missing and continue with the best fallback.
+
+For project-skill creation or deletion:
+
+1. Confirm the user explicitly requested the lifecycle change and inspect current skills with `skills list` or `describe`.
+2. Call `skill_manager` with the exact human-facing name and operation. Never create, rewrite, or remove `.socrates/skills` through Terminal or generic edit tools.
+3. Let the approval flow complete, then verify the result with `skills list` or `describe`.
 
 For an import:
 
@@ -69,5 +78,6 @@ For an import:
 - If a skill conflicts with explicit user/developer instructions, follow the higher-priority instruction.
 - If a URL is not HTTPS, resolves to a local/private address, redirects too many times, is larger than 30 MB, or does not return a ZIP, ask for a valid direct public HTTPS ZIP URL.
 - If an import preview expires, call `preview_import` again; do not reuse or fabricate a preview id.
+- If `skill_manager` reports a conflict or missing skill, refresh with `skills list`; do not guess another name or bypass the structured Skill Writer path.
 - If preview warnings identify network access, package installation, destructive commands, allowed-tools, or possible secrets, report them plainly. Installing a skill never pre-approves the commands it describes.
 <!-- /socrates:section -->

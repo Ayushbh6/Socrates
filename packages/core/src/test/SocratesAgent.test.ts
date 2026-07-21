@@ -71,6 +71,9 @@ describe("SocratesAgent", () => {
     expect(requestJson).toContain("make a real, substantive effort")
     expect(requestJson).toContain("Difficulty or importance alone is not a blocker")
     expect(requestJson).toContain("always pauses for explicit user approval")
+    expect(requestJson).toContain("Treat long read/search/Terminal/MCP/retrieval outputs as temporary evidence")
+    expect(requestJson).toContain("Prefer distill when only a compact set of findings")
+    expect(requestJson).toContain("Long reads and large tool outputs should normally be distilled or released")
   })
 
   it("persists a created goal when goal tracking is active but no candidates exist yet", async () => {
