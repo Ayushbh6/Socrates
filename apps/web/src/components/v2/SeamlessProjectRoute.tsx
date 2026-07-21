@@ -454,6 +454,16 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       onTerminalStop={(terminalId) => guardAction(() => runtime.stopTerminal(terminalId))}
       onTerminalRename={(terminalId, name) => guardAction(() => runtime.renameTerminal(terminalId, name))}
       onFocusAction={(goalId, action) => guardAction(() => runtime.updateFocus(goalId, action))}
+      onDeleteGoal={async (goalId) => {
+        setActionError(null);
+        await v2Api.deleteGoal(projectId, snapshot.flow.id, goalId);
+        await runtime.refresh();
+      }}
+      onDeleteExchange={async (turnId) => {
+        setActionError(null);
+        await v2Api.deleteTurn(projectId, snapshot.flow.id, turnId);
+        await runtime.refresh();
+      }}
       onOpenInClassic={(goalId) => {
         setActionError(null);
         void v2Api.openFocusInClassic(projectId, snapshot.flow.id, goalId)

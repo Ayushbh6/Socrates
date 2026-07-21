@@ -1755,8 +1755,9 @@ export const v2MessageAttachments = sqliteTable(
   }),
 )
 
-// Evidence rows are append-only. Migration 0026 installs UPDATE/DELETE guards;
-// pruning changes only v2_context_items and v2_context_dispositions.
+// Evidence rows are append-only for agent/runtime operations. Explicit user
+// deletion is authorized by a short-lived row in v2_deletion_authorizations;
+// pruning still changes only v2_context_items and v2_context_dispositions.
 export const v2EvidenceItems = sqliteTable(
   "v2_evidence_items",
   {
@@ -1787,6 +1788,20 @@ export const v2EvidenceItems = sqliteTable(
     contentHashIdx: index("v2_evidence_items_content_hash_idx").on(table.flowId, table.contentHash),
     sizeCheck: check("v2_evidence_items_size_check", sql`${table.sizeBytes} IS NULL OR ${table.sizeBytes} >= 0`),
     tokenCheck: check("v2_evidence_items_token_check", sql`${table.tokenEstimate} IS NULL OR ${table.tokenEstimate} >= 0`),
+  }),
+)
+
+export const v2DeletionAuthorizations = sqliteTable(
+  "v2_deletion_authorizations",
+  {
+    id: text("id").primaryKey(),
+    targetKind: text("target_kind").notNull(),
+    targetId: text("target_id").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    targetIdx: uniqueIndex("v2_deletion_authorizations_target_idx").on(table.targetKind, table.targetId),
+    kindCheck: check("v2_deletion_authorizations_kind_check", sql`${table.targetKind} IN ('turn', 'goal', 'flow')`),
   }),
 )
 

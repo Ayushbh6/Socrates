@@ -777,11 +777,15 @@ export class SocratesStore {
     return this.conversations.autoTitleConversation(projectId, conversationId, title, expectedTitle)
   }
 
-  deleteConversation(projectId: string, conversationId: string): { deletedConversationId: string } {
+  deleteConversation(projectId: string, conversationId: string, beforeDelete?: () => void): { deletedConversationId: string } {
     this.terminals.stopConversationTerminals(conversationId)
-    const deleted = this.conversations.deleteConversation(projectId, conversationId)
+    const deleted = this.conversations.deleteConversation(projectId, conversationId, beforeDelete)
     this.retrieval.deleteConversation(projectId, conversationId)
     return deleted
+  }
+
+  rebuildProjectRetrieval(projectId: string, reason: string): void {
+    this.retrieval.enqueueRebuild(projectId, reason)
   }
 
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {

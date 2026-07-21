@@ -6,6 +6,8 @@ import {
   v2ArtifactSchema,
   v2CreateSpeechJobRequestSchema,
   v2CreateSpeechJobResponseSchema,
+  v2DeleteGoalResponseSchema,
+  v2DeleteTurnResponseSchema,
   v2EnsureFlowResponseSchema,
   v2ListFlowMessagesResponseSchema,
   v2MessageAttachmentSchema,
@@ -228,6 +230,20 @@ export const v2Api = {
       `/api/v2/projects/${encodeURIComponent(projectId)}/bridge/classic/${encodeURIComponent(conversationId)}/continue`,
       v2ContinueClassicResponseSchema,
       { method: "POST", body: JSON.stringify({}) },
+    ),
+
+  deleteGoal: (projectId: string, flowId: string, goalId: string) =>
+    request(
+      `${scopedFlowPath(projectId, flowId)}/goals/${encodeURIComponent(goalId)}`,
+      v2DeleteGoalResponseSchema,
+      { method: "DELETE" },
+    ),
+
+  deleteTurn: (projectId: string, flowId: string, turnId: string) =>
+    request(
+      `${scopedFlowPath(projectId, flowId)}/turns/${encodeURIComponent(turnId)}`,
+      v2DeleteTurnResponseSchema,
+      { method: "DELETE" },
     ),
 
   listMessages: async (

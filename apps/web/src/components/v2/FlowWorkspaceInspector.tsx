@@ -38,6 +38,7 @@ interface FlowWorkspaceInspectorProps {
   onVoiceOptionChange?: (optionId: string) => void;
   onOpenVoiceSettings: () => void;
   onFocusAction?: (goalId: string, action: "switch" | "pause" | "finish" | "reopen" | "archive" | "pin" | "unpin") => void;
+  onDeleteGoal?: (goalId: string) => void;
   onOpenInClassic?: (goalId: string) => void;
 }
 
@@ -78,6 +79,7 @@ export function FlowWorkspaceInspector({
   onVoiceOptionChange,
   onOpenVoiceSettings,
   onFocusAction,
+  onDeleteGoal,
   onOpenInClassic,
 }: FlowWorkspaceInspectorProps) {
   const contextItems = contextSummary?.items ?? [];
@@ -193,6 +195,7 @@ export function FlowWorkspaceInspector({
                     </>
                   )}
                   {onOpenInClassic && <button type="button" onClick={() => onOpenInClassic(activeGoal.id)}>Open in Classic</button>}
+                  {activeGoal.kind === "work" && onDeleteGoal && <button type="button" onClick={() => onDeleteGoal(activeGoal.id)}>Delete</button>}
                 </div>
               </section>
             )}
@@ -243,6 +246,9 @@ export function FlowWorkspaceInspector({
                                 <Paperclip aria-hidden="true" />
                               </button>
                             ) : null}
+                            {goal.kind === "work" && onDeleteGoal && goal.status !== "foreground" && (
+                              <button type="button" onClick={() => onDeleteGoal(goal.id)}>Delete</button>
+                            )}
                           </span>
                         </li>
                       ))}

@@ -23,9 +23,11 @@ import {
   createConversationRequestSchema,
   createProjectRequestSchema,
   createProjectResourceRequestSchema,
+  conversationDeletionScopeSchema,
   deleteMcpServerRequestSchema,
   deleteMcpServerResponseSchema,
   deleteSkillResponseSchema,
+  getConversationDeletionImpactResponseSchema,
   inspectWorkspaceRequestSchema,
   listMcpServersQuerySchema,
   listMcpServersResponseSchema,
@@ -71,6 +73,7 @@ import type { ProviderCredentialStore } from "../services/providerCredentials"
 const projectParamsSchema = z.object({ projectId: z.string().min(1) }).strict()
 const resourceParamsSchema = z.object({ projectId: z.string().min(1), resourceId: z.string().min(1) }).strict()
 const conversationParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1) }).strict()
+const conversationDeletionQuerySchema = z.object({ scope: conversationDeletionScopeSchema.default("classic_only") }).strict()
 const attachmentParamsSchema = z.object({ projectId: z.string().min(1), conversationId: z.string().min(1), attachmentId: z.string().min(1) }).strict()
 const providerCredentialParamsSchema = z.object({ providerId: providerIdSchema }).strict()
 const notificationParamsSchema = z.object({ notificationId: z.string().min(1) }).strict()
@@ -94,6 +97,9 @@ const notificationsQuerySchema = z
 
 type HttpRouteHooks = {
   onConversationDelete?: (conversationId: string) => void
+  getConversationDeletionImpact?: (projectId: string, conversationId: string) => { linkedToFlow: boolean }
+  beforeConversationDelete?: (projectId: string, conversationId: string, scope: "classic_only" | "everywhere") => void
+  afterConversationDelete?: (projectId: string, conversationId: string, scope: "classic_only" | "everywhere") => void
   onProjectWorkspaceSwitch?: (projectId: string) => void
 }
 
@@ -911,8 +917,29 @@ export const registerHttpRoutes = async (
   app.delete("/api/projects/:projectId/conversations/:conversationId", async (request, reply) => {
     try {
       const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      const { scope } = parseParams(conversationDeletionQuerySchema, request.query)
       hooks.onConversationDelete?.(conversationId)
-      return ok(store.deleteConversation(projectId, conversationId))
+      const deletionScope = scope ?? "classic_only"
+      const result = store.deleteConversation(
+        projectId,
+        conversationId,
+        () => hooks.beforeConversationDelete?.(projectId, conversationId, deletionScope),
+      )
+      hooks.afterConversationDelete?.(projectId, conversationId, deletionScope)
+      return ok(result)
+    } catch (error) {
+      const { statusCode, response } = handleRouteError(error)
+      return reply.code(statusCode).send(response)
+    }
+  })
+
+  app.get("/api/projects/:projectId/conversations/:conversationId/deletion-impact", async (request, reply) => {
+    try {
+      const { projectId, conversationId } = parseParams(conversationParamsSchema, request.params)
+      store.getConversation(projectId, conversationId)
+      return ok(getConversationDeletionImpactResponseSchema.parse(
+        hooks.getConversationDeletionImpact?.(projectId, conversationId) ?? { linkedToFlow: false },
+      ))
     } catch (error) {
       const { statusCode, response } = handleRouteError(error)
       return reply.code(statusCode).send(response)

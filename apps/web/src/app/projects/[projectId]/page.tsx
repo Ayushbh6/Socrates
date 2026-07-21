@@ -263,10 +263,10 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
     }
   };
 
-  const handleDeleteConversation = async (conversationId: string) => {
+  const handleDeleteConversation = async (conversationId: string, scope: "classic_only" | "everywhere") => {
     setIsSavingConversationAction(true);
     try {
-      await api.deleteConversation(projectId, conversationId);
+      await api.deleteConversation(projectId, conversationId, scope);
       setData((current) =>
         current
           ? {
@@ -319,6 +319,7 @@ export default function ProjectDashboardPage({ params }: { params: Promise<{ pro
               conversations={data?.conversations ?? []}
               isSavingAction={isSavingConversationAction}
               onRename={handleRenameConversation}
+              onGetDeletionImpact={(conversationId) => api.getConversationDeletionImpact(projectId, conversationId)}
               onDelete={handleDeleteConversation}
             />
           </div>

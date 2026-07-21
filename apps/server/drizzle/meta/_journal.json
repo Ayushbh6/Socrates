@@ -211,6 +211,13 @@
       "when": 1784474011870,
       "tag": "0029_slimy_fallen_one",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1784636760181,
+      "tag": "0030_happy_firelord",
+      "breakpoints": true
     }
   ]
 }

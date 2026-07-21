@@ -23,6 +23,7 @@ import {
   deleteProviderCredentialResponseSchema,
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
+  getConversationDeletionImpactResponseSchema,
   getConversationResponseSchema,
   getMcpServerConfigResponseSchema,
   getMemoryAgentFileContentResponseSchema,
@@ -95,6 +96,8 @@ import {
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
+  type GetConversationDeletionImpactResponse,
+  type ConversationDeletionScope,
   type GetMcpServerConfigResponse,
   type GetMemoryAgentFileContentResponse,
   type GetMemoryAgentResponse,
@@ -646,9 +649,15 @@ export const api = {
       },
     ) as Promise<UpdateConversationResponse>,
 
-  deleteConversation: (projectId: string, conversationId: string) =>
+  getConversationDeletionImpact: (projectId: string, conversationId: string) =>
+    request<typeof getConversationDeletionImpactResponseSchema>(
+      `/api/projects/${projectId}/conversations/${conversationId}/deletion-impact`,
+      getConversationDeletionImpactResponseSchema,
+    ) as Promise<GetConversationDeletionImpactResponse>,
+
+  deleteConversation: (projectId: string, conversationId: string, scope: ConversationDeletionScope = "classic_only") =>
     request<typeof deleteConversationResponseSchema>(
-      `/api/projects/${projectId}/conversations/${conversationId}`,
+      `/api/projects/${projectId}/conversations/${conversationId}?scope=${encodeURIComponent(scope)}`,
       deleteConversationResponseSchema,
       {
         method: "DELETE",

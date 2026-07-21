@@ -370,9 +370,14 @@ export class ConversationStore extends StoreBase {
     }
   }
 
-  deleteConversation(projectId: string, conversationId: string): { deletedConversationId: string } {
+  deleteConversation(
+    projectId: string,
+    conversationId: string,
+    beforeDelete?: () => void,
+  ): { deletedConversationId: string } {
     this.mustGetConversationRow(projectId, conversationId)
     const deleteRows = this.handle.sqlite.transaction(() => {
+      beforeDelete?.()
       const turnRows = this.handle.db
         .select({ id: turns.id })
         .from(turns)

@@ -120,6 +120,8 @@ GET  /api/v2/projects/:projectId/flows/:flowId/context
 POST /api/v2/projects/:projectId/flows/:flowId/evidence/retrieve
 POST /api/v2/projects/:projectId/flows/:flowId/attachments/upload
 GET  /api/v2/projects/:projectId/flows/:flowId/attachments/:attachmentId/content
+DELETE /api/v2/projects/:projectId/flows/:flowId/goals/:goalId
+DELETE /api/v2/projects/:projectId/flows/:flowId/turns/:turnId
 
 GET    /api/v2/speech/packs
 GET    /api/v2/speech/packs/:packId
@@ -1114,7 +1116,11 @@ update conversations.updated_at
 emit conversation.updated event
 ```
 
-### `DELETE /api/projects/:projectId/conversations/:conversationId`
+### `GET /api/projects/:projectId/conversations/:conversationId/deletion-impact`
+
+Returns `{ linkedToFlow: boolean }` so the UI can choose the compact confirmation without inferring bridge state.
+
+### `DELETE /api/projects/:projectId/conversations/:conversationId?scope=classic_only|everywhere`
 
 Hard-deletes a conversation.
 
@@ -1135,6 +1141,8 @@ emit conversation.deleted event before the final conversation row delete or as a
 ```
 
 This endpoint must not archive the conversation and must not set `conversations.status = "deleted"` in the current V1 flow. It must not delete project resources, project instructions, the owning project, or retained chat attachment files under `.socrates/attachments`.
+
+`classic_only` detaches the bridge and preserves canonical Flow history. `everywhere` atomically removes linked Flow exchanges before deleting Classic state and then rebuilds project retrieval. Flow turn deletion removes the complete exchange, including its user/assistant messages and owned tool, approval, Terminal, evidence, usage, and Classic-projection rows. Flow goal deletion applies that operation to every turn in the focus, removes its Classic copy, and switches to protected General Conversation. Active work cannot be deleted.
 
 ### `POST /api/projects/:projectId/conversations/:conversationId/messages`
 

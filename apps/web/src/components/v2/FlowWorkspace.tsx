@@ -10,6 +10,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Square,
+  Trash2,
   Volume2,
   X,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import { V2ViewLink } from "./V2ViewLink";
 import { V2SpeechPackManager } from "./V2SpeechPackManager";
 import { FlowWorkspaceNotes } from "./FlowWorkspaceNotes";
 import { FlowWorkspaceInspector, type FlowInspectorView } from "./FlowWorkspaceInspector";
+import { DeleteFlowItemDialog } from "./DeleteFlowItemDialog";
 import styles from "./seamless.module.css";
 import type {
   FlowContextSummary,
@@ -71,6 +73,8 @@ export interface FlowWorkspaceProps {
   onTerminalRename?: (terminalId: string, name: string) => void;
   onLoadEarlierMessages?: () => void;
   onFocusAction?: (goalId: string, action: "switch" | "pause" | "finish" | "reopen" | "archive" | "pin" | "unpin") => void;
+  onDeleteGoal?: (goalId: string) => Promise<void>;
+  onDeleteExchange?: (turnId: string) => Promise<void>;
   onOpenInClassic?: (goalId: string) => void;
 }
 
@@ -112,6 +116,8 @@ export function FlowWorkspace({
   onTerminalRename,
   onLoadEarlierMessages,
   onFocusAction,
+  onDeleteGoal,
+  onDeleteExchange,
   onOpenInClassic,
 }: FlowWorkspaceProps) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
@@ -126,6 +132,8 @@ export function FlowWorkspace({
   const [activeTerminalId, setActiveTerminalId] = useState<string | undefined>();
   const [terminalDockHeight, setTerminalDockHeight] = useState(320);
   const [isMobileView, setIsMobileView] = useState(false);
+  const [goalToDelete, setGoalToDelete] = useState<string | null>(null);
+  const [turnToDelete, setTurnToDelete] = useState<string | null>(null);
   const speechPackDialogRef = useRef<HTMLDivElement>(null);
   const speechPackCloseRef = useRef<HTMLButtonElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -464,6 +472,17 @@ export function FlowWorkspace({
                             {activeReadAloudMessageId === message.id ? <Square aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
                           </button>
                         )}
+                        {onDeleteExchange && message.turnId && (
+                          <button
+                            type="button"
+                            className={styles.readAloudControl}
+                            onClick={() => setTurnToDelete(message.turnId ?? null)}
+                            aria-label="Delete exchange"
+                            title="Delete exchange"
+                          >
+                            <Trash2 aria-hidden="true" />
+                          </button>
+                        )}
                       </div>
                     ) : null}
                     onApprovalDecision={onApprovalDecision}
@@ -531,6 +550,7 @@ export function FlowWorkspace({
                   onVoiceOptionChange={onVoiceOptionChange}
                   onOpenVoiceSettings={() => setIsSpeechPacksOpen(true)}
                   onFocusAction={onFocusAction}
+                  onDeleteGoal={onDeleteGoal ? setGoalToDelete : undefined}
                   onOpenInClassic={onOpenInClassic}
                 />
               </motion.div>
@@ -581,6 +601,26 @@ export function FlowWorkspace({
           </motion.div>
         )}
       </AnimatePresence>
+      {goalToDelete && onDeleteGoal && (
+        <DeleteFlowItemDialog
+          kind="focus"
+          onCancel={() => setGoalToDelete(null)}
+          onDelete={async () => {
+            await onDeleteGoal(goalToDelete);
+            setGoalToDelete(null);
+          }}
+        />
+      )}
+      {turnToDelete && onDeleteExchange && (
+        <DeleteFlowItemDialog
+          kind="exchange"
+          onCancel={() => setTurnToDelete(null)}
+          onDelete={async () => {
+            await onDeleteExchange(turnToDelete);
+            setTurnToDelete(null);
+          }}
+        />
+      )}
     </main>
   );
 }

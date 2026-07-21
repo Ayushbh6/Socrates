@@ -12,6 +12,20 @@ afterEach(() => {
 });
 
 describe("V2 Flow API", () => {
+  it("uses explicit DELETE endpoints for a focus and a complete exchange", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      return url.endsWith("/goals/v2goal_2")
+        ? jsonResponse({ ok: true, data: { deletedGoalId: "v2goal_2", fallbackGoalId: "v2goal_1" } })
+        : jsonResponse({ ok: true, data: { deletedTurnId: "v2turn_1" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(v2Api.deleteGoal("proj_1", "v2flow_1", "v2goal_2")).resolves.toMatchObject({ deletedGoalId: "v2goal_2" });
+    await expect(v2Api.deleteTurn("proj_1", "v2flow_1", "v2turn_1")).resolves.toEqual({ deletedTurnId: "v2turn_1" });
+    expect(fetchMock.mock.calls.map((call) => call[1]?.method)).toEqual(["DELETE", "DELETE"]);
+  });
+
   it("accepts the bounded reference-only context projection returned after a real turn", async () => {
     const fetchMock = vi.fn(async () => jsonResponse({
       ok: true,

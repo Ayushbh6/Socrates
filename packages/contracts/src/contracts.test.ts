@@ -53,6 +53,7 @@ import {
   feedbackSubmitCommandSchema,
   frontierHandoverToolInputSchema,
   getConversationResponseSchema,
+  getConversationDeletionImpactResponseSchema,
   getMemoryAgentFileContentResponseSchema,
   getMeResponseSchema,
   getMemoryAgentRunResponseSchema,
@@ -886,6 +887,8 @@ describe("http contracts", () => {
     expect(updateConversationRequestSchema.safeParse({ title: "" }).success).toBe(false)
     expect(updateConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
     expect(deleteConversationResponseSchema.safeParse({ deletedConversationId: conversation.id }).success).toBe(true)
+    expect(getConversationDeletionImpactResponseSchema.safeParse({ linkedToFlow: true }).success).toBe(true)
+    expect(getConversationDeletionImpactResponseSchema.safeParse({ linkedToFlow: true, turnCount: 3 }).success).toBe(false)
     const notification = {
       id: "note_1",
       projectId: project.id,
@@ -2299,6 +2302,12 @@ describe("V2 Flow standalone contracts", () => {
   it("represents durable Terminal suspension and restart-safe ready tasks honestly", () => {
     expect(v2Flow.v2TurnStatusSchema.safeParse("suspended").success).toBe(true)
     expect(v2Flow.v2AgentTaskStatusSchema.safeParse("ready").success).toBe(true)
+  })
+
+  it("keeps Flow deletion responses minimal and strict", () => {
+    expect(v2Flow.v2DeleteTurnResponseSchema.safeParse({ deletedTurnId: "v2turn_1" }).success).toBe(true)
+    expect(v2Flow.v2DeleteGoalResponseSchema.safeParse({ deletedGoalId: "v2goal_2", fallbackGoalId: "v2goal_1" }).success).toBe(true)
+    expect(v2Flow.v2DeleteGoalResponseSchema.safeParse({ deletedGoalId: "v2goal_2", fallbackGoalId: "v2goal_1", records: 14 }).success).toBe(false)
   })
 
   it("namespaces Flow worker telemetry and compaction lifecycle events", () => {

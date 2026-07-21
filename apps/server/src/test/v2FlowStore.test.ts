@@ -798,4 +798,68 @@ describe("V2FlowStore isolation and lifecycle", () => {
     expect(imported.map((row) => row.goalId)).toEqual([aidpa.goalId, release.goalId, aidpa.goalId])
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM conversations WHERE id = ?").get(conversationId)).toMatchObject({ count: 1 })
   })
+
+  it("deletes one completed Flow exchange with its evidence and Classic projection", () => {
+    const { handle, store } = setup()
+    const flow = store.ensureFlow("proj_one").flow
+    const created = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Review the DBMS notes", runtimeConfig })
+    const work = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: created.turn.id, messageId: created.userMessage.id, messageContent: created.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
+    const evidence = store.recordEvidence({ projectId: "proj_one", flowId: flow.id, goalId: work.id, turnId: created.turn.id, sourceKind: "tool_output", title: "DBMS notes", content: "Exact tool output" })
+    store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: created.turn.id, content: "The notes are organized." })
+    const bridge = store.openFocusInClassic("proj_one", flow.id, work.id)
+
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(bridge.conversationId)).toMatchObject({ count: 2 })
+    expect(store.deleteTurn("proj_one", flow.id, created.turn.id)).toEqual({ deletedTurnId: created.turn.id })
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(created.turn.id)).toMatchObject({ count: 0 })
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_evidence_items WHERE id = ?").get(evidence.evidence.id)).toMatchObject({ count: 0 })
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(bridge.conversationId)).toMatchObject({ count: 0 })
+    expect(store.getSnapshot("proj_one", flow.id).goals.some((goal) => goal.id === work.id)).toBe(true)
+  })
+
+  it("deletes a work focus while preserving General Conversation and unrelated work", () => {
+    const { handle, store } = setup()
+    const flow = store.ensureFlow("proj_one").flow
+    const first = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Review DBMS", runtimeConfig })
+    const dbms = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, messageId: first.userMessage.id, messageContent: first.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
+    store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, content: "DBMS reviewed." })
+    const dbmsBridge = store.openFocusInClassic("proj_one", flow.id, dbms.id)
+    store.continueClassicConversationInSeamless("proj_one", dbmsBridge.conversationId)
+
+    const second = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Prepare the release", runtimeConfig })
+    const release = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: second.turn.id, messageId: second.userMessage.id, messageContent: second.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
+    store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: second.turn.id, content: "Release prepared." })
+
+    const result = store.deleteGoal("proj_one", flow.id, dbms.id)
+    const snapshot = store.getSnapshot("proj_one", flow.id)
+    expect(result.deletedGoalId).toBe(dbms.id)
+    expect(snapshot.goals.some((goal) => goal.id === dbms.id)).toBe(false)
+    expect(snapshot.goals.some((goal) => goal.id === release.id)).toBe(true)
+    expect(snapshot.goals.some((goal) => goal.kind === "general")).toBe(true)
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(first.turn.id)).toMatchObject({ count: 0 })
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(second.turn.id)).toMatchObject({ count: 1 })
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM conversations WHERE id = ?").get(dbmsBridge.conversationId)).toMatchObject({ count: 0 })
+    const general = snapshot.goals.find((goal) => goal.kind === "general")
+    if (!general) throw new Error("Expected General Conversation")
+    expect(() => store.deleteGoal("proj_one", flow.id, general.id)).toThrow(/cannot be deleted/i)
+  })
+
+  it("supports Classic-only detach and everywhere deletion without conflating the scopes", () => {
+    const { handle, store } = setup()
+    const { conversationId, sessionId } = seedClassicConversation(handle)
+    const classicTurn = seedClassicTurn(handle, { conversationId, sessionId, user: "Summarize DBMS", assistant: "Summary ready", offset: 1 })
+    const context = store.prepareClassicGoalRouting("proj_one", conversationId)
+    store.applyClassicGoalRoute({ projectId: "proj_one", conversationId, sessionId, turnId: classicTurn.turnId, userMessageId: classicTurn.userMessageId, userMessage: "Summarize DBMS", context, route: { action: "create", candidates: [], title: "DBMS review" } })
+    const imported = store.continueClassicConversationInSeamless("proj_one", conversationId)
+    const importedTurnId = (handle.sqlite.prepare("SELECT id FROM v2_turns WHERE metadata_json LIKE '%classic_bridge%' LIMIT 1").get() as { id: string }).id
+
+    expect(store.getClassicConversationDeletionImpact("proj_one", conversationId)).toEqual({ linkedToFlow: true })
+    store.deleteClassicConversationProjection("proj_one", conversationId, "classic_only")
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(importedTurnId)).toMatchObject({ count: 1 })
+    expect(store.getClassicConversationDeletionImpact("proj_one", conversationId)).toEqual({ linkedToFlow: false })
+
+    const bridge = store.openFocusInClassic("proj_one", imported.flow.id, imported.foregroundGoal!.id)
+    store.continueClassicConversationInSeamless("proj_one", bridge.conversationId)
+    store.deleteClassicConversationProjection("proj_one", bridge.conversationId, "everywhere")
+    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(importedTurnId)).toMatchObject({ count: 0 })
+  })
 })

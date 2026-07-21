@@ -14,7 +14,8 @@ interface ConversationListProps {
   conversations: Conversation[];
   isSavingAction: boolean;
   onRename: (conversationId: string, title: string) => Promise<void>;
-  onDelete: (conversationId: string) => Promise<void>;
+  onGetDeletionImpact: (conversationId: string) => Promise<{ linkedToFlow: boolean }>;
+  onDelete: (conversationId: string, scope: "classic_only" | "everywhere") => Promise<void>;
 }
 
 export function ConversationList({
@@ -22,10 +23,14 @@ export function ConversationList({
   conversations,
   isSavingAction,
   onRename,
+  onGetDeletionImpact,
   onDelete,
 }: ConversationListProps) {
   const [conversationToRename, setConversationToRename] = useState<Conversation | null>(null);
   const [conversationToDelete, setConversationToDelete] = useState<Conversation | null>(null);
+  const [linkedToFlow, setLinkedToFlow] = useState(false);
+  const [isCheckingDeletion, setIsCheckingDeletion] = useState(false);
+  const [deletionImpactError, setDeletionImpactError] = useState<string | undefined>();
   const [query, setQuery] = useState("");
   const filteredConversations = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -36,6 +41,21 @@ export function ConversationList({
       (conversation.title ?? "Untitled conversation").toLowerCase().includes(normalizedQuery),
     );
   }, [conversations, query]);
+
+  const prepareDelete = async (conversation: Conversation) => {
+    setConversationToDelete(conversation);
+    setLinkedToFlow(false);
+    setDeletionImpactError(undefined);
+    setIsCheckingDeletion(true);
+    try {
+      const impact = await onGetDeletionImpact(conversation.id);
+      setLinkedToFlow(impact.linkedToFlow);
+    } catch {
+      setDeletionImpactError("Could not check Flow history.");
+    } finally {
+      setIsCheckingDeletion(false);
+    }
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -71,7 +91,7 @@ export function ConversationList({
             </Link>
             <ConversationActionsMenu
               onRename={() => setConversationToRename(conversation)}
-              onDelete={() => setConversationToDelete(conversation)}
+              onDelete={() => void prepareDelete(conversation)}
             />
           </div>
         ))}
@@ -89,11 +109,13 @@ export function ConversationList({
       )}
       {conversationToDelete && (
         <DeleteConversationDialog
-          title={conversationToDelete.title ?? "Untitled conversation"}
+          linkedToFlow={linkedToFlow}
+          isChecking={isCheckingDeletion}
+          impactError={deletionImpactError}
           isDeleting={isSavingAction}
           onCancel={() => setConversationToDelete(null)}
-          onDelete={async () => {
-            await onDelete(conversationToDelete.id);
+          onDelete={async (scope) => {
+            await onDelete(conversationToDelete.id, scope);
             setConversationToDelete(null);
           }}
         />

@@ -1256,6 +1256,14 @@ export const deleteConversationResponseSchema = z
   })
   .strict()
 
+export const conversationDeletionScopeSchema = z.enum(["classic_only", "everywhere"])
+
+export const getConversationDeletionImpactResponseSchema = z
+  .object({
+    linkedToFlow: z.boolean(),
+  })
+  .strict()
+
 export const listNotificationsResponseSchema = z
   .object({
     notifications: z.array(notificationSchema),
@@ -1328,6 +1336,8 @@ export type GetConversationResponse = z.infer<typeof getConversationResponseSche
 export type UpdateConversationRequest = z.infer<typeof updateConversationRequestSchema>
 export type UpdateConversationResponse = z.infer<typeof updateConversationResponseSchema>
 export type DeleteConversationResponse = z.infer<typeof deleteConversationResponseSchema>
+export type ConversationDeletionScope = z.infer<typeof conversationDeletionScopeSchema>
+export type GetConversationDeletionImpactResponse = z.infer<typeof getConversationDeletionImpactResponseSchema>
 export type ListNotificationsResponse = z.infer<typeof listNotificationsResponseSchema>
 export type MarkNotificationReadResponse = z.infer<typeof markNotificationReadResponseSchema>
 export type MarkAllNotificationsReadResponse = z.infer<typeof markAllNotificationsReadResponseSchema>

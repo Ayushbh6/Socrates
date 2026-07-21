@@ -397,7 +397,7 @@ Conversation list:
 - Each conversation row should include a compact `...` actions menu.
 - The row actions menu includes `Rename` and `Delete`.
 - Rename updates the persisted conversation title.
-- Delete removes the conversation and its conversation-scoped data from the database. It is not archived in the current V1 flow.
+- Delete removes the conversation and its conversation-scoped data from the database. It is not archived in the current V1 flow. If the conversation is linked to Flow, the compact confirmation offers `Classic only` or `Everywhere`; the latter also removes the linked Flow exchanges. Neither option changes workspace files or saved memory.
 
 Actions:
 

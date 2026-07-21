@@ -75,6 +75,7 @@ import {
   v2ContextItemSources,
   v2ContextItems,
   v2CredentialInputRequests,
+  v2DeletionAuthorizations,
   v2Errors,
   v2EvidenceItems,
   v2Feedback,
@@ -145,6 +146,8 @@ export type V2ContinuedTerminalTask = V2ReadyTerminalTask & {
   runtimeConfigId: string
   wakeContext: string
 }
+
+export type ClassicConversationDeletionScope = "classic_only" | "everywhere"
 
 export type V2TaskLineage = {
   taskId: string
@@ -943,6 +946,128 @@ export class V2FlowStore {
       archived.push(this.updateFocus({ projectId, flowId, goalId: goal.id, action: "archive", note: "Auto-archived after seven inactive paused days." }).goal)
     }
     return archived
+  }
+
+  getClassicConversationDeletionImpact(projectId: string, conversationId: string): { linkedToFlow: boolean } {
+    const conversation = this.handle.db.select({ id: conversations.id }).from(conversations)
+      .where(and(eq(conversations.projectId, projectId), eq(conversations.id, conversationId)))
+      .limit(1).get()
+    if (!conversation) throw new SocratesError("conversation_not_found", "Conversation not found", { recoverable: true })
+    const bridge = this.handle.db.select({ id: v2ClassicConversationBridges.id }).from(v2ClassicConversationBridges)
+      .where(and(eq(v2ClassicConversationBridges.projectId, projectId), eq(v2ClassicConversationBridges.conversationId, conversationId)))
+      .limit(1).get()
+    return { linkedToFlow: Boolean(bridge) }
+  }
+
+  deleteClassicConversationProjection(
+    projectId: string,
+    conversationId: string,
+    scope: ClassicConversationDeletionScope,
+  ): void {
+    const bridge = this.handle.db.select().from(v2ClassicConversationBridges)
+      .where(and(eq(v2ClassicConversationBridges.projectId, projectId), eq(v2ClassicConversationBridges.conversationId, conversationId)))
+      .limit(1).get()
+    if (!bridge) return
+    const operation = this.handle.sqlite.transaction(() => {
+      if (scope === "everywhere") {
+        const turnIds = this.handle.sqlite.prepare(
+          `SELECT DISTINCT m.turn_id AS turnId
+           FROM v2_classic_message_links l
+           INNER JOIN v2_messages m ON m.id = l.v2_message_id
+           WHERE l.bridge_id = ? AND m.turn_id IS NOT NULL`,
+        ).all(bridge.id).map((row) => (row as { turnId: string }).turnId)
+        this.deleteV2TurnsWithinTransaction(turnIds)
+      }
+      this.handle.sqlite.prepare("DELETE FROM v2_goal_classic_homes WHERE bridge_id = ?").run(bridge.id)
+      this.handle.sqlite.prepare("DELETE FROM v2_classic_turn_goal_links WHERE bridge_id = ?").run(bridge.id)
+      this.handle.sqlite.prepare("DELETE FROM v2_classic_message_links WHERE bridge_id = ?").run(bridge.id)
+      this.handle.sqlite.prepare("DELETE FROM v2_classic_conversation_bridges WHERE id = ?").run(bridge.id)
+    })
+    operation()
+  }
+
+  deleteTurn(projectId: string, flowId: string, turnId: string): { deletedTurnId: string } {
+    const turn = this.requireTurn(projectId, flowId, turnId)
+    if (ACTIVE_TURN_STATUSES.includes(turn.status as (typeof ACTIVE_TURN_STATUSES)[number])) {
+      throw new SocratesError("v2_turn_still_active", "Stop this turn before deleting it.", { recoverable: true })
+    }
+    const operation = this.handle.sqlite.transaction(() => this.deleteV2TurnsWithinTransaction([turnId]))
+    operation()
+    return { deletedTurnId: turnId }
+  }
+
+  deleteGoal(projectId: string, flowId: string, goalId: string): { deletedGoalId: string; fallbackGoalId: string } {
+    const flow = this.requireFlow(projectId, flowId)
+    const goal = this.handle.db.select().from(v2Goals)
+      .where(and(eq(v2Goals.flowId, flowId), eq(v2Goals.id, goalId)))
+      .limit(1).get()
+    if (!goal) throw new SocratesError("v2_goal_not_found", "Focus not found", { recoverable: true })
+    if (goal.kind === "general") {
+      throw new SocratesError("v2_general_focus_protected", "General Conversation cannot be deleted.", { recoverable: true })
+    }
+    if (this.hasActiveGoalWork(flowId, goalId)) {
+      throw new SocratesError("v2_focus_still_active", "Stop this focus before deleting it.", { recoverable: true })
+    }
+    const fallback = this.handle.db.select().from(v2Goals)
+      .where(and(eq(v2Goals.flowId, flowId), eq(v2Goals.kind, "general")))
+      .limit(1).get()
+    if (!fallback) throw new SocratesError("v2_general_focus_missing", "General Conversation is unavailable.")
+
+    const operation = this.handle.sqlite.transaction(() => {
+      const classicHomes = this.handle.db.select().from(v2GoalClassicHomes)
+        .where(and(eq(v2GoalClassicHomes.flowId, flowId), eq(v2GoalClassicHomes.goalId, goalId))).all()
+      const turnIds = this.handle.db.select({ id: v2Turns.id }).from(v2Turns)
+        .where(and(eq(v2Turns.flowId, flowId), eq(v2Turns.goalId, goalId))).all().map((row) => row.id)
+      const classicTurnIds = this.handle.db.select({ id: v2ClassicTurnGoalLinks.turnId }).from(v2ClassicTurnGoalLinks)
+        .where(and(eq(v2ClassicTurnGoalLinks.flowId, flowId), eq(v2ClassicTurnGoalLinks.goalId, goalId))).all().map((row) => row.id)
+
+      if (flow.foregroundGoalId === goalId) {
+        this.handle.db.update(v2Goals).set({ status: "parked", updatedAt: nowIso() }).where(eq(v2Goals.id, goalId)).run()
+        this.handle.db.update(v2Goals).set({ status: "foreground", lastActiveAt: nowIso(), updatedAt: nowIso() }).where(eq(v2Goals.id, fallback.id)).run()
+      }
+      this.deleteV2TurnsWithinTransaction(turnIds)
+      this.deleteClassicTurnsWithinTransaction(classicTurnIds)
+      this.authorizeEvidenceDeletion("goal", goalId)
+
+      const contextIds = this.handle.db.select({ id: v2ContextItems.id }).from(v2ContextItems).where(eq(v2ContextItems.goalId, goalId)).all().map((row) => row.id)
+      const capsuleIds = this.handle.db.select({ id: v2GoalCapsules.id }).from(v2GoalCapsules).where(eq(v2GoalCapsules.goalId, goalId)).all().map((row) => row.id)
+      this.deleteContextSources(contextIds, [], capsuleIds)
+      this.deleteRowsByIds("v2_context_dispositions", "context_item_id", contextIds)
+      this.handle.sqlite.prepare("DELETE FROM v2_context_dispositions WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_context_items WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_evidence_items WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_goal_capsules WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_goal_message_links WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_goal_transitions WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_goal_routing_runs WHERE selected_goal_id = ? OR foreground_goal_id = ?").run(goalId, goalId)
+      for (const table of [
+        "v2_runtime_events", "v2_model_calls", "v2_usage_events", "v2_tool_calls", "v2_approvals",
+        "v2_terminal_sessions", "v2_errors", "v2_artifacts", "v2_agent_tasks", "v2_speech_jobs",
+        "v2_feedback", "v2_credential_input_requests", "v2_message_attachments", "v2_messages",
+      ]) {
+        this.handle.sqlite.prepare(`DELETE FROM ${table} WHERE goal_id = ?`).run(goalId)
+      }
+      this.handle.sqlite.prepare("DELETE FROM v2_classic_turn_goal_links WHERE goal_id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_goal_classic_homes WHERE goal_id = ?").run(goalId)
+      for (const home of classicHomes) {
+        const remainingTurns = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM turns WHERE conversation_id = ?").get(home.conversationId) as { count: number }
+        const remainingHomes = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_goal_classic_homes WHERE conversation_id = ?").get(home.conversationId) as { count: number }
+        if (remainingTurns.count === 0 && remainingHomes.count === 0) {
+          this.handle.sqlite.prepare("DELETE FROM v2_classic_message_links WHERE bridge_id = ?").run(home.bridgeId)
+          this.handle.sqlite.prepare("DELETE FROM v2_classic_turn_goal_links WHERE bridge_id = ?").run(home.bridgeId)
+          this.handle.sqlite.prepare("DELETE FROM v2_classic_conversation_bridges WHERE id = ?").run(home.bridgeId)
+          this.deleteEmptyClassicConversationWithinTransaction(home.conversationId)
+        } else {
+          this.handle.sqlite.prepare("UPDATE v2_classic_conversation_bridges SET goal_id = ?, updated_at = ? WHERE id = ?").run(fallback.id, nowIso(), home.bridgeId)
+        }
+      }
+      this.handle.sqlite.prepare("UPDATE v2_classic_conversation_bridges SET goal_id = ?, updated_at = ? WHERE goal_id = ?").run(fallback.id, nowIso(), goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_goals WHERE id = ?").run(goalId)
+      this.handle.sqlite.prepare("DELETE FROM v2_deletion_authorizations WHERE target_kind = 'goal' AND target_id = ?").run(goalId)
+      this.handle.db.update(v2Flows).set({ foregroundGoalId: fallback.id, revision: sql`${v2Flows.revision} + 1`, updatedAt: nowIso() }).where(eq(v2Flows.id, flowId)).run()
+    })
+    operation()
+    return { deletedGoalId: goalId, fallbackGoalId: fallback.id }
   }
 
   mirrorV2TurnToClassic(projectId: string, flowId: string, turnId: string): void {
@@ -3196,6 +3321,148 @@ export class V2FlowStore {
         this.refreshCapsule(goalId, bridge.flowId, v2TurnId, now, "turn_completed")
       })()
     }
+  }
+
+  private authorizeEvidenceDeletion(targetKind: "turn" | "goal" | "flow", targetId: string): void {
+    this.handle.db.insert(v2DeletionAuthorizations).values({
+      id: createId("v2del"),
+      targetKind,
+      targetId,
+      createdAt: nowIso(),
+    }).onConflictDoNothing().run()
+  }
+
+  private deleteRowsByIds(table: string, column: string, ids: string[]): void {
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return
+    const placeholders = unique.map(() => "?").join(", ")
+    this.handle.sqlite.prepare(`DELETE FROM ${table} WHERE ${column} IN (${placeholders})`).run(...unique)
+  }
+
+  private deleteContextSources(contextIds: string[], evidenceIds: string[], capsuleIds: string[], messageIds: string[] = []): void {
+    this.deleteRowsByIds("v2_context_item_sources", "context_item_id", contextIds)
+    this.deleteRowsByIds("v2_context_item_sources", "evidence_item_id", evidenceIds)
+    this.deleteRowsByIds("v2_context_item_sources", "capsule_id", capsuleIds)
+    this.deleteRowsByIds("v2_context_item_sources", "message_id", messageIds)
+  }
+
+  private deleteV2TurnsWithinTransaction(turnIds: string[]): void {
+    const uniqueTurnIds = [...new Set(turnIds)]
+    if (uniqueTurnIds.length === 0) return
+    const placeholders = uniqueTurnIds.map(() => "?").join(", ")
+    const messageIds = this.handle.sqlite.prepare(
+      `SELECT id FROM v2_messages WHERE turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const classicTurnIds = messageIds.length === 0 ? [] : this.handle.sqlite.prepare(
+      `SELECT DISTINCT m.turn_id AS id
+       FROM v2_classic_message_links l
+       INNER JOIN messages m ON m.id = l.classic_message_id
+       WHERE l.v2_message_id IN (${messageIds.map(() => "?").join(", ")}) AND m.turn_id IS NOT NULL`,
+    ).all(...messageIds).map((row) => (row as { id: string }).id)
+    const contextIds = this.handle.sqlite.prepare(
+      `SELECT id FROM v2_context_items WHERE turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const evidenceIds = this.handle.sqlite.prepare(
+      `SELECT id FROM v2_evidence_items WHERE turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const capsuleIds = this.handle.sqlite.prepare(
+      `SELECT id FROM v2_goal_capsules WHERE created_by_turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const terminalIds = this.handle.sqlite.prepare(
+      `SELECT id FROM v2_terminal_sessions WHERE turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const affectedGoalIds = this.handle.sqlite.prepare(
+      `SELECT DISTINCT goal_id AS id FROM v2_turns WHERE id IN (${placeholders}) AND goal_id IS NOT NULL`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+
+    for (const turnId of uniqueTurnIds) this.authorizeEvidenceDeletion("turn", turnId)
+    this.deleteContextSources(contextIds, evidenceIds, capsuleIds, messageIds)
+    this.deleteRowsByIds("v2_context_dispositions", "context_item_id", contextIds)
+    this.deleteRowsByIds("v2_terminal_output_chunks", "terminal_session_id", terminalIds)
+    this.deleteRowsByIds("v2_classic_message_links", "v2_message_id", messageIds)
+    this.deleteRowsByIds("v2_goal_message_links", "message_id", messageIds)
+    this.deleteRowsByIds("v2_feedback", "message_id", messageIds)
+
+    for (const table of [
+      "v2_turn_runtime_configs", "v2_goal_routing_runs", "v2_context_dispositions", "v2_context_items",
+      "v2_runtime_events", "v2_usage_events", "v2_tool_calls", "v2_approvals", "v2_terminal_sessions",
+      "v2_errors", "v2_artifacts", "v2_speech_jobs", "v2_feedback", "v2_credential_input_requests",
+      "v2_message_attachments", "v2_model_calls",
+    ]) {
+      this.deleteRowsByIds(table, "turn_id", uniqueTurnIds)
+    }
+    this.handle.sqlite.prepare(
+      `DELETE FROM v2_agent_tasks WHERE root_turn_id IN (${placeholders}) OR current_turn_id IN (${placeholders})`,
+    ).run(...uniqueTurnIds, ...uniqueTurnIds)
+    this.deleteRowsByIds("v2_goal_transitions", "turn_id", uniqueTurnIds)
+    this.deleteRowsByIds("v2_goal_capsules", "created_by_turn_id", uniqueTurnIds)
+    this.deleteRowsByIds("v2_evidence_items", "turn_id", uniqueTurnIds)
+    this.deleteRowsByIds("v2_messages", "turn_id", uniqueTurnIds)
+    this.deleteRowsByIds("v2_turns", "id", uniqueTurnIds)
+    this.deleteRowsByIds("v2_deletion_authorizations", "target_id", uniqueTurnIds)
+    this.deleteClassicTurnsWithinTransaction(classicTurnIds)
+    this.deleteRowsByIds("v2_goal_capsules", "goal_id", affectedGoalIds)
+  }
+
+  private deleteClassicTurnsWithinTransaction(turnIds: string[]): void {
+    const uniqueTurnIds = [...new Set(turnIds)]
+    if (uniqueTurnIds.length === 0) return
+    const placeholders = uniqueTurnIds.map(() => "?").join(", ")
+    const shellCommandIds = this.handle.sqlite.prepare(
+      `SELECT id FROM shell_commands WHERE turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const traceDocumentIds = this.handle.sqlite.prepare(
+      `SELECT id FROM trace_documents WHERE turn_id IN (${placeholders})`,
+    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
+    const taskIds = this.handle.sqlite.prepare(
+      `SELECT id FROM agent_tasks
+       WHERE root_turn_id IN (${placeholders}) OR current_turn_id IN (${placeholders})
+          OR id IN (SELECT task_id FROM agent_task_turns WHERE turn_id IN (${placeholders}))`,
+    ).all(...uniqueTurnIds, ...uniqueTurnIds, ...uniqueTurnIds).map((row) => (row as { id: string }).id)
+
+    this.deleteRowsByIds("shell_output_chunks", "shell_command_id", shellCommandIds)
+    this.deleteRowsByIds("trace_embeddings", "trace_document_id", traceDocumentIds)
+    const deleteFts = this.handle.sqlite.prepare("DELETE FROM trace_documents_fts WHERE trace_document_id = ?")
+    for (const id of traceDocumentIds) deleteFts.run(id)
+    this.deleteRowsByIds("trace_documents", "id", traceDocumentIds)
+    this.deleteRowsByIds("agent_task_waits", "task_id", taskIds)
+    this.deleteRowsByIds("agent_task_turns", "task_id", taskIds)
+    this.deleteRowsByIds("task_evidence_references", "task_id", taskIds)
+    this.deleteRowsByIds("agent_tasks", "id", taskIds)
+    for (const table of [
+      "turn_runtime_configs", "model_stream_chunks", "model_usage", "ai_usage_events", "turn_usage_reports",
+      "message_feedback", "message_attachments", "audio_outputs", "voice_inputs", "patches", "file_operations",
+      "shell_commands", "approvals", "tool_calls", "context_usage_snapshots", "model_calls",
+      "artifacts", "errors", "events", "messages",
+      "trace_index_jobs", "notifications",
+    ]) {
+      this.deleteRowsByIds(table, "turn_id", uniqueTurnIds)
+    }
+    this.deleteRowsByIds("v2_classic_turn_goal_links", "turn_id", uniqueTurnIds)
+    this.deleteRowsByIds("turns", "id", uniqueTurnIds)
+  }
+
+  private deleteEmptyClassicConversationWithinTransaction(conversationId: string): void {
+    const sessionIds = this.handle.sqlite.prepare("SELECT id FROM sessions WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
+    const terminalIds = this.handle.sqlite.prepare("SELECT id FROM terminal_sessions WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
+    const shellCommandIds = this.handle.sqlite.prepare("SELECT id FROM shell_commands WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
+    const traceDocumentIds = this.handle.sqlite.prepare("SELECT id FROM trace_documents WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
+    this.deleteRowsByIds("terminal_output_chunks", "terminal_session_id", terminalIds)
+    this.deleteRowsByIds("shell_output_chunks", "shell_command_id", shellCommandIds)
+    this.deleteRowsByIds("trace_embeddings", "trace_document_id", traceDocumentIds)
+    const deleteFts = this.handle.sqlite.prepare("DELETE FROM trace_documents_fts WHERE trace_document_id = ?")
+    for (const id of traceDocumentIds) deleteFts.run(id)
+    this.deleteRowsByIds("trace_documents", "id", traceDocumentIds)
+    this.deleteRowsByIds("session_state", "session_id", sessionIds)
+    for (const table of [
+      "message_feedback", "message_attachments", "audio_outputs", "voice_inputs", "patches", "file_operations",
+      "shell_commands", "terminal_sessions", "approvals", "tool_calls", "context_usage_snapshots", "model_calls",
+      "artifacts", "errors", "events", "messages", "turns", "trace_index_jobs", "notifications",
+    ]) {
+      this.handle.sqlite.prepare(`DELETE FROM ${table} WHERE conversation_id = ?`).run(conversationId)
+    }
+    this.handle.sqlite.prepare("DELETE FROM sessions WHERE conversation_id = ?").run(conversationId)
+    this.handle.sqlite.prepare("DELETE FROM conversations WHERE id = ?").run(conversationId)
   }
 
   private hasActiveGoalWork(flowId: string, goalId: string): boolean {

@@ -110,6 +110,13 @@ export const buildServer = async (options: BuildServerOptions) => {
   const websocketRuntime = await registerWebSocketRoutes(app, store, terminals, subscriptions, agent, mcpRuntime, titleProvider, flowStore)
   await registerHttpRoutes(app, store, credentials, mcpRuntime, {
     onConversationDelete: (conversationId) => terminals.stopConversation(conversationId, "Conversation deleted."),
+    ...(flowStore ? {
+      getConversationDeletionImpact: (projectId, conversationId) => flowStore.getClassicConversationDeletionImpact(projectId, conversationId),
+      beforeConversationDelete: (projectId, conversationId, scope) => flowStore.deleteClassicConversationProjection(projectId, conversationId, scope),
+      afterConversationDelete: (projectId, _conversationId, scope) => {
+        if (scope === "everywhere") store.rebuildProjectRetrieval(projectId, "classic_conversation_deleted_everywhere")
+      },
+    } : {}),
     onProjectWorkspaceSwitch: (projectId) => terminals.stopProject(projectId, "Project workspace switched."),
   })
   await registerClassicSpeechRoutes(app, {
@@ -122,7 +129,7 @@ export const buildServer = async (options: BuildServerOptions) => {
 
   let shutdownV2 = async (): Promise<void> => undefined
   if (flowStore) {
-    await registerV2FlowRoutes(app, flowStore)
+    await registerV2FlowRoutes(app, flowStore, store)
     const v2WebSocketRuntime = await registerV2WebSocketRoutes(app, {
       store: flowStore,
       sharedStore: store,

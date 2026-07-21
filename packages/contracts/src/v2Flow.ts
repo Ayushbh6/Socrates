@@ -1022,6 +1022,19 @@ export const v2FocusUpdatePayloadSchema = z
   })
   .strict()
 
+export const v2DeleteGoalResponseSchema = z
+  .object({
+    deletedGoalId: idSchema,
+    fallbackGoalId: idSchema,
+  })
+  .strict()
+
+export const v2DeleteTurnResponseSchema = z
+  .object({
+    deletedTurnId: idSchema,
+  })
+  .strict()
+
 export const v2TurnCancelPayloadSchema = z
   .object({ turnId: idSchema, reason: z.string().max(1_000).optional() })
   .strict()
@@ -1320,6 +1333,8 @@ export type V2SpeechJob = z.infer<typeof v2SpeechJobSchema>
 export type V2MessageWindow = z.infer<typeof v2MessageWindowSchema>
 export type V2FlowSnapshot = z.infer<typeof v2FlowSnapshotSchema>
 export type V2CreateSpeechJobRequest = z.infer<typeof v2CreateSpeechJobRequestSchema>
+export type V2DeleteGoalResponse = z.infer<typeof v2DeleteGoalResponseSchema>
+export type V2DeleteTurnResponse = z.infer<typeof v2DeleteTurnResponseSchema>
 export type V2ClientCommand = z.infer<typeof v2ClientCommandSchema>
 export type V2ServerEvent = z.infer<typeof v2ServerEventSchema>
 export type V2SocketMessage = z.infer<typeof v2SocketMessageSchema>
