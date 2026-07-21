@@ -114,7 +114,7 @@ export const registerV2FlowRoutes = async (app: FastifyInstance, store: V2FlowSt
     try {
       const scope = parse(goalParamsSchema, request.params, "invalid_route_params")
       const result = store.deleteGoal(scope.projectId, scope.flowId, scope.goalId)
-      sharedStore?.rebuildProjectRetrieval(scope.projectId, "v2_goal_deleted")
+      sharedStore?.deleteV2GoalRetrieval(scope.projectId, scope.goalId)
       return ok(v2DeleteGoalResponseSchema.parse(result))
     } catch (error) {
       return sendRouteError(reply, error)
@@ -125,7 +125,7 @@ export const registerV2FlowRoutes = async (app: FastifyInstance, store: V2FlowSt
     try {
       const scope = parse(turnParamsSchema, request.params, "invalid_route_params")
       const result = store.deleteTurn(scope.projectId, scope.flowId, scope.turnId)
-      sharedStore?.rebuildProjectRetrieval(scope.projectId, "v2_turn_deleted")
+      sharedStore?.deleteV2TurnRetrieval(scope.projectId, scope.turnId)
       return ok(v2DeleteTurnResponseSchema.parse(result))
     } catch (error) {
       return sendRouteError(reply, error)

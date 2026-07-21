@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Conversation, Project } from "@socrates/contracts";
-import { History, PanelLeftClose, PanelLeftOpen, RotateCcw } from "lucide-react";
+import { ArrowLeft, PanelLeftClose, PanelLeftOpen, RotateCcw } from "lucide-react";
 import Link from "next/link";
 import { SidebarProjectSection } from "./SidebarProjectSection";
 
@@ -56,6 +56,17 @@ export function ProjectChatSidebar({
   flowOutline,
 }: ProjectChatSidebarProps) {
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(() => new Set());
+  const [flowSidebarNavigation, setFlowSidebarNavigation] = useState<{
+    projectId: string;
+    view: "queries" | "projects";
+  }>(() => ({ projectId: currentProjectId, view: "queries" }));
+  const isFlowSidebar = mode === "projects" && Boolean(flowOutline);
+  const flowSidebarView = flowSidebarNavigation.projectId === currentProjectId
+    ? flowSidebarNavigation.view
+    : "queries";
+  const setFlowSidebarView = (view: "queries" | "projects") => {
+    setFlowSidebarNavigation({ projectId: currentProjectId, view });
+  };
 
   if (isCollapsed) {
     return (
@@ -74,13 +85,28 @@ export function ProjectChatSidebar({
     <aside
       className={
         overlay
-          ? "fixed inset-y-0 left-0 z-50 hidden h-screen w-80 border-r border-gray-200 bg-brand-bg px-4 py-5 shadow-[1.5rem_0_4rem_rgba(45,55,72,0.12)] md:flex md:flex-col"
-          : "hidden h-screen w-80 shrink-0 border-r border-gray-200 bg-brand-bg px-4 py-5 md:flex md:flex-col"
+          ? "fixed inset-y-0 left-0 z-50 hidden h-dvh max-h-dvh w-80 min-w-80 max-w-80 overflow-hidden border-r border-gray-200 bg-brand-bg px-4 py-5 shadow-[1.5rem_0_4rem_rgba(45,55,72,0.12)] md:flex md:flex-col"
+          : "sticky top-0 hidden h-dvh max-h-dvh w-80 min-w-80 max-w-80 shrink-0 overflow-hidden border-r border-gray-200 bg-brand-bg px-4 py-5 md:flex md:flex-col"
       }
       data-layout={overlay ? "overlay" : "inline"}
+      data-sidebar-view={isFlowSidebar ? flowSidebarView : mode}
     >
-      <div className="flex items-center justify-between gap-3 px-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-brand-text-light">Projects</h2>
+      <div className="flex shrink-0 items-center justify-between gap-3 px-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          {isFlowSidebar && flowSidebarView === "queries" ? (
+            <button
+              type="button"
+              aria-label="Show projects"
+              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-brand-text-light transition hover:bg-white hover:text-brand-text-dark"
+              onClick={() => setFlowSidebarView("projects")}
+            >
+              <ArrowLeft size={17} aria-hidden="true" />
+            </button>
+          ) : null}
+          <h2 className="truncate text-sm font-semibold uppercase tracking-wide text-brand-text-light">
+            {isFlowSidebar && flowSidebarView === "queries" ? "Queries" : "Projects"}
+          </h2>
+        </div>
         <button
           type="button"
           aria-label="Collapse project sidebar"
@@ -90,69 +116,11 @@ export function ProjectChatSidebar({
           <PanelLeftClose size={18} aria-hidden="true" />
         </button>
       </div>
-      <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
-        <div className="space-y-2">
-          {mode === "projects"
-            ? projects.map(({ project }) => {
-              const isCurrent = project.id === currentProjectId;
-              return (
-                <Link
-                  key={project.id}
-                  href={projectHref?.(project.id) ?? `/projects/${project.id}`}
-                  aria-current={isCurrent ? "page" : undefined}
-                  className={
-                    isCurrent
-                      ? "block truncate rounded-xl bg-white/75 px-4 py-3 text-sm font-medium text-brand-text-dark"
-                      : "block truncate rounded-xl px-4 py-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-white/70 hover:text-brand-teal-dark"
-                  }
-                >
-                  {project.name}
-                </Link>
-              );
-            })
-            : projects.map(({ project, conversations }) => (
-              <SidebarProjectSection
-                key={project.id}
-                project={project}
-                conversations={conversations}
-                currentProjectId={currentProjectId}
-                currentConversationId={currentConversationId ?? ""}
-                isCollapsed={collapsedProjectIds.has(project.id)}
-                onToggle={() => {
-                  setCollapsedProjectIds((current) => {
-                    const next = new Set(current);
-                    if (next.has(project.id)) {
-                      next.delete(project.id);
-                    } else {
-                      next.add(project.id);
-                    }
-                    return next;
-                  });
-                }}
-                onStartChat={() => onStartChat?.(project.id) ?? Promise.resolve()}
-              />
-            ))}
-        </div>
 
-        {mode === "projects" && flowOutline ? (
-          <div className="mx-2 mt-6 border-t border-gray-200/80 pt-5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.12em] text-brand-text-light">
-                <History size={14} aria-hidden="true" />
-                <span>Queries</span>
-              </div>
-              {flowOutline.selectedId && !flowOutline.items.find((item) => item.id === flowOutline.selectedId)?.isCurrent ? (
-                <button
-                  type="button"
-                  onClick={flowOutline.onReturnToCurrent}
-                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] text-brand-text-light transition hover:bg-white/80 hover:text-brand-text-dark"
-                >
-                  <RotateCcw size={12} aria-hidden="true" />
-                  Current
-                </button>
-              ) : null}
-            </div>
-            <div className="relative mt-4 space-y-1 before:absolute before:bottom-2 before:left-[0.3125rem] before:top-2 before:w-px before:bg-gray-200">
+      {isFlowSidebar && flowSidebarView === "queries" && flowOutline ? (
+        <>
+          <div className="mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3">
+            <div className="relative space-y-1 before:absolute before:bottom-2 before:left-[0.3125rem] before:top-2 before:w-px before:bg-gray-200">
               {flowOutline.items.length > 0 ? flowOutline.items.map((item) => {
                 const isSelected = flowOutline.selectedId === item.id;
                 return (
@@ -181,20 +149,85 @@ export function ProjectChatSidebar({
                 <p className="pl-5 text-xs leading-5 text-brand-text-light">Your queries will appear here.</p>
               )}
             </div>
-            {flowOutline.hasEarlier && flowOutline.onLoadEarlier ? (
-              <button
-                type="button"
-                onClick={flowOutline.onLoadEarlier}
-                disabled={flowOutline.isLoadingEarlier}
-                className="mt-3 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs text-brand-text-light transition hover:bg-white/70 hover:text-brand-text-dark disabled:cursor-wait disabled:opacity-60"
-              >
-                {flowOutline.isLoadingEarlier ? "Loading…" : "Load earlier queries"}
-              </button>
-            ) : null}
-            {flowOutline.error ? <p className="mt-2 text-xs text-red-600" role="alert">{flowOutline.error}</p> : null}
           </div>
-        ) : null}
-      </div>
+
+          {(flowOutline.selectedId && !flowOutline.items.find((item) => item.id === flowOutline.selectedId)?.isCurrent)
+            || (flowOutline.hasEarlier && flowOutline.onLoadEarlier)
+            || flowOutline.error ? (
+              <div className="shrink-0 border-t border-gray-200/80 px-2 pt-3">
+                {flowOutline.selectedId && !flowOutline.items.find((item) => item.id === flowOutline.selectedId)?.isCurrent ? (
+                  <button
+                    type="button"
+                    onClick={flowOutline.onReturnToCurrent}
+                    className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs text-brand-text-light transition hover:bg-white/80 hover:text-brand-text-dark"
+                  >
+                    <RotateCcw size={13} aria-hidden="true" />
+                    Return to current
+                  </button>
+                ) : null}
+                {flowOutline.hasEarlier && flowOutline.onLoadEarlier ? (
+                  <button
+                    type="button"
+                    onClick={flowOutline.onLoadEarlier}
+                    disabled={flowOutline.isLoadingEarlier}
+                    className="mt-1 w-full rounded-lg border border-gray-200 px-3 py-2 text-xs text-brand-text-light transition hover:bg-white/70 hover:text-brand-text-dark disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {flowOutline.isLoadingEarlier ? "Loading…" : "Load earlier queries"}
+                  </button>
+                ) : null}
+                {flowOutline.error ? <p className="mt-2 text-xs text-red-600" role="alert">{flowOutline.error}</p> : null}
+              </div>
+            ) : null}
+        </>
+      ) : (
+        <div className="mt-4 min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          <div className="space-y-2">
+            {mode === "projects"
+              ? projects.map(({ project }) => {
+                const isCurrent = project.id === currentProjectId;
+                return (
+                  <Link
+                    key={project.id}
+                    href={projectHref?.(project.id) ?? `/projects/${project.id}`}
+                    aria-current={isCurrent ? "page" : undefined}
+                    onClick={() => {
+                      if (isFlowSidebar) setFlowSidebarView("queries");
+                    }}
+                    className={
+                      isCurrent
+                        ? "block truncate rounded-xl bg-white/75 px-4 py-3 text-sm font-medium text-brand-text-dark"
+                        : "block truncate rounded-xl px-4 py-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-white/70 hover:text-brand-teal-dark"
+                    }
+                  >
+                    {project.name}
+                  </Link>
+                );
+              })
+              : projects.map(({ project, conversations }) => (
+                <SidebarProjectSection
+                  key={project.id}
+                  project={project}
+                  conversations={conversations}
+                  currentProjectId={currentProjectId}
+                  currentConversationId={currentConversationId ?? ""}
+                  isCollapsed={collapsedProjectIds.has(project.id)}
+                  onToggle={() => {
+                    setCollapsedProjectIds((current) => {
+                      const next = new Set(current);
+                      if (next.has(project.id)) {
+                        next.delete(project.id);
+                      } else {
+                        next.add(project.id);
+                      }
+                      return next;
+                    });
+                  }}
+                  onStartChat={() => onStartChat?.(project.id) ?? Promise.resolve()}
+                />
+              ))}
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

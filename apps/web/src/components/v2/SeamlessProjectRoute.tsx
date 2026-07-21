@@ -457,12 +457,12 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       onDeleteGoal={async (goalId) => {
         setActionError(null);
         await v2Api.deleteGoal(projectId, snapshot.flow.id, goalId);
-        await runtime.refresh();
+        await runtime.refresh({ preserveView: true });
       }}
       onDeleteExchange={async (turnId) => {
         setActionError(null);
         await v2Api.deleteTurn(projectId, snapshot.flow.id, turnId);
-        await runtime.refresh();
+        await runtime.refresh({ preserveView: true });
       }}
       onOpenInClassic={(goalId) => {
         setActionError(null);

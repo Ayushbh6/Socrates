@@ -788,6 +788,14 @@ export class SocratesStore {
     this.retrieval.enqueueRebuild(projectId, reason)
   }
 
+  deleteV2TurnRetrieval(projectId: string, turnId: string): void {
+    this.retrieval.deleteV2Turn(projectId, turnId)
+  }
+
+  deleteV2GoalRetrieval(projectId: string, goalId: string): void {
+    this.retrieval.deleteV2Goal(projectId, goalId)
+  }
+
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
     return this.turns.createTurnFromUserMessage(projectId, conversationId, payload)
   }

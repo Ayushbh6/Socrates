@@ -218,12 +218,13 @@ Rules for chat UI files:
 
 - The chat route page must not become a god component.
 - Whole-sidebar collapse state can be local UI state in the chat workspace. A collapsed sidebar should disappear completely and leave only the reopen control.
+- The shared sidebar is a fixed-width, viewport-height, overflow-hidden shell. Its heading and controls stay outside the single bounded scroll region that owns only the active names/items list. Never place projects and queries/conversations in one long mixed scroll surface; use an explicit two-stage drill-in/back view when the navigation levels are independent.
 - Sidebar project collapse state can be local UI state.
 - API calls should go through `apps/web/src/lib/api.ts` or Socrates-owned hooks.
 - Shared display helpers belong in `apps/web/src/lib/` only when reused.
 - Do not introduce frontend-only API payload types that duplicate `packages/contracts`.
 - The composer owns text entry, send/stop controls, and presentation of backend-owned model/thinking choices. It must not own provider SDK mappings or agent runtime decisions.
-- `ChatComposer`, `ChatTranscript`, `WorkspaceTopbar`, `ProjectChatSidebar`, tool/activity rows, approval/credential cards, and the Terminal dock are shared presentation components. Classic uses conversation content in the sidebar; Flow uses project links plus a typed query outline and overlay layout. Flow selects one exchange through `lib/v2/flowTranscriptWindow.ts` and passes it into the shared transcript; it must not fork message, tool, approval, or Terminal renderers. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
+- `ChatComposer`, `ChatTranscript`, `WorkspaceTopbar`, `ProjectChatSidebar`, tool/activity rows, approval/credential cards, and the Terminal dock are shared presentation components. Classic uses nested project/conversation content in the sidebar; Flow uses separate Queries-only and Projects-only stages inside the same fixed shell and overlay layout. Flow selects one exchange through `lib/v2/flowTranscriptWindow.ts` and passes it into the shared transcript; it must not fork message, tool, approval, or Terminal renderers. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
 
 Initial frontend hooks:
 

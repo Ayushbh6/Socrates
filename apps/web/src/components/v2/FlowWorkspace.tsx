@@ -268,6 +268,16 @@ export function FlowWorkspace({
     return () => window.cancelAnimationFrame(frame);
   }, [composer.isSending, contentVersion, displayedIsCurrent, reduceMotion]);
 
+  const sendFromComposer = async (...args: Parameters<typeof composer.onSend>) => {
+    // An older exchange is only a viewing state. New input always continues
+    // after the live Flow tail and never creates an implicit history branch.
+    if (selectedExchangeKey) {
+      setSelectedExchangeKey(null);
+      shouldFollowCurrentRef.current = true;
+    }
+    await composer.onSend(...args);
+  };
+
   return (
     <main className={styles.flowPage}>
       <div className={styles.oceanNoise} aria-hidden="true" />
@@ -453,7 +463,7 @@ export function FlowWorkspace({
 
             <div className={styles.composerDock}>
               <div className={styles.sharedComposerFrame}>
-                <ChatComposer {...composer} />
+                <ChatComposer {...composer} onSend={sendFromComposer} />
               </div>
             </div>
             <TerminalDockPanel

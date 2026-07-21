@@ -119,8 +119,9 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     onError: setSocketError,
   });
 
-  const refresh = useCallback(async () => {
-    setIsHydrating(true);
+  const refresh = useCallback(async (options: { preserveView?: boolean } = {}) => {
+    const preserveView = options.preserveView === true;
+    if (!preserveView) setIsHydrating(true);
     setLoadError(null);
     setEarlierMessagesError(null);
     try {
@@ -145,7 +146,7 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not refresh the project flow.");
     } finally {
-      setIsHydrating(false);
+      if (!preserveView) setIsHydrating(false);
     }
   }, [projectId]);
 

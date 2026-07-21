@@ -216,12 +216,18 @@ describe("memory doc parser", () => {
   it("keeps bundled tool docs in the five-section structured format", () => {
     const files = listMarkdownFiles(bundledToolUsageDir)
     expect(files.map((filePath) => path.relative(bundledToolUsageDir, filePath).replaceAll(path.sep, "/")).sort()).toEqual([
+      "context_disposition.md",
       "current_time.md",
       "edit_apply_patch.md",
+      "focus_ledger.md",
+      "handover_to_frontier.md",
+      "list_project_resources.md",
       "mcp_registry.md",
+      "memory_agent/current_time.md",
       "memory_agent/edit_files.md",
       "memory_agent/memory_notes.md",
       "memory_agent/projects.md",
+      "memory_agent/read_memory_journal.md",
       "memory_agent/skills.md",
       "memory_agent/soul.md",
       "memory_agent/tool_docs.md",

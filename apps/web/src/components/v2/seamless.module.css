@@ -932,11 +932,21 @@
 }
 
 .historyNotice {
+  position: sticky;
+  top: 0;
+  z-index: 8;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 0.65rem;
+  width: fit-content;
+  margin: -0.5rem auto 0;
+  padding: 0.55rem 0.8rem;
+  border-radius: 999px;
   color: var(--v2-faint);
+  background: color-mix(in srgb, var(--v2-surface) 92%, transparent);
+  box-shadow: 0 0.5rem 1.5rem rgba(45, 55, 72, 0.06);
+  backdrop-filter: blur(12px);
   font-size: 0.68rem;
 }
 

@@ -612,3 +612,15 @@ two presentation/navigation projections
 explicitly namespaced runtime persistence
 no migration or replacement without explicit user authorization
 ```
+
+## 25. Viewport Shells Stay Fixed And Lists Scroll Independently
+
+This is a hard design invariant for every Socrates page, drawer, sidebar, inspector, and management surface.
+
+- Persistent page chrome must not be placed inside the document or list scroll region. Headers, titles, primary controls, composers, and footers stay fixed within their viewport shell; only the intended middle content region scrolls.
+- Important state and navigation controls must never disappear merely because their associated content scrolls. Keep them outside the scroll region or make them sticky within that region; examples include historical/current-state indicators, return/back controls, active status, and required actions.
+- Sidebars have an explicit fixed width and `overflow: hidden` outer shell. Their section title and navigation controls are non-scrolling. The active names/items list owns the bounded `overflow-y: auto` region.
+- Do not concatenate independent navigation levels into one long scroll surface. If a sidebar contains projects and queries/conversations, present one level at a time with an explicit back/drill-in transition.
+- Flow opens its shared sidebar on the Queries level. A small back control opens the Projects level; choosing a project returns to that project's Queries level. Project names and query names never share one scroll container.
+- Classic may keep its nested project/conversation hierarchy, but the shared sidebar heading and whole-sidebar controls remain outside the scrolling names region. Long child lists must be bounded rather than stretching the page.
+- Browser verification for any shell/sidebar change must prove that scrolling the active list does not move the shell heading, fixed controls, main workspace, or composer, at both desktop and narrow responsive widths.

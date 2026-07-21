@@ -314,6 +314,25 @@ export class RetrievalStore {
     })
   }
 
+  deleteV2Turn(projectId: string, turnId: string): void {
+    this.enqueue(projectId, () => this.deleteParentsNow(projectId, [turnId]))
+  }
+
+  deleteV2Goal(projectId: string, goalId: string): void {
+    this.enqueue(projectId, () => this.deleteParentsNow(projectId, [goalId]))
+  }
+
+  private async deleteParentsNow(projectId: string, parentIds: string[]): Promise<void> {
+    const state = this.state(projectId)
+    if (state?.tableName) {
+      await this.lance.upsertParents(state.tableName, parentIds, [])
+      await this.refreshCounts(projectId, state.tableName)
+    }
+    for (const key of this.recentTraceResults.keys()) {
+      if (key.startsWith(`${projectId}:`)) this.recentTraceResults.delete(key)
+    }
+  }
+
   private async deleteConversationNow(projectId: string, conversationId: string): Promise<void> {
     const state = this.state(projectId)
     if (state?.tableName) await this.lance.deleteConversation(state.tableName, conversationId)
