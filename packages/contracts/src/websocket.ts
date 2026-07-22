@@ -339,6 +339,9 @@ export const toolCallFailedPayloadSchema = z
   .object({
     toolCallId: idSchema,
     providerToolCallId: z.string().min(1).optional(),
+    // Schema failures occur before a tool-call record exists, so the client
+    // cannot otherwise identify or render the failed tool.
+    toolName: toolNameSchema.optional(),
     error: apiErrorSchema,
     modelCallId: idSchema.optional(),
     stepIndex: z.number().int().nonnegative().optional(),

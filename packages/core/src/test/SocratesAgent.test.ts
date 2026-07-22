@@ -1007,6 +1007,81 @@ describe("SocratesAgent", () => {
     expect(JSON.stringify(seenMessages.at(-1))).toContain("thoughtSignature")
   })
 
+  it("keeps structured doc indexes out of the next model request", async () => {
+    const requests: unknown[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      countTokens: fakeCountTokens,
+      async *stream(request) {
+        requests.push(JSON.parse(JSON.stringify(request.messages)) as unknown)
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "model.tool_call.completed",
+            toolCall: { toolCallId: "repo_index", toolName: "repo_docs", input: { operation: "read_index" } },
+          }
+          yield { type: "model.completed", finishReason: "tool-calls" }
+          return
+        }
+        yield { type: "model.answer.delta", text: "Done." }
+        yield { type: "model.completed" }
+      },
+    }
+    const executors = emptyToolExecutors()
+    executors.repo_docs = async () => ({
+      operation: "read_index",
+      paths: [".socrates/repo_docs/REPO_RULES.md"],
+      content: "VISIBLE_REPO_DOC_INDEX",
+      indexes: [{
+        path: ".socrates/repo_docs/REPO_RULES.md",
+        scope: "workspace",
+        projectId: "proj_1",
+        docType: "repo_rules",
+        ownerTool: "repo_docs",
+        schemaVersion: 1,
+        contentHash: "index_hash",
+        sections: [{
+          sectionId: "hard_rules",
+          kind: "rules",
+          tags: ["test"],
+          heading: "Hard rules",
+          content: "HIDDEN_DUPLICATE_INDEX_PAYLOAD",
+          lineStart: 1,
+          lineEnd: 1,
+          contentHash: "section_hash",
+          summary: "Hidden duplicate payload.",
+          tokenEstimate: 10,
+        }],
+      }],
+      truncation: { truncated: true, charLimit: 24, originalLength: 9_999, returnedLength: 22 },
+    })
+
+    const agent = new SocratesAgent(provider)
+    for await (const _event of agent.streamTurn({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-pro",
+      runtimeConfig: {
+        providerId: "deepseek",
+        authMode: "api_key",
+        modelId: "deepseek-v4-pro",
+        thinkingEnabled: false,
+        thinkingEffort: "none",
+        approvalMode: "manual",
+        sandboxMode: "read_only",
+      },
+      messages: [{ role: "user", content: "Read the repository index." }],
+      workspacePath: "/tmp",
+      toolExecutors: executors,
+      requestApproval: async () => ({ decision: "approved" }),
+    })) {
+      // Drain the turn.
+    }
+
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[1])).toContain("VISIBLE_REPO_DOC_INDEX")
+    expect(JSON.stringify(requests[1])).not.toContain("HIDDEN_DUPLICATE_INDEX_PAYLOAD")
+  })
+
   it("piggybacks model-chosen tool-output distillation on the next functional tool call", async () => {
     const requests: Array<{ messages: unknown; tools: string[] }> = []
     let calls = 0

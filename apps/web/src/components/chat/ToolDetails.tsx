@@ -4,25 +4,26 @@ import { TerminalBlock } from "./TerminalBlock";
 import { getEditFileSummaries, getPreferredEditDiffFiles } from "./editPresentation";
 
 export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
-  if (tool.toolName === "bash") {
-    return <TerminalDetails tool={tool} />;
-  }
-  if (tool.toolName === "edit" || tool.toolName === "apply_patch") {
-    return <EditDetails tool={tool} />;
-  }
-  if (tool.toolName === "search") {
-    return <SearchDetails tool={tool} />;
-  }
-  if (tool.toolName === "read") {
-    return <ReadDetails tool={tool} />;
-  }
-  if (tool.toolName === "trace_retrieve") {
-    return <TraceDetails tool={tool} />;
-  }
-  if (tool.toolName === "list_project_resources") {
-    return <ResourceDetails tool={tool} />;
-  }
-  return <GenericDetails tool={tool} />;
+  const details = tool.toolName === "bash"
+    ? <TerminalDetails tool={tool} />
+    : tool.toolName === "edit" || tool.toolName === "apply_patch"
+      ? <EditDetails tool={tool} />
+      : tool.toolName === "search"
+        ? <SearchDetails tool={tool} />
+        : tool.toolName === "read"
+          ? <ReadDetails tool={tool} />
+          : tool.toolName === "trace_retrieve"
+            ? <TraceDetails tool={tool} />
+            : tool.toolName === "list_project_resources"
+              ? <ResourceDetails tool={tool} />
+              : <GenericDetails tool={tool} />;
+
+  return (
+    <div className="space-y-2">
+      {details}
+      {tool.error && <p className="text-xs text-red-600">{tool.error}</p>}
+    </div>
+  );
 }
 
 function TerminalDetails({ tool }: { tool: ToolTimelineItem }) {
@@ -60,7 +61,6 @@ function TerminalDetails({ tool }: { tool: ToolTimelineItem }) {
           {tool.shell?.awaitingInput && <span className="text-amber-600">awaiting user input</span>}
         </div>
       )}
-      {tool.error && <p className="text-xs text-red-600">{tool.error}</p>}
     </div>
   );
 }
@@ -227,7 +227,6 @@ function GenericDetails({ tool }: { tool: ToolTimelineItem }) {
     <div className="space-y-2">
       {tool.argsPreview && <LabeledCode label="input" value={tool.argsPreview} />}
       {tool.resultPreview && <LabeledCode label="result" value={tool.resultPreview} />}
-      {tool.error && <p className="text-xs text-red-600">{tool.error}</p>}
     </div>
   );
 }

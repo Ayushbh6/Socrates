@@ -167,7 +167,8 @@ export const editToolJsonSchema: JsonSchemaObject = {
     },
     overwrite: {
       type: "boolean",
-      description: "Set true only when intentionally replacing the full content of an existing file.",
+      enum: [true],
+      description: "Omit for a new file. Include only true when intentionally replacing the full content of an existing file; never send false.",
     },
     dryRun: {
       type: "boolean",

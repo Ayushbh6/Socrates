@@ -1072,6 +1072,7 @@ describe("websocket server event contracts", () => {
     toolCallFailedEventSchema.safeParse(
       envelope("tool.call.failed", {
         toolCallId: "tcall_1",
+        toolName: "edit",
         error: {
           code: "tool_failed",
           message: "Tool failed",

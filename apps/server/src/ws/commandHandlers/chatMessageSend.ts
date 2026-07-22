@@ -804,6 +804,7 @@ export const handleChatMessageSend = async (
           {
             toolCallId: agentEvent.toolCallId,
             providerToolCallId: agentEvent.providerToolCallId,
+            toolName: agentEvent.toolName,
             error: apiError(agentEvent.error.code, agentEvent.error.message, {
               details: agentEvent.error.details,
               recoverable: agentEvent.error.recoverable,

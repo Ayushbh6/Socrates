@@ -8607,6 +8607,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Overwrite README", { approvalMode: "approve_all" }))
       const failed = await waitForEvent(socket, "tool.call.failed")
+      expect(failed.payload.toolName).toBe("edit")
       expect(failed.payload.error.code).toBe("edit_stale_content")
       expect(failed.payload.error.recoverable).toBe(true)
       expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello old world")

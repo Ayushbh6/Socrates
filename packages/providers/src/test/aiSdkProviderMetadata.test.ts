@@ -185,6 +185,7 @@ describe("AI SDK provider metadata", () => {
     expect(JSON.stringify(schema.jsonSchema)).not.toContain('"None"')
     expect(JSON.stringify(schema.jsonSchema)).not.toContain('"anyOf"')
     expect(JSON.stringify(schema.jsonSchema)).not.toContain('"oneOf"')
+    expect(JSON.stringify(schema.jsonSchema)).toContain('"enum":[true]')
 
     await expect(Promise.resolve(schema.validate?.({ path: "README.md", oldString: "old", newString: "new" }))).resolves.toEqual({
       success: true,
@@ -194,6 +195,7 @@ describe("AI SDK provider metadata", () => {
       success: true,
       value: { path: "README.md", content: "new", overwrite: true },
     })
+    await expect(Promise.resolve(schema.validate?.({ path: "README.md", content: "new", overwrite: false }))).resolves.toMatchObject({ success: false })
     const invalid = await Promise.resolve(schema.validate?.({ path: "README.md", content: "new", oldString: "old", newString: "new" }))
     expect(invalid?.success).toBe(false)
   })
