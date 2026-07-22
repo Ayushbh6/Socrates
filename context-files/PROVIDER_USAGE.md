@@ -540,7 +540,7 @@ DeepSeek API
   deepseek-v4-flash            no vision
 ```
 
-Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, Tencent HY3, the DeepSeek V4 models, and Qwen 3.5 Flash, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. Direct DeepSeek API V4 models are also text-only in the Socrates catalog. MiMo Pro and Llama 4 Maverick are vision-capable and must keep native image paths enabled.
+Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, Tencent HY3, the DeepSeek V4 models, Qwen 3.5 Flash, and `xiaomi/mimo-v2.5-pro`, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. MiMo Pro's current OpenRouter endpoint rejects image parts even when its broader model family supports visual work; treating it as text-only prevents a failed screenshot-follow-up request. Direct DeepSeek API V4 models are also text-only in the Socrates catalog. Llama 4 Maverick remains vision-capable and must keep native image paths enabled.
 
 Tencent HY3 is also text-only. Its normalized thinking choices are Off/Low/High and its OpenRouter route is price-first. GLM 5.2 exposes High/Extra High. The July 2026 compaction eval found HY3 too slow/unreliable for structured repeated compression, while GLM 5.2 High was a viable but more expensive fallback to official DeepSeek V4 Flash Off.
 

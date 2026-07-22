@@ -28,7 +28,11 @@ export type EditFileSummary = {
 export function summarizeEditTool(tool: ToolTimelineItem): string {
   const files = getEditFileSummaries(tool);
   if (files.length === 1) {
-    return `Edited ${basename(files[0].path)}`;
+    const file = files[0];
+    const lineCounts = file.added !== undefined || file.removed !== undefined
+      ? ` · +${file.added ?? 0} −${file.removed ?? 0}`
+      : "";
+    return `${capitalize(file.operation)} ${basename(file.path)}${lineCounts}`;
   }
   if (files.length > 1) {
     return `Edited ${files.length} files`;

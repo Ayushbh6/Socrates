@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile)
 
 const nonVisionModelIds = new Set([
   "z-ai/glm-5.2",
+  "xiaomi/mimo-v2.5-pro",
   "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4-flash",
   "qwen/qwen3.5-flash-02-23",

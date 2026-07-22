@@ -133,6 +133,7 @@ import {
   agentThinkingDeltaEventSchema,
   bashToolInputSchema,
   bashToolModelInputSchema,
+  normalizeBashModelInput,
   waitToolInputSchema,
   currentTimeToolInputSchema,
   currentTimeToolOutputSchema,
@@ -1563,6 +1564,11 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "stop", terminalId: "term_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", processId: "proc_1" }).success).toBe(false)
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
+    expect(normalizeBashModelInput({ command: "pnpm run build", argv: ["pnpm", "run", "build"] })).toEqual({ command: "pnpm run build" })
+    expect(normalizeBashModelInput({ argv: ["pwd"] })).toEqual({ argv: ["pwd"] })
+    expect(normalizeBashModelInput({ operation: "output", command: "placeholder", name: "placeholder", target: "ai-dpa-vite" })).toEqual({ operation: "output", target: "ai-dpa-vite" })
+    expect(normalizeBashModelInput({ operation: "output", name: "placeholder" })).toEqual({ operation: "output" })
+    expect(normalizeBashModelInput({ operation: "run", command: "pnpm run build", name: "x", target: "x" })).toEqual({ operation: "run", command: "pnpm run build" })
     expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed", "failed"], reason: "Waiting for integration test results" }).success).toBe(true)
     expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed"], reason: "one two three four five six seven eight" }).success).toBe(false)
     expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed"], reason: "x".repeat(65) }).success).toBe(false)

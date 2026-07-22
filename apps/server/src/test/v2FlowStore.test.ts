@@ -752,6 +752,48 @@ describe("V2FlowStore isolation and lifecycle", () => {
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_classic_message_links WHERE bridge_id = ?").get(bridge.id)).toMatchObject({ count: 2 })
   })
 
+  it("repairs a missing Classic home and makes the latest Classic conversation the preferred bridge", () => {
+    const { handle, store } = setup()
+    const flow = store.ensureFlow("proj_one").flow
+    const turn = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Build the bridge", runtimeConfig })
+    const work = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: turn.turn.id, messageId: turn.userMessage.id, messageContent: turn.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
+    const liveBridge = store.getClassicBridge("proj_one", flow.id, work.id)
+    const now = nowIso()
+    const missingBridgeId = createId("v2bridge")
+    const missingConversationId = createId("conv")
+    const missingSessionId = createId("sess")
+    handle.sqlite.prepare(
+      "INSERT INTO v2_classic_conversation_bridges (id, project_id, flow_id, goal_id, conversation_id, session_id, active_owner, status, last_v2_message_ordinal, created_at, updated_at) VALUES (?, 'proj_one', ?, ?, ?, ?, 'classic', 'active', 0, ?, ?)",
+    ).run(missingBridgeId, flow.id, work.id, missingConversationId, missingSessionId, now, now)
+    handle.sqlite.prepare(
+      "UPDATE v2_goal_classic_homes SET bridge_id = ?, conversation_id = ?, session_id = ?, updated_at = ? WHERE goal_id = ?",
+    ).run(missingBridgeId, missingConversationId, missingSessionId, now, work.id)
+
+    expect(() => store.assertV2FocusOwnership("proj_one", flow.id, work.id)).not.toThrow()
+    expect(handle.sqlite.prepare("SELECT bridge_id AS bridgeId FROM v2_goal_classic_homes WHERE goal_id = ?").get(work.id)).toMatchObject({ bridgeId: liveBridge.id })
+
+    const classic = seedClassicConversation(handle)
+    const classicTurn = seedClassicTurn(handle, { ...classic, user: "Continue building the bridge", assistant: "Continuing.", offset: 1 })
+    const context = store.prepareClassicGoalRouting("proj_one", classic.conversationId, [work.id])
+    const candidate = context.candidates.find((item) => item.goalId === work.id)
+    if (!candidate) throw new Error("Expected the existing Flow focus as a Classic routing candidate")
+    store.applyClassicGoalRoute({
+      projectId: "proj_one",
+      conversationId: classic.conversationId,
+      sessionId: classic.sessionId,
+      turnId: classicTurn.turnId,
+      userMessageId: classicTurn.userMessageId,
+      userMessage: "Continue building the bridge",
+      context,
+      route: { action: "use", candidates: [candidate.candidate], title: null },
+    })
+
+    expect(handle.sqlite.prepare("SELECT conversation_id AS conversationId FROM v2_goal_classic_homes WHERE goal_id = ?").get(work.id)).toMatchObject({ conversationId: classic.conversationId })
+    expect(() => store.assertV2FocusOwnership("proj_one", flow.id, work.id)).toThrow(/owned by Classic/i)
+    store.continueClassicConversationInSeamless("proj_one", classic.conversationId)
+    expect(store.getClassicBridge("proj_one", flow.id, work.id).conversationId).toBe(classic.conversationId)
+  })
+
   it("keeps three Classic tasks in one conversation while linking and importing each canonical goal", () => {
     const { handle, store } = setup()
     const { conversationId, sessionId } = seedClassicConversation(handle)

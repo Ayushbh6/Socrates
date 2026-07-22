@@ -1,5 +1,5 @@
 import { ChevronDown, SquareTerminal } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ToolActivityRow } from "./ToolActivityRow";
 import type { PendingApproval, PendingCredentialInput, ToolTimelineItem } from "./ToolTimelineTypes";
 
@@ -17,8 +17,14 @@ export function ChatToolTimeline({ tools, approvals = [], credentialRequests = [
   const hasActiveWork = tools.some(
     (tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval",
   );
+  const hasFailedWork = tools.some((tool) => tool.status === "failed" || tool.status === "rejected" || tool.status === "cancelled");
   const hasPendingCredential = credentialRequests.some((request) => request.status === "pending");
-  const [isOpen, setIsOpen] = useState(hasPendingApproval || hasActiveWork || hasPendingCredential);
+  const [isOpen, setIsOpen] = useState(hasPendingApproval || hasActiveWork || hasFailedWork || hasPendingCredential);
+  useEffect(() => {
+    if (hasPendingApproval || hasActiveWork || hasFailedWork || hasPendingCredential) {
+      setIsOpen(true);
+    }
+  }, [hasActiveWork, hasFailedWork, hasPendingApproval, hasPendingCredential]);
   const summary = useMemo(() => summarizeToolGroup(tools, approvals), [tools, approvals]);
   const shouldShowDetails = isOpen || hasPendingApproval || hasActiveWork || hasPendingCredential;
 

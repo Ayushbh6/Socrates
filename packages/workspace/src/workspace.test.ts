@@ -339,7 +339,7 @@ describe("workspace tools", () => {
     expect(result.warnings?.[0]).toContain("does not support native vision")
   })
 
-  it("treats MiMo Pro as vision-capable when reading images", async () => {
+  it("keeps MiMo Pro image reads textual when its OpenRouter endpoint does not accept image parts", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "screenshot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
 
@@ -349,8 +349,8 @@ describe("workspace tools", () => {
     )
 
     expect(result.kind).toBe("image")
-    expect(result.image?.nativeVisionSupported).toBe(true)
-    expect(result.warnings).toBeUndefined()
+    expect(result.image?.nativeVisionSupported).toBe(false)
+    expect(result.warnings?.[0]).toContain("does not support native vision")
   })
 
   it("allows reading PROJECT_NOTES.md but rejects generic edits to it", async () => {

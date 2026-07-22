@@ -107,6 +107,8 @@ const ACTIVE_TERMINAL_STATUSES = ["starting", "running", "awaiting_input", "deta
 const V2_MODEL_MESSAGE_LOAD_LIMIT = 500
 export const V2_ACTIVE_CONTEXT_ITEM_LOAD_LIMIT = 256
 
+type ClassicConversationBridgeRow = typeof v2ClassicConversationBridges.$inferSelect
+
 export type V2TerminalRuntimeRecord = {
   terminal: V2Terminal
   workspacePath: string
@@ -370,21 +372,72 @@ export class V2FlowStore {
     return this.getSnapshot(projectId, flowId).flow
   }
 
+  /**
+   * A Classic home is a convenience pointer, not the source of truth. Classic
+   * conversations can be removed independently, so never let a dangling home
+   * take Flow ownership or send the user to a non-existent conversation.
+   */
+  private isLiveClassicBridge(bridge: ClassicConversationBridgeRow): boolean {
+    const conversation = this.handle.db.select({ id: conversations.id }).from(conversations).where(and(
+      eq(conversations.id, bridge.conversationId),
+      eq(conversations.projectId, bridge.projectId),
+    )).limit(1).get()
+    if (!conversation) return false
+    const session = this.handle.db.select({ id: sessions.id }).from(sessions).where(and(
+      eq(sessions.id, bridge.sessionId),
+      eq(sessions.conversationId, bridge.conversationId),
+      eq(sessions.projectId, bridge.projectId),
+    )).limit(1).get()
+    return Boolean(session)
+  }
+
+  private findLatestLiveClassicBridge(projectId: string, flowId: string, goalId: string): ClassicConversationBridgeRow | undefined {
+    const candidates = this.handle.db.select().from(v2ClassicConversationBridges).where(and(
+      eq(v2ClassicConversationBridges.projectId, projectId),
+      eq(v2ClassicConversationBridges.flowId, flowId),
+      eq(v2ClassicConversationBridges.goalId, goalId),
+    )).orderBy(desc(v2ClassicConversationBridges.updatedAt)).all()
+    return candidates.find((candidate) => this.isLiveClassicBridge(candidate))
+  }
+
+  private resolveClassicHome(projectId: string, flowId: string, goalId: string): ClassicConversationBridgeRow | undefined {
+    const home = this.handle.db.select().from(v2GoalClassicHomes).where(and(
+      eq(v2GoalClassicHomes.projectId, projectId),
+      eq(v2GoalClassicHomes.flowId, flowId),
+      eq(v2GoalClassicHomes.goalId, goalId),
+    )).limit(1).get()
+    if (!home) return undefined
+
+    const bridge = this.handle.db.select().from(v2ClassicConversationBridges)
+      .where(eq(v2ClassicConversationBridges.id, home.bridgeId)).limit(1).get()
+    if (bridge && this.isLiveClassicBridge(bridge)) return bridge
+
+    const replacement = this.findLatestLiveClassicBridge(projectId, flowId, goalId)
+    if (replacement) {
+      this.handle.db.update(v2GoalClassicHomes).set({
+        bridgeId: replacement.id,
+        conversationId: replacement.conversationId,
+        sessionId: replacement.sessionId,
+        updatedAt: nowIso(),
+      }).where(eq(v2GoalClassicHomes.id, home.id)).run()
+      return replacement
+    }
+
+    // The old conversation has already gone away, so remove only its stale
+    // home pointer. A future Flow-to-Classic handoff will provision a fresh one.
+    this.handle.db.delete(v2GoalClassicHomes).where(eq(v2GoalClassicHomes.id, home.id)).run()
+    return undefined
+  }
+
   ensureClassicBridge(projectId: string, flowId: string, goalId: string): {
     id: string
     conversationId: string
     sessionId: string
     activeOwner: "v2" | "classic"
   } {
-    const existingHome = this.handle.db
-      .select()
-      .from(v2GoalClassicHomes)
-      .where(and(eq(v2GoalClassicHomes.projectId, projectId), eq(v2GoalClassicHomes.flowId, flowId), eq(v2GoalClassicHomes.goalId, goalId)))
-      .limit(1)
-      .get()
-    if (existingHome) {
-      const bridge = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.id, existingHome.bridgeId)).limit(1).get()
-      if (!bridge) throw new SocratesError("v2_classic_home_invalid", "The Classic home for this focus is unavailable.", { recoverable: true })
+    const existingBridge = this.resolveClassicHome(projectId, flowId, goalId)
+    if (existingBridge) {
+      const bridge = existingBridge
       return { id: bridge.id, conversationId: bridge.conversationId, sessionId: bridge.sessionId, activeOwner: bridge.activeOwner as "v2" | "classic" }
     }
     const created = this.handle.sqlite.transaction(() => {
@@ -550,14 +603,8 @@ export class V2FlowStore {
   }
 
   assertV2FocusOwnership(projectId: string, flowId: string, goalId: string): void {
-    const home = this.handle.db.select().from(v2GoalClassicHomes).where(and(
-      eq(v2GoalClassicHomes.projectId, projectId),
-      eq(v2GoalClassicHomes.flowId, flowId),
-      eq(v2GoalClassicHomes.goalId, goalId),
-    )).limit(1).get()
-    if (!home) return
-    const bridge = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.id, home.bridgeId)).limit(1).get()
-    if (bridge?.activeOwner !== "v2") {
+    const bridge = this.resolveClassicHome(projectId, flowId, goalId)
+    if (bridge && bridge.activeOwner !== "v2") {
       throw new SocratesError("v2_focus_owned_by_classic", "This focus is currently owned by Classic View. Continue it in Seamless to hand writing back before sending another message.", { recoverable: true })
     }
   }
@@ -720,6 +767,16 @@ export class V2FlowStore {
         id: createId("v2home"), projectId: input.projectId, flowId: input.context.flowId, goalId,
         bridgeId: bridge.id, conversationId: input.conversationId, sessionId: input.sessionId, createdAt: now, updatedAt: now,
       }).run()
+    } else if (existingHome.bridgeId !== bridge.id) {
+      // The latest Classic conversation routed to this focus becomes its
+      // preferred home. Keeping an older pointer here can strand Flow on a
+      // deleted conversation and incorrectly block its composer.
+      this.handle.db.update(v2GoalClassicHomes).set({
+        bridgeId: bridge.id,
+        conversationId: input.conversationId,
+        sessionId: input.sessionId,
+        updatedAt: now,
+      }).where(eq(v2GoalClassicHomes.id, existingHome.id)).run()
     }
     this.handle.db.insert(v2ClassicTurnGoalLinks).values({
       id: createId("v2ctgoal"), projectId: input.projectId, flowId: input.context.flowId, goalId,

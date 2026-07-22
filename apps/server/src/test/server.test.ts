@@ -4184,7 +4184,7 @@ describe("WebSocket API", () => {
     expect(body.data.attachments[0]?.uri).toContain(path.join(".socrates", "attachments"))
   })
 
-  it("omits chat image bytes for non-vision models", async () => {
+  it("omits chat image bytes for MiMo Pro when its OpenRouter endpoint is text-only", async () => {
     const requests: unknown[] = []
     const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
     await onboard(app)
@@ -4227,7 +4227,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "connection.ready")
       const command = chatMessageCommandWithRuntime(project.id, conversation.id, "what do you see?", {
         providerId: "openrouter",
-        modelId: "deepseek/deepseek-v4-pro",
+        modelId: "xiaomi/mimo-v2.5-pro",
         thinkingEnabled: false,
         thinkingEffort: "none",
       })

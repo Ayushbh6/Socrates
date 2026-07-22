@@ -147,13 +147,14 @@ describe("model catalog", () => {
     expect(nonVision).toEqual([
       "tencent/hy3",
       "z-ai/glm-5.2",
+      "xiaomi/mimo-v2.5-pro",
       "deepseek/deepseek-v4-pro",
       "deepseek/deepseek-v4-flash",
       "qwen/qwen3.5-flash-02-23",
       "deepseek-v4-pro",
       "deepseek-v4-flash",
     ])
-    expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(true)
+    expect(modelCatalog.find((model) => model.modelId === "xiaomi/mimo-v2.5-pro")?.capabilities?.vision).toBe(false)
     expect(modelCatalog.find((model) => model.modelId === "x-ai/grok-4.5")?.capabilities?.vision).toBe(true)
   })
 

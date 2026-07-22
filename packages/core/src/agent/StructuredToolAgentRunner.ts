@@ -1,4 +1,4 @@
-import type { RuntimeConfig } from "@socrates/contracts"
+import { normalizeBashModelInput, type RuntimeConfig } from "@socrates/contracts"
 import type { ModelEvent, ModelMessage, ModelMessageContent, ModelMessagePart, ModelProvider, ModelRequest, ModelUsage } from "@socrates/providers"
 import { createId, SocratesError } from "@socrates/shared"
 import { prepareContextForModelCall, type ContextCompressionRuntime } from "../context/contextCompression"
@@ -193,7 +193,8 @@ const executeTool = async <TOutput>(
   if (!tool) {
     return { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, output: { error: { code: "tool_not_found", message: "Tool is not registered." } } }
   }
-  const parsed = tool.inputSchema.safeParse(toolCall.input)
+  const executionInput = toolCall.toolName === "bash" ? normalizeBashModelInput(toolCall.input) : toolCall.input
+  const parsed = tool.inputSchema.safeParse(executionInput)
   if (!parsed.success) {
     return { toolCallId: toolCall.toolCallId, toolName: toolCall.toolName, output: { error: { code: "invalid_tool_input", message: "Correct the tool input and retry.", details: parsed.error.flatten() } } }
   }

@@ -18,6 +18,7 @@ import {
   type WaitToolOutput,
   type WorkerModelSettings,
   type V2GoalRouterOutput,
+  normalizeBashModelInput,
 } from "@socrates/contracts"
 import fs from "node:fs"
 import path from "node:path"
@@ -1040,7 +1041,8 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       return toolErrorResult(toolCall, error)
     }
 
-    const parsed = tool.inputSchema.safeParse(toolCall.input)
+    const executionInput = toolCall.toolName === "bash" ? normalizeBashModelInput(toolCall.input) : toolCall.input
+    const parsed = tool.inputSchema.safeParse(executionInput)
     if (!parsed.success) {
       const error = new SocratesError("invalid_tool_input", "Tool input did not match the schema", {
         details: parsed.error.flatten(),

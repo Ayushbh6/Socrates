@@ -1,5 +1,5 @@
 import { ChevronDown, CircleAlert, Clock3, FileText, Pencil, Search, Sparkles, SquareTerminal, Workflow } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import { CredentialPrompt } from "./CredentialPrompt";
 import { ToolDetails } from "./ToolDetails";
@@ -20,8 +20,14 @@ export function ToolActivityRow({ tool, approval, credentialRequest, onApprovalD
   // actively running/awaiting row stays open so the user is never staring at a blank wait.
   const autoOpen =
     (tool.toolName === "bash" && Boolean(tool.stdout || tool.stderr || tool.output)) ||
-    tool.status === "awaiting_approval" || credentialRequest?.status === "pending";
+    isStreaming || tool.status === "running" || tool.status === "awaiting_approval" ||
+    tool.status === "failed" || tool.status === "rejected" || tool.status === "cancelled" || credentialRequest?.status === "pending";
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (autoOpen) {
+      setManualOpen(null);
+    }
+  }, [autoOpen]);
   const isOpen = manualOpen ?? autoOpen;
   const summary = useMemo(() => summarizeTool(tool), [tool]);
   const statusTone = statusClass(tool.status);

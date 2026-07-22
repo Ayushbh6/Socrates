@@ -148,6 +148,9 @@ export const modelCatalog = [
     modelId: "xiaomi/mimo-v2.5-pro",
     label: "MiMo-V2.5-Pro",
     contextWindowTokens: 1048576,
+    // OpenRouter currently rejects image parts for this endpoint. Keep visual
+    // tool evidence textual rather than sending a follow-up image request.
+    capabilities: { vision: false },
     thinkingOptions: [offOption, onOption],
     defaultThinkingOptionId: "off",
   }),

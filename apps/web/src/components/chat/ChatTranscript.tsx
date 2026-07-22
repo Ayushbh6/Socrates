@@ -269,11 +269,12 @@ function CompactionLoader() {
 
 function FirstTokenLoader() {
   return (
-    <div className="flex h-6 items-center">
+    <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-teal-100 bg-teal-50 px-3 py-1.5 text-xs font-medium text-brand-teal-dark">
       <span className="relative flex size-3">
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-teal-dark opacity-25" />
         <span className="relative inline-flex size-3 animate-pulse rounded-full bg-brand-teal-dark shadow-[0_0_18px_rgba(20,184,166,0.55)]" />
       </span>
+      Preparing the workspace task...
     </div>
   );
 }

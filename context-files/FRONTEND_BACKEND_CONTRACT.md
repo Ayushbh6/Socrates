@@ -1667,6 +1667,10 @@ Explored 2 files, ran 1 command
 
 For V1, the frontend may derive this summary from completed tool calls. The backend may also provide `metrics` to avoid duplicated counting logic.
 
+### Tool activity presentation
+
+The shared Classic/Flow activity surface is a live execution trace, not a generic spinner. While a call is active it must keep the row expanded and name the actual operation (for example, reading a file, searching, running a Terminal command, or applying an edit). Approval-required calls remain visibly awaiting approval. Completed edits show the edited path and compact added/removed-line counts; Terminal rows keep streamed output available. Failed or cancelled calls stay expanded with their normalized error so a user never has to infer that a call silently failed. This is presentation of the existing lifecycle events, not a separate provider-specific progress protocol.
+
 ### `tool.call.failed`
 
 Sent when a tool call fails.
