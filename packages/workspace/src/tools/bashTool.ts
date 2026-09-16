@@ -770,7 +770,10 @@ const spawnPtyChecked = async (
       name: "xterm-256color",
       cols,
       rows,
-      ...(adapter.platform === "win32" ? { useConpty: true, useConptyDll: true } : {}),
+      // This stable runtime favors the mature WinPTY backend. The bundled
+      // ConPTY modes do not reliably emit exit events in headless Windows
+      // sessions, which leaves probes and completed commands hanging.
+      ...(adapter.platform === "win32" ? { useConpty: false } : {}),
     })
   } catch (error) {
     throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
