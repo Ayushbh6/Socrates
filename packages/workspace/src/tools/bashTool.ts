@@ -29,7 +29,7 @@ type RunningProcess = {
   systemPid?: number
   command: string
   cwd: string
-  pty: IPty
+  pty: ShellProcess
   adapter: ShellAdapter
   startedAt: string
   exitedAt?: string
@@ -57,6 +57,15 @@ type PtyDisposable = {
 type PtyExit = {
   exitCode: number
   signal?: number | string
+}
+
+type ShellProcess = {
+  pid: number
+  write(text: string): void
+  resize(cols: number, rows: number): void
+  kill(): void
+  onData(listener: (text: string) => void): PtyDisposable
+  onExit(listener: (event: PtyExit) => void): PtyDisposable
 }
 
 const interactiveCommandPattern =
@@ -172,7 +181,7 @@ export class WorkspaceShellSession {
 
     const adapter = await this.resolveAdapter(cwd)
     const wrappedCommand = adapter.wrapCommand({ command: commandText, cwd, cwdMarker, doneMarker })
-    const pty = await spawnPtyChecked(adapter, adapter.runArgs(wrappedCommand), cwd, this.env, defaultCols, defaultRows)
+    const pty = await spawnShellProcessChecked(adapter, adapter.runArgs(wrappedCommand), cwd, this.env, defaultCols, defaultRows)
 
     const append = (text: string) => {
       const normalized = normalizePtyTranscript(text)
@@ -311,7 +320,7 @@ export class WorkspaceShellSession {
     const adapter = await this.resolveAdapter(cwd)
     const cols = defaultCols
     const rows = defaultRows
-    const pty = await spawnPtyChecked(adapter, adapter.runArgs(commandText), cwd, this.env, cols, rows)
+    const pty = await spawnShellProcessChecked(adapter, adapter.runArgs(commandText), cwd, this.env, cols, rows)
     const processId = `proc_${randomUUID().replaceAll("-", "")}`
     const processInfo: RunningProcess = {
       processId,
@@ -799,6 +808,86 @@ const firstWindowsExecutablePath = (output: string): string | undefined =>
     .split(/\r?\n/)
     .map((value) => value.trim())
     .find((value) => Boolean(value) && path.win32.isAbsolute(value))
+
+const spawnShellProcessChecked = async (
+  adapter: ShellAdapter,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  cols: number,
+  rows: number,
+): Promise<ShellProcess> => {
+  if (adapter.platform !== "win32") {
+    return await spawnPtyChecked(adapter, args, cwd, env, cols, rows)
+  }
+
+  try {
+    const child = spawn(adapter.executable, args, {
+      cwd,
+      env: buildWorkspaceCommandEnv(env, adapter.platform),
+      stdio: "pipe",
+      windowsHide: true,
+    })
+    const dataListeners = new Set<(text: string) => void>()
+    const exitListeners = new Set<(event: PtyExit) => void>()
+    const pendingData: string[] = []
+    let finalExit: PtyExit | undefined
+
+    const emitData = (chunk: Buffer | string) => {
+      const text = chunk.toString()
+      if (dataListeners.size === 0) {
+        pendingData.push(text)
+        return
+      }
+      for (const listener of dataListeners) {
+        listener(text)
+      }
+    }
+    child.stdout.on("data", emitData)
+    child.stderr.on("data", emitData)
+    child.once("close", (code, signal) => {
+      finalExit = { exitCode: code ?? 1, ...(signal ? { signal } : {}) }
+      for (const listener of exitListeners) {
+        listener(finalExit)
+      }
+    })
+
+    const process: ShellProcess = {
+      pid: child.pid ?? 0,
+      write: (text) => child.stdin.write(text),
+      resize: () => undefined,
+      kill: () => {
+        child.kill()
+      },
+      onData: (listener) => {
+        dataListeners.add(listener)
+        for (const text of pendingData.splice(0)) {
+          listener(text)
+        }
+        return { dispose: () => dataListeners.delete(listener) }
+      },
+      onExit: (listener) => {
+        exitListeners.add(listener)
+        if (finalExit) {
+          queueMicrotask(() => {
+            if (exitListeners.has(listener) && finalExit) {
+              listener(finalExit)
+            }
+          })
+        }
+        return { dispose: () => exitListeners.delete(listener) }
+      },
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve)
+      child.once("error", reject)
+    })
+    return process
+  } catch (error) {
+    throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+  }
+}
 
 const spawnPtyChecked = async (
   adapter: ShellAdapter,
