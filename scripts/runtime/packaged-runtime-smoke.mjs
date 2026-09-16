@@ -61,6 +61,7 @@ try {
   if (!fs.existsSync(dbPath)) {
     throw new Error(`Packaged runtime did not create its database at ${dbPath}.`);
   }
+  await smokePackagedTerminal(runtimeDir, nodeExecutable, root, env);
   console.log(`Packaged runtime smoke passed on ${process.platform}/${process.arch}.`);
 } catch (error) {
   const tail = output.trim().split(/\r?\n/).slice(-80).join("\n");
@@ -120,4 +121,95 @@ async function stopChild(processHandle) {
   } else if (!exited) {
     processHandle.kill("SIGKILL");
   }
+}
+
+async function smokePackagedTerminal(runtimeRoot, nodePath, stateRoot, runtimeEnv) {
+  const supervisorEntry = path.join(runtimeRoot, "server", "dist", "ws", "terminalSupervisorProcess.js");
+  const hostEntry = path.join(runtimeRoot, "server", "dist", "ws", "terminalHostProcess.js");
+  for (const entry of [supervisorEntry, hostEntry]) {
+    if (!fs.existsSync(entry)) throw new Error(`Packaged Terminal entry is missing: ${entry}`);
+  }
+
+  const workspace = path.join(stateRoot, "terminal-workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  const socketPath = process.platform === "win32"
+    ? `\\\\.\\pipe\\socrates-packaged-smoke-${process.pid}-${Date.now()}`
+    : path.join(os.tmpdir(), `socrates-packaged-${process.pid}-${Date.now()}.sock`);
+  const supervisor = spawn(nodePath, [supervisorEntry, socketPath], {
+    cwd: runtimeRoot,
+    env: { ...runtimeEnv, SOCRATES_TERMINAL_SUPERVISOR_IDLE_MS: "60000" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let supervisorOutput = "";
+  for (const stream of [supervisor.stdout, supervisor.stderr]) {
+    stream.on("data", (chunk) => {
+      supervisorOutput = `${supervisorOutput}${chunk.toString()}`.slice(-16_000);
+    });
+  }
+
+  const terminalId = "packaged-smoke";
+  let processId;
+  try {
+    await waitFor(
+      () => supervisorRequest(socketPath, { id: "health", method: "health" }),
+      (response) => response.ok === true,
+      10_000,
+      "packaged Terminal supervisor",
+    );
+    const command = process.platform === "win32"
+      ? "Write-Output packaged-terminal-ok; Start-Sleep -Milliseconds 750"
+      : "printf 'packaged-terminal-ok\\n'; sleep 0.75";
+    const started = await supervisorRequest(socketPath, {
+      id: "start",
+      method: "start",
+      terminalId,
+      workspacePath: workspace,
+      input: { operation: "start", command, name: "packaged-smoke", timeoutMs: 10_000, charLimit: 16_000 },
+    });
+    if (!started.ok || !started.output?.process?.processId) {
+      throw new Error(`Packaged Terminal failed to start: ${JSON.stringify(started.error ?? started)}`);
+    }
+    processId = started.output.process.processId;
+    await waitFor(
+      () => supervisorRequest(socketPath, {
+        id: "output",
+        method: "output",
+        terminalId,
+        processId,
+        input: { operation: "output", processId, charLimit: 16_000 },
+      }),
+      (response) => response.ok === true && response.output?.stdout?.includes("packaged-terminal-ok"),
+      10_000,
+      "packaged Terminal command output",
+    );
+    console.log("Packaged Terminal supervisor smoke passed.");
+  } catch (error) {
+    const tail = supervisorOutput.trim().split(/\r?\n/).slice(-40).join("\n");
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${tail ? `\nTerminal supervisor output:\n${tail}` : ""}`);
+  } finally {
+    if (processId) {
+      await supervisorRequest(socketPath, { id: "stop", method: "stop", terminalId, processId }).catch(() => undefined);
+    }
+    await supervisorRequest(socketPath, { id: "shutdown", method: "shutdown" }).catch(() => undefined);
+    await stopChild(supervisor);
+    if (process.platform !== "win32" && fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+  }
+}
+
+function supervisorRequest(socketPath, payload) {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.once("connect", () => socket.write(`${JSON.stringify(payload)}\n`));
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      socket.destroy();
+      resolve(JSON.parse(buffer.slice(0, newline)));
+    });
+    socket.once("error", reject);
+    socket.setTimeout(5_000, () => socket.destroy(new Error("Terminal supervisor request timed out.")));
+  });
 }
