@@ -1098,6 +1098,35 @@ describe("workspace tools", () => {
     )
   })
 
+  it("coalesces delete-add pairs into verified full-file rewrites", async () => {
+    const workspacePath = tempDir()
+    fs.writeFileSync(path.join(workspacePath, "App.tsx"), "export default function App() { return 'old' }\n")
+    fs.writeFileSync(path.join(workspacePath, "index.css"), "body { color: red; }\n")
+    const tracker = await readFreshFiles(workspacePath, "App.tsx", "index.css")
+    const patch = [
+      "*** Begin Patch",
+      "*** Delete File: App.tsx",
+      "*** Add File: App.tsx",
+      "+export default function App() { return 'new' }",
+      "*** Delete File: index.css",
+      "*** Add File: index.css",
+      "+body { color: blue; }",
+      "*** End Patch",
+      "",
+    ].join("\n")
+
+    const result = await applyPatchWorkspace({ patch }, { workspacePath, fileFreshness: tracker })
+
+    expect(fs.readFileSync(path.join(workspacePath, "App.tsx"), "utf8")).toBe("export default function App() { return 'new' }\n")
+    expect(fs.readFileSync(path.join(workspacePath, "index.css"), "utf8")).toBe("body { color: blue; }\n")
+    expect(result.changedFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "App.tsx", operation: "patched", verification: "verified" }),
+        expect.objectContaining({ path: "index.css", operation: "patched", verification: "verified" }),
+      ]),
+    )
+  })
+
   it("normalizes common structured patch prefix mistakes with warnings", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "app.txt"), "alpha\n\nbeta\n")

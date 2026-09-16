@@ -3,6 +3,7 @@ import type { Schema } from "ai"
 import {
   applyPatchToolInputSchema,
   applyPatchToolModelInputSchema,
+  bashToolModelInputSchema,
   editToolInputSchema,
   editToolModelInputSchema,
   traceRetrieveToolModelInputSchema,
@@ -196,6 +197,27 @@ describe("AI SDK provider metadata", () => {
     })
     const invalid = await Promise.resolve(schema.validate?.({ path: "README.md", content: "new", oldString: "old", newString: "new" }))
     expect(invalid?.success).toBe(false)
+  })
+
+  it("exposes a flat Terminal schema and recovers redundant model fields", async () => {
+    const schema = inputSchemaForAiTool({
+      name: "bash",
+      description: "Run a Terminal command.",
+      inputSchema: bashToolModelInputSchema,
+    }) as Schema
+    expect(schema.jsonSchema).toMatchObject({ type: "object", additionalProperties: false })
+    const serialized = JSON.stringify(schema.jsonSchema)
+    expect(serialized).not.toContain('"oneOf"')
+    expect(serialized).not.toContain('"anyOf"')
+    await expect(Promise.resolve(schema.validate?.({ command: "pnpm run build", argv: ["pnpm", "run", "build"] }))).resolves.toEqual({
+      success: true,
+      value: { command: "pnpm run build" },
+    })
+    await expect(Promise.resolve(schema.validate?.({ operation: "output", command: "placeholder", name: "placeholder", target: "dev" }))).resolves.toEqual({
+      success: true,
+      value: { operation: "output", target: "dev" },
+    })
+    await expect(Promise.resolve(schema.validate?.({ operation: "start", argv: ["pnpm", "dev"] }))).resolves.toMatchObject({ success: false })
   })
 
   it("exposes trace_retrieve as an object JSON schema for strict providers", async () => {

@@ -554,6 +554,47 @@ export const bashToolInputSchema = z
   })
 export type BashToolInput = z.infer<typeof bashToolInputSchema>
 
+/**
+ * Normalize redundant fields sometimes emitted by models while preserving the
+ * strict public Terminal contract and its approval policy.
+ */
+export const normalizeBashModelInput = (value: unknown): unknown => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const input = value as Record<string, unknown>
+  const operation = typeof input.operation === "string" ? input.operation : "run"
+  if (operation === "status" || operation === "output" || operation === "stop") {
+    const target = preferredTerminalTarget(input.target, input.name)
+    const { command: _command, argv: _argv, name: _name, target: _target, cwd: _cwd, timeoutMs: _timeoutMs, inputMode: _inputMode, ...controlInput } = input
+    return target ? { ...controlInput, target } : controlInput
+  }
+  if (operation === "list") {
+    const { command: _command, argv: _argv, name: _name, target: _target, cwd: _cwd, timeoutMs: _timeoutMs, inputMode: _inputMode, ...listInput } = input
+    return listInput
+  }
+  if (operation === "start") {
+    const { argv: _argv, target: _target, ...startInput } = input
+    return startInput
+  }
+  if (operation === "run") {
+    const { name: _name, target: _target, inputMode: _inputMode, ...runInput } = input
+    if (typeof runInput.command === "string" && Array.isArray(runInput.argv)) {
+      const { argv: _argv, ...commandInput } = runInput
+      return commandInput
+    }
+    return runInput
+  }
+  return value
+}
+
+const preferredTerminalTarget = (target: unknown, legacyName: unknown): string | undefined => {
+  for (const candidate of [target, legacyName]) {
+    if (typeof candidate !== "string") continue
+    const value = candidate.trim()
+    if (value && !/^placeholder$/i.test(value)) return value
+  }
+  return undefined
+}
+
 export const bashToolModelInputSchema = z
   .object({
     operation: z.enum(["run", "start", "status", "output", "stop", "list"]).optional(),

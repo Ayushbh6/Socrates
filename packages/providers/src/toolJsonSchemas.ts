@@ -8,6 +8,9 @@ export const toolParametersJsonSchema = (definition: ModelToolDefinition): unkno
   if (definition.name === "edit") {
     return editToolJsonSchema
   }
+  if (definition.name === "bash") {
+    return bashToolJsonSchema
+  }
   if (definition.name === "trace_retrieve") {
     return traceRetrieveJsonSchema
   }
@@ -167,12 +170,30 @@ export const editToolJsonSchema: JsonSchemaObject = {
     },
     overwrite: {
       type: "boolean",
-      description: "Set true only when intentionally replacing the full content of an existing file.",
+      enum: [true],
+      description: "Omit for a new file. Include only true when intentionally replacing the full content of an existing file; never send false.",
     },
     dryRun: {
       type: "boolean",
       description: "Preview the edit without writing it.",
     },
+  },
+} as const
+
+export const bashToolJsonSchema: JsonSchemaObject = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    operation: { type: "string", enum: ["run", "start", "status", "output", "stop", "list"], description: "Defaults to run. Use start only for a persistent interactive or background Terminal." },
+    command: { type: "string", minLength: 1, description: "Only for run or start: provide this OR argv, never both. Use command for a shell command, test, build, script, or local server. Omit it for status, output, stop, and list." },
+    argv: { type: "array", minItems: 1, maxItems: 32, items: { type: "string", minLength: 1 }, description: "Only for run: provide this OR command, never both. Use argv only for a literal no-shell diagnostic. Omit it for every other operation." },
+    name: { type: "string", minLength: 1, description: "Only for operation=start: a clear name for the new Terminal." },
+    target: { type: "string", minLength: 1, description: "Only for status, output, or stop: the exact Terminal name or id; never use a placeholder." },
+    cwd: { type: "string", minLength: 1, description: "Optional workspace-relative working directory." },
+    timeoutMs: { type: "integer", minimum: 1, maximum: 600000 },
+    charLimit: { type: "integer", minimum: 1, maximum: 16000 },
+    limit: { type: "integer", minimum: 1, maximum: 12 },
+    inputMode: { type: "string", enum: ["none", "user"], description: "Only for operation=start." },
   },
 } as const
 

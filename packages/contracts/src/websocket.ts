@@ -339,6 +339,7 @@ export const toolCallFailedPayloadSchema = z
   .object({
     toolCallId: idSchema,
     providerToolCallId: z.string().min(1).optional(),
+    toolName: toolNameSchema.optional(),
     error: apiErrorSchema,
     modelCallId: idSchema.optional(),
     stepIndex: z.number().int().nonnegative().optional(),

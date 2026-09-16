@@ -12,7 +12,13 @@ import { ChatTranscript, type LiveActivityStep } from "./ChatTranscript";
 import { EmptyChatState } from "./EmptyChatState";
 import { ProjectChatSidebar, type SidebarProject } from "./ProjectChatSidebar";
 import { TerminalDockPanel } from "./TerminalPanel";
-import { type PendingApproval, type PendingCredentialInput, type ToolTimelineItem } from "./ToolTimelineTypes";
+import {
+  categoryForTool,
+  displayNameForTool,
+  type PendingApproval,
+  type PendingCredentialInput,
+  type ToolTimelineItem,
+} from "./ToolTimelineTypes";
 import { ActivityCenter } from "./ActivityCenter";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
 
@@ -205,23 +211,21 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
     const media = window.matchMedia(`(max-width: ${MOBILE_TERMINAL_BREAKPOINT - 1}px)`);
     const updateMedia = () => setIsMobileView(media.matches);
-    updateMedia();
     media.addEventListener("change", updateMedia);
+    const frame = window.requestAnimationFrame(() => {
+      updateMedia();
+      const storedDockHeight = Number.parseInt(window.localStorage.getItem(dockHeightKey) ?? "", 10);
+      if (Number.isFinite(storedDockHeight)) setTerminalDockHeight(storedDockHeight);
+      const storedDockOpen = window.localStorage.getItem(dockOpenKey);
+      if (storedDockOpen === "true" || storedDockOpen === "false") setIsTerminalDockOpen(storedDockOpen === "true");
+      const storedDockActive = window.localStorage.getItem(dockActiveKey);
+      if (storedDockActive && storedDockActive.length > 0) setActiveDockTerminalId(storedDockActive);
+    });
 
-    const storedDockHeight = Number.parseInt(window.localStorage.getItem(dockHeightKey) ?? "", 10);
-    if (Number.isFinite(storedDockHeight)) {
-      setTerminalDockHeight(storedDockHeight);
-    }
-    const storedDockOpen = window.localStorage.getItem(dockOpenKey);
-    if (storedDockOpen === "true" || storedDockOpen === "false") {
-      setIsTerminalDockOpen(storedDockOpen === "true");
-    }
-    const storedDockActive = window.localStorage.getItem(dockActiveKey);
-    if (storedDockActive && storedDockActive.length > 0) {
-      setActiveDockTerminalId(storedDockActive);
-    }
-
-    return () => media.removeEventListener("change", updateMedia);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      media.removeEventListener("change", updateMedia);
+    };
   }, [conversationId, dockActiveKey, dockHeightKey, dockOpenKey, projectId]);
 
   useEffect(() => {
@@ -529,11 +533,42 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
       if (event.type === "tool.call.failed") {
         setLiveSteps((current) =>
-          updateLiveTool(current, event.payload.toolCallId, event.payload.providerToolCallId, (tool) => ({
-            ...tool,
-            status: "failed",
-            error: event.payload.error.message,
-          })),
+          updateLiveStep(current, event.turnId ?? activeTurnIdRef.current, event.payload.modelCallId, event.payload.stepIndex, (step) => {
+            const existing = step.tools.find((tool) =>
+              sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId),
+            );
+            const error = describeToolFailure(event.payload.error);
+            if (existing) {
+              return {
+                ...step,
+                tools: step.tools.map((tool) =>
+                  sameToolIdentity(tool, event.payload.toolCallId, event.payload.providerToolCallId)
+                    ? { ...tool, status: "failed", error, phase: undefined }
+                    : tool,
+                ),
+              };
+            }
+            const toolName = event.payload.toolName ?? "unknown";
+            return {
+              ...step,
+              tools: [...step.tools, {
+                toolCallId: event.payload.toolCallId,
+                ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
+                conversationId,
+                sessionId: event.sessionId ?? "live",
+                turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
+                toolName,
+                displayName: displayNameForTool(toolName),
+                category: categoryForTool(toolName),
+                status: "failed",
+                requiresApproval: false,
+                error,
+                modelCallId: event.payload.modelCallId,
+                stepIndex: event.payload.stepIndex,
+                output: "",
+              }],
+            };
+          }),
         );
         return;
       }
@@ -1387,6 +1422,19 @@ const updateLiveTool = (
 
 const sameToolIdentity = (tool: ToolTimelineItem, toolCallId: string, providerToolCallId: string | undefined): boolean =>
   tool.toolCallId === toolCallId || Boolean(providerToolCallId && tool.providerToolCallId === providerToolCallId);
+
+const describeToolFailure = (error: { code: string; message: string; details?: unknown }): string => {
+  const details = error.details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return `${error.message} (${error.code})`;
+  const fieldErrors = (details as { fieldErrors?: unknown }).fieldErrors;
+  if (!fieldErrors || typeof fieldErrors !== "object" || Array.isArray(fieldErrors)) return `${error.message} (${error.code})`;
+  const fields = Object.entries(fieldErrors)
+    .filter(([, messages]) => Array.isArray(messages) && messages.length > 0)
+    .map(([field]) => field);
+  return fields.length > 0
+    ? `${error.message} (${error.code}; invalid: ${fields.join(", ")})`
+    : `${error.message} (${error.code})`;
+};
 
 const removeSettledLiveTurn = (
   turns: Record<string, LiveActivityStep[]>,

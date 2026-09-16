@@ -16,6 +16,7 @@ import {
   type ToolName,
   type WaitToolOutput,
   type WorkerModelSettings,
+  normalizeBashModelInput,
 } from "@socrates/contracts"
 import fs from "node:fs"
 import path from "node:path"
@@ -943,7 +944,8 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       return toolErrorResult(toolCall, error)
     }
 
-    const parsed = tool.inputSchema.safeParse(toolCall.input)
+    const executionInput = toolCall.toolName === "bash" ? normalizeBashModelInput(toolCall.input) : toolCall.input
+    const parsed = tool.inputSchema.safeParse(executionInput)
     if (!parsed.success) {
       const error = new SocratesError("invalid_tool_input", "Tool input did not match the schema", {
         details: parsed.error.flatten(),
@@ -2187,7 +2189,10 @@ const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelT
       toolCallId: modelToolCallId,
       toolName: result.toolName,
       ok: true,
-      output: sanitizeModelVisibleValue(result.output, { preserveTraceRetrieveIds: result.toolName === "trace_retrieve" }),
+      output: compactModelToolOutput(
+        result.toolName,
+        sanitizeModelVisibleValue(result.output, { preserveTraceRetrieveIds: result.toolName === "trace_retrieve" }),
+      ),
     })
   }
   return toolExecutionResultSchema.parse({
@@ -2202,6 +2207,14 @@ const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelT
         }
       : undefined,
   })
+}
+
+const compactModelToolOutput = (toolName: string, output: unknown): unknown => {
+  if ((toolName !== "project_docs" && toolName !== "repo_docs") || !output || typeof output !== "object" || Array.isArray(output)) return output
+  const record = output as Record<string, unknown>
+  if (typeof record.content !== "string") return output
+  const { index: _index, indexes: _indexes, ...compact } = record
+  return compact
 }
 
 const sanitizeModelVisibleValue = (value: unknown, options: { preserveTraceRetrieveIds?: boolean } = {}): unknown => {
