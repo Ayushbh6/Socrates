@@ -28,17 +28,20 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typecheck shell contracts
-        run: |
-          pnpm --filter @socrates/contracts typecheck
-          pnpm --filter @socrates/workspace typecheck
-          pnpm --filter @socrates/core typecheck
-          pnpm --filter @socrates/server typecheck
-      - name: Test shell contracts
-        run: |
-          pnpm --filter @socrates/contracts test
-          pnpm --filter @socrates/workspace test
-          pnpm --filter @socrates/core test
+      - name: Typecheck contracts
+        run: pnpm --filter @socrates/contracts typecheck
+      - name: Typecheck workspace
+        run: pnpm --filter @socrates/workspace typecheck
+      - name: Typecheck core
+        run: pnpm --filter @socrates/core typecheck
+      - name: Typecheck server
+        run: pnpm --filter @socrates/server typecheck
+      - name: Test contracts
+        run: pnpm --filter @socrates/contracts test
+      - name: Test workspace
+        run: pnpm --filter @socrates/workspace test
+      - name: Test core
+        run: pnpm --filter @socrates/core test
       - name: Test server shell contracts
         if: runner.os != 'Windows'
         run: |

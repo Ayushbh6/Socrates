@@ -107,30 +107,29 @@ const defaultCommandRunner: CommandRunner = async (command, args) => {
 
 const isWindowsAbsolutePath = (workspacePath: string): boolean => /^[a-zA-Z]:[\\/]/.test(workspacePath)
 
-const normalizeWorkspacePath = (workspacePath: string): string => {
-  if (isWindowsAbsolutePath(workspacePath)) {
+const normalizeWorkspacePath = (workspacePath: string, platform: NodeJS.Platform = process.platform): string => {
+  if (platform === "win32" || isWindowsAbsolutePath(workspacePath)) {
     return path.win32.normalize(workspacePath)
   }
-  return path.resolve(workspacePath)
+  return path.posix.normalize(workspacePath)
 }
 
-const folderNameFromPath = (workspacePath: string): string => {
-  if (isWindowsAbsolutePath(workspacePath)) {
+const folderNameFromPath = (workspacePath: string, platform: NodeJS.Platform = process.platform): string => {
+  if (platform === "win32" || isWindowsAbsolutePath(workspacePath)) {
     return path.win32.basename(path.win32.normalize(workspacePath))
   }
-  const normalized = path.resolve(workspacePath)
-  return path.basename(normalized)
+  return path.posix.basename(path.posix.normalize(workspacePath))
 }
 
-const parsePickerOutput = (stdout: string): PickWorkspaceFolderResult => {
+const parsePickerOutput = (stdout: string, platform: NodeJS.Platform): PickWorkspaceFolderResult => {
   const selectedPath = stdout.trim()
   if (!selectedPath) {
     throw new SocratesError("folder_picker_cancelled", "Folder selection was cancelled")
   }
 
   return {
-    path: normalizeWorkspacePath(selectedPath),
-    folderName: folderNameFromPath(selectedPath),
+    path: normalizeWorkspacePath(selectedPath, platform),
+    folderName: folderNameFromPath(selectedPath, platform),
   }
 }
 
@@ -169,6 +168,7 @@ export const pickWorkspaceFolder = async (
             `POSIX path of (choose folder with prompt "${prompt.replaceAll('"', '\\"')}")`,
           ])
         ).stdout,
+        platform,
       )
     }
 
@@ -184,7 +184,7 @@ export const pickWorkspaceFolder = async (
         "  exit 2",
         "}",
       ].join("; ")
-      return parsePickerOutput((await commandRunner("powershell.exe", ["-NoProfile", "-STA", "-Command", command])).stdout)
+      return parsePickerOutput((await commandRunner("powershell.exe", ["-NoProfile", "-STA", "-Command", command])).stdout, platform)
     }
 
     if (platform === "linux") {
@@ -192,10 +192,11 @@ export const pickWorkspaceFolder = async (
       if (picker.endsWith("zenity")) {
         return parsePickerOutput(
           (await commandRunner("zenity", ["--file-selection", "--directory", "--title", prompt])).stdout,
+          platform,
         )
       }
       if (picker.endsWith("kdialog")) {
-        return parsePickerOutput((await commandRunner("kdialog", ["--getexistingdirectory", os.homedir(), prompt])).stdout)
+        return parsePickerOutput((await commandRunner("kdialog", ["--getexistingdirectory", os.homedir(), prompt])).stdout, platform)
       }
     }
   } catch (error) {
