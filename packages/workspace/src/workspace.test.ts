@@ -1515,7 +1515,7 @@ describe("workspace tools", () => {
     })
 
     expect(adapter?.kind).toBe("powershell")
-    expect(adapter?.executable).toBe("powershell.exe")
+    expect(adapter?.executable).toBe("pwsh")
     expect(wrapped).toContain("Set-Location -LiteralPath 'C:\\Users\\Ayush\\Project'")
     expect(wrapped).toContain("Get-Content package.json | Select-String version")
     expect(wrapped).toContain("$global:LASTEXITCODE -ne 0")

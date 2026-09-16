@@ -848,7 +848,7 @@ const buildWorkspaceCommandEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platf
 
 const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): ShellAdapter[] => {
   if (platform === "win32") {
-    return [makePowerShellAdapter(platform, "powershell.exe"), makePowerShellAdapter(platform, "pwsh"), makeCmdAdapter(platform, env.COMSPEC || "cmd.exe")]
+    return [makePowerShellAdapter(platform, "pwsh"), makePowerShellAdapter(platform, "powershell.exe"), makeCmdAdapter(platform, env.COMSPEC || "cmd.exe")]
   }
 
   const candidates = [env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"].filter((item): item is string => Boolean(item))
