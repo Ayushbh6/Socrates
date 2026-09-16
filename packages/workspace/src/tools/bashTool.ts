@@ -502,7 +502,7 @@ export class WorkspaceShellSession {
     signalProcessTree(processTree, "SIGTERM")
     const forceTimer = setTimeout(() => {
       signalProcessTree(processTree, "SIGKILL")
-    }, 500)
+    }, 3_000)
     forceTimer.unref?.()
   }
 
@@ -770,6 +770,7 @@ const spawnPtyChecked = async (
       name: "xterm-256color",
       cols,
       rows,
+      ...(adapter.platform === "win32" ? { useConpty: true, useConptyDll: true } : {}),
     })
   } catch (error) {
     throw normalizeShellError(error, "shell_start_failed", adapter, cwd)

@@ -612,7 +612,7 @@ describe("workspace tools", () => {
     const result = await editWorkspace({ path: "src\\main.py", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "src", "main.py"), "utf8")).toBe("print('new')\n")
-    expect(result.changedFiles[0]?.path).toBe(path.join("src", "main.py"))
+    expect(result.changedFiles[0]?.path).toBe("src/main.py")
   })
 
   it("preserves CRLF content when applying exact replacements", async () => {
