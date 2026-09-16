@@ -956,6 +956,11 @@ const buildWorkspaceCommandEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platf
       sanitized[name] = value
     }
   }
+  if (platform === "win32") {
+    for (const name of ["SystemRoot", "ComSpec", "PATHEXT"] as const) {
+      sanitized[name] ??= env[name] ?? process.env[name]
+    }
+  }
   return {
     ...sanitized,
     PAGER: "cat",

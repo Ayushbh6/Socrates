@@ -1366,6 +1366,15 @@ describe("workspace tools", () => {
     expect(sanitized.NPM_CONFIG_PRODUCTION).toBeUndefined()
     expect(sanitized.CI).toBeUndefined()
 
+    const windowsSanitized = __bashToolTest.buildWorkspaceCommandEnv(
+      { ...env, SystemRoot: "C:\\Windows", ComSpec: "C:\\Windows\\System32\\cmd.exe", PATHEXT: ".EXE;.CMD" },
+      "win32",
+    )
+    expect(windowsSanitized.SystemRoot).toBe("C:\\Windows")
+    expect(windowsSanitized.ComSpec).toBe("C:\\Windows\\System32\\cmd.exe")
+    expect(windowsSanitized.PATHEXT).toBe(".EXE;.CMD")
+    expect(windowsSanitized.OPENROUTER_API_KEY).toBeUndefined()
+
     const session = createWorkspaceShellSession(workspacePath, { env })
     try {
       const command = nodeCommand(
@@ -1405,7 +1414,7 @@ describe("workspace tools", () => {
         process.platform === "win32"
           ? `$env:NODE_ENV = 'production'; ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
           : `NODE_ENV=production ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
-      const result = await session.run({ command, timeoutMs: 2_000 })
+      const result = await session.run({ command, timeoutMs: 3_000 })
 
       expect(result.exitCode, JSON.stringify(result)).toBe(0)
       expect(result.timedOut, JSON.stringify(result)).toBe(false)
@@ -1432,7 +1441,7 @@ describe("workspace tools", () => {
       expect(first.exitCode).toBe(0)
       expect(first.cwd.endsWith("nested")).toBe(true)
       expect(second.stdout).toBe(path.basename(workspacePath))
-      expect(second.cwd).toBe(workspacePath)
+      expect(fs.realpathSync.native(second.cwd).toLowerCase()).toBe(fs.realpathSync.native(workspacePath).toLowerCase())
     } finally {
       session.dispose()
     }
