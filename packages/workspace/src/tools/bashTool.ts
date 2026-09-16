@@ -1010,8 +1010,8 @@ const makePowerShellAdapter = (platform: NodeJS.Platform, executable: string): S
   kind: "powershell",
   platform,
   executable,
-  interactiveArgs: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
-  runArgs: (command) => ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command || "exit 0"],
+  interactiveArgs: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+  runArgs: (command) => ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command || "exit 0"],
   quotePath: powerShellQuote,
   wrapCommand: ({ command, cwd, cwdMarker, doneMarker }) =>
     [

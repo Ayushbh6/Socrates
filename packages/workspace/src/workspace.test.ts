@@ -1373,7 +1373,7 @@ describe("workspace tools", () => {
       )
       const result = await session.run({ command })
 
-      expect(result.exitCode).toBe(0)
+      expect(result.exitCode, JSON.stringify(result)).toBe(0)
       expect(result.stdout).toContain("NODE_ENV=\n")
       expect(result.stdout).toContain("SOCRATES_HOME=\n")
       expect(result.stdout).toContain("OPENAI_API_KEY=\n")
@@ -1405,9 +1405,10 @@ describe("workspace tools", () => {
         process.platform === "win32"
           ? `$env:NODE_ENV = 'production'; ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
           : `NODE_ENV=production ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
-      const result = await session.run({ command })
+      const result = await session.run({ command, timeoutMs: 2_000 })
 
-      expect(result.exitCode).toBe(0)
+      expect(result.exitCode, JSON.stringify(result)).toBe(0)
+      expect(result.timedOut, JSON.stringify(result)).toBe(false)
       expect(result.stdout).toBe("production")
     } finally {
       session.dispose()
@@ -1423,7 +1424,7 @@ describe("workspace tools", () => {
         process.platform === "win32" ? "Set-Location nested; $env:SOCRATES_TEST = 'ok'; Get-Location" : "cd nested && export SOCRATES_TEST=ok && pwd"
       const secondCommand =
         process.platform === "win32"
-          ? 'Write-Output -NoNewline "$(Split-Path -Leaf (Get-Location))"'
+          ? '[Console]::Out.Write((Split-Path -Leaf (Get-Location)))'
           : 'printf "$(basename "$PWD")"'
       const first = await session.run({ command: firstCommand })
       const second = await session.run({ command: secondCommand })
@@ -1491,13 +1492,23 @@ describe("workspace tools", () => {
         return
       }
 
-      await wait(80)
+      let transcript = started.stdout
+      let nextOutputSequence = started.process?.nextOutputSequence ?? 0
+      for (let attempt = 0; attempt < 20 && !transcript.includes("Name?"); attempt += 1) {
+        await wait(50)
+        const readyOutput = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+        transcript += readyOutput.stdout
+        nextOutputSequence = readyOutput.process?.nextOutputSequence ?? nextOutputSequence
+      }
       session.writeProcessInput(processId, "Socrates\n")
-      await wait(120)
-      const output = await session.run({ operation: "output", processId, outputSequence: started.process?.nextOutputSequence ?? 0, charLimit: 20_000 })
+      let output = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+      for (let attempt = 0; attempt < 20 && !output.stdout.includes("hello Socrates"); attempt += 1) {
+        await wait(50)
+        output = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+      }
       const status = await session.run({ operation: "status", processId })
 
-      expect(`${started.stdout}${output.stdout}`).toContain("Name?")
+      expect(transcript).toContain("Name?")
       expect(output.stdout).toContain("hello Socrates")
       expect(status.process?.status).toBe("exited")
     } finally {
