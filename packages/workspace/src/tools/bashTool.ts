@@ -718,6 +718,21 @@ const loadPty = (): Promise<typeof import("@homebridge/node-pty-prebuilt-multiar
 }
 
 const probeAdapter = async (adapter: ShellAdapter, cwd: string, env: NodeJS.ProcessEnv): Promise<void> => {
+  if (adapter.platform === "win32") {
+    try {
+      execFileSync(adapter.executable, adapter.runArgs("exit 0"), {
+        cwd,
+        env: buildWorkspaceCommandEnv(env, adapter.platform),
+        stdio: "ignore",
+        timeout: 3_000,
+        windowsHide: true,
+      })
+      return
+    } catch (error) {
+      throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+    }
+  }
+
   const pty = await spawnPtyChecked(adapter, adapter.runArgs("exit 0"), cwd, env, defaultCols, defaultRows)
   await new Promise<void>((resolve, reject) => {
     let settled = false
