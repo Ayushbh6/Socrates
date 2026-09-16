@@ -41,6 +41,7 @@ export class RetrievalStore {
     private readonly context: StoreContext,
     private readonly embeddings: EmbeddingStore,
     socratesHome: string,
+    private readonly includeV2Flow = true,
   ) {
     this.lance = new LanceDbIndex(path.join(socratesHome, "retrieval", "lance"))
   }
@@ -332,7 +333,7 @@ export class RetrievalStore {
       lastError: null,
     })
     try {
-      const traceRows = loadCanonicalTraceRows(this.context.handle, projectId)
+      const traceRows = loadCanonicalTraceRows(this.context.handle, projectId, undefined, this.includeV2Flow)
       const memoryRows = loadCanonicalMemoryRows(this.context.handle, projectId)
       const embedded = await this.attachVectors(projectId, [...traceRows, ...memoryRows])
       if (embedded.configFingerprint !== this.activeEmbeddingFingerprint(projectId)) {
@@ -548,7 +549,7 @@ export class RetrievalStore {
       }
       return
     }
-    const rows = loadCanonicalTraceRows(this.context.handle, projectId, turnId)
+    const rows = loadCanonicalTraceRows(this.context.handle, projectId, turnId, this.includeV2Flow)
     const embedded = await this.attachVectors(projectId, rows)
     if ((state.embeddingFingerprint ?? undefined) !== embedded.configFingerprint) {
       this.enqueueRebuild(projectId, "embedding_configuration_changed")
@@ -612,12 +613,16 @@ export class RetrievalStore {
 
   private async refreshCounts(projectId: string, tableName: string): Promise<void> {
     const counts = await this.lance.counts(tableName)
-    const traceParents = this.context.handle.sqlite.prepare(
-      `SELECT
-         (SELECT COUNT(DISTINCT id) FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled'))
-         +
-         (SELECT COUNT(DISTINCT id) FROM v2_turns WHERE project_id = ? AND status IN ('completed','failed','cancelled')) AS count`,
-    ).get(projectId, projectId) as { count: number }
+    const traceParents = this.includeV2Flow
+      ? this.context.handle.sqlite.prepare(
+        `SELECT
+           (SELECT COUNT(DISTINCT id) FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled'))
+           +
+           (SELECT COUNT(DISTINCT id) FROM v2_turns WHERE project_id = ? AND status IN ('completed','failed','cancelled')) AS count`,
+      ).get(projectId, projectId) as { count: number }
+      : this.context.handle.sqlite.prepare(
+        "SELECT COUNT(DISTINCT id) AS count FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled')",
+      ).get(projectId) as { count: number }
     const memoryParents = new Set(loadCanonicalMemoryRows(this.context.handle, projectId).map((row) => row.parentId)).size
     this.writeState(projectId, { traceParents: traceParents.count, traceChunks: counts.traceChunks, memoryParents, memoryChunks: counts.memoryChunks })
   }

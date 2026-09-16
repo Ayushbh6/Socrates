@@ -19,12 +19,12 @@ export class TurnStore extends StoreBase {
 
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
     const conversation = this.mustGetConversationRow(projectId, conversationId)
-    const seamlessBridge = this.handle.db.select().from(v2ClassicConversationBridges)
+    const compatibilityBridge = this.handle.db.select().from(v2ClassicConversationBridges)
       .where(eq(v2ClassicConversationBridges.conversationId, conversationId)).limit(1).get()
-    if (seamlessBridge?.activeOwner === "v2") {
+    if (compatibilityBridge?.activeOwner === "v2") {
       throw new SocratesError(
-        "classic_focus_owned_by_seamless",
-        "This bridged focus is currently owned by Seamless View. Use Open in Classic from its Focus ledger before sending here.",
+        "classic_conversation_concurrent_writer",
+        "This conversation is being written by another Socrates runtime. Finish or stop that work, then restart stable Socrates before sending here.",
         { recoverable: true },
       )
     }

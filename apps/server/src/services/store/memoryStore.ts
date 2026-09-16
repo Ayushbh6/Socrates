@@ -143,6 +143,7 @@ type StandardEditFilesInput = Exclude<EditFilesToolInput, { editMode: "move" }>
 
 type MemoryStoreOptions = {
   socratesHome?: string
+  includeV2Flow?: boolean
   provider?: ModelProvider
   credentials?: ProviderCredentialResolver
   traceRetrieveGlobal?: (input: TraceRetrieveGlobalToolInput) => Promise<TraceRetrieveGlobalToolOutput> | TraceRetrieveGlobalToolOutput
@@ -1869,7 +1870,7 @@ export class MemoryStore extends StoreBase {
           LIMIT ?`,
       )
       .all(lastProcessedEventSequence, GLOBAL_MEMORY_AGENT_MAX_TURNS) as Array<Omit<GlobalTurnManifestRow, "runtimeKind">>
-    const v2Rows = this.handle.sqlite
+    const v2Rows = this.options.includeV2Flow === false ? [] : this.handle.sqlite
       .prepare(
         `SELECT COALESCE(MAX(re.sequence), t.ordinal) AS sequence,
                 t.project_id AS projectId,

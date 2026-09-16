@@ -19,7 +19,6 @@ export type ServerConfig = {
   dbPath: string
   port: number
   host: string
-  v2FlowEnabled: boolean
   legacyDevDbPath: string
 }
 
@@ -49,15 +48,11 @@ export const resolveSocratesDbPath = (env: NodeJS.ProcessEnv = process.env): str
   return path.join(resolveSocratesHome(env), "socrates.sqlite")
 }
 
-export const resolveV2FlowEnabled = (env: NodeJS.ProcessEnv = process.env): boolean =>
-  env.SOCRATES_V2_FLOW_ENABLED?.trim().toLowerCase() === "true"
-
 export const getServerConfig = (): ServerConfig => ({
   socratesHome: resolveSocratesHome(),
   dbPath: resolveSocratesDbPath(),
   port: Number(process.env.PORT ?? 4000),
   host: process.env.HOST ?? "127.0.0.1",
-  v2FlowEnabled: resolveV2FlowEnabled(),
   legacyDevDbPath,
 })
 

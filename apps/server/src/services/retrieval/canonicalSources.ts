@@ -37,7 +37,7 @@ type CanonicalMemorySectionRow = {
   updatedAt: string
 }
 
-export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string, turnId?: string): RetrievalIndexRow[] => {
+export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string, turnId?: string, includeV2Flow = true): RetrievalIndexRow[] => {
   const placeholders = INDEXED_TURN_STATUSES.map(() => "?").join(",")
   const conversationPlaceholders = VISIBLE_CONVERSATION_STATUSES.map(() => "?").join(",")
   const classicRows = handle.sqlite
@@ -74,7 +74,7 @@ export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string
     )
     .all(projectId, ...VISIBLE_CONVERSATION_STATUSES, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[]
 
-  const v2Rows = handle.sqlite
+  const v2Rows = includeV2Flow ? handle.sqlite
     .prepare(
       `WITH numbered_v2_turns AS (
          SELECT t.id AS turnId,
@@ -109,7 +109,7 @@ export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string
        ${turnId ? "WHERE nt.turnId = ?" : ""}
        ORDER BY nt.startedAt ASC`,
     )
-    .all(projectId, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[]
+    .all(projectId, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[] : []
 
   return [...classicRows, ...v2Rows].flatMap((row) => traceChunksForTurn(row))
 }

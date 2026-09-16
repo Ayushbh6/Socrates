@@ -692,7 +692,12 @@ export class V2FlowStore {
     return archived
   }
 
-  mirrorV2TurnToClassic(projectId: string, flowId: string, turnId: string): void {
+  mirrorV2TurnToClassic(
+    projectId: string,
+    flowId: string,
+    turnId: string,
+    options: { allowClassicOwner?: boolean } = {},
+  ): void {
     const turn = this.requireTurn(projectId, flowId, turnId)
     if (!turn.goalId || !turn.userMessageId || !turn.assistantMessageId || turn.status !== "completed") return
     const alreadyLinked = this.handle.db.select({ id: v2ClassicMessageLinks.id }).from(v2ClassicMessageLinks)
@@ -701,7 +706,7 @@ export class V2FlowStore {
     if (alreadyLinked) return
     const bridge = this.ensureClassicBridge(projectId, flowId, turn.goalId)
     const row = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.id, bridge.id)).limit(1).get()
-    if (!row || row.activeOwner !== "v2") return
+    if (!row || (!options.allowClassicOwner && row.activeOwner !== "v2")) return
     const user = this.handle.db.select().from(v2Messages).where(eq(v2Messages.id, turn.userMessageId)).limit(1).get()
     const assistant = this.handle.db.select().from(v2Messages).where(eq(v2Messages.id, turn.assistantMessageId)).limit(1).get()
     if (!user || !assistant) return
