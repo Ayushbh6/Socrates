@@ -566,16 +566,16 @@ Skill writing follows the same rule. The Memory Agent may decide that an approve
 
 Pre-made skill import is not skill writing and must not invoke the Skill Writer. Accept one portable ZIP only through staged preview and explicit user commit; parse standards-compatible YAML, preserve package files, never execute during inspection/install, never honor `allowed-tools` as approval, cap archive/extracted/file counts and sizes, reject traversal/symlinks/encryption/multiple roots/reserved provenance files, and install through atomic same-root replacement with rollback. Disabled skills must be excluded from model discovery while remaining visible to management UI.
 
-## 24. V1 Classic And V2 Flow Must Never Blur
+## 24. Stable Classic And V2 Flow Must Never Blur
 
-V1 Classic is the stable chat product. V2 Flow is a separately implemented, feature-flagged experimental product path defined by `context-files/V2_FLOW_ARCHITECTURE.md`.
+Classic is the only stable chat product. V2 Flow is separately preserved redesign work defined by `context-files/V2_FLOW_ARCHITECTURE.md`; it is not mounted, linked, or launched by the stable runtime.
 
 Required boundary:
 
 - Do not add V2 Goal Router, goals, goal capsules, goal state transitions, context dispositions, self-pruning policy, seamless Flow behavior, V2 speech jobs/artifacts, read-aloud, or V2 voice orchestration to the V1 chat path. The explicitly approved Classic microphone is narrower: it may call the shared transcriber adapters through the conversation-scoped temporary-STT route and append text to the unsent draft, but it must not auto-send or create `v2_*` state.
 - Do not migrate or reinterpret existing V1 conversations as V2 Flows.
 - Do not create hidden V1 conversation rows as foreign-key shims or put V2 ids into V1 conversation fields. The only allowed Classic write is the explicit one-focus/one-conversation bridge: V2-owned bridge/link rows may create or reuse one Classic conversation/session and mirror visible Q&A idempotently, while tools, evidence, usage, events, and orchestration remain V2-owned.
-- Keep V2 contracts, transport handlers, services, persistence, events, UI modules, and tests namespaced. A directly started source server is off unless `SOCRATES_V2_FLOW_ENABLED=true`; the ordinary NPM/runtime launcher defaults the packaged web/backend product to enabled and preserves an explicit environment rollback override.
+- Keep V2 contracts, transport handlers, services, persistence, events, UI modules, and tests namespaced. Stable server construction must not mount V2 HTTP/WebSocket routes, stable web routes must not expose Flow navigation, and the packaged launcher must not enable Flow. Historical V2 rows may be read only by the one-time Classic compatibility reconciliation.
 - Add V1 regression coverage with every V2 vertical slice so V2-off reads, writes, events, and behavior remain identical to current V1.
 - Reuse the same workspace `.socrates/`, global `~/.Socrates/`, Socrates agent, Memory Router, global Memory Agent, providers, embeddings, tools, ZIP skill import, MCP registry, Terminal, artifacts, runner, validation, usage, errors, and speech-engine plumbing where ownership remains safe.
 - Never reuse V1 orchestration policy as V2 policy merely to avoid a separate V2 module.

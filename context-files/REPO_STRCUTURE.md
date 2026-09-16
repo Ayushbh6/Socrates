@@ -119,9 +119,9 @@ Socrates/
 
 Root `scripts/` owns opt-in maintenance, packaging, benchmark, and evaluation entrypoints that are not application runtime modules; a package-specific runner may live under that package's `scripts/` directory when it needs package-owned dependencies. Evaluation fixtures and durable summarized findings live under a matching `evals/<name>/` directory. The Memory Router gate experiment follows this boundary: its runner lives outside server `src`, is invoked only by `pnpm eval:memory-router-gate`, uses a synthetic dataset, and records the rejected production decision in a report while raw provider result JSON is ignored. Nothing under that experiment is imported by the server, web app, CLI, or runtime archive.
 
-## Implemented V2 Flow Isolation
+## Preserved V2 Flow Isolation
 
-`V2_FLOW_ARCHITECTURE.md` defines the experimental product path that is implemented separately from V1 Classic while respecting the existing package boundaries.
+`V2_FLOW_ARCHITECTURE.md` defines redesign work preserved separately from stable Classic. Its modules remain namespaced for future work, but the stable server, web route tree, retrieval/memory runtime, and packaged launcher do not activate them.
 
 The implementation uses namespaced modules inside the owning packages:
 
@@ -150,7 +150,7 @@ packages/workspace
 
 There is no second provider layer, workspace layer, duplicate low-level tool set, or duplicate semantic index. V2 calls the same Socrates agent, provider/model catalog, workspace `.socrates/`, global `~/.Socrates/`, Memory Router/Memory Agent, tools, ZIP skill import, MCP registry, workspace operations, and LanceDB retrieval foundation through adapters. Canonical Flow Q&A rows carry `runtimeKind = "v2_flow"` plus `flowId`; raw inspect/audit remains V2-owned. The separate orchestration and contract path keeps V2 policy out of the V1 chat runtime; conversation-owned state uses the 29-table `v2_*` namespace. The only Classic write is the explicit one-focus/one-conversation bridge, which mirrors visible messages without duplicating runtime evidence. Goal titles and materiality-gated rich capsules are deterministic; the Goal Router may reuse the configured fast `title_generator` worker model selection, but V2 never invokes the Classic title-rewrite service or adds a capsule-writing model.
 
-A directly constructed source server resolves `SOCRATES_V2_FLOW_ENABLED` to false unless it is exactly `true`; only `/api/v2/capabilities` remains mounted to report availability. The ordinary NPM/runtime `scripts/runtime/launcher.mjs` passes an explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes Classic/Seamless and retains a rollback override. V1 behavior must continue to be regression-tested whenever V2 code changes.
+Stable server construction mounts no V2 route or socket, the stable web build has no `/seamless` route or Flow switch, and the packaged launcher sets no Flow flag. A one-time upgrade reconciliation may read completed historical V2 turns to recover their visible Q&A and return bridged conversations to Classic; normal stable operation then excludes V2 rows from retrieval and memory processing. Classic behavior must continue to be regression-tested whenever preserved V2 code changes.
 
 ## Package Responsibilities
 

@@ -4,7 +4,7 @@ This document is the handshake between the frontend and backend workstreams.
 
 Both sides must build against this contract. The backend owns persistence, agent execution, providers, tools, approvals, and WebSocket event emission. The frontend owns routes, screens, user interactions, rendering, local view state, and event presentation.
 
-The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the V1 Classic frontend/backend contract in human-readable form and records the implemented V2 Seamless Flow boundary. The complete V2 schemas live in the standalone `packages/contracts/src/v2Flow.ts` module; lifecycle policy lives in `V2_FLOW_ARCHITECTURE.md`.
+The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the stable Classic frontend/backend contract and records the boundary around preserved, non-shipping V2 Seamless redesign code. The V2 schemas remain in `packages/contracts/src/v2Flow.ts`; lifecycle design lives in `V2_FLOW_ARCHITECTURE.md`.
 
 ## Contract Goals
 
@@ -40,9 +40,9 @@ The contract must also stay expandable for later:
 
 Everything below remains the V1 Classic contract unless a section explicitly says otherwise.
 
-V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to V1 payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned persistence. Existing V1 clients continue to function without knowing V2 exists. The explicitly approved Classic microphone is a small conversation-scoped STT contract, not a V2 contract leak: it returns text for the existing unsent draft and creates no goal, Flow, V2 speech job, or V2 artifact.
+V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to Classic payloads and events. Stable server construction does not mount V2 handlers or subscriptions, stable web builds expose no Flow route or entry, and ordinary Classic operation does not read or write V2 state. Existing Classic clients function without knowing V2 exists. The Classic microphone is a small conversation-scoped STT contract: it returns text for the unsent draft and creates no goal, Flow, V2 speech job, or V2 artifact.
 
-`SOCRATES_V2_FLOW_ENABLED` is false for a directly constructed source server unless its value is exactly `true`. Direct source-server development must set it explicitly. The ordinary NPM/runtime-archive `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the project-scoped Seamless switch and retains an explicit rollback override.
+`SOCRATES_V2_FLOW_ENABLED` is not a stable runtime contract. The stable launcher does not set it, `/api/v2/*` and `/v2/ws` return not found, and `/seamless` is absent. The only permitted stable V2 access is the one-time upgrade reconciliation that recovers completed visible bridged Q&A and returns bridge ownership to Classic.
 
 The implemented V2 families include:
 

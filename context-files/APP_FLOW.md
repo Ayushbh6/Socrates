@@ -1,6 +1,6 @@
 # Socrates App Flow
 
-This document defines the V1 Classic product flow, route structure, and page responsibilities for Socrates. The implemented, feature-flagged V2 Seamless Flow first cut lives in `V2_FLOW_ARCHITECTURE.md` and must not be inferred from or inserted into the V1 routes below.
+This document defines the stable Classic product flow, route structure, and page responsibilities for Socrates. The preserved V2 Seamless redesign lives in `V2_FLOW_ARCHITECTURE.md` and must not be inferred from, inserted into, or mounted beside the stable routes below.
 
 Socrates is project-first. Users do not start with a floating global chat. They enter a project, use project resources and instructions, then create or resume conversations inside that project.
 
@@ -8,7 +8,7 @@ Socrates is project-first. Users do not start with a floating global chat. They 
 
 V1 Classic remains the default standalone product. It keeps project-scoped user-created conversations and `/projects/:projectId/chats/:conversationId` exactly as documented here.
 
-V2 Flow is a separate experimental Seamless web window/mode in the normal frontend/backend product. It has one persistent Flow per project, backend-managed goals, one foreground goal, parked goal capsules, self-pruning working context, and text/voice entry through the same bounded Goal Router. Its backend routes remain unmounted unless `SOCRATES_V2_FLOW_ENABLED=true`. The ordinary NPM/runtime launcher defaults that flag to `true`, while a direct source-server run must opt in explicitly. V2 uses namespaced routes/contracts/state and never silently reinterprets existing V1 chats.
+V2 Flow is not part of the stable frontend/backend product. Its namespaced code and historical database tables remain for separate redesign work, but stable builds expose no Flow routes, capability endpoint, WebSocket, navigation, or launcher flag. Upgrade startup performs one bounded compatibility action: recover completed visible bridged Q&A into Classic, return bridge ownership to Classic, and leave all historical V2 rows otherwise untouched.
 
 Both views use the same projects, primary workspace, workspace `.socrates/`, global `~/.Socrates/`, Socrates tools, MCP/skills/provider settings, Memory Router implementation, and global Memory Agent. V2 owns the Flow/goal router, goal-aware context policy, runtime transport, and `v2_*` persistence. See `V2_FLOW_ARCHITECTURE.md` for the complete inheritance boundary and current limitations.
 
@@ -41,7 +41,7 @@ open app
   -> if no onboarded user exists, go to /onboarding
   -> if onboarded user exists, Open Workspace goes to /projects
   -> open one Classic project dashboard
-  -> optionally use Go to Flow View for that same project
+  -> create or resume a conversation inside that project
 ```
 
 The first-run check should use local SQLite state, not browser-only local storage.
@@ -50,12 +50,12 @@ The local SQLite file defaults to `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME`
 
 ## Browser Development Launch Flow
 
-The primary dev-test and product path is the browser app plus normal backend. The supported packaged-product path is the same web frontend/backend, launched through the NPM CLI and downloaded runtime archive. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and supported release targets. Direct source-server development must set `SOCRATES_V2_FLOW_ENABLED=true` to expose Seamless; the packaged NPM/runtime launcher defaults it to `true` and accepts an explicit environment override for rollback.
+The primary dev-test and product path is the browser app plus normal Classic backend. The supported packaged-product path is the same web frontend/backend, launched through the NPM CLI and downloaded runtime archive. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and supported release targets.
 
 Development launch:
 
 ```text
-terminal 1: SOCRATES_V2_FLOW_ENABLED=true pnpm --filter @socrates/server dev
+terminal 1: pnpm --filter @socrates/server dev
   -> starts Fastify APIs and WebSockets on 127.0.0.1:4000
 
 terminal 2: pnpm --filter web dev
@@ -68,7 +68,7 @@ The server still owns the SQLite path. By default it stores durable data at `~/.
 
 ## Packaged Browser Launch Flow
 
-The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. `launcher.mjs` passes `SOCRATES_V2_FLOW_ENABLED = process.env.SOCRATES_V2_FLOW_ENABLED ?? "true"` to the backend, so Classic/Seamless is the normal packaged product default and an explicit value can disable it for rollback.
+The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify Classic backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. The launcher does not set or accept a stable Flow enablement default.
 
 npm CLI release flow:
 
@@ -88,7 +88,7 @@ The CLI fetches the latest GitHub Release runtime by default, so older published
 
 Release packaging is validated against the proven `pnpm@9.15.1` runtime-build path. The runtime release workflow recreates the tag release and uploads each runtime asset explicitly so stale partial drafts are discarded. The produced runtime archive still bundles Node v20.20.2. Local runtime archive builds may run on pnpm 10+; the builder detects that case and uses legacy deploy plus native build-script allowance only for the server deploy packaging step. GitHub Windows shell/runtime jobs should use `windows-2022` rather than `windows-latest` while Windows Server 2025 / VS 2026 trips `node-gyp` Visual Studio detection for native dependencies. Shell Tooling runs Windows install/typecheck plus contracts/workspace/core tests, while server PTY/WebSocket tests run on Ubuntu only because they assume POSIX bash/PTY behavior.
 
-Current runtime release target is `v0.1.19`. Its tag publishes the three GitHub runtime archives, and the launcher source is prepared as `@socrates-ai/cli@0.1.19` for the user's security-key-authenticated npm publish; the public npm registry remains on `0.1.18` until that manual step completes. Existing launcher versions still resolve the newest GitHub runtime by default. The v0.1.19 runtime preserves the v0.1.18 provider, retrieval, model-catalog, memory, MCP credential, standing-context, and packaging foundation, and adds bounded Memory Router failure telemetry, explicit one-way Frontier handover, hardened Terminal supervisor cleanup, plus the isolated V2 Seamless Flow first cut with its Goal Router, namespaced persistence, self-pruning context, immutable evidence, V2 trace retrieval, Classic bridge, shared shell/composer, Flow workspace notes, and shared speech foundation. Runtime construction removes the deployed server's checkout self-link, recursively strips environment files, rejects server links outside the runtime root, and fails final archive validation if any `.env*` entry remains. The packaged launcher enables Flow by default with an explicit rollback override. This is accelerated release evidence rather than a measured 24-hour unattended soak; full cross-platform archive results, large local speech-pack runs, accessibility automation, and extended reliability validation remain explicit follow-ups. The launcher prefers direct GitHub Release asset URLs before falling back to REST metadata so rate limits do not block public `npx` installs.
+The published baseline is `v0.1.19`; the production-repair candidate is `v0.1.20`, with `@socrates-ai/cli@0.1.20` prepared but not published without explicit user approval. The cancelled historical v0.1.20 workflow produced no release and no npm publication. Runtime construction removes the deployed server's checkout self-link, recursively strips environment files, rejects links outside the runtime root, and fails archive validation if any `.env*` entry remains. Each archive build now boots its bundled Node/backend/frontend against explicit disposable `SOCRATES_HOME` and `SOCRATES_DB_PATH`, checks the Classic welcome/health surface, and verifies the V2 capability route is absent. The launcher prefers direct GitHub Release asset URLs before falling back to REST metadata so rate limits do not block public `npx` installs.
 
 On packaged startup, the launcher chooses free localhost ports, starts the backend first, waits up to 180 seconds for `/health` so first-run retrieval reconciliation can finish, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, opens the browser, and exits both child services together.
 
