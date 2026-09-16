@@ -454,8 +454,9 @@ export class WorkspaceShellSession {
     let lastError: unknown
     for (const adapter of candidateAdapters(this.platform, this.env)) {
       try {
-        await probeAdapter(adapter, cwd, this.env)
-        return adapter
+        const resolvedAdapter = resolveWindowsAdapterExecutable(adapter, cwd, this.env)
+        await probeAdapter(resolvedAdapter, cwd, this.env)
+        return resolvedAdapter
       } catch (error) {
         lastError = error
       }
@@ -769,6 +770,36 @@ const probeAdapter = async (adapter: ShellAdapter, cwd: string, env: NodeJS.Proc
   })
 }
 
+const resolveWindowsAdapterExecutable = (adapter: ShellAdapter, cwd: string, env: NodeJS.ProcessEnv): ShellAdapter => {
+  if (adapter.platform !== "win32" || path.win32.isAbsolute(adapter.executable)) {
+    return adapter
+  }
+
+  try {
+    const output = execFileSync("where.exe", [adapter.executable], {
+      cwd,
+      env: buildWorkspaceCommandEnv(env, adapter.platform),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3_000,
+      windowsHide: true,
+    })
+    const executable = firstWindowsExecutablePath(output)
+    if (!executable || !path.win32.isAbsolute(executable)) {
+      throw new Error(`where.exe did not return an absolute path for ${adapter.executable}`)
+    }
+    return { ...adapter, executable }
+  } catch (error) {
+    throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+  }
+}
+
+const firstWindowsExecutablePath = (output: string): string | undefined =>
+  output
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find((value) => Boolean(value) && path.win32.isAbsolute(value))
+
 const spawnPtyChecked = async (
   adapter: ShellAdapter,
   args: string[],
@@ -858,7 +889,9 @@ const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): S
 export const __bashToolTest = {
   buildWorkspaceCommandEnv,
   candidateAdapters,
+  firstWindowsExecutablePath,
   normalizePtyTranscript,
+  resolveWindowsAdapterExecutable,
 }
 
 const makePosixAdapter = (platform: NodeJS.Platform, executable: string): ShellAdapter => {

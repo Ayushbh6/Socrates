@@ -1522,6 +1522,15 @@ describe("workspace tools", () => {
     expect(wrapped).toContain("__SOCRATES_DONE_test__")
   })
 
+  it("selects the first absolute Windows executable reported by where.exe", () => {
+    expect(
+      __bashToolTest.firstWindowsExecutablePath(
+        "notice that is not a path\r\nC:\\Program Files\\PowerShell\\7\\pwsh.exe\r\nC:\\Tools\\pwsh.exe\r\n",
+      ),
+    ).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+    expect(__bashToolTest.firstWindowsExecutablePath("pwsh.exe\r\n")).toBeUndefined()
+  })
+
   it("does not reuse a destroyed shell after startup failure", async () => {
     const workspacePath = tempDir()
     const missingBinPath = path.join(workspacePath, "missing-bin")
