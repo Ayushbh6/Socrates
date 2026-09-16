@@ -370,7 +370,7 @@ Discover goals and tasks in the SQL-backed ledger, search exact historical Q&A, 
   "query": "payment integration | optional",
   "entity": "goals | tasks | both | optional",
   "scope": "current_goal | all_goals | optional",
-  "status": "open | completed | superseded | any | optional",
+  "status": "active | paused | completed | any | optional",
   "from": "date | optional",
   "to": "date | optional",
   "match": "hybrid | exact | optional",
@@ -865,6 +865,7 @@ open_tasks:
 <CURRENT_TASK>
 title: Preserve large tool results in compaction
 objective: Ensure compaction never loses large tool results.
+completion_criteria: Every compacted result remains recoverable through a validated evidence reference.
 status: active
 note: Reviewed compaction. The remaining concern is preserving large tool results.
 </CURRENT_TASK>

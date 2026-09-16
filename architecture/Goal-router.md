@@ -95,6 +95,21 @@ Task: Fix homepage hero on mobile
 
 Message count must not determine the boundary. A task does not split merely because it reached twenty turns, but good scoping prevents unrelated work from accumulating inside it.
 
+### Goal and task lifecycle
+
+Goals and tasks use the same small lifecycle:
+
+```text
+active | paused | completed
+```
+
+- `active → paused`: the user switches away before the work is complete.
+- `paused → active`: the router resumes that goal or task.
+- `active → completed`: the Main Coding Agent proposes completion and the harness records it after validation.
+- `completed → active`: the user reopens the work; the user's decision is final.
+
+Only one task is normally active in Zen view. Automatic chat rollover does not pause or complete it: the same task remains active in a new continuation chat. Replacement is relationship metadata, not a lifecycle state; when applicable, `replaced_by: gN/tN` points to the successor while the replaced task remains paused or completed.
+
 ### Trivial and elliptical messages
 
 Most real traffic is short, unanchored, and elliptical. The resolution rules are:
@@ -118,11 +133,11 @@ The **`general` task** is the default home for trivial and conversational messag
 3. The current user message appears exactly once in the router request and is the final input block.
 4. History is budgeted by tokens, not by a hardcoded number of Q&A pairs.
 5. The router sees complete Q&A pairs wherever possible; a user message is never separated from its answer.
-6. The router only selects a workspace, a goal, and a task. It never writes goal progress, facts, files, capabilities, or task state.
+6. The router selects a workspace, goal, and task and, for newly created records, proposes their bounded definitions. It never writes storage, goal progress, facts, files, capabilities, or execution state.
 7. Exact history remains in storage even after it is compacted out of the model prompt.
 8. Internal goal and task identifiers are never shown to the model or the user. The router receives temporary labels such as `current` and `older_1`.
 9. The Main Coding Agent returns the continuation note together with its visible answer. No additional state-writing model call runs afterward.
-10. **Models propose, the harness disposes.** No LLM ever writes storage directly. Every model-produced field — the router's goal and task selection, the agent's continuation note, the compactor's checkpoint — passes through harness validation before it is persisted.
+10. **Models propose, the harness disposes.** No LLM ever writes storage directly. Every model-produced field — the router's goal/task selection and new definitions, the agent's continuation note, the compactor's checkpoint — passes through harness validation before it is persisted.
 11. **A goal belongs to exactly one workspace.** The binding is permanent. Workspace resolution piggybacks on goal resolution: resolving the goal resolves the workspace.
 12. **The router has exactly two tools, both harness-bounded.** `ledger_query` is read-only over the ledger, capped at three calls per routing decision. `ask_user` ends the routing run with one structured clarification question. Neither can touch files, terminals, or state.
 13. **Clarify is always constructive.** The `ask_user` schema requires a non-empty candidates list; the harness rejects a question without candidates. The only permitted empty-candidates clarify is the zero-history start, which uses an explicit schema flag.
@@ -327,9 +342,12 @@ The router returns strict structured data. It has exactly two tools — `ledger_
   "decision": "continue_current | resume_existing | create_new | compound",
   "goal_label": "current | older_1 | null",
   "new_goal_title": "string | null",
+  "new_goal_objective": "string | null",
   "task_decision": "continue_task | resume_task | create_task | null",
   "task_label": "current | task_1 | null",
   "new_task_title": "string | null",
+  "new_task_objective": "string | null",
+  "new_task_completion_criteria": "string | null",
   "workspace_confidence": "high | low",
   "parts": "array | null",
   "reason": "one short sentence"
@@ -340,9 +358,10 @@ The router returns strict structured data. It has exactly two tools — `ledger_
 
 Rules:
 
-- `continue_current`: `goal_label` must be `current`. `task_decision` is `continue_task` with `task_label: current` for an unanchored or same-subject message, or `create_task` with `new_task_title` when the message introduces a new bounded objective inside the current goal.
+- `continue_current`: `goal_label` must be `current`. `task_decision` is `continue_task` with `task_label: current` for an unanchored or same-subject message, or `create_task` with `new_task_title`, `new_task_objective`, and `new_task_completion_criteria` when the message introduces a new bounded objective inside the current goal.
 - `resume_existing`: `goal_label` must be one supplied older label, or `current` with `task_decision: resume_task` and a supplied task label when the message returns to a different task inside the current goal.
-- `create_new`: `new_goal_title` is populated and the other route-specific fields are null; the message starts the goal's first task. When no existing workspace plausibly owns the request, the harness resolves the workspace: general conversation and Q&A need no workspace; the first mutating action in an unowned request surfaces one lightweight workspace decision, following the same consequential-only questioning policy as anchors.
+- `create_new`: `new_goal_title` and `new_goal_objective` are populated. The message also starts the goal's first task, so `task_decision` is `create_task` and all three new-task definition fields are populated. When no existing workspace plausibly owns the request, the harness resolves the workspace: general conversation and Q&A need no workspace; the first mutating action in an unowned request surfaces one lightweight workspace decision, following the same consequential-only questioning policy as anchors.
+- `create_task`: the router must propose a bounded title, a one-line objective, and explicit completion criteria. The harness validates and persists them; the router never writes storage directly.
 - `clarify`: the router does not return a `clarification_question` field. It calls the `ask_user` tool instead, and its run ends there. See below.
 - `compound`: `parts` is populated and the other route-specific fields are null. Every part contains its exact sub-request, order, goal decision, task decision, reason, and optional dependency. Each part carries its own `workspace_confidence`, because parts may target different workspaces.
 - `workspace_confidence` is `low` whenever two or more workspaces were plausible and the router chose by recency. A `low` value arms the first-mutation gate described under "Workspace resolution."
@@ -362,7 +381,7 @@ The router is not a second agent: it has no file, terminal, or state tools, and 
   "workspace": "string | optional",
   "goal": "string | optional",
   "task": "string | optional",
-  "status": "open | completed | superseded | any | optional",
+  "status": "active | paused | completed | any | optional",
   "limit": "integer, default 10, cap 20"
 }
 ```
@@ -417,9 +436,12 @@ Example compound result:
   "decision": "compound",
   "goal_label": null,
   "new_goal_title": null,
+  "new_goal_objective": null,
   "task_decision": null,
   "task_label": null,
   "new_task_title": null,
+  "new_task_objective": null,
+  "new_task_completion_criteria": null,
   "workspace_confidence": null,
   "reason": "The request contains an existing GitHub action followed by a distinct dependent security review.",
   "parts": [
@@ -429,9 +451,12 @@ Example compound result:
       "decision": "resume_existing",
       "goal_label": "older_1",
       "new_goal_title": null,
+      "new_goal_objective": null,
       "task_decision": "continue_task",
       "task_label": "current",
       "new_task_title": null,
+      "new_task_objective": null,
+      "new_task_completion_criteria": null,
       "workspace_confidence": "high",
       "reason": "This action completes the known GitHub issue task.",
       "depends_on": []
@@ -442,9 +467,12 @@ Example compound result:
       "decision": "create_new",
       "goal_label": null,
       "new_goal_title": "Security review of issue #42 API changes",
+      "new_goal_objective": "Ensure the API surface changed for issue #42 is secure.",
       "task_decision": "create_task",
       "task_label": null,
       "new_task_title": "Audit issue #42 API endpoints for auth problems",
+      "new_task_objective": "Audit every endpoint changed for issue #42 for authentication and authorization defects.",
+      "new_task_completion_criteria": "Every changed endpoint is reviewed, findings are evidenced, and required remediations are identified.",
       "workspace_confidence": "high",
       "reason": "The security audit is a new durable outcome that depends on the GitHub fix.",
       "depends_on": [1]
@@ -506,9 +534,12 @@ The Goal Router itself returns:
   "decision": "resume_existing",
   "goal_label": "older_1",
   "new_goal_title": null,
+  "new_goal_objective": null,
   "task_decision": "create_task",
   "task_label": null,
   "new_task_title": "Complete the Day 10 lesson",
+  "new_task_objective": "Work through Day 10 of the German plan on dative prepositions in context.",
+  "new_task_completion_criteria": "The lesson and its planned practice are completed and reviewed.",
   "workspace_confidence": "high",
   "parts": null,
   "reason": "Today's lesson is a new task within the ongoing German-learning goal."
@@ -606,7 +637,29 @@ A new task begins with clean conversational history. It receives goal context an
 
 The ledger is the queryable index of everything that happened. It is not a document an LLM writes; it is a SQL-backed projection over the exact event log, and it stores references rather than copying exact content. Each task has one current projection plus append-only revisions that preserve every prior state.
 
-### The entry
+### The goal record
+
+```text
+GoalRecord
+  identity
+    goal_id            backend-assigned
+    goal_number        permanent global ordinal; rendered as gN
+    workspace_id       permanent binding once workspace-owned
+  definition
+    title              bounded goal title
+    objective          overarching durable outcome
+    status             active | paused | completed
+    replaced_by        optional gN relationship; never a lifecycle state
+  time
+    created_at          harness clock
+    updated_at          harness clock
+  pointers
+    anchors[]           validated durable goal sources
+```
+
+For a new goal, the Goal Router proposes `title` and `objective` in its routing result. The harness assigns identity and timestamps, validates the proposed definition, binds the workspace, and persists it. The agent may propose completion; the user can always pause, complete, reopen, rename, or correct the goal.
+
+### The task entry
 
 ```text
 LedgerEntry
@@ -619,11 +672,13 @@ LedgerEntry
   time
     started_at         harness clock, on task creation
     updated_at         harness clock, on each completed turn
-    completed_at       harness clock, on task completion (null while open)
+    completed_at       harness clock, on task completion (null until completed)
   what
     title              short task title (bounded)
-    objective          one line: the bounded outcome and completion point
-    status             open | completed | superseded
+    objective          one line: the bounded outcome
+    completion_criteria one line: how the outcome is known to be done
+    status             active | paused | completed
+    replaced_by        optional gN/tN relationship; never a lifecycle state
     continuation_note  verbatim from the Main Coding Agent's latest final result
   pointers
     exchange_refs      → exact user messages + visible responses in the event log
@@ -640,9 +695,9 @@ Rules:
 
 - **Append-only revisions, current projection.** Opening a task creates its first ledger revision. Each completed turn appends a new revision and atomically advances the task's current SQL projection; no prior revision is rewritten. A correction is a new turn or task, never a history rewrite.
 - **Models propose, the harness disposes.** The harness writes every field. Model-produced content — the router's goal and task binding, the agent's continuation note — passes through harness validation before it is persisted. No LLM ever writes storage directly, so nothing in the ledger can be corrupted by a hallucinating model.
-- **Bounded.** Title ≤ ~15 tokens, objective ≤ ~25 tokens, note ≤ ~100 tokens, derived lists capped. An entry is roughly 150–250 tokens, which is what makes retrieval arithmetic predictable.
+- **Bounded.** Title ≤ ~15 tokens, objective ≤ ~25 tokens, completion criteria ≤ ~35 tokens, note ≤ ~100 tokens, derived lists capped. An entry is roughly 150–285 tokens, which is what makes retrieval arithmetic predictable.
 - **No content duplication.** The entry holds pointers and one-line facts; the exact text lives only in the event log.
-- **Interrupted tasks still get entries.** A task cancelled mid-run is finalized by the harness with whatever note exists, or a mechanical "interrupted after N tool calls" fallback. "What was I in the middle of?" is exactly a notepad question, so a PA's notepad records interrupted work too.
+- **Interrupted tasks still get entries.** A task cancelled mid-run is paused by the harness with whatever note exists, or a mechanical "interrupted after N tool calls" fallback. "What was I in the middle of?" is exactly a notepad question, so a PA's notepad records interrupted work too.
 - **Task completion is proposed, recorded, and overridable.** The agent proposes completion in its final result; the harness records it; the user can always reopen the task naturally, and a reopened task continues under the same `task_id`.
 
 ### Ledger entries versus history checkpoints
@@ -814,6 +869,8 @@ The rule underneath this table is **models propose, the harness disposes**: ever
 | Exact user message | — | Harness, immediately on receipt |
 | Goal selection | Goal Router | Harness, after validating the label against supplied candidates |
 | Task selection (continue / resume / create) | Goal Router, in the same routing result | Harness, after validating the task label |
+| New goal title and objective | Goal Router, only for `create_new` | Harness, after validation and bounds |
+| New task title, objective, and completion criteria | Goal Router, only for `create_task` | Harness, after validation and bounds |
 | Short routing reason | Goal Router | Harness, in the same routing result |
 | Workspace binding | Derived from the goal binding | Harness |
 | Exact assistant messages | — | Harness |
@@ -1090,9 +1147,12 @@ The notepad shows all three, so the router does not guess on a mutating request.
   "decision": "resume_existing",
   "goal_label": "older_1",
   "new_goal_title": null,
+  "new_goal_objective": null,
   "task_decision": "continue_task",
   "task_label": "current",
   "new_task_title": null,
+  "new_task_objective": null,
+  "new_task_completion_criteria": null,
   "workspace_confidence": "high",
   "parts": null,
   "reason": "The user selected Website X from the enumerated candidates."
