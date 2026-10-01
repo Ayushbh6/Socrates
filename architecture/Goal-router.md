@@ -300,12 +300,7 @@ This is the exact current query. It appears once, after both context sections, a
 
 ### Recent-history token budget
 
-The initial router-history budget is the smaller of:
-
-- `20,000` tokens; or
-- `15%` of the selected model's context window.
-
-For example, a 128k model receives roughly 19k tokens of recent Q&A, while a 32k model receives roughly 4.8k.
+The router-history budget is a fixed `20,000` tokens. Like every budget in Socrates, it is an absolute number under the universal `180,000`-token ceiling defined in `agent-harness.md` ("Token budget and trigger points") and never a percentage of the served model's context window.
 
 The harness builds `RECENT_EXACT_HISTORY` as follows:
 
@@ -316,7 +311,7 @@ The harness builds `RECENT_EXACT_HISTORY` as follows:
 5. Never include the current user message inside recent history.
 6. If the newest single exchange exceeds the entire budget, include a clearly marked bounded excerpt and retain the complete exchange in storage.
 
-The formula scales automatically with the selected model's context window. The architecture must not encode “last three messages” or another fixed pair count.
+The budget is measured in tokens. The architecture must not encode “last three messages” or another fixed pair count.
 
 ## Router output
 

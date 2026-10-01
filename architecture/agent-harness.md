@@ -558,7 +558,7 @@ The backend enforces one aggregate output bound for every `context_retrieve` act
 
 - `2,000` lines;
 - `50 KiB` of UTF-8 text;
-- `5%` of the selected model's context window; or
+- `9,000` tokens (5% of the universal `180,000`-token ceiling); or
 - the remaining safe tool-output allowance for the current model request.
 
 The agent cannot request raw output, set its own token allowance, use offsets to reconstruct an unbounded dump, or disable truncation. For an oversized inspection, the backend prioritizes turn identity, the user message, the visible final response, a compact tool-call inventory, and bounded beginning-and-end excerpts. Every omission is explicit and receives a short evidence reference such as `e1`. Inspecting that reference is bounded again by the same policy, so repeated calls never unlock a single unrestricted dump.
@@ -974,7 +974,9 @@ Large tool outputs may be replaced in the active prompt by a short result plus a
 
 ### Token budget and trigger points
 
-Compaction is governed by one universal, model-independent budget. The harness does not scale its budget to the served model's context window; a fixed ceiling gives one compaction implementation, one test suite, and consistent cost behavior across providers.
+Compaction is governed by one universal, model-independent budget. The harness does not scale its budget to the served model's context window; a fixed ceiling gives one compaction implementation, one test suite, and consistent cost behavior across providers. Practical agent quality is best between roughly 180k and 250k tokens of context regardless of the advertised window, so a larger window is never used beyond the ceiling.
+
+Every token number in either architecture document is an absolute value under this ceiling. No budget, bound, or allowance is expressed as a percentage of the served model's context window. Consequently, Socrates supports only models whose context window is at least `200,000` tokens, which leaves room for the `180,000`-token ceiling plus output.
 
 | Value | Meaning |
 |---|---|
