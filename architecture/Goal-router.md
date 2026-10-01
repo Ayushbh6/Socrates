@@ -111,6 +111,8 @@ The **recency default** is the workhorse rule of the task layer: unanchored mess
 
 The **`general` task** is the default home for trivial and conversational messages that have no task anchor. A first message that is trivial ("hi, how are you?") creates the `general` task under a `general` goal. An unrelated aside mid-task ("who won the UFC fight?") goes to the `general` task — it neither pollutes the working task's transcript nor spawns a named task. A thematically attached aside ("so what file is this?" during a file task) stays in the current task.
 
+There is exactly one general goal, holding exactly one general task. The router selects it with the reserved goal label `general` (task fields null); the harness creates both on first use. The general goal has no workspace, and its task is never compacted into or mixed with any real task's history.
+
 ## Non-negotiable rules
 
 1. Routing happens once, before the working-agent loop. The router makes two decisions in that one run: which goal, and which task inside that goal.
@@ -277,7 +279,8 @@ One flow spans all workspaces: the section is chronological across workspace swi
 This section is assembled separately. It contains:
 
 1. the current goal, always, when one exists, with a small index of its open and recently completed tasks (label, title, status); and
-2. up to three older goal candidates found by hybrid retrieval over every saved goal title, goal note, task continuation note, and lightweight anchor manifest. Each older candidate carries a small task index too: its most recently updated task, labelled `latest`, and up to two other open tasks.
+2. up to three older goal candidates found by hybrid retrieval over every saved goal title, goal note, task continuation note, and lightweight anchor manifest. Each older candidate carries a small task index too: its most recently updated task, labelled `latest`, and up to two other open tasks. When fewer than three goals match the message, the remaining slots are filled with the goals most recently active in the last seven days, so vague temporal references ("the project from yesterday") still see them; and
+3. the general goal, labelled `general`, unless it is already the current goal.
 
 Hybrid retrieval initially combines:
 
@@ -340,6 +343,7 @@ Rules:
 - `continue_current`: `goal_label` must be `current`. `task_decision` is `continue_task` with `task_label: current` for an unanchored or same-subject message, or `create_task` with `new_task_title` when the message introduces a new bounded objective inside the current goal.
 - `resume_existing`: either `goal_label: current` with `task_decision: resume_task` and a listed task label other than `current`, when the message returns to an earlier task of the current goal; or an older goal (`older_N`, or a `gN` selector returned by `ledger_query`) with `task_decision: resume_task` and one of that goal's task labels (`latest`, `task_N`, or a `gN/tN` selector returned by `ledger_query`), or `create_task` with `new_task_title`. `continue_task` is valid only for the current task of the current goal.
 - `create_new`: `new_goal_title`, `task_decision: create_task`, and `new_task_title` are populated, and `goal_label` and `task_label` are null; the message starts the new goal's first task. When no existing workspace plausibly owns the request, the harness resolves the workspace: general conversation and Q&A need no workspace; the first mutating action in an unowned request surfaces one lightweight workspace decision, following the same consequential-only questioning policy as anchors.
+- `general`: `goal_label: "general"` with all task fields null routes the message to the single general task. It is valid with `continue_current` when the general goal is current, otherwise with `resume_existing`; it is never `create_new`, because the harness creates the general goal on first use.
 - `clarify`: the router does not return a `clarification_question` field. It calls the `ask_user` tool instead, and its run ends there. See below.
 - `compound`: `parts` is populated and the other route-specific fields are null. Every part contains its exact sub-request, order, goal decision, task decision, reason, and optional dependency. Each part carries its own `workspace_confidence`, because parts may target different workspaces.
 - `workspace_confidence` is `low` whenever two or more workspaces were plausible and the router chose by recency. A `low` value arms the first-mutation gate described under "Workspace resolution."
@@ -409,7 +413,8 @@ Schema rules, enforced by the harness:
 - `zero_history: true` is the one permitted empty-candidates form, used only when the ledger contains no activity at all: "I don't have any past sessions on this — shall we start it as new work?"
 - `allow_new` offers "none of these — start something new" as an explicit choice, so the user can reject the entire shortlist without the router guessing again.
 - The question is rendered as a normal assistant message; the UI renders candidates as selectable chips. The user's answer — whether a chip, a free-text reply, or "none of these" — re-enters the router as a normal message and resolves trivially because the candidates are now in recent history.
-- `ask_user` may be called at most once per routing decision. After the user answers, the router re-runs with the answer in context and must return a decision — it cannot ask again in the same task. If the answer is still ambiguous, the fallback ladder applies (see "The backend validates this result").
+- `ask_user` may be called at most once per routing decision. After the user answers, the router re-runs with the answer in context and must return a decision: the harness withdraws `ask_user` from that run and adds a short routing note saying so. If the answer is still ambiguous, the fallback ladder applies (see "The backend validates this result").
+- The question and its user message are stored as a completed exchange that belongs to no goal or task. It receives a `project_turn` number and appears in `RECENT_EXACT_HISTORY` (tagged as a routing clarification) so the answer resolves against the enumerated candidates, but it never enters any task's chat history.
 
 This replaces the free-text `clarification_question` field in the router output schema. The clarify outcome is expressed as a tool call, not a JSON field, which lets the schema enforce the constructive-clarify rule mechanically instead of trusting the model to comply.
 
@@ -463,6 +468,8 @@ The backend validates this result. One repair attempt is allowed for invalid str
 - otherwise ask the user which subject they mean.
 
 ### Router model deployment
+
+The Goal Router is the first phase of every Socrates turn, with its own system prompt and its own two tools; the working agent is the second phase. Which model runs routing is a setting with three values: a small, fast model from the agent's provider (the default), the same model as the agent, or a specific model chosen by the user. The routing contract is identical in every case.
 
 The Goal Router runs on a small, fast model tier by default. The routing task is bounded — pick from at most four candidates plus current, output strict JSON — and a small model handles it well when the input is well-constructed, which is exactly what the pre-rendered sections and `ledger_query` provide. Routing correctness is first-class: a brilliant agent run in the wrong goal produces confidently wrong work, so routing quality is treated as equal to or greater than agent quality.
 
@@ -879,7 +886,7 @@ This preserves the product illusion of one seamless conversation while giving ev
 
 ## Q1-Q12 validation sequence
 
-These natural user messages are the baseline routing test. They must be kept as an architecture fixture when the router is implemented.
+These natural user messages are the baseline routing test. They are kept as an executable fixture in `packages/router/eval/fixtures.ts`: an oracle replay test proves each expected decision is valid in the exact context the router sees, and `pnpm eval:router` grades a live model on the same messages.
 
 Under the goal/task/chat model, Q2–Q10 are **tasks** — bounded pieces of work inside one durable `Socrates development` goal in the `socrates` workspace. Q2–Q4 are one task, Q5–Q6 another, and so on. Each row tests both decisions the router makes: which goal owns the message, and which task inside it. Q11–Q12 test workspace resolution in a separate scenario.
 
@@ -900,7 +907,7 @@ Expected movement:
 
 | Query | Goal decision | Task decision | Selected task |
 |---|---|---|---|
-| Q1 | `create_new` (goal: general) | `create_task` | the `general` task |
+| Q1 | `resume_existing` (goal: general) | — | the `general` task |
 | Q2 | `create_new` (goal: Socrates development) | `create_task` | Review Socrates memory system |
 | Q3 | `continue_current` | `continue_task` | Review Socrates memory system |
 | Q4 | `continue_current` | `continue_task` | Review Socrates memory system |
@@ -924,7 +931,12 @@ None
 </RECENT_EXACT_HISTORY>
 
 <KNOWN_GOALS>
+CURRENT
 None
+
+GENERAL
+label: general
+title: General conversation — greetings, small talk, and unrelated quick questions with no task anchor
 </KNOWN_GOALS>
 
 <CURRENT_USER_MESSAGE>
@@ -932,7 +944,7 @@ Hi, how are you?
 </CURRENT_USER_MESSAGE>
 ```
 
-Result: `create_new` (goal: general) — the `general` task.
+Result: `resume_existing` with `goal_label: general` — the harness creates the general goal and task on first use.
 
 The Main Coding Agent answers normally and saves a continuation note such as `No technical work is active.` With no prior activity, its `<RECENT_ACTIVITY>` block is empty, so it offers no recap.
 
@@ -1096,7 +1108,7 @@ A variant worth testing: Q12' — the user answers "actually, something new." Wi
 
 ## T1-T10 task-boundary validation sequence
 
-Goal routing (Q1–Q12) decides *which goal* owns a message. Task routing decides *which chat inside that goal* owns it. This is the higher-risk decision — too eager and Standard view fills with micro-chats; too lazy and tasks bloat into the long-task problem. These fixtures must be kept alongside Q1–Q12.
+Goal routing (Q1–Q12) decides *which goal* owns a message. Task routing decides *which chat inside that goal* owns it. This is the higher-risk decision — too eager and Standard view fills with micro-chats; too lazy and tasks bloat into the long-task problem. These fixtures live alongside Q1–Q12 in `packages/router/eval/fixtures.ts`.
 
 All T-fixtures assume the current goal is `Andy Website development`:
 
