@@ -31,7 +31,8 @@ export const RoutePart = z.object({
   request: z.string().trim().min(1),
   decision: PartDecision,
   goal_label: z.string().nullable(),
-  new_goal_title: Title.nullable(),
+  /** Only a part that creates a goal uses it; omitted means null. */
+  new_goal_title: Title.nullable().optional(),
   task_decision: TaskDecision.nullable(),
   task_label: z.string().nullable(),
   new_task_title: Title.nullable(),
@@ -45,7 +46,8 @@ export const RoutePart = z.object({
   /** Explicit status change when resuming a completed task; questions leave it completed. */
   reopen_task: z.boolean().nullable().optional(),
   reason: Reason,
-  depends_on: z.array(z.number().int().min(1)),
+  /** Earlier part orders this part needs. Part 1 may omit it; the validator requires it on every later part. */
+  depends_on: z.array(z.number().int().min(1)).optional(),
 });
 export type RoutePart = z.infer<typeof RoutePart>;
 

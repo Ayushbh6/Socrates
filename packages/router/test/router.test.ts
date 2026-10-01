@@ -133,12 +133,12 @@ describe("validation, repair, escalation, and fallback", () => {
     const { store } = setup();
     await exchange(store, "Review the memory system", createGoal("Socrates development", "Review memory system"));
     const { router, routerModel } = routerWith(store, [
-      { text: decision({ decision: "resume_existing", goal_label: "current", task_decision: "create_task", new_task_title: "X", ...defineTask("X") }) },
+      { text: decision({ decision: "resume_existing", goal_label: "current", task_decision: "continue_task", task_label: "current" }) },
       { text: "not json at all" },
     ]);
     const result = await router.route("new thing");
     const repair = routerModel.requests[1]!.messages.at(-1)!.content as string;
-    expect(repair).toContain("continue_current with create_task");
+    expect(repair).toContain("continue_task is valid only for the current task");
     // Second failure with no main model falls back to the one clearly current goal.
     expect(result.kind === "routed" && result.fallback).toBe("continue_current");
   });

@@ -215,3 +215,66 @@ describe("router-proposed task definitions", () => {
     expect(store.listGoals().length).toBe(goalsBefore);
   });
 });
+
+describe("equivalent labels that select the same target", () => {
+  it("accepts a first-message greeting as continue_current to general with a stray workspace confidence", async () => {
+    const { store } = setup();
+    const { router, routerModel } = routerWith(store, [{ text: decision({ decision: "continue_current", goal_label: "general", workspace_confidence: "low" }) }]);
+    const result = await router.route("Hi, how are you?");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(result.fallback).toBeNull();
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts[0]!.goal.general).toBe(true);
+    expect(result.parts[0]!.turn.gateArmed).toBe(false);
+  });
+
+  it("still rejects a general route that tries to create a task", async () => {
+    const { store } = setup();
+    const bad = { text: decision({ decision: "resume_existing", goal_label: "general", task_decision: "create_task", new_task_title: "Chat", ...defineTask("Chat") }) };
+    const { router, routerModel } = routerWith(store, [bad, general()]);
+    const result = await router.route("Hi, how are you?");
+    expect(routerModel.requests).toHaveLength(2);
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(result.parts[0]!.goal.general).toBe(true);
+  });
+
+  it("accepts resume_existing with create_task in the current goal", async () => {
+    const { store } = setup();
+    const first = await exchange(store, "Review memory", createGoal("Socrates development", "Review memory"));
+    if (first.kind !== "routed") throw new Error("Expected route");
+    const step = { text: decision({ decision: "resume_existing", goal_label: "current", task_decision: "create_task", new_task_title: "Audit endpoints", ...defineTask("Audit endpoints") }) };
+    const { router, routerModel } = routerWith(store, [step]);
+    const result = await router.route("Now audit the endpoints.");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts[0]!.goal.id).toBe(first.parts[0]!.goal.id);
+    expect(result.parts[0]!.created.task).toBe(true);
+  });
+
+  const compoundPart = (order: number, request: string, dependsOn?: number[]) => ({
+    order, request, decision: "continue_current", goal_label: "current", task_decision: "create_task",
+    task_label: null, new_task_title: request, ...defineTask(request), workspace_confidence: "high", reason: "separate work",
+    ...(dependsOn ? { depends_on: dependsOn } : {}),
+  });
+
+  it("lets part 1 omit depends_on and every part omit new_goal_title", async () => {
+    const { store } = setup();
+    await exchange(store, "Review memory", createGoal("Socrates development", "Review memory"));
+    const parts = [compoundPart(1, "Redesign logo"), compoundPart(2, "create pricing page", [1])];
+    const { router, routerModel } = routerWith(store, [{ text: decision({ decision: "compound", workspace_confidence: null, parts: parts as never }) }]);
+    const result = await router.route("Redesign logo, then create pricing page");
+    if (result.kind !== "routed") throw new Error("Expected route");
+    expect(routerModel.requests).toHaveLength(1);
+    expect(result.parts.map((p) => p.dependsOn)).toEqual([[], [1]]);
+  });
+
+  it("requires a later part to state its dependencies", async () => {
+    const { store } = setup();
+    await exchange(store, "Review memory", createGoal("Socrates development", "Review memory"));
+    const missing = [compoundPart(1, "Redesign logo"), compoundPart(2, "create pricing page")];
+    const { router, routerModel } = routerWith(store, [{ text: decision({ decision: "compound", workspace_confidence: null, parts: missing as never }) }, continueTask()]);
+    await router.route("Redesign logo, then create pricing page");
+    const repair = routerModel.requests[1]!.messages.at(-1)!.content as string;
+    expect(repair).toContain("part 2: depends_on is required");
+  });
+});

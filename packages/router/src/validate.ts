@@ -116,9 +116,12 @@ export function resolveDecision(
       const requestStart = original.indexOf(p.request, requestEnd);
       if (requestStart < 0) errors.push(`part ${p.order}: request must be an exact, ordered sub-request from the original user message (copy its case and punctuation). Invalid request: ${JSON.stringify(p.request)}`);
       else requestEnd = requestStart + p.request.length;
-      if (new Set(p.depends_on).size !== p.depends_on.length) errors.push(`part ${p.order}: dependencies must be unique.`);
+      const deps = p.depends_on ?? [];
+      // Part 1 cannot depend on anything; a later part must say whether it needs earlier evidence.
+      if (p.depends_on === undefined && p.order > 1) errors.push(`part ${p.order}: depends_on is required: list the earlier part orders it needs, or [] when it is independent.`);
+      if (new Set(deps).size !== deps.length) errors.push(`part ${p.order}: dependencies must be unique.`);
       if (p.order !== i + 1) errors.push(`parts must be numbered 1..${parts.length} without gaps; found order ${p.order}.`);
-      for (const dep of p.depends_on) {
+      for (const dep of deps) {
         if (dep >= p.order) errors.push(`part ${p.order} may depend only on earlier parts; found depends_on ${dep}.`);
       }
     });
@@ -227,9 +230,10 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
       decision: part.decision,
       taskDecision: part.task_decision,
       target,
-      workspaceConfidence: part.workspace_confidence ?? "high",
+      // General conversation has no workspace, so a confidence the model supplied there cannot arm the mutation gate.
+      workspaceConfidence: target.kind === "general" ? "high" : part.workspace_confidence ?? "high",
       reopenTask: part.reopen_task === true,
-      dependsOn: part.depends_on,
+      dependsOn: part.depends_on ?? [],
       reason: part.reason,
     },
   });
@@ -238,28 +242,28 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
   const goalLabel = norm(part.goal_label);
   const taskLabel = norm(part.task_label);
 
-  // The general route: greetings, small talk, and unrelated asides.
+  // The general route: greetings, small talk, and unrelated asides. continue_current and resume_existing
+  // reach the same single general task, and general conversation has no workspace, so neither the goal
+  // decision nor workspace_confidence is checked here; any field that would select or create a task is.
   if (goalLabel === "general" || (goalLabel === "current" && ctx.current?.goal.general)) {
     if (part.decision === "create_new") return fail("create_new cannot target the general goal; use goal_label general with continue_current or resume_existing.");
     if (
       part.task_decision !== null ||
       part.task_label !== null ||
       part.new_task_title !== null ||
-      part.new_goal_title !== null ||
+      part.new_goal_title != null ||
       part.new_goal_objective != null ||
       part.new_task_objective != null ||
       part.new_task_completion_criteria != null ||
-      part.workspace_confidence !== null ||
       part.reopen_task != null
     ) {
-      return fail("general requires all task fields, new-goal and new-task definitions, and workspace_confidence null.");
+      return fail("general requires all task fields and new-goal and new-task definitions null.");
     }
-    if (part.decision === "continue_current" && !ctx.current?.goal.general) return fail("continue_current to general requires the general goal to be current; use resume_existing.");
     return done({ kind: "general" });
   }
 
   if (part.workspace_confidence === null) return fail("A work route requires workspace_confidence high or low.");
-  if (part.decision !== "create_new" && part.new_goal_title !== null) return fail("new_goal_title must be null unless creating a new goal.");
+  if (part.decision !== "create_new" && part.new_goal_title != null) return fail("new_goal_title must be null unless creating a new goal.");
   if (part.task_decision === "create_task" && part.task_label !== null) return fail("create_task requires task_label null.");
   if (part.task_decision !== "create_task" && part.new_task_title !== null) return fail("new_task_title must be null unless creating a new task.");
   if (part.decision !== "create_new" && part.new_goal_objective != null) return fail("new_goal_objective must be null unless creating a new goal.");
@@ -317,8 +321,8 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
       if (part.task_decision === "continue_task") {
         return fail("continue_task is valid only for the current task of the current goal (continue_current). Use resume_task or create_task.");
       }
+      // A new task in the current goal is canonically continue_current; resume_existing reaches the same goal and is accepted.
       if (part.task_decision === "create_task") {
-        if (isCurrentGoal) return fail("A new task in the current goal is continue_current with create_task, not resume_existing.");
         if (!part.new_task_title) return fail("create_task requires new_task_title.");
         const def = definition();
         if (!def) return fail(missingDefinition);
