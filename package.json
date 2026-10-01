@@ -1,0 +1,21 @@
+{
+  "name": "socrates",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
+    "test:watch": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest",
+    "eval:router": "NODE_OPTIONS=--disable-warning=ExperimentalWarning tsx packages/router/eval/run-router-eval.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  }
+}

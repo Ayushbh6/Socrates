@@ -1,0 +1,197 @@
+import { fixedClock } from "@socrates/shared";
+import { beforeEach, describe, expect, it } from "vitest";
+import { LedgerStore, parseGoalSelector, parseTaskSelector, renderLedgerRow, runLedgerQuery, toFtsQuery } from "../src";
+
+const TZ = "UTC";
+
+function openStore() {
+  const clock = fixedClock("2026-09-01T10:00:00Z");
+  return { store: LedgerStore.open({ path: ":memory:", clock }), clock };
+}
+
+describe("event log", () => {
+  it("is append-only", () => {
+    const { store } = openStore();
+    const event = store.recordUserMessage("hello");
+    expect(() => store.db.exec(`UPDATE events SET type = 'x' WHERE id = '${event.id}'`)).toThrow(/append-only/);
+    expect(() => store.db.exec(`DELETE FROM events WHERE id = '${event.id}'`)).toThrow(/append-only/);
+    expect(store.getEvent(event.id)?.payload).toEqual({ text: "hello" });
+  });
+
+  it("rolls back every write of a failed transaction", () => {
+    const { store } = openStore();
+    const before = store.listEvents().length;
+    expect(() =>
+      store.transaction(() => {
+        store.createGoal({ title: "Doomed" });
+        throw new Error("boom");
+      }),
+    ).toThrow("boom");
+    expect(store.listEvents().length).toBe(before);
+    expect(store.listGoals()).toHaveLength(0);
+  });
+});
+
+describe("ledger", () => {
+  let store: LedgerStore;
+  let clock: ReturnType<typeof fixedClock>;
+  beforeEach(() => ({ store, clock } = openStore()));
+
+  it("numbers goals globally and tasks per goal", () => {
+    const g1 = store.createGoal({ title: "Website" });
+    const g2 = store.createGoal({ title: "German" });
+    const t1 = store.createTask(g1.id, { title: "Hero" });
+    const t2 = store.createTask(g1.id, { title: "Nav" });
+    const t3 = store.createTask(g2.id, { title: "Day 1" });
+    expect([g1.number, g2.number]).toEqual([1, 2]);
+    expect([t1.number, t2.number, t3.number]).toEqual([1, 2, 1]);
+  });
+
+  it("appends a revision for every task change and keeps prior revisions", () => {
+    const goal = store.createGoal({ title: "Website" });
+    const task = store.createTask(goal.id, { title: "Hero", objective: "Fix the hero on mobile." });
+    store.reviseTask(task.id, { continuationNote: "Heading reduced." });
+    const done = store.reviseTask(task.id, { status: "completed", continuationNote: "Verified at 375px." });
+    expect(done.revision).toBe(3);
+    expect(done.completedAt).not.toBeNull();
+    expect(store.listTaskRevisions(task.id).map((r) => r.continuationNote)).toEqual([null, "Heading reduced.", "Verified at 375px."]);
+    expect(() => store.db.exec("DELETE FROM task_revisions")).toThrow(/append-only/);
+  });
+
+  it("keeps goal-note history", () => {
+    const goal = store.createGoal({ title: "German" });
+    store.reviseGoalNote(goal.id, "Toward B1.");
+    const g = store.reviseGoalNote(goal.id, "Toward B1. Day 9 done.");
+    expect(g.note).toBe("Toward B1. Day 9 done.");
+    expect(store.listGoalNoteRevisions(goal.id).map((r) => r.revision)).toEqual([1, 2]);
+  });
+
+  it("binds a workspace permanently", () => {
+    const ws = store.createWorkspace("website-x");
+    const other = store.createWorkspace("personal");
+    const goal = store.bindGoalWorkspace(store.createGoal({ title: "Website" }).id, ws.id);
+    expect(goal.workspaceId).toBe(ws.id);
+    expect(() => store.bindGoalWorkspace(goal.id, other.id)).toThrow(/already bound/);
+  });
+
+  it("creates exactly one general goal and task", () => {
+    const a = store.ensureGeneral();
+    const b = store.ensureGeneral();
+    expect(a.goal.id).toBe(b.goal.id);
+    expect(a.task.id).toBe(b.task.id);
+    expect(a.goal.general && a.task.general).toBe(true);
+  });
+});
+
+describe("turns and exchanges", () => {
+  it("binds turns, completes them, and tracks the current binding", () => {
+    const { store } = openStore();
+    expect(store.currentBinding()).toBeNull();
+    const goal = store.createGoal({ title: "Website" });
+    const task = store.createTask(goal.id, { title: "Hero" });
+    const msg = store.recordUserMessage("Fix the hero on mobile");
+    const turn = store.bindTurn({ userEventId: msg.id, taskId: task.id, route: "create_new" });
+    expect(turn.projectTurn).toBe(1);
+    expect(store.currentBinding()?.task.id).toBe(task.id);
+
+    const response = store.recordResponse("Fixed.", { turn_id: turn.id });
+    store.completeTurn(turn.id, { responseEventId: response.id, continuationNote: "Hero fixed.", goalNote: "Website polish." });
+    expect(store.requireTask(task.id).continuationNote).toBe("Hero fixed.");
+    expect(store.requireGoal(goal.id).note).toBe("Website polish.");
+    expect(() => store.completeTurn(turn.id, { responseEventId: response.id })).toThrow(/already completed/);
+
+    const [exchange] = [...store.recentExchanges()];
+    expect(exchange).toMatchObject({ userMessage: "Fix the hero on mobile", response: "Fixed.", projectTurns: [1] });
+  });
+
+  it("stores a compound message once and links it to every part", () => {
+    const { store } = openStore();
+    const goal = store.createGoal({ title: "Socrates development" });
+    const a = store.createTask(goal.id, { title: "Issue #42" });
+    const b = store.createTask(goal.id, { title: "Security review" });
+    const msg = store.recordUserMessage("Post the update, then audit the endpoints");
+    const p1 = store.bindTurn({ userEventId: msg.id, taskId: a.id, partOrder: 1, route: "compound" });
+    const p2 = store.bindTurn({ userEventId: msg.id, taskId: b.id, partOrder: 2, route: "compound" });
+    const response = store.recordResponse("1. Posted. 2. Audit done.");
+    store.completeTurn(p1.id, { responseEventId: response.id });
+    store.completeTurn(p2.id, { responseEventId: response.id });
+
+    const exchanges = [...store.recentExchanges()];
+    expect(exchanges).toHaveLength(1);
+    expect(exchanges[0]!.projectTurns).toEqual([1, 2]);
+    expect(exchanges[0]!.bindings.map((x) => x.taskId)).toEqual([a.id, b.id]);
+    expect(store.listEvents({ type: "user_message" })).toHaveLength(1);
+  });
+
+  it("records clarifications outside every task", () => {
+    const { store } = openStore();
+    const msg = store.recordUserMessage("Let's continue the project from yesterday.");
+    const turn = store.recordClarification(msg.id, "Which one?");
+    expect(turn.kind).toBe("clarification");
+    expect(turn.taskId).toBeNull();
+    expect(store.currentBinding()).toBeNull();
+    expect([...store.recentExchanges()][0]).toMatchObject({ kind: "clarification", response: "Which one?" });
+  });
+});
+
+describe("ledger queries", () => {
+  function seed() {
+    const { store, clock } = openStore();
+    const web = store.createWorkspace("website-x");
+    const personal = store.createWorkspace("personal");
+    const site = store.createGoal({ title: "Andy Website development", workspaceId: web.id });
+    clock.set("2026-08-12T09:00:00Z");
+    const pay = store.createTask(site.id, { title: "Payment integration" });
+    store.reviseTask(pay.id, { continuationNote: "Sandbox works, live keys pending." });
+    const german = store.createGoal({ title: "Ongoing German learning", workspaceId: personal.id });
+    store.reviseGoalNote(german.id, "German lessons toward B1 following the 30-day plan.");
+    clock.set("2026-08-05T09:00:00Z");
+    const day8 = store.createTask(german.id, { title: "German Day 8" });
+    store.reviseTask(day8.id, { continuationNote: "Subordinate clauses.", status: "completed" });
+    return { store, site, german };
+  }
+
+  it("filters by date range and renders selectors", () => {
+    const { store } = seed();
+    const rows = runLedgerQuery(store, { from: "2026-08-01", to: "2026-08-31" }, TZ);
+    expect(rows.map(renderLedgerRow)).toEqual([
+      "2026-08-12  website-x    g1 Andy Website development · g1/t1 Payment integration — open — Sandbox works, live keys pending.",
+      "2026-08-05  personal     g2 Ongoing German learning · g2/t1 German Day 8 — completed — Subordinate clauses.",
+    ]);
+  });
+
+  it("matches stemmed words in goal notes and task metadata", () => {
+    const { store } = seed();
+    expect(runLedgerQuery(store, { match: "lesson" }, TZ).map((r) => r.taskSelector)).toEqual(["g2/t1"]);
+    expect(runLedgerQuery(store, { match: "payments" }, TZ).map((r) => r.taskSelector)).toEqual(["g1/t1"]);
+  });
+
+  it("applies status, workspace, goal, and task filters", () => {
+    const { store } = seed();
+    expect(runLedgerQuery(store, { status: "completed" }, TZ).map((r) => r.taskSelector)).toEqual(["g2/t1"]);
+    expect(runLedgerQuery(store, { workspace: "website-x" }, TZ).map((r) => r.taskSelector)).toEqual(["g1/t1"]);
+    expect(runLedgerQuery(store, { goal: "g2" }, TZ).map((r) => r.taskSelector)).toEqual(["g2/t1"]);
+    expect(runLedgerQuery(store, { goal: "website" }, TZ).map((r) => r.taskSelector)).toEqual(["g1/t1"]);
+    expect(runLedgerQuery(store, { task: "g1/t1" }, TZ).map((r) => r.taskSelector)).toEqual(["g1/t1"]);
+    expect(runLedgerQuery(store, { limit: 1 }, TZ)).toHaveLength(1);
+  });
+
+  it("rejects inverted ranges and empty matches with corrective errors", () => {
+    const { store } = seed();
+    expect(() => runLedgerQuery(store, { from: "2026-09-01", to: "2026-08-01" }, TZ)).toThrow(/after/);
+    expect(() => runLedgerQuery(store, { match: "the and of" }, TZ)).toThrow(/no searchable words/);
+  });
+});
+
+describe("helpers", () => {
+  it("parses selectors", () => {
+    expect(parseGoalSelector("g12")).toBe(12);
+    expect(parseGoalSelector("older_1")).toBeNull();
+    expect(parseTaskSelector("g12/t4")).toEqual({ goal: 12, task: 4 });
+  });
+
+  it("builds injection-safe FTS queries", () => {
+    expect(toFtsQuery('Okay, let\'s start today\'s lesson "NEAR"')).toBe('"start" OR "lesson" OR "near"');
+    expect(toFtsQuery("hi how are you")).toBe("");
+  });
+});

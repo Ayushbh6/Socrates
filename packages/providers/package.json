@@ -1,0 +1,12 @@
+{
+  "name": "@socrates/providers",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@socrates/contracts": "workspace:*", "@socrates/shared": "workspace:*"
+  }
+}
