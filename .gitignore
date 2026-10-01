@@ -42,3 +42,6 @@ host-workspaces/
 .socrates/
 tmp-reference-agents/
 Screenshot 2026-05-28 at 8.*PM.png
+*.db
+*.db-wal
+*.db-shm

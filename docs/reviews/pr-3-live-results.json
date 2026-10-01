@@ -1,0 +1,73 @@
+{
+  "provider": "gemini",
+  "model": "gemini-3.8-flash",
+  "requests": 30,
+  "providerReportedTokens": 84748,
+  "assertions": [
+    {
+      "name": "native signed tool continuation on the real provider",
+      "pass": true
+    },
+    {
+      "name": "new durable goal, real deliverable, task completion",
+      "pass": true
+    },
+    {
+      "name": "elliptical continuation reopens the same completed task",
+      "pass": true
+    },
+    {
+      "name": "independent deliverable creates a task inside the same project",
+      "pass": true
+    },
+    {
+      "name": "unrelated greeting uses the general singleton",
+      "pass": true
+    },
+    {
+      "name": "restart, older task selection and regression correction",
+      "pass": true
+    },
+    {
+      "name": "ordered compound tasks, explicit dependency and two real artifacts",
+      "pass": true
+    },
+    {
+      "name": "clarification survives restart and worker receives the original action",
+      "pass": true
+    },
+    {
+      "name": "historical retrieval through actual model tool calls",
+      "pass": true
+    },
+    {
+      "name": "real model escalation after two deliberately invalid answers",
+      "pass": true
+    },
+    {
+      "name": "event-only recovery, SQLite integrity and bounded metadata",
+      "pass": true
+    }
+  ],
+  "artifacts": [
+    "discount-retry-checklist.md",
+    "mobile-nav-matrix.md",
+    "release-readiness.md",
+    "remaining-work.md",
+    "rollback-drill.md"
+  ],
+  "routing_fixtures": {
+    "gemini": {
+      "passed": 22,
+      "total": 22
+    },
+    "deepseek": {
+      "passed": 22,
+      "total": 22
+    },
+    "openrouter": {
+      "passed": 22,
+      "total": 22
+    }
+  }
+}

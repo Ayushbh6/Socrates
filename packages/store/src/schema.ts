@@ -1,0 +1,166 @@
+/**
+ * SQLite schema for the event log and the ledger (Goal-router.md, "The ledger").
+ *
+ * - `events` is the append-only source of truth. Triggers reject UPDATE and DELETE.
+ * - `goals` and `tasks` are current projections. Every change to a goal note or a
+ *   task's ledger fields appends a row to the matching *_revisions table in the
+ *   same transaction, so no prior state is ever rewritten.
+ * - `turns` binds each user message to a goal, task, and chat. A compound message
+ *   produces one turn per part; all of them point at the same stored user event.
+ * - `ledger_fts` is a derived full-text index over goal and task metadata used by
+ *   router candidate retrieval and `ledger_query`.
+ */
+export const SCHEMA_VERSION = 1;
+
+export const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS events (
+  seq      INTEGER PRIMARY KEY AUTOINCREMENT,
+  id       TEXT NOT NULL UNIQUE,
+  type     TEXT NOT NULL,
+  at       TEXT NOT NULL,
+  goal_id  TEXT,
+  task_id  TEXT,
+  chat_id  TEXT,
+  turn_id  TEXT,
+  payload  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_by_task ON events(task_id, seq);
+CREATE INDEX IF NOT EXISTS events_by_turn ON events(turn_id, seq);
+CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
+  BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
+  BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
+
+CREATE TABLE IF NOT EXISTS workspaces (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE,
+  root_path  TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+  id            TEXT PRIMARY KEY,
+  goal_number   INTEGER NOT NULL UNIQUE,
+  workspace_id  TEXT REFERENCES workspaces(id),
+  title         TEXT NOT NULL,
+  status        TEXT NOT NULL CHECK (status IN ('open', 'completed', 'superseded')),
+  is_general    INTEGER NOT NULL DEFAULT 0 CHECK (is_general IN (0, 1)),
+  note          TEXT,
+  note_revision INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS goals_single_general ON goals(is_general) WHERE is_general = 1;
+
+CREATE TABLE IF NOT EXISTS goal_note_revisions (
+  goal_id    TEXT NOT NULL REFERENCES goals(id),
+  revision   INTEGER NOT NULL,
+  note       TEXT NOT NULL,
+  event_id   TEXT NOT NULL REFERENCES events(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (goal_id, revision)
+);
+CREATE TRIGGER IF NOT EXISTS goal_note_revisions_no_update BEFORE UPDATE ON goal_note_revisions
+  BEGIN SELECT RAISE(ABORT, 'revisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS goal_note_revisions_no_delete BEFORE DELETE ON goal_note_revisions
+  BEGIN SELECT RAISE(ABORT, 'revisions are append-only'); END;
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id                TEXT PRIMARY KEY,
+  goal_id           TEXT NOT NULL REFERENCES goals(id),
+  task_number       INTEGER NOT NULL,
+  title             TEXT NOT NULL,
+  objective         TEXT NOT NULL,
+  status            TEXT NOT NULL CHECK (status IN ('open', 'completed', 'superseded')),
+  is_general        INTEGER NOT NULL DEFAULT 0 CHECK (is_general IN (0, 1)),
+  continuation_note TEXT,
+  revision          INTEGER NOT NULL,
+  started_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  completed_at      TEXT,
+  UNIQUE (goal_id, task_number)
+);
+CREATE INDEX IF NOT EXISTS tasks_by_updated ON tasks(updated_at);
+
+CREATE TABLE IF NOT EXISTS task_revisions (
+  task_id           TEXT NOT NULL REFERENCES tasks(id),
+  revision          INTEGER NOT NULL,
+  title             TEXT NOT NULL,
+  objective         TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  continuation_note TEXT,
+  event_id          TEXT NOT NULL REFERENCES events(id),
+  created_at        TEXT NOT NULL,
+  PRIMARY KEY (task_id, revision)
+);
+CREATE TRIGGER IF NOT EXISTS task_revisions_no_update BEFORE UPDATE ON task_revisions
+  BEGIN SELECT RAISE(ABORT, 'revisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS task_revisions_no_delete BEFORE DELETE ON task_revisions
+  BEGIN SELECT RAISE(ABORT, 'revisions are append-only'); END;
+
+CREATE TABLE IF NOT EXISTS chats (
+  id               TEXT PRIMARY KEY,
+  task_id          TEXT NOT NULL REFERENCES tasks(id),
+  ordinal          INTEGER NOT NULL,
+  continuation_of  TEXT REFERENCES chats(id),
+  handover_ref     TEXT,
+  compaction_count INTEGER NOT NULL DEFAULT 0,
+  opened_at        TEXT NOT NULL,
+  closed_at        TEXT,
+  UNIQUE (task_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS turns (
+  id                   TEXT PRIMARY KEY,
+  project_turn         INTEGER NOT NULL UNIQUE,
+  kind                 TEXT NOT NULL CHECK (kind IN ('task', 'clarification')),
+  goal_id              TEXT REFERENCES goals(id),
+  task_id              TEXT REFERENCES tasks(id),
+  chat_id              TEXT REFERENCES chats(id),
+  part_order           INTEGER,
+  user_event_id        TEXT NOT NULL REFERENCES events(id),
+  response_event_id    TEXT REFERENCES events(id),
+  workspace_confidence TEXT CHECK (workspace_confidence IN ('high', 'low')),
+  gate_armed           INTEGER NOT NULL DEFAULT 0 CHECK (gate_armed IN (0, 1)),
+  status               TEXT NOT NULL CHECK (status IN ('in_progress', 'completed', 'interrupted')),
+  created_at           TEXT NOT NULL,
+  completed_at         TEXT,
+  CHECK (kind = 'clarification' OR (goal_id IS NOT NULL AND task_id IS NOT NULL AND chat_id IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS turns_by_task ON turns(task_id, project_turn);
+
+CREATE TABLE IF NOT EXISTS anchors (
+  id         TEXT PRIMARY KEY,
+  goal_id    TEXT NOT NULL REFERENCES goals(id),
+  path       TEXT NOT NULL,
+  role       TEXT NOT NULL,
+  status     TEXT NOT NULL CHECK (status IN ('provisional', 'active', 'superseded')),
+  summary    TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (goal_id, path, role)
+);
+
+CREATE TABLE IF NOT EXISTS task_facts (
+  id         TEXT PRIMARY KEY,
+  task_id    TEXT NOT NULL REFERENCES tasks(id),
+  kind       TEXT NOT NULL CHECK (kind IN ('file_changed', 'command', 'test', 'capability')),
+  value      TEXT NOT NULL,
+  event_id   TEXT NOT NULL REFERENCES events(id),
+  created_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS ledger_fts USING fts5(
+  entity UNINDEXED,
+  entity_id UNINDEXED,
+  goal_id UNINDEXED,
+  title,
+  body,
+  tokenize = 'porter unicode61'
+);
+`;

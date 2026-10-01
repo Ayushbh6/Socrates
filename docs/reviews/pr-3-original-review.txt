@@ -1,0 +1,138 @@
+Archived review of the original PR head. All ten findings were subsequently fixed; see pr-3-validation.md for the current implementation and live acceptance results.
+
+Socrates V2 PR 3 deep review
+
+Recommendation: request changes before merging. Ten actionable findings: three P1 and seven P2. Eleven additional regression cases reproduce the gaps, while the PR's existing 44 tests and type check pass.
+
+PR: https://github.com/Ayushbh6/Socrates/pull/3
+Reviewed head: 22ab8141ecc178aabcfb2681a5e50d75b9ba1752
+Reviewed base: befa410d39b551de5d5f180f0a7d7c7ec6f5b091, socrates-v2
+Date: 1 October 2026
+
+Both architecture documents were read from the current remote socrates-v2 branch before reviewing implementation. The review covers all 44 changed files: contracts, store and schema, context construction, validation, routing and binding, providers, fixtures, evaluation, configuration and documentation. Socrates source checkouts and runtime data were preserved. No GitHub comments or review submission were posted.
+
+P1 findings
+
+1. Preserve the original action across a routing clarification
+   Location: packages/router/src/validate.ts:113-125, especially line 116.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/src/validate.ts#L116
+
+   An ambiguous request such as "Review yesterday's project for SQL injection and fix the unsafe queries" is stored as an unbound clarification exchange. After the user answers "The German one", the resolved part's request is only that selection. When it creates a task, the objective also becomes "The German one". The returned task/turn has no reference to the original pending request, and the clarification exchange is expressly excluded from task history. The router sees the actual action; the working-agent handoff loses it.
+
+   Reproduction: clarify the SQL-review request, then select the older goal and create a task titled "Fix SQL injection". The returned part contains only the clarification answer. This is a verified handoff defect; its downstream effect is inferred from the architecture's task-local context contract because the working loop is not implemented yet.
+
+   Fix: persist pending-request references and carry the exact original action, question and answer into the resolved task as explicit clarification context. Keep the original user messages stored once; do not fabricate a rewritten user message.
+
+2. Make the event log sufficient to reconstruct its projections
+   Location: packages/store/src/store.ts:660-669; packages/contracts/src/events.ts:21-36.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/store/src/store.ts#L660
+
+   turn_bound omits user_event_id, and turn_completed omits response_event_id. Those links exist only in mutable turns rows. Two user messages can be persisted before either is bound, so event order cannot reliably reconstruct ownership. Shared compound responses recorded without refs also cannot be linked back from completion events alone. Separately, workspace_created omits the generated workspace ID, upsertAnchor changes canonical anchor state without any event, and chat_opened omits handover_ref. These are missing facts in the claimed source of truth, rather than an absent convenience replay function.
+
+   Reproductions: record requests A and B, then bind A; its binding event contains no reference to A. Creating an active anchor does not increase the event count. Current SQLite projections remain intact, but rebuilding them from events would lose these relationships and anchor state.
+
+   Fix: append complete lifecycle payloads with canonical identities and ownership links, and log anchor changes in the same transaction. Add a replay round-trip check before treating the ledger as a projection over events.
+
+3. Preserve provider metadata for DeepSeek thinking-mode tool calls
+   Location: packages/providers/src/openai.ts:82-93 and 101-113.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/providers/src/openai.ts#L82
+
+   The adapter drops reasoning_content from an assistant response and reconstructs subsequent assistant messages using only content and tool_calls. DeepSeek requires that reasoning metadata to be replayed when tools are supplied. Thus a thinking model can issue ledger_query successfully and receive a 400 on its next request, causing routing to fail over or fall back instead of using the result. The same defect would affect the future working loop.
+
+   Reproduction: injected fetch returns a reasoning-bearing tool call, then enforces DeepSeek's documented requirement on the continuation request. The adapter sends no reasoning_content and receives a normalized invalid_request/400. This is a mocked protocol reproduction, not a live provider call.
+
+   Primary source: https://api-docs.deepseek.com/guides/thinking_mode/ — the Tool Calls section requires replaying reasoning_content and states that omission produces a 400.
+
+   Fix: preserve raw assistant metadata under the exact compatible-provider identity and replay the fields required by that provider. Add a two-request provider contract test, rather than testing only a single response.
+
+P2 findings
+
+4. Carry retrieved evidence into escalation
+   Location: packages/router/src/router.ts:145-146, called again at line 119.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/src/router.ts#L146
+
+   Every attempt starts with only ctx.input. Escalation inherits seen selectors and the consumed three-call ledger budget, but loses the actual tool results, invalid answer and corrective errors. If the small model used all three queries to locate old work and then failed validation, the main model cannot see that work or query it again. A previously authorized selector can also remain valid despite being absent from the main model's visible evidence.
+
+   Reproduction: issue three date queries, return two invalid answers, then escalate. The main request contains zero ledger-result messages; its next query hits ledger_query_limit.
+
+   Fix: pass the accumulated evidence and corrective context into the main attempt, translating provider-native content where needed, while retaining the shared call budget.
+
+5. Enforce the no-repeat clarification rule in fallback too
+   Location: packages/router/src/router.ts:272-282.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/src/router.ts#L277
+
+   Withdrawing ask_user from model tools does not prevent fallback from emitting another clarification. With two goals, a clarification answer followed by invalid output or provider failures returns ask_subject again, despite answeringClarification being true. Repeated failures can trap the user in the same selection loop.
+
+   Reproduction: ask which of Website/German to continue, answer "The German one", then return two malformed model outputs. Result: clarify rather than a decision.
+
+   Fix: keep an explicit pending clarification and bind a confirmed selection through the recovery path; fallback must respect the one-question constraint. Also validate synthetic clarifications so existing goals with no current turn cannot produce an empty candidates list without zero_history.
+
+6. Reopen completed tasks when the user resumes work on them
+   Location: packages/router/src/router.ts:380-381; packages/store/src/store.ts:761-764.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/src/router.ts#L380
+
+   An existing task is returned unchanged. Routing "the hero regressed; fix it again" to a completed task leaves status completed and completed_at populated; completing another turn without taskComplete preserves that stale state. Active work therefore remains excluded from open-task discovery and appears completed in the agent context.
+
+   Reproduction: complete a hero task, then continue it with a regression report. The routed task still has status completed.
+
+   Fix: define an explicit validated reopen operation and append its revision atomically when resumed work requires it. Preserve the same task ID. A mere question about past work need not reopen the task, so make that distinction part of the routing contract.
+
+7. Apply structured filters before truncating lexical matches
+   Location: packages/store/src/ledger.ts:111, with filtering at lines 128-143.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/store/src/ledger.ts#L111
+
+   ledger_query takes the top 200 global FTS hits before applying workspace, goal, task, date and status filters. A valid scoped match below that global cutoff disappears, and the tool says there are no matches. This becomes consequential as a durable ledger accumulates hundreds of tasks.
+
+   Reproduction: 220 high-scoring "payments" tasks in one workspace, plus one bounded payment-repair task in another. Query match=payments and workspace=desired returns zero rows despite the matching task existing.
+
+   Fix: put scope predicates into the search query before LIMIT, or page internally until the requested bounded result is complete. The model-facing result can remain capped.
+
+8. Validate reserved general routes before accepting them
+   Location: packages/router/src/validate.ts:201-205.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/src/validate.ts#L202
+
+   The early general branch accepts any non-create_new decision and ignores task fields. After a greeting, continue_current/current/create_task with new_task_title="Build website" validates successfully but is silently turned into a general route. It should fail and invoke repair, because the PR's general contract requires null task fields and the appropriate goal decision. Similar malformed reserved-label combinations bypass normal checks.
+
+   Reproduction: make general current, then validate the create_task decision above. Validation returns ok=true with target general.
+
+   Fix: validate decision eligibility and every reserved-route field before returning the general target. Do not silently reinterpret a model-proposed task creation.
+
+9. Keep task objectives bounded and separate from exact messages
+   Location: packages/router/src/router.ts:383 and 388.
+   https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/src/router.ts#L383
+
+   materialize copies the entire user request into objective. A pasted specification is then stored in the current task, task_created, its first revision and the FTS index; every later task revision copies it again. This violates the documented concise objective and no-content-duplication rules, and gives future CURRENT_TASK rendering an unbounded metadata field.
+
+   Reproduction: a 1,504-token specification produces a 1,504-token task objective, against the architecture's approximately 25-token objective budget.
+
+   Fix: introduce a bounded objective proposal validated by the harness, or use a bounded mechanical objective until that proposal exists. Keep exact specifications in user_message events and reference them.
+
+10. Grade compound routing by ownership, order and dependencies
+    Location: packages/router/eval/fixtures.ts:333-347, especially line 336.
+    https://github.com/Ayushbh6/Socrates/blob/22ab8141ecc178aabcfb2681a5e50d75b9ba1752/packages/router/eval/fixtures.ts#L336
+
+    A compound result passes grading solely because it has two parts. The evaluation does not check the selected goals/tasks, exact work units, order or dependsOn. Q10 therefore passes for two entirely unrelated newly created tasks. Single-task expectations also identify a task by title without checking its goal, so duplicate titles can conceal wrong-goal routing.
+
+    Reproduction: route Q10's issue-update/security-audit request to new tasks "Redesign logo" and "Create pricing page", both independent. grade returns true.
+
+    Fix: give compound expectations per-part ownership and dependency assertions, and identify ordinary task expectations with their goal. Mutation-test wrong owners, swapped parts and missing dependencies.
+
+Validation and limits
+
+- pnpm install --frozen-lockfile completed in an isolated archive of the reviewed head.
+- pnpm typecheck passed before adding review-only diagnostic tests.
+- pnpm test passed: 44 tests across 4 files.
+- Eleven review-only regression tests failed against the expected contracts. The two event-log cases belong to the same finding, producing ten findings overall.
+- git diff --check passed; both Socrates working trees remained clean.
+- GitHub reports no CI checks on this PR. Head/base were rechecked during review.
+- No live model evaluation was run. Scripted routing tests and injected provider fetches establish harness behavior and protocol gaps, not model routing accuracy.
+
+The foundation does implement useful invariants: transactional task/note revisions, append-only event and revision tables, chronological token-budgeted router history, and selectors restricted to same-run ledger evidence. The happy-path tests cover these effectively, but recovery and handoff cases need stronger coverage.
+
+Known deferrals were not counted as defects: embeddings, low-confidence semantic escalation, workspace resolution for new goals, the working agent loop, tools, compaction and rollover execution. The PR is a first build stage, not the complete architecture.
+
+Review reproduction file: /Users/aparajitbhattacharya/Documents/Work/Ayush-Personal/Socrates/.socrates/reviews/pr-3/initial-review/original-regressions.test.ts
+To run it, copy it into packages/router/test/deep-review.test.ts in an isolated checkout of the reviewed head, install the locked dependencies, then run:
+pnpm exec vitest run packages/router/test/deep-review.test.ts --reporter=verbose
+
+The diagnostic source imports the OpenAI SDK from the sibling providers package's pnpm dependency location. It uses test-only credentials and an injected fetch; it makes no provider network calls. It is intentionally a failing regression suite and is not a production-code change.
