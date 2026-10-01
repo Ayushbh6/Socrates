@@ -842,25 +842,69 @@ There is no separate planner agent, answer-writing agent, state-writing agent, o
 3. Run the Goal Router described in `Goal-router.md`: it selects the workspace, goal, and task.
 4. Bind the turn to the selected goal and task.
 5. Resolve the goal's frozen Skill shelf and retrieve zero to two likely capability candidates for this turn. (The shelf is frozen per goal; candidates are per turn.)
-6. Assemble the working context for that task: goal context, task context, task history.
+6. Assemble the working context for that task in the canonical order defined in "Working-agent context."
 7. Start the model/tool loop with the ten permanent tools.
 8. Let the agent activate a candidate, search for another capability, or use neither.
 9. Continue until the model returns a final response or asks the user a question.
-10. Require the final result to contain a visible answer, a short task-local continuation note, and an optional task-completion proposal.
+10. Require the final result to contain a visible answer, a short task-local continuation note, an optional goal-note update, an optional task-completion proposal, and optional anchor proposals.
 11. Persist those fields and all exact tool evidence.
 12. Throughout the loop, attach history per the three-tier policy and, whenever the `160,000`-token trigger is crossed before a model request, compact per the "Context and compaction" section: one history-checkpoint LLM call when completed history lies outside the verbatim window, then mechanical in-turn linearization if still needed. The turn continues naturally. Compaction is strictly task-local; when the trigger would fire for the sixth time in the same chat, the harness performs the automatic rollover described in `Goal-router.md` instead.
 
 ## Working-agent context
 
-The current user request must be the final block and must appear exactly once.
+This is the one canonical layout of every working-agent request. `Goal-router.md` ("Context assembly after goal and task selection") describes how each section's content is selected; it does not define a second layout.
+
+Blocks are ordered from most stable to most volatile, so that the provider prompt cache covers as much of the request as possible. Anything that changes on every turn sits after the history, because a change early in the request invalidates the cache for everything after it.
 
 ```text
-<CURRENT_GOAL>
+[STABLE PREFIX — identical for every request]
+system prompt · fixed behavioral rules · the ten permanent tool schemas
+(dynamically activated MCP tool schemas are appended after the permanent ones)
+
+[GOAL-STABLE — changes only when the goal, its anchors, or its active set change]
+<GOAL>
 title: Socrates memory system
+workspace: socrates
+anchors:
+- architecture/agent-harness.md — harness architecture and compaction design
+</GOAL>
+
+<AVAILABLE_SKILLS>
+At most five frozen name-and-description entries.
+</AVAILABLE_SKILLS>
+
+<ACTIVE_CAPABILITIES>
+Full instructions of Skills activated for this goal, and the names of active MCP tools.
+</ACTIVE_CAPABILITIES>
+
+[CHAT HISTORY — frozen or append-only within this task chat]
+<HISTORY_CHECKPOINT ref="hc-2" turns="1–9">
+summary: Reviewed the memory system and identified the compaction gap.
+outstanding_requests:
+- turn 3: "Also check whether the recovery path validates source references."
+</HISTORY_CHECKPOINT>
+
+[TURN 10]
+USER:
+Can you review the memory system?
+
+SOCRATES:
+The current implementation compacts large tool results...
+
+[TURN 11 — full]
+USER:
+Why are the memory tests failing?
+TOOL CALL read memory/compact.ts (lines 1–120) → full bounded result
+TOOL CALL terminal: pytest tests/memory/ → full bounded result
+SOCRATES:
+Two tests fail because compact_history() drops source_ref...
+
+[TURN-VOLATILE — rebuilt for every user turn]
+<GOAL_STATE>
 note: Ongoing review and hardening of the memory and compaction system.
 open_tasks:
-- Preserve large tool results in compaction — active
-</CURRENT_GOAL>
+- t3 Preserve large tool results in compaction — active
+</GOAL_STATE>
 
 <CURRENT_TASK>
 title: Preserve large tool results in compaction
@@ -869,34 +913,22 @@ status: active
 note: Reviewed compaction. The remaining concern is preserving large tool results.
 </CURRENT_TASK>
 
-<HISTORY_CHECKPOINT ref="hc-2" turns="1–9">
-summary: Reviewed the memory system and identified the compaction gap.
-outstanding_requests:
-- turn 3: "Also check whether the recovery path validates source references."
-</HISTORY_CHECKPOINT>
+<RECENT_ACTIVITY>
+Only for the general task: the same ledger-derived notepad the router sees.
+</RECENT_ACTIVITY>
 
-[TURN 10 — Q&A + tool activity]
-USER:
-Can you review the memory system?
+<EVIDENCE_FROM_PART_1>
+Only for a dependent compound part (see "Compound tasks").
+</EVIDENCE_FROM_PART_1>
 
-SOCRATES:
-The current implementation compacts large tool results...
+<RETRIEVED_HISTORY>
+Older exact exchanges or evidence from this task, or specifically relevant
+evidence from other tasks in this goal, retrieved for the current request.
+</RETRIEVED_HISTORY>
 
-TOOL ACTIVITY:
-- read memory/compact.ts (lines 1–120)
-- terminal: pytest tests/memory/ → 2 failed (assert source_ref is None)
-
-<RETRIEVED_SUPPORTING_CONTEXT>
-Only exact repository or older-task evidence required for this turn.
-</RETRIEVED_SUPPORTING_CONTEXT>
-
-<ACTIVE_CAPABILITIES>
-Only Skills and MCP tools activated for this task.
-</ACTIVE_CAPABILITIES>
-
-<AVAILABLE_SKILLS>
-At most five frozen name-and-description entries.
-</AVAILABLE_SKILLS>
+<PROJECT_CONTEXT>
+Relevant sections from goal anchors and dynamically retrieved project sources.
+</PROJECT_CONTEXT>
 
 <CAPABILITY_CANDIDATES>
 At most one Skill and one MCP hint for this turn.
@@ -905,11 +937,18 @@ At most one Skill and one MCP hint for this turn.
 <CURRENT_USER_MESSAGE>
 Can you fix the information-loss problem?
 </CURRENT_USER_MESSAGE>
+
+[IN-FLIGHT TURN — native tool calls and results, appended step by step]
 ```
 
-There is no separate `latest exchange` field because it would duplicate the newest entry in exact history.
+Rules:
 
-History follows the three-tier attachment policy: the N−1 turn appears with its Q&A and linearized tool inventory, older completed turns appear as Q&A-only pairs or inside a history checkpoint, and the current user message is the final block. The tier-3 Q&A allowance is token-based and configurable, initially `20,000` tokens. Complete Q&A pairs are preferred over arbitrary message slices.
+- The current user message appears exactly once and is the final block before the in-flight turn. There is no separate `latest exchange` field because it would duplicate the newest entry in history.
+- Goal-stable blocks contain only content that changes rarely: the goal title, workspace, and anchor manifest; the frozen Skill shelf; and the active capability set. A Skill activated mid-turn arrives first as the activation tool result; from the next user turn it is carried in `<ACTIVE_CAPABILITIES>`, and history renders the earlier activation call with its one-line linear form so the instructions are never present twice.
+- Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, nothing before the in-flight turn changes, so every step after the first is a cache hit up to the newest tool result.
+- Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
+- `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
+- The provider adapter decides whether completed turns are sent as native messages or harness-formatted text; the block order above is binding either way.
 
 ## Compound tasks
 
@@ -968,7 +1007,7 @@ The harness stores:
 - terminal session events;
 - file mutations;
 - goal bindings;
-- the latest continuation note produced by the Main Coding Agent.
+- the latest continuation note and goal note produced by the Main Coding Agent.
 
 Large tool outputs may be replaced in the active prompt by a short result plus a retrievable reference, but the complete result remains stored.
 
@@ -1221,6 +1260,8 @@ Compaction never rewrites or deletes the underlying event log. It changes only w
 
 Obligations receive special protection: unanswered user requests survive compaction verbatim inside `outstanding_requests`, are visible in every subsequent request, and are carried forward across checkpoint generations until resolved. Compaction can compress what happened; it can never silently drop what is still owed.
 
+## Final result
+
 The Main Coding Agent's final result is:
 
 ```text
@@ -1230,12 +1271,24 @@ The response shown to the user.
 CONTINUATION NOTE
 A short statement of the task's verified progress, unresolved work, and important constraints.
 
+GOAL NOTE (optional)
+A replacement goal-level note. Absent when the goal's durable state did not change.
+
 TASK COMPLETION (optional)
 complete: The task's objective is met and verified.
 reason: One short sentence. Absent when the task continues.
+
+ANCHOR PROPOSALS (optional)
+- path: learning/30-day-plan.md
+  role: goal_plan
+  reason: Defines the lesson sequence and expected progress for this goal.
 ```
 
-The continuation note is not a second visible answer and is not produced by another agent. The task-completion proposal is recorded by the harness and can always be overridden or reopened by the user — the user has the final say.
+The continuation note is not a second visible answer and is not produced by another agent. It is task-local and bounded (about 100 tokens).
+
+The goal note is the only goal-level state the agent writes. It records the goal's durable state across tasks: overall progress, durable user constraints and preferences, and what the goal is heading toward. The agent supplies it only when that durable state changed during this turn. It is bounded (about 150 tokens), validated by the harness, and stored as a new append-only revision of the goal record; it appears in `<GOAL_STATE>` and in the router's `KNOWN_GOALS`. The Goal Router never writes it.
+
+The task-completion proposal is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals follow the anchor lifecycle in `Goal-router.md`.
 
 ## Provider independence
 
@@ -1261,13 +1314,14 @@ The cacheable prefix remains stable:
 2. fixed behavioral rules;
 3. the ten permanent tool schemas in a fixed order.
 
-Goal notes, exact history, current user messages, and dynamically activated capabilities come afterward.
+Everything after it follows the canonical order in "Working-agent context": goal-stable blocks, then chat history, then turn-volatile blocks, then the current user message and the in-flight turn. Content is placed by how often it changes, never by topic.
 
 Further rules:
 
 - Do not put timestamps, request identifiers, paths that change each turn, or capability catalogs in the stable prefix.
 - Do not reorder permanent tools between calls.
-- Keep the goal's five-Skill shelf stable until the goal changes; place it after the permanent prefix.
+- Keep the goal's five-Skill shelf stable until the goal changes; place it in the goal-stable blocks after the permanent prefix.
+- Never place per-turn state—the continuation note, goal note, open-task index, retrieval results, candidates, or the recent-activity notepad—before the chat history.
 - Treat likely candidates as task-specific dynamic context and omit the block when neither kind clears its threshold.
 - Append dynamic MCP tool schemas after the permanent tools.
 - Keep full Skill instructions out of the prompt until activated.

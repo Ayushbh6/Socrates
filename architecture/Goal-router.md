@@ -532,68 +532,69 @@ The router reasons about the outcome, not keyword overlap alone.
 
 Router context and working-agent context are separate. The Goal Router receives project-wide evidence to select the owning goal and task. Only after the backend binds the turn to that goal and task does it build the Main Coding Agent's focused context.
 
-The working-agent input has this exact order:
+The working-agent request has exactly one layout, defined in `agent-harness.md` ("Working-agent context"). It orders blocks from most stable to most volatile for prompt caching: the stable prefix, then goal-stable blocks (`<GOAL>`, `<AVAILABLE_SKILLS>`, `<ACTIVE_CAPABILITIES>`), then chat history, then turn-volatile blocks (`<GOAL_STATE>`, `<CURRENT_TASK>`, optional `<RECENT_ACTIVITY>`, `<RETRIEVED_HISTORY>`, `<PROJECT_CONTEXT>`, `<CAPABILITY_CANDIDATES>`), and finally `<CURRENT_USER_MESSAGE>`. This section describes how the goal- and task-specific blocks are filled.
+
+For the German example, the selected sections contain:
 
 ```text
-<CURRENT_GOAL>
+<GOAL>
 title: Ongoing German learning
-note: Covers German lessons and practice toward B1.
+workspace: personal
 anchors:
 - 30-day-plan.md — curriculum and lesson sequence
+</GOAL>
+
+... chat history of the new task (empty on its first turn) ...
+
+<GOAL_STATE>
+note: Covers German lessons and practice toward B1. Day 9 completed.
 open_tasks:
-- Day 10 lesson — next
-</CURRENT_GOAL>
+- t11 Complete the Day 10 lesson — active
+</GOAL_STATE>
 
 <CURRENT_TASK>
 title: Complete the Day 10 lesson
 objective: Work through Day 10 of the 30-day plan (dative prepositions in context).
 status: active
-note: Day 9 completed dative prepositions. Day 10 is next.
+note: New task. Day 9 completed dative prepositions.
 </CURRENT_TASK>
 
-<RECENT_EXACT_TASK_HISTORY>
-Newest complete Q&A pairs belonging specifically to this task.
-</RECENT_EXACT_TASK_HISTORY>
-
-<RETRIEVED_OLDER_TASK_HISTORY>
-Older exact exchanges or evidence from this task, or specifically relevant
-evidence from other tasks in this goal, retrieved for the current request.
-</RETRIEVED_OLDER_TASK_HISTORY>
-
-<RELEVANT_PROJECT_CONTEXT>
-Relevant sections from goal anchors and dynamically retrieved project sources.
-</RELEVANT_PROJECT_CONTEXT>
+<PROJECT_CONTEXT>
+30-day-plan.md — plan outline and the Day 10 section.
+</PROJECT_CONTEXT>
 
 <CURRENT_USER_MESSAGE>
 Okay, let's start today's lesson.
 </CURRENT_USER_MESSAGE>
 ```
 
-The current user message appears exactly once and remains the final block.
+### `GOAL` and `GOAL_STATE`
 
-### `CURRENT_GOAL`
+Goal context is split by how often it changes. `<GOAL>` holds the goal's title, workspace, and anchor manifest, which change rarely and therefore sit before the chat history. `<GOAL_STATE>` holds the goal note and a small index of open tasks, which change from turn to turn and therefore sit after it. Goal context is deliberately concise: the overarching objective, durable user constraints and preferences, anchor manifests, and the open-task index. It does not include other tasks' transcripts.
 
-The backend supplies the selected goal's title, a concise goal-level note, its anchors, and a small index of open tasks. Goal context is deliberately concise: the overarching objective, durable user constraints and preferences, anchor manifests, and the open-task index. It does not include other tasks' transcripts.
-
-The Goal Router never writes this note.
+The goal note is written only through the Main Coding Agent's optional `GOAL NOTE` field, validated by the harness (see "Final result" in `agent-harness.md`). The Goal Router never writes it.
 
 ### `CURRENT_TASK`
 
 The backend supplies the selected task's title, objective, expected completion point, status, and latest continuation note. The note is the short hidden field returned by the Main Coding Agent after the previous turn in this task. It records verified progress, unresolved work, important constraints, and what is likely to matter next. The continuation note is task-local.
 
-### `RECENT_EXACT_TASK_HISTORY`
+### Chat history
 
-This is a mechanical chronological walk backward through complete Q&A pairs already bound to the selected task. It does not include interleaved turns from other tasks or goals and applies no semantic filtering.
+Chat history is a mechanical chronological sequence of the turns already bound to the selected task chat, preceded by its active history checkpoint or handover capsule when one exists. It does not include interleaved turns from other tasks or goals and applies no semantic filtering.
 
 It has no separate token cap. Every completed turn of the current task chat is attached in its three-tier shape (N−1 with full tool activity, older turns as Q&A only), presented oldest to newest, until the `160,000`-token compaction trigger fires; size is then managed only by the compaction design in `agent-harness.md`. Exact messages and tool evidence remain in persistent storage even after compaction removes them from the prompt.
 
-### `RETRIEVED_OLDER_TASK_HISTORY`
+### `RECENT_ACTIVITY`
 
-After excluding exchanges already present in recent exact task history, the backend performs hybrid retrieval over older ledger entries belonging to the selected task — and, when specifically relevant to the current request, entries from other tasks in the same goal.
+When the turn is bound to the `general` task, the working agent receives the same ledger-derived `<RECENT_ACTIVITY>` notepad the router sees. This is what lets Socrates greet the user with a short recap—"Last time we fixed the checkout flow and finished German Day 10. Want to pick one of those up?"—without any tool call. Turns bound to a real task do not receive it; their goal and task blocks already carry the relevant state.
 
-Hybrid retrieval uses semantic similarity, BM25 or equivalent keyword matching, and recency. It first retrieves compact ledger entries, then expands only the exact source exchanges or evidence required for the current turn. A summary is never treated as a replacement for its exact source.
+### `RETRIEVED_HISTORY`
 
-This section is therefore different from recent exact task history: recent history is chronological and guaranteed recent; retrieved older history is relevance-selected and explicitly excludes that recent window.
+After excluding turns already present in chat history, the backend performs hybrid retrieval over the selected task's older exchanges—those compacted into a checkpoint or held in an earlier chat of the task's continuation chain—and, when specifically relevant to the current request, over the ledger entries of other tasks in the same goal.
+
+Hybrid retrieval uses semantic similarity, BM25 or equivalent keyword matching, and recency. It first retrieves compact ledger entries or turn references, then expands only the exact source exchanges or evidence required for the current turn. A summary is never treated as a replacement for its exact source.
+
+This section is therefore different from chat history: chat history is chronological and guaranteed recent; retrieved history is relevance-selected and explicitly excludes what chat history already shows.
 
 A new task begins with clean conversational history. It receives goal context and only specifically relevant evidence from previous tasks. It does not inherit their transcripts. Switching tasks is context replacement, not compaction.
 
@@ -650,7 +651,7 @@ These are different artifacts with different lifecycles, and the vocabulary must
 | Exists because | The task exists | The 160k trigger fired inside that task |
 | Written by | Harness (validated model fields) | Compactor LLM (validated by harness) |
 | Purpose | Index and retrieval unit | Prompt compaction artifact |
-| Read by | Router assembly, `ledger_query`, `context_retrieve`, `RETRIEVED_OLDER_TASK_HISTORY` | Working prompt, `context_retrieve` inspection |
+| Read by | Router assembly, `ledger_query`, `context_retrieve`, `RETRIEVED_HISTORY` | Working prompt, `context_retrieve` inspection |
 
 Both cite the same event log; neither duplicates it. A task with no compaction has an entry but no checkpoints; a task with heavy compaction has both, and the checkpoint's `key_evidence` refs resolve into the same evidence the entries point at.
 
@@ -738,9 +739,9 @@ The second chat starts with a visible, collapsible card: "Automatically continue
 
 `ledger_search` returns compact goal/task rows with permanent human-facing selectors and stable pagination. `search` returns exact Q&A previews with short refs, and `inspect` expands them under the normal output bounds. A bare `t4` always means task 4 of the current goal; cross-goal selection requires `gN/tN`. Pure temporal searches need no query text — just a range. The router keeps its narrower, three-call, metadata-only `ledger_query`; the working agent may iteratively search, page, and inspect under the ordinary loop safeguards.
 
-**Reader 4 — Context assembly.** `RETRIEVED_OLDER_TASK_HISTORY` is grounded in the ledger: hybrid retrieval selects entries of the selected task (and specifically relevant entries from sibling tasks in the same goal), then expands only the pointed-to exact exchanges. The entry is the retrieval unit; the exchange is the payload.
+**Reader 4 — Context assembly.** `RETRIEVED_HISTORY` is grounded in the ledger and event log: hybrid retrieval selects the selected task's older turn references (and specifically relevant entries from sibling tasks in the same goal), then expands only the pointed-to exact exchanges. The entry is the retrieval unit; the exchange is the payload.
 
-### `RELEVANT_PROJECT_CONTEXT`
+### `PROJECT_CONTEXT`
 
 This section combines two source classes without confusing them:
 
@@ -753,19 +754,9 @@ Dynamic sources are discovered through scoped file, keyword, semantic, and evide
 
 ## Anchor lifecycle
 
-The Goal Router does not promote files to anchors. The Main Coding Agent may return an optional anchor proposal together with its normal final result:
+The Goal Router does not promote files to anchors. The Main Coding Agent may return optional `ANCHOR PROPOSALS` as part of its normal final result, whose complete format is defined once in `agent-harness.md` ("Final result"):
 
 ```text
-VISIBLE ANSWER
-The response shown to the user.
-
-CONTINUATION NOTE
-The task's verified progress, unresolved work, constraints, and likely next step.
-
-TASK COMPLETION (optional)
-complete: The task's objective is met and verified.
-reason: One short sentence. Absent when the task continues.
-
 ANCHOR PROPOSALS
 - path: learning/30-day-plan.md
   role: goal_plan
@@ -819,11 +810,12 @@ The rule underneath this table is **models propose, the harness disposes**: ever
 | Active capabilities | Main Coding Agent decisions | Capability runtime, not the router |
 | Visible answer | Main Coding Agent | Harness |
 | Short continuation note (task-local) | Main Coding Agent, in the same final result | Harness |
+| Goal note (goal-level, optional update) | Main Coding Agent, in the same final result | Harness, after validation, as a new goal-record revision |
 | Optional anchor proposal | Main Coding Agent, in the same final result | Harness, after validation |
 | Anchor status | — | Backend policy, overridden by explicit user direction |
 | Handover capsule | Compactor-style LLM call at rollover | Harness, after schema validation |
 
-The Main Coding Agent does not maintain a large `saved_state` object. Its final result contains the visible answer, one short task-local continuation note, an optional task-completion proposal, and only when needed a small list of anchor proposals. The router does not generate facts, files, progress lists, anchor proposals, or active capabilities.
+The Main Coding Agent does not maintain a large `saved_state` object. Its final result contains the visible answer, one short task-local continuation note, an optional goal-note update, an optional task-completion proposal, and only when needed a small list of anchor proposals. The router does not generate facts, files, progress lists, anchor proposals, or active capabilities.
 
 The backend automatically records files, commands, tests, tool results, MCP calls, and Skill activations from the execution log — these become the ledger entry's derived fields.
 
@@ -868,7 +860,7 @@ Build the selected task's working context (goal context + task context)
     ↓
 Run the coding-agent loop
     ↓
-Persist visible answer, task-local continuation note, and tool evidence
+Persist visible answer, task-local continuation note, optional goal note, and tool evidence
     ↓
 Harness updates the ledger entry; record task completion if proposed
     ↓
