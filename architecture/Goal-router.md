@@ -20,7 +20,7 @@ It does not answer the user, search the repository, update memory, or perform th
 - **Task**: one bounded, meaningful piece of work with a single objective and a recognisable completion point — the equivalent of a chat in a standard harness. A task contains many conversational turns, not one. "Fix the homepage hero on mobile" is a task; "make the heading smaller" is a turn inside it.
 - **Chat**: one context session performing a task. Usually one task has one chat. Exceptionally, a long task has a linked chain of continuation chats created by the automatic rollover (see "Task rollover").
 - **Turn**: one user message and the work performed in response to it, inside a task.
-- **Ledger**: the queryable index of work. One immutable entry per task, carrying identity, timestamps, the continuation note, and pointers to exact evidence. See "The ledger."
+- **Ledger**: the queryable index of work. One entry per task, kept as a current projection over append-only revisions, carrying identity, timestamps, the continuation note, and pointers to exact evidence. See "The ledger."
 - **Continuation note**: a short description of where a task currently stands and what matters next. It is task-local.
 - **Exact history**: the original user messages, assistant responses, tool calls, and tool results stored without summarization.
 
@@ -120,7 +120,7 @@ The **`general` task** is the default home for trivial and conversational messag
 5. The router sees complete Q&A pairs wherever possible; a user message is never separated from its answer.
 6. The router only selects a workspace, a goal, and a task. It never writes goal progress, facts, files, capabilities, or task state.
 7. Exact history remains in storage even after it is compacted out of the model prompt.
-8. Internal goal and task identifiers are never shown to the model or the user. The router receives temporary labels such as `current` and `older_1`.
+8. Internal goal and task identifiers are never shown to the model or the user. The router receives temporary labels such as `current`, `older_1`, and `latest`, plus the permanent human-facing selectors (`gN`, `gN/tN`) that `ledger_query` returns. Neither is a database identifier; the harness resolves both.
 9. The Main Coding Agent returns the continuation note together with its visible answer. No additional state-writing model call runs afterward.
 10. **Models propose, the harness disposes.** No LLM ever writes storage directly. Every model-produced field — the router's goal and task selection, the agent's continuation note, the compactor's checkpoint — passes through harness validation before it is persisted.
 11. **A goal belongs to exactly one workspace.** The binding is permanent. Workspace resolution piggybacks on goal resolution: resolving the goal resolves the workspace.
@@ -133,23 +133,23 @@ The **`general` task** is the default home for trivial and conversational messag
 
 The router must choose exactly one outcome, and each outcome now carries both a goal decision and a task decision:
 
+The `decision` field names the goal-level outcome; `task_decision` names the task-level outcome inside the selected goal. The permitted combinations are listed under "Router output."
+
 ### `continue_current`
 
-The message continues the current goal and the current task inside it.
+The message stays in the current goal. It either continues the current task inside it or, when it introduces a new bounded objective, creates a new task in the current goal.
 
 Changing from review to implementation does not automatically create a new goal or a new task. For example, “review the memory system” followed by “fix the information-loss problem” remains one goal, and “make the heading smaller” after fixing the hero remains one task.
 
 ### `resume_existing`
 
-The message clearly returns to a different known goal, or to a different task inside the current goal.
+The message clearly returns to a different known goal, or to a different, earlier task inside the current goal. Returning to an older goal either resumes one of its tasks or creates a new task in it.
 
 The user does not need to say “go back.” Natural references to the subject are sufficient. For example, after discussing the agent prompt, “Did that memory compaction fix preserve tool results?” can select the older memory-system goal; after moving to the nav menu, “actually go back to the hero, it regressed” resumes the hero task.
 
 ### `create_new`
 
-The message seeks an independent outcome that does not belong to the current or an older goal — or, inside the current goal, a new bounded objective that does not belong to the current task.
-
-### `clarify`
+The message seeks an independent outcome that does not belong to the current or any older goal. The router creates a new goal and its first task. A new bounded objective inside an existing goal is not `create_new`; it is `create_task` under `continue_current` or `resume_existing`.
 
 ### `clarify`
 
@@ -162,9 +162,9 @@ The question is asked as a normal assistant response; no special user-facing mec
 
 ### `compound`
 
-One message contains multiple dependent work units that cannot honestly be assigned to one goal. The router splits the message without rewriting its meaning, assigns each part to an existing or new goal (each part thereby also resolving its workspace), and preserves their execution order.
+One message contains multiple work units that cannot honestly be assigned to one task. The router splits the message without rewriting its meaning, assigns each part its own goal decision and task decision (each part thereby also resolving its workspace), and preserves their execution order. Parts may land in different tasks of the same goal or in different goals.
 
-This is for requests such as posting the completed work from one goal and then starting a new security review based on that work. It is not used merely because one goal contains several implementation steps.
+This is for requests such as posting the completed work from one task and then starting a new security review based on that work. It is not used merely because one task contains several implementation steps.
 
 ### Workspace resolution
 
@@ -220,7 +220,7 @@ Can you review the checkout flow in Website X?
 SOCRATES:
 The current checkout path drops the discount code on retry...
 
-[goal=older_1 · task=task_1 · workspace=personal]
+[goal=older_1 · task=latest · workspace=personal]
 USER:
 The agent prompt feels too complicated. Can you review it?
 
@@ -243,6 +243,8 @@ label: older_1
 title: Agent prompt improvement
 workspace: personal
 note: Simplify the core prompt and keep provider-specific guidance outside it.
+tasks:
+- latest: Split provider guidance out of the core prompt — open
 </KNOWN_GOALS>
 
 <CURRENT_USER_MESSAGE>
@@ -270,12 +272,12 @@ Every included Q&A pair is tagged with the goal, task, and workspace to which it
 
 One flow spans all workspaces: the section is chronological across workspace switches, because that is how the user experienced it. The tags carry the structure.
 
-#### 2. `KNOWN_GOALS`
+#### 3. `KNOWN_GOALS`
 
 This section is assembled separately. It contains:
 
 1. the current goal, always, when one exists, with a small index of its open and recently completed tasks (label, title, status); and
-2. up to three older goal candidates found by hybrid retrieval over every saved goal title, continuation note, and lightweight anchor manifest.
+2. up to three older goal candidates found by hybrid retrieval over every saved goal title, goal note, task continuation note, and lightweight anchor manifest. Each older candidate carries a small task index too: its most recently updated task, labelled `latest`, and up to two other open tasks.
 
 Hybrid retrieval initially combines:
 
@@ -284,7 +286,7 @@ Hybrid retrieval initially combines:
 - a small recency boost; and
 - a small boost for open, long-running goals whose scope plausibly contains the request.
 
-Candidate retrieval is grounded in the exact current user message and the project's lightweight identity, such as its name and stated purpose. It searches goal titles, continuation notes, and anchor names, roles, and short summaries. It never injects full anchor files into the router request.
+Candidate retrieval is grounded in the exact current user message and the project's lightweight identity, such as its name and stated purpose. It searches goal titles, goal notes, task continuation notes, and anchor names, roles, and short summaries. It never injects full anchor files into the router request.
 
 This matters for elliptical requests. In a project named `German`, the message `Okay, let's start today's lesson` should retrieve an open goal titled `Ongoing German learning` even when the last German lesson is outside the recent exact-history window. Its continuation note and an anchor summary such as `30-day-plan.md — curriculum and lesson sequence` provide additional evidence.
 
@@ -292,9 +294,9 @@ Appearing in recent exact history may improve a goal's recency signal, but it is
 
 Retrieval only creates a shortlist. The Goal Router—not the retrieval system—decides whether the message continues the current goal and task, resumes a candidate, creates a new goal or task, needs clarification, or is compound.
 
-The labels `older_1`, `older_2`, and `older_3` are temporary ranks for this request. A goal created 23 goals ago may still be labelled `older_1`; there is no `older_23` label. Task labels (`current`, `task_1`, `task_2`, ...) follow the same rule within the selected goal.
+The labels `older_1`, `older_2`, and `older_3` are temporary ranks for this request. A goal created 23 goals ago may still be labelled `older_1`; there is no `older_23` label. Task labels follow the same rule and are interpreted within the selected goal: in the current goal, `current` is the current task and `task_1`, `task_2`, ... are its other listed tasks; in an older goal, `latest` is its most recently updated task and `task_1`, `task_2`, ... are its other listed tasks.
 
-#### 3. `CURRENT_USER_MESSAGE`
+#### 4. `CURRENT_USER_MESSAGE`
 
 This is the exact current query. It appears once, after both context sections, and is always the final block read by the router.
 
@@ -320,10 +322,10 @@ The router returns strict structured data. It has exactly two tools — `ledger_
 ```json
 {
   "decision": "continue_current | resume_existing | create_new | compound",
-  "goal_label": "current | older_1 | null",
+  "goal_label": "current | older_N | gN | null",
   "new_goal_title": "string | null",
   "task_decision": "continue_task | resume_task | create_task | null",
-  "task_label": "current | task_1 | null",
+  "task_label": "current | latest | task_N | gN/tN | null",
   "new_task_title": "string | null",
   "workspace_confidence": "high | low",
   "parts": "array | null",
@@ -336,8 +338,8 @@ The router returns strict structured data. It has exactly two tools — `ledger_
 Rules:
 
 - `continue_current`: `goal_label` must be `current`. `task_decision` is `continue_task` with `task_label: current` for an unanchored or same-subject message, or `create_task` with `new_task_title` when the message introduces a new bounded objective inside the current goal.
-- `resume_existing`: `goal_label` must be one supplied older label, or `current` with `task_decision: resume_task` and a supplied task label when the message returns to a different task inside the current goal.
-- `create_new`: `new_goal_title` is populated and the other route-specific fields are null; the message starts the goal's first task. When no existing workspace plausibly owns the request, the harness resolves the workspace: general conversation and Q&A need no workspace; the first mutating action in an unowned request surfaces one lightweight workspace decision, following the same consequential-only questioning policy as anchors.
+- `resume_existing`: either `goal_label: current` with `task_decision: resume_task` and a listed task label other than `current`, when the message returns to an earlier task of the current goal; or an older goal (`older_N`, or a `gN` selector returned by `ledger_query`) with `task_decision: resume_task` and one of that goal's task labels (`latest`, `task_N`, or a `gN/tN` selector returned by `ledger_query`), or `create_task` with `new_task_title`. `continue_task` is valid only for the current task of the current goal.
+- `create_new`: `new_goal_title`, `task_decision: create_task`, and `new_task_title` are populated, and `goal_label` and `task_label` are null; the message starts the new goal's first task. When no existing workspace plausibly owns the request, the harness resolves the workspace: general conversation and Q&A need no workspace; the first mutating action in an unowned request surfaces one lightweight workspace decision, following the same consequential-only questioning policy as anchors.
 - `clarify`: the router does not return a `clarification_question` field. It calls the `ask_user` tool instead, and its run ends there. See below.
 - `compound`: `parts` is populated and the other route-specific fields are null. Every part contains its exact sub-request, order, goal decision, task decision, reason, and optional dependency. Each part carries its own `workspace_confidence`, because parts may target different workspaces.
 - `workspace_confidence` is `low` whenever two or more workspaces were plausible and the router chose by recency. A `low` value arms the first-mutation gate described under "Workspace resolution."
@@ -375,7 +377,13 @@ Hard caps, enforced by the harness:
 - Rows carry only ledger-level facts: date, workspace, permanent goal/task selectors, goal title, task title, task objective/status, and note excerpt. Never workspace content, never exact message bodies.
 - The tool is deliberately cross-workspace — resolving "which project?" is its job — but it exposes only the same metadata `KNOWN_GOALS` already exposes.
 
-Example: "Remember what we were working on last month, I have a new idea on it." The message's temporal reference falls outside the 7-day notepad, so the router calls `ledger_query(from: 2026-08-01, to: 2026-08-31)`, reads the two rows, and either resumes the one plausible goal or returns a constructive clarify enumerating exactly those rows.
+#### Selecting a goal found by `ledger_query`
+
+A goal or task found through `ledger_query` is directly selectable, even when it was not one of the `KNOWN_GOALS` candidates. The router returns its permanent selector exactly as the row showed it: `goal_label: "g12"` for a goal, and `task_label: "g12/t4"` for one of its tasks.
+
+The harness accepts a `gN` or `gN/tN` selector only if it appeared in a `ledger_query` result during this same routing run. Any other selector—one copied from history, guessed, or remembered from an earlier run—fails validation and triggers the normal repair attempt. This keeps the router's choices bounded to evidence it was actually shown, while removing the dead end where the router finds the right goal but has no valid way to name it.
+
+Example: "Remember what we were working on last month, I have a new idea on it." The message's temporal reference falls outside the 7-day notepad, so the router calls `ledger_query(from: 2026-08-01, to: 2026-08-31)` and reads the rows. If exactly one goal is plausible, it returns `resume_existing` with that row's `gN` selector and either resumes the row's task (`gN/tN`) or creates a new task for the new idea; otherwise it returns a constructive clarify enumerating exactly those rows.
 
 The escalation path composes with the tools: if the router model returns invalid output or misuses a tool, the single retry on the main model inherits the same remaining call budget.
 
@@ -405,7 +413,7 @@ Schema rules, enforced by the harness:
 
 This replaces the free-text `clarification_question` field in the router output schema. The clarify outcome is expressed as a tool call, not a JSON field, which lets the schema enforce the constructive-clarify rule mechanically instead of trusting the model to comply.
 
-Example compound result:
+Example compound result, for Q10 of the validation sequence below. The current goal is `Socrates development`, its current task is the onboarding alignment, and the GitHub issue task is listed in its task index as `task_2`:
 
 ```json
 {
@@ -416,32 +424,32 @@ Example compound result:
   "task_label": null,
   "new_task_title": null,
   "workspace_confidence": null,
-  "reason": "The request contains an existing GitHub action followed by a distinct dependent security review.",
+  "reason": "The request contains an action on the existing GitHub issue task followed by a distinct dependent security review.",
   "parts": [
     {
       "order": 1,
       "request": "Post the implementation summary and test results on GitHub issue #42.",
       "decision": "resume_existing",
-      "goal_label": "older_1",
+      "goal_label": "current",
       "new_goal_title": null,
-      "task_decision": "continue_task",
-      "task_label": "current",
+      "task_decision": "resume_task",
+      "task_label": "task_2",
       "new_task_title": null,
       "workspace_confidence": "high",
-      "reason": "This action completes the known GitHub issue task.",
+      "reason": "Posting the prepared update completes the earlier GitHub issue task.",
       "depends_on": []
     },
     {
       "order": 2,
       "request": "Audit every API endpoint touched by that fix for authentication and authorization problems.",
-      "decision": "create_new",
-      "goal_label": null,
-      "new_goal_title": "Security review of issue #42 API changes",
+      "decision": "continue_current",
+      "goal_label": "current",
+      "new_goal_title": null,
       "task_decision": "create_task",
       "task_label": null,
-      "new_task_title": "Audit issue #42 API endpoints for auth problems",
+      "new_task_title": "Security review of issue #42 API changes",
       "workspace_confidence": "high",
-      "reason": "The security audit is a new durable outcome that depends on the GitHub fix.",
+      "reason": "The audit is a new bounded objective within Socrates development that depends on the GitHub fix.",
       "depends_on": [1]
     }
   ]
@@ -871,9 +879,9 @@ This preserves the product illusion of one seamless conversation while giving ev
 
 ## Q1-Q12 validation sequence
 
-These natural user messages are the baseline goal-routing test. They must be kept as an architecture fixture when the router is implemented.
+These natural user messages are the baseline routing test. They must be kept as an architecture fixture when the router is implemented.
 
-**Re-mapping note (2026-09-02):** under the goal/task/chat model, the subjects this fixture originally called "goals" are **tasks** — bounded pieces of work inside the durable `Socrates development` goal. The expected movement below is re-expressed accordingly: Q2–Q4 are one task, Q5–Q6 another, and so on. The goal-level decisions (which goal owns the message) remain the primary test; the task column shows the task-level decision the router now also makes.
+Under the goal/task/chat model, Q2–Q10 are **tasks** — bounded pieces of work inside one durable `Socrates development` goal in the `socrates` workspace. Q2–Q4 are one task, Q5–Q6 another, and so on. Each row tests both decisions the router makes: which goal owns the message, and which task inside it. Q11–Q12 test workspace resolution in a separate scenario.
 
 1. “Hi, how are you?”
 2. “Can you review the memory system in Socrates and explain how it currently works?”
@@ -885,24 +893,26 @@ These natural user messages are the baseline goal-routing test. They must be kep
 8. “How far is our onboarding page from the latest Socrates design in Figma?”
 9. “Bring it in line with the design, but keep our existing colour palette.”
 10. “Post the implementation summary and test results on GitHub issue #42, then audit every API endpoint touched by that fix for authentication and authorization problems.”
+11. “Let's continue the project from yesterday.” (separate scenario, below)
+12. “The German one.” (answer to Q11's clarification)
 
 Expected movement:
 
-| Query | Router result | Selected task |
-|---|---|---|
-| Q1 | `create_new` (goal: general) | General conversation (the `general` task) |
-| Q2 | `create_task` in Socrates development | Review Socrates memory system |
-| Q3 | `continue_task` | Review Socrates memory system |
-| Q4 | `continue_task` | Review Socrates memory system |
-| Q5 | `create_task` | Investigate GitHub issue #42 |
-| Q6 | `continue_task` | Investigate GitHub issue #42 |
-| Q7 | `resume_task` | Review Socrates memory system |
-| Q8 | `create_task` | Align onboarding page with Figma |
-| Q9 | `continue_task` | Align onboarding page with Figma |
-| Q10 part 1 | `resume_task` | Investigate GitHub issue #42 |
-| Q10 part 2 | `create_task`, depends on part 1 | Security review of issue #42 API changes |
-| Q11 | `ask_user` (constructive clarify) | — |
-| Q12 | `resume_task` | Checkout flow fix (Website X) |
+| Query | Goal decision | Task decision | Selected task |
+|---|---|---|---|
+| Q1 | `create_new` (goal: general) | `create_task` | the `general` task |
+| Q2 | `create_new` (goal: Socrates development) | `create_task` | Review Socrates memory system |
+| Q3 | `continue_current` | `continue_task` | Review Socrates memory system |
+| Q4 | `continue_current` | `continue_task` | Review Socrates memory system |
+| Q5 | `continue_current` | `create_task` | Investigate GitHub issue #42 |
+| Q6 | `continue_current` | `continue_task` | Investigate GitHub issue #42 |
+| Q7 | `resume_existing` (goal: current) | `resume_task` | Review Socrates memory system |
+| Q8 | `continue_current` | `create_task` | Align onboarding page with Figma |
+| Q9 | `continue_current` | `continue_task` | Align onboarding page with Figma |
+| Q10 part 1 | `resume_existing` (goal: current) | `resume_task` | Investigate GitHub issue #42 |
+| Q10 part 2 | `continue_current` | `create_task`, depends on part 1 | Security review of issue #42 API changes |
+| Q11 | `ask_user` (constructive clarify) | — | — |
+| Q12 | `resume_existing` (goal: older_1) | `resume_task` (`latest`) | Complete the Day 10 lesson (German) |
 
 ### Q1: first message
 
@@ -924,9 +934,9 @@ Hi, how are you?
 
 Result: `create_new` (goal: general) — the `general` task.
 
-The Main Coding Agent answers normally and saves a continuation note such as `No technical work is active.`
+The Main Coding Agent answers normally and saves a continuation note such as `No technical work is active.` With no prior activity, its `<RECENT_ACTIVITY>` block is empty, so it offers no recap.
 
-### Q2-Q4: one goal moving from review to implementation
+### Q2-Q4: one task moving from review to implementation
 
 For Q2, Q1 is recent history and the `general` task is current. The final block is:
 
@@ -936,9 +946,9 @@ Can you review the memory system in Socrates and explain how it currently works?
 </CURRENT_USER_MESSAGE>
 ```
 
-The router creates the task `Review Socrates memory system` (inside the durable Socrates development goal, or a new goal if none exists).
+No goal plausibly owns this outcome yet, so the router creates the goal `Socrates development` and its first task, `Review Socrates memory system`. Had the goal already existed, the result would be `resume_existing` with `create_task`.
 
-For Q3, the router sees the exact Q2 pair plus this current-goal note:
+For Q3, the router sees the exact Q2 pair plus this current-task note:
 
 ```text
 Reviewed the memory system. Exact exchanges are stored separately from the
@@ -954,7 +964,7 @@ What is the biggest architectural weakness in it?
 </CURRENT_USER_MESSAGE>
 ```
 
-The router continues the current goal because “it” is resolved by the exact Q2 pair.
+The router continues the current task because “it” is resolved by the exact Q2 pair.
 
 For Q4, the exact Q3 answer identifies the weakness and the final block is:
 
@@ -964,11 +974,11 @@ Fix that and run the relevant tests.
 </CURRENT_USER_MESSAGE>
 ```
 
-The router continues the same goal. Review, fix, and test are stages of one intended outcome.
+The router continues the same task. Review, fix, and test are stages of one bounded outcome.
 
-### Q5-Q6: GitHub issue goal
+### Q5-Q6: GitHub issue task
 
-For Q5, the memory goal is current but the final message explicitly seeks a different outcome:
+For Q5, the memory task is current but the final message introduces an independently completable objective inside the same goal:
 
 ```text
 <CURRENT_USER_MESSAGE>
@@ -976,9 +986,9 @@ Does GitHub issue #42 still reproduce against the current code?
 </CURRENT_USER_MESSAGE>
 ```
 
-The router creates the task `Investigate GitHub issue #42`. Routing does not load GitHub. Inside the working loop, the agent searches for and activates the necessary GitHub MCP tools.
+The router returns `continue_current` with `create_task` for `Investigate GitHub issue #42`. Routing does not load GitHub. Inside the working loop, the agent searches for and activates the necessary GitHub MCP tools.
 
-For Q6, the current goal note says the bug reproduced and the latest exact goal pair identifies issue #42. Therefore:
+For Q6, the current task note says the bug reproduced and the latest exact pair identifies issue #42. Therefore:
 
 ```text
 <CURRENT_USER_MESSAGE>
@@ -986,29 +996,26 @@ If it does, fix it and draft a concise update for the issue.
 </CURRENT_USER_MESSAGE>
 ```
 
-continues the GitHub goal without requiring the user to repeat its name.
+continues the GitHub task without requiring the user to repeat its name.
 
-### Q7: natural return to an older goal
+### Q7: natural return to an earlier task
 
-The current goal is GitHub issue #42. Candidate retrieval supplies the older memory goal because its title and note match “memory” and “compaction.”
+The current task is GitHub issue #42. The memory task appears in the current goal's task index, and its title and note match “memory” and “compaction.”
 
 ```text
 <RECENT_EXACT_HISTORY>
-Newest complete Q&A pairs fitting the model-aware token budget.
+Newest complete Q&A pairs fitting the 20,000-token router-history budget.
 </RECENT_EXACT_HISTORY>
 
 <KNOWN_GOALS>
 CURRENT
 label: current
-title: Investigate GitHub issue #42
-workspace: website-x
-note: Terminal reconnect fix implemented. Tests pass. A concise issue update is drafted.
-
-OLDER
-label: older_1
-title: Review Socrates memory system
-workspace: website-x
-note: Compaction provenance fix implemented. Recovery validates source references. Focused tests pass.
+title: Socrates development
+workspace: socrates
+note: Hardening the Socrates harness: memory, compaction, and open GitHub issues.
+tasks:
+- current: Investigate GitHub issue #42 — open; reconnect fix implemented, issue update drafted
+- task_1: Review Socrates memory system — open; provenance fix implemented, focused tests pass
 </KNOWN_GOALS>
 
 <CURRENT_USER_MESSAGE>
@@ -1016,17 +1023,17 @@ Could that memory fix lose information during compaction?
 </CURRENT_USER_MESSAGE>
 ```
 
-Result: `resume_task`. The Main Coding Agent then receives the memory task's exact history, not the GitHub task's history.
+Result: `resume_existing` with `goal_label: current`, `task_decision: resume_task`, and `task_label: task_1`. The Main Coding Agent then receives the memory task's chat history, not the GitHub task's.
 
-### Q8-Q9: Figma onboarding goal
+### Q8-Q9: Figma onboarding task
 
-Q8 creates the task `Align onboarding page with Figma`. The working agent—not the router—uses `capability_search` and `capability_control` to obtain only the relevant Figma MCP tools.
+Q8 creates the task `Align onboarding page with Figma` in the current goal. The working agent—not the router—uses `capability_search` and `capability_control` to obtain only the relevant Figma MCP tools.
 
-Q9 continues that goal because “it” and “the design” are resolved by the exact Q8 pair. The requirement to preserve the existing colour palette is part of the exact current user message and later continuation note.
+Q9 continues that task because “it” and “the design” are resolved by the exact Q8 pair. The requirement to preserve the existing colour palette is part of the exact current user message and later continuation note.
 
 ### Q10: compound request
 
-The router sees the onboarding goal as current and retrieves the GitHub issue goal as an older candidate. The exact current message remains one final block:
+The router sees the onboarding task as current and the GitHub issue task in the current goal's task index. The exact current message remains one final block:
 
 ```text
 <CURRENT_USER_MESSAGE>
@@ -1034,18 +1041,18 @@ Post the implementation summary and test results on GitHub issue #42, then audit
 </CURRENT_USER_MESSAGE>
 ```
 
-It returns two ordered parts:
+It returns two ordered parts (the full JSON appears under "Router output"):
 
 1. Resume the GitHub issue task and post the already-prepared summary and test results.
 2. Create the task `Security review of issue #42 API changes`, depending on part 1, and pass only the relevant files, verified results, and exact supporting evidence from the GitHub task.
 
-The exact user message is stored once. The task has two ordered goal links; it is not duplicated in storage.
+The exact user message is stored once and linked to both tasks; it is not duplicated in storage.
 
 ### Q11-Q12: ambiguous temporal reference and constructive clarify
 
-These extend the fixture with the workspace-resolution behavior.
+These extend the fixture with the workspace-resolution behavior, in a separate scenario: yesterday the user worked on three goals across two workspaces, most recently Website X.
 
-**Q11** — the user, having worked on three things across two workspaces the previous day, says:
+**Q11** — the user says:
 
 ```text
 Let's continue the project from yesterday.
@@ -1058,30 +1065,32 @@ The notepad shows all three, so the router does not guess on a mutating request.
   "question": "Yesterday you worked on three things — which should we continue with?",
   "candidates": [
     { "label": "Website X", "detail": "checkout flow fix, most recent", "suggested": true },
-    { "label": "German lessons", "detail": "Day 10, dative prepositions" },
+    { "label": "German lessons", "detail": "Day 10 lesson, dative prepositions — in progress" },
     { "label": "UFC chat", "detail": "fight discussion" }
   ],
   "allow_new": true
 }
 ```
 
-**Q12** — the user answers "the website one." The answer re-enters the router as a normal message; the candidates are now in recent exact history, so it resolves trivially:
+**Q12** — the user answers "The German one." The answer re-enters the router as a normal message; the candidates are now in recent exact history, and the German goal is supplied as `older_1` with its most recent task labelled `latest`, so it resolves trivially:
 
 ```json
 {
   "decision": "resume_existing",
   "goal_label": "older_1",
   "new_goal_title": null,
-  "task_decision": "continue_task",
-  "task_label": "current",
+  "task_decision": "resume_task",
+  "task_label": "latest",
   "new_task_title": null,
   "workspace_confidence": "high",
   "parts": null,
-  "reason": "The user selected Website X from the enumerated candidates."
+  "reason": "The user selected the German goal from the enumerated candidates; its Day 10 lesson is still in progress."
 }
 ```
 
-The working agent runs in `website-x` with the checkout goal's context. The banner shows the resolution; because the user explicitly confirmed, the first-mutation gate is disarmed for this task.
+The working agent runs in the `personal` workspace with the German goal's context and the Day 10 task's chat history. The banner shows the resolution; because the user explicitly confirmed, the first-mutation gate is disarmed for this task.
+
+Had the user picked the suggested Website X instead, the router would return `continue_current` with `continue_task`, because the most recently worked goal is the current goal.
 
 A variant worth testing: Q12' — the user answers "actually, something new." With `allow_new: true` the router returns `create_new`, and the harness surfaces the one lightweight workspace decision at the first mutating action.
 
