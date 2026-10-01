@@ -30,7 +30,7 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 
 ## Current Project State
 
-- Published baseline: **v0.1.19**. Current production-repair candidate: **v0.1.20**.
+- Previous release: **v0.1.19**. Current live release: **v0.1.20** (this `main` branch).
 - Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.20**, but publishing remains a manual approval step.
 - Runtime availability for macOS 15+ (arm64/x64) and Windows x64.
 - The stable product is the original cream **Classic View**: projects contain user-created conversations with normal history, context compaction, tools, cancellation, and restart recovery.
