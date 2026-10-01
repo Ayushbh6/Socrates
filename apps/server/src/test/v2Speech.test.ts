@@ -487,27 +487,6 @@ describe("V2 speech engine boundaries", () => {
     expect(request).toHaveBeenCalledTimes(1)
   })
 
-  it("bounds a hosted transcription that never returns", async () => {
-    const request = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
-    }))
-    const transcriber = new OpenRouterTranscriber(
-      { getApiKey: () => "openrouter-key" },
-      request as typeof fetch,
-      5,
-    )
-
-    await expect(transcriber.transcribe({
-      modelId: "nvidia/parakeet-tdt-0.6b-v3",
-      audio: Buffer.from("audio"),
-      format: "wav",
-    })).rejects.toMatchObject({
-      code: "v2_stt_failed",
-      message: "Hosted transcription timed out. Try again or choose another OpenRouter transcriber.",
-      recoverable: true,
-    })
-  })
-
   it("fails explicitly when hosted credentials or local runtimes are missing", async () => {
     const request = vi.fn()
     const hosted = new OpenRouterTranscriber({ getApiKey: () => undefined }, request as unknown as typeof fetch)
@@ -657,7 +636,7 @@ describe("V2 speech engine boundaries", () => {
       sampleRate: 24_000,
     })
     await synthesizer.synthesize({ text: "The model stays warm.", outputPath: secondOutput })
-    expect(createAsync).toHaveBeenCalledTimes(2)
+    expect(createAsync).toHaveBeenCalledTimes(1)
     expect(generateAsync).toHaveBeenCalledTimes(2)
     expect(nativeRuntime.writeWave).toHaveBeenCalledTimes(2)
     expect(fs.readFileSync(firstOutput, "utf8")).toBe("RIFF-native-kokoro")

@@ -21,9 +21,9 @@ export function ChatToolTimeline({ tools, approvals = [], credentialRequests = [
   const hasPendingCredential = credentialRequests.some((request) => request.status === "pending");
   const [isOpen, setIsOpen] = useState(hasPendingApproval || hasActiveWork || hasFailedWork || hasPendingCredential);
   useEffect(() => {
-    if (hasPendingApproval || hasActiveWork || hasFailedWork || hasPendingCredential) {
-      setIsOpen(true);
-    }
+    if (!(hasPendingApproval || hasActiveWork || hasFailedWork || hasPendingCredential)) return;
+    const frame = window.requestAnimationFrame(() => setIsOpen(true));
+    return () => window.cancelAnimationFrame(frame);
   }, [hasActiveWork, hasFailedWork, hasPendingApproval, hasPendingCredential]);
   const summary = useMemo(() => summarizeToolGroup(tools, approvals), [tools, approvals]);
   const shouldShowDetails = isOpen || hasPendingApproval || hasActiveWork || hasPendingCredential;

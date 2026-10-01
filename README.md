@@ -30,15 +30,12 @@ Socrates is a local-first coding and investigation workspace that keeps long pro
 
 ## Current Project State
 
-- Current GitHub runtime release: **v0.1.19**.
-- Distribution: the public `@socrates-ai/cli@0.1.19` launcher already resolves the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.20** for the security-key-authenticated npm publish.
+- Published baseline: **v0.1.19**. Current production-repair candidate: **v0.1.20**.
+- Distribution: `@socrates-ai/cli` launches the latest GitHub runtime via `npx`; launcher source is prepared at **0.1.20**, but publishing remains a manual approval step.
 - Runtime availability for macOS 15+ (arm64/x64) and Windows x64.
-- The original cream **Classic View (V1)** welcome, projects, and project dashboard remain the default path. A project-scoped **Go to Flow View** control opens that same project's isolated V2 Flow; there is no global view chooser or second project directory.
-- Seamless View provides one persistent Flow per project, bounded foreground/parked goals, versioned capsules, pruned working context, and immutable retrievable evidence.
-- Classic and Flow share one canonical per-project goal ledger. A Classic conversation may contain many goals; each routed turn links to one goal, and **Open in Classic** gives an individual goal at most one preferred Classic home without splitting a Flow into surprise conversations.
-- V2 inherits the same providers, Socrates agent, tools, approvals, Terminals, MCP servers, skills, Memory Router, Global Memory Agent, workspace `.socrates/`, and global `~/.Socrates/` foundation as Classic.
-- The shared voice setting defaults to **Not configured**. Classic and Flow use the same explicit offline/OpenRouter choice; offline packs download only after the user presses Install. Transcripts append to the unsent draft and never auto-send.
-- V2 Voice V1 additionally exposes local Whisper `base.en`/`small.en`, the three allowlisted OpenRouter transcription models, and local Kokoro read-aloud; local failures never silently upload audio.
+- The stable product is the original cream **Classic View**: projects contain user-created conversations with normal history, context compaction, tools, cancellation, and restart recovery.
+- Experimental Seamless/Flow routes and runtime services are not shipped in this stable line. Existing Flow data is preserved but inactive; a one-time compatibility repair recovers completed visible Q&A into Classic and returns bridged conversations to Classic ownership.
+- The shared Classic composer now includes click-to-record STT. It defaults to local Whisper `small.en`, appends the transcript to the unsent draft, never auto-sends, and creates no V2 Flow state.
 - Ollama can serve local chat models from the normal model picker when the local Ollama runtime is reachable.
 - Trace retrieval upgraded for broader match windows and exact quote context.
 - Duplicate tool-call handling added to avoid repeated identical retrieval passes in one turn.
@@ -74,7 +71,7 @@ Terminal 1:
 
 ```bash
 pnpm install
-SOCRATES_V2_FLOW_ENABLED=true pnpm --filter @socrates/server dev
+pnpm --filter @socrates/server dev
 ```
 
 Terminal 2:

@@ -42,8 +42,6 @@ type MemoryRouterAgentBaseInput = {
   projectDescription?: string
   userMessage: string
   recentMessages: ModelMessage[]
-  goalCandidates?: readonly GoalCandidateCard[]
-  currentGoalCandidate?: number
   toolExecutors: ToolExecutors
   automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
   cacheKey?: string
@@ -62,27 +60,11 @@ export type MemoryRouterRunRecord = {
   error?: { code: string; message: string; details?: unknown; recoverable: boolean }
 }
 
-export type GoalCandidateCard = Readonly<{
-  goalId: string
-  candidate: number
-  status: string
-  title: string
-  note: string
-}>
-
-export type ActiveGoalCard = Readonly<{
-  goalId: string
-  title: string
-  state: string
-  note: string
-}>
-
 export type MemoryRouterPreTurnInput = MemoryRouterAgentBaseInput
 export type MemoryRouterPostTurnInput = MemoryRouterAgentBaseInput & {
   preflightSummary?: string
   toolSummary: string
   assistantDraft: string
-  activeGoal?: ActiveGoalCard
 }
 
 export class MemoryRouterAgent {
@@ -105,8 +87,6 @@ export class MemoryRouterAgent {
         userMessage: input.userMessage,
         recentMessages: input.recentMessages,
         automaticCandidates: prefetch.results,
-        ...(input.goalCandidates ? { goalCandidates: input.goalCandidates } : {}),
-        ...(input.currentGoalCandidate ? { currentGoalCandidate: input.currentGoalCandidate } : {}),
         ...(prefetch.warning ? { automaticCoverageWarning: prefetch.warning } : {}),
       }),
       schema: memoryRouterPreTurnResultSchema,
@@ -139,7 +119,6 @@ export class MemoryRouterAgent {
         ...(input.preflightSummary ? { preflightSummary: input.preflightSummary } : {}),
         toolSummary: input.toolSummary,
         assistantDraft: input.assistantDraft,
-        ...(input.activeGoal ? { activeGoal: input.activeGoal } : {}),
       }),
       schema: memoryRouterPostTurnResultSchema,
       toolRegistry: createMemoryFinalizationToolRegistry(),

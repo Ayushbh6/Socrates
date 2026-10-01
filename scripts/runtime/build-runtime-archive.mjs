@@ -97,6 +97,8 @@ if (manifest.runtimeKind !== "cli" || typeof manifest.node !== "string") {
   throw new Error("Runtime archive manifest is not a bundled-node CLI runtime.");
 }
 
+await run(bundledNode, [path.join(runtimeScriptsRoot, "packaged-runtime-smoke.mjs"), runtimeDir]);
+
 const sizeMb = Math.round((fs.statSync(archivePath).size / 1024 / 1024) * 10) / 10;
 console.log(`Created ${archivePath} (${sizeMb} MB) on ${os.platform()}/${os.arch()}`);
 

@@ -5,7 +5,6 @@ import {
   waitToolOutputSchema,
   type MemoryRouterPostTurnResult,
   type MemoryRouterPreTurnResult,
-  type GoalFinalization,
   type MemoryReconciliationAction,
   type MemorySearchInput,
   type MemorySearchOutput,
@@ -17,7 +16,6 @@ import {
   type ToolName,
   type WaitToolOutput,
   type WorkerModelSettings,
-  type V2GoalRouterOutput,
   normalizeBashModelInput,
 } from "@socrates/contracts"
 import fs from "node:fs"
@@ -30,17 +28,11 @@ import {
   type ContextCompactionLifecycleEvent,
   type ContextCompressionRuntime,
 } from "../context/contextCompression"
-import { ToolOutputDispositionLedger } from "../context/toolOutputDisposition"
 import { buildSocratesDynamicContext, buildSocratesSystemPrompt, type SocratesPromptContext } from "../prompts/socratesPrompt"
 import { renderSocratesSurfaceMap } from "@socrates/contracts"
 import { createDefaultToolRegistry, type ToolRegistry } from "../tools/registry"
 import type { ApprovalDecision, ApprovalRequest, CredentialInputDecision, CredentialInputRequest, ToolExecutors, ToolLifecycleEvent, ToolPolicyDecision, ToolRuntimeContext } from "../tools/types"
-import {
-  MemoryRouterAgent,
-  type ActiveGoalCard,
-  type GoalCandidateCard,
-  type MemoryRouterRunRecord,
-} from "./MemoryRouterAgent"
+import { MemoryRouterAgent, type MemoryRouterRunRecord } from "./MemoryRouterAgent"
 
 export type SocratesAgentTurnInput = {
   projectId?: string
@@ -73,11 +65,6 @@ export type SocratesAgentTurnInput = {
   stableCachePreludeSnapshot?: StableCachePreludeSnapshot
   recordMemoryRouterRun?: (input: MemoryRouterRunRecord) => void | Promise<void>
   automaticMemorySearch?: (input: MemorySearchInput) => Promise<MemorySearchOutput>
-  goalCandidates?: readonly GoalCandidateCard[]
-  currentGoalCandidate?: number
-  activeGoal?: ActiveGoalCard
-  applyGoalRoute?: (route: V2GoalRouterOutput) => Promise<ActiveGoalCard>
-  applyGoalFinalization?: (finalization: GoalFinalization) => Promise<void>
   contextCompression?: ContextCompressionRuntime
   maxToolCallsPerTurn?: number
   maxConfirmedToolErrorsPerTurn?: number
@@ -152,7 +139,6 @@ export class SocratesAgent {
   async *streamTurn(input: SocratesAgentTurnInput): AsyncIterable<SocratesAgentEvent> {
     const system = input.systemPromptOverride ?? buildSocratesSystemPrompt()
     const messages: ModelMessage[] = [...input.messages]
-    const toolOutputDispositions = new ToolOutputDispositionLedger(messages)
     const maxToolCallsPerTurn = input.maxToolCallsPerTurn ?? 80
     const maxConfirmedToolErrorsPerTurn = input.maxConfirmedToolErrorsPerTurn ?? 10
     const maxParallelToolCalls = input.maxParallelToolCalls ?? 5
@@ -173,7 +159,6 @@ export class SocratesAgent {
     let docsSyncCheckpointSent = false
     let pendingInteractiveTerminalName: string | undefined
     let preTurnMemoryLoopSummary: string | undefined
-    let activeGoal: ActiveGoalCard | undefined = input.activeGoal
     let finalReconciliationSent = false
     let accumulatedAnswerText = ""
     let currentProviderId = input.providerId
@@ -184,11 +169,9 @@ export class SocratesAgent {
     const memoryFinalizationEnabled = canRunMemoryLoop(this.provider, input, this.toolRegistry)
     const reconciliationVerification = new ReconciliationVerificationLedger()
     let reconciliationReminderCount = 0
-    let contextDispositionComplianceReminderCount = 0
 
     const preTurnMemoryLoop = await this.runPreTurnMemoryLoop(input, messages, docsLedger)
     preTurnMemoryLoopSummary = preTurnMemoryLoop.summary
-    activeGoal = preTurnMemoryLoop.activeGoal ?? activeGoal
     for (const event of preTurnMemoryLoop.events) {
       yield event
     }
@@ -388,13 +371,11 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         if (modelEvent.type === "model.tool_call.completed") {
           const parsed = normalizedToolCallSchema.safeParse(modelEvent.toolCall)
           if (parsed.success) {
-            if (parsed.data.toolName !== "context_disposition") {
-              const inputKey = stableToolInputKey(parsed.data.toolName, parsed.data.input)
-              const nextCount = (toolInputCounts.get(inputKey) ?? 0) + 1
-              toolInputCounts.set(inputKey, nextCount)
-              if (nextCount >= 3) {
-                repeatedToolInputsThisStep.add(`${parsed.data.toolName} ${JSON.stringify(parsed.data.input)}`)
-              }
+            const inputKey = stableToolInputKey(parsed.data.toolName, parsed.data.input)
+            const nextCount = (toolInputCounts.get(inputKey) ?? 0) + 1
+            toolInputCounts.set(inputKey, nextCount)
+            if (nextCount >= 3) {
+              repeatedToolInputsThisStep.add(`${parsed.data.toolName} ${JSON.stringify(parsed.data.input)}`)
             }
             toolCalls.push({
               ...parsed.data,
@@ -410,45 +391,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         }
 
         yield attachModelMetadata(modelEvent, modelCallId, step)
-      }
-
-      const pendingDispositionResults = toolOutputDispositions.pendingResults()
-      const hasFunctionalToolCall = toolCalls.some((toolCall) => toolCall.toolName !== "context_disposition")
-      const hasContextDispositionCall = toolCalls.some((toolCall) => toolCall.toolName === "context_disposition")
-      if (pendingDispositionResults.length > 0 && hasFunctionalToolCall && !hasContextDispositionCall) {
-        if (contextDispositionComplianceReminderCount >= 2) {
-          // A provider that repeatedly ignores the control contract must not
-          // deadlock the task. Conservatively retain the visible results exact
-          // and record that decision through the normal auditable tool path.
-          // This fallback makes no semantic release/distillation judgment.
-          const providerToolCallId = createId("tcall")
-          toolCalls.unshift({
-            toolCallId: toolRunIdFor(providerToolCallId),
-            providerToolCallId,
-            toolName: "context_disposition",
-            input: {
-              decisions: pendingDispositionResults.slice(0, 8).map((result) => ({ result, action: "keep_exact" as const })),
-            },
-          })
-          contextDispositionComplianceReminderCount = 0
-        } else {
-          contextDispositionComplianceReminderCount += 1
-          messages.push({
-            role: "developer",
-            content: [
-              "The previous proposed functional tool calls were not executed because they omitted the required same-response context_disposition call.",
-              `Before retrying those functional calls, classify the visible pending results (${pendingDispositionResults.slice(0, 8).join(", ")}) with one context_disposition call in the same response.`,
-              "This is a model judgment: choose keep_exact, distill, release, or unresolved for each result you classify. Do not call context_disposition alone.",
-              ...(contextDispositionComplianceReminderCount >= 2
-                ? ["This is the second compliance reminder. Include the context_disposition call now; one more omission will use the safe keep-exact fallback so the task can continue."]
-                : []),
-            ].join("\n"),
-          })
-          continue
-        }
-      }
-      if (hasContextDispositionCall) {
-        contextDispositionComplianceReminderCount = 0
       }
 
       const requestedHandover = toolCalls.find((toolCall) => toolCall.toolName === "handover_to_frontier")
@@ -528,7 +470,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
               })
             : "No structured task evidence was available.",
           assistantDraft: stepText || accumulatedAnswerText,
-          ...(activeGoal ? { activeGoal } : {}),
         })
         finalReconciliationSent = true
         reconciliationVerification.require(finalMemoryLoop.reconciliationActions ?? [])
@@ -604,11 +545,6 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           stepIndex: step,
           ...(input.fileFreshness ? { fileFreshness: input.fileFreshness } : {}),
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
-          applyContextDisposition: async (dispositionInput) =>
-            toolOutputDispositions.apply(
-              dispositionInput,
-              toolCalls.some((toolCall) => toolCall.toolName !== "context_disposition"),
-            ),
         },
         remainingBudget: maxToolCallsPerTurn - usedToolCalls,
         maxParallelToolCalls,
@@ -633,12 +569,16 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
         yield { type: "agent.suspended", wait: waitResult.output }
         return
       }
+      const nextUsedToolCalls = usedToolCalls + execution.countedToolCalls
+      if (nextUsedToolCalls >= 10) {
+        compactPriorToolHistoryForModel(messages)
+      }
       usedToolCalls += execution.countedToolCalls
       const confirmedToolErrorResults = execution.results.filter(isConfirmedToolErrorResult)
       confirmedToolErrors += confirmedToolErrorResults.length
 
       messages.push({ role: "assistant", content: assistantParts })
-      const toolResultMessage: ModelMessage = {
+      messages.push({
         role: "tool",
         content: execution.results.map((result) => ({
           type: "tool-result",
@@ -646,8 +586,7 @@ Current runtime fact: the bash tool is a fully interactive, conversation-scoped 
           toolName: result.toolName,
           output: sanitizeToolExecutionResultForModel(result, result.providerToolCallId ?? result.toolCallId),
         })),
-      }
-      messages.push(toolResultMessage)
+      })
       const rejectedHandover = execution.results.find(
         (result) =>
           result.ok === false &&
@@ -696,13 +635,11 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       }
       const nativeToolMessages = execution.results.flatMap((result) => nativeFollowUpMessagesForToolResult(result, input.workspacePath))
       messages.push(...nativeToolMessages)
-      const operationalToolCalls = toolCalls.filter((toolCall) => toolCall.toolName !== "context_disposition")
-      const operationalResults = execution.results.filter((result) => result.toolName !== "context_disposition")
-      docsLedger.recordBatch({ toolCalls: operationalToolCalls, results: operationalResults })
-      reconciliationVerification.recordBatch(operationalToolCalls, operationalResults)
+      docsLedger.recordBatch({ toolCalls, results: execution.results })
+      reconciliationVerification.recordBatch(toolCalls, execution.results)
       const ledgerUpdate = actionLedger.recordBatch({
-        toolCalls: operationalToolCalls,
-        results: operationalResults,
+        toolCalls,
+        results: execution.results,
         estimatedTokens: preparedContext.estimatedTokens,
         currentTurnTokenGrowth,
       })
@@ -710,7 +647,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       for (const warning of ledgerUpdate.warnings) {
         messages.push({ role: "developer", content: warning })
       }
-      memorySaveLedger.recordBatch({ toolCalls: operationalToolCalls, results: operationalResults })
+      memorySaveLedger.recordBatch({ toolCalls, results: execution.results })
       const memoryLedgerMessage = memorySaveLedger.flushDeveloperMessage()
       if (memoryLedgerMessage) {
         messages.push({ role: "developer", content: memoryLedgerMessage })
@@ -728,11 +665,6 @@ You are Frontier and now own this task for the rest of the current turn. Continu
           content: `You have repeated the same exact tool call input at least 3 times this turn (${[...repeatedToolInputsThisStep].slice(0, 3).join("; ")}). Stop repeating identical calls. Either answer from the evidence already gathered, inspect a different target, or ask the user for more information.`,
         })
       }
-      toolOutputDispositions.recordBatch({
-        message: toolResultMessage,
-        providerId: currentProviderId,
-        modelId: currentModelId,
-      })
       if (!totalToolCountNudgeSent && usedToolCalls >= 50) {
         messages.push({
           role: "user",
@@ -782,8 +714,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       const runnable: NormalizedToolCall[] = []
 
       for (const toolCall of input.toolCalls) {
-        const countsTowardBudget = toolCall.toolName !== "context_disposition"
-        if (countsTowardBudget && countedToolCalls >= input.remainingBudget) {
+        if (countedToolCalls >= input.remainingBudget) {
           budgetExhausted = true
           const error = new SocratesError("tool_budget_exhausted", "The per-turn tool-call budget was exhausted.")
           queue.push({
@@ -796,7 +727,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
           results.set(toolCall.toolCallId, toolErrorResult(toolCall, error))
           continue
         }
-        if (countsTowardBudget) countedToolCalls += 1
+        countedToolCalls += 1
         runnable.push(toolCall)
       }
 
@@ -855,11 +786,9 @@ You are Frontier and now own this task for the rest of the current turn. Continu
       : renderStableCachePrelude(records)
 
     if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
-      const activeGoal = await applyFallbackGoalRoute(input, messages)
       return {
         events: [],
         records,
-        ...(activeGoal ? { activeGoal, developerMessage: renderActiveGoalDeveloperMessage(activeGoal) } : {}),
         ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
       }
     }
@@ -874,41 +803,24 @@ You are Frontier and now own this task for the rest of the current turn. Continu
         records.push(record)
       }
 
-      let activeGoal: ActiveGoalCard | undefined
-      if (input.applyGoalRoute) {
-        const goalRoute = route.goalRoute ?? fallbackGoalRoute(input.goalCandidates ?? [], input.currentGoalCandidate, latestUserText(messages))
-        try {
-          activeGoal = await input.applyGoalRoute(goalRoute)
-        } catch (error) {
-          const normalized = normalizeError(error)
-          skipped.push(`goal route was not persisted: ${normalized.code}`)
-        }
-      }
       const summary = summarizeMemoryLoop("pre_turn", route, records, skipped)
       const dynamicRecords = records.filter((record) => !isStableCachePreludeRecord(record))
-      const memoryDeveloperMessage = renderMemoryLoopDeveloperMessage("pre_turn", route, dynamicRecords, skipped, {
-        stableCachePreludeApplied: Boolean(stableCachePreludeMessage),
-      })
       return {
         events,
         summary,
         records,
-        ...(activeGoal ? { activeGoal } : {}),
         ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
-        developerMessage: activeGoal ? `${memoryDeveloperMessage}\n${renderActiveGoalDeveloperMessage(activeGoal)}` : memoryDeveloperMessage,
+        developerMessage: renderMemoryLoopDeveloperMessage("pre_turn", route, dynamicRecords, skipped, {
+          stableCachePreludeApplied: Boolean(stableCachePreludeMessage),
+        }),
       }
     } catch (error) {
       const normalized = normalizeError(error)
       const warning = memoryLoopWarning("pre_turn", `${normalized.code}: ${normalized.message}`)
-      const activeGoal = await applyFallbackGoalRoute(input, messages)
       return {
         ...warning,
         events: [...events, ...warning.events],
         records,
-        ...(activeGoal ? {
-          activeGoal,
-          developerMessage: `${warning.developerMessage ?? ""}\n${renderActiveGoalDeveloperMessage(activeGoal)}`.trim(),
-        } : {}),
         ...(stableCachePreludeMessage ? { stableCachePreludeMessage } : {}),
       }
     }
@@ -917,7 +829,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
   private async runPostEvidenceMemoryLoop(
     input: SocratesAgentTurnInput,
     messages: ModelMessage[],
-    context: { preflightSummary?: string; toolSummary: string; assistantDraft: string; activeGoal?: ActiveGoalCard },
+    context: { preflightSummary?: string; toolSummary: string; assistantDraft: string },
   ): Promise<MemoryLoopRunResult> {
     if (!canRunMemoryLoop(this.provider, input, this.toolRegistry)) {
       return emptyMemoryLoopRunResult()
@@ -929,16 +841,7 @@ You are Frontier and now own this task for the rest of the current turn. Continu
         ...(context.preflightSummary ? { preflightSummary: context.preflightSummary } : {}),
         toolSummary: context.toolSummary,
         assistantDraft: context.assistantDraft,
-        ...(context.activeGoal ? { activeGoal: context.activeGoal } : {}),
       })
-      if (context.activeGoal && route.goalFinalization && input.applyGoalFinalization) {
-        try {
-          await input.applyGoalFinalization(route.goalFinalization)
-        } catch {
-          // Goal-ledger finalization is useful telemetry, but it must never
-          // block the ordinary Socrates answer or memory reconciliation.
-        }
-      }
       const summary = summarizeMemoryLoop("post_evidence", route, [], [])
       return {
         events: [],
@@ -1301,7 +1204,6 @@ type MemoryLoopRunResult = {
   stableCachePreludeMessage?: string
   developerMessage?: string
   reconciliationActions?: MemoryReconciliationAction[]
-  activeGoal?: ActiveGoalCard
 }
 
 type MemoryLoopToolRecord = {
@@ -1360,39 +1262,6 @@ const memoryRouterModelSettingsFor = (input: SocratesAgentTurnInput): MemoryRout
     thinkingEffort: "none",
   }
 
-const fallbackGoalRoute = (
-  candidates: readonly GoalCandidateCard[],
-  currentGoalCandidate: number | undefined,
-  userMessage: string,
-): V2GoalRouterOutput => {
-  if (currentGoalCandidate && candidates.some((candidate) => candidate.candidate === currentGoalCandidate)) {
-    return { action: "use", candidates: [currentGoalCandidate], title: null }
-  }
-  const title = userMessage.replace(/\s+/g, " ").trim()
-  return { action: "create", candidates: [], title: clipText(title || "New focus", 120) }
-}
-
-const applyFallbackGoalRoute = async (
-  input: SocratesAgentTurnInput,
-  messages: readonly ModelMessage[],
-): Promise<ActiveGoalCard | undefined> => {
-  if (!input.applyGoalRoute) return undefined
-  try {
-    return await input.applyGoalRoute(fallbackGoalRoute(input.goalCandidates ?? [], input.currentGoalCandidate, latestUserText(messages)))
-  } catch {
-    return undefined
-  }
-}
-
-const renderActiveGoalDeveloperMessage = (goal: ActiveGoalCard): string => [
-  '<socrates_active_goal source="project_goal_ledger">',
-  `title: ${goal.title}`,
-  `state: ${goal.state}`,
-  `note: ${goal.note}`,
-  "Treat this as the primary goal for the current turn. Do not expose internal goal ids.",
-  "</socrates_active_goal>",
-].join("\n")
-
 const isSameModelSelection = (runtimeConfig: RuntimeConfig, settings: FrontierModelSettings | undefined): boolean =>
   Boolean(
     settings &&
@@ -1430,8 +1299,6 @@ const memoryRouterBaseInput = (input: SocratesAgentTurnInput, messages: ModelMes
     ...(input.promptContext?.projectDescription ? { projectDescription: input.promptContext.projectDescription } : {}),
     userMessage: latestUserText(messages),
     recentMessages: messages,
-    ...(input.goalCandidates ? { goalCandidates: input.goalCandidates } : {}),
-    ...(input.currentGoalCandidate ? { currentGoalCandidate: input.currentGoalCandidate } : {}),
     toolExecutors: input.toolExecutors,
     ...(input.automaticMemorySearch ? { automaticMemorySearch: input.automaticMemorySearch } : {}),
     ...(input.cacheKey ? { cacheKey: input.cacheKey } : {}),
@@ -1484,7 +1351,7 @@ const routedPreTurnRecallRequests = (route: MemoryRouterPreTurnResult): Array<{ 
   return requests
 }
 
-const latestUserText = (messages: readonly ModelMessage[]): string => {
+const latestUserText = (messages: ModelMessage[]): string => {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message?.role !== "user") {
@@ -1748,6 +1615,64 @@ const isDynamicMcpToolName = (toolName: string): boolean => /^mcp__[a-z0-9_-]+__
 const isConfirmedToolErrorResult = (result: ToolExecutionResult): boolean =>
   result.ok === false && typeof result.error?.code === "string" && result.error.code.length > 0 && typeof result.error.message === "string" && result.error.message.length > 0
 
+const compactPriorToolHistoryForModel = (messages: ModelMessage[]): void => {
+  for (const message of messages) {
+    if (message.role !== "tool" || !Array.isArray(message.content)) {
+      continue
+    }
+    for (const part of message.content) {
+      if (!part || typeof part !== "object" || (part as { type?: unknown }).type !== "tool-result") {
+        continue
+      }
+      const record = part as { output?: unknown; toolName?: unknown }
+      record.output = compactModelVisibleToolOutput(record.output, typeof record.toolName === "string" ? record.toolName : undefined)
+    }
+  }
+}
+
+const compactModelVisibleToolOutput = (output: unknown, toolName: string | undefined): unknown => {
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    return output
+  }
+  const record = output as Record<string, unknown>
+  if (record.contextCompacted === true) {
+    return output
+  }
+  if (record.ok === false) {
+    const error = record.error && typeof record.error === "object" && !Array.isArray(record.error) ? (record.error as Record<string, unknown>) : undefined
+    return {
+      toolName,
+      ok: false,
+      contextCompacted: true,
+      message: `Earlier failed ${toolName ?? "tool"} result omitted for context cleanliness after 10+ tool calls.`,
+      ...(typeof error?.code === "string" ? { code: error.code } : {}),
+      ...(typeof error?.message === "string" ? { errorMessage: error.message } : {}),
+    }
+  }
+  const serialized = safeJsonPreview(output, 4_001)
+  if (serialized.length <= 4_000) {
+    return output
+  }
+  return {
+    toolName,
+    ok: record.ok === true,
+    contextCompacted: true,
+    message:
+      "Earlier large tool result compacted after 10+ tool calls. Re-read the file, rerun a targeted search, or use trace_retrieve audit/inspect if exact older evidence is needed.",
+    preview: safeJsonPreview(output, 2_000),
+  }
+}
+
+const safeJsonPreview = (value: unknown, limit: number): string => {
+  let text: string
+  try {
+    text = typeof value === "string" ? value : JSON.stringify(value, null, 2)
+  } catch {
+    text = String(value)
+  }
+  return text.length > limit ? `${text.slice(0, limit)}...` : text
+}
+
 const DOCS_PREFLIGHT_CHECKPOINT = `<runtime_socrates_docs_preflight>
 This turn has workspace tools. Read-only/chat work does not require project docs. Before any bash, edit, or apply_patch call, first call project_docs with area="notes" and call repo_docs in this same turn using read, search, read_index, or read_section. After any successful bash, edit, or apply_patch call, read/search project_docs area="memory" before final answer; update memory only if there is durable project value. The active state ledger lives in project notes and must be fetched with project_docs, not assumed from the prompt. Use tool_docs before unfamiliar, failed, complex, or edge-case tool use.
 Before an ordered multi-step, verification/review, or closure/handoff workflow, call skills list before project_docs/repo_docs/domain tools and describe the best match; generic tool knowledge does not replace learned user gates.
@@ -1840,17 +1765,11 @@ type MemorySaveLedgerBatchInput = {
 
 class ReconciliationVerificationLedger {
   private readonly targets = new Map<string, { label: string; mutated: boolean; verified: boolean }>()
-  private readonly observed = new Map<string, { mutated: boolean; verified: boolean }>()
 
   require(actions: MemoryReconciliationAction[]): void {
     for (const action of actions) {
       const key = this.keyForAction(action)
-      const observed = this.observed.get(key)
-      this.targets.set(key, {
-        label: `${action.fileName}/${action.sectionId}`,
-        mutated: observed?.mutated ?? false,
-        verified: observed?.verified ?? false,
-      })
+      this.targets.set(key, { label: `${action.fileName}/${action.sectionId}`, mutated: false, verified: false })
     }
   }
 
@@ -1865,17 +1784,15 @@ class ReconciliationVerificationLedger {
       if (!result?.ok) continue
       const key = this.keyForCall(call)
       if (!key) continue
-      const operation = toolOperation(call)
-      const observed = this.observed.get(key) ?? { mutated: false, verified: false }
-      if (operation === "edit" || operation === "patch_section") {
-        observed.mutated = true
-        observed.verified = false
-      } else if (observed.mutated && isDocsReadOperation(operation)) {
-        observed.verified = true
-      }
-      this.observed.set(key, observed)
       const target = this.targets.get(key)
-      if (target) Object.assign(target, observed)
+      if (!target) continue
+      const operation = toolOperation(call)
+      if (operation === "edit" || operation === "patch_section") {
+        target.mutated = true
+        target.verified = false
+      } else if (target.mutated && isDocsReadOperation(operation)) {
+        target.verified = true
+      }
     }
   }
 
@@ -2293,18 +2210,9 @@ const sanitizeToolExecutionResultForModel = (result: ToolExecutionResult, modelT
 }
 
 const compactModelToolOutput = (toolName: string, output: unknown): unknown => {
-  // read_index already renders the model-facing index in `content`. Keeping the
-  // full structured `index`/`indexes` as well duplicates every section record,
-  // bypasses the requested charLimit, and can turn a one-step edit into several
-  // expensive context-disposition/model rounds. The complete result remains in
-  // the audit store; only the duplicate model-facing copy is removed.
-  if ((toolName !== "project_docs" && toolName !== "repo_docs") || !output || typeof output !== "object" || Array.isArray(output)) {
-    return output
-  }
+  if ((toolName !== "project_docs" && toolName !== "repo_docs") || !output || typeof output !== "object" || Array.isArray(output)) return output
   const record = output as Record<string, unknown>
-  if (typeof record.content !== "string") {
-    return output
-  }
+  if (typeof record.content !== "string") return output
   const { index: _index, indexes: _indexes, ...compact } = record
   return compact
 }

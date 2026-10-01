@@ -54,9 +54,11 @@ export function ProviderCredentialsPanel({ showUpdater = false, onConfiguredProv
       return;
     }
     if (chatGptCodexConfigured) {
-      setIsChatGptCodexAuthPending(false);
-      setMessage("ChatGPT Codex signed in. Socrates will prefer ChatGPT Codex models by default.");
-      return;
+      const timer = window.setTimeout(() => {
+        setIsChatGptCodexAuthPending(false);
+        setMessage("ChatGPT Codex signed in. Socrates will prefer ChatGPT Codex models by default.");
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
 
     let attempts = 0;

@@ -416,40 +416,37 @@ const createTestAgent = (): SocratesAgent => {
 
 const createTitleProvider = (title: string, requestedModelIds: string[] = []): ModelProvider => ({
   countTokens: fakeCountTokens,
-  async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>) {
+  async *stream(request) {
     requestedModelIds.push(request.modelId)
-    return {
-      output: { title } as TOutput,
+    yield { type: "model.answer.delta", text: title }
+    yield {
+      type: "model.completed",
       usage: {
         inputTokens: 8,
         outputTokens: 4,
         totalTokens: 12,
       },
     }
-  },
-  async *stream() {
-    yield { type: "model.failed", error: new Error("Title Generator must use structured generation") }
   },
 })
 
 const createFallbackTitleProvider = (title: string, requestedModelIds: string[]): ModelProvider => ({
   countTokens: fakeCountTokens,
-  async generateStructured<TOutput>(request: StructuredModelRequest<TOutput>) {
+  async *stream(request) {
     requestedModelIds.push(request.modelId)
     if (request.modelId === "meta-llama/llama-4-maverick") {
-      throw new Error("Primary title model unavailable")
+      yield { type: "model.failed", error: new Error("Primary title model unavailable") }
+      return
     }
-    return {
-      output: { title } as TOutput,
+    yield { type: "model.answer.delta", text: title }
+    yield {
+      type: "model.completed",
       usage: {
         inputTokens: 8,
         outputTokens: 4,
         totalTokens: 12,
       },
     }
-  },
-  async *stream() {
-    yield { type: "model.failed", error: new Error("Title Generator must use structured generation") }
   },
 })
 
@@ -2279,10 +2276,8 @@ describe("HTTP API", () => {
     }
     expect(listBody.data.settings.map((setting) => setting.workerId)).toEqual([
       "skill_writer",
-      "socrates_context_compactor",
-      "memory_context_compactor",
+      "context_compactor",
       "title_generator",
-      "goal_router",
       "memory_router",
       "frontier",
     ])
@@ -2294,11 +2289,6 @@ describe("HTTP API", () => {
     expect(listBody.data.settings.find((setting) => setting.workerId === "memory_router")).toMatchObject({
       providerId: "openrouter",
       modelId: "deepseek/deepseek-v4-flash",
-      thinkingEnabled: false,
-    })
-    expect(listBody.data.settings.find((setting) => setting.workerId === "goal_router")).toMatchObject({
-      providerId: "openrouter",
-      modelId: "meta-llama/llama-4-maverick",
       thinkingEnabled: false,
     })
     expect(listBody.data.settings.find((setting) => setting.workerId === "frontier")).toMatchObject({
@@ -2316,7 +2306,7 @@ describe("HTTP API", () => {
 
     const updateResponse = await app.inject({
       method: "PATCH",
-      url: "/api/worker-model-settings/goal_router",
+      url: "/api/worker-model-settings/title_generator",
       payload: {
         providerId: "google",
         authMode: "api_key",
@@ -2331,7 +2321,7 @@ describe("HTTP API", () => {
       throw new Error("Expected worker model settings update success")
     }
     expect(updateBody.data.settings).toMatchObject({
-      workerId: "goal_router",
+      workerId: "title_generator",
       providerId: "google",
       authMode: "api_key",
       modelId: "gemini-3.5-flash",
@@ -2372,14 +2362,7 @@ describe("HTTP API", () => {
       thinkingEnabled: true,
       thinkingEffort: "low",
     })
-    expect(resolutionByWorker.get("socrates_context_compactor")?.effective).toMatchObject({
-      providerId: "openai",
-      authMode: "chatgpt_subscription",
-      modelId: "gpt-5.4-mini",
-      thinkingEnabled: true,
-      thinkingEffort: "low",
-    })
-    expect(resolutionByWorker.get("memory_context_compactor")?.effective).toMatchObject({
+    expect(resolutionByWorker.get("context_compactor")?.effective).toMatchObject({
       providerId: "openai",
       authMode: "chatgpt_subscription",
       modelId: "gpt-5.4-mini",
@@ -2387,13 +2370,6 @@ describe("HTTP API", () => {
       thinkingEffort: "low",
     })
     expect(resolutionByWorker.get("title_generator")?.effective).toMatchObject({
-      providerId: "openai",
-      authMode: "chatgpt_subscription",
-      modelId: "gpt-5.4-mini",
-      thinkingEnabled: true,
-      thinkingEffort: "low",
-    })
-    expect(resolutionByWorker.get("goal_router")?.effective).toMatchObject({
       providerId: "openai",
       authMode: "chatgpt_subscription",
       modelId: "gpt-5.4-mini",
@@ -3691,8 +3667,8 @@ describe("WebSocket API", () => {
             type: "model.answer.delta",
             text: JSON.stringify(
               isPostEvidence
-                ? { actions: [], reason: "No durable update is needed.", goalFinalization: null }
-                : { readTargets: [], reason: "No routed recall is needed.", goalRoute: null },
+                ? { actions: [], reason: "No durable update is needed." }
+                : { readTargets: [], reason: "No routed recall is needed." },
             ),
           }
           yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } }
@@ -3913,7 +3889,7 @@ describe("WebSocket API", () => {
       },
       async generateStructured<TOutput>(): Promise<StructuredModelResult<TOutput>> {
         return {
-          output: { readTargets: [], reason: "", goalRoute: null } as TOutput,
+          output: { readTargets: [], reason: "" } as TOutput,
           usage: { inputTokens: 6, outputTokens: 2, totalTokens: 8 },
         }
       },
@@ -4184,7 +4160,7 @@ describe("WebSocket API", () => {
     expect(body.data.attachments[0]?.uri).toContain(path.join(".socrates", "attachments"))
   })
 
-  it("omits chat image bytes for MiMo Pro when its OpenRouter endpoint is text-only", async () => {
+  it("omits chat image bytes for non-vision models", async () => {
     const requests: unknown[] = []
     const app = await buildTestServer(tempDbPath(), createCapturingAgent(requests))
     await onboard(app)
@@ -4227,7 +4203,7 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "connection.ready")
       const command = chatMessageCommandWithRuntime(project.id, conversation.id, "what do you see?", {
         providerId: "openrouter",
-        modelId: "xiaomi/mimo-v2.5-pro",
+        modelId: "deepseek/deepseek-v4-pro",
         thinkingEnabled: false,
         thinkingEffort: "none",
       })
@@ -5249,18 +5225,12 @@ describe("WebSocket API", () => {
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "user_profile.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "tool_docs.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "current_time.md"))).toBe(true)
-	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "context_disposition.md"))).toBe(true)
-	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "focus_ledger.md"))).toBe(true)
-	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "handover_to_frontier.md"))).toBe(true)
-	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "list_project_resources.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "trace_retrieve_global.md"))).toBe(false)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "tool_docs.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "skills.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "soul.md"))).toBe(true)
 	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "user_profile.md"))).toBe(true)
-	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "current_time.md"))).toBe(true)
-	    expect(fs.existsSync(path.join(socratesHome, "tool_usage", "memory_agent", "read_memory_journal.md"))).toBe(true)
     const readSearchToolDoc = expectStructuredToolDoc(socratesHome, "read_search.md")
     expect(readSearchToolDoc).toContain("Use read/search tools to find candidate workspace files")
 	    const projectDocsToolDoc = expectStructuredToolDoc(socratesHome, "project_docs.md")
@@ -5271,12 +5241,6 @@ describe("WebSocket API", () => {
 	    expect(traceToolDoc).toContain("cross-project selectors are unavailable")
 	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "edit_files.md"))
 	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "user_profile.md"))
-	    expectStructuredToolDoc(socratesHome, "context_disposition.md")
-	    expectStructuredToolDoc(socratesHome, "focus_ledger.md")
-	    expectStructuredToolDoc(socratesHome, "handover_to_frontier.md")
-	    expectStructuredToolDoc(socratesHome, "list_project_resources.md")
-	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "current_time.md"))
-	    expectStructuredToolDoc(socratesHome, path.join("memory_agent", "read_memory_journal.md"))
 	    const memoryNotesToolDoc = expectStructuredToolDoc(socratesHome, path.join("memory_agent", "memory_notes.md"))
 	    expect(memoryNotesToolDoc).toContain("inspect the exact full Q&A parent")
 	    expect(memoryNotesToolDoc).toContain("Interpret intent semantically")
@@ -8607,7 +8571,6 @@ describe("WebSocket API", () => {
       await waitForEvent(socket, "connection.ready")
       sendCommand(socket, chatMessageCommandWithRuntime(project.id, conversation.id, "Overwrite README", { approvalMode: "approve_all" }))
       const failed = await waitForEvent(socket, "tool.call.failed")
-      expect(failed.payload.toolName).toBe("edit")
       expect(failed.payload.error.code).toBe("edit_stale_content")
       expect(failed.payload.error.recoverable).toBe(true)
       expect(fs.readFileSync(path.join(primaryWorkspace.path ?? "", "README.md"), "utf8")).toBe("hello old world")

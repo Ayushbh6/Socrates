@@ -33,7 +33,6 @@ import {
   contextCompactionStartedEventSchema,
   contextUsageSnapshotEventSchema,
   conversationSchema,
-  conversationTitleAgentOutputSchema,
   conversationUpdatedEventSchema,
   credentialInputRequestedEventSchema,
   credentialInputResolvedEventSchema,
@@ -53,7 +52,6 @@ import {
   feedbackSubmitCommandSchema,
   frontierHandoverToolInputSchema,
   getConversationResponseSchema,
-  getConversationDeletionImpactResponseSchema,
   getMemoryAgentFileContentResponseSchema,
   getMeResponseSchema,
   getMemoryAgentRunResponseSchema,
@@ -192,7 +190,6 @@ import {
   triggerMemoryAgentRunResponseSchema,
   listWorkerModelSettingsResponseSchema,
   workerModelSettingsParamsSchema,
-  workerModelRoleSchema,
   agentModelHandoverEventSchema,
   conversationToolRunSchema,
   editToolOutputSchema,
@@ -888,8 +885,6 @@ describe("http contracts", () => {
     expect(updateConversationRequestSchema.safeParse({ title: "" }).success).toBe(false)
     expect(updateConversationResponseSchema.safeParse({ conversation }).success).toBe(true)
     expect(deleteConversationResponseSchema.safeParse({ deletedConversationId: conversation.id }).success).toBe(true)
-    expect(getConversationDeletionImpactResponseSchema.safeParse({ linkedToFlow: true }).success).toBe(true)
-    expect(getConversationDeletionImpactResponseSchema.safeParse({ linkedToFlow: true, turnCount: 3 }).success).toBe(false)
     const notification = {
       id: "note_1",
       projectId: project.id,
@@ -1073,7 +1068,6 @@ describe("websocket server event contracts", () => {
     toolCallFailedEventSchema.safeParse(
       envelope("tool.call.failed", {
         toolCallId: "tcall_1",
-        toolName: "edit",
         error: {
           code: "tool_failed",
           message: "Tool failed",
@@ -1566,7 +1560,7 @@ describe("tool contracts", () => {
     expect(bashToolModelInputSchema.safeParse({ operation: "output", outputSequence: 0 }).success).toBe(false)
     expect(normalizeBashModelInput({ command: "pnpm run build", argv: ["pnpm", "run", "build"] })).toEqual({ command: "pnpm run build" })
     expect(normalizeBashModelInput({ argv: ["pwd"] })).toEqual({ argv: ["pwd"] })
-    expect(normalizeBashModelInput({ operation: "output", command: "placeholder", name: "placeholder", target: "ai-dpa-vite" })).toEqual({ operation: "output", target: "ai-dpa-vite" })
+    expect(normalizeBashModelInput({ operation: "output", command: "placeholder", name: "placeholder", target: "dev" })).toEqual({ operation: "output", target: "dev" })
     expect(normalizeBashModelInput({ operation: "output", name: "placeholder" })).toEqual({ operation: "output" })
     expect(normalizeBashModelInput({ operation: "run", command: "pnpm run build", name: "x", target: "x" })).toEqual({ operation: "run", command: "pnpm run build" })
     expect(waitToolInputSchema.safeParse({ terminalNames: ["tests"], wakeOn: ["completed", "failed"], reason: "Waiting for integration test results" }).success).toBe(true)
@@ -1905,12 +1899,6 @@ describe("tool contracts", () => {
     }
     expect(listWorkerModelSettingsResponseSchema.safeParse({ settings: [workerSetting] }).success).toBe(true)
     expect(updateWorkerModelSettingsResponseSchema.safeParse({ settings: workerSetting }).success).toBe(true)
-    expect(workerModelRoleSchema.safeParse("goal_router").success).toBe(true)
-    expect(workerModelRoleSchema.safeParse("socrates_context_compactor").success).toBe(true)
-    expect(workerModelRoleSchema.safeParse("memory_context_compactor").success).toBe(true)
-    expect(workerModelRoleSchema.safeParse("context_compactor").success).toBe(false)
-    expect(conversationTitleAgentOutputSchema.safeParse({ title: "Agent Architecture" }).success).toBe(true)
-    expect(conversationTitleAgentOutputSchema.safeParse({ title: "Agent Architecture", prose: "extra" }).success).toBe(false)
     expect(
       skillWriteToolInputSchema.safeParse({
         scope: "global",
@@ -2128,14 +2116,12 @@ describe("tool contracts", () => {
       memoryRouterPreTurnResultSchema.safeParse({
         readTargets: [{ surface: "user_profile", fileName: "user_profile.md", sectionId: "collaboration_style", reason: "Slow mode is a collaboration preference." }],
         reason: "Read the precise preference and preserve the contract.",
-        goalRoute: null,
       }).success,
     ).toBe(true)
     expect(
       memoryRouterPreTurnResultSchema.safeParse({
         readTargets: [{ surface: "identity", fileName: "user_profile.md", sectionId: "collaboration_style", reason: "wrong owner" }],
         reason: "invalid",
-        goalRoute: null,
       }).success,
     ).toBe(false)
     expect(memoryRouterPreTurnResultSchema.safeParse({ readTargets: [], memoryWrites: [], reason: "writes are forbidden" }).success).toBe(false)
@@ -2143,14 +2129,12 @@ describe("tool contracts", () => {
       memoryRouterPostTurnResultSchema.safeParse({
         actions: [{ operation: "replace", surface: "repo_docs", fileName: "CONTRACTS.md", sectionId: "tool_contracts", instruction: "Replace the stale contract.", reason: "Verified runtime evidence supersedes it.", evidenceReferences: ["evd_abc123"], capabilityId: "terminal.interactive_input", verifiedRuntime: "bash start accepts user PTY input", verifiedAt: "2026-07-12T10:00:00.000Z" }],
         reason: "One stale capability claim requires reconciliation.",
-        goalFinalization: null,
       }).success,
     ).toBe(true)
     expect(
       memoryRouterPostTurnResultSchema.safeParse({
         actions: [{ operation: "replace", surface: "project_notes", fileName: "PROJECT_NOTES.md", sectionId: "state_ledger", instruction: "Rewrite backend state.", reason: "stale", evidenceReferences: [] }],
         reason: "invalid backend-owned target",
-        goalFinalization: null,
       }).success,
     ).toBe(false)
     expect(turnEvidenceToolInputSchema.safeParse({ operation: "inspect", limit: 21, charLimit: 8_000 }).success).toBe(false)
@@ -2309,12 +2293,6 @@ describe("V2 Flow standalone contracts", () => {
   it("represents durable Terminal suspension and restart-safe ready tasks honestly", () => {
     expect(v2Flow.v2TurnStatusSchema.safeParse("suspended").success).toBe(true)
     expect(v2Flow.v2AgentTaskStatusSchema.safeParse("ready").success).toBe(true)
-  })
-
-  it("keeps Flow deletion responses minimal and strict", () => {
-    expect(v2Flow.v2DeleteTurnResponseSchema.safeParse({ deletedTurnId: "v2turn_1" }).success).toBe(true)
-    expect(v2Flow.v2DeleteGoalResponseSchema.safeParse({ deletedGoalId: "v2goal_2", fallbackGoalId: "v2goal_1" }).success).toBe(true)
-    expect(v2Flow.v2DeleteGoalResponseSchema.safeParse({ deletedGoalId: "v2goal_2", fallbackGoalId: "v2goal_1", records: 14 }).success).toBe(false)
   })
 
   it("namespaces Flow worker telemetry and compaction lifecycle events", () => {

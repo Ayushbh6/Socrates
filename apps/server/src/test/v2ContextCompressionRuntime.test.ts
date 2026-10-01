@@ -3,7 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import type { ChatCompaction, V2RuntimeConfig } from "@socrates/contracts"
-import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, type V2GoalRouterResult } from "@socrates/core"
+import type { V2GoalRouterResult } from "@socrates/core"
 import { createId, nowIso } from "@socrates/shared"
 import { openDatabase, runMigrations, type DatabaseHandle } from "../db/client"
 import type { SocratesStore } from "../services/store"
@@ -71,9 +71,9 @@ const setup = () => {
 
 const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterResult => {
   const foregroundGoal = store.listGoalsForRouter(flowId).find((goal) => goal.status === "foreground")
-  const foreground = foregroundGoal ? { goal: foregroundGoal, candidate: 1 } : undefined
+  const foreground = foregroundGoal ? { goal: foregroundGoal, lexicalScore: 0 } : undefined
   return {
-    decision: { action: "create", title: "Test goal" },
+    decision: { action: "create", secondaryGoalIds: [], confidence: 0.9, reasonCode: "new_goal" },
     candidates: {
       ...(foreground ? { foreground } : {}),
       parked: [],
@@ -88,7 +88,7 @@ const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterRes
 
 const sharedStore = {
   getWorkerModelSetting: (_workerId: Parameters<SocratesStore["getWorkerModelSetting"]>[0]) => ({
-    workerId: "socrates_context_compactor" as const,
+    workerId: "context_compactor" as const,
     providerId: "openrouter" as const,
     authMode: "api_key" as const,
     modelId: "deepseek/deepseek-v4-flash",
@@ -114,11 +114,13 @@ const summary: ChatCompaction = {
 }
 
 describe("V2 within-turn context compression runtime", () => {
-  it("uses the exact shared Socrates 170k/180k compression policy", () => {
-    const thresholds = v2WithinTurnCompressionThresholds()
-    expect(thresholds).toEqual(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS)
-    expect(thresholds.triggerTokens).toBe(170_000)
-    expect(thresholds.hardLimitTokens).toBe(180_000)
+  it("derives model-aware bounds from the selected context window", () => {
+    const small = v2WithinTurnCompressionThresholds(32_000)
+    const large = v2WithinTurnCompressionThresholds(256_000)
+    expect(small.triggerTokens).toBeLessThan(small.hardLimitTokens)
+    expect(small.postCompactionTargetTokens).toBeLessThan(small.triggerTokens)
+    expect(large.triggerTokens).toBeGreaterThan(small.triggerTokens)
+    expect(large.currentTurnToolResultFloor).toBe(5)
   })
 
   it("stores immutable V2-only snapshot evidence and restores the latest goal snapshot", async () => {
@@ -130,7 +132,7 @@ describe("V2 within-turn context compression runtime", () => {
       flowId,
       goalId,
       turnId,
-      workspacePath: "/tmp/socrates-v2-context-test",
+      runtimeConfig,
     })
     await runtime.startSnapshot?.({
       snapshotId: "ctxcmp_v2_exact",
@@ -193,7 +195,7 @@ describe("V2 within-turn context compression runtime", () => {
       flowId,
       goalId,
       turnId,
-      workspacePath: "/tmp/socrates-v2-context-test",
+      runtimeConfig,
     })
     await runtime.startSnapshot?.({
       snapshotId: "ctxcmp_v2_failed",

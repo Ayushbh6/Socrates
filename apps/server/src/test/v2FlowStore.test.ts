@@ -58,9 +58,9 @@ const seedProject = (handle: DatabaseHandle, projectId: string, workspacePath: s
 const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterResult => {
   const goals = store.listGoalsForRouter(flowId)
   const foregroundGoal = goals.find((goal) => goal.status === "foreground")
-  const foreground = foregroundGoal ? { goal: foregroundGoal, candidate: 1 } : undefined
+  const foreground = foregroundGoal ? { goal: foregroundGoal, lexicalScore: 0 } : undefined
   return {
-    decision: { action: "create", title: "Test goal" },
+    decision: { action: "create", secondaryGoalIds: [], confidence: 0.9, reasonCode: "new_goal" },
     candidates: {
       ...(foreground ? { foreground } : {}),
       parked: [],
@@ -71,42 +71,6 @@ const forcedCreateResult = (store: V2FlowStore, flowId: string): V2GoalRouterRes
     source: "fallback",
     fallbackReason: "invalid_output",
   }
-}
-
-const seedClassicConversation = (handle: DatabaseHandle) => {
-  const now = nowIso()
-  const conversationId = createId("conv")
-  const sessionId = createId("sess")
-  handle.sqlite.prepare(
-    "INSERT INTO conversations (id, project_id, user_id, title, status, created_at, updated_at) VALUES (?, 'proj_one', 'user_v2', 'Mixed work', 'active', ?, ?)",
-  ).run(conversationId, now, now)
-  handle.sqlite.prepare(
-    "INSERT INTO sessions (id, conversation_id, project_id, project_workspace_id, workspace_path, status, created_at, updated_at) VALUES (?, ?, 'proj_one', 'pws_proj_one', ?, 'active', ?, ?)",
-  ).run(sessionId, conversationId, path.join(roots.at(-1) ?? "", "one"), now, now)
-  return { conversationId, sessionId }
-}
-
-const seedClassicTurn = (handle: DatabaseHandle, input: {
-  conversationId: string
-  sessionId: string
-  user: string
-  assistant: string
-  offset: number
-}) => {
-  const turnId = createId("turn")
-  const userMessageId = createId("msg")
-  const assistantMessageId = createId("msg")
-  const createdAt = new Date(Date.parse("2026-07-19T16:00:00.000Z") + input.offset * 1_000).toISOString()
-  handle.sqlite.prepare(
-    "INSERT INTO turns (id, session_id, conversation_id, user_message_id, assistant_message_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?)",
-  ).run(turnId, input.sessionId, input.conversationId, userMessageId, assistantMessageId, createdAt, createdAt)
-  handle.sqlite.prepare(
-    "INSERT INTO messages (id, conversation_id, session_id, turn_id, role, content, content_format, status, created_at, completed_at) VALUES (?, ?, ?, ?, 'user', ?, 'markdown', 'completed', ?, ?)",
-  ).run(userMessageId, input.conversationId, input.sessionId, turnId, input.user, createdAt, createdAt)
-  handle.sqlite.prepare(
-    "INSERT INTO messages (id, conversation_id, session_id, turn_id, role, content, content_format, status, parent_message_id, created_at, completed_at) VALUES (?, ?, ?, ?, 'assistant', ?, 'markdown', 'completed', ?, ?, ?)",
-  ).run(assistantMessageId, input.conversationId, input.sessionId, turnId, input.assistant, userMessageId, createdAt, createdAt)
-  return { turnId, userMessageId, assistantMessageId }
 }
 
 describe("V2FlowStore isolation and lifecycle", () => {
@@ -206,13 +170,19 @@ describe("V2FlowStore isolation and lifecycle", () => {
       attachmentIds: attachment ? [attachment.id] : [],
       runtimeConfig,
     })
+    const routed = await routeV2Goal({
+      flowId: first.flow.id,
+      userMessage: created.userMessage.content,
+      goals: store.listGoalsForRouter(first.flow.id),
+      capsules: store.listCapsulesForRouter(first.flow.id),
+    })
     const applied = store.applyRouting({
       projectId: "proj_one",
       flowId: first.flow.id,
       turnId: created.turn.id,
       messageId: created.userMessage.id,
       messageContent: created.userMessage.content,
-      result: forcedCreateResult(store, first.flow.id),
+      result: routed,
     })
     expect(applied.goal.status).toBe("foreground")
     const assistant = store.completeTurn({
@@ -235,21 +205,7 @@ describe("V2FlowStore isolation and lifecycle", () => {
     const { root, handle, store } = setup()
     const flow = store.ensureFlow("proj_one").flow
     const first = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "First goal", runtimeConfig })
-    store.applyRouting({
-      projectId: "proj_one",
-      flowId: flow.id,
-      turnId: first.turn.id,
-      messageId: first.userMessage.id,
-      messageContent: first.userMessage.content,
-      result: await routeV2Goal({
-        projectId: "proj_one",
-        flowId: flow.id,
-        turnId: first.turn.id,
-        workspacePath: path.join(root, "one"),
-        userMessage: first.userMessage.content,
-        goals: [],
-      }),
-    })
+    store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, messageId: first.userMessage.id, messageContent: first.userMessage.content, result: await routeV2Goal({ flowId: flow.id, userMessage: first.userMessage.content, goals: [] }) })
     store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, content: "First response" })
 
     const second = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "A completely different second goal", runtimeConfig })
@@ -463,7 +419,7 @@ describe("V2FlowStore isolation and lifecycle", () => {
       query: "long Flow evidence",
       messages: [],
       contextItems: lightItems,
-      budget: deriveV2ContextBudget(),
+      budget: deriveV2ContextBudget({ contextWindowTokens: 8_192 }),
       evidenceTokenLimit: 1_000,
       exactRetriever: (refs) => {
         retrievedBatches.push(refs.map((ref) => ref.evidenceId))
@@ -588,11 +544,14 @@ describe("V2FlowStore isolation and lifecycle", () => {
       decision: {
         action: "continue",
         primaryGoalId: createdGoal.id,
+        secondaryGoalIds: [],
+        confidence: 0.99,
+        reasonCode: "foreground_continuation",
       },
       candidates: {
-        foreground: { goal: createdGoal, capsule: firstCapsule, candidate: 1 },
+        foreground: { goal: createdGoal, capsule: firstCapsule, lexicalScore: 1 },
         parked: [],
-        candidates: [{ goal: createdGoal, capsule: firstCapsule, candidate: 1 }],
+        candidates: [{ goal: createdGoal, capsule: firstCapsule, lexicalScore: 1 }],
         totalEligibleParked: 0,
         parkedCandidateLimit: 5,
       },
@@ -688,7 +647,7 @@ describe("V2FlowStore isolation and lifecycle", () => {
 
     const ambiguous = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "What about the second one?", runtimeConfig })
     const goals = store.listGoalsForRouter(flow.id)
-    const candidates = goals.map((goal) => ({ goal, candidate: 1 }))
+    const candidates = goals.map((goal) => ({ goal, lexicalScore: 0.2 }))
     const clarification = store.requestRoutingClarification({
       projectId: "proj_one",
       flowId: flow.id,
@@ -697,6 +656,9 @@ describe("V2FlowStore isolation and lifecycle", () => {
       result: {
         decision: {
           action: "clarify",
+          secondaryGoalIds: [],
+          confidence: 0.31,
+          reasonCode: "ambiguous_focus",
           clarificationQuestion: "Do you mean General Conversation or authentication tests?",
           clarificationGoalIds: [goals[0]!.id, work.id],
         },
@@ -723,7 +685,7 @@ describe("V2FlowStore isolation and lifecycle", () => {
       messageId: ambiguous.userMessage.id,
       messageContent: ambiguous.userMessage.content,
       result: {
-        decision: { action: work.status === "foreground" ? "continue" : "resume", primaryGoalId: work.id },
+        decision: { action: work.status === "foreground" ? "continue" : "resume", primaryGoalId: work.id, secondaryGoalIds: [], confidence: 0.99, reasonCode: "model_match" },
         candidates: { ...(candidates.find((item) => item.goal.status === "foreground") ? { foreground: candidates.find((item) => item.goal.status === "foreground")! } : {}), parked: candidates.filter((item) => item.goal.status !== "foreground"), candidates, totalEligibleParked: candidates.length - 1, parkedCandidateLimit: 5 },
         source: "model",
       },
@@ -739,169 +701,14 @@ describe("V2FlowStore isolation and lifecycle", () => {
     const turn = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Build the bridge", runtimeConfig })
     const work = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: turn.turn.id, messageId: turn.userMessage.id, messageContent: turn.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
     store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: turn.turn.id, content: "Bridge built." })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_classic_message_links").get()).toMatchObject({ count: 0 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM conversations WHERE project_id = ?").get("proj_one")).toMatchObject({ count: 0 })
-    const bridge = store.openFocusInClassic("proj_one", flow.id, work.id)
+    const bridge = store.getClassicBridge("proj_one", flow.id, work.id)
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_classic_message_links WHERE bridge_id = ?").get(bridge.id)).toMatchObject({ count: 2 })
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(bridge.conversationId)).toMatchObject({ count: 2 })
-    expect(bridge).toMatchObject({ activeOwner: "classic" })
+    expect(store.openFocusInClassic("proj_one", flow.id, work.id)).toMatchObject({ activeOwner: "classic" })
     expect(() => store.assertV2FocusOwnership("proj_one", flow.id, work.id)).toThrow(/owned by Classic/i)
     const resumed = store.continueClassicConversationInSeamless("proj_one", bridge.conversationId)
     expect(resumed.foregroundGoal?.id).toBe(work.id)
     expect(() => store.assertV2FocusOwnership("proj_one", flow.id, work.id)).not.toThrow()
     expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_classic_message_links WHERE bridge_id = ?").get(bridge.id)).toMatchObject({ count: 2 })
-  })
-
-  it("repairs a missing Classic home and makes the latest Classic conversation the preferred bridge", () => {
-    const { handle, store } = setup()
-    const flow = store.ensureFlow("proj_one").flow
-    const turn = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Build the bridge", runtimeConfig })
-    const work = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: turn.turn.id, messageId: turn.userMessage.id, messageContent: turn.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
-    const liveBridge = store.getClassicBridge("proj_one", flow.id, work.id)
-    const now = nowIso()
-    const missingBridgeId = createId("v2bridge")
-    const missingConversationId = createId("conv")
-    const missingSessionId = createId("sess")
-    handle.sqlite.prepare(
-      "INSERT INTO v2_classic_conversation_bridges (id, project_id, flow_id, goal_id, conversation_id, session_id, active_owner, status, last_v2_message_ordinal, created_at, updated_at) VALUES (?, 'proj_one', ?, ?, ?, ?, 'classic', 'active', 0, ?, ?)",
-    ).run(missingBridgeId, flow.id, work.id, missingConversationId, missingSessionId, now, now)
-    handle.sqlite.prepare(
-      "UPDATE v2_goal_classic_homes SET bridge_id = ?, conversation_id = ?, session_id = ?, updated_at = ? WHERE goal_id = ?",
-    ).run(missingBridgeId, missingConversationId, missingSessionId, now, work.id)
-
-    expect(() => store.assertV2FocusOwnership("proj_one", flow.id, work.id)).not.toThrow()
-    expect(handle.sqlite.prepare("SELECT bridge_id AS bridgeId FROM v2_goal_classic_homes WHERE goal_id = ?").get(work.id)).toMatchObject({ bridgeId: liveBridge.id })
-
-    const classic = seedClassicConversation(handle)
-    const classicTurn = seedClassicTurn(handle, { ...classic, user: "Continue building the bridge", assistant: "Continuing.", offset: 1 })
-    const context = store.prepareClassicGoalRouting("proj_one", classic.conversationId, [work.id])
-    const candidate = context.candidates.find((item) => item.goalId === work.id)
-    if (!candidate) throw new Error("Expected the existing Flow focus as a Classic routing candidate")
-    store.applyClassicGoalRoute({
-      projectId: "proj_one",
-      conversationId: classic.conversationId,
-      sessionId: classic.sessionId,
-      turnId: classicTurn.turnId,
-      userMessageId: classicTurn.userMessageId,
-      userMessage: "Continue building the bridge",
-      context,
-      route: { action: "use", candidates: [candidate.candidate], title: null },
-    })
-
-    expect(handle.sqlite.prepare("SELECT conversation_id AS conversationId FROM v2_goal_classic_homes WHERE goal_id = ?").get(work.id)).toMatchObject({ conversationId: classic.conversationId })
-    expect(() => store.assertV2FocusOwnership("proj_one", flow.id, work.id)).toThrow(/owned by Classic/i)
-    store.continueClassicConversationInSeamless("proj_one", classic.conversationId)
-    expect(store.getClassicBridge("proj_one", flow.id, work.id).conversationId).toBe(classic.conversationId)
-  })
-
-  it("keeps three Classic tasks in one conversation while linking and importing each canonical goal", () => {
-    const { handle, store } = setup()
-    const { conversationId, sessionId } = seedClassicConversation(handle)
-    const first = seedClassicTurn(handle, { conversationId, sessionId, user: "Tell me where the AIDPA report stands.", assistant: "The report has a complete outline.", offset: 1 })
-    const firstContext = store.prepareClassicGoalRouting("proj_one", conversationId)
-    const aidpa = store.applyClassicGoalRoute({
-      projectId: "proj_one", conversationId, sessionId, turnId: first.turnId, userMessageId: first.userMessageId,
-      userMessage: "Tell me where the AIDPA report stands.", context: firstContext,
-      route: { action: "create", candidates: [], title: "Review AIDPA report" },
-    })
-    store.finalizeClassicGoal(first.turnId, { state: "active", note: "The report review is still active." }, first.assistantMessageId)
-
-    const second = seedClassicTurn(handle, { conversationId, sessionId, user: "Can you make me a Socrates release checklist?", assistant: "The checklist is ready.", offset: 2 })
-    const secondContext = store.prepareClassicGoalRouting("proj_one", conversationId)
-    const release = store.applyClassicGoalRoute({
-      projectId: "proj_one", conversationId, sessionId, turnId: second.turnId, userMessageId: second.userMessageId,
-      userMessage: "Can you make me a Socrates release checklist?", context: secondContext,
-      route: { action: "create", candidates: [], title: "Prepare Socrates release" },
-    })
-    store.finalizeClassicGoal(second.turnId, { state: "completed", note: "The release checklist is complete." }, second.assistantMessageId)
-
-    const third = seedClassicTurn(handle, { conversationId, sessionId, user: "Back to the report: what evidence is missing?", assistant: "Two evidence sources remain.", offset: 3 })
-    const thirdContext = store.prepareClassicGoalRouting("proj_one", conversationId, [aidpa.goalId])
-    const aidpaCandidate = thirdContext.candidates.find((candidate) => candidate.goalId === aidpa.goalId)
-    if (!aidpaCandidate) throw new Error("Expected the AIDPA goal candidate")
-    const resumed = store.applyClassicGoalRoute({
-      projectId: "proj_one", conversationId, sessionId, turnId: third.turnId, userMessageId: third.userMessageId,
-      userMessage: "Back to the report: what evidence is missing?", context: thirdContext,
-      route: { action: "use", candidates: [aidpaCandidate.candidate], title: null },
-    })
-    store.finalizeClassicGoal(third.turnId, { state: "active", note: "Evidence collection continues." }, third.assistantMessageId)
-
-    expect(resumed.goalId).toBe(aidpa.goalId)
-    expect(release.goalId).not.toBe(aidpa.goalId)
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_classic_conversation_bridges WHERE conversation_id = ?").get(conversationId)).toMatchObject({ count: 1 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_goal_classic_homes WHERE conversation_id = ?").get(conversationId)).toMatchObject({ count: 2 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_classic_turn_goal_links WHERE conversation_id = ?").get(conversationId)).toMatchObject({ count: 3 })
-
-    const snapshot = store.continueClassicConversationInSeamless("proj_one", conversationId)
-    expect(snapshot.foregroundGoal?.id).toBe(aidpa.goalId)
-    const imported = handle.sqlite.prepare(
-      "SELECT goal_id AS goalId FROM v2_turns WHERE metadata_json LIKE '%classic_bridge%' ORDER BY ordinal",
-    ).all() as Array<{ goalId: string }>
-    expect(imported.map((row) => row.goalId)).toEqual([aidpa.goalId, release.goalId, aidpa.goalId])
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM conversations WHERE id = ?").get(conversationId)).toMatchObject({ count: 1 })
-  })
-
-  it("deletes one completed Flow exchange with its evidence and Classic projection", () => {
-    const { handle, store } = setup()
-    const flow = store.ensureFlow("proj_one").flow
-    const created = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Review the DBMS notes", runtimeConfig })
-    const work = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: created.turn.id, messageId: created.userMessage.id, messageContent: created.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
-    const evidence = store.recordEvidence({ projectId: "proj_one", flowId: flow.id, goalId: work.id, turnId: created.turn.id, sourceKind: "tool_output", title: "DBMS notes", content: "Exact tool output" })
-    store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: created.turn.id, content: "The notes are organized." })
-    const bridge = store.openFocusInClassic("proj_one", flow.id, work.id)
-
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(bridge.conversationId)).toMatchObject({ count: 2 })
-    expect(store.deleteTurn("proj_one", flow.id, created.turn.id)).toEqual({ deletedTurnId: created.turn.id })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(created.turn.id)).toMatchObject({ count: 0 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_evidence_items WHERE id = ?").get(evidence.evidence.id)).toMatchObject({ count: 0 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM messages WHERE conversation_id = ?").get(bridge.conversationId)).toMatchObject({ count: 0 })
-    expect(store.getSnapshot("proj_one", flow.id).goals.some((goal) => goal.id === work.id)).toBe(true)
-  })
-
-  it("deletes a work focus while preserving General Conversation and unrelated work", () => {
-    const { handle, store } = setup()
-    const flow = store.ensureFlow("proj_one").flow
-    const first = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Review DBMS", runtimeConfig })
-    const dbms = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, messageId: first.userMessage.id, messageContent: first.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
-    store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: first.turn.id, content: "DBMS reviewed." })
-    const dbmsBridge = store.openFocusInClassic("proj_one", flow.id, dbms.id)
-    store.continueClassicConversationInSeamless("proj_one", dbmsBridge.conversationId)
-
-    const second = store.createTurn({ projectId: "proj_one", flowId: flow.id, clientMessageId: createId("v2msg"), content: "Prepare the release", runtimeConfig })
-    const release = store.applyRouting({ projectId: "proj_one", flowId: flow.id, turnId: second.turn.id, messageId: second.userMessage.id, messageContent: second.userMessage.content, result: forcedCreateResult(store, flow.id) }).goal
-    store.completeTurn({ projectId: "proj_one", flowId: flow.id, turnId: second.turn.id, content: "Release prepared." })
-
-    const result = store.deleteGoal("proj_one", flow.id, dbms.id)
-    const snapshot = store.getSnapshot("proj_one", flow.id)
-    expect(result.deletedGoalId).toBe(dbms.id)
-    expect(snapshot.goals.some((goal) => goal.id === dbms.id)).toBe(false)
-    expect(snapshot.goals.some((goal) => goal.id === release.id)).toBe(true)
-    expect(snapshot.goals.some((goal) => goal.kind === "general")).toBe(true)
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(first.turn.id)).toMatchObject({ count: 0 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(second.turn.id)).toMatchObject({ count: 1 })
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM conversations WHERE id = ?").get(dbmsBridge.conversationId)).toMatchObject({ count: 0 })
-    const general = snapshot.goals.find((goal) => goal.kind === "general")
-    if (!general) throw new Error("Expected General Conversation")
-    expect(() => store.deleteGoal("proj_one", flow.id, general.id)).toThrow(/cannot be deleted/i)
-  })
-
-  it("supports Classic-only detach and everywhere deletion without conflating the scopes", () => {
-    const { handle, store } = setup()
-    const { conversationId, sessionId } = seedClassicConversation(handle)
-    const classicTurn = seedClassicTurn(handle, { conversationId, sessionId, user: "Summarize DBMS", assistant: "Summary ready", offset: 1 })
-    const context = store.prepareClassicGoalRouting("proj_one", conversationId)
-    store.applyClassicGoalRoute({ projectId: "proj_one", conversationId, sessionId, turnId: classicTurn.turnId, userMessageId: classicTurn.userMessageId, userMessage: "Summarize DBMS", context, route: { action: "create", candidates: [], title: "DBMS review" } })
-    const imported = store.continueClassicConversationInSeamless("proj_one", conversationId)
-    const importedTurnId = (handle.sqlite.prepare("SELECT id FROM v2_turns WHERE metadata_json LIKE '%classic_bridge%' LIMIT 1").get() as { id: string }).id
-
-    expect(store.getClassicConversationDeletionImpact("proj_one", conversationId)).toEqual({ linkedToFlow: true })
-    store.deleteClassicConversationProjection("proj_one", conversationId, "classic_only")
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(importedTurnId)).toMatchObject({ count: 1 })
-    expect(store.getClassicConversationDeletionImpact("proj_one", conversationId)).toEqual({ linkedToFlow: false })
-
-    const bridge = store.openFocusInClassic("proj_one", imported.flow.id, imported.foregroundGoal!.id)
-    store.continueClassicConversationInSeamless("proj_one", bridge.conversationId)
-    store.deleteClassicConversationProjection("proj_one", bridge.conversationId, "everywhere")
-    expect(handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_turns WHERE id = ?").get(importedTurnId)).toMatchObject({ count: 0 })
   })
 })

@@ -9,7 +9,6 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   type FocusLedgerToolInput,
   type FocusLedgerToolOutput,
-  type GoalFinalization,
   V2_FLOW_MESSAGE_PAGE_MAX,
   V2_FLOW_SNAPSHOT_MESSAGE_LIMIT,
   type V2Approval,
@@ -30,7 +29,6 @@ import {
   type V2GoalMessageLink,
   type V2GoalRoutingRun,
   type V2GoalTransition,
-  type V2GoalRouterOutput,
   type V2Message,
   type V2MessageAttachment,
   type V2MessageWindow,
@@ -47,8 +45,6 @@ import {
 import type { V2SpeechArtifactContent, V2SpeechJobUpdate } from "../../routes/v2SpeechRoutes"
 import type {
   ImmutableEvidenceRecord,
-  ActiveGoalCard,
-  GoalCandidateCard,
   V2ContextDispositionDecision,
   V2ContextItem as CoreV2ContextItem,
   V2ContextState,
@@ -75,7 +71,6 @@ import {
   v2ContextItemSources,
   v2ContextItems,
   v2CredentialInputRequests,
-  v2DeletionAuthorizations,
   v2Errors,
   v2EvidenceItems,
   v2Feedback,
@@ -87,8 +82,6 @@ import {
   v2GoalTransitions,
   v2ClassicConversationBridges,
   v2ClassicMessageLinks,
-  v2ClassicTurnGoalLinks,
-  v2GoalClassicHomes,
   v2MessageAttachments,
   v2Messages,
   v2ModelCalls,
@@ -106,8 +99,6 @@ const ACTIVE_TURN_STATUSES = ["queued", "routing", "awaiting_clarification", "ru
 const ACTIVE_TERMINAL_STATUSES = ["starting", "running", "awaiting_input", "detached"] as const
 const V2_MODEL_MESSAGE_LOAD_LIMIT = 500
 export const V2_ACTIVE_CONTEXT_ITEM_LOAD_LIMIT = 256
-
-type ClassicConversationBridgeRow = typeof v2ClassicConversationBridges.$inferSelect
 
 export type V2TerminalRuntimeRecord = {
   terminal: V2Terminal
@@ -149,8 +140,6 @@ export type V2ContinuedTerminalTask = V2ReadyTerminalTask & {
   wakeContext: string
 }
 
-export type ClassicConversationDeletionScope = "classic_only" | "everywhere"
-
 export type V2TaskLineage = {
   taskId: string
   rootTurnId: string
@@ -188,13 +177,8 @@ type RoutingApplication = {
   routingRun: V2GoalRoutingRun
   goal: V2Goal
   transition?: V2GoalTransition
+  secondaryGoalIds: string[]
 }
-
-export type ClassicGoalRoutingContext = Readonly<{
-  flowId: string
-  currentGoalCandidate?: number
-  candidates: readonly GoalCandidateCard[]
-}>
 
 export type V2MessagePage = Readonly<{
   messages: V2Message[]
@@ -292,6 +276,7 @@ export class V2FlowStore {
       return { flowId: row.id, generalGoalId: general.id }
     })
     const ensured = operation()
+    this.ensureClassicBridge(projectId, ensured.flowId, ensured.generalGoalId)
     this.archiveDormantGoals(projectId, ensured.flowId)
     return this.getSnapshot(projectId, ensured.flowId)
   }
@@ -372,73 +357,20 @@ export class V2FlowStore {
     return this.getSnapshot(projectId, flowId).flow
   }
 
-  /**
-   * A Classic home is a convenience pointer, not the source of truth. Classic
-   * conversations can be removed independently, so never let a dangling home
-   * take Flow ownership or send the user to a non-existent conversation.
-   */
-  private isLiveClassicBridge(bridge: ClassicConversationBridgeRow): boolean {
-    const conversation = this.handle.db.select({ id: conversations.id }).from(conversations).where(and(
-      eq(conversations.id, bridge.conversationId),
-      eq(conversations.projectId, bridge.projectId),
-    )).limit(1).get()
-    if (!conversation) return false
-    const session = this.handle.db.select({ id: sessions.id }).from(sessions).where(and(
-      eq(sessions.id, bridge.sessionId),
-      eq(sessions.conversationId, bridge.conversationId),
-      eq(sessions.projectId, bridge.projectId),
-    )).limit(1).get()
-    return Boolean(session)
-  }
-
-  private findLatestLiveClassicBridge(projectId: string, flowId: string, goalId: string): ClassicConversationBridgeRow | undefined {
-    const candidates = this.handle.db.select().from(v2ClassicConversationBridges).where(and(
-      eq(v2ClassicConversationBridges.projectId, projectId),
-      eq(v2ClassicConversationBridges.flowId, flowId),
-      eq(v2ClassicConversationBridges.goalId, goalId),
-    )).orderBy(desc(v2ClassicConversationBridges.updatedAt)).all()
-    return candidates.find((candidate) => this.isLiveClassicBridge(candidate))
-  }
-
-  private resolveClassicHome(projectId: string, flowId: string, goalId: string): ClassicConversationBridgeRow | undefined {
-    const home = this.handle.db.select().from(v2GoalClassicHomes).where(and(
-      eq(v2GoalClassicHomes.projectId, projectId),
-      eq(v2GoalClassicHomes.flowId, flowId),
-      eq(v2GoalClassicHomes.goalId, goalId),
-    )).limit(1).get()
-    if (!home) return undefined
-
-    const bridge = this.handle.db.select().from(v2ClassicConversationBridges)
-      .where(eq(v2ClassicConversationBridges.id, home.bridgeId)).limit(1).get()
-    if (bridge && this.isLiveClassicBridge(bridge)) return bridge
-
-    const replacement = this.findLatestLiveClassicBridge(projectId, flowId, goalId)
-    if (replacement) {
-      this.handle.db.update(v2GoalClassicHomes).set({
-        bridgeId: replacement.id,
-        conversationId: replacement.conversationId,
-        sessionId: replacement.sessionId,
-        updatedAt: nowIso(),
-      }).where(eq(v2GoalClassicHomes.id, home.id)).run()
-      return replacement
-    }
-
-    // The old conversation has already gone away, so remove only its stale
-    // home pointer. A future Flow-to-Classic handoff will provision a fresh one.
-    this.handle.db.delete(v2GoalClassicHomes).where(eq(v2GoalClassicHomes.id, home.id)).run()
-    return undefined
-  }
-
   ensureClassicBridge(projectId: string, flowId: string, goalId: string): {
     id: string
     conversationId: string
     sessionId: string
     activeOwner: "v2" | "classic"
   } {
-    const existingBridge = this.resolveClassicHome(projectId, flowId, goalId)
-    if (existingBridge) {
-      const bridge = existingBridge
-      return { id: bridge.id, conversationId: bridge.conversationId, sessionId: bridge.sessionId, activeOwner: bridge.activeOwner as "v2" | "classic" }
+    const existing = this.handle.db
+      .select()
+      .from(v2ClassicConversationBridges)
+      .where(and(eq(v2ClassicConversationBridges.projectId, projectId), eq(v2ClassicConversationBridges.flowId, flowId), eq(v2ClassicConversationBridges.goalId, goalId)))
+      .limit(1)
+      .get()
+    if (existing) {
+      return { id: existing.id, conversationId: existing.conversationId, sessionId: existing.sessionId, activeOwner: existing.activeOwner as "v2" | "classic" }
     }
     const created = this.handle.sqlite.transaction(() => {
       const project = this.requireProject(projectId)
@@ -492,28 +424,9 @@ export class V2FlowStore {
         createdAt: now,
         updatedAt: now,
       }).run()
-      this.handle.db.insert(v2GoalClassicHomes).values({
-        id: createId("v2home"),
-        projectId,
-        flowId,
-        goalId,
-        bridgeId,
-        conversationId,
-        sessionId,
-        createdAt: now,
-        updatedAt: now,
-      }).run()
       return { id: bridgeId, conversationId, sessionId, activeOwner: "v2" as const }
     })
-    const bridge = created()
-    const completedGoalTurns = this.handle.db
-      .select({ id: v2Turns.id })
-      .from(v2Turns)
-      .where(and(eq(v2Turns.flowId, flowId), eq(v2Turns.goalId, goalId), eq(v2Turns.status, "completed")))
-      .orderBy(asc(v2Turns.ordinal))
-      .all()
-    for (const turn of completedGoalTurns) this.mirrorV2TurnToClassic(projectId, flowId, turn.id)
-    return bridge
+    return created()
   }
 
   getClassicBridge(projectId: string, flowId: string, goalId: string) {
@@ -528,7 +441,7 @@ export class V2FlowStore {
     }
     const bridge = this.ensureClassicBridge(projectId, flowId, goalId)
     const now = nowIso()
-    this.handle.db.update(v2ClassicConversationBridges).set({ goalId, activeOwner: "classic", updatedAt: now }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
+    this.handle.db.update(v2ClassicConversationBridges).set({ activeOwner: "classic", updatedAt: now }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
     return { ...bridge, activeOwner: "classic" as const }
   }
 
@@ -574,28 +487,22 @@ export class V2FlowStore {
           summary: summaryText, decisionsJson: "[]", openQuestionsJson: "[]", nextActionsJson: "[]", evidenceHandlesJson: "[]",
           sourceThroughSequence: 0, tokenEstimate: estimateTokens(summaryText), createdAt: now,
         }).run()
-        const bridgeId = createId("v2bridge")
         this.handle.db.insert(v2ClassicConversationBridges).values({
-          id: bridgeId, projectId, flowId: snapshot.flow.id, goalId,
+          id: createId("v2bridge"), projectId, flowId: snapshot.flow.id, goalId,
           conversationId, sessionId: session.id, activeOwner: "classic", status: "active", createdAt: now, updatedAt: now,
-        }).run()
-        this.handle.db.insert(v2GoalClassicHomes).values({
-          id: createId("v2home"), projectId, flowId: snapshot.flow.id, goalId, bridgeId,
-          conversationId, sessionId: session.id, createdAt: now, updatedAt: now,
         }).run()
       })()
       bridge = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.conversationId, conversationId)).limit(1).get()
     }
     if (!bridge) throw new SocratesError("v2_bridge_create_failed", "The Classic conversation bridge could not be created.")
-    const targetGoalId = bridge.goalId
     this.importClassicBridgeTurns(bridge.id)
     const now = nowIso()
-    this.handle.db.update(v2ClassicConversationBridges).set({ goalId: targetGoalId, activeOwner: "v2", status: "active", archivedAt: null, updatedAt: now }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
-    const goal = this.handle.db.select().from(v2Goals).where(eq(v2Goals.id, targetGoalId)).limit(1).get()
+    this.handle.db.update(v2ClassicConversationBridges).set({ activeOwner: "v2", status: "active", archivedAt: null, updatedAt: now }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
+    const goal = this.handle.db.select().from(v2Goals).where(eq(v2Goals.id, bridge.goalId)).limit(1).get()
     this.updateFocus({
       projectId,
       flowId: bridge.flowId,
-      goalId: targetGoalId,
+      goalId: bridge.goalId,
       action: goal?.status === "archived" || goal?.status === "completed" ? "reopen" : "switch",
       note: "Continued from Classic View.",
     })
@@ -603,8 +510,8 @@ export class V2FlowStore {
   }
 
   assertV2FocusOwnership(projectId: string, flowId: string, goalId: string): void {
-    const bridge = this.resolveClassicHome(projectId, flowId, goalId)
-    if (bridge && bridge.activeOwner !== "v2") {
+    const bridge = this.ensureClassicBridge(projectId, flowId, goalId)
+    if (bridge.activeOwner !== "v2") {
       throw new SocratesError("v2_focus_owned_by_classic", "This focus is currently owned by Classic View. Continue it in Seamless to hand writing back before sending another message.", { recoverable: true })
     }
   }
@@ -622,224 +529,6 @@ export class V2FlowStore {
       if (!user || !assistant) return []
       return [{ ...(turn.goalId ? { goalId: turn.goalId } : {}), user: user.content, assistant: assistant.content }]
     })
-  }
-
-  prepareClassicGoalRouting(
-    projectId: string,
-    conversationId: string,
-    retrievedGoalIds: readonly string[] = [],
-  ): ClassicGoalRoutingContext {
-    this.requireProject(projectId)
-    const conversation = this.handle.db.select().from(conversations).where(and(
-      eq(conversations.id, conversationId),
-      eq(conversations.projectId, projectId),
-    )).limit(1).get()
-    if (!conversation) throw new SocratesError("conversation_not_found", "The Classic conversation was not found.", { recoverable: true })
-    const snapshot = this.ensureFlow(projectId)
-    const latestLink = this.handle.db.select().from(v2ClassicTurnGoalLinks)
-      .where(eq(v2ClassicTurnGoalLinks.conversationId, conversationId))
-      .orderBy(desc(v2ClassicTurnGoalLinks.updatedAt), desc(v2ClassicTurnGoalLinks.id))
-      .limit(1)
-      .get()
-    const currentGoalId = this.handle.db.select({ goalId: v2ClassicConversationBridges.goalId }).from(v2ClassicConversationBridges)
-      .where(eq(v2ClassicConversationBridges.conversationId, conversationId)).limit(1).get()?.goalId
-      ?? latestLink?.goalId
-    const goals = this.handle.db.select().from(v2Goals).where(and(
-      eq(v2Goals.flowId, snapshot.flow.id),
-      inArray(v2Goals.status, ["foreground", "parked", "blocked", "completed", "discarded"]),
-    )).orderBy(desc(v2Goals.lastActiveAt)).all()
-      .filter((goal) => goal.kind === "work" || goal.id === currentGoalId)
-    const byId = new Map(goals.map((goal) => [goal.id, goal]))
-    const orderedIds = uniqueStrings([
-      ...(currentGoalId ? [currentGoalId] : []),
-      ...retrievedGoalIds,
-      ...goals.map((goal) => goal.id),
-    ]).filter((goalId) => byId.has(goalId)).slice(0, 5)
-    const latestCapsules = this.handle.db.select().from(v2GoalCapsules)
-      .where(and(eq(v2GoalCapsules.flowId, snapshot.flow.id), eq(v2GoalCapsules.status, "active"))).all()
-    const capsuleByGoal = new Map(latestCapsules.map((capsule) => [capsule.goalId, capsule]))
-    const candidates = orderedIds.map((goalId, index): GoalCandidateCard => {
-      const goal = byId.get(goalId)!
-      return {
-        goalId,
-        candidate: index + 1,
-        status: goal.status,
-        title: goal.title,
-        note: capsuleByGoal.get(goalId)?.summary ?? goal.summary ?? "No progress note yet.",
-      }
-    })
-    const currentGoalCandidate = currentGoalId
-      ? candidates.find((candidate) => candidate.goalId === currentGoalId)?.candidate
-      : undefined
-    return {
-      flowId: snapshot.flow.id,
-      ...(currentGoalCandidate === undefined ? {} : { currentGoalCandidate }),
-      candidates,
-    }
-  }
-
-  applyClassicGoalRoute(input: {
-    projectId: string
-    conversationId: string
-    sessionId: string
-    turnId: string
-    userMessageId: string
-    userMessage: string
-    context: ClassicGoalRoutingContext
-    route: V2GoalRouterOutput
-  }): ActiveGoalCard {
-    const candidateByNumber = new Map(input.context.candidates.map((candidate) => [candidate.candidate, candidate]))
-    let goalId: string
-    const effectiveRoute = input.route.action === "clarify"
-      ? input.context.currentGoalCandidate
-        ? { action: "use" as const, candidates: [input.context.currentGoalCandidate], title: null }
-        : { action: "create" as const, candidates: [], title: deriveGoalTitle(input.userMessage) }
-      : input.route
-    if (effectiveRoute.action === "use") {
-      const selected = candidateByNumber.get(effectiveRoute.candidates[0] ?? -1)
-      if (!selected) throw new SocratesError("classic_goal_candidate_invalid", "The Memory Router selected an unavailable goal candidate.", { recoverable: true })
-      goalId = selected.goalId
-    } else {
-      const now = nowIso()
-      goalId = createId("v2goal")
-      const title = effectiveRoute.title?.trim() || deriveGoalTitle(input.userMessage)
-      this.handle.sqlite.transaction(() => {
-        this.handle.db.insert(v2Goals).values({
-          id: goalId,
-          flowId: input.context.flowId,
-          projectId: input.projectId,
-          ordinal: this.nextInteger("v2_goals", "ordinal", "flow_id", input.context.flowId),
-          title,
-          summary: input.userMessage.trim().slice(0, 2_000) || title,
-          kind: "work",
-          status: "parked",
-          origin: "router",
-          priority: 50,
-          pinned: false,
-          lastActiveAt: now,
-          createdAt: now,
-          updatedAt: now,
-        }).run()
-        this.insertGoalTransition({
-          flowId: input.context.flowId,
-          goalId,
-          turnId: input.turnId,
-          fromStatus: null,
-          toStatus: "parked",
-          reason: "created",
-          note: "Created by the Classic pre-turn Memory Router.",
-          createdAt: now,
-        })
-        this.handle.db.insert(v2GoalCapsules).values({
-          id: createId("v2cap"), flowId: input.context.flowId, goalId, version: 1, status: "active",
-          summary: input.userMessage.trim().slice(0, 2_000) || title,
-          decisionsJson: "[]", openQuestionsJson: "[]", nextActionsJson: JSON.stringify(["Respond to the latest user request."]), evidenceHandlesJson: "[]",
-          sourceThroughSequence: 0, tokenEstimate: estimateTokens(input.userMessage), createdByTurnId: input.turnId, createdAt: now,
-        }).run()
-      })()
-    }
-
-    const goalBefore = this.handle.db.select().from(v2Goals).where(and(eq(v2Goals.id, goalId), eq(v2Goals.flowId, input.context.flowId))).limit(1).get()
-    if (!goalBefore) throw new SocratesError("v2_goal_not_found", "The routed goal was not found.", { recoverable: true })
-    this.updateFocus({
-      projectId: input.projectId,
-      flowId: input.context.flowId,
-      goalId,
-      action: goalBefore.status === "completed" || goalBefore.status === "discarded" || goalBefore.status === "archived" ? "reopen" : "switch",
-      note: "Selected by the Classic pre-turn Memory Router.",
-    })
-    const now = nowIso()
-    let bridge = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.conversationId, input.conversationId)).limit(1).get()
-    if (!bridge) {
-      const bridgeId = createId("v2bridge")
-      this.handle.db.insert(v2ClassicConversationBridges).values({
-        id: bridgeId, projectId: input.projectId, flowId: input.context.flowId, goalId,
-        conversationId: input.conversationId, sessionId: input.sessionId, activeOwner: "classic", status: "active", createdAt: now, updatedAt: now,
-      }).run()
-      bridge = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.id, bridgeId)).get()
-    } else {
-      this.handle.db.update(v2ClassicConversationBridges).set({ goalId, sessionId: input.sessionId, activeOwner: "classic", updatedAt: now }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
-    }
-    if (!bridge) throw new SocratesError("v2_bridge_create_failed", "The Classic goal bridge could not be saved.")
-    const existingHome = this.handle.db.select().from(v2GoalClassicHomes).where(eq(v2GoalClassicHomes.goalId, goalId)).limit(1).get()
-    if (!existingHome) {
-      this.handle.db.insert(v2GoalClassicHomes).values({
-        id: createId("v2home"), projectId: input.projectId, flowId: input.context.flowId, goalId,
-        bridgeId: bridge.id, conversationId: input.conversationId, sessionId: input.sessionId, createdAt: now, updatedAt: now,
-      }).run()
-    } else if (existingHome.bridgeId !== bridge.id) {
-      // The latest Classic conversation routed to this focus becomes its
-      // preferred home. Keeping an older pointer here can strand Flow on a
-      // deleted conversation and incorrectly block its composer.
-      this.handle.db.update(v2GoalClassicHomes).set({
-        bridgeId: bridge.id,
-        conversationId: input.conversationId,
-        sessionId: input.sessionId,
-        updatedAt: now,
-      }).where(eq(v2GoalClassicHomes.id, existingHome.id)).run()
-    }
-    this.handle.db.insert(v2ClassicTurnGoalLinks).values({
-      id: createId("v2ctgoal"), projectId: input.projectId, flowId: input.context.flowId, goalId,
-      bridgeId: bridge.id, conversationId: input.conversationId, sessionId: input.sessionId,
-      turnId: input.turnId, userMessageId: input.userMessageId, createdAt: now, updatedAt: now,
-    }).onConflictDoNothing().run()
-    const goal = this.handle.db.select().from(v2Goals).where(eq(v2Goals.id, goalId)).get()
-    if (!goal) throw new SocratesError("v2_goal_not_found", "The routed goal was not found.")
-    return { goalId, title: goal.title, state: goal.status, note: goal.summary ?? "Work is active." }
-  }
-
-  finalizeClassicGoal(turnId: string, finalization: GoalFinalization, assistantMessageId?: string): void {
-    const link = this.handle.db.select().from(v2ClassicTurnGoalLinks).where(eq(v2ClassicTurnGoalLinks.turnId, turnId)).limit(1).get()
-    if (!link) return
-    this.finalizeGoal(link.projectId, link.flowId, link.goalId, turnId, finalization)
-    this.handle.db.update(v2ClassicTurnGoalLinks).set({ ...(assistantMessageId ? { assistantMessageId } : {}), updatedAt: nowIso() }).where(eq(v2ClassicTurnGoalLinks.id, link.id)).run()
-  }
-
-  finalizeGoal(projectId: string, flowId: string, goalId: string, turnId: string, finalization: GoalFinalization): void {
-    this.requireFlow(projectId, flowId)
-    const goal = this.handle.db.select().from(v2Goals).where(and(eq(v2Goals.id, goalId), eq(v2Goals.flowId, flowId))).limit(1).get()
-    if (!goal) return
-    const now = nowIso()
-    const requestedStatus = finalization.state === "active" ? "foreground" : finalization.state
-    const nextStatus = goal.kind === "general" ? "foreground" : requestedStatus
-    this.handle.sqlite.transaction(() => {
-      if (goal.status !== nextStatus) {
-        this.handle.db.update(v2Goals).set({
-          status: nextStatus,
-          summary: finalization.note,
-          lastActiveAt: now,
-          completedAt: nextStatus === "completed" ? now : null,
-          updatedAt: now,
-        }).where(eq(v2Goals.id, goal.id)).run()
-        this.insertGoalTransition({
-          flowId, goalId, turnId, fromStatus: goal.status as V2Goal["status"], toStatus: nextStatus,
-          reason: finalization.state === "completed" ? "completed" : finalization.state === "blocked" ? "blocked" : finalization.state === "discarded" ? "discarded" : "router_decision",
-          note: finalization.note, createdAt: now,
-        })
-      } else {
-        this.handle.db.update(v2Goals).set({ summary: finalization.note, lastActiveAt: now, updatedAt: now }).where(eq(v2Goals.id, goal.id)).run()
-      }
-      const flow = this.requireFlow(projectId, flowId)
-      if (nextStatus !== "foreground" && flow.foregroundGoalId === goalId) {
-        const general = this.handle.db.select().from(v2Goals).where(and(eq(v2Goals.flowId, flowId), eq(v2Goals.kind, "general"))).limit(1).get()
-        if (general && general.id !== goalId) {
-          this.handle.db.update(v2Goals).set({ status: "foreground", lastActiveAt: now, updatedAt: now }).where(eq(v2Goals.id, general.id)).run()
-          this.insertGoalTransition({ flowId, goalId: general.id, turnId, fromStatus: general.status as V2Goal["status"], toStatus: "foreground", reason: "resumed", note: "Returned to General Conversation after goal finalization.", createdAt: now })
-          this.handle.db.update(v2Flows).set({ foregroundGoalId: general.id, revision: sql`${v2Flows.revision} + 1`, updatedAt: now }).where(eq(v2Flows.id, flowId)).run()
-        }
-      }
-    })()
-  }
-
-  getClassicGoalForTurn(turnId: string): ActiveGoalCard | undefined {
-    const link = this.handle.db.select().from(v2ClassicTurnGoalLinks).where(eq(v2ClassicTurnGoalLinks.turnId, turnId)).limit(1).get()
-    if (!link) return undefined
-    const goal = this.handle.db.select().from(v2Goals).where(eq(v2Goals.id, link.goalId)).limit(1).get()
-    return goal ? { goalId: goal.id, title: goal.title, state: goal.status, note: goal.summary ?? "Work is active." } : undefined
-  }
-
-  attachClassicGoalAssistantMessage(turnId: string, assistantMessageId: string): void {
-    this.handle.db.update(v2ClassicTurnGoalLinks).set({ assistantMessageId, updatedAt: nowIso() }).where(eq(v2ClassicTurnGoalLinks.turnId, turnId)).run()
   }
 
   useFocusLedger(input: {
@@ -978,12 +667,10 @@ export class V2FlowStore {
       return { goal: mapGoal(row), transitions }
     })
     const result = operation()
+    const bridge = this.ensureClassicBridge(input.projectId, input.flowId, input.goalId)
     const archived = result.goal.status === "archived"
-    const home = this.handle.db.select().from(v2GoalClassicHomes).where(eq(v2GoalClassicHomes.goalId, input.goalId)).limit(1).get()
-    if (home) {
-      this.handle.db.update(v2ClassicConversationBridges).set({ status: archived ? "archived" : "active", archivedAt: archived ? nowIso() : null, updatedAt: nowIso() }).where(eq(v2ClassicConversationBridges.id, home.bridgeId)).run()
-      this.handle.db.update(conversations).set({ status: archived ? "archived" : "active", archivedAt: archived ? nowIso() : null, updatedAt: nowIso() }).where(eq(conversations.id, home.conversationId)).run()
-    }
+    this.handle.db.update(v2ClassicConversationBridges).set({ status: archived ? "archived" : "active", archivedAt: archived ? nowIso() : null, updatedAt: nowIso() }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
+    this.handle.db.update(conversations).set({ status: archived ? "archived" : "active", archivedAt: archived ? nowIso() : null, updatedAt: nowIso() }).where(eq(conversations.id, bridge.conversationId)).run()
     return result
   }
 
@@ -1005,139 +692,21 @@ export class V2FlowStore {
     return archived
   }
 
-  getClassicConversationDeletionImpact(projectId: string, conversationId: string): { linkedToFlow: boolean } {
-    const conversation = this.handle.db.select({ id: conversations.id }).from(conversations)
-      .where(and(eq(conversations.projectId, projectId), eq(conversations.id, conversationId)))
-      .limit(1).get()
-    if (!conversation) throw new SocratesError("conversation_not_found", "Conversation not found", { recoverable: true })
-    const bridge = this.handle.db.select({ id: v2ClassicConversationBridges.id }).from(v2ClassicConversationBridges)
-      .where(and(eq(v2ClassicConversationBridges.projectId, projectId), eq(v2ClassicConversationBridges.conversationId, conversationId)))
-      .limit(1).get()
-    return { linkedToFlow: Boolean(bridge) }
-  }
-
-  deleteClassicConversationProjection(
+  mirrorV2TurnToClassic(
     projectId: string,
-    conversationId: string,
-    scope: ClassicConversationDeletionScope,
+    flowId: string,
+    turnId: string,
+    options: { allowClassicOwner?: boolean } = {},
   ): void {
-    const bridge = this.handle.db.select().from(v2ClassicConversationBridges)
-      .where(and(eq(v2ClassicConversationBridges.projectId, projectId), eq(v2ClassicConversationBridges.conversationId, conversationId)))
-      .limit(1).get()
-    if (!bridge) return
-    const operation = this.handle.sqlite.transaction(() => {
-      if (scope === "everywhere") {
-        const turnIds = this.handle.sqlite.prepare(
-          `SELECT DISTINCT m.turn_id AS turnId
-           FROM v2_classic_message_links l
-           INNER JOIN v2_messages m ON m.id = l.v2_message_id
-           WHERE l.bridge_id = ? AND m.turn_id IS NOT NULL`,
-        ).all(bridge.id).map((row) => (row as { turnId: string }).turnId)
-        this.deleteV2TurnsWithinTransaction(turnIds)
-      }
-      this.handle.sqlite.prepare("DELETE FROM v2_goal_classic_homes WHERE bridge_id = ?").run(bridge.id)
-      this.handle.sqlite.prepare("DELETE FROM v2_classic_turn_goal_links WHERE bridge_id = ?").run(bridge.id)
-      this.handle.sqlite.prepare("DELETE FROM v2_classic_message_links WHERE bridge_id = ?").run(bridge.id)
-      this.handle.sqlite.prepare("DELETE FROM v2_classic_conversation_bridges WHERE id = ?").run(bridge.id)
-    })
-    operation()
-  }
-
-  deleteTurn(projectId: string, flowId: string, turnId: string): { deletedTurnId: string } {
-    const turn = this.requireTurn(projectId, flowId, turnId)
-    if (ACTIVE_TURN_STATUSES.includes(turn.status as (typeof ACTIVE_TURN_STATUSES)[number])) {
-      throw new SocratesError("v2_turn_still_active", "Stop this turn before deleting it.", { recoverable: true })
-    }
-    const operation = this.handle.sqlite.transaction(() => this.deleteV2TurnsWithinTransaction([turnId]))
-    operation()
-    return { deletedTurnId: turnId }
-  }
-
-  deleteGoal(projectId: string, flowId: string, goalId: string): { deletedGoalId: string; fallbackGoalId: string } {
-    const flow = this.requireFlow(projectId, flowId)
-    const goal = this.handle.db.select().from(v2Goals)
-      .where(and(eq(v2Goals.flowId, flowId), eq(v2Goals.id, goalId)))
-      .limit(1).get()
-    if (!goal) throw new SocratesError("v2_goal_not_found", "Focus not found", { recoverable: true })
-    if (goal.kind === "general") {
-      throw new SocratesError("v2_general_focus_protected", "General Conversation cannot be deleted.", { recoverable: true })
-    }
-    if (this.hasActiveGoalWork(flowId, goalId)) {
-      throw new SocratesError("v2_focus_still_active", "Stop this focus before deleting it.", { recoverable: true })
-    }
-    const fallback = this.handle.db.select().from(v2Goals)
-      .where(and(eq(v2Goals.flowId, flowId), eq(v2Goals.kind, "general")))
-      .limit(1).get()
-    if (!fallback) throw new SocratesError("v2_general_focus_missing", "General Conversation is unavailable.")
-
-    const operation = this.handle.sqlite.transaction(() => {
-      const classicHomes = this.handle.db.select().from(v2GoalClassicHomes)
-        .where(and(eq(v2GoalClassicHomes.flowId, flowId), eq(v2GoalClassicHomes.goalId, goalId))).all()
-      const turnIds = this.handle.db.select({ id: v2Turns.id }).from(v2Turns)
-        .where(and(eq(v2Turns.flowId, flowId), eq(v2Turns.goalId, goalId))).all().map((row) => row.id)
-      const classicTurnIds = this.handle.db.select({ id: v2ClassicTurnGoalLinks.turnId }).from(v2ClassicTurnGoalLinks)
-        .where(and(eq(v2ClassicTurnGoalLinks.flowId, flowId), eq(v2ClassicTurnGoalLinks.goalId, goalId))).all().map((row) => row.id)
-
-      if (flow.foregroundGoalId === goalId) {
-        this.handle.db.update(v2Goals).set({ status: "parked", updatedAt: nowIso() }).where(eq(v2Goals.id, goalId)).run()
-        this.handle.db.update(v2Goals).set({ status: "foreground", lastActiveAt: nowIso(), updatedAt: nowIso() }).where(eq(v2Goals.id, fallback.id)).run()
-      }
-      this.deleteV2TurnsWithinTransaction(turnIds)
-      this.deleteClassicTurnsWithinTransaction(classicTurnIds)
-      this.authorizeEvidenceDeletion("goal", goalId)
-
-      const contextIds = this.handle.db.select({ id: v2ContextItems.id }).from(v2ContextItems).where(eq(v2ContextItems.goalId, goalId)).all().map((row) => row.id)
-      const capsuleIds = this.handle.db.select({ id: v2GoalCapsules.id }).from(v2GoalCapsules).where(eq(v2GoalCapsules.goalId, goalId)).all().map((row) => row.id)
-      this.deleteContextSources(contextIds, [], capsuleIds)
-      this.deleteRowsByIds("v2_context_dispositions", "context_item_id", contextIds)
-      this.handle.sqlite.prepare("DELETE FROM v2_context_dispositions WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_context_items WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_evidence_items WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_goal_capsules WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_goal_message_links WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_goal_transitions WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_goal_routing_runs WHERE selected_goal_id = ? OR foreground_goal_id = ?").run(goalId, goalId)
-      for (const table of [
-        "v2_runtime_events", "v2_model_calls", "v2_usage_events", "v2_tool_calls", "v2_approvals",
-        "v2_terminal_sessions", "v2_errors", "v2_artifacts", "v2_agent_tasks", "v2_speech_jobs",
-        "v2_feedback", "v2_credential_input_requests", "v2_message_attachments", "v2_messages",
-      ]) {
-        this.handle.sqlite.prepare(`DELETE FROM ${table} WHERE goal_id = ?`).run(goalId)
-      }
-      this.handle.sqlite.prepare("DELETE FROM v2_classic_turn_goal_links WHERE goal_id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_goal_classic_homes WHERE goal_id = ?").run(goalId)
-      for (const home of classicHomes) {
-        const remainingTurns = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM turns WHERE conversation_id = ?").get(home.conversationId) as { count: number }
-        const remainingHomes = this.handle.sqlite.prepare("SELECT COUNT(*) AS count FROM v2_goal_classic_homes WHERE conversation_id = ?").get(home.conversationId) as { count: number }
-        if (remainingTurns.count === 0 && remainingHomes.count === 0) {
-          this.handle.sqlite.prepare("DELETE FROM v2_classic_message_links WHERE bridge_id = ?").run(home.bridgeId)
-          this.handle.sqlite.prepare("DELETE FROM v2_classic_turn_goal_links WHERE bridge_id = ?").run(home.bridgeId)
-          this.handle.sqlite.prepare("DELETE FROM v2_classic_conversation_bridges WHERE id = ?").run(home.bridgeId)
-          this.deleteEmptyClassicConversationWithinTransaction(home.conversationId)
-        } else {
-          this.handle.sqlite.prepare("UPDATE v2_classic_conversation_bridges SET goal_id = ?, updated_at = ? WHERE id = ?").run(fallback.id, nowIso(), home.bridgeId)
-        }
-      }
-      this.handle.sqlite.prepare("UPDATE v2_classic_conversation_bridges SET goal_id = ?, updated_at = ? WHERE goal_id = ?").run(fallback.id, nowIso(), goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_goals WHERE id = ?").run(goalId)
-      this.handle.sqlite.prepare("DELETE FROM v2_deletion_authorizations WHERE target_kind = 'goal' AND target_id = ?").run(goalId)
-      this.handle.db.update(v2Flows).set({ foregroundGoalId: fallback.id, revision: sql`${v2Flows.revision} + 1`, updatedAt: nowIso() }).where(eq(v2Flows.id, flowId)).run()
-    })
-    operation()
-    return { deletedGoalId: goalId, fallbackGoalId: fallback.id }
-  }
-
-  mirrorV2TurnToClassic(projectId: string, flowId: string, turnId: string): void {
     const turn = this.requireTurn(projectId, flowId, turnId)
     if (!turn.goalId || !turn.userMessageId || !turn.assistantMessageId || turn.status !== "completed") return
     const alreadyLinked = this.handle.db.select({ id: v2ClassicMessageLinks.id }).from(v2ClassicMessageLinks)
       .where(or(eq(v2ClassicMessageLinks.v2MessageId, turn.userMessageId), eq(v2ClassicMessageLinks.v2MessageId, turn.assistantMessageId)))
       .limit(1).get()
     if (alreadyLinked) return
-    const home = this.handle.db.select().from(v2GoalClassicHomes).where(and(eq(v2GoalClassicHomes.flowId, flowId), eq(v2GoalClassicHomes.goalId, turn.goalId))).limit(1).get()
-    if (!home) return
-    const row = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.id, home.bridgeId)).limit(1).get()
-    if (!row || row.activeOwner !== "v2") return
+    const bridge = this.ensureClassicBridge(projectId, flowId, turn.goalId)
+    const row = this.handle.db.select().from(v2ClassicConversationBridges).where(eq(v2ClassicConversationBridges.id, bridge.id)).limit(1).get()
+    if (!row || (!options.allowClassicOwner && row.activeOwner !== "v2")) return
     const user = this.handle.db.select().from(v2Messages).where(eq(v2Messages.id, turn.userMessageId)).limit(1).get()
     const assistant = this.handle.db.select().from(v2Messages).where(eq(v2Messages.id, turn.assistantMessageId)).limit(1).get()
     if (!user || !assistant) return
@@ -1190,20 +759,6 @@ export class V2FlowStore {
         { id: createId("v2blink"), bridgeId: row.id, v2MessageId: user.id, classicMessageId: classicUserId, direction: "v2_to_classic", sourceRuntime: "v2", createdAt: now },
         { id: createId("v2blink"), bridgeId: row.id, v2MessageId: assistant.id, classicMessageId: classicAssistantId, direction: "v2_to_classic", sourceRuntime: "v2", createdAt: now },
       ]).run()
-      this.handle.db.insert(v2ClassicTurnGoalLinks).values({
-        id: createId("v2ctgoal"),
-        projectId,
-        flowId,
-        goalId: turn.goalId!,
-        bridgeId: row.id,
-        conversationId: row.conversationId,
-        sessionId: row.sessionId,
-        turnId: classicTurnId,
-        userMessageId: classicUserId,
-        assistantMessageId: classicAssistantId,
-        createdAt: now,
-        updatedAt: now,
-      }).run()
       const attachments = this.handle.db.select().from(v2MessageAttachments).where(and(eq(v2MessageAttachments.messageId, user.id), eq(v2MessageAttachments.status, "attached"))).all()
       for (const attachment of attachments) {
         this.handle.db.insert(messageAttachments).values({
@@ -1226,7 +781,6 @@ export class V2FlowStore {
         }).run()
       }
       this.handle.db.update(v2ClassicConversationBridges).set({
-        goalId: turn.goalId!,
         lastV2MessageOrdinal: assistant.ordinal,
         lastClassicMessageCreatedAt: assistant.createdAt,
         updatedAt: now,
@@ -1544,7 +1098,7 @@ export class V2FlowStore {
       const currentForeground = existingGoals.find((goal) => goal.status === "foreground")
       if (input.result.decision.action === "create") {
         selectedGoalId = createId("v2goal")
-        const title = input.result.decision.title?.trim() || deriveGoalTitle(input.messageContent)
+        const title = deriveGoalTitle(input.messageContent)
         const ordinal = existingGoals.length === 0 ? 1 : Math.max(...existingGoals.map((goal) => goal.ordinal)) + 1
         this.handle.db.insert(v2Goals).values({
           id: selectedGoalId,
@@ -1639,6 +1193,9 @@ export class V2FlowStore {
       } else {
         this.handle.db.update(v2Goals).set({ lastActiveAt: now, updatedAt: now }).where(eq(v2Goals.id, selectedGoalId)).run()
       }
+      const secondaryGoalIds = uniqueStrings(input.result.decision.secondaryGoalIds)
+        .filter((id) => id !== selectedGoalId && existingGoals.some((goal) => goal.id === id))
+        .slice(0, 3)
       const decision = routingDecisionContract(input.result.decision)
       const routingValues = {
         id: routingRunId,
@@ -1650,6 +1207,8 @@ export class V2FlowStore {
         candidateGoalIdsJson: JSON.stringify(input.result.candidates.candidates.map((candidate) => candidate.goal.id)),
         selectedGoalId,
         decision,
+        confidence: input.result.decision.confidence,
+        rationale: input.result.decision.reasonCode,
         providerId: input.providerId,
         modelId: input.modelId,
         status: input.result.source === "fallback" ? "fallback" : "completed",
@@ -1662,6 +1221,8 @@ export class V2FlowStore {
           candidateGoalIdsJson: routingValues.candidateGoalIdsJson,
           selectedGoalId,
           decision,
+          confidence: routingValues.confidence,
+          rationale: routingValues.rationale,
           providerId: routingValues.providerId,
           modelId: routingValues.modelId,
           status: routingValues.status,
@@ -1679,6 +1240,11 @@ export class V2FlowStore {
       this.handle.db.insert(v2GoalMessageLinks).values({
         id: createId("v2link"), flowId: input.flowId, goalId: selectedGoalId, messageId: input.messageId, turnId: input.turnId, relation: "primary", createdAt: now,
       }).run()
+      for (const secondaryGoalId of secondaryGoalIds) {
+        this.handle.db.insert(v2GoalMessageLinks).values({
+          id: createId("v2link"), flowId: input.flowId, goalId: secondaryGoalId, messageId: input.messageId, turnId: input.turnId, relation: "reference", createdAt: now,
+        }).run()
+      }
       if (primaryTransition?.reason === "resumed") {
         this.refreshCapsule(selectedGoalId, input.flowId, input.turnId, now, "resumed")
       }
@@ -1690,9 +1256,12 @@ export class V2FlowStore {
         routingRun: mapRoutingRun(routingRow),
         goal: mapGoal(goalRow),
         ...(primaryTransition ? { transition: mapTransition(primaryTransition) } : {}),
+        secondaryGoalIds,
       }
     })
-    return operation()
+    const applied = operation()
+    this.ensureClassicBridge(input.projectId, input.flowId, applied.goal.id)
+    return applied
   }
 
   requestRoutingClarification(input: {
@@ -1725,6 +1294,8 @@ export class V2FlowStore {
         foregroundGoalId: flow.foregroundGoalId,
         candidateGoalIdsJson: JSON.stringify(input.result.candidates.candidates.map((candidate) => candidate.goal.id)),
         decision: "clarify",
+        confidence: decision.confidence,
+        rationale: decision.reasonCode,
         clarificationQuestion,
         clarificationCandidateGoalIdsJson: JSON.stringify(decision.clarificationGoalIds),
         providerId: input.providerId,
@@ -3315,8 +2886,6 @@ export class V2FlowStore {
       const user = this.handle.db.select().from(messages).where(eq(messages.id, classicTurn.userMessageId)).limit(1).get()
       const assistant = this.handle.db.select().from(messages).where(eq(messages.id, classicTurn.assistantMessageId)).limit(1).get()
       if (!user || !assistant) continue
-      const goalLink = this.handle.db.select().from(v2ClassicTurnGoalLinks).where(eq(v2ClassicTurnGoalLinks.turnId, classicTurn.id)).limit(1).get()
-      const goalId = goalLink?.goalId ?? bridge.goalId
       this.handle.sqlite.transaction(() => {
         const now = nowIso()
         const v2TurnId = createId("v2turn")
@@ -3326,7 +2895,7 @@ export class V2FlowStore {
           id: v2TurnId,
           flowId: bridge.flowId,
           projectId: bridge.projectId,
-          goalId,
+          goalId: bridge.goalId,
           ordinal: this.nextInteger("v2_turns", "ordinal", "flow_id", bridge.flowId),
           userMessageId: v2UserId,
           assistantMessageId: v2AssistantId,
@@ -3338,21 +2907,21 @@ export class V2FlowStore {
         }).run()
         this.handle.db.insert(v2Messages).values([
           {
-            id: v2UserId, flowId: bridge.flowId, projectId: bridge.projectId, goalId, turnId: v2TurnId,
+            id: v2UserId, flowId: bridge.flowId, projectId: bridge.projectId, goalId: bridge.goalId, turnId: v2TurnId,
             ordinal: this.nextInteger("v2_messages", "ordinal", "flow_id", bridge.flowId), role: "user", kind: "bridge_import",
             content: user.content, status: "completed", createdAt: user.createdAt, completedAt: user.completedAt ?? user.createdAt,
             metadataJson: JSON.stringify({ source: "classic_bridge", classicMessageId: user.id }),
           },
           {
-            id: v2AssistantId, flowId: bridge.flowId, projectId: bridge.projectId, goalId, turnId: v2TurnId,
+            id: v2AssistantId, flowId: bridge.flowId, projectId: bridge.projectId, goalId: bridge.goalId, turnId: v2TurnId,
             ordinal: this.nextInteger("v2_messages", "ordinal", "flow_id", bridge.flowId) + 1, role: "assistant", kind: "bridge_import",
             content: assistant.content, status: "completed", parentMessageId: v2UserId, createdAt: assistant.createdAt, completedAt: assistant.completedAt ?? assistant.createdAt,
             metadataJson: JSON.stringify({ source: "classic_bridge", classicMessageId: assistant.id }),
           },
         ]).run()
         this.handle.db.insert(v2GoalMessageLinks).values([
-          { id: createId("v2link"), flowId: bridge.flowId, goalId, messageId: v2UserId, turnId: v2TurnId, relation: "primary", createdAt: now },
-          { id: createId("v2link"), flowId: bridge.flowId, goalId, messageId: v2AssistantId, turnId: v2TurnId, relation: "primary", createdAt: now },
+          { id: createId("v2link"), flowId: bridge.flowId, goalId: bridge.goalId, messageId: v2UserId, turnId: v2TurnId, relation: "primary", createdAt: now },
+          { id: createId("v2link"), flowId: bridge.flowId, goalId: bridge.goalId, messageId: v2AssistantId, turnId: v2TurnId, relation: "primary", createdAt: now },
         ]).run()
         this.handle.db.insert(v2ClassicMessageLinks).values([
           { id: createId("v2blink"), bridgeId: bridge.id, v2MessageId: v2UserId, classicMessageId: user.id, direction: "classic_to_v2", sourceRuntime: "classic", createdAt: now },
@@ -3362,12 +2931,12 @@ export class V2FlowStore {
         for (const attachment of classicAttachments) {
           const artifactId = createId("v2art")
           this.handle.db.insert(v2Artifacts).values({
-            id: artifactId, flowId: bridge.flowId, projectId: bridge.projectId, goalId, turnId: v2TurnId,
+            id: artifactId, flowId: bridge.flowId, projectId: bridge.projectId, goalId: bridge.goalId, turnId: v2TurnId,
             kind: "message_attachment", path: attachment.uri, uri: attachment.uri, mimeType: attachment.mimeType,
             sizeBytes: attachment.sizeBytes, createdAt: attachment.createdAt,
           }).run()
           this.handle.db.insert(v2MessageAttachments).values({
-            id: createId("v2att"), projectId: bridge.projectId, flowId: bridge.flowId, goalId,
+            id: createId("v2att"), projectId: bridge.projectId, flowId: bridge.flowId, goalId: bridge.goalId,
             turnId: v2TurnId, messageId: v2UserId, artifactId, kind: attachment.kind, fileName: attachment.fileName,
             mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, uri: attachment.uri, status: "attached",
             createdAt: attachment.createdAt, updatedAt: now,
@@ -3375,151 +2944,9 @@ export class V2FlowStore {
         }
         this.handle.db.update(v2ClassicConversationBridges).set({ lastClassicMessageCreatedAt: assistant.createdAt, updatedAt: now }).where(eq(v2ClassicConversationBridges.id, bridge.id)).run()
         this.handle.db.update(v2Flows).set({ revision: sql`${v2Flows.revision} + 1`, updatedAt: now }).where(eq(v2Flows.id, bridge.flowId)).run()
-        this.refreshCapsule(goalId, bridge.flowId, v2TurnId, now, "turn_completed")
+        this.refreshCapsule(bridge.goalId, bridge.flowId, v2TurnId, now, "turn_completed")
       })()
     }
-  }
-
-  private authorizeEvidenceDeletion(targetKind: "turn" | "goal" | "flow", targetId: string): void {
-    this.handle.db.insert(v2DeletionAuthorizations).values({
-      id: createId("v2del"),
-      targetKind,
-      targetId,
-      createdAt: nowIso(),
-    }).onConflictDoNothing().run()
-  }
-
-  private deleteRowsByIds(table: string, column: string, ids: string[]): void {
-    const unique = [...new Set(ids)]
-    if (unique.length === 0) return
-    const placeholders = unique.map(() => "?").join(", ")
-    this.handle.sqlite.prepare(`DELETE FROM ${table} WHERE ${column} IN (${placeholders})`).run(...unique)
-  }
-
-  private deleteContextSources(contextIds: string[], evidenceIds: string[], capsuleIds: string[], messageIds: string[] = []): void {
-    this.deleteRowsByIds("v2_context_item_sources", "context_item_id", contextIds)
-    this.deleteRowsByIds("v2_context_item_sources", "evidence_item_id", evidenceIds)
-    this.deleteRowsByIds("v2_context_item_sources", "capsule_id", capsuleIds)
-    this.deleteRowsByIds("v2_context_item_sources", "message_id", messageIds)
-  }
-
-  private deleteV2TurnsWithinTransaction(turnIds: string[]): void {
-    const uniqueTurnIds = [...new Set(turnIds)]
-    if (uniqueTurnIds.length === 0) return
-    const placeholders = uniqueTurnIds.map(() => "?").join(", ")
-    const messageIds = this.handle.sqlite.prepare(
-      `SELECT id FROM v2_messages WHERE turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const classicTurnIds = messageIds.length === 0 ? [] : this.handle.sqlite.prepare(
-      `SELECT DISTINCT m.turn_id AS id
-       FROM v2_classic_message_links l
-       INNER JOIN messages m ON m.id = l.classic_message_id
-       WHERE l.v2_message_id IN (${messageIds.map(() => "?").join(", ")}) AND m.turn_id IS NOT NULL`,
-    ).all(...messageIds).map((row) => (row as { id: string }).id)
-    const contextIds = this.handle.sqlite.prepare(
-      `SELECT id FROM v2_context_items WHERE turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const evidenceIds = this.handle.sqlite.prepare(
-      `SELECT id FROM v2_evidence_items WHERE turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const capsuleIds = this.handle.sqlite.prepare(
-      `SELECT id FROM v2_goal_capsules WHERE created_by_turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const terminalIds = this.handle.sqlite.prepare(
-      `SELECT id FROM v2_terminal_sessions WHERE turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const affectedGoalIds = this.handle.sqlite.prepare(
-      `SELECT DISTINCT goal_id AS id FROM v2_turns WHERE id IN (${placeholders}) AND goal_id IS NOT NULL`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-
-    for (const turnId of uniqueTurnIds) this.authorizeEvidenceDeletion("turn", turnId)
-    this.deleteContextSources(contextIds, evidenceIds, capsuleIds, messageIds)
-    this.deleteRowsByIds("v2_context_dispositions", "context_item_id", contextIds)
-    this.deleteRowsByIds("v2_terminal_output_chunks", "terminal_session_id", terminalIds)
-    this.deleteRowsByIds("v2_classic_message_links", "v2_message_id", messageIds)
-    this.deleteRowsByIds("v2_goal_message_links", "message_id", messageIds)
-    this.deleteRowsByIds("v2_feedback", "message_id", messageIds)
-
-    for (const table of [
-      "v2_turn_runtime_configs", "v2_goal_routing_runs", "v2_context_dispositions", "v2_context_items",
-      "v2_runtime_events", "v2_usage_events", "v2_tool_calls", "v2_approvals", "v2_terminal_sessions",
-      "v2_errors", "v2_artifacts", "v2_speech_jobs", "v2_feedback", "v2_credential_input_requests",
-      "v2_message_attachments", "v2_model_calls",
-    ]) {
-      this.deleteRowsByIds(table, "turn_id", uniqueTurnIds)
-    }
-    this.handle.sqlite.prepare(
-      `DELETE FROM v2_agent_tasks WHERE root_turn_id IN (${placeholders}) OR current_turn_id IN (${placeholders})`,
-    ).run(...uniqueTurnIds, ...uniqueTurnIds)
-    this.deleteRowsByIds("v2_goal_transitions", "turn_id", uniqueTurnIds)
-    this.deleteRowsByIds("v2_goal_capsules", "created_by_turn_id", uniqueTurnIds)
-    this.deleteRowsByIds("v2_evidence_items", "turn_id", uniqueTurnIds)
-    this.deleteRowsByIds("v2_messages", "turn_id", uniqueTurnIds)
-    this.deleteRowsByIds("v2_turns", "id", uniqueTurnIds)
-    this.deleteRowsByIds("v2_deletion_authorizations", "target_id", uniqueTurnIds)
-    this.deleteClassicTurnsWithinTransaction(classicTurnIds)
-    this.deleteRowsByIds("v2_goal_capsules", "goal_id", affectedGoalIds)
-  }
-
-  private deleteClassicTurnsWithinTransaction(turnIds: string[]): void {
-    const uniqueTurnIds = [...new Set(turnIds)]
-    if (uniqueTurnIds.length === 0) return
-    const placeholders = uniqueTurnIds.map(() => "?").join(", ")
-    const shellCommandIds = this.handle.sqlite.prepare(
-      `SELECT id FROM shell_commands WHERE turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const traceDocumentIds = this.handle.sqlite.prepare(
-      `SELECT id FROM trace_documents WHERE turn_id IN (${placeholders})`,
-    ).all(...uniqueTurnIds).map((row) => (row as { id: string }).id)
-    const taskIds = this.handle.sqlite.prepare(
-      `SELECT id FROM agent_tasks
-       WHERE root_turn_id IN (${placeholders}) OR current_turn_id IN (${placeholders})
-          OR id IN (SELECT task_id FROM agent_task_turns WHERE turn_id IN (${placeholders}))`,
-    ).all(...uniqueTurnIds, ...uniqueTurnIds, ...uniqueTurnIds).map((row) => (row as { id: string }).id)
-
-    this.deleteRowsByIds("shell_output_chunks", "shell_command_id", shellCommandIds)
-    this.deleteRowsByIds("trace_embeddings", "trace_document_id", traceDocumentIds)
-    const deleteFts = this.handle.sqlite.prepare("DELETE FROM trace_documents_fts WHERE trace_document_id = ?")
-    for (const id of traceDocumentIds) deleteFts.run(id)
-    this.deleteRowsByIds("trace_documents", "id", traceDocumentIds)
-    this.deleteRowsByIds("agent_task_waits", "task_id", taskIds)
-    this.deleteRowsByIds("agent_task_turns", "task_id", taskIds)
-    this.deleteRowsByIds("task_evidence_references", "task_id", taskIds)
-    this.deleteRowsByIds("agent_tasks", "id", taskIds)
-    for (const table of [
-      "turn_runtime_configs", "model_stream_chunks", "model_usage", "ai_usage_events", "turn_usage_reports",
-      "message_feedback", "message_attachments", "audio_outputs", "voice_inputs", "patches", "file_operations",
-      "shell_commands", "approvals", "tool_calls", "context_usage_snapshots", "model_calls",
-      "artifacts", "errors", "events", "messages",
-      "trace_index_jobs", "notifications",
-    ]) {
-      this.deleteRowsByIds(table, "turn_id", uniqueTurnIds)
-    }
-    this.deleteRowsByIds("v2_classic_turn_goal_links", "turn_id", uniqueTurnIds)
-    this.deleteRowsByIds("turns", "id", uniqueTurnIds)
-  }
-
-  private deleteEmptyClassicConversationWithinTransaction(conversationId: string): void {
-    const sessionIds = this.handle.sqlite.prepare("SELECT id FROM sessions WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
-    const terminalIds = this.handle.sqlite.prepare("SELECT id FROM terminal_sessions WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
-    const shellCommandIds = this.handle.sqlite.prepare("SELECT id FROM shell_commands WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
-    const traceDocumentIds = this.handle.sqlite.prepare("SELECT id FROM trace_documents WHERE conversation_id = ?").all(conversationId).map((row) => (row as { id: string }).id)
-    this.deleteRowsByIds("terminal_output_chunks", "terminal_session_id", terminalIds)
-    this.deleteRowsByIds("shell_output_chunks", "shell_command_id", shellCommandIds)
-    this.deleteRowsByIds("trace_embeddings", "trace_document_id", traceDocumentIds)
-    const deleteFts = this.handle.sqlite.prepare("DELETE FROM trace_documents_fts WHERE trace_document_id = ?")
-    for (const id of traceDocumentIds) deleteFts.run(id)
-    this.deleteRowsByIds("trace_documents", "id", traceDocumentIds)
-    this.deleteRowsByIds("session_state", "session_id", sessionIds)
-    for (const table of [
-      "message_feedback", "message_attachments", "audio_outputs", "voice_inputs", "patches", "file_operations",
-      "shell_commands", "terminal_sessions", "approvals", "tool_calls", "context_usage_snapshots", "model_calls",
-      "artifacts", "errors", "events", "messages", "turns", "trace_index_jobs", "notifications",
-    ]) {
-      this.handle.sqlite.prepare(`DELETE FROM ${table} WHERE conversation_id = ?`).run(conversationId)
-    }
-    this.handle.sqlite.prepare("DELETE FROM sessions WHERE conversation_id = ?").run(conversationId)
-    this.handle.sqlite.prepare("DELETE FROM conversations WHERE id = ?").run(conversationId)
   }
 
   private hasActiveGoalWork(flowId: string, goalId: string): boolean {

@@ -38,15 +38,12 @@
 .directoryPage a,
 .routeStatePage button,
 .routeStatePage a,
+.flowPage button,
 .flowPage a,
 .flowPage input,
 .flowPage select,
 .flowPage textarea {
   color: inherit;
-  font: inherit;
-}
-
-.flowPage button {
   font: inherit;
 }
 
@@ -708,15 +705,6 @@
   white-space: nowrap;
 }
 
-.flowConversation {
-  position: relative;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: minmax(0, 1fr);
-  overflow: hidden;
-  isolation: isolate;
-}
-
 .timelineScroller {
   min-height: 0;
   overflow-x: hidden;
@@ -726,71 +714,28 @@
   overscroll-behavior: contain;
 }
 
-.timelineFrame {
-  position: relative;
-  z-index: 20;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.timelineFrame .timelineScroller {
-  height: 100%;
-  border-top: 0;
-  padding: 0;
-}
-
-.sharedTranscriptContent {
-  width: min(52rem, calc(100% - 2rem));
-  min-width: 0;
-  margin: 0 auto;
-  padding: clamp(1.5rem, 5vh, 3.5rem) 0 2.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: clamp(1.15rem, 3vh, 2rem);
-}
-
-.sharedTranscriptContent > .messageActions {
-  width: min(48rem, 100%);
-  margin-top: -0.7rem;
-}
-
-.jumpToLatest {
-  position: absolute;
-  z-index: 4;
-  right: max(1rem, calc((100% - 50rem) / 2));
-  bottom: 0.85rem;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.55rem 0.8rem;
-  border: 1px solid var(--v2-line-strong);
-  border-radius: 999px;
-  color: var(--v2-text);
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 0.65rem 1.8rem rgba(45, 55, 72, 0.1);
-  font-size: 0.68rem;
-  cursor: pointer;
-  backdrop-filter: blur(14px);
-}
-
-.jumpToLatest:hover,
-.jumpToLatest:focus-visible {
-  border-color: rgba(90, 181, 168, 0.45);
-  outline: none;
-}
-
-.jumpToLatest svg {
-  width: 0.85rem;
-  height: 0.85rem;
-}
-
 .timeline {
-  width: min(48rem, calc(100% - 2rem));
-  min-height: 0;
+  width: 100%;
+  min-height: 100%;
   margin: 0 auto;
   display: grid;
+  align-content: center;
+  padding: clamp(1.5rem, 4vh, 3.2rem) 1rem;
+}
+
+.timelineHasItems {
   align-content: start;
-  padding: 0.75rem 0 1.5rem;
+}
+
+.presenceStage {
+  display: grid;
+  justify-items: center;
+  gap: 1.3rem;
+}
+
+.timelineHasItems .presenceStage {
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--v2-line);
 }
 
 .timelineList,
@@ -799,54 +744,45 @@
   margin-inline: auto;
 }
 
-/* The presence is atmosphere, not layout: it sits behind the one focus canvas. */
+/* Socrates's desk: at most two ambient working notes around the presence. */
 
-.orbBackdrop {
-  position: absolute;
-  z-index: 10;
-  inset: 0;
+.assistantDesk {
+  position: relative;
+  width: 100%;
+  min-height: clamp(18rem, 43vh, 27rem);
   display: grid;
   place-items: center;
-  overflow: hidden;
-  opacity: 0.72;
-  pointer-events: none;
-  transform: scale(0.98);
-  transition: opacity 420ms ease, transform 520ms cubic-bezier(0.2, 0.72, 0.2, 1), filter 420ms ease;
 }
 
-.flowConversation[data-has-exchange="true"] .orbBackdrop {
-  opacity: 0.24;
-  filter: saturate(0.72);
+.timelineHasItems .assistantDesk {
+  min-height: 19rem;
 }
-
-.orbBackdrop[data-active="true"] {
-  opacity: 0.82 !important;
-  filter: saturate(1) !important;
-  transform: scale(1.055);
-}
-
-/* At most two movable working notes float above the transcript. */
 
 .ambientNotes {
   position: absolute;
-  z-index: 30;
+  z-index: 2;
   inset: 0;
   overflow: visible;
   pointer-events: none;
+}
+
+.deskSphere {
+  display: grid;
+  place-items: center;
 }
 
 .clippedNote {
   position: absolute;
   z-index: 2;
-  width: min(14.75rem, 100%);
+  width: min(15.5rem, 100%);
   min-height: 10.75rem;
   margin: 0;
   overflow: visible;
   border: 1px solid rgba(67, 94, 91, 0.16);
-  border-radius: 0.42rem;
+  border-radius: 0.28rem 0.5rem 0.42rem 0.22rem;
   color: var(--v2-text);
   background: rgba(255, 254, 247, 0.94);
-  box-shadow: 0 1.2rem 3rem rgba(45, 55, 72, 0.085), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
+  box-shadow: 0 1.35rem 3.25rem rgba(45, 55, 72, 0.09), 0 1px 0 rgba(255, 255, 255, 0.9) inset;
   pointer-events: auto;
   isolation: isolate;
   transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
@@ -854,12 +790,12 @@
 
 .clippedNote[data-note="context"] {
   left: clamp(1.5rem, 4vw, 4rem);
-  top: clamp(1.15rem, 3vh, 2rem);
+  top: calc(100% - 11rem);
   background: rgba(247, 252, 249, 0.95);
 }
 
 .clippedNote[data-note="focus"] {
-  top: 0.75rem;
+  top: 1.15rem;
   right: clamp(1rem, 7vw, 6.5rem);
   background: rgba(255, 252, 241, 0.96);
 }
@@ -901,11 +837,6 @@
   cursor: grabbing;
 }
 
-.noteClip:disabled {
-  cursor: default;
-  opacity: 0.72;
-}
-
 .noteClip svg {
   width: 0.95rem;
   height: 0.95rem;
@@ -931,38 +862,30 @@
   outline-offset: 3px;
 }
 
-.historyNotice {
-  position: sticky;
-  top: 0;
-  z-index: 8;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.65rem;
-  width: fit-content;
-  margin: -0.5rem auto 0;
-  padding: 0.55rem 0.8rem;
-  border-radius: 999px;
-  color: var(--v2-faint);
-  background: color-mix(in srgb, var(--v2-surface) 92%, transparent);
-  box-shadow: 0 0.5rem 1.5rem rgba(45, 55, 72, 0.06);
-  backdrop-filter: blur(12px);
-  font-size: 0.68rem;
+.noteStackEdge {
+  position: absolute;
+  z-index: -2;
+  inset: 0.45rem -0.45rem -0.45rem 0.45rem;
+  opacity: 0;
+  border: 1px solid rgba(67, 94, 91, 0.09);
+  border-radius: 0.28rem 0.5rem 0.42rem 0.22rem;
+  background: rgba(255, 252, 241, 0.48);
+  transform: rotate(0.75deg);
+  transition: opacity 180ms ease;
 }
 
-.historyNotice button {
-  padding: 0;
-  border: 0;
-  color: var(--v2-accent-strong);
-  background: transparent;
-  cursor: pointer;
+.clippedNote[data-stacked="true"] .noteStackEdge {
+  opacity: 1;
 }
 
-.historyNotice button:hover,
-.historyNotice button:focus-visible {
-  text-decoration: underline;
-  text-underline-offset: 0.18rem;
-  outline: none;
+.clippedNote[data-stacked="true"] .noteStackEdge::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0.42rem -0.42rem -0.42rem 0.42rem;
+  border: 1px solid rgba(67, 94, 91, 0.06);
+  border-radius: inherit;
+  background: rgba(255, 252, 241, 0.3);
 }
 
 .noteEyebrow {
@@ -980,9 +903,8 @@
   font-size: 1rem;
   font-weight: 590;
   line-height: 1.35;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .noteBody {
@@ -1089,8 +1011,6 @@
 .timelineList {
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 0.7rem;
   list-style: none;
 }
 
@@ -1130,8 +1050,8 @@
 }
 
 .timelineItem {
-  min-width: 0;
-  padding: 1.15rem 0 1.45rem;
+  padding: clamp(1.25rem, 2.7vw, 2rem) 0;
+  border-bottom: 1px solid var(--v2-line);
 }
 
 .timelineItem[data-role="system"] {
@@ -1170,28 +1090,7 @@
 }
 
 .timelineItem[data-role="user"] {
-  width: fit-content;
-  max-width: min(38rem, 88%);
-  margin-left: auto;
-  padding: 0.8rem 1rem 0.9rem;
-  border: 1px solid rgba(67, 94, 91, 0.12);
-  border-radius: 1rem 1rem 0.3rem 1rem;
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: 0 0.55rem 1.5rem rgba(45, 55, 72, 0.035);
-}
-
-.timelineItem[data-role="assistant"] {
-  width: min(44rem, 100%);
-  margin-right: auto;
-  border-bottom: 1px solid var(--v2-line);
-}
-
-.timelineItem[data-role="user"] .timelineItemMeta {
-  justify-content: flex-end;
-}
-
-.timelineItem[data-role="user"] .timelineItemMeta > span:last-child:not(:first-child) {
-  margin-left: 0.5rem;
+  padding-left: clamp(1rem, 5vw, 4.5rem);
 }
 
 .timelineItemMeta {
@@ -1321,15 +1220,14 @@
 }
 
 .readAloudControl {
-  width: 1.65rem;
-  height: 1.65rem;
-  display: grid;
-  place-items: center;
-  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0;
   border: 0;
-  border-radius: 50%;
   color: var(--v2-muted);
   background: transparent;
+  font-size: 0.67rem;
   cursor: pointer;
 }
 
@@ -1367,16 +1265,9 @@
 }
 
 .readAloudControl:hover,
-.readAloudControl:focus-visible,
-.readAloudControl[data-active="true"] {
+.readAloudControl:focus-visible {
   color: var(--v2-text);
-  background: rgba(131, 214, 201, 0.1);
   outline: none;
-}
-
-.readAloudControl:disabled {
-  cursor: not-allowed;
-  opacity: 0.35;
 }
 
 .readAloudControl svg {
@@ -2287,7 +2178,7 @@
 .inspectorTabs {
   min-height: 3.4rem;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.25rem;
   padding: 0.55rem 0.7rem;
   border-bottom: 1px solid var(--v2-line);
@@ -2771,17 +2662,6 @@
   .inspectorMotionShell {
     width: min(25rem, calc(100% - 1.7rem));
   }
-
-  .sharedTranscriptContent {
-    width: min(50rem, calc(100% - 2rem));
-    padding-top: 14.5rem;
-  }
-}
-
-@media (min-width: 67.501rem) and (max-width: 80rem) {
-  .sharedTranscriptContent {
-    width: min(52rem, calc(100% - 39rem));
-  }
 }
 
 @media (max-width: 45rem) {
@@ -2868,8 +2748,20 @@
     padding-inline: 0.6rem;
   }
 
-  .orbBackdrop {
-    opacity: 0.46;
+  .assistantDesk {
+    min-height: 24rem;
+    display: block;
+  }
+
+  .timelineHasItems .assistantDesk {
+    min-height: 24rem;
+  }
+
+  .deskSphere {
+    position: absolute;
+    top: -1.5rem;
+    left: 50%;
+    transform: translateX(-50%);
   }
 
   .clippedNote {
@@ -2878,12 +2770,12 @@
   }
 
   .clippedNote[data-note="context"] {
-    top: 0.8rem;
+    top: 14.6rem;
     left: 0.5rem;
   }
 
   .clippedNote[data-note="focus"] {
-    top: 0.8rem;
+    top: 13.15rem;
     right: 0.5rem;
   }
 
@@ -2902,8 +2794,7 @@
   }
 
   .timelineItem[data-role="user"] {
-    max-width: 92%;
-    padding: 0.8rem 1rem 0.9rem;
+    padding-left: 1rem;
   }
 
   .composerDock {

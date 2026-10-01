@@ -23,7 +23,6 @@ import {
   deleteProviderCredentialResponseSchema,
   deleteProjectResourceResponseSchema,
   getMeResponseSchema,
-  getConversationDeletionImpactResponseSchema,
   getConversationResponseSchema,
   getMcpServerConfigResponseSchema,
   getMemoryAgentFileContentResponseSchema,
@@ -96,8 +95,6 @@ import {
   type DeleteProviderCredentialResponse,
   type DeleteProjectResourceResponse,
   type GetConversationResponse,
-  type GetConversationDeletionImpactResponse,
-  type ConversationDeletionScope,
   type GetMcpServerConfigResponse,
   type GetMemoryAgentFileContentResponse,
   type GetMemoryAgentResponse,
@@ -649,15 +646,9 @@ export const api = {
       },
     ) as Promise<UpdateConversationResponse>,
 
-  getConversationDeletionImpact: (projectId: string, conversationId: string) =>
-    request<typeof getConversationDeletionImpactResponseSchema>(
-      `/api/projects/${projectId}/conversations/${conversationId}/deletion-impact`,
-      getConversationDeletionImpactResponseSchema,
-    ) as Promise<GetConversationDeletionImpactResponse>,
-
-  deleteConversation: (projectId: string, conversationId: string, scope: ConversationDeletionScope = "classic_only") =>
+  deleteConversation: (projectId: string, conversationId: string) =>
     request<typeof deleteConversationResponseSchema>(
-      `/api/projects/${projectId}/conversations/${conversationId}?scope=${encodeURIComponent(scope)}`,
+      `/api/projects/${projectId}/conversations/${conversationId}`,
       deleteConversationResponseSchema,
       {
         method: "DELETE",
@@ -690,7 +681,10 @@ export const api = {
     projectId: string,
     conversationId: string,
     recording: Blob,
-    preference: { engine: "local_whisper" | "openrouter"; modelId: string },
+    preference: { engine: "local_whisper" | "openrouter"; modelId: string } = {
+      engine: "local_whisper",
+      modelId: "small.en",
+    },
   ) => {
     const body = new FormData();
     body.append("file", recording, "recording.wav");

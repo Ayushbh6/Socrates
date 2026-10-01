@@ -37,18 +37,7 @@ type CanonicalMemorySectionRow = {
   updatedAt: string
 }
 
-type CanonicalGoalRow = {
-  projectId: string
-  flowId: string
-  goalId: string
-  title: string
-  status: string
-  summary: string | null
-  capsuleSummary: string | null
-  updatedAt: string
-}
-
-export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string, turnId?: string): RetrievalIndexRow[] => {
+export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string, turnId?: string, includeV2Flow = true): RetrievalIndexRow[] => {
   const placeholders = INDEXED_TURN_STATUSES.map(() => "?").join(",")
   const conversationPlaceholders = VISIBLE_CONVERSATION_STATUSES.map(() => "?").join(",")
   const classicRows = handle.sqlite
@@ -85,7 +74,7 @@ export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string
     )
     .all(projectId, ...VISIBLE_CONVERSATION_STATUSES, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[]
 
-  const v2Rows = handle.sqlite
+  const v2Rows = includeV2Flow ? handle.sqlite
     .prepare(
       `WITH numbered_v2_turns AS (
          SELECT t.id AS turnId,
@@ -120,7 +109,7 @@ export const loadCanonicalTraceRows = (handle: DatabaseHandle, projectId: string
        ${turnId ? "WHERE nt.turnId = ?" : ""}
        ORDER BY nt.startedAt ASC`,
     )
-    .all(projectId, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[]
+    .all(projectId, ...INDEXED_TURN_STATUSES, ...(turnId ? [turnId] : [])) as CanonicalTurnRow[] : []
 
   return [...classicRows, ...v2Rows].flatMap((row) => traceChunksForTurn(row))
 }
@@ -144,26 +133,6 @@ export const loadCanonicalMemoryRows = (handle: DatabaseHandle, projectId: strin
     .all(projectId) as CanonicalMemorySectionRow[]
 
   return rows.flatMap((row) => memoryChunksForSection(projectId, row))
-}
-
-export const loadCanonicalGoalRows = (handle: DatabaseHandle, projectId: string, goalId?: string): RetrievalIndexRow[] => {
-  const rows = handle.sqlite.prepare(
-    `SELECT g.project_id AS projectId,
-            g.flow_id AS flowId,
-            g.id AS goalId,
-            g.title,
-            g.status,
-            g.summary,
-            c.summary AS capsuleSummary,
-            g.updated_at AS updatedAt
-     FROM v2_goals g
-     LEFT JOIN v2_goal_capsules c ON c.goal_id = g.id AND c.status = 'active'
-     WHERE g.project_id = ?
-       AND g.status <> 'archived'
-       ${goalId ? "AND g.id = ?" : ""}
-     ORDER BY g.last_active_at DESC, g.id`,
-  ).all(projectId, ...(goalId ? [goalId] : [])) as CanonicalGoalRow[]
-  return rows.map(goalCardRow)
 }
 
 export const canonicalMemoryParentId = (input: { scope: string; projectId: string; path: string; sectionId: string }): string =>
@@ -241,41 +210,6 @@ const memoryChunksForSection = (activeProjectId: string, row: CanonicalMemorySec
     matchedRole: "",
     status: "",
   }))
-}
-
-const goalCardRow = (row: CanonicalGoalRow): RetrievalIndexRow => {
-  const content = [
-    `Goal: ${row.title}`,
-    `State: ${row.status}`,
-    `Note: ${row.capsuleSummary?.trim() || row.summary?.trim() || "No progress note yet."}`,
-  ].join("\n")
-  const chunk = chunkMarkdown(content)[0]!
-  return {
-    id: retrievalChunkId({ corpusKind: "goal_card", parentId: row.goalId, discriminator: "goal", chunkIndex: 0, contentHash: chunk.contentHash }),
-    projectId: row.projectId,
-    corpusKind: "goal_card",
-    parentId: row.goalId,
-    discriminator: "goal",
-    content,
-    contentHash: chunk.contentHash,
-    chunkIndex: 0,
-    tokenCount: chunk.tokenCount,
-    occurredAt: row.updatedAt,
-    priority: 1,
-    scope: "project",
-    runtimeKind: "goal",
-    flowId: row.flowId,
-    surface: "",
-    fileName: "",
-    sectionId: "",
-    sectionHeading: row.title,
-    conversationId: "",
-    conversationTitle: "",
-    turnId: "",
-    turnNumber: 0,
-    matchedRole: "",
-    status: "",
-  }
 }
 
 const visibleStatus = (row: CanonicalTurnRow): TraceRetrieveVisibleStatus => {

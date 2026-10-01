@@ -1,7 +1,6 @@
 import fs from "node:fs"
-import type { Message, MessageAttachment, ProviderAuthMode, ProviderId, ThinkingEffort, WorkerModelSettings } from "@socrates/contracts"
-import { TitleGeneratorAgent } from "@socrates/core"
-import type { ModelMessageContent, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
+import type { Message, MessageAttachment, ProviderId, RuntimeConfig, WorkerModelSettings } from "@socrates/contracts"
+import type { ModelMessage, ModelMessagePart, ModelProvider, ModelUsage } from "@socrates/providers"
 
 export const conversationTitleProviderId: ProviderId = "openrouter"
 export const conversationTitlePrimaryModelId = "meta-llama/llama-4-maverick"
@@ -22,9 +21,6 @@ export const generateConversationTitle = async (input: {
   provider: ModelProvider
   projectId: string
   conversationId: string
-  sessionId: string
-  turnId: string
-  workspacePath: string
   message: Message
   fallbackTitle: string
   modelSettings?: WorkerModelSettings
@@ -34,13 +30,13 @@ export const generateConversationTitle = async (input: {
     return
   }
 
-  const titleContent = buildTitleContent(input.message)
+  const titleMessage = buildTitleMessage(input.message)
   const candidates = titleModelCandidates(input.modelSettings)
   for (const candidate of candidates) {
-    const result = await runTitleCandidate({
+    const result = await streamTitleCandidate({
       ...input,
       modelSettings: candidate,
-      userContent: titleContent,
+      message: titleMessage,
     })
     if (result?.title) {
       return result
@@ -48,15 +44,12 @@ export const generateConversationTitle = async (input: {
   }
 }
 
-const runTitleCandidate = async (input: {
+const streamTitleCandidate = async (input: {
   provider: ModelProvider
   projectId: string
   conversationId: string
-  sessionId: string
-  turnId: string
-  workspacePath: string
   modelSettings: TitleModelSettings
-  userContent: ModelMessageContent
+  message: ModelMessage
   fallbackTitle: string
   abortSignal?: AbortSignal
 }): Promise<ConversationTitleGenerationResult | undefined> => {
@@ -70,25 +63,44 @@ const runTitleCandidate = async (input: {
   input.abortSignal?.addEventListener("abort", abortFromParent, { once: true })
 
   try {
-    const result = await new TitleGeneratorAgent().run({
-      provider: input.provider,
-      modelSettings: input.modelSettings,
-      userContent: input.userContent,
-      projectId: input.projectId,
-      conversationId: input.conversationId,
-      sessionId: input.sessionId,
-      turnId: input.turnId,
-      workspacePath: input.workspacePath,
+    let answer = ""
+    let latestUsage: ModelUsage | undefined
+    for await (const event of input.provider.stream({
+      providerId: input.modelSettings.providerId,
+      modelId: input.modelSettings.modelId,
+      sessionId: input.conversationId,
+      cacheKey: `project:${input.projectId}:conversation:${input.conversationId}:title`,
+      system: titleSystemPrompt,
+      messages: [input.message],
+      providerRouting: { omitReasoning: true },
+      runtimeConfig: titleRuntimeConfig(input.modelSettings),
+      tools: [],
       abortSignal: abortController.signal,
-    })
-    const title = sanitizeGeneratedTitle(result.output.title, input.fallbackTitle)
-    const usage = mergeUsages(result.usages)
+    })) {
+      if (event.type === "model.answer.delta") {
+        answer += event.text
+      }
+      if (event.type === "model.usage") {
+        latestUsage = event.usage
+      }
+      if (event.type === "model.completed" && event.usage) {
+        latestUsage = event.usage
+      }
+      if (event.type === "model.failed") {
+        return
+      }
+    }
+
+    if (!answer.trim()) {
+      return
+    }
+    const title = sanitizeGeneratedTitle(answer, input.fallbackTitle)
     return title
       ? {
           title,
           providerId: input.modelSettings.providerId,
           modelId: input.modelSettings.modelId,
-          ...(usage ? { usage } : {}),
+          ...(latestUsage ? { usage: latestUsage } : {}),
         }
       : undefined
   } catch {
@@ -116,11 +128,14 @@ export const sanitizeGeneratedTitle = (value: string, fallbackTitle: string): st
   return `${title.slice(0, maxTitleCharacters - 3).trimEnd()}...`
 }
 
-const buildTitleContent = (message: Message): ModelMessageContent => {
+const buildTitleMessage = (message: Message): ModelMessage => {
   const attachments = (message.attachments ?? []).filter((attachment) => attachment.kind === "image").slice(0, maxTitleImages)
   const text = message.content.trim()
   if (attachments.length === 0) {
-    return text || "Create a short title for this new image-only chat."
+    return {
+      role: "user",
+      content: text || "Create a short title for this new image-only chat.",
+    }
   }
 
   const parts: ModelMessagePart[] = [
@@ -140,7 +155,10 @@ const buildTitleContent = (message: Message): ModelMessageContent => {
     }
   }
 
-  return parts
+  return {
+    role: "user",
+    content: parts,
+  }
 }
 
 const readAttachmentDataUrl = (attachment: MessageAttachment): string | undefined => {
@@ -154,10 +172,10 @@ const readAttachmentDataUrl = (attachment: MessageAttachment): string | undefine
 
 type TitleModelSettings = {
   providerId: ProviderId
-  authMode?: ProviderAuthMode
+  authMode?: RuntimeConfig["authMode"]
   modelId: string
   thinkingEnabled: boolean
-  thinkingEffort?: ThinkingEffort
+  thinkingEffort?: RuntimeConfig["thinkingEffort"]
 }
 
 const titleModelCandidates = (settings: WorkerModelSettings | undefined): TitleModelSettings[] => {
@@ -190,25 +208,21 @@ const uniqueTitleModels = (models: TitleModelSettings[]): TitleModelSettings[] =
   })
 }
 
-const mergeUsages = (usages: ModelUsage[]): ModelUsage | undefined =>
-  usages.reduce<ModelUsage | undefined>((merged, usage) => {
-    if (!merged) return { ...usage }
-    const next: ModelUsage = { ...merged, ...usage }
-    for (const key of usageNumberKeys) {
-      if (merged[key] !== undefined || usage[key] !== undefined) {
-        next[key] = (merged[key] ?? 0) + (usage[key] ?? 0)
-      }
-    }
-    return next
-  }, undefined)
+const titleRuntimeConfig = (settings: TitleModelSettings): RuntimeConfig => ({
+  providerId: settings.providerId,
+  authMode: settings.authMode ?? "api_key",
+  modelId: settings.modelId,
+  thinkingEnabled: settings.thinkingEnabled,
+  ...(settings.thinkingEffort ? { thinkingEffort: settings.thinkingEffort } : {}),
+  approvalMode: "read_only_auto",
+  sandboxMode: "read_only",
+})
 
-const usageNumberKeys = [
-  "inputTokens",
-  "outputTokens",
-  "reasoningTokens",
-  "cachedInputTokens",
-  "cacheWriteTokens",
-  "uncachedInputTokens",
-  "totalTokens",
-  "costUsd",
-] as const satisfies ReadonlyArray<keyof ModelUsage>
+const titleSystemPrompt = [
+  "Generate a short title for a new chat conversation.",
+  "Return only the title.",
+  "Use 2 to 6 words when possible.",
+  "Do not wrap the title in quotes.",
+  "Use the user's language if obvious.",
+  "For image-only messages, infer the subject from the image.",
+].join("\n")

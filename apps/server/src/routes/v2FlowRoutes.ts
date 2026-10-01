@@ -9,20 +9,16 @@ import {
   v2EnsureFlowRequestSchema,
   v2EnsureFlowResponseSchema,
   v2GetFlowResponseSchema,
-  v2DeleteGoalResponseSchema,
-  v2DeleteTurnResponseSchema,
   v2ListFlowMessagesResponseSchema,
 } from "@socrates/contracts"
 import { SocratesError } from "@socrates/shared"
 import { fail, ok, toApiError } from "../http"
 import type { V2FlowStore } from "../services/v2/flowStore"
-import type { SocratesStore } from "../services/store"
 
 const projectParamsSchema = z.object({ projectId: z.string().min(1) }).strict()
 const flowParamsSchema = projectParamsSchema.extend({ flowId: z.string().min(1) }).strict()
 const attachmentParamsSchema = flowParamsSchema.extend({ attachmentId: z.string().min(1) }).strict()
 const goalParamsSchema = flowParamsSchema.extend({ goalId: z.string().min(1) }).strict()
-const turnParamsSchema = flowParamsSchema.extend({ turnId: z.string().min(1) }).strict()
 const classicConversationParamsSchema = projectParamsSchema.extend({ conversationId: z.string().min(1) }).strict()
 const timelineQuerySchema = z
   .object({
@@ -64,7 +60,7 @@ const routeError = (error: unknown) => {
         ? 413
         : api.code.endsWith("_not_found") || api.code === "project_workspace_path_missing"
           ? 404
-          : api.code === "v2_turn_already_active" || api.code === "v2_turn_still_active" || api.code === "v2_client_message_conflict" || api.code.includes("owned_by") || api.code === "v2_focus_still_active" || api.code === "v2_general_focus_protected"
+          : api.code === "v2_turn_already_active" || api.code === "v2_client_message_conflict" || api.code.includes("owned_by") || api.code === "v2_focus_still_active"
             ? 409
             : 500
   return { statusCode, response: fail(api) }
@@ -80,7 +76,7 @@ const sendRouteError = (reply: FastifyReply, error: unknown) => {
  * feature flag is enabled; this module never mounts Classic routes or creates a
  * Classic conversation as a side effect.
  */
-export const registerV2FlowRoutes = async (app: FastifyInstance, store: V2FlowStore, sharedStore?: SocratesStore): Promise<void> => {
+export const registerV2FlowRoutes = async (app: FastifyInstance, store: V2FlowStore): Promise<void> => {
   app.post("/api/v2/projects/:projectId/flow", async (request, reply) => {
     try {
       const { projectId } = parse(projectParamsSchema, request.params, "invalid_route_params")
@@ -105,28 +101,6 @@ export const registerV2FlowRoutes = async (app: FastifyInstance, store: V2FlowSt
       const scope = parse(goalParamsSchema, request.params, "invalid_route_params")
       const bridge = store.openFocusInClassic(scope.projectId, scope.flowId, scope.goalId)
       return ok({ bridge, href: `/projects/${encodeURIComponent(scope.projectId)}/chats/${encodeURIComponent(bridge.conversationId)}` })
-    } catch (error) {
-      return sendRouteError(reply, error)
-    }
-  })
-
-  app.delete("/api/v2/projects/:projectId/flows/:flowId/goals/:goalId", async (request, reply) => {
-    try {
-      const scope = parse(goalParamsSchema, request.params, "invalid_route_params")
-      const result = store.deleteGoal(scope.projectId, scope.flowId, scope.goalId)
-      sharedStore?.deleteV2GoalRetrieval(scope.projectId, scope.goalId)
-      return ok(v2DeleteGoalResponseSchema.parse(result))
-    } catch (error) {
-      return sendRouteError(reply, error)
-    }
-  })
-
-  app.delete("/api/v2/projects/:projectId/flows/:flowId/turns/:turnId", async (request, reply) => {
-    try {
-      const scope = parse(turnParamsSchema, request.params, "invalid_route_params")
-      const result = store.deleteTurn(scope.projectId, scope.flowId, scope.turnId)
-      sharedStore?.deleteV2TurnRetrieval(scope.projectId, scope.turnId)
-      return ok(v2DeleteTurnResponseSchema.parse(result))
     } catch (error) {
       return sendRouteError(reply, error)
     }

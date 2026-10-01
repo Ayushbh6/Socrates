@@ -21,12 +21,6 @@ import {
 } from "./ToolTimelineTypes";
 import { ActivityCenter } from "./ActivityCenter";
 import { WorkspaceTopbar } from "./WorkspaceTopbar";
-import { ContinueInSeamlessButton } from "@/components/v2/ContinueInSeamlessButton";
-import {
-  consumeViewHandoff,
-  handoffAttachmentsToFiles,
-  type ViewHandoffEnvelope,
-} from "@/lib/v2/viewHandoff";
 
 interface ChatWorkspaceProps {
   projectId: string;
@@ -193,8 +187,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
   const [rejectingSkillActionId, setRejectingSkillActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draftText, setDraftText] = useState("");
-  const [draftAttachments, setDraftAttachments] = useState<MessageAttachment[]>([]);
-  const [pendingViewHandoff, setPendingViewHandoff] = useState<ViewHandoffEnvelope | null>(null);
   const activeTurnIdRef = useRef<string | null>(null);
   const liveStepsRef = useRef<LiveActivityStep[]>([]);
   const previousAwaitingTerminalInputRef = useRef(false);
@@ -219,23 +211,21 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
 
     const media = window.matchMedia(`(max-width: ${MOBILE_TERMINAL_BREAKPOINT - 1}px)`);
     const updateMedia = () => setIsMobileView(media.matches);
-    updateMedia();
     media.addEventListener("change", updateMedia);
+    const frame = window.requestAnimationFrame(() => {
+      updateMedia();
+      const storedDockHeight = Number.parseInt(window.localStorage.getItem(dockHeightKey) ?? "", 10);
+      if (Number.isFinite(storedDockHeight)) setTerminalDockHeight(storedDockHeight);
+      const storedDockOpen = window.localStorage.getItem(dockOpenKey);
+      if (storedDockOpen === "true" || storedDockOpen === "false") setIsTerminalDockOpen(storedDockOpen === "true");
+      const storedDockActive = window.localStorage.getItem(dockActiveKey);
+      if (storedDockActive && storedDockActive.length > 0) setActiveDockTerminalId(storedDockActive);
+    });
 
-    const storedDockHeight = Number.parseInt(window.localStorage.getItem(dockHeightKey) ?? "", 10);
-    if (Number.isFinite(storedDockHeight)) {
-      setTerminalDockHeight(storedDockHeight);
-    }
-    const storedDockOpen = window.localStorage.getItem(dockOpenKey);
-    if (storedDockOpen === "true" || storedDockOpen === "false") {
-      setIsTerminalDockOpen(storedDockOpen === "true");
-    }
-    const storedDockActive = window.localStorage.getItem(dockActiveKey);
-    if (storedDockActive && storedDockActive.length > 0) {
-      setActiveDockTerminalId(storedDockActive);
-    }
-
-    return () => media.removeEventListener("change", updateMedia);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      media.removeEventListener("change", updateMedia);
+    };
   }, [conversationId, dockActiveKey, dockHeightKey, dockOpenKey, projectId]);
 
   useEffect(() => {
@@ -561,25 +551,22 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             const toolName = event.payload.toolName ?? "unknown";
             return {
               ...step,
-              tools: [
-                ...step.tools,
-                {
-                  toolCallId: event.payload.toolCallId,
-                  ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
-                  conversationId,
-                  sessionId: event.sessionId ?? "live",
-                  turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
-                  toolName,
-                  displayName: displayNameForTool(toolName),
-                  category: categoryForTool(toolName),
-                  status: "failed",
-                  requiresApproval: false,
-                  error,
-                  modelCallId: event.payload.modelCallId,
-                  stepIndex: event.payload.stepIndex,
-                  output: "",
-                },
-              ],
+              tools: [...step.tools, {
+                toolCallId: event.payload.toolCallId,
+                ...(event.payload.providerToolCallId ? { providerToolCallId: event.payload.providerToolCallId } : {}),
+                conversationId,
+                sessionId: event.sessionId ?? "live",
+                turnId: event.turnId ?? activeTurnIdRef.current ?? "live",
+                toolName,
+                displayName: displayNameForTool(toolName),
+                category: categoryForTool(toolName),
+                status: "failed",
+                requiresApproval: false,
+                error,
+                modelCallId: event.payload.modelCallId,
+                stepIndex: event.payload.stepIndex,
+                output: "",
+              }],
             };
           }),
         );
@@ -877,39 +864,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
       throw err;
     }
   };
-
-  useEffect(() => {
-    const handoff = consumeViewHandoff("classic", projectId, conversationId);
-    if (!handoff) return;
-    setDraftText(handoff.text);
-    setPendingViewHandoff(handoff);
-    if (handoff.attachments.length > 0) {
-      void handoffAttachmentsToFiles(handoff.attachments)
-        .then((files) => api.uploadConversationAttachments(projectId, conversationId, files))
-        .then((result) => setDraftAttachments(result.attachments))
-        .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Could not transfer draft attachments."));
-    }
-  }, [conversationId, projectId]);
-
-  useEffect(() => {
-    if (!pendingViewHandoff?.model || models.length === 0) return;
-    const model = findModelSelection(
-      models,
-      pendingViewHandoff.model.providerId,
-      pendingViewHandoff.model.modelId,
-      pendingViewHandoff.model.authMode ?? "api_key",
-    );
-    if (!model) {
-      setPendingViewHandoff(null);
-      return;
-    }
-    const thinking = model.thinkingOptions.find((option) => option.id === pendingViewHandoff.thinkingOptionId)
-      ?? selectDefaultThinkingOption(model);
-    setSelectedModel(model);
-    setSelectedThinkingOption(thinking);
-    writeComposerModelPreference(composerModelKey, model, thinking);
-    setPendingViewHandoff(null);
-  }, [composerModelKey, models, pendingViewHandoff]);
 
   const handleSend = async (content: string, attachments: MessageAttachment[]) => {
     if (!selectedModel || !selectedThinkingOption) {
@@ -1302,15 +1256,6 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
             approvingSkillActionId={approvingSkillActionId}
             rejectingSkillActionId={rejectingSkillActionId}
           />
-          <ContinueInSeamlessButton
-            projectId={projectId}
-            conversationId={conversationId}
-            hasPersistedTurns={(conversationData?.messages.length ?? 0) > 0}
-            draftText={draftText}
-            attachments={draftAttachments}
-            selectedModel={selectedModel}
-            selectedThinkingOption={selectedThinkingOption}
-          />
           {hasTerminals ? (
             <button
               type="button"
@@ -1347,16 +1292,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                 warningResetKey={conversationId}
                 value={draftText}
                 onValueChange={setDraftText}
-                attachments={draftAttachments}
-                onAttachmentsChange={setDraftAttachments}
                 voiceAvailable={voice.isAvailable}
-                voiceStatus={voice.status === "recording" || voice.status === "transcribing" ? voice.status : "idle"}
-                voiceStatusLabel={voice.status === "recording"
-                  ? "Listening… Tap the microphone when you are finished."
-                  : voice.status === "transcribing"
-                    ? `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}…`
-                    : undefined}
-                voiceError={voice.error}
+                voiceRecording={voice.status === "recording"}
                 voiceBusy={voice.status === "transcribing"}
                 onModelChange={handleModelChange}
                 onThinkingChange={handleThinkingChange}
@@ -1394,16 +1331,8 @@ export function ChatWorkspace({ projectId, conversationId }: ChatWorkspaceProps)
                       warningResetKey={conversationId}
                       value={draftText}
                       onValueChange={setDraftText}
-                      attachments={draftAttachments}
-                      onAttachmentsChange={setDraftAttachments}
                       voiceAvailable={voice.isAvailable}
-                      voiceStatus={voice.status === "recording" || voice.status === "transcribing" ? voice.status : "idle"}
-                      voiceStatusLabel={voice.status === "recording"
-                        ? "Listening… Tap the microphone when you are finished."
-                        : voice.status === "transcribing"
-                          ? `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}…`
-                          : undefined}
-                      voiceError={voice.error}
+                      voiceRecording={voice.status === "recording"}
                       voiceBusy={voice.status === "transcribing"}
                       onModelChange={handleModelChange}
                       onThinkingChange={handleThinkingChange}
@@ -1496,13 +1425,9 @@ const sameToolIdentity = (tool: ToolTimelineItem, toolCallId: string, providerTo
 
 const describeToolFailure = (error: { code: string; message: string; details?: unknown }): string => {
   const details = error.details;
-  if (!details || typeof details !== "object" || Array.isArray(details)) {
-    return `${error.message} (${error.code})`;
-  }
+  if (!details || typeof details !== "object" || Array.isArray(details)) return `${error.message} (${error.code})`;
   const fieldErrors = (details as { fieldErrors?: unknown }).fieldErrors;
-  if (!fieldErrors || typeof fieldErrors !== "object" || Array.isArray(fieldErrors)) {
-    return `${error.message} (${error.code})`;
-  }
+  if (!fieldErrors || typeof fieldErrors !== "object" || Array.isArray(fieldErrors)) return `${error.message} (${error.code})`;
   const fields = Object.entries(fieldErrors)
     .filter(([, messages]) => Array.isArray(messages) && messages.length > 0)
     .map(([field]) => field);

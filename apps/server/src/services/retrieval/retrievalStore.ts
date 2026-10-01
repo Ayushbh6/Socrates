@@ -21,11 +21,11 @@ import {
 } from "../../db/schema"
 import type { EmbeddingStore } from "../store/embeddingStore"
 import type { StoreContext } from "../store/shared"
-import { canonicalMemoryParentId, loadCanonicalGoalRows, loadCanonicalMemoryRows, loadCanonicalTraceRows } from "./canonicalSources"
+import { canonicalMemoryParentId, loadCanonicalMemoryRows, loadCanonicalTraceRows } from "./canonicalSources"
 import { LanceDbIndex } from "./lanceDbIndex"
 import type { RetrievalIndexRow, RetrievalSearchFilters, RetrievalSearchMode } from "./types"
 
-const RETRIEVAL_INDEX_VERSION = 3
+const RETRIEVAL_INDEX_VERSION = 2
 const EMBEDDING_BATCH_SIZE = 16
 
 type RetrievalStateRow = typeof retrievalIndexStates.$inferSelect
@@ -41,6 +41,7 @@ export class RetrievalStore {
     private readonly context: StoreContext,
     private readonly embeddings: EmbeddingStore,
     socratesHome: string,
+    private readonly includeV2Flow = true,
   ) {
     this.lance = new LanceDbIndex(path.join(socratesHome, "retrieval", "lance"))
   }
@@ -94,10 +95,6 @@ export class RetrievalStore {
 
   enqueueV2Turn(projectId: string, turnId: string): void {
     this.enqueue(projectId, () => this.upsertTurn(projectId, turnId))
-  }
-
-  enqueueGoal(projectId: string, goalId: string): void {
-    this.enqueue(projectId, () => this.upsertGoal(projectId, goalId))
   }
 
   onMemoryDocIndexed(index: MemoryDocIndex, changedSectionIds: string[], removedSectionIds: string[]): void {
@@ -285,18 +282,6 @@ export class RetrievalStore {
     }
   }
 
-  async searchGoalCards(projectId: string, query: string, limit = 4): Promise<string[]> {
-    const ranked = await this.search({
-      projectId,
-      query,
-      mode: "combined",
-      filters: { corpusKind: "goal_card", scope: "project" },
-      limit: Math.max(1, Math.min(4, limit)),
-      automaticFallback: true,
-    })
-    return ranked.map((result) => result.parentId)
-  }
-
   status(projectId: string): RetrievalStateRow | undefined {
     return this.state(projectId)
   }
@@ -312,25 +297,6 @@ export class RetrievalStore {
       this.context.handle.sqlite.prepare("DELETE FROM retrieval_result_diagnostics WHERE run_id IN (SELECT id FROM retrieval_runs WHERE project_id = ? AND json_extract(filters_json, '$.flowId') = ?)").run(projectId, flowId)
       this.context.handle.sqlite.prepare("DELETE FROM retrieval_runs WHERE project_id = ? AND json_extract(filters_json, '$.flowId') = ?").run(projectId, flowId)
     })
-  }
-
-  deleteV2Turn(projectId: string, turnId: string): void {
-    this.enqueue(projectId, () => this.deleteParentsNow(projectId, [turnId]))
-  }
-
-  deleteV2Goal(projectId: string, goalId: string): void {
-    this.enqueue(projectId, () => this.deleteParentsNow(projectId, [goalId]))
-  }
-
-  private async deleteParentsNow(projectId: string, parentIds: string[]): Promise<void> {
-    const state = this.state(projectId)
-    if (state?.tableName) {
-      await this.lance.upsertParents(state.tableName, parentIds, [])
-      await this.refreshCounts(projectId, state.tableName)
-    }
-    for (const key of this.recentTraceResults.keys()) {
-      if (key.startsWith(`${projectId}:`)) this.recentTraceResults.delete(key)
-    }
   }
 
   private async deleteConversationNow(projectId: string, conversationId: string): Promise<void> {
@@ -367,10 +333,9 @@ export class RetrievalStore {
       lastError: null,
     })
     try {
-      const traceRows = loadCanonicalTraceRows(this.context.handle, projectId)
+      const traceRows = loadCanonicalTraceRows(this.context.handle, projectId, undefined, this.includeV2Flow)
       const memoryRows = loadCanonicalMemoryRows(this.context.handle, projectId)
-      const goalRows = loadCanonicalGoalRows(this.context.handle, projectId)
-      const embedded = await this.attachVectors(projectId, [...traceRows, ...memoryRows, ...goalRows])
+      const embedded = await this.attachVectors(projectId, [...traceRows, ...memoryRows])
       if (embedded.configFingerprint !== this.activeEmbeddingFingerprint(projectId)) {
         const completedAt = nowIso()
         this.writeState(projectId, { status: "rebuilding", vectorReady: false, lastError: null })
@@ -584,31 +549,13 @@ export class RetrievalStore {
       }
       return
     }
-    const rows = loadCanonicalTraceRows(this.context.handle, projectId, turnId)
+    const rows = loadCanonicalTraceRows(this.context.handle, projectId, turnId, this.includeV2Flow)
     const embedded = await this.attachVectors(projectId, rows)
     if ((state.embeddingFingerprint ?? undefined) !== embedded.configFingerprint) {
       this.enqueueRebuild(projectId, "embedding_configuration_changed")
       return
     }
     await this.lance.upsertParents(state.tableName, [turnId], embedded.rows)
-    await this.refreshCounts(projectId, state.tableName)
-  }
-
-  private async upsertGoal(projectId: string, goalId: string): Promise<void> {
-    const state = this.state(projectId)
-    if (!state?.tableName || state.status !== "ready") {
-      if (!state || (state.status !== "rebuilding" && state.status !== "pending")) {
-        this.enqueueRebuild(projectId, "goal_without_ready_index")
-      }
-      return
-    }
-    const rows = loadCanonicalGoalRows(this.context.handle, projectId, goalId)
-    const embedded = await this.attachVectors(projectId, rows)
-    if ((state.embeddingFingerprint ?? undefined) !== embedded.configFingerprint) {
-      this.enqueueRebuild(projectId, "embedding_configuration_changed")
-      return
-    }
-    await this.lance.upsertParents(state.tableName, [goalId], embedded.rows)
     await this.refreshCounts(projectId, state.tableName)
   }
 
@@ -666,12 +613,16 @@ export class RetrievalStore {
 
   private async refreshCounts(projectId: string, tableName: string): Promise<void> {
     const counts = await this.lance.counts(tableName)
-    const traceParents = this.context.handle.sqlite.prepare(
-      `SELECT
-         (SELECT COUNT(DISTINCT id) FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled'))
-         +
-         (SELECT COUNT(DISTINCT id) FROM v2_turns WHERE project_id = ? AND status IN ('completed','failed','cancelled')) AS count`,
-    ).get(projectId, projectId) as { count: number }
+    const traceParents = this.includeV2Flow
+      ? this.context.handle.sqlite.prepare(
+        `SELECT
+           (SELECT COUNT(DISTINCT id) FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled'))
+           +
+           (SELECT COUNT(DISTINCT id) FROM v2_turns WHERE project_id = ? AND status IN ('completed','failed','cancelled')) AS count`,
+      ).get(projectId, projectId) as { count: number }
+      : this.context.handle.sqlite.prepare(
+        "SELECT COUNT(DISTINCT id) AS count FROM turns WHERE conversation_id IN (SELECT id FROM conversations WHERE project_id = ? AND status IN ('active','archived')) AND status IN ('completed','failed','cancelled')",
+      ).get(projectId) as { count: number }
     const memoryParents = new Set(loadCanonicalMemoryRows(this.context.handle, projectId).map((row) => row.parentId)).size
     this.writeState(projectId, { traceParents: traceParents.count, traceChunks: counts.traceChunks, memoryParents, memoryChunks: counts.memoryChunks })
   }

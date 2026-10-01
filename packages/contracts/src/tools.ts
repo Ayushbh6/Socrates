@@ -29,8 +29,6 @@ export const baseToolNameSchema = z.enum([
   "turn_evidence",
   "read_memory_journal",
   "skill_write",
-  "skill_manager",
-  "context_disposition",
   "focus_ledger",
 ])
 export const dynamicMcpToolNameSchema = z.string().regex(/^mcp__[a-z0-9_-]+__[a-zA-Z0-9_-]+$/)
@@ -57,63 +55,6 @@ export const frontierHandoverToolOutputSchema = z
   })
   .strict()
 export type FrontierHandoverToolOutput = z.infer<typeof frontierHandoverToolOutputSchema>
-
-export const contextDispositionActionSchema = z.enum(["keep_exact", "distill", "release", "unresolved"])
-export type ContextDispositionAction = z.infer<typeof contextDispositionActionSchema>
-
-export const contextDispositionDecisionSchema = z
-  .object({
-    result: z.string().regex(/^result_[1-9]\d*$/),
-    action: contextDispositionActionSchema,
-    summary: z.string().trim().min(1).max(1_200).optional(),
-  })
-  .strict()
-  .superRefine((decision, context) => {
-    if (decision.action === "distill" && !decision.summary) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["summary"],
-        message: "summary is required when action is distill",
-      })
-    }
-    if (decision.action !== "distill" && decision.summary) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["summary"],
-        message: "summary is allowed only when action is distill",
-      })
-    }
-  })
-
-export const contextDispositionToolInputSchema = z
-  .object({
-    decisions: z.array(contextDispositionDecisionSchema).min(1).max(8),
-  })
-  .strict()
-  .superRefine((input, context) => {
-    const seen = new Set<string>()
-    for (const [index, decision] of input.decisions.entries()) {
-      if (seen.has(decision.result)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["decisions", index, "result"],
-          message: "each result may be classified only once per call",
-        })
-      }
-      seen.add(decision.result)
-    }
-  })
-export type ContextDispositionToolInput = z.infer<typeof contextDispositionToolInputSchema>
-
-export const contextDispositionToolOutputSchema = z
-  .object({
-    applied: z.array(z.object({ result: z.string(), action: contextDispositionActionSchema }).strict()).max(8),
-    ignored: z.array(z.string()).max(8),
-    piggybacked: z.boolean(),
-    summary: z.string().min(1),
-  })
-  .strict()
-export type ContextDispositionToolOutput = z.infer<typeof contextDispositionToolOutputSchema>
 
 export const focusLedgerOperationSchema = z.enum(["list", "inspect", "update_current", "record_blocker", "complete_current"])
 
@@ -147,7 +88,7 @@ export const focusLedgerGoalSchema = z
     id: z.string().min(1),
     title: z.string().min(1),
     kind: z.enum(["general", "work"]),
-    status: z.enum(["foreground", "parked", "blocked", "completed", "discarded", "archived"]),
+    status: z.enum(["foreground", "parked", "blocked", "completed", "archived"]),
     summary: z.string().optional(),
     pinned: z.boolean(),
     lastActiveAt: z.string().min(1),
@@ -614,17 +555,11 @@ export const bashToolInputSchema = z
 export type BashToolInput = z.infer<typeof bashToolInputSchema>
 
 /**
- * Models occasionally redundantly emit both Terminal invocation forms even
- * though they describe the same intended action. Keep the public runtime
- * contract strict, but make model-originated calls resilient by selecting the
- * raw command and removing operation-incompatible placeholder fields. Raw
- * commands retain the stricter approval policy, so this cannot turn an
- * approval-required command into an auto-approved argv call.
+ * Normalize redundant fields sometimes emitted by models while preserving the
+ * strict public Terminal contract and its approval policy.
  */
 export const normalizeBashModelInput = (value: unknown): unknown => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return value
-  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
   const input = value as Record<string, unknown>
   const operation = typeof input.operation === "string" ? input.operation : "run"
   if (operation === "status" || operation === "output" || operation === "stop") {
@@ -1849,27 +1784,6 @@ export const skillWriteToolOutputSchema = z
   })
   .strict()
 export type SkillWriteToolOutput = z.infer<typeof skillWriteToolOutputSchema>
-
-export const skillManagerToolInputSchema = z.discriminatedUnion("operation", [
-  z.object({
-    operation: z.literal("create"),
-    name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-    request: z.string().trim().min(1).max(4_000),
-  }).strict(),
-  z.object({
-    operation: z.literal("delete"),
-    name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-  }).strict(),
-])
-export type SkillManagerToolInput = z.infer<typeof skillManagerToolInputSchema>
-
-export const skillManagerToolOutputSchema = z.object({
-  operation: z.enum(["create", "delete"]),
-  name: z.string().min(1),
-  scope: z.literal("project"),
-  status: z.enum(["created", "deleted"]),
-}).strict()
-export type SkillManagerToolOutput = z.infer<typeof skillManagerToolOutputSchema>
 
 export const projectsToolInputSchema = z
   .object({

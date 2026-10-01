@@ -15,7 +15,6 @@ import { handleCredentialInputSubmit } from "./commandHandlers/credentialInputSu
 import { handleTurnCancel } from "./commandHandlers/chatTurnCancel"
 import { handleFeedbackSubmit } from "./commandHandlers/feedbackSubmit"
 import { emitError, emitNormalizedError, idsFromCommand } from "./eventSender"
-import type { V2FlowStore } from "../services/v2/flowStore"
 
 export const handleInboundMessage = async (
   socket: WebSocket,
@@ -27,7 +26,6 @@ export const handleInboundMessage = async (
   raw: string,
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
-  flowStore?: V2FlowStore,
 ): Promise<void> => {
   let parsedJson: unknown
   try {
@@ -73,7 +71,7 @@ export const handleInboundMessage = async (
       case "chat.message.send":
         const messageScope = requireConversationScope(store, command)
         subscriptions.subscribe(socket, messageScope.conversationId)
-        void handleChatMessageSend(socket, store, agent, activeTurns, terminals, subscriptions, command, mcpRuntime, titleProvider, undefined, flowStore).catch((error) => {
+        void handleChatMessageSend(socket, store, agent, activeTurns, terminals, subscriptions, command, mcpRuntime, titleProvider).catch((error) => {
           const normalized = normalizeError(error)
           emitNormalizedError(socket, store, normalized, idsFromCommand(command))
         })

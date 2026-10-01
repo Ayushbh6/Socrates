@@ -32,7 +32,10 @@ const nodeArchiveName = `${nodePackageBase}.${process.platform === "win32" ? "zi
 const nodeArchivePath = path.join(cacheDir, nodeArchiveName);
 const nodeDownloadUrl = `https://nodejs.org/dist/${nodeVersion}/${nodeArchiveName}`;
 const cliPackageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, "apps", "cli", "package.json"), "utf8"));
-const runtimeVersion = process.env.SOCRATES_RUNTIME_VERSION ?? process.env.GITHUB_REF_NAME?.replace(/^v/, "") ?? cliPackageJson.version;
+const githubTagVersion = /^v\d+\.\d+\.\d+(?:[-+].+)?$/.test(process.env.GITHUB_REF_NAME ?? "")
+  ? process.env.GITHUB_REF_NAME.replace(/^v/, "")
+  : undefined;
+const runtimeVersion = process.env.SOCRATES_RUNTIME_VERSION ?? githubTagVersion ?? cliPackageJson.version;
 const whisperNodeVersion = "1.0.22";
 const whisperNodeCpuTargets = [
   "darwin-arm64",

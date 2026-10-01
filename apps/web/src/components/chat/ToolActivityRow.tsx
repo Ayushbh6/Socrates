@@ -24,9 +24,9 @@ export function ToolActivityRow({ tool, approval, credentialRequest, onApprovalD
     tool.status === "failed" || tool.status === "rejected" || tool.status === "cancelled" || credentialRequest?.status === "pending";
   const [manualOpen, setManualOpen] = useState<boolean | null>(null);
   useEffect(() => {
-    if (autoOpen) {
-      setManualOpen(null);
-    }
+    if (!autoOpen) return;
+    const frame = window.requestAnimationFrame(() => setManualOpen(null));
+    return () => window.cancelAnimationFrame(frame);
   }, [autoOpen]);
   const isOpen = manualOpen ?? autoOpen;
   const summary = useMemo(() => summarizeTool(tool), [tool]);

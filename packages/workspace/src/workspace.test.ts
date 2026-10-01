@@ -339,7 +339,7 @@ describe("workspace tools", () => {
     expect(result.warnings?.[0]).toContain("does not support native vision")
   })
 
-  it("keeps MiMo Pro image reads textual when its OpenRouter endpoint does not accept image parts", async () => {
+  it("treats MiMo Pro as vision-capable when reading images", async () => {
     const workspacePath = tempDir()
     fs.writeFileSync(path.join(workspacePath, "screenshot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]))
 
@@ -349,8 +349,8 @@ describe("workspace tools", () => {
     )
 
     expect(result.kind).toBe("image")
-    expect(result.image?.nativeVisionSupported).toBe(false)
-    expect(result.warnings?.[0]).toContain("does not support native vision")
+    expect(result.image?.nativeVisionSupported).toBe(true)
+    expect(result.warnings).toBeUndefined()
   })
 
   it("allows reading PROJECT_NOTES.md but rejects generic edits to it", async () => {
@@ -612,7 +612,7 @@ describe("workspace tools", () => {
     const result = await editWorkspace({ path: "src\\main.py", oldString: "old", newString: "new" }, { workspacePath, fileFreshness: tracker })
 
     expect(fs.readFileSync(path.join(workspacePath, "src", "main.py"), "utf8")).toBe("print('new')\n")
-    expect(result.changedFiles[0]?.path).toBe(path.join("src", "main.py"))
+    expect(result.changedFiles[0]?.path).toBe("src/main.py")
   })
 
   it("preserves CRLF content when applying exact replacements", async () => {
@@ -1366,6 +1366,15 @@ describe("workspace tools", () => {
     expect(sanitized.NPM_CONFIG_PRODUCTION).toBeUndefined()
     expect(sanitized.CI).toBeUndefined()
 
+    const windowsSanitized = __bashToolTest.buildWorkspaceCommandEnv(
+      { ...env, SystemRoot: "C:\\Windows", ComSpec: "C:\\Windows\\System32\\cmd.exe", PATHEXT: ".EXE;.CMD" },
+      "win32",
+    )
+    expect(windowsSanitized.SystemRoot).toBe("C:\\Windows")
+    expect(windowsSanitized.ComSpec).toBe("C:\\Windows\\System32\\cmd.exe")
+    expect(windowsSanitized.PATHEXT).toBe(".EXE;.CMD")
+    expect(windowsSanitized.OPENROUTER_API_KEY).toBeUndefined()
+
     const session = createWorkspaceShellSession(workspacePath, { env })
     try {
       const command = nodeCommand(
@@ -1373,7 +1382,7 @@ describe("workspace tools", () => {
       )
       const result = await session.run({ command })
 
-      expect(result.exitCode).toBe(0)
+      expect(result.exitCode, JSON.stringify(result)).toBe(0)
       expect(result.stdout).toContain("NODE_ENV=\n")
       expect(result.stdout).toContain("SOCRATES_HOME=\n")
       expect(result.stdout).toContain("OPENAI_API_KEY=\n")
@@ -1405,9 +1414,10 @@ describe("workspace tools", () => {
         process.platform === "win32"
           ? `$env:NODE_ENV = 'production'; ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
           : `NODE_ENV=production ${nodeCommand("process.stdout.write(process.env.NODE_ENV ?? '')")}`
-      const result = await session.run({ command })
+      const result = await session.run({ command, timeoutMs: 3_000 })
 
-      expect(result.exitCode).toBe(0)
+      expect(result.exitCode, JSON.stringify(result)).toBe(0)
+      expect(result.timedOut, JSON.stringify(result)).toBe(false)
       expect(result.stdout).toBe("production")
     } finally {
       session.dispose()
@@ -1423,7 +1433,7 @@ describe("workspace tools", () => {
         process.platform === "win32" ? "Set-Location nested; $env:SOCRATES_TEST = 'ok'; Get-Location" : "cd nested && export SOCRATES_TEST=ok && pwd"
       const secondCommand =
         process.platform === "win32"
-          ? 'Write-Output -NoNewline "$(Split-Path -Leaf (Get-Location))"'
+          ? '[Console]::Out.Write((Split-Path -Leaf (Get-Location)))'
           : 'printf "$(basename "$PWD")"'
       const first = await session.run({ command: firstCommand })
       const second = await session.run({ command: secondCommand })
@@ -1431,7 +1441,7 @@ describe("workspace tools", () => {
       expect(first.exitCode).toBe(0)
       expect(first.cwd.endsWith("nested")).toBe(true)
       expect(second.stdout).toBe(path.basename(workspacePath))
-      expect(second.cwd).toBe(workspacePath)
+      expect(fs.realpathSync.native(second.cwd).toLowerCase()).toBe(fs.realpathSync.native(workspacePath).toLowerCase())
     } finally {
       session.dispose()
     }
@@ -1491,13 +1501,23 @@ describe("workspace tools", () => {
         return
       }
 
-      await wait(80)
+      let transcript = started.stdout
+      let nextOutputSequence = started.process?.nextOutputSequence ?? 0
+      for (let attempt = 0; attempt < 20 && !transcript.includes("Name?"); attempt += 1) {
+        await wait(50)
+        const readyOutput = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+        transcript += readyOutput.stdout
+        nextOutputSequence = readyOutput.process?.nextOutputSequence ?? nextOutputSequence
+      }
       session.writeProcessInput(processId, "Socrates\n")
-      await wait(120)
-      const output = await session.run({ operation: "output", processId, outputSequence: started.process?.nextOutputSequence ?? 0, charLimit: 20_000 })
+      let output = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+      for (let attempt = 0; attempt < 20 && !output.stdout.includes("hello Socrates"); attempt += 1) {
+        await wait(50)
+        output = await session.run({ operation: "output", processId, outputSequence: nextOutputSequence, charLimit: 20_000 })
+      }
       const status = await session.run({ operation: "status", processId })
 
-      expect(`${started.stdout}${output.stdout}`).toContain("Name?")
+      expect(transcript).toContain("Name?")
       expect(output.stdout).toContain("hello Socrates")
       expect(status.process?.status).toBe("exited")
     } finally {
@@ -1515,11 +1535,20 @@ describe("workspace tools", () => {
     })
 
     expect(adapter?.kind).toBe("powershell")
-    expect(adapter?.executable).toBe("powershell.exe")
+    expect(adapter?.executable).toBe("pwsh")
     expect(wrapped).toContain("Set-Location -LiteralPath 'C:\\Users\\Ayush\\Project'")
     expect(wrapped).toContain("Get-Content package.json | Select-String version")
     expect(wrapped).toContain("$global:LASTEXITCODE -ne 0")
     expect(wrapped).toContain("__SOCRATES_DONE_test__")
+  })
+
+  it("selects the first absolute Windows executable reported by where.exe", () => {
+    expect(
+      __bashToolTest.firstWindowsExecutablePath(
+        "notice that is not a path\r\nC:\\Program Files\\PowerShell\\7\\pwsh.exe\r\nC:\\Tools\\pwsh.exe\r\n",
+      ),
+    ).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe")
+    expect(__bashToolTest.firstWindowsExecutablePath("pwsh.exe\r\n")).toBeUndefined()
   })
 
   it("does not reuse a destroyed shell after startup failure", async () => {

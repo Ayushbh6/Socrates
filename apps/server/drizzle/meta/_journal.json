@@ -197,27 +197,6 @@
       "when": 1784310101392,
       "tag": "0027_long_terror",
       "breakpoints": true
-    },
-    {
-      "idx": 28,
-      "version": "6",
-      "when": 1784469000000,
-      "tag": "0028_split_context_compactors",
-      "breakpoints": true
-    },
-    {
-      "idx": 29,
-      "version": "6",
-      "when": 1784474011870,
-      "tag": "0029_slimy_fallen_one",
-      "breakpoints": true
-    },
-    {
-      "idx": 30,
-      "version": "6",
-      "when": 1784636760181,
-      "tag": "0030_happy_firelord",
-      "breakpoints": true
     }
   ]
 }

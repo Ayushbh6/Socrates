@@ -9,6 +9,8 @@ import {
   type V2Turn,
 } from "@socrates/contracts"
 import {
+  assembleV2GoalWorkingContext,
+  deriveV2ContextBudget,
   findModelOption,
   routeV2Goal,
   type SocratesAgent,
@@ -20,6 +22,7 @@ import { createId, normalizeError, nowIso, SocratesError } from "@socrates/share
 import { listWorkspaceEnvKeyCandidates, readWorkspaceEnvValue } from "@socrates/workspace"
 import type { SocratesStore } from "../services/store"
 import { createV2ContextCompressionRuntime } from "../services/v2/contextCompressionRuntime"
+import { V2ContextMaintenanceService } from "../services/v2/contextMaintenance"
 import type { V2ContinuedTerminalTask, V2FlowStore, V2ReadyTerminalTask } from "../services/v2/flowStore"
 import { ActiveTurns } from "../ws/activeTurns"
 import { makeV2Event } from "./eventSender"
@@ -45,6 +48,7 @@ export class V2ExecutionRuntime {
   readonly activeTurns: ActiveTurns
   readonly terminals: V2TerminalRuntime
   private readonly inFlight = new Map<string, Promise<void>>()
+  private readonly contextMaintenance: V2ContextMaintenanceService
   private initialized = false
 
   constructor(private readonly deps: V2ExecutionRuntimeDeps) {
@@ -53,6 +57,10 @@ export class V2ExecutionRuntime {
     this.terminals = new V2TerminalRuntime(deps.store, (type, payload, scope, source) => {
       this.emitUntyped(type, payload, scope, source ?? "terminal")
     }, { ...(deps.supervisorScope ? { supervisorScope: deps.supervisorScope } : {}) })
+    this.contextMaintenance = new V2ContextMaintenanceService({
+      store: deps.store,
+      ...(deps.routerProvider ? { provider: deps.routerProvider } : {}),
+    })
   }
 
   async initialize(): Promise<void> {
@@ -385,7 +393,6 @@ export class V2ExecutionRuntime {
     let suspended = false
     let frontierHandoverActive = false
     try {
-      const workspacePath = this.deps.sharedStore.getPrimaryWorkspacePath(command.projectId)
       let activeGoalId: string
       if (continuation) {
         activeGoalId = continuation.goalId
@@ -396,8 +403,7 @@ export class V2ExecutionRuntime {
           "main_agent",
         )
       } else {
-        const goalRouterSetting = this.deps.sharedStore.getWorkerModelSetting("goal_router")
-        const retrievedGoalIds = await this.deps.sharedStore.searchGoalCards(command.projectId, command.payload.content, 4).catch(() => [] as string[])
+        const goalRouterSetting = this.deps.sharedStore.getWorkerModelSetting("title_generator")
         const goalRouterModel = {
           providerId: goalRouterSetting.providerId,
           ...(goalRouterSetting.authMode ? { authMode: goalRouterSetting.authMode } : {}),
@@ -407,15 +413,11 @@ export class V2ExecutionRuntime {
           timeoutMs: 8_000,
         }
         const routing = await routeV2Goal({
-          projectId: command.projectId,
           flowId: command.flowId,
-          turnId: created.turn.id,
-          workspacePath,
           userMessage: command.payload.content,
           goals: this.deps.store.getSnapshot(command.projectId, command.flowId).goals,
           capsules: this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules,
           recentTurns: this.deps.store.listRecentRoutingTurns(command.flowId, 3),
-          candidateGoalIds: retrievedGoalIds,
           ...(clarificationAnswer ? { clarificationAnswer } : {}),
           ...(this.deps.routerProvider ? { provider: this.deps.routerProvider, model: goalRouterModel } : {}),
         })
@@ -436,25 +438,14 @@ export class V2ExecutionRuntime {
                 turnId: created.turn.id,
                 source: "goal_router",
                 code: `v2_goal_router_${routing.modelAttempt.errorCode ?? "failed"}`,
-                message: routing.modelAttempt.errorCode === "timeout"
-                  ? "The Flow goal router timed out."
-                  : routing.modelAttempt.errorCode === "invalid_output"
-                    ? "The Flow goal router returned invalid structured output after one repair attempt."
-                    : "The Flow goal router provider failed.",
-                details: { fallbackReason: routing.fallbackReason, errorMessage: routing.modelAttempt.errorMessage },
+                message: routing.modelAttempt.errorCode === "timeout" ? "The Flow goal router timed out." : "The Flow goal router provider failed.",
+                details: { fallbackReason: routing.fallbackReason },
                 recoverable: true,
               })
             : undefined
           this.deps.store.completeModelCall({
             modelCallId: routerCallId,
-            response: {
-              source: routing.source,
-              fallbackReason: routing.fallbackReason,
-              decision: routing.decision.action,
-              startedAt: routing.modelAttempt.startedAt,
-              completedAt: routing.modelAttempt.completedAt,
-              durationMs: routing.modelAttempt.durationMs,
-            },
+            response: { source: routing.source, fallbackReason: routing.fallbackReason, decision: routing.decision.action },
             ...(routerError ? { errorId: routerError.id } : {}),
           })
           if (routing.modelAttempt.usage) this.recordUsage(routerCallId, routing.modelAttempt.usage)
@@ -478,15 +469,11 @@ export class V2ExecutionRuntime {
         }
         const effectiveRouting = routing.decision.action === "clarify"
           ? await routeV2Goal({
-              projectId: command.projectId,
               flowId: command.flowId,
-              turnId: created.turn.id,
-              workspacePath,
               userMessage: `${command.payload.content}\n\nClarification answer: ${clarificationAnswer ?? ""}`,
               goals: this.deps.store.getSnapshot(command.projectId, command.flowId).goals,
               capsules: this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules,
               recentTurns: this.deps.store.listRecentRoutingTurns(command.flowId, 3),
-              candidateGoalIds: retrievedGoalIds,
             })
           : routing
         const applied = this.deps.store.applyRouting({
@@ -499,7 +486,6 @@ export class V2ExecutionRuntime {
           ...(this.deps.routerProvider ? { providerId: goalRouterModel.providerId, modelId: goalRouterModel.modelId } : {}),
         })
         activeGoalId = applied.goal.id
-        this.deps.sharedStore.indexGoalRetrieval(command.projectId, activeGoalId)
         this.deps.store.assertV2FocusOwnership(command.projectId, command.flowId, activeGoalId)
         this.emit(
           "v2.goal.routed",
@@ -512,6 +498,7 @@ export class V2ExecutionRuntime {
       }
       goalId = activeGoalId
 
+      const workspacePath = this.deps.sharedStore.getPrimaryWorkspacePath(command.projectId)
       const selectedModel =
         this.deps.sharedStore.findAvailableModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key") ??
         findModelOption(runtimeConfig.providerId, runtimeConfig.modelId, runtimeConfig.authMode ?? "api_key")
@@ -520,6 +507,7 @@ export class V2ExecutionRuntime {
         flowId: command.flowId,
         goalId: activeGoalId,
         query: command.payload.content,
+        contextWindowTokens: runtimeConfig.contextWindowTokens ?? selectedModel?.contextWindowTokens ?? 128_000,
         includeImages: selectedModel?.capabilities?.vision === true,
         ...(continuation ? { lateDeveloperContext: continuation.wakeContext } : {}),
       })
@@ -557,9 +545,6 @@ export class V2ExecutionRuntime {
       })
       const streamMessageId = `${created.turn.id}_assistant`
       const fileFreshness = this.activeTurns.getFileFreshness(created.turn.id)
-      const activeGoalSnapshot = this.deps.store.getSnapshot(command.projectId, command.flowId)
-      const activeGoal = activeGoalSnapshot.goals.find((goal) => goal.id === activeGoalId)
-      const activeCapsule = activeGoalSnapshot.latestCapsules.find((capsule) => capsule.goalId === activeGoalId)
       for await (const event of this.deps.agent.streamTurn({
         projectId: command.projectId,
         // V2 owns execution. The bridge mirrors only completed visible turns
@@ -578,18 +563,6 @@ export class V2ExecutionRuntime {
         workspacePath,
         stableCachePreludeSnapshot,
         automaticMemorySearch: (memoryInput) => this.deps.sharedStore.searchMemory(command.projectId, memoryInput, true),
-        ...(activeGoal ? {
-          activeGoal: {
-            goalId: activeGoal.id,
-            title: activeGoal.title,
-            state: activeGoal.status,
-            note: activeCapsule?.summary ?? activeGoal.summary ?? "Work is active.",
-          },
-          applyGoalFinalization: async (finalization) => {
-            this.deps.store.finalizeGoal(command.projectId, command.flowId, activeGoalId, created.turn.id, finalization)
-            this.deps.sharedStore.indexGoalRetrieval(command.projectId, activeGoalId)
-          },
-        } : {}),
         recordMemoryRouterRun: async (run) => {
           const error = run.error
             ? this.deps.store.recordError({
@@ -632,7 +605,7 @@ export class V2ExecutionRuntime {
           flowId: command.flowId,
           goalId: activeGoalId,
           turnId: created.turn.id,
-          workspacePath,
+          runtimeConfig,
         }),
         toolExecutors,
         dynamicTools: () => this.deps.mcpRuntime
@@ -807,29 +780,6 @@ export class V2ExecutionRuntime {
         ...(reasoningText ? { reasoning: reasoningText } : {}),
       })
       this.deps.sharedStore.indexV2TurnRetrieval(command.projectId, created.turn.id)
-      const postTurnMessages = await this.buildWorkingMessages({
-        projectId: command.projectId,
-        flowId: command.flowId,
-        goalId: activeGoalId,
-        query: command.payload.content,
-        includeImages: selectedModel?.capabilities?.vision === true,
-      })
-      await this.deps.agent.precomputeContext({
-        providerId: runtimeConfig.providerId,
-        modelId: runtimeConfig.modelId,
-        runtimeConfig,
-        messages: postTurnMessages,
-        promptContext,
-        contextCompression: createV2ContextCompressionRuntime({
-          store: this.deps.store,
-          sharedStore: this.deps.sharedStore,
-          projectId: command.projectId,
-          flowId: command.flowId,
-          goalId: activeGoalId,
-          turnId: created.turn.id,
-          workspacePath,
-        }),
-      })
       const refreshedCapsule = this.deps.store.getSnapshot(command.projectId, command.flowId).latestCapsules
         .find((capsule) => capsule.goalId === activeGoalId)
       if (refreshedCapsule) {
@@ -839,6 +789,31 @@ export class V2ExecutionRuntime {
           goalId: activeGoalId,
           turnId: created.turn.id,
         }, "main_agent")
+      }
+      const contextWorker = this.deps.sharedStore.getWorkerModelSetting("context_compactor")
+      const maintenance = await this.contextMaintenance.runAfterTurn({
+        projectId: command.projectId,
+        flowId: command.flowId,
+        goalId: activeGoalId,
+        turnId: created.turn.id,
+        completedTurnOrdinal: created.turn.ordinal,
+        query: command.payload.content,
+        runtimeConfig,
+        workerRuntime: {
+          providerId: contextWorker.providerId,
+          ...(contextWorker.authMode ? { authMode: contextWorker.authMode } : {}),
+          modelId: contextWorker.modelId,
+          thinkingEnabled: contextWorker.thinkingEnabled,
+          ...(contextWorker.thinkingEffort ? { thinkingEffort: contextWorker.thinkingEffort } : {}),
+        },
+      })
+      for (const event of maintenance.events) {
+        this.emit(event.type, event.payload, {
+          projectId: command.projectId,
+          flowId: command.flowId,
+          goalId: activeGoalId,
+          turnId: created.turn.id,
+        }, event.source)
       }
       for (const modelCallId of modelCallIds) {
         if (completedModelCalls.has(modelCallId)) continue
@@ -891,19 +866,46 @@ export class V2ExecutionRuntime {
     flowId: string
     goalId: string
     query: string
+    contextWindowTokens: number
     includeImages: boolean
     lateDeveloperContext?: string
   }) {
+    const budget = deriveV2ContextBudget({ contextWindowTokens: Math.max(2_048, input.contextWindowTokens) })
     const history = this.deps.store.getModelMessages(input.flowId, input.goalId, input.includeImages)
-    // Flow supplies the full active-goal conversation to the same Socrates
-    // runtime as Classic. The shared 170k/180k compactor owns history
-    // reduction; this view layer must not silently truncate a separate tail.
-    const retained = history
+    const retained = retainNewestMessages(history, budget.recentGoalTailTokens)
     const snapshot = this.deps.store.getSnapshot(input.projectId, input.flowId)
     const capsule = snapshot.latestCapsules.find((item) => item.goalId === input.goalId)
+    const fixedContextTokens = estimateRuntimeContextTokens([
+      snapshot.foregroundGoal?.title ?? "Current Flow goal",
+      capsule?.summary ?? "",
+      input.lateDeveloperContext ?? "",
+    ])
+    const retainedHistoryTokens = retained.reduce(
+      (sum, message) => sum + Math.max(1, Math.ceil(safeStringify(message.content).length / 4)),
+      0,
+    )
+    const evidenceTokenLimit = Math.max(
+      0,
+      budget.postPruneTargetTokens - retainedHistoryTokens - fixedContextTokens,
+    )
+    const contextItems = this.deps.store.getActiveContextItems(input.flowId, input.goalId)
+    const assembled = await assembleV2GoalWorkingContext({
+      foregroundGoalId: input.goalId,
+      query: input.query,
+      messages: [],
+      contextItems,
+      budget,
+      evidenceTokenLimit,
+      exactRetriever: (refs) => this.deps.store.retrieveExactEvidence(input.flowId, refs.map((ref) => ref.evidenceId)).map((record) => ({
+        evidenceRef: record.ref,
+        exactContent: record.exactContent,
+      })),
+    })
     const sections = [
       `<active_goal id="${input.goalId}">${snapshot.foregroundGoal?.title ?? "Current Flow goal"}</active_goal>`,
       capsule ? `<goal_capsule version="${capsule.version}">${capsule.summary}</goal_capsule>` : "",
+      ...assembled.distilledItems.map((item) => `<distilled_evidence ref="${item.evidenceRef.sourceLocator}">${item.text}</distilled_evidence>`),
+      ...assembled.exactEvidence.map((item) => `<exact_evidence ref="${item.evidenceRef.sourceLocator}">${item.exactContent}</exact_evidence>`),
       input.lateDeveloperContext ? `<terminal_wake_context>${input.lateDeveloperContext}</terminal_wake_context>` : "",
     ].filter(Boolean)
     if (sections.length <= 1) return retained
@@ -929,17 +931,14 @@ export class V2ExecutionRuntime {
     }
     if (event.type === "tool.call.completed") {
       const toolCall = this.deps.store.completeToolCall(event.toolCallId, event.output)
-      if (event.toolName !== "context_disposition") {
-        this.deps.store.recordEvidence({
-          ...scope,
-          sourceKind: event.toolName === "bash" ? "terminal_output" : "tool_output",
-          sourceId: event.toolCallId,
-          title: `${event.toolName}: ${event.summary}`.slice(0, 1_000),
-          content: safeStringify(event.output),
-          rank: 30,
-          includeInContext: false,
-        })
-      }
+      this.deps.store.recordEvidence({
+        ...scope,
+        sourceKind: event.toolName === "bash" ? "terminal_output" : "tool_output",
+        sourceId: event.toolCallId,
+        title: `${event.toolName}: ${event.summary}`.slice(0, 1_000),
+        content: safeStringify(event.output),
+        rank: 30,
+      })
       this.emit("v2.tool.call.updated", { toolCall }, scope, "tool")
       return
     }
@@ -1040,6 +1039,24 @@ const actorForSource = (source: string): { type: "user" | "main_agent" | "worker
   if (source === "context_compactor" || source === "context_distiller") return { type: "worker", label: source === "context_compactor" ? "Context Compactor" : "Context Distiller" }
   return { type: "system" }
 }
+
+const retainNewestMessages = <T extends { content: unknown }>(messages: T[], tokenLimit: number): T[] => {
+  const retained: T[] = []
+  let used = 0
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (!message) continue
+    const tokens = Math.max(1, Math.ceil(safeStringify(message.content).length / 4))
+    if (retained.length > 0 && used + tokens > tokenLimit) continue
+    retained.push(message)
+    used += tokens
+    if (used >= tokenLimit) break
+  }
+  return retained.reverse()
+}
+
+const estimateRuntimeContextTokens = (parts: readonly string[]): number =>
+  parts.reduce((sum, part) => sum + (part ? Math.max(1, Math.ceil(part.length / 4)) : 0), 0)
 
 const safeStringify = (value: unknown): string => {
   try {

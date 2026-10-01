@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowUp, Brain, ChevronDown, EyeOff, FileText, ImagePlus, LoaderCircle, Mic, Square, Sparkles, X } from "lucide-react";
+import { ArrowUp, Brain, ChevronDown, EyeOff, FileText, ImagePlus, Mic, Square, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   MAX_INLINE_MESSAGE_CHARS,
@@ -10,7 +10,6 @@ import {
   type ModelThinkingOption,
 } from "@socrates/contracts";
 import { socratesApiBaseUrl } from "@/lib/api";
-import { composerVoicePresentation, type ComposerVoiceStatus } from "@/lib/speech/composer";
 
 export interface ComposerAttachment {
   id: string;
@@ -29,12 +28,8 @@ export interface ChatComposerProps<TAttachment extends ComposerAttachment = Mess
   warningResetKey?: string;
   value?: string;
   onValueChange?: (value: string) => void;
-  attachments?: TAttachment[];
-  onAttachmentsChange?: (attachments: TAttachment[]) => void;
   voiceAvailable?: boolean;
-  voiceStatus?: ComposerVoiceStatus;
-  voiceStatusLabel?: string;
-  voiceError?: string | null;
+  voiceRecording?: boolean;
   voiceBusy?: boolean;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
@@ -53,12 +48,8 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
   warningResetKey,
   value,
   onValueChange,
-  attachments: controlledAttachments,
-  onAttachmentsChange,
   voiceAvailable = false,
-  voiceStatus = "idle",
-  voiceStatusLabel,
-  voiceError,
+  voiceRecording = false,
   voiceBusy = false,
   onModelChange,
   onThinkingChange,
@@ -68,27 +59,16 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
   onStop,
 }: ChatComposerProps<TAttachment>) {
   const [internalContent, setInternalContent] = useState("");
-  const [internalAttachments, setInternalAttachments] = useState<TAttachment[]>([]);
+  const [attachments, setAttachments] = useState<TAttachment[]>([]);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isThinkingMenuOpen, setIsThinkingMenuOpen] = useState(false);
   const [dismissedVisionWarningKey, setDismissedVisionWarningKey] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const thinkingMenuRef = useRef<HTMLDivElement | null>(null);
-  const previousVoiceStatusRef = useRef(voiceStatus);
   const content = value ?? internalContent;
-  const attachments = controlledAttachments ?? internalAttachments;
-  const setAttachments = (update: TAttachment[] | ((current: TAttachment[]) => TAttachment[])) => {
-    const next = typeof update === "function" ? update(attachments) : update;
-    if (controlledAttachments !== undefined) {
-      onAttachmentsChange?.(next);
-    } else {
-      setInternalAttachments(next);
-    }
-  };
   const setContent = (nextValue: string) => {
     if (value !== undefined) {
       onValueChange?.(nextValue);
@@ -96,28 +76,13 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
     }
     setInternalContent(nextValue);
   };
-  const voiceInputActive = voiceStatus !== "idle";
-  const voicePresentation = composerVoicePresentation(voiceStatus, voiceStatusLabel);
-  const canSend = (content.trim().length > 0 || attachments.length > 0) && !isSending && !isUploading && !voiceInputActive && isConnected && Boolean(selectedModel);
+  const canSend = (content.trim().length > 0 || attachments.length > 0) && !isSending && !isUploading && isConnected && Boolean(selectedModel);
   const selectedModelHasNoVision = selectedModel?.capabilities?.vision === false;
   const selectedModelKey = selectedModel ? modelKey(selectedModel) : "none";
   const selectedModelLabel = selectedModel ? `${selectedModel.label} · ${selectedModel.providerLabel}` : models.length === 0 ? "Connect provider" : "Model";
   const visionWarningKey = `${warningResetKey ?? "default"}:${selectedModelKey}`;
   const shouldShowVisionWarning = selectedModelHasNoVision && dismissedVisionWarningKey !== visionWarningKey;
   const modelGroups = groupModels(models);
-  const voiceRecording = voiceStatus === "recording";
-  const voiceTranscribing = voiceStatus === "transcribing";
-  const voiceActivityLabel = voicePresentation.activityLabel;
-
-  useEffect(() => {
-    const previous = previousVoiceStatusRef.current;
-    previousVoiceStatusRef.current = voiceStatus;
-    if (previous !== "transcribing" || voiceStatus !== "idle" || !content.trim()) return;
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-    textarea.focus();
-    textarea.setSelectionRange(content.length, content.length);
-  }, [content, voiceStatus]);
 
   useEffect(() => {
     if (!isModelMenuOpen && !isThinkingMenuOpen) {
@@ -173,7 +138,7 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
 
   const handleSend = async () => {
     const nextContent = content.trim();
-    if ((!nextContent && attachments.length === 0) || isSending || isUploading || voiceInputActive) {
+    if ((!nextContent && attachments.length === 0) || isSending || isUploading) {
       return;
     }
     try {
@@ -222,14 +187,6 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
         </div>
       )}
       <div className={`relative rounded-xl border bg-white shadow-sm ${isDraggingOver ? "border-brand-teal-dark ring-2 ring-teal-100" : "border-gray-200"}`}>
-        {voiceActivityLabel && (
-          <VoiceActivityStatus key={voiceStatus} label={voiceActivityLabel} isRecording={voiceRecording} />
-        )}
-        {voiceError && !voiceActivityLabel && (
-          <div role="alert" className="px-4 pt-3 text-sm font-medium text-red-600">
-            {voiceError}
-          </div>
-        )}
         {attachments.length > 0 && (
           <div className="flex gap-2 overflow-x-auto px-4 pt-3">
             {attachments.map((attachment) => (
@@ -259,12 +216,8 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
           </div>
         )}
         <textarea
-          ref={textareaRef}
           className="block min-h-20 w-full resize-none rounded-xl bg-white px-4 py-3 pb-14 pr-14 text-sm leading-6 text-brand-text-dark outline-none placeholder:text-brand-text-light focus:border-brand-teal-dark"
-          placeholder={voicePresentation.placeholder}
-          aria-label={voicePresentation.textareaLabel}
-          aria-busy={voicePresentation.inputBusy}
-          readOnly={voicePresentation.inputReadOnly}
+          placeholder="Write a message..."
           value={content}
           onChange={(event) => setContent(event.target.value)}
           onPaste={(event) => {
@@ -308,7 +261,7 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
           <button
             type="button"
             className="inline-flex size-9 items-center justify-center rounded-full border border-gray-200 bg-gray-50 text-brand-text-light transition-colors hover:bg-gray-100 hover:text-brand-text-dark disabled:opacity-60"
-            disabled={isSending || isUploading || voiceInputActive || !onUploadAttachments}
+            disabled={isSending || isUploading || !onUploadAttachments}
             aria-label="Attach image, text file, or Agent Skill ZIP"
             title="Attach image, text file, or Agent Skill ZIP"
             onClick={() => fileInputRef.current?.click()}
@@ -320,7 +273,6 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
               type="button"
               className="inline-flex h-9 max-w-28 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100 sm:max-w-72"
               title={selectedModelLabel}
-              disabled={voiceInputActive}
               onClick={() => {
                 setIsModelMenuOpen((current) => !current);
                 setIsThinkingMenuOpen(false);
@@ -368,7 +320,7 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
             <button
               type="button"
               className="inline-flex h-9 items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 text-sm font-medium text-brand-text-dark transition-colors hover:bg-gray-100"
-              disabled={!selectedModel || voiceInputActive}
+              disabled={!selectedModel}
               onClick={() => {
                 setIsThinkingMenuOpen((current) => !current);
                 setIsModelMenuOpen(false);
@@ -407,17 +359,15 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
               className={`inline-flex size-9 items-center justify-center rounded-full border text-brand-text-light transition-colors hover:text-brand-text-dark disabled:opacity-60 ${
                 voiceRecording
                   ? "border-brand-teal-dark bg-teal-50 text-brand-teal-dark ring-2 ring-teal-100"
-                  : voiceTranscribing
-                    ? "border-brand-teal-dark bg-teal-50 text-brand-teal-dark"
                   : "border-gray-200 bg-gray-50 hover:bg-gray-100"
               }`}
-              disabled={!isConnected || !voiceAvailable || voiceTranscribing || (voiceBusy && !voiceRecording)}
-              aria-label={voicePresentation.microphoneLabel}
+              disabled={!isConnected || !voiceAvailable || (voiceBusy && !voiceRecording)}
+              aria-label={voiceRecording ? "Stop voice recording" : "Start voice recording"}
               aria-pressed={voiceRecording}
-              title={voiceAvailable ? voicePresentation.microphoneTitle : "Voice input unavailable"}
+              title={voiceAvailable ? "Voice input" : "Voice input unavailable"}
               onClick={onVoiceToggle}
             >
-              {voiceTranscribing ? <LoaderCircle className="size-4 animate-spin" /> : <Mic className="size-4" />}
+              <Mic className="size-4" />
             </button>
           )}
         </div>
@@ -437,30 +387,6 @@ export function ChatComposer<TAttachment extends ComposerAttachment = MessageAtt
 
 const modelKey = (model: Pick<ModelOption, "providerId" | "authMode" | "modelId">): string =>
   `${model.providerId}:${model.authMode ?? "api_key"}:${model.modelId}`;
-
-function VoiceActivityStatus({ label, isRecording }: { label: string; isRecording: boolean }) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
-  useEffect(() => {
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
-    }, 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="flex items-center gap-2 px-4 pt-3 text-sm font-medium text-brand-teal-dark"
-    >
-      <span className={`size-2 rounded-full bg-brand-teal-dark ${isRecording ? "animate-pulse" : ""}`} />
-      <span>{label}</span>
-      <span className="font-mono text-xs font-normal text-brand-text-light">{elapsedSeconds}s</span>
-    </div>
-  );
-}
 
 const groupModels = (models: ModelOption[]): Array<{ label: string; models: ModelOption[] }> => {
   const groups: Array<{ label: string; models: ModelOption[] }> = [];

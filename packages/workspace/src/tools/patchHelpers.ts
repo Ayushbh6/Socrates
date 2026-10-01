@@ -1112,7 +1112,7 @@ const applyPatch = async (workspacePath: string, patchText: string): Promise<voi
 
 const runGitApply = (workspacePath: string, patchText: string, check: boolean): Promise<void> =>
   new Promise((resolve, reject) => {
-    const child = spawn("git", ["apply", ...(check ? ["--check"] : []), "--whitespace=nowarn", "-"], {
+    const child = spawn("git", ["-c", "core.autocrlf=false", "-c", "core.eol=lf", "apply", ...(check ? ["--check"] : []), "--whitespace=nowarn", "-"], {
       cwd: workspacePath,
       stdio: ["pipe", "pipe", "pipe"],
     })

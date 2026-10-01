@@ -37,7 +37,7 @@ const normalizeWorkspaceRequestPath = (requestedPath?: string): string | undefin
 
 export const toWorkspaceRelativePath = (workspacePath: string, targetPath: string): string => {
   const relative = path.relative(path.resolve(workspacePath), path.resolve(targetPath))
-  return relative.length === 0 ? "." : relative
+  return relative.length === 0 ? "." : relative.replaceAll(path.sep, "/")
 }
 
 export const truncateText = (text: string, charLimit = DEFAULT_CHAR_LIMIT, offset = 0): { text: string; truncation: TruncationMetadata } => {

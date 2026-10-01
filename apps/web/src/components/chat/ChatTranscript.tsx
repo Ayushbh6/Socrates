@@ -2,7 +2,7 @@
 
 import type { ConversationActivityStep, ConversationPartialTurn, ConversationToolRun, Message, MessageAttachment } from "@socrates/contracts";
 import { Check, ChevronDown, Compass, Copy, SquareTerminal } from "lucide-react";
-import { isValidElement, useEffect, useRef, useState, type ReactNode, type RefObject, type UIEventHandler } from "react";
+import { isValidElement, useEffect, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { socratesApiBaseUrl } from "@/lib/api";
@@ -11,7 +11,7 @@ import { ToolActivityRow } from "./ToolActivityRow";
 import type { PendingApproval, PendingCredentialInput, ToolTimelineItem } from "./ToolTimelineTypes";
 import { toolRunToTimelineItem } from "./ToolTimelineTypes";
 
-export interface ChatTranscriptProps {
+interface ChatTranscriptProps {
   messages: Message[];
   toolRuns?: ConversationToolRun[];
   partialTurns?: ConversationPartialTurn[];
@@ -23,14 +23,6 @@ export interface ChatTranscriptProps {
   anchorMessageId?: string | null;
   isStreaming?: boolean;
   isCompacting?: boolean;
-  scrollContainerRef?: RefObject<HTMLDivElement | null>;
-  scrollContainerClassName?: string;
-  contentClassName?: string;
-  beforeMessages?: ReactNode;
-  collapseLongUserMessages?: boolean;
-  renderBeforeMessage?: (message: Message, index: number) => ReactNode;
-  renderAfterMessage?: (message: Message, index: number) => ReactNode;
-  onScroll?: UIEventHandler<HTMLDivElement>;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
   onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }
@@ -60,19 +52,10 @@ export function ChatTranscript({
   anchorMessageId,
   isStreaming,
   isCompacting,
-  scrollContainerRef: externalScrollContainerRef,
-  scrollContainerClassName,
-  contentClassName,
-  beforeMessages,
-  collapseLongUserMessages = false,
-  renderBeforeMessage,
-  renderAfterMessage,
-  onScroll,
   onApprovalDecision,
   onCredentialInput,
 }: ChatTranscriptProps) {
-  const internalScrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const scrollContainerRef = externalScrollContainerRef ?? internalScrollContainerRef;
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const scrolledAnchorRef = useRef<string | null>(null);
   const hasLiveActivity = liveSteps.some((step) => step.reasoning || step.answer || step.tools.length > 0);
   const isWaitingForFirstToken = Boolean(isStreaming && !isCompacting && !hasLiveActivity);
@@ -102,58 +85,27 @@ export function ChatTranscript({
       scrolledAnchorRef.current = anchorMessageId;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [anchorMessageId, messages.length, scrollContainerRef]);
+  }, [anchorMessageId, messages.length]);
 
   return (
-    <div
-      ref={scrollContainerRef}
-      className={scrollContainerClassName ?? "min-w-0 flex-1 overflow-y-auto px-6 py-6"}
-      onScroll={onScroll}
-    >
-      <div className={contentClassName ?? "mx-auto flex min-w-0 w-full max-w-4xl flex-col gap-5"}>
-        {beforeMessages}
-        {messages.map((message, index) => {
+    <div ref={scrollContainerRef} className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
+      <div className="mx-auto flex min-w-0 w-full max-w-4xl flex-col gap-5">
+        {messages.map((message) => {
           const tools = message.role === "assistant" && message.turnId ? historicalToolsByTurn.get(message.turnId) ?? [] : [];
           const steps = message.role === "assistant" && message.turnId ? historicalStepsByTurn.get(message.turnId) ?? [] : [];
           const assistantSettledSteps =
             message.role === "assistant" && message.turnId ? settledLiveTurns[message.turnId] ?? [] : [];
-          const messageToolIds = new Set(tools.map((tool) => tool.toolCallId));
-          const messageApprovals = approvals.filter((approval) => approval.toolCallId && messageToolIds.has(approval.toolCallId));
-          const messageCredentialRequests = credentialRequests.filter((request) => messageToolIds.has(request.toolCallId));
           const shouldRenderIncompleteTurn =
             message.role === "user" && message.turnId && !assistantTurnIds.has(message.turnId) && !liveTurnIds.has(message.turnId);
           const incompleteTurn = shouldRenderIncompleteTurn ? partialTurnsByTurn.get(message.turnId as string) : undefined;
           const incompleteTools = shouldRenderIncompleteTurn ? historicalToolsByTurn.get(message.turnId as string) ?? [] : [];
           const settledSteps = shouldRenderIncompleteTurn ? settledLiveTurns[message.turnId as string] ?? [] : [];
-          const incompleteToolIds = new Set(incompleteTools.map((tool) => tool.toolCallId));
-          const incompleteApprovals = approvals.filter((approval) => !approval.toolCallId || incompleteToolIds.has(approval.toolCallId));
-          const incompleteCredentialRequests = credentialRequests.filter((request) => incompleteToolIds.has(request.toolCallId));
 
           return (
             <div key={message.id} className="contents">
-              {renderBeforeMessage?.(message, index)}
-              <MessageBubble
-                message={message}
-                tools={tools}
-                steps={steps}
-                settledSteps={assistantSettledSteps}
-                approvals={messageApprovals}
-                credentialRequests={messageCredentialRequests}
-                onApprovalDecision={onApprovalDecision}
-                onCredentialInput={onCredentialInput}
-                collapseLongUserMessage={collapseLongUserMessages}
-              />
-              {renderAfterMessage?.(message, index)}
+              <MessageBubble message={message} tools={tools} steps={steps} settledSteps={assistantSettledSteps} />
               {shouldRenderIncompleteTurn ? (
-                <IncompleteTurnBubble
-                  turn={incompleteTurn}
-                  tools={incompleteTools}
-                  liveSteps={settledSteps}
-                  approvals={incompleteApprovals}
-                  credentialRequests={incompleteCredentialRequests}
-                  onApprovalDecision={onApprovalDecision}
-                  onCredentialInput={onCredentialInput}
-                />
+                <IncompleteTurnBubble turn={incompleteTurn} tools={incompleteTools} liveSteps={settledSteps} />
               ) : null}
             </div>
           );
@@ -189,18 +141,10 @@ function IncompleteTurnBubble({
   turn,
   tools,
   liveSteps = [],
-  approvals = [],
-  credentialRequests = [],
-  onApprovalDecision,
-  onCredentialInput,
 }: {
   turn?: ConversationPartialTurn;
   tools: ToolTimelineItem[];
   liveSteps?: LiveActivityStep[];
-  approvals?: PendingApproval[];
-  credentialRequests?: PendingCredentialInput[];
-  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }) {
   if (!turn && tools.length === 0 && liveSteps.length === 0) {
     return null;
@@ -224,24 +168,11 @@ function IncompleteTurnBubble({
       >
         {isSuspended ? <ContinuedIndicator /> : <StoppedIndicator reason={label} />}
         {liveSteps.length > 0 ? (
-          <AssistantActivityStream
-            steps={liveSteps}
-            fallbackAnswer={turn?.answer}
-            approvals={approvals}
-            credentialRequests={credentialRequests}
-            onApprovalDecision={onApprovalDecision}
-            onCredentialInput={onCredentialInput}
-          />
+          <AssistantActivityStream steps={liveSteps} fallbackAnswer={turn?.answer} />
         ) : (
           <>
             {turn?.reasoning ? <ThinkingBlock content={turn.reasoning} /> : null}
-            <ChatToolTimeline
-              tools={tools}
-              approvals={approvals}
-              credentialRequests={credentialRequests}
-              onApprovalDecision={onApprovalDecision}
-              onCredentialInput={onCredentialInput}
-            />
+            <ChatToolTimeline tools={tools} />
             {turn?.answer ? <MarkdownContent content={turn.answer} /> : null}
           </>
         )}
@@ -269,12 +200,11 @@ function CompactionLoader() {
 
 function FirstTokenLoader() {
   return (
-    <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-teal-100 bg-teal-50 px-3 py-1.5 text-xs font-medium text-brand-teal-dark">
+    <div className="flex h-6 items-center">
       <span className="relative flex size-3">
         <span className="absolute inline-flex size-full animate-ping rounded-full bg-brand-teal-dark opacity-25" />
         <span className="relative inline-flex size-3 animate-pulse rounded-full bg-brand-teal-dark shadow-[0_0_18px_rgba(20,184,166,0.55)]" />
       </span>
-      Preparing the workspace task...
     </div>
   );
 }
@@ -284,21 +214,11 @@ function MessageBubble({
   tools,
   steps,
   settledSteps,
-  approvals,
-  credentialRequests,
-  onApprovalDecision,
-  onCredentialInput,
-  collapseLongUserMessage,
 }: {
   message: Message;
   tools: ToolTimelineItem[];
   steps: HistoricalActivityStep[];
   settledSteps: LiveActivityStep[];
-  approvals: PendingApproval[];
-  credentialRequests: PendingCredentialInput[];
-  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
-  collapseLongUserMessage?: boolean;
 }) {
   const isUser = message.role === "user";
   const hasStepAnswers = steps.some((step) => step.answer);
@@ -314,13 +234,7 @@ function MessageBubble({
       >
         {isUser ? (
           <>
-            {message.content ? (
-              <ExpandableUserMessage
-                key={message.content}
-                content={message.content}
-                enabled={Boolean(collapseLongUserMessage)}
-              />
-            ) : null}
+            {message.content ? <p className="whitespace-pre-wrap">{message.content}</p> : null}
             <AttachmentGrid attachments={message.attachments ?? []} />
           </>
         ) : (
@@ -336,85 +250,19 @@ function MessageBubble({
                   tools: step.tools,
                 }))}
                 fallbackAnswer={hasStepAnswers ? "" : message.content}
-                approvals={approvals}
-                credentialRequests={credentialRequests}
-                onApprovalDecision={onApprovalDecision}
-                onCredentialInput={onCredentialInput}
               />
             ) : settledSteps.length > 0 ? (
-              <AssistantActivityStream
-                steps={settledSteps}
-                fallbackAnswer={message.content}
-                approvals={approvals}
-                credentialRequests={credentialRequests}
-                onApprovalDecision={onApprovalDecision}
-                onCredentialInput={onCredentialInput}
-              />
+              <AssistantActivityStream steps={settledSteps} fallbackAnswer={message.content} />
             ) : (
               <div className="space-y-4">
                 {message.reasoning ? <ThinkingBlock content={message.reasoning} /> : null}
-                <ChatToolTimeline
-                  tools={tools}
-                  approvals={approvals}
-                  credentialRequests={credentialRequests}
-                  onApprovalDecision={onApprovalDecision}
-                  onCredentialInput={onCredentialInput}
-                />
+                <ChatToolTimeline tools={tools} />
                 <MarkdownContent content={message.content} />
               </div>
             )}
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function ExpandableUserMessage({ content, enabled }: { content: string; enabled: boolean }) {
-  const contentRef = useRef<HTMLParagraphElement>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isOverflowing, setIsOverflowing] = useState(false);
-
-  useEffect(() => {
-    if (!enabled) return;
-    const element = contentRef.current;
-    if (!element) return;
-    const measure = () => setIsOverflowing(element.scrollHeight > 98);
-    const frame = window.requestAnimationFrame(measure);
-    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(measure);
-    observer?.observe(element);
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer?.disconnect();
-    };
-  }, [content, enabled]);
-
-  const isCollapsed = enabled && isOverflowing && !isExpanded;
-
-  return (
-    <div className="relative">
-      <p
-        ref={contentRef}
-        className={`whitespace-pre-wrap ${isCollapsed ? "max-h-24 overflow-hidden pr-1" : ""}`}
-      >
-        {content}
-      </p>
-      {isCollapsed ? (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-brand-button"
-        />
-      ) : null}
-      {enabled && isOverflowing ? (
-        <button
-          type="button"
-          className="relative mt-2 border-0 bg-transparent p-0 text-xs font-medium text-white/75 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/45"
-          onClick={() => setIsExpanded((current) => !current)}
-          aria-expanded={isExpanded}
-        >
-          {isExpanded ? "Show less" : "Show more"}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -451,16 +299,7 @@ function ActivityStepView({
     return null;
   }
   if (kind === "intent") {
-    return (
-      <IntentDiscoveryStep
-        tools={tools}
-        approvals={approvals}
-        credentialRequests={credentialRequests}
-        defaultOpen={defaultOpen}
-        onApprovalDecision={onApprovalDecision}
-        onCredentialInput={onCredentialInput}
-      />
-    );
+    return <IntentDiscoveryStep tools={tools} defaultOpen={defaultOpen} />;
   }
   return (
     <div className="space-y-3">
@@ -480,17 +319,9 @@ function ActivityStepView({
 function AssistantActivityStream({
   steps,
   fallbackAnswer,
-  approvals = [],
-  credentialRequests = [],
-  onApprovalDecision,
-  onCredentialInput,
 }: {
   steps: Array<{ key: string; kind?: ActivityStepKind; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
   fallbackAnswer?: string;
-  approvals?: PendingApproval[];
-  credentialRequests?: PendingCredentialInput[];
-  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }) {
   const answer = steps
     .map((step) => step.answer.trim())
@@ -499,15 +330,7 @@ function AssistantActivityStream({
   const hasWork = steps.some((step) => step.reasoning || step.tools.length > 0);
   return (
     <div className="space-y-4">
-      {hasWork ? (
-        <AssistantWorkGroup
-          steps={steps}
-          approvals={approvals}
-          credentialRequests={credentialRequests}
-          onApprovalDecision={onApprovalDecision}
-          onCredentialInput={onCredentialInput}
-        />
-      ) : null}
+      {hasWork ? <AssistantWorkGroup steps={steps} /> : null}
       {answer ? <MarkdownContent content={answer} /> : null}
     </div>
   );
@@ -515,16 +338,8 @@ function AssistantActivityStream({
 
 function AssistantWorkGroup({
   steps,
-  approvals = [],
-  credentialRequests = [],
-  onApprovalDecision,
-  onCredentialInput,
 }: {
   steps: Array<{ key: string; kind?: ActivityStepKind; reasoning: string; answer: string; tools: ToolTimelineItem[] }>;
-  approvals?: PendingApproval[];
-  credentialRequests?: PendingCredentialInput[];
-  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
 }) {
   const tools = steps.flatMap((step) => step.tools);
   const hasActiveWork = tools.some((tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval");
@@ -547,59 +362,25 @@ function AssistantWorkGroup({
       </button>
       {shouldShowDetails ? (
         <div className="space-y-3 pb-1 pt-2">
-          {steps.map((step, index) => {
-            const stepToolIds = new Set(step.tools.map((tool) => tool.toolCallId));
-            const stepApprovals = approvals.filter((approval) => approval.toolCallId
-              ? stepToolIds.has(approval.toolCallId)
-              : index === steps.length - 1);
-            const stepCredentialRequests = credentialRequests.filter((request) => stepToolIds.has(request.toolCallId));
-            return (
-              <div key={step.key} className="space-y-2">
-                {step.kind === "intent" ? (
-                  <IntentDiscoveryStep
-                    tools={step.tools}
-                    approvals={stepApprovals}
-                    credentialRequests={stepCredentialRequests}
-                    defaultOpen
-                    onApprovalDecision={onApprovalDecision}
-                    onCredentialInput={onCredentialInput}
-                  />
-                ) : (
-                  <>
-                    {step.reasoning ? <ThinkingBlock content={step.reasoning} /> : null}
-                    <ChatToolTimeline
-                      tools={step.tools}
-                      approvals={stepApprovals}
-                      credentialRequests={stepCredentialRequests}
-                      onApprovalDecision={onApprovalDecision}
-                      onCredentialInput={onCredentialInput}
-                    />
-                  </>
-                )}
-              </div>
-            );
-          })}
+          {steps.map((step) => (
+            <div key={step.key} className="space-y-2">
+              {step.kind === "intent" ? (
+                <IntentDiscoveryStep tools={step.tools} defaultOpen />
+              ) : (
+                <>
+                  {step.reasoning ? <ThinkingBlock content={step.reasoning} /> : null}
+                  <ChatToolTimeline tools={step.tools} />
+                </>
+              )}
+            </div>
+          ))}
         </div>
       ) : null}
     </div>
   );
 }
 
-function IntentDiscoveryStep({
-  tools,
-  approvals = [],
-  credentialRequests = [],
-  defaultOpen = false,
-  onApprovalDecision,
-  onCredentialInput,
-}: {
-  tools: ToolTimelineItem[];
-  approvals?: PendingApproval[];
-  credentialRequests?: PendingCredentialInput[];
-  defaultOpen?: boolean;
-  onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialInput?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
-}) {
+function IntentDiscoveryStep({ tools, defaultOpen = false }: { tools: ToolTimelineItem[]; defaultOpen?: boolean }) {
   const hasActiveWork = tools.some(
     (tool) => tool.phase === "streaming" || tool.status === "running" || tool.status === "awaiting_approval",
   );
@@ -636,17 +417,9 @@ function IntentDiscoveryStep({
       </button>
       {shouldShowDetails ? (
         <div className="border-t border-teal-100/80 bg-white/55 px-2 py-1.5">
-          {approvals.length > 0 || credentialRequests.length > 0 ? (
-            <ChatToolTimeline
-              tools={tools}
-              approvals={approvals}
-              credentialRequests={credentialRequests}
-              onApprovalDecision={onApprovalDecision}
-              onCredentialInput={onCredentialInput}
-            />
-          ) : tools.map((tool) => (
-              <ToolActivityRow key={tool.toolCallId} tool={tool} />
-            ))}
+          {tools.map((tool) => (
+            <ToolActivityRow key={tool.toolCallId} tool={tool} />
+          ))}
         </div>
       ) : null}
     </div>

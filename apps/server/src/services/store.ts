@@ -187,6 +187,7 @@ export class SocratesStore {
   private readonly embeddings: EmbeddingStore
   private readonly retrieval: RetrievalStore
   private readonly contextCompactions: ContextCompactionStore
+  private readonly includeV2Flow: boolean
   private ollamaChatModels: ModelOption[] = []
   private ollamaChatModelsCheckedAt = 0
   private memoryAgentScheduler: ReturnType<typeof setInterval> | undefined
@@ -196,8 +197,9 @@ export class SocratesStore {
     private readonly handle: DatabaseHandle,
     embeddingProvider?: EmbeddingProvider,
     private readonly credentials?: ProviderCredentialResolver,
-    options: { socratesHome?: string; memoryProvider?: ModelProvider } = {},
+    options: { socratesHome?: string; memoryProvider?: ModelProvider; includeV2Flow?: boolean } = {},
   ) {
+    this.includeV2Flow = options.includeV2Flow ?? true
     this.events = new EventStore(handle)
     const context: StoreContext = {
       handle,
@@ -220,7 +222,7 @@ export class SocratesStore {
     this.agentTasks = new AgentTaskStore(context)
     this.embeddings = new EmbeddingStore(context, embeddingProvider ?? createDefaultEmbeddingProvider(credentials), credentials)
     const socratesHome = options.socratesHome ?? path.join(os.homedir(), ".Socrates")
-    this.retrieval = new RetrievalStore(context, this.embeddings, socratesHome)
+    this.retrieval = new RetrievalStore(context, this.embeddings, socratesHome, this.includeV2Flow)
     this.traces = new TraceStore(context)
     this.notifications = new NotificationStore(context)
     this.memoryAgentSettings = new MemoryAgentGlobalSettingsStore(context)
@@ -229,6 +231,7 @@ export class SocratesStore {
       ...(options.socratesHome ? { socratesHome: options.socratesHome } : {}),
       ...(options.memoryProvider ? { provider: options.memoryProvider } : credentials ? { provider: createDefaultModelProvider(credentials) } : {}),
       ...(credentials ? { credentials } : {}),
+      includeV2Flow: this.includeV2Flow,
       traceRetrieveGlobal: (input: TraceRetrieveGlobalToolInput) => this.retrieveGlobalToolTraces(input),
       getMemoryAgentGlobalSettings: () => this.memoryAgentSettings.ensureSettings(),
       getWorkerModelSettings: (workerId: WorkerModelRole) => this.getWorkerModelSetting(workerId),
@@ -416,12 +419,8 @@ export class SocratesStore {
     return this.memory.runMemoryNotesTool(input)
   }
 
-  async buildProjectSkill(
-    projectId: string,
-    input: BuildProjectSkillRequest,
-    source?: { conversationId: string; sessionId: string; turnId: string },
-  ): Promise<BuildProjectSkillResponse> {
-    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request, input.name, source) }
+  async buildProjectSkill(projectId: string, input: BuildProjectSkillRequest): Promise<BuildProjectSkillResponse> {
+    return { skill: await this.memory.buildProjectSkill(projectId, this.getPrimaryWorkspacePath(projectId), input.request, input.name) }
   }
 
   deleteProjectSkill(projectId: string, skillName: string): DeleteSkillResponse {
@@ -777,23 +776,11 @@ export class SocratesStore {
     return this.conversations.autoTitleConversation(projectId, conversationId, title, expectedTitle)
   }
 
-  deleteConversation(projectId: string, conversationId: string, beforeDelete?: () => void): { deletedConversationId: string } {
+  deleteConversation(projectId: string, conversationId: string): { deletedConversationId: string } {
     this.terminals.stopConversationTerminals(conversationId)
-    const deleted = this.conversations.deleteConversation(projectId, conversationId, beforeDelete)
+    const deleted = this.conversations.deleteConversation(projectId, conversationId)
     this.retrieval.deleteConversation(projectId, conversationId)
     return deleted
-  }
-
-  rebuildProjectRetrieval(projectId: string, reason: string): void {
-    this.retrieval.enqueueRebuild(projectId, reason)
-  }
-
-  deleteV2TurnRetrieval(projectId: string, turnId: string): void {
-    this.retrieval.deleteV2Turn(projectId, turnId)
-  }
-
-  deleteV2GoalRetrieval(projectId: string, goalId: string): void {
-    this.retrieval.deleteV2Goal(projectId, goalId)
   }
 
   createTurnFromUserMessage(projectId: string, conversationId: string, payload: ChatMessageSendPayload): CreatedTurn {
@@ -1129,10 +1116,6 @@ export class SocratesStore {
     this.retrieval.enqueueV2Turn(projectId, turnId)
   }
 
-  indexGoalRetrieval(projectId: string, goalId: string): void {
-    this.retrieval.enqueueGoal(projectId, goalId)
-  }
-
   retrieveV2FlowTraces(projectId: string, flowId: string, input: TraceRetrieveMainToolInput) {
     return this.retrieval.retrieveV2FlowTrace(projectId, flowId, input)
   }
@@ -1153,7 +1136,7 @@ export class SocratesStore {
       if (!projectId) {
         throw new SocratesError("trace_result_not_found", "The requested trace result could not be resolved to a visible project.", { recoverable: true })
       }
-      if (turnId) {
+      if (turnId && this.includeV2Flow) {
         const v2Result = this.retrieveV2GlobalTraceTurn(projectId, turnId, input.charLimit ?? 80_000)
         if (v2Result) {
           this.globalTraceRefs = [{ projectId, turnId }]
@@ -1198,18 +1181,20 @@ export class SocratesStore {
         } catch (error) {
           warnings.push(`${this.projectTitle(projectId)}: ${error instanceof Error ? error.message : String(error)}`)
         }
-        try {
-          for (const candidate of this.searchV2GlobalTraceTurns(projectId, input)) {
-            collected.push({ projectId, result: candidate.result, rawScore: candidate.rawScore })
+        if (this.includeV2Flow) {
+          try {
+            for (const candidate of this.searchV2GlobalTraceTurns(projectId, input)) {
+              collected.push({ projectId, result: candidate.result, rawScore: candidate.rawScore })
+            }
+          } catch (error) {
+            warnings.push(`${this.projectTitle(projectId)} Seamless Flow: ${error instanceof Error ? error.message : String(error)}`)
           }
-        } catch (error) {
-          warnings.push(`${this.projectTitle(projectId)} Seamless Flow: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
     } else {
       for (const projectId of projectIds) {
         try {
-          const selectedV2Flow = input.conversationId
+          const selectedV2Flow = this.includeV2Flow && input.conversationId
             ? Boolean(this.handle.sqlite.prepare("SELECT 1 FROM v2_flows WHERE id = ? AND project_id = ? LIMIT 1").get(input.conversationId, projectId))
             : false
           const ranked = await this.retrieval.search({
@@ -1281,10 +1266,6 @@ export class SocratesStore {
     return this.retrieval.searchMemory(projectId, input, automaticFallback)
   }
 
-  searchGoalCards(projectId: string, query: string, limit = 4) {
-    return this.retrieval.searchGoalCards(projectId, query, limit)
-  }
-
   getProjectEmbeddingStatus(projectId: string) {
     const { activeJob: _retiredLegacyJob, lastError: _retiredLegacyError, ...embedding } = this.embeddings.getStatus(projectId)
     const retrieval = this.retrieval.status(projectId)
@@ -1342,11 +1323,14 @@ export class SocratesStore {
     const requestedIds = traceSelectorValues(input.projectId)
     if (requestedIds.length > 0) return requestedIds
     if (input.conversationId) {
-      const rows = this.handle.sqlite.prepare(
-        `SELECT project_id AS projectId FROM conversations WHERE id = ?
-         UNION
-         SELECT project_id AS projectId FROM v2_flows WHERE id = ?`,
-      ).all(input.conversationId, input.conversationId) as Array<{ projectId: string }>
+      const rows = this.includeV2Flow
+        ? this.handle.sqlite.prepare(
+          `SELECT project_id AS projectId FROM conversations WHERE id = ?
+           UNION
+           SELECT project_id AS projectId FROM v2_flows WHERE id = ?`,
+        ).all(input.conversationId, input.conversationId) as Array<{ projectId: string }>
+        : this.handle.sqlite.prepare("SELECT project_id AS projectId FROM conversations WHERE id = ?")
+          .all(input.conversationId) as Array<{ projectId: string }>
       return rows.map((row) => row.projectId)
     }
     const titles = traceSelectorValues(input.projectTitle)

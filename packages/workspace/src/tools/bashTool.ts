@@ -29,7 +29,7 @@ type RunningProcess = {
   systemPid?: number
   command: string
   cwd: string
-  pty: IPty
+  pty: ShellProcess
   adapter: ShellAdapter
   startedAt: string
   exitedAt?: string
@@ -57,6 +57,15 @@ type PtyDisposable = {
 type PtyExit = {
   exitCode: number
   signal?: number | string
+}
+
+type ShellProcess = {
+  pid: number
+  write(text: string): void
+  resize(cols: number, rows: number): void
+  kill(): void
+  onData(listener: (text: string) => void): PtyDisposable
+  onExit(listener: (event: PtyExit) => void): PtyDisposable
 }
 
 const interactiveCommandPattern =
@@ -172,7 +181,7 @@ export class WorkspaceShellSession {
 
     const adapter = await this.resolveAdapter(cwd)
     const wrappedCommand = adapter.wrapCommand({ command: commandText, cwd, cwdMarker, doneMarker })
-    const pty = await spawnPtyChecked(adapter, adapter.runArgs(wrappedCommand), cwd, this.env, defaultCols, defaultRows)
+    const pty = await spawnShellProcessChecked(adapter, adapter.runArgs(wrappedCommand), cwd, this.env, defaultCols, defaultRows)
 
     const append = (text: string) => {
       const normalized = normalizePtyTranscript(text)
@@ -311,7 +320,7 @@ export class WorkspaceShellSession {
     const adapter = await this.resolveAdapter(cwd)
     const cols = defaultCols
     const rows = defaultRows
-    const pty = await spawnPtyChecked(adapter, adapter.runArgs(commandText), cwd, this.env, cols, rows)
+    const pty = await spawnShellProcessChecked(adapter, adapter.runArgs(commandText), cwd, this.env, cols, rows)
     const processId = `proc_${randomUUID().replaceAll("-", "")}`
     const processInfo: RunningProcess = {
       processId,
@@ -454,8 +463,9 @@ export class WorkspaceShellSession {
     let lastError: unknown
     for (const adapter of candidateAdapters(this.platform, this.env)) {
       try {
-        await probeAdapter(adapter, cwd, this.env)
-        return adapter
+        const resolvedAdapter = resolveWindowsAdapterExecutable(adapter, cwd, this.env)
+        await probeAdapter(resolvedAdapter, cwd, this.env)
+        return resolvedAdapter
       } catch (error) {
         lastError = error
       }
@@ -502,7 +512,7 @@ export class WorkspaceShellSession {
     signalProcessTree(processTree, "SIGTERM")
     const forceTimer = setTimeout(() => {
       signalProcessTree(processTree, "SIGKILL")
-    }, 500)
+    }, 3_000)
     forceTimer.unref?.()
   }
 
@@ -718,6 +728,21 @@ const loadPty = (): Promise<typeof import("@homebridge/node-pty-prebuilt-multiar
 }
 
 const probeAdapter = async (adapter: ShellAdapter, cwd: string, env: NodeJS.ProcessEnv): Promise<void> => {
+  if (adapter.platform === "win32") {
+    try {
+      execFileSync(adapter.executable, adapter.runArgs("exit 0"), {
+        cwd,
+        env: buildWorkspaceCommandEnv(env, adapter.platform),
+        stdio: "ignore",
+        timeout: 3_000,
+        windowsHide: true,
+      })
+      return
+    } catch (error) {
+      throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+    }
+  }
+
   const pty = await spawnPtyChecked(adapter, adapter.runArgs("exit 0"), cwd, env, defaultCols, defaultRows)
   await new Promise<void>((resolve, reject) => {
     let settled = false
@@ -754,6 +779,116 @@ const probeAdapter = async (adapter: ShellAdapter, cwd: string, env: NodeJS.Proc
   })
 }
 
+const resolveWindowsAdapterExecutable = (adapter: ShellAdapter, cwd: string, env: NodeJS.ProcessEnv): ShellAdapter => {
+  if (adapter.platform !== "win32" || path.win32.isAbsolute(adapter.executable)) {
+    return adapter
+  }
+
+  try {
+    const output = execFileSync("where.exe", [adapter.executable], {
+      cwd,
+      env: buildWorkspaceCommandEnv(env, adapter.platform),
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 3_000,
+      windowsHide: true,
+    })
+    const executable = firstWindowsExecutablePath(output)
+    if (!executable || !path.win32.isAbsolute(executable)) {
+      throw new Error(`where.exe did not return an absolute path for ${adapter.executable}`)
+    }
+    return { ...adapter, executable }
+  } catch (error) {
+    throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+  }
+}
+
+const firstWindowsExecutablePath = (output: string): string | undefined =>
+  output
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .find((value) => Boolean(value) && path.win32.isAbsolute(value))
+
+const spawnShellProcessChecked = async (
+  adapter: ShellAdapter,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  cols: number,
+  rows: number,
+): Promise<ShellProcess> => {
+  if (adapter.platform !== "win32") {
+    return await spawnPtyChecked(adapter, args, cwd, env, cols, rows)
+  }
+
+  try {
+    const child = spawn(adapter.executable, args, {
+      cwd,
+      env: buildWorkspaceCommandEnv(env, adapter.platform),
+      stdio: "pipe",
+      windowsHide: true,
+    })
+    const dataListeners = new Set<(text: string) => void>()
+    const exitListeners = new Set<(event: PtyExit) => void>()
+    const pendingData: string[] = []
+    let finalExit: PtyExit | undefined
+
+    const emitData = (chunk: Buffer | string) => {
+      const text = chunk.toString()
+      if (dataListeners.size === 0) {
+        pendingData.push(text)
+        return
+      }
+      for (const listener of dataListeners) {
+        listener(text)
+      }
+    }
+    child.stdout.on("data", emitData)
+    child.stderr.on("data", emitData)
+    child.once("close", (code, signal) => {
+      finalExit = { exitCode: code ?? 1, ...(signal ? { signal } : {}) }
+      for (const listener of exitListeners) {
+        listener(finalExit)
+      }
+    })
+
+    const process: ShellProcess = {
+      pid: child.pid ?? 0,
+      write: (text) => child.stdin.write(text),
+      resize: () => undefined,
+      kill: () => {
+        child.kill()
+      },
+      onData: (listener) => {
+        dataListeners.add(listener)
+        for (const text of pendingData.splice(0)) {
+          listener(text)
+        }
+        return { dispose: () => dataListeners.delete(listener) }
+      },
+      onExit: (listener) => {
+        exitListeners.add(listener)
+        if (finalExit) {
+          queueMicrotask(() => {
+            if (exitListeners.has(listener) && finalExit) {
+              listener(finalExit)
+            }
+          })
+        }
+        return { dispose: () => exitListeners.delete(listener) }
+      },
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      child.once("spawn", resolve)
+      child.once("error", reject)
+    })
+    return process
+  } catch (error) {
+    throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
+  }
+}
+
 const spawnPtyChecked = async (
   adapter: ShellAdapter,
   args: string[],
@@ -770,6 +905,10 @@ const spawnPtyChecked = async (
       name: "xterm-256color",
       cols,
       rows,
+      // This stable runtime favors the mature WinPTY backend. The bundled
+      // ConPTY modes do not reliably emit exit events in headless Windows
+      // sessions, which leaves probes and completed commands hanging.
+      ...(adapter.platform === "win32" ? { useConpty: false } : {}),
     })
   } catch (error) {
     throw normalizeShellError(error, "shell_start_failed", adapter, cwd)
@@ -817,6 +956,11 @@ const buildWorkspaceCommandEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platf
       sanitized[name] = value
     }
   }
+  if (platform === "win32") {
+    for (const name of ["SystemRoot", "ComSpec", "PATHEXT"] as const) {
+      sanitized[name] ??= env[name] ?? process.env[name]
+    }
+  }
   return {
     ...sanitized,
     PAGER: "cat",
@@ -829,7 +973,7 @@ const buildWorkspaceCommandEnv = (env: NodeJS.ProcessEnv, platform: NodeJS.Platf
 
 const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): ShellAdapter[] => {
   if (platform === "win32") {
-    return [makePowerShellAdapter(platform, "powershell.exe"), makePowerShellAdapter(platform, "pwsh"), makeCmdAdapter(platform, env.COMSPEC || "cmd.exe")]
+    return [makePowerShellAdapter(platform, "pwsh"), makePowerShellAdapter(platform, "powershell.exe"), makeCmdAdapter(platform, env.COMSPEC || "cmd.exe")]
   }
 
   const candidates = [env.SHELL, "/bin/zsh", "/bin/bash", "/bin/sh"].filter((item): item is string => Boolean(item))
@@ -839,7 +983,9 @@ const candidateAdapters = (platform: NodeJS.Platform, env: NodeJS.ProcessEnv): S
 export const __bashToolTest = {
   buildWorkspaceCommandEnv,
   candidateAdapters,
+  firstWindowsExecutablePath,
   normalizePtyTranscript,
+  resolveWindowsAdapterExecutable,
 }
 
 const makePosixAdapter = (platform: NodeJS.Platform, executable: string): ShellAdapter => {
@@ -869,8 +1015,8 @@ const makePowerShellAdapter = (platform: NodeJS.Platform, executable: string): S
   kind: "powershell",
   platform,
   executable,
-  interactiveArgs: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"],
-  runArgs: (command) => ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command || "exit 0"],
+  interactiveArgs: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", "-"],
+  runArgs: (command) => ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command || "exit 0"],
   quotePath: powerShellQuote,
   wrapCommand: ({ command, cwd, cwdMarker, doneMarker }) =>
     [

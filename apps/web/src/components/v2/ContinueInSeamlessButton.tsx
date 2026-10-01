@@ -1,34 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
-import type { MessageAttachment, ModelOption, ModelThinkingOption } from "@socrates/contracts";
 import { v2Api } from "@/lib/v2/api";
-import { appendViewHandoff, createViewHandoff } from "@/lib/v2/viewHandoff";
 
-export function ContinueInSeamlessButton({
-  projectId,
-  conversationId,
-  hasPersistedTurns,
-  draftText,
-  attachments,
-  selectedModel,
-  selectedThinkingOption,
-}: {
-  projectId: string;
-  conversationId: string;
-  hasPersistedTurns: boolean;
-  draftText: string;
-  attachments: MessageAttachment[];
-  selectedModel: ModelOption | null;
-  selectedThinkingOption: ModelThinkingOption | null;
-}) {
-  const router = useRouter();
+export function ContinueInSeamlessButton({ projectId, conversationId }: { projectId: string; conversationId: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   return (
-    <div className="relative ml-2 shrink-0">
+    <div className="fixed right-5 top-[4.25rem] z-20 flex flex-col items-end gap-1">
       <button
         type="button"
         disabled={busy}
@@ -36,22 +16,8 @@ export function ContinueInSeamlessButton({
         onClick={() => {
           setBusy(true);
           setError(null);
-          const navigation = hasPersistedTurns
-            ? v2Api.continueClassicInSeamless(projectId, conversationId).then(({ href }) => href)
-            : v2Api.ensureFlow(projectId).then(() => `/seamless/projects/${encodeURIComponent(projectId)}`);
-          void navigation
-            .then((href) => {
-              const nonce = createViewHandoff({
-                target: "flow",
-                projectId,
-                conversationId,
-                text: draftText,
-                attachments,
-                model: selectedModel,
-                thinking: selectedThinkingOption,
-              });
-              router.push(appendViewHandoff(href, nonce));
-            })
+          void v2Api.continueClassicInSeamless(projectId, conversationId)
+            .then(({ href }) => { window.location.href = href; })
             .catch((reason: unknown) => {
               setError(reason instanceof Error ? reason.message : "Could not continue this chat in Seamless View.");
               setBusy(false);
@@ -60,14 +26,7 @@ export function ContinueInSeamlessButton({
       >
         {busy ? "Bridging…" : "Continue in Flow View ↗"}
       </button>
-      {error ? (
-        <p
-          className="absolute right-0 top-11 z-30 w-72 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-[11px] text-red-700 shadow-lg"
-          role="alert"
-        >
-          {error}
-        </p>
-      ) : null}
+      {error && <p className="max-w-72 rounded bg-red-50 px-2 py-1 text-[11px] text-red-700" role="alert">{error}</p>}
     </div>
   );
 }

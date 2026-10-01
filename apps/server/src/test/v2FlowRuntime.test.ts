@@ -4,7 +4,7 @@ import path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { WebSocket } from "ws"
 import { type V2ClientCommand, type V2RuntimeConfig, type V2ServerEvent } from "@socrates/contracts"
-import { DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS, createDefaultToolRegistry, routeV2Goal, SocratesAgent } from "@socrates/core"
+import { createDefaultToolRegistry, routeV2Goal, SocratesAgent } from "@socrates/core"
 import type { EmbeddingProvider, ModelProvider, StructuredModelRequest } from "@socrates/providers"
 import { createId, nowIso } from "@socrates/shared"
 import { openDatabase, runMigrations, type DatabaseHandle } from "../db/client"
@@ -24,7 +24,6 @@ type TestRuntime = {
   handle: DatabaseHandle
   sharedStore: SocratesStore
   flowStore: V2FlowStore
-  agent: SocratesAgent
   runtime: V2ExecutionRuntime
 }
 
@@ -145,8 +144,8 @@ const frontierProofProvider = () => {
         yield {
           type: "model.answer.delta",
           text: JSON.stringify(postEvidence
-            ? { actions: [], reason: "No durable update is needed.", goalFinalization: null }
-            : { readTargets: [], reason: "No routed recall is needed.", goalRoute: null }),
+            ? { actions: [], reason: "No durable update is needed." }
+            : { readTargets: [], reason: "No routed recall is needed." }),
         }
         yield { type: "model.completed", usage: { inputTokens: 4, outputTokens: 2, totalTokens: 6 } }
         return
@@ -191,8 +190,8 @@ const repairedMemoryRouterProvider = (): ModelProvider => {
       const usage = { inputTokens: 10 + attempt, outputTokens: 2, totalTokens: 12 + attempt }
       if (attempt === 1) return { output: { invalid: true } as TOutput, usage }
       const output = phase === "post_evidence"
-        ? { actions: [], reason: "No reconciliation needed.", goalFinalization: null }
-        : { readTargets: [], reason: "No memory recall needed.", goalRoute: null }
+        ? { actions: [], reason: "No reconciliation needed." }
+        : { readTargets: [], reason: "No memory recall needed." }
       return { output: output as TOutput, usage }
     },
   }
@@ -205,11 +204,7 @@ const goalRouterProvider = (): ModelProvider => ({
   },
   async generateStructured<TOutput>() {
     return {
-      output: {
-        action: "create",
-        candidates: [],
-        title: "Continue the requested work",
-      } as TOutput,
+      output: { action: "create", secondaryGoalIds: [], confidence: 0.93 } as TOutput,
       usage: { inputTokens: 17, outputTokens: 3, totalTokens: 20 },
     }
   },
@@ -252,14 +247,13 @@ const setup = (provider: ModelProvider, projectId = "proj_one", routerProvider?:
   const sharedStore = new SocratesStore(handle, fakeEmbeddings(), undefined, { socratesHome: path.join(root, "home") })
   vi.spyOn(sharedStore, "resolveRuntimeConfig").mockImplementation((config) => config)
   const flowStore = new V2FlowStore(handle)
-  const agent = new SocratesAgent(provider)
   const runtime = new V2ExecutionRuntime({
     store: flowStore,
     sharedStore,
-    agent,
+    agent: new SocratesAgent(provider),
     ...(routerProvider ? { routerProvider } : {}),
   })
-  const result = { root, workspace, handle, sharedStore, flowStore, agent, runtime }
+  const result = { root, workspace, handle, sharedStore, flowStore, runtime }
   runtimes.push(result)
   return result
 }
@@ -314,21 +308,6 @@ const waitUntil = async (predicate: () => boolean, message: string, timeoutMs = 
 }
 
 describe("V2ExecutionRuntime", () => {
-  it("uses the same Socrates post-turn precompute path and fixed thresholds as Classic", async () => {
-    const testRuntime = setup(toolProofProvider())
-    const precompute = vi.spyOn(testRuntime.agent, "precomputeContext")
-    const flow = testRuntime.flowStore.ensureFlow("proj_one").flow
-
-    await testRuntime.runtime.startTurn(asWebSocket(new FakeSocket()), messageCommand("proj_one", flow.id, "Keep the shared Socrates compactor invariant"))
-    await waitUntil(() => testRuntime.flowStore.getSnapshot("proj_one", flow.id).activeTurn === undefined, "the shared precompute turn to complete")
-
-    expect(precompute).toHaveBeenCalledTimes(1)
-    const input = precompute.mock.calls[0]?.[0]
-    expect(input?.contextCompression.thresholds).toEqual(DEFAULT_CONTEXT_COMPRESSION_THRESHOLDS)
-    expect(JSON.stringify(input?.messages)).toContain("Keep the shared Socrates compactor invariant")
-    expect(JSON.stringify(input?.messages)).toContain("Read V2 evidence successfully.")
-  })
-
   it("provides an executor for every shared Socrates tool that is not core-internal", async () => {
     const testRuntime = setup(toolProofProvider())
     const flow = testRuntime.flowStore.ensureFlow("proj_one").flow
@@ -339,14 +318,7 @@ describe("V2ExecutionRuntime", () => {
       content: "Verify the shared Socrates tool surface.",
       runtimeConfig,
     })
-    const routing = await routeV2Goal({
-      projectId: "proj_one",
-      flowId: flow.id,
-      turnId: created.turn.id,
-      workspacePath: testRuntime.workspace,
-      userMessage: created.userMessage.content,
-      goals: [],
-    })
+    const routing = await routeV2Goal({ flowId: flow.id, userMessage: created.userMessage.content, goals: [] })
     const applied = testRuntime.flowStore.applyRouting({
       projectId: "proj_one",
       flowId: flow.id,
@@ -366,13 +338,13 @@ describe("V2ExecutionRuntime", () => {
       turnId: created.turn.id,
       workspacePath: testRuntime.workspace,
     })
-    const coreInternalTools = new Set(["handover_to_frontier", "context_disposition"])
+    const coreInternalTools = new Set(["handover_to_frontier"])
     const sharedExecutorTools = createDefaultToolRegistry()
       .list()
       .map((tool) => tool.name)
       .filter((name) => !coreInternalTools.has(name))
 
-    expect(sharedExecutorTools).toHaveLength(19)
+    expect(sharedExecutorTools).toHaveLength(18)
     expect(sharedExecutorTools.filter((name) => typeof Reflect.get(executors, name) !== "function")).toEqual([])
     expect(testRuntime.flowStore.countV1Rows()).toEqual({
       conversations: 0,
@@ -431,32 +403,6 @@ describe("V2ExecutionRuntime", () => {
     }
   })
 
-  it("keeps exact Flow tool evidence auditable without injecting it into the next Socrates turn", async () => {
-    const testRuntime = setup(toolProofProvider())
-    fs.writeFileSync(path.join(testRuntime.workspace, "note.txt"), "IMMUTABLE-V2-EXACT-EVIDENCE-42")
-    const streamTurn = vi.spyOn(testRuntime.agent, "streamTurn")
-    const flow = testRuntime.flowStore.ensureFlow("proj_one").flow
-
-    await testRuntime.runtime.startTurn(asWebSocket(new FakeSocket()), messageCommand("proj_one", flow.id, "read proof from note.txt"))
-    await waitUntil(() => testRuntime.flowStore.getSnapshot("proj_one", flow.id).activeTurn === undefined, "the evidence turn to complete")
-
-    const firstSnapshot = testRuntime.flowStore.getSnapshot("proj_one", flow.id)
-    const goalId = firstSnapshot.foregroundGoal?.id
-    expect(goalId).toBeTruthy()
-    expect(testRuntime.flowStore.getCoreContextState(flow.id).evidence.some((item) => item.exactContent.includes("IMMUTABLE-V2-EXACT-EVIDENCE-42"))).toBe(true)
-    expect(testRuntime.flowStore.getActiveContextItems(flow.id, goalId)).toEqual([])
-
-    await testRuntime.runtime.startTurn(asWebSocket(new FakeSocket()), messageCommand("proj_one", flow.id, "What was the main point?"))
-    await waitUntil(() => testRuntime.flowStore.getSnapshot("proj_one", flow.id).activeTurn === undefined, "the follow-up turn to complete")
-
-    expect(streamTurn).toHaveBeenCalledTimes(2)
-    const nextTurnMessages = JSON.stringify(streamTurn.mock.calls[1]?.[0].messages)
-    expect(nextTurnMessages).toContain("Read V2 evidence successfully.")
-    expect(nextTurnMessages).not.toContain("IMMUTABLE-V2-EXACT-EVIDENCE-42")
-    expect(nextTurnMessages).not.toContain("<exact_evidence")
-    expect(nextTurnMessages).not.toContain("<distilled_evidence")
-  })
-
   it("persists each repaired Memory Router attempt as its own V2 model call and usage row", async () => {
     const testRuntime = setup(repairedMemoryRouterProvider())
     const flow = testRuntime.flowStore.ensureFlow("proj_one").flow
@@ -488,11 +434,8 @@ describe("V2ExecutionRuntime", () => {
     const usage = testRuntime.handle.sqlite.prepare(
       "SELECT input_tokens AS inputTokens, output_tokens AS outputTokens, total_tokens AS totalTokens FROM v2_usage_events WHERE model_call_id = ?",
     ).get(call.id) as { inputTokens: number; outputTokens: number; totalTokens: number }
-    const routerErrors = testRuntime.handle.sqlite.prepare(
-      "SELECT code, message, details_json AS detailsJson FROM v2_errors WHERE source = 'goal_router'",
-    ).all()
-    const routerModel = testRuntime.sharedStore.getWorkerModelSetting("goal_router")
-    expect({ call, routerErrors }).toMatchObject({ call: { status: "completed", providerId: routerModel.providerId, modelId: routerModel.modelId }, routerErrors: [] })
+    const routerModel = testRuntime.sharedStore.getWorkerModelSetting("title_generator")
+    expect(call).toMatchObject({ status: "completed", providerId: routerModel.providerId, modelId: routerModel.modelId })
     expect(usage).toEqual({ inputTokens: 17, outputTokens: 3, totalTokens: 20 })
     expect(testRuntime.flowStore.countV1Rows().model_calls).toBe(0)
   })
@@ -535,14 +478,7 @@ describe("V2ExecutionRuntime", () => {
       content: "Remember that I prefer exact restart evidence.",
       runtimeConfig,
     })
-    const routing = await routeV2Goal({
-      projectId: "proj_one",
-      flowId: flow.id,
-      turnId: created.turn.id,
-      workspacePath: testRuntime.workspace,
-      userMessage: created.userMessage.content,
-      goals: [],
-    })
+    const routing = await routeV2Goal({ flowId: flow.id, userMessage: created.userMessage.content, goals: [] })
     const applied = testRuntime.flowStore.applyRouting({
       projectId: "proj_one",
       flowId: flow.id,
@@ -824,14 +760,7 @@ describe("V2ExecutionRuntime", () => {
       content: "Connect a credentialed tool",
       runtimeConfig,
     })
-    const routing = await routeV2Goal({
-      projectId: "proj_one",
-      flowId: flow.id,
-      turnId: created.turn.id,
-      workspacePath: testRuntime.workspace,
-      userMessage: created.userMessage.content,
-      goals: [],
-    })
+    const routing = await routeV2Goal({ flowId: flow.id, userMessage: created.userMessage.content, goals: [] })
     const applied = testRuntime.flowStore.applyRouting({
       projectId: "proj_one",
       flowId: flow.id,

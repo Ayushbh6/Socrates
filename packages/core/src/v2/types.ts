@@ -14,15 +14,24 @@ export type V2GoalRoutingAction = "continue" | "resume" | "create" | "clarify"
 export type V2GoalRoutingDecision = Readonly<{
   action: V2GoalRoutingAction
   primaryGoalId?: string
-  title?: string
+  secondaryGoalIds: readonly string[]
+  confidence: number
   clarificationQuestion?: string
   clarificationGoalIds?: readonly string[]
+  reasonCode:
+    | "foreground_continuation"
+    | "explicit_parked_match"
+    | "model_match"
+    | "no_foreground"
+    | "new_goal"
+    | "conservative_fallback"
+    | "ambiguous_focus"
 }>
 
 export type V2GoalRoutingCandidate = Readonly<{
   goal: V2Goal
   capsule?: V2GoalCapsule
-  candidate: number
+  lexicalScore: number
 }>
 
 export type V2GoalRoutingCandidateSet = Readonly<{
@@ -44,6 +53,7 @@ export type V2GoalRoutingPlan = Readonly<{
   foregroundGoalId: string
   createGoal: boolean
   transitions: readonly V2GoalTransition[]
+  secondaryGoalIds: readonly string[]
 }>
 
 export type V2CapsuleRefreshReason =
@@ -102,6 +112,10 @@ export type V2ContextState = Readonly<{
 }>
 
 export type V2ContextBudget = Readonly<{
+  contextWindowTokens: number
+  reservedOutputTokens: number
+  systemAndToolReserveTokens: number
+  usableInputTokens: number
   softPruneTriggerTokens: number
   compactionTriggerTokens: number
   postPruneTargetTokens: number

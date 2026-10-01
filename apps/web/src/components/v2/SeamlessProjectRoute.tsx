@@ -13,35 +13,16 @@ import type {
   GetProjectResponse,
   ListModelsHttpResponse,
   ListProjectsResponse,
-  Message,
   ModelOption,
   V2Message,
-  V2MessageAttachment,
   V2RuntimeConfig,
 } from "@socrates/contracts";
 import { RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { FlowWorkspace } from "./FlowWorkspace";
 import { LivingSphere } from "./LivingSphere";
 import styles from "./seamless.module.css";
-import type { FlowPresenceState } from "./types";
-import {
-  flowApprovalToClassicApproval,
-  flowCredentialToClassicCredential,
-  flowMessageToClassicMessage,
-  flowTerminalToClassicTerminal,
-  flowToolToClassicToolRun,
-} from "@/lib/v2/classicPresentation";
-import {
-  appendViewHandoff,
-  clearCurrentViewHandoff,
-  createViewHandoff,
-  handoffAttachmentsToFiles,
-  parseViewHandoffSnapshot,
-  readViewHandoffSnapshot,
-  type ViewHandoffEnvelope,
-} from "@/lib/v2/viewHandoff";
+import type { FlowPresenceState, FlowTimelineItemView } from "./types";
 
 interface SeamlessProjectRouteProps {
   projectId: string;
@@ -72,30 +53,14 @@ const chooseInitialThinkingOption = (model: ModelOption, projectId: string): str
     ?? model.thinkingOptions[0]!.id;
 };
 
-const chooseComposerSelection = (
-  data: ListModelsHttpResponse,
-  projectId: string,
-  handoff: ViewHandoffEnvelope | null,
-): { modelId?: string; thinkingOptionId?: string } => {
-  const handoffModelPreference = handoff?.model;
-  const handoffModel = handoffModelPreference
-    ? data.models.find((candidate) =>
-      candidate.providerId === handoffModelPreference.providerId &&
-      candidate.modelId === handoffModelPreference.modelId &&
-      (candidate.authMode ?? "api_key") === (handoffModelPreference.authMode ?? "api_key"))
-    : undefined;
-  if (handoffModel) {
-    const thinking = handoffModel.thinkingOptions.find((option) => option.id === handoff?.thinkingOptionId)
-      ?? handoffModel.thinkingOptions.find((option) => option.id === handoffModel.defaultThinkingOptionId)
-      ?? handoffModel.thinkingOptions[0];
-    return { modelId: modelKey(handoffModel), thinkingOptionId: thinking?.id };
+const summarizeAction = (action: unknown): string | undefined => {
+  if (typeof action === "string") return action.slice(0, 180);
+  try {
+    const serialized = JSON.stringify(action);
+    return serialized && serialized !== "{}" ? serialized.slice(0, 180) : undefined;
+  } catch {
+    return undefined;
   }
-  const modelId = chooseInitialModel(data, projectId);
-  const model = data.models.find((candidate) => modelKey(candidate) === modelId);
-  return {
-    modelId,
-    thinkingOptionId: model ? chooseInitialThinkingOption(model, projectId) : undefined,
-  };
 };
 
 const contextItemLabel = (sourceLocator: string, sourceType: string): string => {
@@ -104,43 +69,66 @@ const contextItemLabel = (sourceLocator: string, sourceType: string): string => 
   return tail?.trim() || sourceLocator.trim() || sourceType.replaceAll("_", " ");
 };
 
-const presentationFromMessages = (
+const timelineFromMessages = (
   messages: V2Message[],
-  streams: Record<string, { answer: string; reasoning?: string; turnId?: string }>,
-): { messages: Message[] } => {
-  const visibleMessages = messages
+  streams: Record<string, { answer: string; reasoning?: string }>,
+  goalTitles: Map<string, string>,
+): FlowTimelineItemView[] => {
+  const base: FlowTimelineItemView[] = messages
     .filter((message): message is V2Message & { role: "user" | "assistant" | "system" } =>
       message.role === "user" || message.role === "assistant" || message.role === "system")
-    .map((message) => {
-      return flowMessageToClassicMessage({
-        ...message,
-        content: `${message.content}${streams[message.id]?.answer ?? ""}`,
-        ...(`${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}`
-          ? { reasoning: `${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}` }
-          : {}),
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: `${message.content}${streams[message.id]?.answer ?? ""}`,
+      ...(`${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}`
+        ? { reasoning: `${message.reasoning ?? ""}${streams[message.id]?.reasoning ?? ""}` }
+        : {}),
+      ...(message.attachments?.length ? {
+        attachments: message.attachments.map((attachment) => ({
+          id: attachment.id,
+          fileName: attachment.fileName,
+          kind: attachment.kind,
+          ...(attachment.url ? { url: attachment.url } : {}),
+        })),
+      } : {}),
+      status: message.status,
+      createdAt: message.createdAt,
+      ...(message.goalId ? { goalId: message.goalId } : {}),
+      readAloudAvailable: message.role === "assistant" && message.status === "completed" && Boolean(message.content.trim()),
+    }));
+
+  const visible: FlowTimelineItemView[] = [];
+  let previousGoalId: string | undefined;
+  for (const item of base) {
+    if (item.goalId && previousGoalId && item.goalId !== previousGoalId) {
+      visible.push({
+        id: `focus-shift-${item.id}`,
+        role: "system",
+        content: `Focus shifted to ${goalTitles.get(item.goalId) ?? "another thread"}`,
+        status: "completed",
+        goalId: item.goalId,
       });
-    });
+    }
+    if (item.goalId) previousGoalId = item.goalId;
+    visible.push(item);
+  }
   const messageIds = new Set(messages.map((message) => message.id));
   for (const [messageId, stream] of Object.entries(streams)) {
     if (!messageIds.has(messageId) && stream.answer) {
-      visibleMessages.push({
+      visible.push({
         id: messageId,
-        conversationId: messages[0]?.flowId ?? "flow",
-        sessionId: messages[0]?.flowId ?? "flow",
-        ...(stream.turnId ? { turnId: stream.turnId } : {}),
         role: "assistant",
         content: stream.answer,
         ...(stream.reasoning ? { reasoning: stream.reasoning } : {}),
         status: "streaming",
-        createdAt: new Date().toISOString(),
       });
     }
   }
-  return { messages: visibleMessages };
+  return visible;
 };
 
 export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
-  const router = useRouter();
   const runtime = useV2FlowRuntime({ projectId });
   const [projectData, setProjectData] = useState<GetProjectResponse | null>(null);
   const [projectsData, setProjectsData] = useState<ListProjectsResponse["projects"]>([]);
@@ -151,29 +139,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
   const [projectError, setProjectError] = useState<string | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const handoffSnapshot = useSyncExternalStore(
-    () => () => undefined,
-    readViewHandoffSnapshot,
-    () => null,
-  );
-  const pendingViewHandoff = useMemo(
-    () => parseViewHandoffSnapshot(handoffSnapshot, "flow", projectId),
-    [handoffSnapshot, projectId],
-  );
-  const [draftTextOverride, setDraftTextOverride] = useState<string | null>(null);
-  const draftText = draftTextOverride ?? pendingViewHandoff?.text ?? "";
-  const [draftAttachments, setDraftAttachments] = useState<V2MessageAttachment[]>([]);
-  const appliedHandoffAttachmentsRef = useRef(false);
-
-  useEffect(() => {
-    const snapshot = runtime.state?.snapshot;
-    if (appliedHandoffAttachmentsRef.current || !pendingViewHandoff || !snapshot || pendingViewHandoff.attachments.length === 0) return;
-    appliedHandoffAttachmentsRef.current = true;
-    void handoffAttachmentsToFiles(pendingViewHandoff.attachments)
-      .then((files) => v2Api.uploadAttachments(projectId, snapshot.flow.id, files))
-      .then(setDraftAttachments)
-      .catch((reason: unknown) => setActionError(reason instanceof Error ? reason.message : "Could not transfer draft attachments."));
-  }, [pendingViewHandoff, projectId, runtime.state?.snapshot]);
+  const [draftText, setDraftText] = useState("");
 
   const loadProjectShell = useCallback(async () => {
     setIsLoadingProject(true);
@@ -185,9 +151,10 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       try {
         const models = await api.listModels();
         setModelsData(models);
-        const selection = chooseComposerSelection(models, projectId, pendingViewHandoff);
-        setSelectedModelId(selection.modelId);
-        setSelectedThinkingOptionId(selection.thinkingOptionId);
+        const initialModelId = chooseInitialModel(models, projectId);
+        setSelectedModelId(initialModelId);
+        const initialModel = models.models.find((model) => modelKey(model) === initialModelId);
+        setSelectedThinkingOptionId(initialModel ? chooseInitialThinkingOption(initialModel, projectId) : undefined);
         setModelError(null);
       } catch (modelsError) {
         setModelError(modelsError instanceof Error ? modelsError.message : "Models are unavailable.");
@@ -197,7 +164,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     } finally {
       setIsLoadingProject(false);
     }
-  }, [pendingViewHandoff, projectId]);
+  }, [projectId]);
 
   useEffect(() => {
     let isMounted = true;
@@ -212,9 +179,10 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
           const models = await api.listModels();
           if (isMounted) {
             setModelsData(models);
-            const selection = chooseComposerSelection(models, projectId, pendingViewHandoff);
-            setSelectedModelId(selection.modelId);
-            setSelectedThinkingOptionId(selection.thinkingOptionId);
+            const initialModelId = chooseInitialModel(models, projectId);
+            setSelectedModelId(initialModelId);
+            const initialModel = models.models.find((model) => modelKey(model) === initialModelId);
+            setSelectedThinkingOptionId(initialModel ? chooseInitialThinkingOption(initialModel, projectId) : undefined);
             setModelError(null);
           }
         } catch (modelsError) {
@@ -230,7 +198,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     return () => {
       isMounted = false;
     };
-  }, [pendingViewHandoff, projectId]);
+  }, [projectId]);
 
   const selectedModel = useMemo(
     () => modelsData?.models.find((model) => modelKey(model) === selectedModelId),
@@ -256,11 +224,8 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
   }, [selectedModel, selectedThinkingOption]);
 
   const appendTranscript = useCallback((transcript: string) => {
-    setDraftTextOverride((current) => {
-      const existing = current ?? pendingViewHandoff?.text ?? "";
-      return existing.trim() ? `${existing.trimEnd()} ${transcript}` : transcript;
-    });
-  }, [pendingViewHandoff?.text]);
+    setDraftText((current) => current.trim() ? `${current.trimEnd()} ${transcript}` : transcript);
+  }, []);
   const snapshot = runtime.state?.snapshot;
   const voice = useV2Voice({
     projectId,
@@ -316,7 +281,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     statusLabel = "Listening · tap the microphone to stop";
   } else if (voice.status === "transcribing") {
     presenceState = "thinking";
-    statusLabel = `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}`;
+    statusLabel = "Transcribing locally or with your selected provider";
   } else if (voice.status === "synthesizing" || voice.status === "speaking") {
     presenceState = "working";
     statusLabel = voice.status === "speaking" ? "Reading aloud" : "Preparing local speech";
@@ -337,9 +302,10 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
     statusLabel = visibleError;
   }
 
-  const presentation = presentationFromMessages(
+  const timeline = timelineFromMessages(
     snapshot.messages,
     runtime.state.streams,
+    new Map(snapshot.goals.map((goal) => [goal.id, goal.title])),
   );
   const messageById = new Map(snapshot.messages.map((message) => [message.id, message]));
   const isClarifying = Boolean(runtime.state.pendingClarification && snapshot.activeTurn?.status === "awaiting_clarification");
@@ -367,29 +333,46 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       releasedItemCount: releasedCount,
     };
   })() : runtime.contextError ? { unavailableReason: runtime.contextError } : undefined;
-  const approvalsByToolCallId = new Map(
-    Object.values(runtime.state.approvals)
-      .filter((approval) => approval.toolCallId)
-      .map((approval) => [approval.toolCallId as string, approval]),
-  );
-  const toolRuns = Object.values(runtime.state.toolCalls)
-    .sort((left, right) => (left.startedAt ?? "").localeCompare(right.startedAt ?? ""))
-    .map((tool) => flowToolToClassicToolRun(tool, approvalsByToolCallId.get(tool.id)));
+  const toolActivity = Object.values(runtime.state.toolCalls)
+    .sort((left, right) => (right.startedAt ?? "").localeCompare(left.startedAt ?? ""))
+    .slice(0, 12)
+    .map((tool) => ({
+      id: tool.id,
+      name: tool.toolName,
+      status: tool.status,
+      ...(summarizeAction(tool.arguments) ? { summary: summarizeAction(tool.arguments) } : {}),
+      ...(tool.result !== undefined && summarizeAction(tool.result)
+        ? { resultSummary: summarizeAction(tool.result) }
+        : {}),
+    }));
   const approvalActivity = Object.values(runtime.state.approvals)
-    .filter((approval) => approval.status === "pending" && (
-      !approval.toolCallId
-      || runtime.state?.toolCalls[approval.toolCallId]?.status === "awaiting_approval"
-    ))
-    .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt))
-    .map(flowApprovalToClassicApproval);
+    .sort((left, right) => right.requestedAt.localeCompare(left.requestedAt))
+    .slice(0, 12)
+    .map((approval) => ({
+      id: approval.id,
+      actionKind: approval.actionKind.replaceAll("_", " "),
+      status: approval.status,
+      ...(summarizeAction(approval.action) ? { actionSummary: summarizeAction(approval.action) } : {}),
+    }));
   const terminalOutputsById = runtime.state.terminalOutputs;
   const terminalActivity = Object.values(runtime.state.terminals)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .map((terminal) => flowTerminalToClassicTerminal(
-      terminal,
-      terminalOutputsById[terminal.id] ?? [],
-      projectData.primaryWorkspace.path ?? terminal.cwd,
-    ));
+    .slice(0, 8)
+    .map((terminal) => {
+      const output = (terminalOutputsById[terminal.id] ?? []).map((chunk) => {
+        if (chunk.stream === "input") return chunk.redacted ? "› [input hidden]\n" : `› ${chunk.text}\n`;
+        return chunk.text;
+      }).join("");
+      return {
+        id: terminal.id,
+        name: terminal.name,
+        command: terminal.command,
+        cwd: terminal.cwd,
+        status: terminal.status,
+        awaitingInput: terminal.awaitingInput,
+        output: output.slice(-12_000),
+      };
+    });
 
   const guardAction = (action: () => void) => {
     setActionError(null);
@@ -405,8 +388,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       projectId={projectId}
       projectName={projectData.project.name}
       sidebarProjects={projectsData.map(({ project }) => ({ project, conversations: [] }))}
-      messages={presentation.messages}
-      activeTurnId={isSending ? snapshot.activeTurn?.id : undefined}
+      timeline={timeline}
       goals={snapshot.goals.map((goal) => ({
         id: goal.id,
         title: goal.title,
@@ -426,9 +408,17 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       statusLabel={statusLabel}
       contextSummary={contextSummary}
       approvals={approvalActivity}
-      toolRuns={toolRuns}
+      toolActivity={toolActivity}
       terminalActivity={terminalActivity}
-      credentialRequests={Object.values(runtime.state.credentialRequests).map(flowCredentialToClassicCredential)}
+      credentialRequests={Object.values(runtime.state.credentialRequests).map((request) => ({
+        id: request.id,
+        turnId: request.turnId,
+        serverLabel: request.serverLabel ?? request.serverId,
+        envKey: request.envKey,
+      }))}
+      feedbackByMessageId={Object.fromEntries(
+        Object.entries(runtime.state.feedbackByMessageId).map(([messageId, feedback]) => [messageId, feedback.rating]),
+      )}
       voiceOptions={V2_TRANSCRIBER_OPTIONS.map((option) => ({ id: option.id, label: option.label }))}
       selectedVoiceOptionId={voice.transcriberId}
       voiceStatusLabel={voice.error ?? "Speech never switches from local to hosted without your selection."}
@@ -444,50 +434,26 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
       }}
       onApprovalDecision={(approvalId, decision) => guardAction(() => runtime.decideApproval(approvalId, decision))}
       onCredentialResolve={(request, decision, value) => guardAction(() => runtime.resolveCredential({
-        credentialRequestId: request.credentialRequestId,
+        credentialRequestId: request.id,
         turnId: request.turnId,
         decision,
         ...(value !== undefined ? { value } : {}),
       }))}
-      onTerminalInput={(terminalId, input) => guardAction(() => runtime.sendTerminalInput(terminalId, input))}
-      onTerminalResize={(terminalId, size) => guardAction(() => runtime.resizeTerminal(terminalId, size))}
+      onFeedback={(messageId, rating) => guardAction(() => runtime.submitFeedback(messageId, rating))}
+      onTerminalInput={(terminalId, text) => guardAction(() => runtime.sendTerminalInput(terminalId, text))}
       onTerminalStop={(terminalId) => guardAction(() => runtime.stopTerminal(terminalId))}
       onTerminalRename={(terminalId, name) => guardAction(() => runtime.renameTerminal(terminalId, name))}
       onFocusAction={(goalId, action) => guardAction(() => runtime.updateFocus(goalId, action))}
-      onDeleteGoal={async (goalId) => {
-        setActionError(null);
-        await v2Api.deleteGoal(projectId, snapshot.flow.id, goalId);
-        await runtime.refresh({ preserveView: true });
-      }}
-      onDeleteExchange={async (turnId) => {
-        setActionError(null);
-        await v2Api.deleteTurn(projectId, snapshot.flow.id, turnId);
-        await runtime.refresh({ preserveView: true });
-      }}
       onOpenInClassic={(goalId) => {
         setActionError(null);
         void v2Api.openFocusInClassic(projectId, snapshot.flow.id, goalId)
-          .then(({ href, bridge }) => {
-            const nonce = createViewHandoff({
-              target: "classic",
-              projectId,
-              conversationId: bridge.conversationId,
-              text: draftText,
-              attachments: draftAttachments,
-              model: selectedModel,
-              thinking: selectedThinkingOption,
-            });
-            clearCurrentViewHandoff();
-            router.push(appendViewHandoff(href, nonce));
-          })
+          .then(({ href }) => { window.location.href = href; })
           .catch((error: unknown) => setActionError(error instanceof Error ? error.message : "Could not open this focus in Classic View."));
       }}
       onReadAloud={(messageId) => {
         const message = messageById.get(messageId);
         if (message?.content) void voice.readAloud({ messageId, text: message.content });
       }}
-      activeReadAloudMessageId={voice.activeReadAloudMessageId ?? undefined}
-      readAloudStatus={voice.status === "synthesizing" || voice.status === "speaking" ? voice.status : undefined}
       composer={{
         isConnected: composerConnected,
         isSending,
@@ -496,17 +462,9 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
         selectedThinkingOption: selectedThinkingOption ?? null,
         warningResetKey: snapshot.flow.id,
         value: draftText,
-        onValueChange: setDraftTextOverride,
-        attachments: draftAttachments,
-        onAttachmentsChange: setDraftAttachments,
+        onValueChange: setDraftText,
         voiceAvailable: voice.isAvailable,
-        voiceStatus: voice.status === "recording" || voice.status === "transcribing" ? voice.status : "idle",
-        voiceStatusLabel: voice.status === "recording"
-          ? "Listening… Tap the microphone when you are finished."
-          : voice.status === "transcribing"
-            ? `Transcribing with ${voice.transcriberLabel ?? "your selected transcriber"}…`
-            : undefined,
-        voiceError: voice.error,
+        voiceRecording: voice.status === "recording",
         voiceBusy: voice.status === "transcribing" || voice.status === "synthesizing" || voice.status === "speaking",
         onModelChange: (nextModel) => {
           const nextModelId = modelKey(nextModel);
@@ -539,8 +497,7 @@ export function SeamlessProjectRoute({ projectId }: SeamlessProjectRouteProps) {
               runtimeConfig,
             });
           }
-          clearCurrentViewHandoff();
-          setDraftTextOverride("");
+          setDraftText("");
           setActionError(null);
         },
         onStop: runtime.cancelActiveTurn,

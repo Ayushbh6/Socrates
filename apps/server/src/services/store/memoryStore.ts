@@ -143,6 +143,7 @@ type StandardEditFilesInput = Exclude<EditFilesToolInput, { editMode: "move" }>
 
 type MemoryStoreOptions = {
   socratesHome?: string
+  includeV2Flow?: boolean
   provider?: ModelProvider
   credentials?: ProviderCredentialResolver
   traceRetrieveGlobal?: (input: TraceRetrieveGlobalToolInput) => Promise<TraceRetrieveGlobalToolOutput> | TraceRetrieveGlobalToolOutput
@@ -226,7 +227,7 @@ type ApprovedSkillWriterTask = {
   sessionId?: string
   turnId?: string
   sourceTurnIds?: string[]
-  sourceKind: "dashboard" | "memory_agent_action" | "socrates_tool"
+  sourceKind: "dashboard" | "memory_agent_action"
   sourceId?: string
 }
 
@@ -851,13 +852,7 @@ export class MemoryStore extends StoreBase {
     return setSkillEnabled({ target: { scope: "project", projectId, root: path.join(workspacePath, ".socrates", "skills") }, name, enabled })
   }
 
-  async buildProjectSkill(
-    projectId: string,
-    workspacePath: string,
-    request: string,
-    explicitName?: string,
-    source?: { conversationId: string; sessionId: string; turnId: string },
-  ): Promise<SkillSummary> {
+  async buildProjectSkill(projectId: string, workspacePath: string, request: string, explicitName?: string): Promise<SkillSummary> {
     this.ensureProjectMemory(projectId, workspacePath)
     const skillRoot = path.join(workspacePath, ".socrates", "skills")
     fs.mkdirSync(skillRoot, { recursive: true })
@@ -869,8 +864,7 @@ export class MemoryStore extends StoreBase {
       request,
       projectId,
       workspacePath,
-      sourceKind: source ? "socrates_tool" : "dashboard",
-      ...(source ?? {}),
+      sourceKind: "dashboard",
     })
   }
 
@@ -1643,7 +1637,7 @@ export class MemoryStore extends StoreBase {
     const toolEvents: unknown[] = []
     let latestUsage: unknown
     try {
-      const contextCompressorSettings = this.options.getWorkerModelSettings?.("memory_context_compactor")
+      const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
       const runResult = await runMemoryAgentTurn({
         provider: this.options.provider,
         modelSettings,
@@ -1876,7 +1870,7 @@ export class MemoryStore extends StoreBase {
           LIMIT ?`,
       )
       .all(lastProcessedEventSequence, GLOBAL_MEMORY_AGENT_MAX_TURNS) as Array<Omit<GlobalTurnManifestRow, "runtimeKind">>
-    const v2Rows = this.handle.sqlite
+    const v2Rows = this.options.includeV2Flow === false ? [] : this.handle.sqlite
       .prepare(
         `SELECT COALESCE(MAX(re.sequence), t.ordinal) AS sequence,
                 t.project_id AS projectId,
@@ -3303,7 +3297,7 @@ export class MemoryStore extends StoreBase {
     const inspectedTurnIds = new Set<string>()
     let existingSkillRead = input.operation === "create"
     try {
-      const contextCompressorSettings = this.options.getWorkerModelSettings?.("memory_context_compactor")
+      const contextCompressorSettings = this.options.getWorkerModelSettings?.("context_compactor")
       let answer = ""
       let attemptCount = 0
       for (; attemptCount < 2 && !written; attemptCount += 1) {

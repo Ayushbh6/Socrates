@@ -2,8 +2,9 @@ import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
 import { afterEach, describe, expect, it } from "vitest"
-import { TerminalSupervisorClient } from "./terminalSupervisorClient"
+import { resolveTerminalSupervisorProcessPath, TerminalSupervisorClient } from "./terminalSupervisorClient"
 import { terminalHostSocketPath, terminalSupervisorSocketPath } from "./terminalSupervisorPaths"
 
 const clients: TerminalSupervisorClient[] = []
@@ -15,6 +16,22 @@ afterEach(async () => {
 })
 
 describe("Terminal supervisor resilience", () => {
+  it("resolves the detached supervisor from the bundled dist/ws layout", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-bundled-path-"))
+    const distRoot = path.join(runtimeRoot, "server", "dist")
+    const bundledEntry = path.join(distRoot, "index.js")
+    const supervisorEntry = path.join(distRoot, "ws", "terminalSupervisorProcess.js")
+    fs.mkdirSync(path.dirname(supervisorEntry), { recursive: true })
+    fs.writeFileSync(bundledEntry, "")
+    fs.writeFileSync(supervisorEntry, "")
+
+    try {
+      expect(resolveTerminalSupervisorProcessPath(pathToFileURL(bundledEntry).href)).toBe(supervisorEntry)
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true })
+    }
+  })
+
   it("serializes shutdown behind an in-flight start and never respawns afterward", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "socrates-terminal-shutdown-race-"))
     const client = new TerminalSupervisorClient(workspace)

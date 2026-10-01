@@ -21,7 +21,7 @@ import {
   type V2FlowContextMessage,
   type V2Goal,
 } from "../v2"
-import { createDefaultToolRegistry, createGoalRouterToolRegistry, createV2ToolRegistry } from "../tools/registry"
+import { createDefaultToolRegistry, createV2ToolRegistry } from "../tools/registry"
 
 const flowId = "flow_1"
 
@@ -33,10 +33,9 @@ describe("V2 Flow goal routing", () => {
     expect(seamless).toContain("handover_to_frontier")
     expect(seamless).toContain("trace_retrieve")
     expect(classic).not.toContain("focus_ledger")
-    expect(createGoalRouterToolRegistry().list()).toEqual([])
   })
 
-  it("bounds a 30-goal Flow to five cards and honors retrieved goal ids without deciding semantically", () => {
+  it("bounds a 30-goal Flow to the foreground plus the configured parked candidates", () => {
     const goals: V2Goal[] = [goal("goal_0", "foreground", "Current implementation")]
     for (let index = 1; index < 30; index += 1) {
       goals.push(goal(`goal_${index}`, "parked", index === 27 ? "Vienna travel itinerary" : `Parked topic ${index}`))
@@ -46,11 +45,10 @@ describe("V2 Flow goal routing", () => {
       userMessage: "resume the Vienna travel itinerary",
       goals,
       parkedCandidateLimit: 5,
-      candidateGoalIds: ["goal_27"],
     })
 
-    expect(selected.candidates).toHaveLength(5)
-    expect(selected.parked).toHaveLength(4)
+    expect(selected.candidates).toHaveLength(6)
+    expect(selected.parked).toHaveLength(5)
     expect(selected.totalEligibleParked).toBe(29)
     expect(selected.parked[0]?.goal.id).toBe("goal_27")
     expect(selected.foreground?.goal.id).toBe("goal_0")
@@ -61,14 +59,11 @@ describe("V2 Flow goal routing", () => {
       throw new Error("provider unavailable")
     })
     const result = await routeV2Goal({
-      projectId: "project_1",
       flowId,
-      turnId: "turn_1",
-      workspacePath: "/workspace",
       userMessage: "Can you take another look?",
       goals: [goal("active", "foreground", "Build V2"), goal("parked", "parked", "Travel")],
       provider,
-      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false },
+      model: { providerId: "openrouter", modelId: "router-model" },
     })
 
     expect(result.source).toBe("fallback")
@@ -79,14 +74,11 @@ describe("V2 Flow goal routing", () => {
   it("falls back on timeout even when a provider ignores abort", async () => {
     const provider = providerWithStructured(async () => new Promise(() => undefined))
     const result = await routeV2Goal({
-      projectId: "project_1",
       flowId,
-      turnId: "turn_1",
-      workspacePath: "/workspace",
       userMessage: "keep going",
       goals: [goal("active", "foreground", "Build V2")],
       provider,
-      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false, timeoutMs: 50 },
+      model: { providerId: "openrouter", modelId: "router-model", timeoutMs: 50 },
     })
 
     expect(result.fallbackReason).toBe("timeout")
@@ -100,16 +92,16 @@ describe("V2 Flow goal routing", () => {
       return {
         output: ({
           action: "clarify",
-          candidates: [1, 2],
-          title: null,
+          primaryGoalId: null,
+          secondaryGoalIds: [],
+          confidence: 0.34,
+          clarificationQuestion: "Do you mean the API work or the presentation?",
+          clarificationGoalIds: ["api", "slides"],
         }) as unknown as TOutput,
       }
     })
     const result = await routeV2Goal({
-      projectId: "project_1",
       flowId,
-      turnId: "turn_1",
-      workspacePath: "/workspace",
       userMessage: "What about the second one?",
       goals: [goal("api", "foreground", "API work"), goal("slides", "parked", "Presentation")],
       recentTurns: [
@@ -118,70 +110,27 @@ describe("V2 Flow goal routing", () => {
         { goalId: "slides", user: "Compare two openings", assistant: "The second is calmer." },
       ],
       provider,
-      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false },
+      model: { providerId: "openrouter", modelId: "router-model" },
     })
 
     expect(result.decision).toMatchObject({
       action: "clarify",
       clarificationGoalIds: ["api", "slides"],
-      clarificationQuestion: "Should I continue “API work” or “Presentation”?",
+      clarificationQuestion: "Do you mean the API work or the presentation?",
     })
     expect(routedPayload?.recentTurns).toHaveLength(3)
   })
 
-  it("runs through the shared structured agent and repairs one invalid result", async () => {
-    let attempts = 0
-    let systemPrompt = ""
-    const provider = providerWithStructured(async <TOutput>(request: StructuredModelRequest<TOutput>) => {
-      attempts += 1
-      systemPrompt = request.system
-      if (attempts === 1) {
-        return {
-          output: {
-            action: "use",
-            candidates: [99],
-            title: null,
-          } as TOutput,
-          usage: { inputTokens: 8, outputTokens: 2, totalTokens: 10 },
-        }
-      }
-      return {
-        output: {
-          action: "use",
-          candidates: [1],
-          title: null,
-        } as TOutput,
-        usage: { inputTokens: 9, outputTokens: 2, totalTokens: 11 },
-      }
-    })
-
-    const result = await routeV2Goal({
-      projectId: "project_1",
-      flowId,
-      turnId: "turn_repair",
-      workspacePath: "/workspace",
-      userMessage: "keep going",
-      goals: [goal("active", "foreground", "Build V2")],
-      provider,
-      model: { providerId: "openrouter", modelId: "router-model", thinkingEnabled: false },
-    })
-
-    expect(attempts).toBe(2)
-    expect(systemPrompt).toContain("Goal Router Agent")
-    expect(systemPrompt).toContain("asks about the active conversation")
-    expect(systemPrompt).toContain("Never select it for a concrete task")
-    expect(result.source).toBe("model")
-    expect(result.decision).toMatchObject({ action: "continue", primaryGoalId: "active" })
-    expect(result.modelAttempt?.usage).toMatchObject({ inputTokens: 17, outputTokens: 4, totalTokens: 21 })
-  })
-
-  it("plans exactly one foreground when resuming", () => {
+  it("plans exactly one foreground when resuming and preserves bounded secondary links", () => {
     const plan = planV2GoalRoutingTransition({
       flowId,
       goals: [goal("active", "foreground", "Build V2"), goal("travel", "parked", "Travel"), goal("voice", "parked", "Voice")],
       decision: {
         action: "resume",
         primaryGoalId: "travel",
+        secondaryGoalIds: ["active", "voice", "unknown"],
+        confidence: 0.9,
+        reasonCode: "model_match",
       },
     })
 
@@ -190,6 +139,7 @@ describe("V2 Flow goal routing", () => {
       { goalId: "active", from: "foreground", to: "parked" },
       { goalId: "travel", from: "parked", to: "foreground" },
     ])
+    expect(plan.secondaryGoalIds).toEqual(["active", "voice"])
   })
 })
 
@@ -275,13 +225,17 @@ describe("V2 Flow context disposition policy", () => {
   })
 })
 
-describe("V2 Flow Socrates context policy", () => {
-  it("keeps one fixed 170k/180k policy regardless of selected model metadata", () => {
-    const budget = deriveV2ContextBudget()
+describe("V2 Flow model-aware context", () => {
+  it("derives pressure thresholds from the actual selected model window", () => {
+    const small = deriveV2ContextBudget({ contextWindowTokens: 8_192 })
+    const frontier = deriveV2ContextBudget({ contextWindowTokens: 200_000 })
 
-    expect(budget.compactionTriggerTokens).toBe(170_000)
-    expect(budget.hardInputLimitTokens).toBe(180_000)
-    expect(budget.recentGoalTailTokens).toBe(50_000)
+    expect(small.contextWindowTokens).toBe(8_192)
+    expect(frontier.contextWindowTokens).toBe(200_000)
+    expect(frontier.compactionTriggerTokens).toBeGreaterThan(small.compactionTriggerTokens * 10)
+    expect(small.postCompactionTargetTokens).toBeLessThan(small.postPruneTargetTokens)
+    expect(small.softPruneTriggerTokens).toBeLessThan(small.compactionTriggerTokens)
+    expect(frontier.hardInputLimitTokens + frontier.reservedOutputTokens + frontier.systemAndToolReserveTokens).toBe(200_000)
   })
 
   it("assembles only foreground-linked or Flow-global history and bounds exact retrieval", async () => {
@@ -362,7 +316,7 @@ describe("V2 Flow Socrates context policy", () => {
       query: "bounded evidence",
       messages: [],
       contextItems,
-      budget: deriveV2ContextBudget(),
+      budget: deriveV2ContextBudget({ contextWindowTokens: 8_192 }),
       evidenceTokenLimit: 250,
       exactRetriever: (refs) => {
         retrievedBatches.push(refs.map((candidate) => candidate.evidenceId))

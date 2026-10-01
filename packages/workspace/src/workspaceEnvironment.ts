@@ -115,7 +115,7 @@ const findPackageFiles = (root: string): string[] => {
       if (!entry.isDirectory() || ignoredDirectoryNames.has(entry.name)) {
         continue
       }
-      const packagePath = path.join(rootName, entry.name, "package.json")
+      const packagePath = path.posix.join(rootName, entry.name, "package.json")
       if (isFile(path.join(root, packagePath))) {
         files.add(packagePath)
       }
@@ -141,12 +141,12 @@ const findBoundedFiles = (root: string, names: string[]): string[] => {
       const packageRoot = path.join(absoluteRoot, entry.name)
       for (const child of safeReadDir(packageRoot)) {
         if (child.isFile() && wanted.has(child.name)) {
-          files.add(path.join(rootName, entry.name, child.name))
+          files.add(path.posix.join(rootName, entry.name, child.name))
         }
         if (child.isDirectory() && !ignoredDirectoryNames.has(child.name)) {
           for (const grandchild of safeReadDir(path.join(packageRoot, child.name))) {
             if (grandchild.isFile() && wanted.has(grandchild.name)) {
-              files.add(path.join(rootName, entry.name, child.name, grandchild.name))
+              files.add(path.posix.join(rootName, entry.name, child.name, grandchild.name))
             }
           }
         }

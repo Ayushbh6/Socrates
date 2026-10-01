@@ -30,7 +30,7 @@ The rest of Socrates must never depend directly on Vercel AI SDK.
 
 ## V2 Flow Provider Reuse Boundary
 
-V2 Flow reuses `packages/providers`, credential-aware model resolution, normalized usage, token counting, Ollama chat, the existing embedding boundary, the same Socrates agent, Memory Router worker setting, and Socrates Context Compactor worker setting. It does not fork provider adapters merely because its orchestration is separate from V1.
+V2 Flow reuses `packages/providers`, credential-aware model resolution, normalized usage, token counting, Ollama chat, the existing embedding boundary, the same Socrates agent, Memory Router worker setting, and Context Compactor worker setting. It does not fork provider adapters merely because its orchestration is separate from V1.
 
 V2 Flow Q&A parents also reuse the shared per-project LanceDB retrieval lifecycle. Rows are scoped with `runtimeKind = "v2_flow"` and exact `flowId`, so lexical, semantic, and combined trace retrieval use the configured shared embedding provider without fake Classic conversations; raw inspect/audit and immutable evidence remain V2-owned.
 
@@ -44,7 +44,7 @@ V2 Flow orchestration ───┘
 
 Each concurrent V1 conversation or V2 Flow turn produces its own provider/LLM call and request context. A single backend process may multiplex those independent calls, but it never concatenates unrelated projects or goals into one Socrates prompt. Goal Router, Memory Router attempt, main/Frontier, context-distiller, and context-compactor calls are individually persisted in `v2_model_calls` with matching V2 usage/error telemetry where available.
 
-The V2 Goal Router is a bounded structured call with thinking disabled and a conservative timeout/fallback. Post-turn distillation/compaction uses the configured `socrates_context_compactor` worker selection rather than silently spending the foreground model; model-window budgeting still comes from the selected foreground model. The same Memory Router implementation and global Memory Agent are shared, while their Flow source references and runtime telemetry remain V2-scoped.
+The V2 Goal Router is a bounded structured call with thinking disabled and a conservative timeout/fallback. Post-turn distillation/compaction uses the configured `context_compactor` worker selection rather than silently spending the foreground model; model-window budgeting still comes from the selected foreground model. The same Memory Router implementation and global Memory Agent are shared, while their Flow source references and runtime telemetry remain V2-scoped.
 
 Ollama support exists to make local capability available to users with suitable models and hardware. It is not expected to make a small local model match a frontier hosted model in reasoning, tools, speed, or context size. V2 must preserve honest model-specific limits and graceful failure. Ollama remains the local chat/embedding runtime, not an assumed TTS engine; V2 speech uses separate replaceable STT/TTS adapters.
 
@@ -54,9 +54,9 @@ Speech providers are independent from `ModelProvider` and `EmbeddingProvider`. A
 
 Classic and V2 share the lower-level Local Whisper and OpenRouter transcription adapters, but not their orchestration or persistence:
 
-- Classic and Flow read one shared explicit voice preference. It defaults to **Not configured**; the microphone guides the user to Settings until they choose a transcriber.
-- Classic sends a temporary WAV to the conversation-scoped transcription endpoint, appends the result to the unsent draft, and never creates V2 Flow/artifact/job state or auto-sends the text. V2 stores V2 speech artifacts/jobs, passes finalized transcripts through the Goal Router, and owns local Kokoro read-aloud.
-- Neither path silently switches from local to hosted transcription. Hosted selection requires the user's OpenRouter credential. Offline weights download only after the user presses Install in Settings, where exact sizes, verification status, paths, and removal are visible.
+- Classic currently presents one push-to-talk mic in the shared composer, defaults to local Whisper `small.en`, sends a temporary WAV to the conversation-scoped transcription endpoint, appends the result to the unsent draft, and never creates V2 Flow/artifact/job state or auto-sends the text.
+- V2 exposes the explicit Local/OpenRouter transcriber picker, stores V2 speech artifacts/jobs, passes finalized transcripts through the Goal Router, and owns local Kokoro read-aloud.
+- Neither path silently switches from local to hosted transcription. Classic does not expose the hosted picker in its current UI even though its backend contract validates the same explicit allowlist for future selection.
 
 The implemented provider set is:
 
@@ -206,8 +206,6 @@ export interface ModelProvider {
 }
 ```
 
-Every model-driven capability should reach this provider boundary through the single provider-neutral `packages/core` `AgentRuntime`, not through separate feature-owned provider loops. Thin Socrates/router/worker modules configure prompts, scoped tools, schemas, completion mode, limits, and hooks; `AgentRuntime` owns the shared execution semantics and calls `ModelProvider`. Provider adapters remain unaware of whether the caller is the main interactive agent or a bounded structured worker.
-
 The request should be normalized:
 
 ```ts
@@ -274,7 +272,7 @@ The main-agent `memory_note` provider-visible schema stays tiny: `note` and opti
 
 Memory-to-Skill-Writer handoff preserves exact approved source-turn ids. The Writer must inspect and cite them before `skill_write`; direct DeepSeek tool-loop and structured-final usage/cost for these agents are accounted through the same normalized provider events as main Socrates. The skill-learning eval uses official `deepseek-v4-flash` / `deepseek-v4-pro` with Off/High/Max, isolated state, dependency rebuilds before execution, and a hard pre-call budget reserve; raw private corpora/results remain local and gitignored. The completed 2026-07-10/11 composed E2E used Memory Pro/high plus Writer Flash/off: the earlier full path proved create plus v1 use, and the seeded continuation proved a meaningful cross-project handoff update, Writer v2, and actual main-agent `skills list` plus `describe` with 6/6 expected behavior concepts. The final run cost $0.027175; post-screenshot continuation spend was $0.174649, putting the user's $0.69 dashboard starting total at an estimated $0.864649, below the raised $1 account ceiling. This is a capability/value pass, not statistical production-reliability proof.
 
-Changing runtime facts must stay behind tools, not in prompt headers. Current date/time comes from `current_time`; workspace runtime facts and project active context come from `project_docs`; global user active context comes from `user_profile`; reusable workflows come from `skills`; Memory Agent leads come from `memory_note`; and external MCP servers come from `mcp_registry`. Main chat must not inject a per-turn wake-context block or hidden skill/MCP matches based on user-query wording. The provider-agnostic prompt envelope is cache ordered: stable system prompt first, then `<socrates_stable_cache_prelude>` from the backend's bounded standing-section snapshot, then visible conversation/user text, then dynamic routed context, tool results, docs checkpoints, and ledgers. Snapshot hits must avoid the former five tool calls; changed source files are content-hashed, and only changed standing-section hashes replace the snapshot. Dynamic routing must skip standing targets and exact duplicates. The same-turn memory-save ledger is allowed only as a tiny dynamic tail block after a `memory_note` succeeds. Substantial tool results may similarly add a tiny result-handle tail block; the `context_disposition` tool definition itself stays stable from the first call, and the model may invoke it only alongside a real next tool call. This preserves the cache prefix and adds no standalone model round trip.
+Changing runtime facts must stay behind tools, not in prompt headers. Current date/time comes from `current_time`; workspace runtime facts and project active context come from `project_docs`; global user active context comes from `user_profile`; reusable workflows come from `skills`; Memory Agent leads come from `memory_note`; and external MCP servers come from `mcp_registry`. Main chat must not inject a per-turn wake-context block or hidden skill/MCP matches based on user-query wording. The provider-agnostic prompt envelope is cache ordered: stable system prompt first, then `<socrates_stable_cache_prelude>` from the backend's bounded standing-section snapshot, then visible conversation/user text, then dynamic routed context, tool results, docs checkpoints, and ledgers. Snapshot hits must avoid the former five tool calls; changed source files are content-hashed, and only changed standing-section hashes replace the snapshot. Dynamic routing must skip standing targets and exact duplicates. The same-turn memory-save ledger is allowed only as a tiny dynamic tail block after a `memory_note` succeeds, so post-evidence continuations can avoid duplicate saves without invalidating the stable prompt prefix that cache hits depend on.
 
 The first-call `skills` schema includes automatic list/describe/read and `preview_import` for exactly one public HTTPS ZIP URL or current-turn ZIP attachment path, plus approval-backed `commit_import`. URL preview uses fixed byte/redirect/time and public-address limits; attachment preview verifies current conversation/turn ownership and a 20 MB cap. Both return capped files/warnings and never execute package content. Commit installs only the exact destination-bound preview and defaults to reject-on-conflict. Providers must not reinterpret this as web search or silently replace it with Terminal/network shell calls.
 
@@ -542,7 +540,7 @@ DeepSeek API
   deepseek-v4-flash            no vision
 ```
 
-Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, Tencent HY3, the DeepSeek V4 models, Qwen 3.5 Flash, and `xiaomi/mimo-v2.5-pro`, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. MiMo Pro's current OpenRouter endpoint rejects image parts even when its broader model family supports visual work; treating it as text-only prevents a failed screenshot-follow-up request. Direct DeepSeek API V4 models are also text-only in the Socrates catalog. Llama 4 Maverick remains vision-capable and must keep native image paths enabled.
+Vision capability must come from the backend model catalog. For OpenRouter, all listed providers/models are treated as vision-capable except GLM, Tencent HY3, the DeepSeek V4 models, and Qwen 3.5 Flash, whose `capabilities.vision` flag must remain `false` so chat attachments are warned in the UI and image bytes are omitted from provider requests. Direct DeepSeek API V4 models are also text-only in the Socrates catalog. MiMo Pro and Llama 4 Maverick are vision-capable and must keep native image paths enabled.
 
 Tencent HY3 is also text-only. Its normalized thinking choices are Off/Low/High and its OpenRouter route is price-first. GLM 5.2 exposes High/Extra High. The July 2026 compaction eval found HY3 too slow/unreliable for structured repeated compression, while GLM 5.2 High was a viable but more expensive fallback to official DeepSeek V4 Flash Off.
 
@@ -618,7 +616,7 @@ The frontend must render the credential-filtered catalog from the backend respon
 
 ## Context Compressor Model Selection
 
-Socrates and Memory compressor models are independent worker settings resolved against the same credential-aware model list as the composer and other workers. Both built-in defaults are:
+The compressor model is a worker model setting resolved against the same credential-aware model list as the composer and other workers. The built-in default worker setting is:
 
 ```text
 providerId = openrouter
@@ -627,7 +625,7 @@ modelId = deepseek/deepseek-v4-flash
 thinking = off
 ```
 
-When ChatGPT Codex is connected and either saved compactor setting is the built-in default or unavailable, that role's effective runtime setting is:
+When ChatGPT Codex is connected and the saved Context Compactor setting is the built-in default or unavailable, the effective runtime setting is:
 
 ```text
 providerId = openai
@@ -651,11 +649,11 @@ The local/release evaluation gate should continue to run compressor candidates o
 - Latency and cost.
 - Failure modes such as invented facts, dropped constraints, or vague summaries without handles.
 
-All compressor calls use `CompressorAgent`, `StructuredToolAgentRunner`, mode-specific prompt modules, an explicit empty tool registry/executor mapping, structured generation, and strict schema validation before a compaction snapshot can become active. Server fallback selection is credential-aware: the runtime may add the available default model as a fallback when it differs from the primary, but hard-coded OpenRouter fallbacks must not run when OpenRouter is unavailable.
+All compressor calls use structured generation and strict schema validation before a compaction snapshot can become active. Server fallback selection is credential-aware: the runtime may add the available default model as a fallback when it differs from the primary, but hard-coded OpenRouter fallbacks must not run when OpenRouter is unavailable.
 
-The frontend exposes separate Socrates Context Compactor and Memory Context Compactor rows through the shared registry-backed worker settings surface instead of hardcoding provider mappings. The Memory Router is also a worker model setting; its built-in default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off, and credential-aware resolution prefers ChatGPT Codex `gpt-5.4-mini` with low reasoning when ChatGPT Codex is connected and the saved setting is the built-in default or unavailable. Router usage is recorded into `ai_usage_events` as `source_kind = "memory_router"` so normal turn/conversation cost totals include it without a separate visible router-cost widget. Usage already observed before a failed structured phase is persisted with failed status and phase/error linkage; an `errors` row is still written when the provider supplied no usage. Provider adapters only need to support structured output for this router; the router's product contract is owned by `packages/contracts/src/memoryRouting.ts`. Its pre-turn schema returns capped exact read targets, while its finalization schema returns capped reconciliation plans grounded in bounded task evidence; neither phase performs writes itself.
+The frontend exposes the compressor through the shared registry-backed worker settings surface instead of hardcoding provider mappings. The Memory Router is also a worker model setting; its built-in default is OpenRouter `deepseek/deepseek-v4-flash` with thinking off, and credential-aware resolution prefers ChatGPT Codex `gpt-5.4-mini` with low reasoning when ChatGPT Codex is connected and the saved setting is the built-in default or unavailable. Router usage is recorded into `ai_usage_events` as `source_kind = "memory_router"` so normal turn/conversation cost totals include it without a separate visible router-cost widget. Usage already observed before a failed structured phase is persisted with failed status and phase/error linkage; an `errors` row is still written when the provider supplied no usage. Provider adapters only need to support structured output for this router; the router's product contract is owned by `packages/contracts/src/memoryRouting.ts`. Its pre-turn schema returns capped exact read targets, while its finalization schema returns capped reconciliation plans grounded in bounded task evidence; neither phase performs writes itself.
 
-Frontier is one of seven worker-model settings and defaults to OpenRouter `x-ai/grok-4.5` with low reasoning. OpenRouter's live model metadata marks Grok 4.5 reasoning mandatory with Low, Medium, and High efforts; do not expose or send Off/None for this model because the endpoint rejects it. A stale unsupported saved thinking choice resolves to the model's supported default. Every requested switch requires explicit typed user approval regardless of the turn's ordinary approval/full-access setting. A successful one-way handover does not create a new provider abstraction: the existing stream runner starts the next model call with the Frontier provider/model/runtime selection, and both driver and Frontier calls retain independent `model_calls` and usage rows under the same visible turn. The Frontier request includes the complete current messages and tool results plus the compact optional focus. A rejected request never starts a Frontier provider call and removes the handover tool for the remainder of that turn.
+Frontier is a fifth worker-model setting and defaults to OpenRouter `x-ai/grok-4.5` with low reasoning. OpenRouter's live model metadata marks Grok 4.5 reasoning mandatory with Low, Medium, and High efforts; do not expose or send Off/None for this model because the endpoint rejects it. A stale unsupported saved thinking choice resolves to the model's supported default. Every requested switch requires explicit typed user approval regardless of the turn's ordinary approval/full-access setting. A successful one-way handover does not create a new provider abstraction: the existing stream runner starts the next model call with the Frontier provider/model/runtime selection, and both driver and Frontier calls retain independent `model_calls` and usage rows under the same visible turn. The Frontier request includes the complete current messages and tool results plus the compact optional focus. A rejected request never starts a Frontier provider call and removes the handover tool for the remainder of that turn.
 
 Vercel AI Gateway should be skipped in V1. If added later, it should be treated as another provider route:
 

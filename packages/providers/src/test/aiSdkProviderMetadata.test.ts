@@ -186,7 +186,6 @@ describe("AI SDK provider metadata", () => {
     expect(JSON.stringify(schema.jsonSchema)).not.toContain('"None"')
     expect(JSON.stringify(schema.jsonSchema)).not.toContain('"anyOf"')
     expect(JSON.stringify(schema.jsonSchema)).not.toContain('"oneOf"')
-    expect(JSON.stringify(schema.jsonSchema)).toContain('"enum":[true]')
 
     await expect(Promise.resolve(schema.validate?.({ path: "README.md", oldString: "old", newString: "new" }))).resolves.toEqual({
       success: true,
@@ -196,38 +195,27 @@ describe("AI SDK provider metadata", () => {
       success: true,
       value: { path: "README.md", content: "new", overwrite: true },
     })
-    await expect(Promise.resolve(schema.validate?.({ path: "README.md", content: "new", overwrite: false }))).resolves.toMatchObject({ success: false })
     const invalid = await Promise.resolve(schema.validate?.({ path: "README.md", content: "new", oldString: "old", newString: "new" }))
     expect(invalid?.success).toBe(false)
   })
 
-  it("exposes a flat Terminal schema and recovers a redundant model invocation form", async () => {
+  it("exposes a flat Terminal schema and recovers redundant model fields", async () => {
     const schema = inputSchemaForAiTool({
       name: "bash",
       description: "Run a Terminal command.",
       inputSchema: bashToolModelInputSchema,
     }) as Schema
-
-    expect(schema.jsonSchema).toMatchObject({
-      type: "object",
-      additionalProperties: false,
-    })
+    expect(schema.jsonSchema).toMatchObject({ type: "object", additionalProperties: false })
     const serialized = JSON.stringify(schema.jsonSchema)
     expect(serialized).not.toContain('"oneOf"')
     expect(serialized).not.toContain('"anyOf"')
-    expect(serialized).toContain("never both")
-
     await expect(Promise.resolve(schema.validate?.({ command: "pnpm run build", argv: ["pnpm", "run", "build"] }))).resolves.toEqual({
       success: true,
       value: { command: "pnpm run build" },
     })
-    await expect(Promise.resolve(schema.validate?.({ operation: "output", command: "placeholder", name: "placeholder", target: "ai-dpa-vite" }))).resolves.toEqual({
+    await expect(Promise.resolve(schema.validate?.({ operation: "output", command: "placeholder", name: "placeholder", target: "dev" }))).resolves.toEqual({
       success: true,
-      value: { operation: "output", target: "ai-dpa-vite" },
-    })
-    await expect(Promise.resolve(schema.validate?.({ operation: "run", command: "pnpm run build", name: "x", target: "x" }))).resolves.toEqual({
-      success: true,
-      value: { operation: "run", command: "pnpm run build" },
+      value: { operation: "output", target: "dev" },
     })
     await expect(Promise.resolve(schema.validate?.({ operation: "start", argv: ["pnpm", "dev"] }))).resolves.toMatchObject({ success: false })
   })

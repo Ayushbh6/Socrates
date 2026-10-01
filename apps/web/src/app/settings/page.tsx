@@ -4,7 +4,6 @@ import Link from "next/link";
 import { ArrowLeft, Settings } from "lucide-react";
 import { ProviderCredentialsPanel } from "@/components/settings/ProviderCredentialsPanel";
 import { WorkerModelSettingsPanel } from "@/components/settings/WorkerModelSettingsPanel";
-import { VoiceSpeechSettingsPanel } from "@/components/settings/VoiceSpeechSettingsPanel";
 
 export default function SettingsPage() {
   return (
@@ -24,7 +23,7 @@ export default function SettingsPage() {
                 <div className="min-w-0">
                   <h1 className="truncate text-xl font-semibold text-brand-text-dark sm:text-2xl">Settings</h1>
                   <p className="mt-0.5 hidden text-sm text-brand-text-light sm:block">
-                    Manage provider access, helper models, voice, embedding prerequisites, and updates.
+                    Manage provider access, helper models, embedding prerequisites, and desktop updates.
                   </p>
                 </div>
               </div>
@@ -36,7 +35,6 @@ export default function SettingsPage() {
           <div className="mx-auto w-full max-w-7xl space-y-6 pb-4">
             <ProviderCredentialsPanel showUpdater />
             <WorkerModelSettingsPanel />
-            <VoiceSpeechSettingsPanel />
           </div>
         </section>
 

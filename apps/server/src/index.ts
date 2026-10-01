@@ -14,7 +14,6 @@ const app = await buildServer({
   dbPath: config.dbPath,
   logger: true,
   socratesHome: config.socratesHome,
-  v2FlowEnabled: config.v2FlowEnabled,
 })
 
 try {

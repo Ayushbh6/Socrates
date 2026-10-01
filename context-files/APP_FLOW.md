@@ -1,6 +1,6 @@
 # Socrates App Flow
 
-This document defines product routes, page responsibilities, and the currently implemented Classic/Flow navigation. `FLOW_NORTH_STAR.md` owns the target product intent that Classic and Flow are two projections of one canonical Socrates work state. `V2_FLOW_ARCHITECTURE.md` records the released implementation and migration constraints.
+This document defines the stable Classic product flow, route structure, and page responsibilities for Socrates. The preserved V2 Seamless redesign lives in `V2_FLOW_ARCHITECTURE.md` and must not be inferred from, inserted into, or mounted beside the stable routes below.
 
 Socrates is project-first. Users do not start with a floating global chat. They enter a project, use project resources and instructions, then create or resume conversations inside that project.
 
@@ -8,9 +8,9 @@ Socrates is project-first. Users do not start with a floating global chat. They 
 
 V1 Classic remains the default standalone product. It keeps project-scoped user-created conversations and `/projects/:projectId/chats/:conversationId` exactly as documented here.
 
-V2 Flow is a separate experimental Seamless web window/mode in the normal frontend/backend product. It has one persistent Flow per project, backend-managed goals, one foreground goal, parked goal capsules, and text/voice entry through the same bounded Goal Router. Classic and Flow use the same Socrates within-turn tool-output disposition and fixed 170k compaction policy. Flow additionally stores exact namespaced evidence for audit/retrieval but does not automatically inject prior-turn tool outputs into later model requests. Its backend routes remain unmounted unless `SOCRATES_V2_FLOW_ENABLED=true`. The ordinary NPM/runtime launcher defaults that flag to `true`, while a direct source-server run must opt in explicitly. V2 uses namespaced routes/contracts/state and never silently reinterprets existing V1 chats.
+V2 Flow is not part of the stable frontend/backend product. Its namespaced code and historical database tables remain for separate redesign work, but stable builds expose no Flow routes, capability endpoint, WebSocket, navigation, or launcher flag. Upgrade startup performs one bounded compatibility action: recover completed visible bridged Q&A into Classic, return bridge ownership to Classic, and leave all historical V2 rows otherwise untouched.
 
-Both views must converge on the same canonical projects, turns, tasks, goals, tools, evidence, live execution state, primary workspace, workspace `.socrates/`, global `~/.Socrates/`, Socrates tool loop, MCP/skills/provider settings, context compressor, and global Memory Agent. Their routing policies and presentations may differ. The released V2 implementation still owns namespaced Flow transport and persistence plus a bridge; see `V2_FLOW_ARCHITECTURE.md` for that current migration boundary and `FLOW_NORTH_STAR.md` for the endpoint.
+Both views use the same projects, primary workspace, workspace `.socrates/`, global `~/.Socrates/`, Socrates tools, MCP/skills/provider settings, Memory Router implementation, and global Memory Agent. V2 owns the Flow/goal router, goal-aware context policy, runtime transport, and `v2_*` persistence. See `V2_FLOW_ARCHITECTURE.md` for the complete inheritance boundary and current limitations.
 
 ## V1 Route Summary
 
@@ -41,7 +41,7 @@ open app
   -> if no onboarded user exists, go to /onboarding
   -> if onboarded user exists, Open Workspace goes to /projects
   -> open one Classic project dashboard
-  -> optionally use Go to Flow View for that same project
+  -> create or resume a conversation inside that project
 ```
 
 The first-run check should use local SQLite state, not browser-only local storage.
@@ -50,12 +50,12 @@ The local SQLite file defaults to `~/.Socrates/socrates.sqlite`. `SOCRATES_HOME`
 
 ## Browser Development Launch Flow
 
-The primary dev-test and product path is the browser app plus normal backend. The supported packaged-product path is the same web frontend/backend, launched through the NPM CLI and downloaded runtime archive. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and supported release targets. Direct source-server development must set `SOCRATES_V2_FLOW_ENABLED=true` to expose Seamless; the packaged NPM/runtime launcher defaults it to `true` and accepts an explicit environment override for rollback.
+The primary dev-test and product path is the browser app plus normal Classic backend. The supported packaged-product path is the same web frontend/backend, launched through the NPM CLI and downloaded runtime archive. Runtime archive construction is owned by root `scripts/runtime/` and preserves the NPM launcher contract and supported release targets.
 
 Development launch:
 
 ```text
-terminal 1: SOCRATES_V2_FLOW_ENABLED=true pnpm --filter @socrates/server dev
+terminal 1: pnpm --filter @socrates/server dev
   -> starts Fastify APIs and WebSockets on 127.0.0.1:4000
 
 terminal 2: pnpm --filter web dev
@@ -68,7 +68,7 @@ The server still owns the SQLite path. By default it stores durable data at `~/.
 
 ## Packaged Browser Launch Flow
 
-The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. `launcher.mjs` passes `SOCRATES_V2_FLOW_ENABLED = process.env.SOCRATES_V2_FLOW_ENABLED ?? "true"` to the backend, so Classic/Seamless is the normal packaged product default and an explicit value can disable it for rollback.
+The NPM launcher downloads and verifies the platform runtime, then starts the bundled Fastify Classic backend and Next standalone frontend. Root `scripts/runtime/build-runtime.mjs`, `build-runtime-archive.mjs`, and `launcher.mjs` own this path. The launcher does not set or accept a stable Flow enablement default.
 
 npm CLI release flow:
 
@@ -88,7 +88,7 @@ The CLI fetches the latest GitHub Release runtime by default, so older published
 
 Release packaging is validated against the proven `pnpm@9.15.1` runtime-build path. The runtime release workflow recreates the tag release and uploads each runtime asset explicitly so stale partial drafts are discarded. The produced runtime archive still bundles Node v20.20.2. Local runtime archive builds may run on pnpm 10+; the builder detects that case and uses legacy deploy plus native build-script allowance only for the server deploy packaging step. GitHub Windows shell/runtime jobs should use `windows-2022` rather than `windows-latest` while Windows Server 2025 / VS 2026 trips `node-gyp` Visual Studio detection for native dependencies. Shell Tooling runs Windows install/typecheck plus contracts/workspace/core tests, while server PTY/WebSocket tests run on Ubuntu only because they assume POSIX bash/PTY behavior.
 
-Current GitHub runtime release is `v0.1.19`, published non-draft and non-prerelease with the three supported runtime archives plus `SHA256SUMS`. The public npm registry now serves `@socrates-ai/cli@0.1.19` as `latest`; the launcher continues to resolve the newest GitHub runtime by default. The v0.1.19 runtime preserves the v0.1.18 provider, retrieval, model-catalog, memory, MCP credential, standing-context, and packaging foundation, and adds bounded Memory Router failure telemetry, explicit one-way Frontier handover, hardened Terminal supervisor cleanup, plus the isolated V2 Seamless Flow first cut with its Goal Router, namespaced persistence, self-pruning context, immutable evidence, V2 trace retrieval, Classic bridge, shared shell/composer, Flow workspace notes, and shared speech foundation. Runtime construction removes the deployed server's checkout self-link, recursively strips environment files, rejects server links outside the runtime root, and fails final archive validation if any `.env*` entry remains. The packaged launcher enables Flow by default with an explicit rollback override. All three supported runtime archives passed their native release builders and smoke checks. This remains accelerated evidence rather than a measured 24-hour unattended soak; large local speech-pack runs, accessibility automation, and extended reliability validation remain explicit follow-ups. The launcher prefers direct GitHub Release asset URLs before falling back to REST metadata so rate limits do not block public `npx` installs.
+The published baseline is `v0.1.19`; the production-repair candidate is `v0.1.20`, with `@socrates-ai/cli@0.1.20` prepared but not published without explicit user approval. The cancelled historical v0.1.20 workflow produced no release and no npm publication. Runtime construction removes the deployed server's checkout self-link, recursively strips environment files, rejects links outside the runtime root, and fails archive validation if any `.env*` entry remains. Each archive build now boots its bundled Node/backend/frontend against explicit disposable `SOCRATES_HOME` and `SOCRATES_DB_PATH`, checks the Classic welcome/health surface, and verifies the V2 capability route is absent. The launcher prefers direct GitHub Release asset URLs before falling back to REST metadata so rate limits do not block public `npx` installs.
 
 On packaged startup, the launcher chooses free localhost ports, starts the backend first, waits up to 180 seconds for `/health` so first-run retrieval reconciliation can finish, starts the web server with `SOCRATES_API_BASE_URL` pointing at the backend, opens the browser, and exits both child services together.
 
@@ -397,7 +397,7 @@ Conversation list:
 - Each conversation row should include a compact `...` actions menu.
 - The row actions menu includes `Rename` and `Delete`.
 - Rename updates the persisted conversation title.
-- Delete removes the conversation and its conversation-scoped data from the database. It is not archived in the current V1 flow. If the conversation is linked to Flow, the compact confirmation offers `Classic only` or `Everywhere`; the latter also removes the linked Flow exchanges. Neither option changes workspace files or saved memory.
+- Delete removes the conversation and its conversation-scoped data from the database. It is not archived in the current V1 flow.
 
 Actions:
 
@@ -543,7 +543,6 @@ Left sidebar behavior:
 - The whole sidebar can be collapsed. When collapsed, it disappears completely and leaves only a small reopen button at the top-left edge of the chat workspace. Do not leave a rail, thin sidebar strip, or hidden chat text behind.
 - When expanded, the collapse control lives inside the sidebar header.
 - The sidebar header is `Projects`.
-- The sidebar outer shell has fixed viewport dimensions and never owns a page-length scroll. Its header and controls remain fixed; only the bounded names list below them may scroll.
 - The sidebar lists existing projects only. Users cannot create new projects from this sidebar in V1.
 - Each project row shows the project name, a small `+` action to start a new chat in that project, and a collapse/expand control for that project's chats.
 - Clicking a project name routes to that project's dashboard.
@@ -579,7 +578,7 @@ Composer behavior:
 - The chat page subscribes its WebSocket to the active conversation with `chat.conversation.subscribe` on initial connect and reconnect.
 - The frontend sends `chat.message.send` over WebSocket for the real AI path.
 - The older no-AI HTTP message endpoint remains available but is not the normal chat UI send path.
-- Classic STT reads the shared explicit voice preference, which defaults to **Not configured**. Choosing local Whisper requires a separate explicit pack installation; choosing OpenRouter requires the user's credential. It never auto-sends the transcript or creates V2 artifact/speech-job state. The backend deletes its temporary WAV after the transcription attempt.
+- Classic STT defaults to `engine=local_whisper&modelId=small.en`. It never auto-sends the transcript, never routes through the V2 Goal Router, and never creates V2 Flow, artifact, or speech-job state. The backend deletes its temporary WAV after the transcription attempt.
 
 Classic conversation transcription uses:
 
@@ -811,7 +810,7 @@ current_time when truly needed
 
 It should not receive Terminal, arbitrary filesystem read/write, generic patch tools, identity/profile writes, project/repo docs writes, or raw path mutation tools.
 
-Settings exposes seven independent worker model selectors for Skill Writer, Socrates Context Compactor, Memory Context Compactor, Title Generator, Goal Router, Memory Router, and Frontier. Together with the Global Memory Agent and main Socrates picker, this is nine independently selectable model roles. Each selector uses the normal model registry and thinking options. Socrates Context Compactor controls shared Classic/Flow 170k conversation compression, while fine-grained within-turn tool-output disposition is chosen by the active main Socrates model without another worker call. Memory Context Compactor controls Global Memory Agent and Skill Writer compression. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off. Frontier defaults to OpenRouter `x-ai/grok-4.5` with low reasoning; OpenRouter declares reasoning mandatory for that endpoint, so its selector exposes Low, Medium, and High rather than an invalid Off choice.
+Settings exposes independent worker model selectors for Skill Writer, Context Compactor, Title Generator, Memory Router, and Frontier. Each selector uses the normal model registry and thinking options. Memory Router controls the pre-turn and post-evidence structured routing calls and defaults to OpenRouter `deepseek/deepseek-v4-flash` with thinking off. Frontier defaults to OpenRouter `x-ai/grok-4.5` with low reasoning; OpenRouter declares reasoning mandatory for that endpoint, so its selector exposes Low, Medium, and High rather than an invalid Off choice.
 
 Current Memory Router flow:
 
@@ -959,7 +958,7 @@ current-turn tool-result raw tail target around 50k tokens
 keep at least the latest 5 current-turn tool results when possible
 ```
 
-There is one Socrates chat trigger shared by Classic and Flow: before each provider call, Socrates counts the assembled model-visible input. If it is below 170k, the request proceeds. If it is at or above 170k, compaction runs before sending the next provider call. Tail selection budgets recent whole turns against an 80k preferred rebuilt total after reserving the fixed system/tool prefix, current active turn, and maximum structured-summary allowance. Results at or below 60k are classified `excellent`, results through 80k are `preferred`, and results from 80k through the 120k acceptance ceiling are `acceptable`; no second compressor call is made merely to improve the class. A result is accepted only when it is at or below 120k and achieves the minimum reduction. Requests above 180k fail before provider dispatch when compression cannot safely reduce them. Older head context is summarized into hidden markdown. Bounded deterministic carryover protects exact attachment paths, shell commands, and explicit unresolved/do-not-complete instructions across repeated rounds. For long active turns, older bulky tool results are converted into lightweight progress statements while preserving the newest whole tool results. Global Memory Agent calls use the same trigger with memory-mode compression, so the memory compressor prompt and structured memory schema are used instead of the chat compressor prompt/schema. Completed snapshots are applied before later token counts, and represented raw turns are removed from the model request while remaining authoritative in SQLite.
+There is one V1 trigger: before each provider call, Socrates counts the assembled model-visible input. If it is below 170k, the request proceeds. If it is at or above 170k, compaction runs before sending the next provider call. Tail selection budgets recent whole turns against an 80k preferred rebuilt total after reserving the fixed system/tool prefix, current active turn, and maximum structured-summary allowance. Results at or below 60k are classified `excellent`, results through 80k are `preferred`, and results from 80k through the 120k acceptance ceiling are `acceptable`; no second compressor call is made merely to improve the class. A result is accepted only when it is at or below 120k and achieves the minimum reduction. Requests above 180k fail before provider dispatch when compression cannot safely reduce them. Older head context is summarized into hidden markdown. Bounded deterministic carryover protects exact attachment paths, shell commands, and explicit unresolved/do-not-complete instructions across repeated rounds. For long active turns, older bulky tool results are converted into lightweight progress statements while preserving the newest whole tool results. Global Memory Agent calls use the same trigger with memory-mode compression, so the memory compressor prompt and structured memory schema are used instead of the chat compressor prompt/schema. Completed snapshots are applied before later token counts, and represented raw turns are removed from the model request while remaining authoritative in SQLite.
 
 The estimate is provider-aware. Before each model call, Socrates counts the assembled next provider request through `packages/providers`, including the system prompt, visible messages, hidden compaction summaries, active tool calls/results, and tool definitions/schemas. Completed earlier turns still contribute only visible user query plus final assistant answer.
 
@@ -1217,27 +1216,24 @@ Project
   ├── V1 Classic
   │     └── user-created conversations
   └── V2 Seamless Flow, feature flagged
-        └── one persistent Flow
-              ├── one current-exchange focus canvas
-              ├── Projects -> Goals -> Queries navigation
-              ├── one selected goal plus its current task
+        └── one persistent visible timeline
+              ├── one foreground goal
+              ├── parked goal capsules
               ├── pruned working context
               └── immutable retrievable evidence
 ```
 
-The implemented surface preserves the original cream `/welcome` and `/projects` path. Users first open a Classic project dashboard, where a small **Go to Flow View** control in the always-visible project header opens `/seamless/projects/:projectId` for that same project. `/seamless` itself redirects to `/projects`; there is no global view chooser or duplicate project-directory page. The project switch checks V2 capability and becomes unavailable when the backend flag is off. **Open in Classic** and **Continue in Flow View** flip the active writer around one canonical goal ledger. A Classic conversation may contain many goal-linked turns, and a goal gets a preferred Classic home only after an explicit open; the bridge never invents a conversation split.
+The implemented surface preserves the original cream `/welcome` and `/projects` path. Users first open a Classic project dashboard, where a small **Go to Flow View** control in the always-visible project header opens `/seamless/projects/:projectId` for that same project. `/seamless` itself redirects to `/projects`; there is no global view chooser or duplicate project-directory page. The project switch checks V2 capability and becomes unavailable when the backend flag is off. Each focus has one explicit Classic bridge conversation: **Open in Classic** and **Continue in Flow View** flip the active writer and preserve visible Q&A without migrating unrelated chats or duplicating tool/evidence/usage rows.
 
-The Flow project view uses the same warm cream Socrates surface as Classic, but its center is a focused projection of one exchange rather than the whole chronological transcript. The current user request remains above the living sphere. While Socrates is routing, thinking, or using tools, the sphere becomes the sole prominent visual anchor and floats/revolves with restrained stateful motion. Exactly one fixed-height activity sentence sits beneath it. `Finding the right focus…` is replaced in place by later states such as `Searching the tool registry…`, `Reading traceRetrieveTool.ts…`, or `Comparing four related files…`; these are never stacked into a list or tag array. Parallel operations collapse into the same sentence. Approvals, credentials, and Terminal input remain full interactive components when action is required.
+The Flow project view uses the same warm cream Socrates surface as Classic, with a restrained low-contrast living sphere and one chronological timeline. Two lightweight clipped notes float on that surface: **Live Context** and **Current Focus / Current Task**. They can be dragged only by their complete circular paperclip handles, moved precisely with the arrow keys, clamped into the responsive workspace, and persisted per project. Opening either note reveals the larger Context/Focuses/Activity inspector; that inspector can be pinned or dismissed, and keeps detailed evidence, focus lifecycle, approvals, tools, credentials, Terminals, and speech settings out of the calm default surface.
 
-The final answer does not enter the reading layer until its structured result is validated and durably saved. It then appears above the sphere as the foreground content, while the sphere fades/scales into its existing subtle background presence and the live sentence disappears. Persisted reasoning and tool history becomes one collapsed disclosure such as **Thinking · 11 tool calls**, expandable on demand. A historical exchange shows the saved answer and disclosure but never replays live activity. Two single lightweight notes float above the canvas: **Live Context** and **Current Focus / Current Task**. They can be dragged only by their complete circular paperclip handles, moved precisely with the arrow keys, clamped into the responsive workspace, and persisted per project. The focus note always displays backend-authoritative state rather than deriving a label from the visible query.
-
-The outer shell is not a V2 imitation: both views render the shared `ProjectChatSidebar` shell and `WorkspaceTopbar`, so full collapse, hover bounds, dimensions, and dashboard treatment stay identical. The target Flow sidebar is a three-stage drill-in: **Projects → Goals → Queries**. It opens on Queries for the selected goal; one back action opens Goals for the current project and another opens Projects. Each level owns a fixed heading/control region and one independently scrolling list. A new goal becomes selected and its Queries list shows only that goal's tasks, while completed or parked goals remain one level back. Clicking a completed goal views it without silently reopening it; a later send is routed semantically with that explicit selection as a strong candidate. The drawer overlays the canvas instead of shifting or resizing notes or the composer. **Classic View** returns to the originating conversation or lazily creates/reuses the selected goal's Classic home under the Flow North Star.
+The outer shell is not a V2 imitation: both views render the shared `ProjectChatSidebar` shell and `WorkspaceTopbar`, so full collapse, hover bounds, dimensions, and dashboard treatment stay identical. Their sidebar content deliberately differs: Classic shows projects, conversations, and New Chat actions; Flow shows project-only links, one per persistent project Flow, and never displays conversations or New Chat controls. In Flow the shared sidebar is an overlay drawer: opening it covers the canvas instead of shifting, shrinking, or reflowing the notes and composer. **Classic View** returns to the exact source project. Flow renders assistant Markdown/GFM, sparse same-turn routing clarification, streamed reasoning disclosure, message attachments, and tool results.
 
 The composer is the actual shared Classic `ChatComposer`, preserving the exact model/thinking menus, send/stop behavior, file picker, image paste, image/file preview tray, drag/drop, vision warning, Agent Skill ZIP support, attachment limits, and 10,000-character large-paste attachment rule. Both Classic and Flow now receive the same optional push-to-talk microphone presentation. Classic sends the normalized recording to its temporary conversation-scoped STT endpoint and appends the transcript to its draft without auto-sending or creating V2 state. Flow uses the V2 speech path and sends a finalized transcript through the Goal Router. Neither view adds a separate Tools control. Per-response read aloud remains outside the composer. Users do not create chats or manually organize goal boundaries, though direct switch/pause/finish/reopen/archive/pin controls remain available.
 
-V2 uses the same Socrates agent, tools, providers, workspace `.socrates/`, global `~/.Socrates/`, Memory Router implementation, and global Memory Agent as Classic. It does not use the Classic conversation-title rewriter or a capsule-writing LLM: deterministic goal titles and materiality-gated rich capsule versions provide the Seamless navigation/resume labels. The Goal Router has its own model/thinking setting and runs its strict structured contract through the shared agent runner without calling the title-rewrite service. V2 turn, tool, approval, Terminal, evidence, context, usage, and event persistence remains `v2_*`-owned. Canonical V2 Q&A parents reuse shared LanceDB lexical/semantic/combined retrieval under explicit `runtimeKind = "v2_flow"` and `flowId` filters; queryless/inspect/audit continue to resolve through V2-owned raw evidence.
+V2 uses the same Socrates agent, tools, providers, workspace `.socrates/`, global `~/.Socrates/`, Memory Router implementation, and global Memory Agent as Classic. It does not use the Classic conversation-title rewriter or a capsule-writing LLM: deterministic goal titles and materiality-gated rich capsule versions provide the Seamless navigation/resume labels. The Goal Router reuses the configured fast structured `title_generator` worker model selection without calling the title-rewrite service. V2 turn, tool, approval, Terminal, evidence, context, usage, and event persistence remains `v2_*`-owned. Canonical V2 Q&A parents reuse shared LanceDB lexical/semantic/combined retrieval under explicit `runtimeKind = "v2_flow"` and `flowId` filters; queryless/inspect/audit continue to resolve through V2-owned raw evidence.
 
-The shared speech foundation has two deliberately different orchestration surfaces but one explicit preference. Voice defaults to **Not configured** in both views; the transcript stays in the draft until the user sends it. Settings offers two transcription modes and one read-aloud mode:
+The shared speech foundation has two deliberately different orchestration surfaces. Classic offers one simple composer mic and currently defaults to offline Whisper `small.en`; the transcript stays in the draft until the user sends it. V2 Voice V1 exposes two transcription modes and one read-aloud mode:
 
 ```text
 Speech input
@@ -1256,7 +1252,7 @@ Read aloud
 
 The OpenRouter list is an explicit allowlist even if discovery returns other transcription models. The UI shows Local versus OpenRouter before recording is submitted and never switches from local to cloud automatically. Local model packs install only after an explicit user action with byte/checksum verification and then run offline. Granite Speech, Ollama speech, hosted TTS, and full-duplex realtime voice are outside this first slice.
 
-Full routing, context, voice, concurrency, recovery, and validation boundaries are in `V2_FLOW_ARCHITECTURE.md`. Whole-repo regression, production builds, focused browser interaction verification, and supported-platform v0.1.19 release archives have passed for the released foundation. The current-exchange Focus UI was subsequently verified on 2026-07-21 with an isolated three-exchange Flow, query-history selection, long-query expansion, concise deletion, and Flow -> Classic -> Flow navigation at desktop, narrow, and mobile widths. The extended soak remains outstanding. The existence of the UI must not be described as proof of 24-hour unattended reliability.
+Full routing, context, voice, concurrency, recovery, and validation boundaries are in `V2_FLOW_ARCHITECTURE.md`. Whole-repo regression, production builds, and focused browser interaction verification have passed for this milestone; extended soak and supported-platform release evidence remain outstanding. The existence of the UI must not be described as proof of 24-hour unattended reliability.
 
 ## Design Notes
 

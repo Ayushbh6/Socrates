@@ -4,7 +4,7 @@ This document is the handshake between the frontend and backend workstreams.
 
 Both sides must build against this contract. The backend owns persistence, agent execution, providers, tools, approvals, and WebSocket event emission. The frontend owns routes, screens, user interactions, rendering, local view state, and event presentation.
 
-The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the frontend/backend contract and records the implemented V2 Seamless Flow boundary. `FLOW_NORTH_STAR.md` owns the target product semantics; the complete current V2 schemas live in `packages/contracts/src/v2Flow.ts`, and current lifecycle mechanics and migration constraints live in `V2_FLOW_ARCHITECTURE.md`.
+The executable source of truth for shared TypeScript types and schemas lives in `packages/contracts`. This document explains the stable Classic frontend/backend contract and records the boundary around preserved, non-shipping V2 Seamless redesign code. The V2 schemas remain in `packages/contracts/src/v2Flow.ts`; lifecycle design lives in `V2_FLOW_ARCHITECTURE.md`.
 
 ## Contract Goals
 
@@ -40,9 +40,9 @@ The contract must also stay expandable for later:
 
 Everything below remains the V1 Classic contract unless a section explicitly says otherwise.
 
-V2 does not add goal ids, Flow state, V2 context-projection rows, or Flow routing semantics to V1 wire payloads and events. It has a namespaced contract family, separate handlers/subscriptions, a feature-gated UI entry, and V2-owned execution persistence. Existing V1 clients continue to function without knowing V2 exists. The model-visible `context_disposition` tool is different: it is a shared core Socrates within-turn control in both views and never creates V2 persistence from Classic. Behind that wire boundary, Classic pre/post Memory Router phases may select/finalize the canonical project goal ledger and persist exact turn-goal links. The Classic microphone is a small conversation-scoped STT contract: it returns text for the existing unsent draft and creates no Flow speech job or artifact.
+V2 does not add goal ids, Flow state, context dispositions, or V2 routing semantics to Classic payloads and events. Stable server construction does not mount V2 handlers or subscriptions, stable web builds expose no Flow route or entry, and ordinary Classic operation does not read or write V2 state. Existing Classic clients function without knowing V2 exists. The Classic microphone is a small conversation-scoped STT contract: it returns text for the unsent draft and creates no goal, Flow, V2 speech job, or V2 artifact.
 
-`SOCRATES_V2_FLOW_ENABLED` is false for a directly constructed source server unless its value is exactly `true`. Direct source-server development must set it explicitly. The ordinary NPM/runtime-archive `scripts/runtime/launcher.mjs` passes the explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes the project-scoped Seamless switch and retains an explicit rollback override.
+`SOCRATES_V2_FLOW_ENABLED` is not a stable runtime contract. The stable launcher does not set it, `/api/v2/*` and `/v2/ws` return not found, and `/seamless` is absent. The only permitted stable V2 access is the one-time upgrade reconciliation that recovers completed visible bridged Q&A and returns bridge ownership to Classic.
 
 The implemented V2 families include:
 
@@ -58,36 +58,13 @@ v2.speech.*
 
 The exact entities, HTTP bodies, socket commands, socket events, and speech unions are in `packages/contracts/src/v2Flow.ts`. That module is not merged into the V1 command or event unions, so a V2 payload cannot be accidentally accepted by a Classic handler.
 
-V2 reuses the same normalized provider, tool semantics, approvals, Terminal supervisor, artifacts, usage normalization, errors, workspace `.socrates/`, global `~/.Socrates/`, MCP/skills, Memory Router implementation, and global Memory Agent. Ordinary V2 execution never creates a shadow Classic runtime merely to reuse an endpoint. The explicit bridge keeps one canonical goal ledger: a Classic conversation can contain many goals, each routed Classic turn links to one goal, and each goal has at most one preferred Classic home. Visible Q&A mirrors idempotently only across an established home; tools, evidence, usage, and events stay source-runtime-owned. Canonical V2 Q&A parents enter the shared retrieval index with `runtimeKind = "v2_flow"` and `flowId`; lexical/semantic/combined searches use that shared index, while queryless/inspect/audit resolve through V2-owned raw evidence.
+V2 reuses the same normalized provider, tool semantics, approvals, Terminal supervisor, artifacts, usage normalization, errors, workspace `.socrates/`, global `~/.Socrates/`, MCP/skills, Memory Router implementation, and global Memory Agent. Conversation-owned records are persisted through V2 contracts and 29 `v2_*` tables. Ordinary V2 execution never creates a shadow Classic runtime merely to reuse an endpoint. The explicit bridge alone maps each focus to at most one Classic conversation/session and mirrors visible Q&A idempotently; tools, evidence, usage, and events remain V2-owned. Canonical V2 Q&A parents enter the shared retrieval index with `runtimeKind = "v2_flow"` and `flowId`; lexical/semantic/combined searches use that shared index, while queryless/inspect/audit resolve through V2-owned raw evidence.
 
 V2 also renders the same shared web `ChatComposer` used by Classic. The component owns identical model/thinking menus, send/stop behavior, attachment picker, pasted and drag/dropped images, previews, vision warning, Agent Skill ZIP support, large-paste conversion, and optional microphone presentation in both views. V2 supplies V2-scoped attachment upload/send and voice callbacks; Classic supplies its existing attachment/send callbacks plus its conversation-scoped transcription callback. There is no V2-specific Tools toggle or second composer implementation.
 
-The web shell follows the same rule: Classic and Flow both render the `ProjectChatSidebar` shell and `WorkspaceTopbar`. The shared sidebar has a fixed viewport height/width and an overflow-hidden outer shell; its heading and controls are non-scrolling, and only the active bounded names list may scroll. The target Flow navigation contract has three typed levels: Projects, Goals in the selected project, and Queries/tasks in the selected goal. Flow opens on the current goal's Queries level, backs into Goals, then Projects. The levels never share one scroll surface. Selecting a completed goal changes presentation/composer scope without mutating goal state; the next send still passes through semantic routing. V2 keeps overlay mode so its drawer covers the Flow canvas without changing canvas/composer coordinates and must not implement a parallel project rail or separate header geometry.
+The web shell follows the same rule: Classic and Flow both render the `ProjectChatSidebar` shell and `WorkspaceTopbar`. `ProjectChatSidebar` has two data modes: Classic renders nested conversations and New Chat actions; Flow renders project-only links targeting `/seamless/projects/:projectId`, with no conversation rows or chat-creation controls. V2 sets the shared sidebar to overlay mode so its 320px drawer covers the Flow canvas instead of changing canvas/composer coordinates. V2 may supply different center-workspace content and header actions, but it must not implement a parallel project rail, collapsed icon strip, or separate header geometry. Collapsing the shared sidebar removes it completely and leaves only the shared expand button.
 
-The V2 center workspace renders one selected/current exchange through the shared transcript primitives. During an active turn, the living sphere becomes the prominent anchor and exactly one fixed-height `activityLabel` appears beneath it; every later routing/thinking/tool/finalizing state replaces that value in place. The frontend must never accumulate these values into rows or tags. The backend owns the bounded human-facing label from typed execution state, including deterministic safe formatting/grouping for tools; the frontend does not render raw tool syntax, opaque ids, secrets, `undefined`, or unbounded provider reasoning in that slot. User-action states such as approvals, credentials, and Terminal input keep their full components.
-
-After the structured final answer passes schema/integrity validation and is saved, the answer becomes the foreground reading layer, the sphere recedes behind it, and the live label clears. Persisted reasoning/tool activity is available through one collapsed disclosure and the normal detailed trace components. Historical exchanges never receive a live label. Long user requests may be presentation-collapsed without changing message content. Two single movable notes summarize Live Context and Current Focus/Task; their drag/open state remains presentation-only.
-
-### Target Flow activity status contract
-
-The current V2 event set exposes message deltas and tool updates but does not yet provide the single backend-authored display status required by the Flow North Star. Convergence must add one strict event in the existing V2 socket namespace rather than make the frontend infer copy from raw events:
-
-```ts
-type V2AgentActivityUpdatedPayload = {
-  turnId: string
-  phase: "routing" | "thinking" | "tool" | "finalizing" | "waiting" | "cleared"
-  label: string | null // null only for cleared
-  occurredAt: string
-}
-
-type V2AgentActivityUpdatedEvent = {
-  type: "v2.agent.activity.updated"
-  payload: V2AgentActivityUpdatedPayload
-  // normal V2 envelope scope/source fields
-}
-```
-
-Only the latest event for the current turn occupies the live slot. Labels are bounded, single-line, human-facing runtime output. Tool definitions/runtime formatters own safe labels and parallel-call grouping. The event is presentation state, not semantic conversation history and not a replacement for persisted reasoning/tool audit rows. Completion emits `phase: "cleared", label: null` after the validated answer is saved; hydration of a completed turn derives only the collapsed trace summary and never restores a live activity label.
+The V2 center workspace uses two movable clipped notes rather than a fixed focus ribbon: one summarizes Live Context and one summarizes Current Focus/Task. Their circular paperclip buttons are the only drag handles, also support keyboard arrow movement, and store clamped per-project coordinates locally. Selecting a note opens the larger typed Context/Focuses/Activity inspector, whose pinned/open state is presentation-only local state.
 
 The implemented V2 Voice V1 configuration is:
 
@@ -118,7 +95,7 @@ type ConversationTranscriptionResponse = {
 }
 ```
 
-Classic and Flow read the same explicit browser preference, which defaults to `disabled`. Choosing an offline Whisper model never installs it; the user must press a size-labelled, checksum-verified Install action in Settings. Choosing one of the three OpenRouter models requires the user's configured OpenRouter credential. Classic appends `transcriptText` to the controlled composer draft and never auto-sends it or silently switches engines.
+Its current UI sends `engine=local_whisper&modelId=small.en`, appends `transcriptText` to the controlled composer draft, and never auto-sends it. The route may also validate the existing Whisper `base.en` and three OpenRouter transcription ids for future explicit selection, but it never silently switches engine.
 
 ```text
 POST /api/projects/:projectId/conversations/:conversationId/speech/transcribe
@@ -143,8 +120,6 @@ GET  /api/v2/projects/:projectId/flows/:flowId/context
 POST /api/v2/projects/:projectId/flows/:flowId/evidence/retrieve
 POST /api/v2/projects/:projectId/flows/:flowId/attachments/upload
 GET  /api/v2/projects/:projectId/flows/:flowId/attachments/:attachmentId/content
-DELETE /api/v2/projects/:projectId/flows/:flowId/goals/:goalId
-DELETE /api/v2/projects/:projectId/flows/:flowId/turns/:turnId
 
 GET    /api/v2/speech/packs
 GET    /api/v2/speech/packs/:packId
@@ -160,7 +135,7 @@ WS /v2/ws
 
 V2 client commands are `v2.flow.subscribe`, `v2.flow.unsubscribe`, `v2.message.send`, `v2.routing.clarification.respond`, `v2.focus.update`, `v2.turn.cancel`, `v2.approval.decide`, `v2.feedback.submit`, `v2.credential.input.submit`, and the `v2.terminal.stop/input/resize/rename` family. Focus actions are `switch`, `pause`, `finish`, `reopen`, `archive`, `pin`, and `unpin`. The live server emits connection/snapshot hydration, turns/messages, goal routing/clarification/capsules/transitions, context dispositions/compaction, tool/approval/credential/Terminal/error lifecycle, feedback, and Frontier handover. The contract also reserves typed `v2.artifact.created` and `v2.speech.job.updated` events; artifact/speech jobs are currently handled through HTTP. All envelopes carry schema version 2 plus project/Flow scope; runtime events use a `v2.` prefix.
 
-The V2 project route is `/seamless/projects/:projectId`; `/seamless` redirects to the Classic `/projects` directory. The Classic project dashboard owns the capability-aware **Go to Flow View** link into its matching Flow; a mapped Classic chat uses **Continue in Flow View**. These labels do not rename the internal route namespace. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router has a dedicated `goal_router` model/thinking setting and calls the strict V2 routing schema through the shared structured-agent runner; it is not a title rewrite.
+The V2 project route is `/seamless/projects/:projectId`; `/seamless` redirects to the Classic `/projects` directory. The Classic project dashboard owns the capability-aware **Go to Flow View** link into its matching Flow; a mapped Classic chat uses **Continue in Flow View**. These labels do not rename the internal route namespace. V2 does not call the Classic conversation-title endpoint/service or a separate capsule-writing model; deterministic goal titles and materiality-gated rich capsule versions are its navigation/resume contract. The V2 Goal Router may reuse the configured fast structured `title_generator` worker model selection, but it calls the strict V2 routing schema and is not a title rewrite.
 
 ## Route Contract
 
@@ -1139,11 +1114,7 @@ update conversations.updated_at
 emit conversation.updated event
 ```
 
-### `GET /api/projects/:projectId/conversations/:conversationId/deletion-impact`
-
-Returns `{ linkedToFlow: boolean }` so the UI can choose the compact confirmation without inferring bridge state.
-
-### `DELETE /api/projects/:projectId/conversations/:conversationId?scope=classic_only|everywhere`
+### `DELETE /api/projects/:projectId/conversations/:conversationId`
 
 Hard-deletes a conversation.
 
@@ -1164,8 +1135,6 @@ emit conversation.deleted event before the final conversation row delete or as a
 ```
 
 This endpoint must not archive the conversation and must not set `conversations.status = "deleted"` in the current V1 flow. It must not delete project resources, project instructions, the owning project, or retained chat attachment files under `.socrates/attachments`.
-
-`classic_only` detaches the bridge and preserves canonical Flow history. `everywhere` atomically removes linked Flow exchanges before deleting Classic state and then rebuilds project retrieval. Flow turn deletion removes the complete exchange, including its user/assistant messages and owned tool, approval, Terminal, evidence, usage, and Classic-projection rows. Flow goal deletion applies that operation to every turn in the focus, removes its Classic copy, and switches to protected General Conversation. Active work cannot be deleted.
 
 ### `POST /api/projects/:projectId/conversations/:conversationId/messages`
 
@@ -1211,7 +1180,6 @@ normal chat send uses WebSocket chat.message.send
 after the first user message is saved, emit conversation.updated with the placeholder title
 generate a personalized title from the first text/image message
 title model: resolved Title Generator worker model setting
-execution: no-tool TitleGeneratorAgent through StructuredToolAgentRunner with the prompt in packages/core/src/prompts/titleGeneratorPrompt.ts and strict conversationTitleAgentOutputSchema validation
 OpenRouter built-in default: openrouter meta-llama/llama-4-maverick with thinking off
 ChatGPT Codex effective default, when connected and the saved setting is built-in/default unavailable: openai chatgpt_subscription gpt-5.4-mini with low reasoning
 if a generated title is returned and the title is still the placeholder, update the conversation and emit conversation.updated
@@ -1689,10 +1657,6 @@ Explored 2 files, ran 1 command
 ```
 
 For V1, the frontend may derive this summary from completed tool calls. The backend may also provide `metrics` to avoid duplicated counting logic.
-
-### Tool activity presentation
-
-The shared Classic/Flow activity surface is a live execution trace, not a generic spinner. While a call is active it must keep the row expanded and name the actual operation (for example, reading a file, searching, running a Terminal command, or applying an edit). Approval-required calls remain visibly awaiting approval. Completed edits show the edited path and compact added/removed-line counts; Terminal rows keep streamed output available. Failed or cancelled calls stay expanded with their normalized error so a user never has to infer that a call silently failed. This is presentation of the existing lifecycle events, not a separate provider-specific progress protocol.
 
 ### `tool.call.failed`
 
@@ -2577,19 +2541,12 @@ Rules:
 
 ### Worker Model Settings
 
-Skill Writer, Socrates Context Compactor, Memory Context Compactor, Title Generator, Goal Router, Memory Router, and Frontier model settings are independently user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for all seven workers while preserving the default models already used by the app. Socrates Context Compactor controls shared Classic/Flow 170k chat compression. Fine-grained within-turn tool-output disposition is selected by the active main Socrates model in the same response as its next functional tool, so it has no separate worker setting. Memory Context Compactor controls Global Memory Agent and Skill Writer compression. Memory Router controls the structured pre-turn and post-evidence routing calls. Frontier controls the one-way same-task takeover target.
+Skill Writer, Context Compactor, Title Generator, Memory Router, and Frontier model settings are user-configurable through `/api/worker-model-settings`. The Settings page should show polished registry-backed model/thinking selectors for these workers while preserving the default models already used by the app. Memory Router controls the structured pre-turn and post-evidence routing calls. Frontier controls the one-way same-task takeover target.
 
 All model settings are auth-mode-aware. `authMode = "api_key"` means normal provider API credentials or a local direct provider path such as Ollama. `authMode = "chatgpt_subscription"` is currently valid only for OpenAI ChatGPT Codex subscription auth. Saved unavailable settings are preserved, and runtime/UI resolution returns an effective fallback without overwriting the saved row. Ollama settings are valid when the exact discovered local model is still available; Ollama thinking options are intentionally just Off and On.
 
 ```ts
-type WorkerModelRole =
-  | "skill_writer"
-  | "socrates_context_compactor"
-  | "memory_context_compactor"
-  | "title_generator"
-  | "goal_router"
-  | "memory_router"
-  | "frontier"
+type WorkerModelRole = "skill_writer" | "context_compactor" | "title_generator" | "memory_router" | "frontier"
 
 type WorkerModelSettings = {
   workerId: WorkerModelRole
@@ -2923,7 +2880,7 @@ new user query
 current-turn tool calls only
 ```
 
-When the context grows too large, compression happens before a provider request is sent. Classic and Flow are two views of the same Socrates runtime and share one fixed trigger at 170k estimated model-visible input tokens; model context-window metadata must not derive a separate Flow trigger. The rebuilt request has an 80k preferred soft target, with at most 60k classified `excellent`, 60-80k `preferred`, 80-120k `acceptable`, and anything above the 120k post-compaction ceiling rejected. The 180k limit remains the hard pre-provider ceiling. Tail selection keeps recent whole turns only within the remaining preferred budget after reserving fixed prompt/tool context, the active turn, and the maximum summary allowance; it does not spend another model call solely to improve the size class. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with validated source-turn handles and targeted lexical/semantic/audit retrieval hints. Active snapshots replace represented raw turns in the model request without deleting SQLite history. Bounded deterministic carryover writes exact `.socrates/attachments/...` paths to `relevantFiles`, exact shell commands to `toolState`, and explicit unresolved/do-not-complete user instructions to `blocked`. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. All compressor calls run through the no-tool `CompressorAgent` and shared structured runner. Classic/Flow uses the resolved Socrates Context Compactor setting; Global Memory Agent and Skill Writer compression use the Memory Context Compactor setting. Built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
+When the context grows too large, compression happens before a provider request is sent. The V1 trigger is 170k estimated model-visible input tokens. The rebuilt request has an 80k preferred soft target, with at most 60k classified `excellent`, 60-80k `preferred`, 80-120k `acceptable`, and anything above the 120k post-compaction ceiling rejected. The 180k limit remains the hard pre-provider ceiling. Tail selection keeps recent whole turns only within the remaining preferred budget after reserving fixed prompt/tool context, the active turn, and the maximum summary allowance; it does not spend another model call solely to improve the size class. This includes long conversations, long single-turn tasks, and backend Global Memory Agent runs. Recent visible conversation turns should still be sent as normal role-typed messages. Older same-conversation history, bulky current-turn tool evidence, and important decisions may be represented in hidden compacted context with validated source-turn handles and targeted lexical/semantic/audit retrieval hints. Active snapshots replace represented raw turns in the model request without deleting SQLite history. Bounded deterministic carryover writes exact `.socrates/attachments/...` paths to `relevantFiles`, exact shell commands to `toolState`, and explicit unresolved/do-not-complete user instructions to `blocked`. Global Memory Agent runs use the memory-specific structured compaction schema and prompt. The compressor model comes from the resolved Context Compactor worker setting; built-in OpenRouter defaults must resolve away from OpenRouter when only ChatGPT Codex or another provider auth source is available.
 
 Inline `chat.message.send.content` is capped at 10,000 characters and one message may contain at most 15 attachment ids. Oversized pasted text is uploaded as a `text/plain` attachment under `.socrates/attachments/`; the provider sees a compact name/path/hash/size provenance manifest, not the full bytes, until Socrates explicitly reads or searches that source. Image and text attachments are each capped at 5 MB and the combined message attachment payload is capped at 20 MB.
 

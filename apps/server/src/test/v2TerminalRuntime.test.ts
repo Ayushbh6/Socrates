@@ -151,7 +151,7 @@ const seedProject = (handle: DatabaseHandle, workspace: string): void => {
 }
 
 const createGoalResult = (): V2GoalRouterResult => ({
-  decision: { action: "create", title: "Test goal" },
+  decision: { action: "create", secondaryGoalIds: [], confidence: 1, reasonCode: "new_goal" },
   candidates: { parked: [], candidates: [], totalEligibleParked: 0, parkedCandidateLimit: 5 },
   source: "fallback",
   fallbackReason: "invalid_output",

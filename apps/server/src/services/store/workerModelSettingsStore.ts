@@ -19,15 +19,8 @@ export const DEFAULT_WORKER_MODEL_SETTINGS: Record<WorkerModelRole, Omit<WorkerM
     modelId: "xiaomi/mimo-v2.5-pro",
     thinkingEnabled: false,
   },
-  socrates_context_compactor: {
-    workerId: "socrates_context_compactor",
-    providerId: "openrouter",
-    authMode: "api_key",
-    modelId: "deepseek/deepseek-v4-flash",
-    thinkingEnabled: false,
-  },
-  memory_context_compactor: {
-    workerId: "memory_context_compactor",
+  context_compactor: {
+    workerId: "context_compactor",
     providerId: "openrouter",
     authMode: "api_key",
     modelId: "deepseek/deepseek-v4-flash",
@@ -35,13 +28,6 @@ export const DEFAULT_WORKER_MODEL_SETTINGS: Record<WorkerModelRole, Omit<WorkerM
   },
   title_generator: {
     workerId: "title_generator",
-    providerId: "openrouter",
-    authMode: "api_key",
-    modelId: "meta-llama/llama-4-maverick",
-    thinkingEnabled: false,
-  },
-  goal_router: {
-    workerId: "goal_router",
     providerId: "openrouter",
     authMode: "api_key",
     modelId: "meta-llama/llama-4-maverick",
@@ -64,15 +50,7 @@ export const DEFAULT_WORKER_MODEL_SETTINGS: Record<WorkerModelRole, Omit<WorkerM
   },
 }
 
-const workerOrder: WorkerModelRole[] = [
-  "skill_writer",
-  "socrates_context_compactor",
-  "memory_context_compactor",
-  "title_generator",
-  "goal_router",
-  "memory_router",
-  "frontier",
-]
+const workerOrder: WorkerModelRole[] = ["skill_writer", "context_compactor", "title_generator", "memory_router", "frontier"]
 
 export class WorkerModelSettingsStore extends StoreBase {
   ensureAll(): WorkerModelSettings[] {

@@ -44,7 +44,7 @@ export const v2FlowSchema = z
   })
   .strict()
 
-export const v2GoalStatusSchema = z.enum(["foreground", "parked", "blocked", "completed", "discarded", "archived"])
+export const v2GoalStatusSchema = z.enum(["foreground", "parked", "blocked", "completed", "archived"])
 export const v2GoalOriginSchema = z.enum(["router", "user", "recovery", "system"])
 export const v2GoalKindSchema = z.enum(["general", "work"])
 
@@ -77,7 +77,6 @@ export const v2GoalTransitionReasonSchema = z.enum([
   "blocked",
   "resumed",
   "completed",
-  "discarded",
   "archived",
   "reopened",
   "auto_archived",
@@ -107,30 +106,6 @@ export const v2GoalRoutingDecisionSchema = z.enum([
   "clarify",
 ])
 export const v2GoalRoutingStatusSchema = z.enum(["running", "awaiting_clarification", "completed", "failed", "fallback"])
-
-export const v2GoalRouterOutputSchema = z
-  .object({
-    action: z.enum(["use", "create", "clarify"]),
-    candidates: z.array(z.number().int().min(1).max(5)).max(5),
-    title: z.string().min(1).max(200).nullable(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const candidates = [...new Set(value.candidates)]
-    if (candidates.length !== value.candidates.length) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Candidate numbers must be unique." })
-    }
-    if (value.action === "use" && (candidates.length !== 1 || value.title !== null)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Use requires one candidate and a null title." })
-    }
-    if (value.action === "create" && (candidates.length !== 0 || !value.title?.trim())) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["title"], message: "Create requires a short title and no candidates." })
-    }
-    if (value.action === "clarify" && (candidates.length < 2 || value.title !== null)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ["candidates"], message: "Clarify requires two to five candidates and a null title." })
-    }
-  })
-export type V2GoalRouterOutput = z.infer<typeof v2GoalRouterOutputSchema>
 
 export const v2GoalRoutingRunSchema = z
   .object({
@@ -1022,19 +997,6 @@ export const v2FocusUpdatePayloadSchema = z
   })
   .strict()
 
-export const v2DeleteGoalResponseSchema = z
-  .object({
-    deletedGoalId: idSchema,
-    fallbackGoalId: idSchema,
-  })
-  .strict()
-
-export const v2DeleteTurnResponseSchema = z
-  .object({
-    deletedTurnId: idSchema,
-  })
-  .strict()
-
 export const v2TurnCancelPayloadSchema = z
   .object({ turnId: idSchema, reason: z.string().max(1_000).optional() })
   .strict()
@@ -1333,8 +1295,6 @@ export type V2SpeechJob = z.infer<typeof v2SpeechJobSchema>
 export type V2MessageWindow = z.infer<typeof v2MessageWindowSchema>
 export type V2FlowSnapshot = z.infer<typeof v2FlowSnapshotSchema>
 export type V2CreateSpeechJobRequest = z.infer<typeof v2CreateSpeechJobRequestSchema>
-export type V2DeleteGoalResponse = z.infer<typeof v2DeleteGoalResponseSchema>
-export type V2DeleteTurnResponse = z.infer<typeof v2DeleteTurnResponseSchema>
 export type V2ClientCommand = z.infer<typeof v2ClientCommandSchema>
 export type V2ServerEvent = z.infer<typeof v2ServerEventSchema>
 export type V2SocketMessage = z.infer<typeof v2SocketMessageSchema>

@@ -5,8 +5,6 @@ import type {
   BashToolOutput,
   CurrentTimeToolInput,
   CurrentTimeToolOutput,
-  ContextDispositionToolInput,
-  ContextDispositionToolOutput,
   EditToolInput,
   EditToolOutput,
   ListProjectResourcesToolInput,
@@ -41,8 +39,6 @@ import type {
   SkillsToolOutput,
   SkillWriteToolInput,
   SkillWriteToolOutput,
-  SkillManagerToolInput,
-  SkillManagerToolOutput,
   SoulToolInput,
   SoulToolOutput,
   ToolDocsToolInput,
@@ -115,7 +111,6 @@ export type ToolExecutors = {
   turn_evidence?: (input: TurnEvidenceToolInput, context: ToolExecutorContext) => Promise<TurnEvidenceToolOutput>
   read_memory_journal?: (input: ReadMemoryJournalToolInput, context: ToolExecutorContext) => Promise<ReadMemoryJournalToolOutput>
   skill_write?: (input: SkillWriteToolInput, context: ToolExecutorContext) => Promise<SkillWriteToolOutput>
-  skill_manager?: (input: SkillManagerToolInput, context: ToolExecutorContext) => Promise<SkillManagerToolOutput>
   mcp_registry?: (
     input: McpRegistryToolInput,
     context: ToolExecutorContext,
@@ -167,7 +162,6 @@ export type ToolRuntimeContext = Omit<ToolExecutorContext, "onOutput"> & {
   }
   modelCallId?: string | undefined
   stepIndex?: number | undefined
-  applyContextDisposition?: (input: ContextDispositionToolInput) => Promise<ContextDispositionToolOutput>
 }
 
 export type ToolPolicyDecision =

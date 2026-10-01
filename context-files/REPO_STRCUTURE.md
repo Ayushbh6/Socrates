@@ -101,7 +101,6 @@ Socrates/
   context-files/
     APP_FLOW.md
     DB_STRUCTURE.md
-    FLOW_NORTH_STAR.md
     FRONTEND_BACKEND_CONTRACT.md
     PROVIDER_USAGE.md
     REPO_STRCUTURE.md
@@ -120,9 +119,9 @@ Socrates/
 
 Root `scripts/` owns opt-in maintenance, packaging, benchmark, and evaluation entrypoints that are not application runtime modules; a package-specific runner may live under that package's `scripts/` directory when it needs package-owned dependencies. Evaluation fixtures and durable summarized findings live under a matching `evals/<name>/` directory. The Memory Router gate experiment follows this boundary: its runner lives outside server `src`, is invoked only by `pnpm eval:memory-router-gate`, uses a synthetic dataset, and records the rejected production decision in a report while raw provider result JSON is ignored. Nothing under that experiment is imported by the server, web app, CLI, or runtime archive.
 
-## Implemented V2 Flow Isolation
+## Preserved V2 Flow Isolation
 
-`FLOW_NORTH_STAR.md` defines the durable target product intent for Classic and Flow as two views of one canonical Socrates work state. `V2_FLOW_ARCHITECTURE.md` records the released experimental implementation, migration constraints, and current technical mechanics.
+`V2_FLOW_ARCHITECTURE.md` defines redesign work preserved separately from stable Classic. Its modules remain namespaced for future work, but the stable server, web route tree, retrieval/memory runtime, and packaged launcher do not activate them.
 
 The implementation uses namespaced modules inside the owning packages:
 
@@ -134,13 +133,10 @@ apps/web/src/components/chat + hooks/useClassicVoiceTranscription.ts + lib/speec
   -> shared Classic/Flow shell and composer, Classic draft-only STT, and shared browser audio normalization
 
 apps/server/src/routes/v2* + src/v2 + services/v2
-  -> V2 HTTP/WebSocket transport, Flow/Terminal runtime, stores, exact evidence audit, speech, feature flag
-
-packages/core/src/agent + context + tools
-  -> shared Socrates loop, within-turn tool-output disposition, fixed 170k compaction
+  -> V2 HTTP/WebSocket transport, Flow/Terminal runtime, stores, context maintenance, speech, feature flag
 
 packages/core/src/v2
-  -> V2 Goal Router, Flow orchestration, context-ledger compatibility primitives
+  -> V2 Goal Router, Flow orchestrator, context ledger, Context Distiller integration
 
 packages/contracts/src/v2Flow.ts
   -> V2-only schemas, commands, events, and entity types
@@ -152,9 +148,9 @@ packages/workspace
   -> shared tools and workspace operations, no V2 fork
 ```
 
-There is no second provider layer, workspace layer, duplicate low-level tool set, or duplicate semantic index. The released V2 path calls the same Socrates agent, provider/model catalog, workspace `.socrates/`, global `~/.Socrates/`, Memory Router/Memory Agent, tools, ZIP skill import, MCP registry, workspace operations, and LanceDB retrieval foundation through namespaced adapters. Current Flow Q&A rows carry `runtimeKind = "v2_flow"` plus `flowId`, and the released bridge may mirror visible messages while keeping raw runtime evidence source-owned. This is migration reality, not the target semantic boundary. `FLOW_NORTH_STAR.md` requires convergence on canonical work identities and view projections without replacement Q&A copies; new architecture must not expand the mirror-based assumption. The Goal Router uses its own `goal_router` worker selection through the shared structured-agent runner, while V2 never invokes the Classic title-rewrite service or adds a capsule-writing model.
+There is no second provider layer, workspace layer, duplicate low-level tool set, or duplicate semantic index. V2 calls the same Socrates agent, provider/model catalog, workspace `.socrates/`, global `~/.Socrates/`, Memory Router/Memory Agent, tools, ZIP skill import, MCP registry, workspace operations, and LanceDB retrieval foundation through adapters. Canonical Flow Q&A rows carry `runtimeKind = "v2_flow"` plus `flowId`; raw inspect/audit remains V2-owned. The separate orchestration and contract path keeps V2 policy out of the V1 chat runtime; conversation-owned state uses the 29-table `v2_*` namespace. The only Classic write is the explicit one-focus/one-conversation bridge, which mirrors visible messages without duplicating runtime evidence. Goal titles and materiality-gated rich capsules are deterministic; the Goal Router may reuse the configured fast `title_generator` worker model selection, but V2 never invokes the Classic title-rewrite service or adds a capsule-writing model.
 
-A directly constructed source server resolves `SOCRATES_V2_FLOW_ENABLED` to false unless it is exactly `true`; only `/api/v2/capabilities` remains mounted to report availability. The ordinary NPM/runtime `scripts/runtime/launcher.mjs` passes an explicit environment value or defaults it to `true`, so the normal packaged web/backend product exposes Classic/Seamless and retains a rollback override. V1 behavior must continue to be regression-tested whenever V2 code changes.
+Stable server construction mounts no V2 route or socket, the stable web build has no `/seamless` route or Flow switch, and the packaged launcher sets no Flow flag. A one-time upgrade reconciliation may read completed historical V2 turns to recover their visible Q&A and return bridged conversations to Classic; normal stable operation then excludes V2 rows from retrieval and memory processing. Classic behavior must continue to be regression-tested whenever preserved V2 code changes.
 
 ## Package Responsibilities
 
@@ -219,13 +215,12 @@ Rules for chat UI files:
 
 - The chat route page must not become a god component.
 - Whole-sidebar collapse state can be local UI state in the chat workspace. A collapsed sidebar should disappear completely and leave only the reopen control.
-- The shared sidebar is a fixed-width, viewport-height, overflow-hidden shell. Its heading and controls stay outside the single bounded scroll region that owns only the active names/items list. Never place independent navigation levels in one mixed scroll surface. Classic may render its project/conversation hierarchy; target Flow drills through separate Projects, Goals, and Queries levels with explicit back navigation.
 - Sidebar project collapse state can be local UI state.
 - API calls should go through `apps/web/src/lib/api.ts` or Socrates-owned hooks.
 - Shared display helpers belong in `apps/web/src/lib/` only when reused.
 - Do not introduce frontend-only API payload types that duplicate `packages/contracts`.
 - The composer owns text entry, send/stop controls, and presentation of backend-owned model/thinking choices. It must not own provider SDK mappings or agent runtime decisions.
-- `ChatComposer`, `ChatTranscript`, `WorkspaceTopbar`, `ProjectChatSidebar`, detailed tool/activity rows, approval/credential cards, and the Terminal dock are shared presentation components. Classic uses nested project/conversation content in the sidebar; target Flow uses separate Projects, Goals, and Queries stages inside the same fixed shell and overlay layout. During live Flow execution, a Flow-owned presentation layer renders one backend-authored changing activity sentence beneath the orb rather than the detailed rows; after completion, one disclosure opens the shared detailed trace components. Flow selects one exchange through `lib/v2/flowTranscriptWindow.ts`; it must not fork message, approval, or Terminal renderers. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
+- `ChatComposer`, `WorkspaceTopbar`, and `ProjectChatSidebar` are shared presentation components. Classic uses conversation content in the sidebar; Flow uses project-only content and overlay layout. The shared optional microphone receives mode-owned callbacks: Classic appends conversation-scoped STT to its draft, while V2 owns its speech/Goal Router behavior.
 
 Initial frontend hooks:
 
@@ -507,7 +502,7 @@ model-visible access
 
 Retrieval indexing is server/store work. The implementation converts each visible turn into one canonical Q&A parent, chunks user and assistant roles independently, and incrementally upserts changed parents into the active LanceDB project table. Memory sections use the same chunker and index lifecycle. Compaction summaries, tool calls, shell output, patches, files, and errors are excluded from the semantic corpus and remain available through raw inspect/audit. `packages/workspace` does not own conversation-history indexing because retrieval is over Socrates persistence rather than local filesystem state.
 
-Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, the no-tool `CompressorAgent`, `StructuredToolAgentRunner` execution, explicit empty tool registry/executor mapping, chat and memory compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `apps/server/src/services/store/modelSettingsResolver.ts` resolves the independent `socrates_context_compactor` and `memory_context_compactor` settings against the credential-filtered model list before runtime use. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression, auth-mode request behavior, or tokenizer behavior must not leak into `apps/web` or route handlers.
+Context compression is a provider-call-boundary concern around the agent/model loop, not ad hoc prompt rewriting inside WebSocket handlers. `packages/core` owns the model-facing context assembly policy, `CompressorAgent`, compressor prompts, packing, and budget decisions. `packages/contracts/src/contextCompression.ts` owns the strict structured schemas. `apps/server/src/services/store/contextCompactionStore.ts` owns append-only snapshot persistence, while `traceStore.ts` indexes completed summaries into searchable trace evidence. `apps/server/src/services/store/modelSettingsResolver.ts` resolves saved worker and memory-agent settings against the credential-filtered model list before runtime use. `packages/providers` owns provider/model token counting and structured generation behind the provider interface; provider-specific compression, auth-mode request behavior, or tokenizer behavior must not leak into `apps/web` or route handlers.
 
 `packages/contracts/src/socratesSurfaces.ts` is the single code-owned `.socrates` surface registry. `packages/workspace` derives protected paths and storage roots from it, and `packages/core` renders its bounded model-facing surface map. `packages/contracts/src/attachments.ts` owns inline/count/per-file/combined attachment limits. `apps/web/src/components/chat/ChatComposer.tsx` converts pasted text over 10,000 characters into `pasted-text-<id>.txt`; `apps/server/src/services/store/attachmentStore.ts` validates and persists image/text source attachments with provenance, while `conversationStore.ts` sends compact manifests and includes image bytes only for vision-capable models. These responsibilities must not be duplicated as frontend-only constants or handwritten prompt path maps.
 
@@ -526,17 +521,13 @@ agent prompt
 
 Do not add serious model-driven workflows as bespoke provider calls inside routes, stores, or UI handlers. A store method may enqueue work, load context, persist outputs, and apply validated effects, but it should not own a private prompt loop for a capability that behaves like an agent.
 
-Target convergence places one public `AgentRuntime` in `packages/core` below all model-driven capabilities. Its typed invocation combines prompt/messages, scoped registry/executors, multimodal content, model settings, limits, lifecycle hooks, and a discriminated completion mode; its run handle exposes one typed event stream and one final typed result. `SocratesAgent` and `StructuredToolAgentRunner` are current callers/migration sources, not permanent parallel owners of provider/tool loops. Internal context, provider, tool, approval, recovery, validation, and telemetry modules stay separate behind that public boundary.
-
 Role boundaries:
 
-- Memory Router is a real `MemoryRouterAgent` built through the same prompt -> shared runtime -> scoped tool registry/executor -> strict structured validation -> usage/persistence pattern as other model-driven capabilities. Its current pre-turn phase has only `memory_search`, backend automatic prefetch, a three-call cap, and exact read-only `readTargets`. Its released finalization phase receives bounded task-wide evidence and returns reconciliation plans; the Flow North Star replaces that detached finalization phase with the validated main-Socrates structured final contract after the replacement is implemented and verified.
+- Memory Router is a real `MemoryRouterAgent` built through the same prompt -> shared runner -> scoped tool registry/executor -> strict structured validation -> usage/persistence pattern as other model-driven capabilities. Its pre-turn phase has only `memory_search`, backend automatic prefetch, a three-call cap, and exact read-only `readTargets`. Its finalization phase receives bounded task-wide evidence, may inspect only backend-created task-scoped references through `turn_evidence`, and returns bounded reconciliation plans. It never authors patches or writes docs; Socrates performs and re-reads every planned project/repo mutation before the final answer is released.
 - Frontier is not a second conversational agent loop. It is a one-way model selection change inside `SocratesAgent.streamTurn`: after real substantive effort, the default model may request `handover_to_frontier` once; the normal typed approval pipeline always pauses for the user. Approval appends the tool result and complete prior task history, switches provider/model/runtime settings, removes the handover tool, and lets Frontier own the remainder of the task. Rejection persists the rejected call, removes the tool for the turn, and explicitly returns completion responsibility to Socrates. Driver answer deltas are buffered and discarded when an approved handover occurs so only Frontier supplies the user-visible answer.
 - Socrates writes workspace project memory, project notes, and repo docs through `project_docs` and `repo_docs`. It owns project-scoped active context in project notes and may create `memory_note` leads for the Memory Agent, preferably one and never more than two per user-turn. It does not write identity, user profile, or skills.
 - The Global Memory Agent writes global user profile through scoped edits, proposes/applies identity only through the confirmation policy, inspects full skills for freshness, and sends approved skill create/update tasks to the Skill Writer Agent. It uses `StructuredToolAgentRunner` like Memory Router: normal scoped tool calls first, then one strict Zod journal output. Each successful run persists one `memory_agent_journal` row and refreshes a bounded generated ledger/next-run briefing; `read_memory_journal` provides capped list/read access to older runs without embeddings. It should skip project-local active context for global memory and close each memory note with one of `applied`, `already_represented`, `skipped`, or `proposed_skill` plus a one-line resolution.
 - The Skill Writer Agent receives exact approved evidence ids, inspects every source turn, reads the canonical scoped existing skill for updates, then writes the final `SKILL.md` plus optional bounded supporting files through `skill_write`. It does not decide whether the skill should exist. The write path rejects shallow bodies, traversal, broken links, and no-op updates; one bounded agent retry is allowed when an attempt ends without the required write call.
-- The Title Generator is a real no-tool `TitleGeneratorAgent`: its system prompt lives in `packages/core/src/prompts/titleGeneratorPrompt.ts`, its strict result lives in `packages/contracts/src/conversationTitle.ts`, and it runs through `StructuredToolAgentRunner` with an explicit empty registry/executor mapping. The server-side conversation-title service may assemble bounded text/image content, enforce timeout/fallback sanitization, record usage, and persist the title; it must not own a provider prompt loop.
-- Chat and memory compression share the named `CompressorAgent` implementation but keep distinct prompt modules, strict schemas, and worker selections. The agent performs draft generation and anchor repair only through `StructuredToolAgentRunner` with `createCompressorToolRegistry()` and an empty executor mapping. Classic/Flow and V2 maintenance use `socrates_context_compactor`; Global Memory Agent and Skill Writer compression use `memory_context_compactor`.
 
 ### `packages/providers`
 

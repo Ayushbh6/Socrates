@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 import type { BashToolInput, BashToolOutput } from "@socrates/contracts"
 import { SocratesError, type ErrorDetails } from "@socrates/shared"
@@ -190,7 +191,7 @@ export class TerminalSupervisorClient {
     }
     const currentPath = fileURLToPath(import.meta.url)
     const isBuilt = currentPath.endsWith(".js")
-    const supervisorPath = fileURLToPath(new URL(isBuilt ? "./terminalSupervisorProcess.js" : "./terminalSupervisorProcess.ts", import.meta.url))
+    const supervisorPath = resolveTerminalSupervisorProcessPath(import.meta.url)
     const args = isBuilt ? [supervisorPath, this.socketPath] : ["--import", "tsx", supervisorPath, this.socketPath]
     const child = spawn(process.execPath, args, {
       detached: true,
@@ -300,3 +301,20 @@ const requireOutput = (response: SupervisorResponse): BashToolOutput => {
 }
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+export const resolveTerminalSupervisorProcessPath = (
+  currentModuleUrl: string,
+  exists: (candidate: string) => boolean = fs.existsSync,
+): string => {
+  const currentPath = fileURLToPath(currentModuleUrl)
+  if (!currentPath.endsWith(".js")) {
+    return fileURLToPath(new URL("./terminalSupervisorProcess.ts", currentModuleUrl))
+  }
+
+  const sibling = path.join(path.dirname(currentPath), "terminalSupervisorProcess.js")
+  if (exists(sibling)) return sibling
+
+  // The production server is bundled into dist/index.js, while the detached
+  // Terminal entry points remain separate under dist/ws so they can be spawned.
+  return path.join(path.dirname(currentPath), "ws", "terminalSupervisorProcess.js")
+}

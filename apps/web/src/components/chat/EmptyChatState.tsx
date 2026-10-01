@@ -13,12 +13,8 @@ interface EmptyChatStateProps {
   warningResetKey?: string;
   value?: string;
   onValueChange?: (value: string) => void;
-  attachments?: MessageAttachment[];
-  onAttachmentsChange?: (attachments: MessageAttachment[]) => void;
   voiceAvailable?: boolean;
-  voiceStatus?: "idle" | "recording" | "transcribing";
-  voiceStatusLabel?: string;
-  voiceError?: string | null;
+  voiceRecording?: boolean;
   voiceBusy?: boolean;
   onModelChange: (model: ModelOption) => void;
   onThinkingChange: (option: ModelThinkingOption) => void;
@@ -38,12 +34,8 @@ export function EmptyChatState({
   warningResetKey,
   value,
   onValueChange,
-  attachments,
-  onAttachmentsChange,
   voiceAvailable,
-  voiceStatus,
-  voiceStatusLabel,
-  voiceError,
+  voiceRecording,
   voiceBusy,
   onModelChange,
   onThinkingChange,
@@ -64,12 +56,8 @@ export function EmptyChatState({
         warningResetKey={warningResetKey}
         value={value}
         onValueChange={onValueChange}
-        attachments={attachments}
-        onAttachmentsChange={onAttachmentsChange}
         voiceAvailable={voiceAvailable}
-        voiceStatus={voiceStatus}
-        voiceStatusLabel={voiceStatusLabel}
-        voiceError={voiceError}
+        voiceRecording={voiceRecording}
         voiceBusy={voiceBusy}
         onModelChange={onModelChange}
         onThinkingChange={onThinkingChange}

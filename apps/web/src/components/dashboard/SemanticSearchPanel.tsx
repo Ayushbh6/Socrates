@@ -159,30 +159,30 @@ function EmbeddingSetupDialog({
       return;
     }
     let cancelled = false;
-    setIsLoadingOllamaModels(true);
-    void api
-      .listOllamaEmbeddingModels({ ollamaBaseUrl })
-      .then((response) => {
-        if (cancelled) {
-          return;
-        }
-        setOllamaDiscovery(response);
-        if (response.suggestedModelId && (ollamaModel === DEFAULT_OLLAMA_MODEL || currentStatus?.providerId !== "ollama")) {
-          setOllamaModel(response.suggestedModelId);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Could not list Ollama models.");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsLoadingOllamaModels(false);
-        }
-      });
+    const frame = window.requestAnimationFrame(() => {
+      if (cancelled) return;
+      setIsLoadingOllamaModels(true);
+      void api
+        .listOllamaEmbeddingModels({ ollamaBaseUrl })
+        .then((response) => {
+          if (cancelled) return;
+          setOllamaDiscovery(response);
+          if (response.suggestedModelId) {
+            setOllamaModel((current) =>
+              current === DEFAULT_OLLAMA_MODEL || currentStatus?.providerId !== "ollama" ? response.suggestedModelId! : current,
+            );
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) setError(err instanceof Error ? err.message : "Could not list Ollama models.");
+        })
+        .finally(() => {
+          if (!cancelled) setIsLoadingOllamaModels(false);
+        });
+    });
     return () => {
       cancelled = true;
+      window.cancelAnimationFrame(frame);
     };
   }, [currentStatus?.providerId, ollamaBaseUrl, providerId]);
 
@@ -192,8 +192,10 @@ function EmbeddingSetupDialog({
     try {
       const response = await api.listOllamaEmbeddingModels({ ollamaBaseUrl });
       setOllamaDiscovery(response);
-      if (response.suggestedModelId && (ollamaModel === DEFAULT_OLLAMA_MODEL || currentStatus?.providerId !== "ollama")) {
-        setOllamaModel(response.suggestedModelId);
+      if (response.suggestedModelId) {
+        setOllamaModel((current) =>
+          current === DEFAULT_OLLAMA_MODEL || currentStatus?.providerId !== "ollama" ? response.suggestedModelId! : current,
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not list Ollama models.");

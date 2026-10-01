@@ -119,9 +119,8 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     onError: setSocketError,
   });
 
-  const refresh = useCallback(async (options: { preserveView?: boolean } = {}) => {
-    const preserveView = options.preserveView === true;
-    if (!preserveView) setIsHydrating(true);
+  const refresh = useCallback(async () => {
+    setIsHydrating(true);
     setLoadError(null);
     setEarlierMessagesError(null);
     try {
@@ -146,7 +145,7 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : "Could not refresh the project flow.");
     } finally {
-      if (!preserveView) setIsHydrating(false);
+      setIsHydrating(false);
     }
   }, [projectId]);
 
@@ -254,22 +253,13 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     }, { ...scope, turnId: input.turnId }));
   }, [requireScope, socket]);
 
-  const sendTerminalInput = useCallback((terminalId: string, input: {
-    data?: string;
-    text?: string;
-    key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C";
-    submit?: boolean;
-  }) => {
+  const sendTerminalInput = useCallback((terminalId: string, text: string) => {
     const scope = requireScope();
     socket.send(makeV2Command("v2.terminal.input", {
       terminalId,
-      ...input,
+      text,
+      submit: true,
     }, scope));
-  }, [requireScope, socket]);
-
-  const resizeTerminal = useCallback((terminalId: string, size: { cols: number; rows: number }) => {
-    const scope = requireScope();
-    socket.send(makeV2Command("v2.terminal.resize", { terminalId, ...size }, scope));
   }, [requireScope, socket]);
 
   const stopTerminal = useCallback((terminalId: string) => {
@@ -311,7 +301,6 @@ export function useV2FlowRuntime({ projectId }: UseV2FlowRuntimeInput) {
     submitFeedback,
     resolveCredential,
     sendTerminalInput,
-    resizeTerminal,
     stopTerminal,
     renameTerminal,
     clearRuntimeError,

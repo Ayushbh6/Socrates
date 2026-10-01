@@ -17,13 +17,7 @@ export function ToolDetails({ tool }: { tool: ToolTimelineItem }) {
             : tool.toolName === "list_project_resources"
               ? <ResourceDetails tool={tool} />
               : <GenericDetails tool={tool} />;
-
-  return (
-    <div className="space-y-2">
-      {details}
-      {tool.error && <p className="text-xs text-red-600">{tool.error}</p>}
-    </div>
-  );
+  return <div className="space-y-2">{details}{tool.error && <p className="text-xs text-red-600">{tool.error}</p>}</div>;
 }
 
 function TerminalDetails({ tool }: { tool: ToolTimelineItem }) {

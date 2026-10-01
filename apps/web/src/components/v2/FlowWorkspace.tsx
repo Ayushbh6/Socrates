@@ -3,37 +3,37 @@
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
   ArrowUpRight,
-  Eye,
-  EyeOff,
   LayoutDashboard,
   PanelRightClose,
   PanelRightOpen,
-  Square,
-  Trash2,
+  ThumbsDown,
+  ThumbsUp,
   Volume2,
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ConversationTerminal, ConversationToolRun, Message, V2MessageAttachment } from "@socrates/contracts";
+import clsx from "clsx";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { V2MessageAttachment } from "@socrates/contracts";
 import { ChatComposer, type ChatComposerProps } from "@/components/chat/ChatComposer";
-import { ChatTranscript, type LiveActivityStep } from "@/components/chat/ChatTranscript";
 import { ProjectChatSidebar, type SidebarProject } from "@/components/chat/ProjectChatSidebar";
-import { TerminalDockPanel } from "@/components/chat/TerminalPanel";
-import type { PendingApproval, PendingCredentialInput } from "@/components/chat/ToolTimelineTypes";
-import { toolRunToTimelineItem } from "@/components/chat/ToolTimelineTypes";
 import { WorkspaceTopbar } from "@/components/chat/WorkspaceTopbar";
-import { groupFlowExchanges, selectFlowExchange } from "@/lib/v2/flowTranscriptWindow";
 import { LivingSphere } from "./LivingSphere";
 import { V2ViewLink } from "./V2ViewLink";
 import { V2SpeechPackManager } from "./V2SpeechPackManager";
 import { FlowWorkspaceNotes } from "./FlowWorkspaceNotes";
 import { FlowWorkspaceInspector, type FlowInspectorView } from "./FlowWorkspaceInspector";
-import { DeleteFlowItemDialog } from "./DeleteFlowItemDialog";
 import styles from "./seamless.module.css";
 import type {
   FlowContextSummary,
+  FlowApprovalView,
+  FlowCredentialRequestView,
   FlowGoalView,
   FlowPresenceState,
+  FlowTimelineItemView,
+  FlowTerminalActivityView,
+  FlowToolActivityView,
   FlowVoiceOption,
 } from "./types";
 
@@ -41,18 +41,18 @@ export interface FlowWorkspaceProps {
   projectId: string;
   projectName: string;
   sidebarProjects: SidebarProject[];
-  messages?: Message[];
-  activeTurnId?: string;
+  timeline?: FlowTimelineItemView[];
   goals?: FlowGoalView[];
   activeGoalId?: string;
   currentTaskLabel?: string;
   presenceState?: FlowPresenceState;
   statusLabel?: string;
   contextSummary?: FlowContextSummary;
-  approvals?: PendingApproval[];
-  toolRuns?: ConversationToolRun[];
-  terminalActivity?: ConversationTerminal[];
-  credentialRequests?: PendingCredentialInput[];
+  approvals?: FlowApprovalView[];
+  toolActivity?: FlowToolActivityView[];
+  terminalActivity?: FlowTerminalActivityView[];
+  credentialRequests?: FlowCredentialRequestView[];
+  feedbackByMessageId?: Record<string, "thumbs_up" | "thumbs_down">;
   voiceOptions?: FlowVoiceOption[];
   selectedVoiceOptionId?: string;
   voiceStatusLabel?: string;
@@ -61,19 +61,15 @@ export interface FlowWorkspaceProps {
   earlierMessagesError?: string;
   composer: ChatComposerProps<V2MessageAttachment>;
   onReadAloud?: (itemId: string) => void;
-  activeReadAloudMessageId?: string | undefined;
-  readAloudStatus?: "synthesizing" | "speaking" | undefined;
   onApprovalDecision?: (approvalId: string, decision: "approved" | "rejected") => void;
-  onCredentialResolve?: (request: PendingCredentialInput, decision: "submitted" | "cancelled", value?: string) => void;
+  onCredentialResolve?: (request: FlowCredentialRequestView, decision: "submitted" | "cancelled", value?: string) => void;
+  onFeedback?: (messageId: string, rating: "thumbs_up" | "thumbs_down") => void;
   onVoiceOptionChange?: (optionId: string) => void;
-  onTerminalInput?: (terminalId: string, input: { data?: string; text?: string; key?: "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight" | "Enter" | "Escape" | "Ctrl-C"; submit?: boolean }) => void;
-  onTerminalResize?: (terminalId: string, size: { cols: number; rows: number }) => void;
+  onTerminalInput?: (terminalId: string, text: string) => void;
   onTerminalStop?: (terminalId: string) => void;
   onTerminalRename?: (terminalId: string, name: string) => void;
   onLoadEarlierMessages?: () => void;
   onFocusAction?: (goalId: string, action: "switch" | "pause" | "finish" | "reopen" | "archive" | "pin" | "unpin") => void;
-  onDeleteGoal?: (goalId: string) => Promise<void>;
-  onDeleteExchange?: (turnId: string) => Promise<void>;
   onOpenInClassic?: (goalId: string) => void;
 }
 
@@ -81,8 +77,7 @@ export function FlowWorkspace({
   projectId,
   projectName,
   sidebarProjects,
-  messages = [],
-  activeTurnId,
+  timeline = [],
   goals = [],
   activeGoalId,
   currentTaskLabel = "Ready for your next thought",
@@ -90,9 +85,10 @@ export function FlowWorkspace({
   statusLabel = "Seamless runtime disconnected",
   contextSummary,
   approvals = [],
-  toolRuns = [],
+  toolActivity = [],
   terminalActivity = [],
   credentialRequests = [],
+  feedbackByMessageId = {},
   voiceOptions = [],
   selectedVoiceOptionId,
   voiceStatusLabel,
@@ -101,19 +97,15 @@ export function FlowWorkspace({
   earlierMessagesError,
   composer,
   onReadAloud,
-  activeReadAloudMessageId,
-  readAloudStatus,
   onApprovalDecision,
   onCredentialResolve,
+  onFeedback,
   onVoiceOptionChange,
   onTerminalInput,
-  onTerminalResize,
   onTerminalStop,
   onTerminalRename,
   onLoadEarlierMessages,
   onFocusAction,
-  onDeleteGoal,
-  onDeleteExchange,
   onOpenInClassic,
 }: FlowWorkspaceProps) {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
@@ -121,30 +113,9 @@ export function FlowWorkspace({
   const [isInspectorPinned, setIsInspectorPinned] = useState(false);
   const [inspectorView, setInspectorView] = useState<FlowInspectorView>("context");
   const [isSpeechPacksOpen, setIsSpeechPacksOpen] = useState(false);
-  const [selectedExchangeKey, setSelectedExchangeKey] = useState<string | null>(null);
-  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
-  const [activeTerminalId, setActiveTerminalId] = useState<string | undefined>();
-  const [terminalDockHeight, setTerminalDockHeight] = useState(320);
-  const [isMobileView, setIsMobileView] = useState(false);
-  const [goalToDelete, setGoalToDelete] = useState<string | null>(null);
-  const [turnToDelete, setTurnToDelete] = useState<string | null>(null);
   const speechPackDialogRef = useRef<HTMLDivElement>(null);
   const speechPackCloseRef = useRef<HTMLButtonElement>(null);
-  const transcriptRef = useRef<HTMLDivElement>(null);
-  const displayedExchangeKeyRef = useRef<string | undefined>(undefined);
-  const shouldFollowCurrentRef = useRef(true);
   const reduceMotion = useReducedMotion();
-  const exchanges = useMemo(() => groupFlowExchanges(messages), [messages]);
-  const currentExchange = useMemo(
-    () => selectFlowExchange(messages, null, activeTurnId),
-    [activeTurnId, messages],
-  );
-  const displayedExchange = useMemo(
-    () => selectFlowExchange(messages, selectedExchangeKey, activeTurnId),
-    [activeTurnId, messages, selectedExchangeKey],
-  );
-  const displayedMessages = useMemo(() => displayedExchange?.messages ?? [], [displayedExchange]);
-  const displayedIsCurrent = Boolean(displayedExchange && displayedExchange.key === currentExchange?.key);
   const activeGoal = useMemo(
     () => goals.find((goal) => goal.id === activeGoalId) ?? goals.find((goal) => goal.status === "foreground"),
     [activeGoalId, goals],
@@ -153,36 +124,6 @@ export function FlowWorkspace({
     () => goals.filter((goal) => goal.status === "parked" || goal.status === "blocked").length,
     [goals],
   );
-  const liveSteps = useMemo<LiveActivityStep[]>(() => {
-    const assistantTurnIds = new Set(
-      messages.filter((message) => message.role === "assistant" && message.turnId).map((message) => message.turnId as string),
-    );
-    const toolsByStep = new Map<string, ConversationToolRun[]>();
-    for (const tool of toolRuns) {
-      if (!activeTurnId || tool.turnId !== activeTurnId) continue;
-      if (assistantTurnIds.has(tool.turnId)) continue;
-      const stepKey = `${tool.turnId}:${tool.modelCallId ?? "intent"}`;
-      const grouped = toolsByStep.get(stepKey) ?? [];
-      grouped.push(tool);
-      toolsByStep.set(stepKey, grouped);
-    }
-    return [...toolsByStep.entries()].map(([stepKey, runs], index) => ({
-      key: `flow-live-${stepKey}`,
-      turnId: runs[0]?.turnId,
-      ...(runs[0]?.modelCallId
-        ? { modelCallId: runs[0].modelCallId, kind: "agent" as const }
-        : { kind: "intent" as const }),
-      stepIndex: index,
-      reasoning: "",
-      answer: "",
-      tools: runs.map(toolRunToTimelineItem),
-    }));
-  }, [activeTurnId, messages, toolRuns]);
-  const contentVersion = useMemo(() => {
-    const last = displayedMessages.at(-1);
-    const toolVersion = toolRuns.map((tool) => `${tool.toolCallId}:${tool.status}:${tool.resultPreview?.length ?? 0}`).join("|");
-    return `${last?.id ?? "none"}:${last?.content.length ?? 0}:${last?.reasoning?.length ?? 0}:${toolVersion}`;
-  }, [displayedMessages, toolRuns]);
 
   const openInspector = (view: FlowInspectorView) => {
     setInspectorView(view);
@@ -233,51 +174,6 @@ export function FlowWorkspace({
     return () => window.removeEventListener("keydown", handleEscape);
   }, [isInspectorOpen, isSpeechPacksOpen]);
 
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 767px)");
-    const update = () => setIsMobileView(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
-
-  useEffect(() => {
-    if (!terminalActivity.some((terminal) => terminal.awaitingInput || terminal.status === "awaiting_input")) return;
-    const timeout = window.setTimeout(() => setIsTerminalDockOpen(true), 0);
-    return () => window.clearTimeout(timeout);
-  }, [terminalActivity]);
-
-  useEffect(() => {
-    const container = transcriptRef.current;
-    if (!container || !displayedExchange) return;
-    if (displayedExchangeKeyRef.current === displayedExchange.key) return;
-    displayedExchangeKeyRef.current = displayedExchange.key;
-    shouldFollowCurrentRef.current = true;
-    const frame = window.requestAnimationFrame(() => {
-      container.scrollTo({ top: 0, behavior: "instant" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [displayedExchange]);
-
-  useEffect(() => {
-    const container = transcriptRef.current;
-    if (!container || !displayedIsCurrent || !composer.isSending || !shouldFollowCurrentRef.current) return;
-    const frame = window.requestAnimationFrame(() => {
-      container.scrollTo({ top: container.scrollHeight, behavior: reduceMotion ? "instant" : "smooth" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [composer.isSending, contentVersion, displayedIsCurrent, reduceMotion]);
-
-  const sendFromComposer = async (...args: Parameters<typeof composer.onSend>) => {
-    // An older exchange is only a viewing state. New input always continues
-    // after the live Flow tail and never creates an implicit history branch.
-    if (selectedExchangeKey) {
-      setSelectedExchangeKey(null);
-      shouldFollowCurrentRef.current = true;
-    }
-    await composer.onSend(...args);
-  };
-
   return (
     <main className={styles.flowPage}>
       <div className={styles.oceanNoise} aria-hidden="true" />
@@ -291,26 +187,6 @@ export function FlowWorkspace({
         mode="projects"
         overlay
         projectHref={(targetProjectId) => `/seamless/projects/${encodeURIComponent(targetProjectId)}`}
-        flowOutline={{
-          items: exchanges.slice().reverse().map((exchange) => ({
-            id: exchange.key,
-            label: exchange.label,
-            isCurrent: exchange.key === currentExchange?.key,
-          })),
-          selectedId: displayedExchange?.key,
-          hasEarlier: hasEarlierMessages,
-          isLoadingEarlier: isLoadingEarlierMessages,
-          error: earlierMessagesError,
-          onSelect: (exchangeKey) => {
-            setSelectedExchangeKey(exchangeKey === currentExchange?.key ? null : exchangeKey);
-            setIsSidebarCollapsed(true);
-          },
-          onReturnToCurrent: () => {
-            setSelectedExchangeKey(null);
-            setIsSidebarCollapsed(true);
-          },
-          onLoadEarlier: onLoadEarlierMessages,
-        }}
       />
 
       <section className={styles.flowShell} data-inspector={isInspectorOpen ? "open" : "closed"}>
@@ -333,37 +209,18 @@ export function FlowWorkspace({
               onClick={() => isInspectorOpen ? setIsInspectorOpen(false) : openInspector("context")}
               aria-controls="v2-goal-inspector"
               aria-expanded={isInspectorOpen}
-              aria-label={isInspectorOpen ? "Hide working notes" : "Working notes"}
             >
               {isInspectorOpen ? <PanelRightClose aria-hidden="true" /> : <PanelRightOpen aria-hidden="true" />}
-              <span className="hidden sm:inline">{isInspectorOpen ? "Hide notes" : "Working notes"}</span>
+              <span>{isInspectorOpen ? "Hide notes" : "Working notes"}</span>
             </button>
-            {terminalActivity.length > 0 && (
-              <button
-                type="button"
-                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
-                onClick={() => setIsTerminalDockOpen((current) => !current)}
-                aria-pressed={isTerminalDockOpen}
-              >
-                {isTerminalDockOpen ? <EyeOff className="size-4" aria-hidden="true" /> : <Eye className="size-4" aria-hidden="true" />}
-                <span className="hidden sm:inline">Terminal</span>
-                <span className="rounded-full bg-teal-50 px-1.5 py-0.5 font-mono text-[10px] text-brand-teal-dark">
-                  {terminalActivity.length}
-                </span>
-              </button>
-            )}
-            <button
-              type="button"
-              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!activeGoal || !onOpenInClassic}
-              aria-label="Open in Classic View"
-              onClick={() => {
-                if (activeGoal) onOpenInClassic?.(activeGoal.id);
-              }}
+            <V2ViewLink
+              view="classic"
+              href={`/projects/${encodeURIComponent(projectId)}`}
+              className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-medium text-brand-text-light shadow-sm hover:bg-gray-50 hover:text-brand-text-dark"
             >
-              <span className="hidden sm:inline">Classic View</span>
+              <span>Classic View</span>
               <ArrowUpRight className="size-4" aria-hidden="true" />
-            </button>
+            </V2ViewLink>
           </div>
         </WorkspaceTopbar>
 
@@ -375,111 +232,129 @@ export function FlowWorkspace({
               if (isInspectorOpen && !isInspectorPinned) setIsInspectorOpen(false);
             }}
           >
-            <div
-              className={styles.flowConversation}
-              data-presence={presenceState}
-              data-has-exchange={displayedMessages.length > 0 || undefined}
-            >
-              <div
-                className={styles.orbBackdrop}
-                data-active={composer.isSending || ["listening", "routing", "thinking", "working", "awaiting_input"].includes(presenceState) || undefined}
-              >
-                <LivingSphere
-                  state={presenceState}
-                  size="full"
-                  statusLabel={statusLabel}
-                />
-              </div>
-              <FlowWorkspaceNotes
-                projectId={projectId}
-                activeGoal={activeGoal}
-                currentTaskLabel={currentTaskLabel}
-                contextSummary={contextSummary}
-                pausedGoalCount={pausedGoalCount}
-                compact={messages.length > 0}
-                onOpenContext={() => openInspector("context")}
-                onOpenFocuses={() => openInspector("focuses")}
-              />
-
-              {displayedMessages.length > 0 && (
-                <div className={styles.timelineFrame}>
-                  <ChatTranscript
-                    messages={displayedMessages}
-                    toolRuns={toolRuns}
-                    liveSteps={displayedIsCurrent ? liveSteps : []}
-                    approvals={approvals}
-                    credentialRequests={credentialRequests}
-                    isStreaming={displayedIsCurrent && composer.isSending}
-                    scrollContainerRef={transcriptRef}
-                    scrollContainerClassName={styles.timelineScroller}
-                    contentClassName={styles.sharedTranscriptContent}
-                    collapseLongUserMessages
-                    beforeMessages={!displayedIsCurrent ? (
-                      <div className={styles.historyNotice}>
-                        <span>Earlier query</span>
-                        <button type="button" onClick={() => setSelectedExchangeKey(null)}>Return to current</button>
-                      </div>
-                    ) : undefined}
-                    renderAfterMessage={(message) => message.role === "assistant" && message.status === "completed" && message.content.trim() ? (
-                      <div className={styles.messageActions}>
-                        {onReadAloud && (
-                          <button
-                            type="button"
-                            className={styles.readAloudControl}
-                            onClick={() => onReadAloud(message.id)}
-                            disabled={Boolean(activeReadAloudMessageId && activeReadAloudMessageId !== message.id)}
-                            data-active={activeReadAloudMessageId === message.id || undefined}
-                            aria-label={activeReadAloudMessageId === message.id ? "Stop reading response" : "Read response aloud"}
-                            title={activeReadAloudMessageId === message.id
-                              ? readAloudStatus === "synthesizing" ? "Preparing speech — click to stop" : "Stop reading"
-                              : "Read aloud"}
-                          >
-                            {activeReadAloudMessageId === message.id ? <Square aria-hidden="true" /> : <Volume2 aria-hidden="true" />}
-                          </button>
-                        )}
-                        {onDeleteExchange && message.turnId && (
-                          <button
-                            type="button"
-                            className={styles.readAloudControl}
-                            onClick={() => setTurnToDelete(message.turnId ?? null)}
-                            aria-label="Delete exchange"
-                            title="Delete exchange"
-                          >
-                            <Trash2 aria-hidden="true" />
-                          </button>
-                        )}
-                      </div>
-                    ) : null}
-                    onApprovalDecision={onApprovalDecision}
-                    onCredentialInput={onCredentialResolve}
-                    onScroll={(event) => {
-                      const container = event.currentTarget;
-                      shouldFollowCurrentRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 96;
-                    }}
-                  />
+            <div className={styles.timelineScroller}>
+              <div className={clsx(styles.timeline, timeline.length > 0 && styles.timelineHasItems)}>
+                <div className={styles.presenceStage}>
+                  <div className={styles.assistantDesk}>
+                    <FlowWorkspaceNotes
+                      projectId={projectId}
+                      activeGoal={activeGoal}
+                      currentTaskLabel={currentTaskLabel}
+                      contextSummary={contextSummary}
+                      pausedGoalCount={pausedGoalCount}
+                      compact={timeline.length > 0}
+                      onOpenContext={() => openInspector("context")}
+                      onOpenFocuses={() => openInspector("focuses")}
+                    />
+                    <div className={styles.deskSphere}>
+                      <LivingSphere
+                        state={presenceState}
+                        size={timeline.length > 0 ? "compact" : "full"}
+                        statusLabel={statusLabel}
+                      />
+                    </div>
+                  </div>
                 </div>
-              )}
+
+                {(hasEarlierMessages || earlierMessagesError) && (
+                  <div className={styles.earlierMessagesControl}>
+                    {hasEarlierMessages && onLoadEarlierMessages && (
+                      <button
+                        type="button"
+                        onClick={onLoadEarlierMessages}
+                        disabled={isLoadingEarlierMessages}
+                      >
+                        {isLoadingEarlierMessages ? "Loading earlier messages…" : "Load earlier messages"}
+                      </button>
+                    )}
+                    {earlierMessagesError && <p role="alert">{earlierMessagesError}</p>}
+                  </div>
+                )}
+
+                {timeline.length > 0 && (
+                  <ol className={styles.timelineList} aria-label="Flow timeline">
+                    {timeline.map((item, index) => (
+                      <motion.li
+                        key={item.id}
+                        className={styles.timelineItem}
+                        data-role={item.role}
+                        initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.24, delay: Math.min(index, 4) * 0.035 }}
+                      >
+                        <div className={styles.timelineItemMeta}>
+                          <span>{item.role === "assistant" ? "Socrates" : item.role === "user" ? "You" : "Flow"}</span>
+                          {item.status === "streaming" && <span>Writing…</span>}
+                        </div>
+                        {item.reasoning && (
+                          <details className={styles.messageReasoning}>
+                            <summary>Thinking</summary>
+                            <p>{item.reasoning}</p>
+                          </details>
+                        )}
+                        <div className={styles.messageMarkdown}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+                        </div>
+                        {item.attachments && item.attachments.length > 0 && (
+                          <ul className={styles.messageAttachments} aria-label="Message attachments">
+                            {item.attachments.map((attachment) => (
+                              <li key={attachment.id}>
+                                {attachment.url ? (
+                                  <a href={attachment.url} target="_blank" rel="noreferrer">
+                                    {attachment.fileName}
+                                  </a>
+                                ) : (
+                                  <span>{attachment.fileName}</span>
+                                )}
+                                <small>{attachment.kind.replaceAll("_", " ")}</small>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {item.role === "assistant" && item.readAloudAvailable && onReadAloud && (
+                          <div className={styles.messageActions}>
+                            <button
+                              type="button"
+                              className={styles.readAloudControl}
+                              onClick={() => onReadAloud(item.id)}
+                            >
+                              <Volume2 aria-hidden="true" />
+                              Read aloud
+                            </button>
+                            {onFeedback && (
+                              <>
+                                <button
+                                  type="button"
+                                  data-selected={feedbackByMessageId[item.id] === "thumbs_up" || undefined}
+                                  onClick={() => onFeedback(item.id, "thumbs_up")}
+                                  aria-label="Helpful response"
+                                >
+                                  <ThumbsUp aria-hidden="true" />
+                                </button>
+                                <button
+                                  type="button"
+                                  data-selected={feedbackByMessageId[item.id] === "thumbs_down" || undefined}
+                                  onClick={() => onFeedback(item.id, "thumbs_down")}
+                                  aria-label="Unhelpful response"
+                                >
+                                  <ThumbsDown aria-hidden="true" />
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </motion.li>
+                    ))}
+                  </ol>
+                )}
+              </div>
             </div>
 
             <div className={styles.composerDock}>
               <div className={styles.sharedComposerFrame}>
-                <ChatComposer {...composer} onSend={sendFromComposer} />
+                <ChatComposer {...composer} />
               </div>
             </div>
-            <TerminalDockPanel
-              terminals={terminalActivity}
-              isOpen={isTerminalDockOpen}
-              isMobile={isMobileView}
-              activeTerminalId={activeTerminalId}
-              onActiveTerminalIdChange={setActiveTerminalId}
-              onClose={() => setIsTerminalDockOpen(false)}
-              onStop={(terminalId) => onTerminalStop?.(terminalId)}
-              onRename={(terminalId, name) => onTerminalRename?.(terminalId, name)}
-              onInput={(terminalId, input) => onTerminalInput?.(terminalId, input)}
-              onResize={(terminalId, size) => onTerminalResize?.(terminalId, size)}
-              dockHeight={terminalDockHeight}
-              onResizeDock={setTerminalDockHeight}
-            />
           </section>
 
           <AnimatePresence initial={false}>
@@ -498,16 +373,24 @@ export function FlowWorkspace({
                   currentTaskLabel={currentTaskLabel}
                   goals={goals}
                   contextSummary={contextSummary}
+                  approvals={approvals}
+                  toolActivity={toolActivity}
+                  terminalActivity={terminalActivity}
+                  credentialRequests={credentialRequests}
                   voiceOptions={voiceOptions}
                   selectedVoiceOptionId={selectedVoiceOptionId}
                   voiceStatusLabel={voiceStatusLabel}
                   onViewChange={setInspectorView}
                   onPinnedChange={setIsInspectorPinned}
                   onClose={() => setIsInspectorOpen(false)}
+                  onApprovalDecision={onApprovalDecision}
+                  onCredentialResolve={onCredentialResolve}
                   onVoiceOptionChange={onVoiceOptionChange}
                   onOpenVoiceSettings={() => setIsSpeechPacksOpen(true)}
+                  onTerminalInput={onTerminalInput}
+                  onTerminalStop={onTerminalStop}
+                  onTerminalRename={onTerminalRename}
                   onFocusAction={onFocusAction}
-                  onDeleteGoal={onDeleteGoal ? setGoalToDelete : undefined}
                   onOpenInClassic={onOpenInClassic}
                 />
               </motion.div>
@@ -558,26 +441,6 @@ export function FlowWorkspace({
           </motion.div>
         )}
       </AnimatePresence>
-      {goalToDelete && onDeleteGoal && (
-        <DeleteFlowItemDialog
-          kind="focus"
-          onCancel={() => setGoalToDelete(null)}
-          onDelete={async () => {
-            await onDeleteGoal(goalToDelete);
-            setGoalToDelete(null);
-          }}
-        />
-      )}
-      {turnToDelete && onDeleteExchange && (
-        <DeleteFlowItemDialog
-          kind="exchange"
-          onCancel={() => setTurnToDelete(null)}
-          onDelete={async () => {
-            await onDeleteExchange(turnToDelete);
-            setTurnToDelete(null);
-          }}
-        />
-      )}
     </main>
   );
 }

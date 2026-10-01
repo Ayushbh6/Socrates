@@ -2,7 +2,6 @@ import type { ModelToolDefinition, ToolName } from "@socrates/contracts"
 import { applyPatchTool } from "./applyPatchTool"
 import { bashTool } from "./bashTool"
 import { currentTimeTool } from "./currentTimeTool"
-import { contextDispositionTool } from "./contextDispositionTool"
 import { editTool } from "./editTool"
 import { editFilesTool } from "./editFilesTool"
 import { frontierHandoverTool } from "./frontierHandoverTool"
@@ -21,7 +20,6 @@ import { repoDocsTool } from "./repoDocsTool"
 import { searchTool } from "./searchTool"
 import { skillsReadOnlyTool, skillsTool } from "./skillsTool"
 import { skillWriteTool } from "./skillWriteTool"
-import { skillManagerTool } from "./skillManagerTool"
 import { soulTool } from "./soulTool"
 import { toolDocsTool } from "./toolDocsTool"
 import { globalTraceRetrieveTool, traceRetrieveTool } from "./traceRetrieveTool"
@@ -43,7 +41,6 @@ const tools = [
   traceRetrieveTool,
   toolDocsTool,
   skillsTool,
-  skillManagerTool,
   projectDocsTool,
   repoDocsTool,
   soulTool,
@@ -51,7 +48,6 @@ const tools = [
   listProjectResourcesTool,
   mcpRegistryTool,
   memoryNoteTool,
-  contextDispositionTool,
 ] as const
 
 export type RegisteredTool = SocratesTool<any, any>
@@ -93,12 +89,6 @@ export const createMemoryToolRegistry = (): ToolRegistry => new ToolRegistry(mem
 export const createMemoryRouterToolRegistry = (): ToolRegistry => new ToolRegistry([memorySearchTool])
 
 export const createMemoryFinalizationToolRegistry = (): ToolRegistry => new ToolRegistry([memorySearchTool, turnEvidenceTool])
-
-export const createGoalRouterToolRegistry = (): ToolRegistry => new ToolRegistry([])
-
-export const createTitleGeneratorToolRegistry = (): ToolRegistry => new ToolRegistry([])
-
-export const createCompressorToolRegistry = (): ToolRegistry => new ToolRegistry([])
 
 const skillWriterTools = [currentTimeTool, globalTraceRetrieveTool, skillsReadOnlyTool, userProfileTool, soulTool, projectDocsTool, repoDocsTool, skillWriteTool] as const
 

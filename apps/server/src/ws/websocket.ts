@@ -11,7 +11,6 @@ import { ConversationSubscriptions } from "./conversationSubscriptions"
 import { handleInboundMessage } from "./commandDispatcher"
 import { resumeTerminalTask } from "./commandHandlers/chatMessageSend"
 import { makeEvent, sendEvent } from "./eventSender"
-import type { V2FlowStore } from "../services/v2/flowStore"
 
 export const registerWebSocketRoutes = async (
   app: FastifyInstance,
@@ -21,7 +20,6 @@ export const registerWebSocketRoutes = async (
   agent: SocratesAgent = createDefaultSocratesAgent(),
   mcpRuntime?: McpRuntime,
   titleProvider?: ModelProvider,
-  flowStore?: V2FlowStore,
 ): Promise<{ shutdown: () => Promise<boolean> }> => {
   await app.register(websocket)
 
@@ -29,13 +27,13 @@ export const registerWebSocketRoutes = async (
   let acceptingTaskWakes = true
   terminals.setTaskWakeHandler((task) => {
     if (!acceptingTaskWakes) return
-    void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider, flowStore).catch(() => {
+    void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider).catch(() => {
       // The durable task remains available for a later reconciliation if a continuation cannot start.
     })
   })
   for (const task of store.listReadyTerminalTasks()) {
     if (!acceptingTaskWakes) break
-    void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider, flowStore).catch(() => undefined)
+    void resumeTerminalTask(store, agent, activeTurns, terminals, subscriptions, task, mcpRuntime, titleProvider).catch(() => undefined)
   }
 
   app.get("/ws", { websocket: true }, (socket) => {
@@ -46,7 +44,7 @@ export const registerWebSocketRoutes = async (
     sendEvent(socket, ready)
 
     socket.on("message", (raw) => {
-      void handleInboundMessage(socket, store, agent, activeTurns, terminals, subscriptions, raw.toString(), mcpRuntime, titleProvider, flowStore)
+      void handleInboundMessage(socket, store, agent, activeTurns, terminals, subscriptions, raw.toString(), mcpRuntime, titleProvider)
     })
   })
 
