@@ -32,7 +32,7 @@ Read a bounded, line-addressable window from one UTF-8 text file.
 }
 ```
 
-`offset` is the 1-based first line and defaults to `1`. `limit` defaults to `500` lines and is capped by policy. The backend also enforces a UTF-8 byte bound and a per-line bound, so a pathological file or line cannot consume the model context.
+`offset` is the 1-based first line and defaults to `1`. `limit` defaults to `2,000` lines. A read window ends at whichever comes first: the line limit, or the universal `10,000`-token per-result ceiling (see "Bounded ingestion"). Individual lines longer than `2,000` characters are cut with an explicit marker, so a pathological file or line cannot consume the model context. Reaching the ceiling is paging, not loss: the result sets `truncated: true` and `next_offset`, and the agent continues from there.
 
 Successful output is structured and rendered to the model with line numbers:
 
@@ -240,7 +240,7 @@ Persistent result:
 }
 ```
 
-`terminal` is the preferred selector and equals the supplied name when present; otherwise the backend returns a short readable session id. Output is bounded, treated as untrusted text, and retained separately for cursor-based reads. A running session survives model turns, HTTP requests, task suspension, and user steering. The project terminal supervisor owns process-tree cleanup and reconciles retained sessions after an application restart; the agent never kills an unverified operating-system PID directly.
+`terminal` is the preferred selector and equals the supplied name when present; otherwise the backend returns a short readable session id. Output is bounded to a head-and-tail excerpt within the universal per-result ceiling (see "Bounded ingestion"), treated as untrusted text, and retained in full separately for cursor-based reads. A running session survives model turns, HTTP requests, task suspension, and user steering. The project terminal supervisor owns process-tree cleanup and reconciles retained sessions after an application restart; the agent never kills an unverified operating-system PID directly.
 
 #### 7. `terminal_control`
 
@@ -558,7 +558,7 @@ The backend enforces one aggregate output bound for every `context_retrieve` act
 
 - `2,000` lines;
 - `50 KiB` of UTF-8 text;
-- `9,000` tokens (5% of the universal `180,000`-token ceiling); or
+- `10,000` tokens (the universal per-result ceiling in "Bounded ingestion"); or
 - the remaining safe tool-output allowance for the current model request.
 
 The agent cannot request raw output, set its own token allowance, use offsets to reconstruct an unbounded dump, or disable truncation. For an oversized inspection, the backend prioritizes turn identity, the user message, the visible final response, a compact tool-call inventory, and bounded beginning-and-end excerpts. Every omission is explicit and receives a short evidence reference such as `e1`. Inspecting that reference is bounded again by the same policy, so repeated calls never unlock a single unrestricted dump.
@@ -772,7 +772,7 @@ Skills and MCP tools are deliberately surfaced differently:
 - Skill instructions cannot weaken the core prompt, workspace access policy, approval rules, or tool error boundary;
 - provider catalogs, connection state, active-set changes, calls, results, and errors are persisted as exact events so a resumed task reconstructs the same model-visible world.
 
-Dynamic MCP schemas are appended after the permanent schemas in deterministic public-name order. Skill instructions and goal-specific capability state appear after the stable prefix with the other dynamic goal context. Adding, replacing, or removing a conditional capability may invalidate only this dynamic suffix; it never reorders or rewrites the ten permanent tool definitions.
+Dynamic MCP schemas are appended after the permanent schemas in deterministic public-name order. Skill instructions and goal-specific capability state appear after the stable prefix with the other dynamic goal context. Adding, replacing, or removing a conditional capability never reorders or rewrites the ten permanent tool definitions. It does change the request's tool list, which most providers include in the cached prefix, so an activation or deactivation costs one cache miss on the next request. That cost is accepted: activations are rare, goal-scoped, and usually happen early in a task. Where a provider offers native deferred tool loading that keeps the cached prefix intact, the provider adapter uses it as an optimization; the core never depends on it.
 
 This design takes deferred native-schema exposure from Codex, bounded Skill catalogs and exact on-demand loading from DeepSeek and OpenCode, and OMP's separation between permanent and discoverable tools. It does not copy OMP's `xd://` dispatch transport because hiding an MCP call inside generic read/write would discard native schema visibility, approval identity, and clear tool evidence.
 
@@ -1026,6 +1026,8 @@ Every token number in either architecture document is an absolute value under th
 | `30,000` tokens | Intact in-turn window. When layer 2 runs, the newest tool calls and results of the current turn up to this size stay intact. |
 | `20,000` tokens | N−1 full-attachment limit. Turn N−1 is attached with its full tool activity only when its full rendering fits this size. |
 
+The `20,000`-token gap between the trigger and the ceiling is a reserve, the same size the established harnesses keep (OpenCode reserves 20,000 tokens below the input limit, Pi 16,384; Codex compacts at 90% of the window). It absorbs the difference between the harness-standard token count and the provider's own tokenizer, which can count noticeably more on code. The model's own reply is covered separately by the `200,000`-token minimum window. Raising the trigger toward `170,000` would halve that reserve, so the trigger stays at `160,000`.
+
 The gap between trigger and target is the hysteresis: after compaction, the prompt must grow by at least 80k tokens before the trigger fires again, so compaction never runs on consecutive steps.
 
 Token counting uses one fixed harness-standard tokenizer, independent of the served model. The canonical counter is `tiktoken` with the `o200k` encoding. Its count is treated as the authoritative budget number for every model; exactness against each provider's native tokenizer is not required, only consistency. Thresholds carry a built-in safety margin, so an estimator drift of a few percent cannot push a request past the provider's real limit.
@@ -1194,7 +1196,26 @@ Linearization runs only when the trigger fires, never proactively on every step.
 
 ### Bounded ingestion
 
-Every tool result is bounded when it enters the prompt, before any compaction decision. A result larger than its per-result bound (initially `2,000` tokens) is stored completely in the event log and appears in the prompt as a bounded excerpt plus a retrievable reference. No unbounded content ever enters the working prompt, which is what guarantees that layer 2 can always reach the target mechanically.
+Every tool result is bounded when it enters the prompt, before any compaction decision. No unbounded content ever enters the working prompt, which is what guarantees that layer 2 can always reach the target mechanically.
+
+One universal ceiling applies to every tool, permanent or MCP: a single result may place at most `10,000` tokens in the prompt. This matches what the established harnesses converged on: Codex caps tool output at 10,000 tokens, OpenCode and Pi cap it at 2,000 lines or 50 KB (roughly 12,000 tokens), and Claude Code inlines about 30,000 characters of shell output and up to 25,000 tokens of MCP output. Smaller caps such as 2,000 tokens force the agent to page constantly through ordinary source files; larger ones let a few results flood the context.
+
+Within that ceiling, each tool bounds its output in the way that keeps the most useful part:
+
+| Tool | Shape at the ceiling | Where the rest is |
+|---|---|---|
+| `read` | A window of whole lines from `offset`; `truncated: true` with `next_offset` | The file itself; the agent reads the next window |
+| `glob`, `grep` | The first matches in stable order; each matched line cut at `500` characters | `next_cursor` continues the exact result set |
+| `terminal`, `terminal_control read` | Head and tail of the output with an explicit omission marker, because errors and summaries usually sit at the end | The terminal session's retained output, read by cursor |
+| `edit`, `apply_patch` | A bounded diff | The complete mutation in the event log |
+| `context_retrieve` | Its own prioritized bounded view (see "`inspect`") | Further `inspect` calls on the returned handles |
+| MCP tools and anything else | The head of the result with an explicit omission marker | The complete result in the event log, under an evidence handle such as `e9` |
+
+Rules:
+
+- Truncation is always explicit. The model-facing result states what was omitted and exactly how to get it: a `next_offset`, a `next_cursor`, a terminal cursor, or an evidence handle that `context_retrieve` `inspect` resolves. Nothing is silently dropped.
+- The complete result is always stored in the event log, whatever reaches the prompt.
+- Token counts use the harness-standard tokenizer defined in "Token budget and trigger points".
 
 ### Atomicity invariants
 
@@ -1323,7 +1344,7 @@ Further rules:
 - Keep the goal's five-Skill shelf stable until the goal changes; place it in the goal-stable blocks after the permanent prefix.
 - Never place per-turn state—the continuation note, goal note, open-task index, retrieval results, candidates, or the recent-activity notepad—before the chat history.
 - Treat likely candidates as task-specific dynamic context and omit the block when neither kind clears its threshold.
-- Append dynamic MCP tool schemas after the permanent tools.
+- Append dynamic MCP tool schemas after the permanent tools, in deterministic public-name order, so the same active set always produces the same tool list. Changing the active set costs one cache miss; it is not avoided by reordering or hiding schemas.
 - Keep full Skill instructions out of the prompt until activated.
 - Preserve provider prompt-cache handles when the API supports them, without making the core depend on them.
 - Compaction replaces content only in the dynamic suffix, never in the stable prefix. A history checkpoint, once written, is frozen text: it does not change between steps of the same turn, so the post-compaction prompt remains cache-stable from that point forward.
