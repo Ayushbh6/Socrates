@@ -1024,13 +1024,21 @@ Every token number in either architecture document is an absolute value under th
 | `80,000` tokens | Post-compaction target. Compaction runs until the prompt is at or below this size. |
 | `30,000` tokens | Verbatim history window. When layer 1 runs, the newest completed turns up to this size stay exactly as they were attached. |
 | `30,000` tokens | Intact in-turn window. When layer 2 runs, the newest tool calls and results of the current turn up to this size stay intact. |
-| `20,000` tokens | N−1 full-attachment limit. Turn N−1 is attached with its full tool activity only when its full rendering fits this size. |
+| `20,000` tokens | N−1 attachment budget. Turn N−1 is fitted to this size by the reduction ladder in "Fitting turn N−1"; its user query and final response are always complete. |
 
-The `20,000`-token gap between the trigger and the ceiling is a reserve, the same size the established harnesses keep (OpenCode reserves 20,000 tokens below the input limit, Pi 16,384; Codex compacts at 90% of the window). It absorbs the difference between the harness-standard token count and the provider's own tokenizer, which can count noticeably more on code. The model's own reply is covered separately by the `200,000`-token minimum window. Raising the trigger toward `170,000` would halve that reserve, so the trigger stays at `160,000`.
+The `20,000`-token gap between the trigger and the ceiling is a reserve, the same size the established harnesses keep (OpenCode reserves 20,000 tokens below the input limit, Pi 16,384; Codex compacts at 90% of the window). It absorbs any remaining counting error, such as the first requests to a newly used model before its ratio is calibrated, since the provider's tokenizer can count noticeably more than `o200k` on code. The model's own reply is covered separately by the `200,000`-token minimum window. Raising the trigger toward `170,000` would halve that reserve, so the trigger stays at `160,000`.
 
 The gap between trigger and target is the hysteresis: after compaction, the prompt must grow by at least 80k tokens before the trigger fires again, so compaction never runs on consecutive steps.
 
-Token counting uses one fixed harness-standard tokenizer, independent of the served model. The canonical counter is `tiktoken` with the `o200k` encoding. Its count is treated as the authoritative budget number for every model; exactness against each provider's native tokenizer is not required, only consistency. Thresholds carry a built-in safety margin, so an estimator drift of a few percent cannot push a request past the provider's real limit.
+Token counting uses one harness-standard tokenizer for every model: `tiktoken` with the `o200k` encoding. Budgets that shape the prompt—the verbatim window, the intact in-turn window, the N−1 budget, and the per-result ceiling—are measured with it directly. They need only be consistent, not exact.
+
+The safety-critical decision is whether the next request crosses the `160,000`-token trigger or the `180,000`-token ceiling. That measurement is calibrated against the provider's own count, without any provider-specific tokenizer:
+
+- Every provider reports token usage for each request. The provider adapter normalizes it into one number: total prompt tokens, including cache-read and cache-write tokens.
+- After each response, the harness records the ratio between that provider count and the `o200k` count of the same request, smoothed per model.
+- Before each request, the measured size is the `o200k` count multiplied by that ratio. Until the first response for a model arrives, the ratio is `1.0` and the `20,000`-token reserve described above absorbs the difference.
+
+This is one code path for every provider. Supporting a new provider adds no tokenizer, only the usage normalization the adapter already performs. OpenCode and Pi likewise trigger compaction on provider-reported usage.
 
 ### When compaction runs
 
@@ -1043,8 +1051,26 @@ The unit being measured is the full next model request: stable prefix, history, 
 History attaches to the working prompt in three tiers. This policy decides the *shape* of each turn on every request; it does not impose a size cap. Until the compaction trigger fires, every completed turn of the current task chat is attached in its tier shape. Size is managed only by compaction.
 
 1. **Current turn (in flight).** Everything: the full user query, full tool calls, and full bounded results. This is the agent's active working state.
-2. **Turn N−1 (just completed).** Everything: the full user query, every tool call with its bounded result, and the full final response. The previous turn is the most likely referent of the next user message, so its complete working evidence stays in view. If the full rendering of N−1 exceeds the `20,000`-token N−1 limit, it is attached instead as the full user query, the full final response, a tool inventory in the linearization grammar below, and bounded excerpts of the most significant results (for example, a failing assertion).
+2. **Turn N−1 (just completed).** The full user query, its tool calls with their results, and the full final response, fitted to the `20,000`-token N−1 budget. The previous turn is the most likely referent of the next user message, so its working evidence stays in view. When the full rendering is larger than the budget, only the large or reproducible parts are reduced, step by step, as described in "Fitting turn N−1" below.
 3. **Turns N−2 and older.** The full user query and full final response only. No tool calls and no tool results. Tool evidence remains in the event log, reachable through `context_retrieve`.
+
+#### Fitting turn N−1
+
+When a turn completes, the harness renders it once as N−1 and freezes that rendering until the turn becomes N−2, so it stays cache-stable. If the full rendering fits the `20,000`-token budget, it is used unchanged. Real working turns are often larger: a turn with three reads, two edits, two searches, and a test run is typically 25–35k tokens in full. Reduction is therefore graduated, never all-or-nothing. The harness applies these steps in order and stops as soon as the turn fits:
+
+1. **Collapse what is reproducible or stale.** These calls become one line in the linearization grammar, with their evidence handle:
+   - `edit` and `apply_patch`, because the change is already on disk: `edit memory/compact.ts (+3 −1) [e12]`;
+   - a `read` of a file that a later call in the same turn modified, because its content is out of date;
+   - `glob`, `grep`, `context_retrieve`, `capability_search`, `capability_control`, and `terminal_control` calls, as one line with their counts or outcome;
+   - `terminal` commands that succeeded, as one line with the exit status and the final output line.
+2. **Trim the largest remaining results evenly.** The harness computes one cap such that every remaining result larger than the cap is cut to it and the turn fits; smaller results are untouched. Reads keep the beginning of their window; failed commands keep their head and tail. Each trimmed result states what was cut and carries its evidence handle. The cap never goes below `1,500` tokens.
+3. **Collapse the oldest remaining calls.** Only if the turn still does not fit with every result at the floor, the oldest remaining calls are collapsed to one line, oldest first, until it fits.
+
+The user query and the final response are never reduced. Oversized user messages are already bounded at ingestion.
+
+Example: three reads of about 9k tokens each, two edits, two greps, and a passing test run total about 35k. Step 1 collapses the edits, greps, and test run into five lines (about 0.3k). Step 2 trims each read to about 6k. The turn fits within 20k with all three reads still largely visible.
+
+The order reflects what the next message usually needs. Edits are already reflected in the files, searches and passing commands can be repeated cheaply, while what the agent read and what failed are the evidence a follow-up most often builds on. Every collapsed or trimmed call remains one `context_retrieve` `inspect` away.
 
 Dropping tool activity from older turns is deliberate. Their final responses carry what the work established, re-sending every historical tool call and result wastes most of the context, and the agent works better without that noise. Nothing is lost: every attached turn carries a visible `[TURN k]` label with its permanent `project_turn` number, and that label is a requirement, not decoration. It is what lets the agent call `context_retrieve` `inspect` with `turn_number: k` to recover that turn's exact tool calls and results whenever it needs them.
 
@@ -1190,7 +1216,7 @@ Linearization reduces a hundred-call turn from potentially 80–150k tokens to r
 - terminal: pytest tests/memory/ → 24 passed [e14]
 ```
 
-The same grammar renders the tool inventory of an oversized N−1 turn in tier 2 of history attachment.
+The same grammar renders the calls that "Fitting turn N−1" collapses in tier 2 of history attachment.
 
 Linearization runs only when the trigger fires, never proactively on every step. Rewriting earlier calls on each step would change the middle of the prompt on every request and invalidate the provider prompt cache each time; trigger-based linearization changes it once per compaction.
 
