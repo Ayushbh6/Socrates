@@ -7,6 +7,9 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@socrates/contracts": "workspace:*", "@socrates/shared": "workspace:*"
+    "@anthropic-ai/sdk": "^0.131.0",
+    "@socrates/contracts": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "openai": "^7.25.0"
   }
 }

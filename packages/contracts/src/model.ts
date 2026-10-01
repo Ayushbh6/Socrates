@@ -18,9 +18,20 @@ export interface ToolCall {
   input: unknown;
 }
 
+/**
+ * The provider's own representation of an assistant turn. Adapters replay it
+ * byte-for-byte when the conversation continues on the same provider, so
+ * provider-specific blocks (for example thinking blocks that must be passed
+ * back unchanged) survive the normalized contract. Other providers ignore it.
+ */
+export interface ProviderContent {
+  provider: string;
+  content: unknown;
+}
+
 export type ModelMessage =
   | { role: "user"; content: string }
-  | { role: "assistant"; content: string; toolCalls?: ToolCall[] }
+  | { role: "assistant"; content: string; toolCalls?: ToolCall[]; raw?: ProviderContent }
   | { role: "tool"; toolCallId: string; toolName: string; content: string; isError?: boolean };
 
 export interface ModelRequest {
@@ -44,13 +55,17 @@ export interface ModelUsage {
   cacheWriteTokens: number;
 }
 
-export type StopReason = "end" | "tool_use" | "max_tokens" | "other";
+export type StopReason = "end" | "tool_use" | "max_tokens" | "refusal" | "other";
 
 export interface ModelResponse {
   text: string;
   toolCalls: ToolCall[];
   stopReason: StopReason;
   usage: ModelUsage;
+  /** The provider's raw assistant content, to attach to the assistant message when continuing. */
+  raw?: ProviderContent;
+  /** The model that actually served the request, when the provider reports it (for example after a fallback). */
+  servedBy?: string;
 }
 
 export interface ModelClient {

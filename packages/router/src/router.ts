@@ -150,13 +150,13 @@ export class GoalRouter {
         system: ROUTER_SYSTEM_PROMPT,
         messages,
         tools,
-        maxOutputTokens: 2_000,
+        maxOutputTokens: 8_000,
         temperature: 0,
         ...(signal ? { signal } : {}),
       });
 
       if (response.toolCalls.length > 0) {
-        messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls });
+        messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls, ...(response.raw ? { raw: response.raw } : {}) });
         for (const call of response.toolCalls) {
           const result = this.executeTool(call, ctx, seen, budget);
           if (result.ask) return { kind: "clarify", ask: result.ask };
@@ -170,7 +170,7 @@ export class GoalRouter {
       lastErrors = validation.errors;
       if (repaired) break;
       repaired = true;
-      messages.push({ role: "assistant", content: response.text });
+      messages.push({ role: "assistant", content: response.text, ...(response.raw ? { raw: response.raw } : {}) });
       messages.push({
         role: "user",
         content:
