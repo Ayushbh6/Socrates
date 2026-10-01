@@ -99,7 +99,9 @@ export function resolveDecision(
       if (r.ok) resolved.push(r.value);
       else errors.push(...r.errors);
     }
-    const taskIds = resolved.flatMap((p) => (p.target.kind === "existing_task" ? [p.target.task.id] : []));
+    const taskIds = resolved.flatMap((p) =>
+      p.target.kind === "existing_task" ? [p.target.task.id] : p.target.kind === "general" ? ["general"] : [],
+    );
     if (new Set(taskIds).size !== taskIds.length) {
       errors.push("Two parts select the same task. A message that fits one task is not compound; return a single decision.");
     }

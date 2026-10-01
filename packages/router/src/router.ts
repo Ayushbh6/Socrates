@@ -2,6 +2,8 @@ import {
   type AskUserInput,
   LEDGER_QUERY_MAX_CALLS,
   type ModelClient,
+  ModelError,
+  type ModelResponse,
   type ModelMessage,
   type RouterDecision,
   type ToolCall,
@@ -146,14 +148,22 @@ export class GoalRouter {
     let lastErrors: string[] = ["The router did not return a decision."];
 
     for (let step = 0; step < this.maxSteps; step++) {
-      const response = await model.complete({
-        system: ROUTER_SYSTEM_PROMPT,
-        messages,
-        tools,
-        maxOutputTokens: 8_000,
-        temperature: 0,
-        ...(signal ? { signal } : {}),
-      });
+      let response: ModelResponse;
+      try {
+        response = await model.complete({
+          system: ROUTER_SYSTEM_PROMPT,
+          messages,
+          tools,
+          maxOutputTokens: 8_000,
+          temperature: 0,
+          ...(signal ? { signal } : {}),
+        });
+      } catch (error) {
+        // A cancelled turn stops routing. Any other model failure is treated like an
+        // invalid answer, so escalation and the fallback ladder still bind the message.
+        if (error instanceof ModelError && error.kind === "aborted") throw error;
+        return { kind: "invalid", errors: [`${model.id} failed: ${error instanceof Error ? error.message : String(error)}`] };
+      }
 
       if (response.toolCalls.length > 0) {
         messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls, ...(response.raw ? { raw: response.raw } : {}) });

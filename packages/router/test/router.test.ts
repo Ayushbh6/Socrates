@@ -1,3 +1,4 @@
+import { ModelError } from "@socrates/contracts";
 import { describe, expect, it } from "vitest";
 import { buildRoutingContext } from "../src";
 import { TZ, continueTask, createGoal, createTask, decision, exchange, general, routerWith, setup } from "./helpers";
@@ -150,6 +151,28 @@ describe("validation, repair, escalation, and fallback", () => {
     expect(mainModel!.requests).toHaveLength(1);
     const event = store.listEvents({ type: "routing_completed" }).at(-1)!;
     expect(event.payload).toMatchObject({ model: "test:main", attempts: 2, escalated: true });
+  });
+
+  it("treats model failures like invalid answers and still binds the message", async () => {
+    const { store } = setup();
+    await exchange(store, "Review the memory system", createGoal("Socrates development", "Review memory system"));
+    const failing = (): never => {
+      throw new ModelError("Could not reach the model endpoint.", "network");
+    };
+    const { router } = routerWith(store, [failing], [failing]);
+    const result = await router.route("keep going");
+    expect(result.kind === "routed" && result.fallback).toBe("continue_current");
+    expect(result.kind === "routed" && result.escalated).toBe(true);
+  });
+
+  it("propagates cancellation", async () => {
+    const { store } = setup();
+    const { router } = routerWith(store, [
+      (): never => {
+        throw new ModelError("Request aborted.", "aborted");
+      },
+    ]);
+    await expect(router.route("hi")).rejects.toThrow("aborted");
   });
 
   it("falls back to creating the first goal when nothing exists", async () => {
