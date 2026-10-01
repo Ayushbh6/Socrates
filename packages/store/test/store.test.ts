@@ -1,6 +1,11 @@
-import { fixedClock } from "@socrates/shared";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { countTokens, fixedClock } from "@socrates/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import { LedgerStore, parseGoalSelector, parseTaskSelector, renderLedgerRow, runLedgerQuery, toFtsQuery } from "../src";
+import { SCHEMA_SQL } from "../src/schema";
 
 const TZ = "UTC";
 
@@ -200,10 +205,11 @@ describe("event-only recovery", () => {
   it("reconstructs every implemented projection, revisions, links and FTS without consulting the source database", () => {
     const {store, clock} = openStore();
     const ws = store.createWorkspace("sample", "/tmp/synthetic");
-    const goal = store.createGoal({title: "Checkout"});
+    const goal = store.createGoal({title: "Checkout", objective: "Keep checkout reliable for every customer."});
     store.bindGoalWorkspace(goal.id, ws.id);
     store.reviseGoalNote(goal.id, "Keep checkout reliable.");
-    const task = store.createTask(goal.id, {title: "Retry discount", objective: "Preserve the discount on retries."});
+    const task = store.createTask(goal.id, {title: "Retry discount", objective: "Preserve the discount on retries.", completionCriteria: "A retried payment keeps its discount."});
+    store.reviseTask(task.id, {completionCriteria: "A retried payment keeps its discount in an end-to-end test."});
     store.upsertAnchor({goalId: goal.id, path: "plan.md", role: "goal_plan", summary: "Original", status: "provisional"});
     clock.advance(1000);
     store.upsertAnchor({goalId: goal.id, path: "plan.md", role: "goal_plan", summary: "Updated", status: "active"});
@@ -279,5 +285,42 @@ describe("canonical timestamps and metadata budgets", () => {
     expect(countTokens(revised.continuationNote!)).toBeLessThanOrEqual(100);
     expect(countTokens(noted.note!)).toBeLessThanOrEqual(150);
     expect(store.getEvent(event.id)?.payload).toEqual({text});
+  });
+});
+
+describe("goal objectives and task completion criteria", () => {
+  it("stores bounded definitions and keeps criteria history in revisions", () => {
+    const { store } = openStore();
+    const goal = store.createGoal({ title: "German", objective: "Reach B1 German. ".repeat(30) });
+    expect(countTokens(goal.objective!)).toBeLessThanOrEqual(40);
+    const task = store.createTask(goal.id, { title: "Day 10", objective: "Work through Day 10.", completionCriteria: "Exercises done. ".repeat(30) });
+    expect(countTokens(task.completionCriteria!)).toBeLessThanOrEqual(35);
+    const revised = store.reviseTask(task.id, { completionCriteria: "All Day 10 exercises are reviewed." });
+    expect(revised.completionCriteria).toBe("All Day 10 exercises are reviewed.");
+    expect(store.reviseTask(task.id, { continuationNote: "Halfway." }).completionCriteria).toBe("All Day 10 exercises are reviewed.");
+    expect(runLedgerQuery(store, { match: "reviewed" }, TZ).map((r) => r.taskSelector)).toEqual(["g1/t1"]);
+    store.close();
+  });
+
+  it("migrates a version 1 store in place without losing rows", () => {
+    const dir = mkdtempSync(join(tmpdir(), "socrates-migrate-"));
+    const path = join(dir, "v1.db");
+    const v1 = SCHEMA_SQL.replace(/^\s*objective\s+TEXT,\n/m, "").replace(/^\s*completion_criteria TEXT,\n/gm, "");
+    expect(v1).not.toContain("completion_criteria");
+    const raw = new DatabaseSync(path);
+    raw.exec(v1);
+    raw.exec("INSERT INTO meta (key, value) VALUES ('schema_version', '1')");
+    raw.exec(`INSERT INTO goals (id, goal_number, title, status, is_general, note_revision, created_at, updated_at)
+              VALUES ('goal_old', 1, 'Old goal', 'open', 0, 0, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')`);
+    raw.close();
+
+    const store = LedgerStore.open({ path });
+    expect(store.getMeta("schema_version")).toBe("2");
+    expect(store.requireGoal("goal_old")).toMatchObject({ title: "Old goal", objective: null });
+    const task = store.createTask("goal_old", { title: "New task", completionCriteria: "It works." });
+    expect(task.completionCriteria).toBe("It works.");
+    store.close();
+    expect(LedgerStore.open({ path }).getMeta("schema_version")).toBe("2");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

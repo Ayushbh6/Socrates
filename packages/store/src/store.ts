@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import type { EventPayloads, EventRefs, EventType, StoredEvent } from "@socrates/contracts";
 import { type Clock, newId, systemClock, truncateToTokens } from "@socrates/shared";
-import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
+import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
 
 export type LedgerStatus = "open" | "completed" | "superseded";
 
@@ -19,6 +19,8 @@ export interface Goal {
   title: string;
   status: LedgerStatus;
   general: boolean;
+  /** The durable outcome the goal works toward; null for goals created before objectives existed. */
+  objective: string | null;
   note: string | null;
   noteRevision: number;
   createdAt: string;
@@ -31,6 +33,8 @@ export interface Task {
   number: number;
   title: string;
   objective: string;
+  /** How the task's outcome is known to be done; null when it was never proposed. */
+  completionCriteria: string | null;
   status: LedgerStatus;
   general: boolean;
   continuationNote: string | null;
@@ -122,6 +126,7 @@ function toGoal(r: Row): Goal {
     title: str(r.title),
     status: str(r.status) as LedgerStatus,
     general: num(r.is_general) === 1,
+    objective: strOrNull(r.objective),
     note: strOrNull(r.note),
     noteRevision: num(r.note_revision),
     createdAt: str(r.created_at),
@@ -136,6 +141,7 @@ function toTask(r: Row): Task {
     number: num(r.task_number),
     title: str(r.title),
     objective: str(r.objective),
+    completionCriteria: strOrNull(r.completion_criteria),
     status: str(r.status) as LedgerStatus,
     general: num(r.is_general) === 1,
     continuationNote: strOrNull(r.continuation_note),
@@ -221,8 +227,18 @@ export class LedgerStore {
     const store = new LedgerStore(db, options.clock ?? systemClock);
     const version = store.getMeta("schema_version");
     if (version === null) store.setMeta("schema_version", String(SCHEMA_VERSION));
-    else if (Number(version) !== SCHEMA_VERSION) {
-      throw new StoreError(`Unsupported store schema version ${version}; expected ${SCHEMA_VERSION}.`);
+    else {
+      let current = Number(version);
+      if (current > SCHEMA_VERSION) throw new StoreError(`Unsupported store schema version ${version}; expected ${SCHEMA_VERSION}.`);
+      store.transaction(() => {
+        while (current < SCHEMA_VERSION) {
+          const migration = MIGRATIONS[current];
+          if (!migration) throw new StoreError(`No migration from store schema version ${current}.`);
+          db.exec(migration);
+          current++;
+          store.setMeta("schema_version", String(current));
+        }
+      });
     }
     return store;
   }
@@ -388,7 +404,7 @@ export class LedgerStore {
       }
       case "goal_created": {
         const p = e.payload as EventPayloads["goal_created"];
-        this.run("INSERT INTO goals (id, goal_number, workspace_id, title, status, is_general, note_revision, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, 0, ?, ?)", e.goal_id, p.goal_number, p.workspace_id, p.title, p.general ? 1 : 0, e.at, e.at); break;
+        this.run("INSERT INTO goals (id, goal_number, workspace_id, title, status, is_general, objective, note_revision, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, 0, ?, ?)", e.goal_id, p.goal_number, p.workspace_id, p.title, p.general ? 1 : 0, p.objective ?? null, e.at, e.at); break;
       }
       case "goal_workspace_bound": {
         const p = e.payload as EventPayloads["goal_workspace_bound"];
@@ -401,16 +417,17 @@ export class LedgerStore {
       }
       case "task_created": {
         const p = e.payload as EventPayloads["task_created"];
-        this.run("INSERT INTO tasks (id, goal_id, task_number, title, objective, status, is_general, revision, started_at, updated_at) VALUES (?, ?, ?, ?, ?, 'open', ?, 1, ?, ?)", e.task_id, e.goal_id, p.task_number, p.title, p.objective, p.general ? 1 : 0, e.at, e.at);
-        this.run("INSERT INTO task_revisions (task_id, revision, title, objective, status, event_id, created_at) VALUES (?, 1, ?, ?, 'open', ?, ?)", e.task_id, p.title, p.objective, e.id, e.at);
+        this.run("INSERT INTO tasks (id, goal_id, task_number, title, objective, completion_criteria, status, is_general, revision, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, 1, ?, ?)", e.task_id, e.goal_id, p.task_number, p.title, p.objective, p.completion_criteria ?? null, p.general ? 1 : 0, e.at, e.at);
+        this.run("INSERT INTO task_revisions (task_id, revision, title, objective, completion_criteria, status, event_id, created_at) VALUES (?, 1, ?, ?, ?, 'open', ?, ?)", e.task_id, p.title, p.objective, p.completion_criteria ?? null, e.id, e.at);
         this.run("UPDATE goals SET updated_at = ? WHERE id = ?", e.at, e.goal_id); break;
       }
       case "task_revised": {
         const p = e.payload as EventPayloads["task_revised"];
         const task = this.requireTask(e.task_id!);
         const completed = p.status === "completed" ? task.completedAt ?? e.at : null;
-        this.run("INSERT INTO task_revisions (task_id, revision, title, objective, status, continuation_note, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", e.task_id, p.revision, p.title, p.objective, p.status, p.continuation_note, e.id, e.at);
-        this.run("UPDATE tasks SET title = ?, objective = ?, status = ?, continuation_note = ?, revision = ?, updated_at = ?, completed_at = ? WHERE id = ?", p.title, p.objective, p.status, p.continuation_note, p.revision, e.at, completed, e.task_id);
+        const criteria = p.completion_criteria === undefined ? task.completionCriteria : p.completion_criteria;
+        this.run("INSERT INTO task_revisions (task_id, revision, title, objective, completion_criteria, status, continuation_note, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", e.task_id, p.revision, p.title, p.objective, criteria, p.status, p.continuation_note, e.id, e.at);
+        this.run("UPDATE tasks SET title = ?, objective = ?, completion_criteria = ?, status = ?, continuation_note = ?, revision = ?, updated_at = ?, completed_at = ? WHERE id = ?", p.title, p.objective, criteria, p.status, p.continuation_note, p.revision, e.at, completed, e.task_id);
         this.run("UPDATE goals SET updated_at = ? WHERE id = ?", e.at, e.goal_id); break;
       }
       case "chat_opened": {
@@ -464,8 +481,9 @@ export class LedgerStore {
 
   // ── Goals ────────────────────────────────────────────────────────────────
 
-  createGoal(input: { title: string; workspaceId?: string | null; general?: boolean }): Goal {
+  createGoal(input: { title: string; objective?: string | null; workspaceId?: string | null; general?: boolean }): Goal {
     input = { ...input, title: truncateToTokens(input.title, 15).text };
+    const objective = input.objective ? truncateToTokens(input.objective, 40).text : null;
     return this.transaction(() => {
       const id = newId("goal");
       const next = num(this.get("SELECT COALESCE(MAX(goal_number), 0) + 1 AS n FROM goals")?.n);
@@ -473,18 +491,19 @@ export class LedgerStore {
       const general = input.general ?? false;
       const event = this.appendEvent(
         "goal_created",
-        { goal_number: next, title: input.title, workspace_id: workspaceId, general },
+        { goal_number: next, title: input.title, workspace_id: workspaceId, general, objective },
         { goal_id: id },
       );
       const at = event.at;
       this.run(
-        `INSERT INTO goals (id, goal_number, workspace_id, title, status, is_general, note, note_revision, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'open', ?, NULL, 0, ?, ?)`,
+        `INSERT INTO goals (id, goal_number, workspace_id, title, status, is_general, objective, note, note_revision, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'open', ?, ?, NULL, 0, ?, ?)`,
         id,
         next,
         workspaceId,
         input.title,
         general ? 1 : 0,
+        objective,
         at,
         at,
       );
@@ -561,38 +580,41 @@ export class LedgerStore {
 
   // ── Tasks ────────────────────────────────────────────────────────────────
 
-  createTask(goalId: string, input: { title: string; objective?: string; general?: boolean }): Task {
+  createTask(goalId: string, input: { title: string; objective?: string; completionCriteria?: string | null; general?: boolean }): Task {
     return this.transaction(() => {
       this.requireGoal(goalId);
       const id = newId("task");
       const next = num(this.get("SELECT COALESCE(MAX(task_number), 0) + 1 AS n FROM tasks WHERE goal_id = ?", goalId)?.n);
       const title = truncateToTokens(input.title, 15).text;
       const objective = truncateToTokens(input.objective ?? title, 25).text;
+      const completionCriteria = input.completionCriteria ? truncateToTokens(input.completionCriteria, 35).text : null;
       const general = input.general ?? false;
       const event = this.appendEvent(
         "task_created",
-        { task_number: next, title, objective, general },
+        { task_number: next, title, objective, general, completion_criteria: completionCriteria },
         { goal_id: goalId, task_id: id },
       );
       const at = event.at;
       this.run(
-        `INSERT INTO tasks (id, goal_id, task_number, title, objective, status, is_general, continuation_note, revision, started_at, updated_at, completed_at)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, NULL, 1, ?, ?, NULL)`,
+        `INSERT INTO tasks (id, goal_id, task_number, title, objective, completion_criteria, status, is_general, continuation_note, revision, started_at, updated_at, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?, NULL, 1, ?, ?, NULL)`,
         id,
         goalId,
         next,
         title,
         objective,
+        completionCriteria,
         general ? 1 : 0,
         at,
         at,
       );
       this.run(
-        `INSERT INTO task_revisions (task_id, revision, title, objective, status, continuation_note, event_id, created_at)
-         VALUES (?, 1, ?, ?, 'open', NULL, ?, ?)`,
+        `INSERT INTO task_revisions (task_id, revision, title, objective, completion_criteria, status, continuation_note, event_id, created_at)
+         VALUES (?, 1, ?, ?, ?, 'open', NULL, ?, ?)`,
         id,
         title,
         objective,
+        completionCriteria,
         event.id,
         at,
       );
@@ -633,7 +655,7 @@ export class LedgerStore {
    */
   reviseTask(
     taskId: string,
-    changes: { status?: LedgerStatus; continuationNote?: string | null; title?: string; objective?: string },
+    changes: { status?: LedgerStatus; continuationNote?: string | null; title?: string; objective?: string; completionCriteria?: string | null },
   ): Task {
     return this.transaction(() => {
       const task = this.requireTask(taskId);
@@ -641,22 +663,36 @@ export class LedgerStore {
       const next = {
         title: truncateToTokens(changes.title ?? task.title, 15).text,
         objective: truncateToTokens(changes.objective ?? task.objective, 25).text,
+        completionCriteria:
+          changes.completionCriteria === undefined
+            ? task.completionCriteria
+            : changes.completionCriteria === null
+              ? null
+              : truncateToTokens(changes.completionCriteria, 35).text,
         status: changes.status ?? task.status,
         continuationNote: changes.continuationNote === undefined ? task.continuationNote : changes.continuationNote === null ? null : truncateToTokens(changes.continuationNote, 100).text,
       };
       const event = this.appendEvent(
         "task_revised",
-        { revision, status: next.status, continuation_note: next.continuationNote, title: next.title, objective: next.objective },
+        {
+          revision,
+          status: next.status,
+          continuation_note: next.continuationNote,
+          title: next.title,
+          objective: next.objective,
+          completion_criteria: next.completionCriteria,
+        },
         { goal_id: task.goalId, task_id: taskId },
       );
       const at = event.at;
       this.run(
-        `INSERT INTO task_revisions (task_id, revision, title, objective, status, continuation_note, event_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO task_revisions (task_id, revision, title, objective, completion_criteria, status, continuation_note, event_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         taskId,
         revision,
         next.title,
         next.objective,
+        next.completionCriteria,
         next.status,
         next.continuationNote,
         event.id,
@@ -664,10 +700,11 @@ export class LedgerStore {
       );
       const completedAt = next.status === "completed" ? (task.completedAt ?? at) : null;
       this.run(
-        `UPDATE tasks SET title = ?, objective = ?, status = ?, continuation_note = ?, revision = ?, updated_at = ?, completed_at = ?
+        `UPDATE tasks SET title = ?, objective = ?, completion_criteria = ?, status = ?, continuation_note = ?, revision = ?, updated_at = ?, completed_at = ?
          WHERE id = ?`,
         next.title,
         next.objective,
+        next.completionCriteria,
         next.status,
         next.continuationNote,
         revision,
@@ -690,7 +727,13 @@ export class LedgerStore {
   /** The single general goal and its single general task, created on first use. */
   ensureGeneral(): { goal: Goal; task: Task } {
     return this.transaction(() => {
-      const goal = this.getGeneralGoal() ?? this.createGoal({ title: GENERAL_GOAL_TITLE, general: true });
+      const goal =
+        this.getGeneralGoal() ??
+        this.createGoal({
+          title: GENERAL_GOAL_TITLE,
+          objective: "Greetings, small talk, and quick questions that belong to no project.",
+          general: true,
+        });
       const existing = this.get("SELECT * FROM tasks WHERE goal_id = ? AND is_general = 1", goal.id);
       const task = existing
         ? toTask(existing)
@@ -986,7 +1029,7 @@ export class LedgerStore {
       goalId,
       goalId,
       goal.title,
-      [goal.note ?? "", anchors].filter(Boolean).join("\n"),
+      [goal.objective ?? "", goal.note ?? "", anchors].filter(Boolean).join("\n"),
     );
   }
 
@@ -998,7 +1041,7 @@ export class LedgerStore {
       taskId,
       task.goalId,
       task.title,
-      [task.objective, task.continuationNote ?? ""].filter(Boolean).join("\n"),
+      [task.objective, task.completionCriteria ?? "", task.continuationNote ?? ""].filter(Boolean).join("\n"),
     );
   }
 

@@ -28,11 +28,23 @@ export function decision(partial: Partial<RouterDecision> & Pick<RouterDecision,
 
 export const general = () => ({ text: decision({ decision: "resume_existing", goal_label: "general", workspace_confidence: null }) });
 export const continueTask = (reopenTask = false) => ({ text: decision({ decision: "continue_current", goal_label: "current", task_decision: "continue_task", task_label: "current", reopen_task: reopenTask }) });
+/** The bounded definition a router proposes for every task it creates. */
+export const defineTask = (title: string) => ({
+  new_task_objective: `${title}.`,
+  new_task_completion_criteria: `${title} is done and verified.`,
+});
 export const createTask = (title: string) => ({
-  text: decision({ decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: title }),
+  text: decision({ decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: title, ...defineTask(title) }),
 });
 export const createGoal = (goal: string, task: string) => ({
-  text: decision({ decision: "create_new", new_goal_title: goal, task_decision: "create_task", new_task_title: task }),
+  text: decision({
+    decision: "create_new",
+    new_goal_title: goal,
+    new_goal_objective: `Deliver ${goal}.`,
+    task_decision: "create_task",
+    new_task_title: task,
+    ...defineTask(task),
+  }),
 });
 
 export function routerWith(store: LedgerStore, steps: ScriptedStep[], main?: ScriptedStep[]) {

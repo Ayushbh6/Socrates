@@ -12,8 +12,16 @@ import type { RoutingContext } from "./context";
 
 export type RouteTarget =
   | { kind: "existing_task"; goal: Goal; task: Task }
-  | { kind: "new_task"; goal: Goal; taskTitle: string }
-  | { kind: "new_goal"; goalTitle: string; taskTitle: string }
+  /** Definitions are always present for model routes; harness fallbacks have none to offer. */
+  | { kind: "new_task"; goal: Goal; taskTitle: string; objective?: string | null; completionCriteria?: string | null }
+  | {
+      kind: "new_goal";
+      goalTitle: string;
+      goalObjective?: string | null;
+      taskTitle: string;
+      objective?: string | null;
+      completionCriteria?: string | null;
+    }
   | { kind: "general" };
 
 export interface ResolvedPart {
@@ -83,7 +91,18 @@ export function resolveDecision(
   const errors: string[] = [];
 
   if (decision.decision === "compound") {
-    for (const key of ["goal_label", "new_goal_title", "task_decision", "task_label", "new_task_title", "workspace_confidence", "reopen_task"] as const) {
+    for (const key of [
+      "goal_label",
+      "new_goal_title",
+      "task_decision",
+      "task_label",
+      "new_task_title",
+      "new_goal_objective",
+      "new_task_objective",
+      "new_task_completion_criteria",
+      "workspace_confidence",
+      "reopen_task",
+    ] as const) {
       if (decision[key] !== null && decision[key] !== undefined) errors.push(`compound requires top-level ${key} null.`);
     }
     const parts = decision.parts ?? [];
@@ -130,6 +149,9 @@ export function resolveDecision(
       task_decision: decision.task_decision,
       task_label: decision.task_label,
       new_task_title: decision.new_task_title,
+      new_goal_objective: decision.new_goal_objective ?? null,
+      new_task_objective: decision.new_task_objective ?? null,
+      new_task_completion_criteria: decision.new_task_completion_criteria ?? null,
       workspace_confidence: decision.workspace_confidence,
       ...(decision.reopen_task !== undefined ? {reopen_task: decision.reopen_task} : {}),
       reason: decision.reason,
@@ -219,7 +241,19 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
   // The general route: greetings, small talk, and unrelated asides.
   if (goalLabel === "general" || (goalLabel === "current" && ctx.current?.goal.general)) {
     if (part.decision === "create_new") return fail("create_new cannot target the general goal; use goal_label general with continue_current or resume_existing.");
-    if (part.task_decision !== null || part.task_label !== null || part.new_task_title !== null || part.new_goal_title !== null || part.workspace_confidence !== null || part.reopen_task != null) return fail("general requires all task fields, new_goal_title, and workspace_confidence null.");
+    if (
+      part.task_decision !== null ||
+      part.task_label !== null ||
+      part.new_task_title !== null ||
+      part.new_goal_title !== null ||
+      part.new_goal_objective != null ||
+      part.new_task_objective != null ||
+      part.new_task_completion_criteria != null ||
+      part.workspace_confidence !== null ||
+      part.reopen_task != null
+    ) {
+      return fail("general requires all task fields, new-goal and new-task definitions, and workspace_confidence null.");
+    }
     if (part.decision === "continue_current" && !ctx.current?.goal.general) return fail("continue_current to general requires the general goal to be current; use resume_existing.");
     return done({ kind: "general" });
   }
@@ -228,15 +262,34 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
   if (part.decision !== "create_new" && part.new_goal_title !== null) return fail("new_goal_title must be null unless creating a new goal.");
   if (part.task_decision === "create_task" && part.task_label !== null) return fail("create_task requires task_label null.");
   if (part.task_decision !== "create_task" && part.new_task_title !== null) return fail("new_task_title must be null unless creating a new task.");
+  if (part.decision !== "create_new" && part.new_goal_objective != null) return fail("new_goal_objective must be null unless creating a new goal.");
+  if (part.task_decision !== "create_task" && (part.new_task_objective != null || part.new_task_completion_criteria != null)) {
+    return fail("new_task_objective and new_task_completion_criteria must be null unless creating a new task.");
+  }
+  /** A model-created task must arrive with its bounded definition (Goal-router.md, "Router output"). */
+  const definition = (): { objective: string; completionCriteria: string } | null =>
+    part.new_task_objective && part.new_task_completion_criteria
+      ? { objective: part.new_task_objective, completionCriteria: part.new_task_completion_criteria }
+      : null;
+  const missingDefinition = "create_task requires new_task_objective (one line: the bounded outcome) and new_task_completion_criteria (one line: how it is known to be done).";
 
   switch (part.decision) {
     case "create_new": {
       if (part.goal_label !== null) return fail("create_new requires goal_label null.");
       if (!part.new_goal_title) return fail("create_new requires new_goal_title.");
+      if (!part.new_goal_objective) return fail("create_new requires new_goal_objective: one line naming the durable outcome the goal works toward.");
       if (part.task_decision !== "create_task" || !part.new_task_title) {
         return fail("create_new requires task_decision create_task and new_task_title for the new goal's first task.");
       }
-      return done({ kind: "new_goal", goalTitle: part.new_goal_title, taskTitle: part.new_task_title });
+      const first = definition();
+      if (!first) return fail(missingDefinition);
+      return done({
+        kind: "new_goal",
+        goalTitle: part.new_goal_title,
+        goalObjective: part.new_goal_objective,
+        taskTitle: part.new_task_title,
+        ...first,
+      });
     }
 
     case "continue_current": {
@@ -248,7 +301,9 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
       }
       if (part.task_decision === "create_task") {
         if (!part.new_task_title) return fail("create_task requires new_task_title.");
-        return done({ kind: "new_task", goal: ctx.current.goal, taskTitle: part.new_task_title });
+        const def = definition();
+        if (!def) return fail(missingDefinition);
+        return done({ kind: "new_task", goal: ctx.current.goal, taskTitle: part.new_task_title, ...def });
       }
       return fail("continue_current requires task_decision continue_task or create_task. To return to an earlier task of the current goal, use resume_existing with resume_task.");
     }
@@ -265,7 +320,9 @@ function resolvePart(part: RoutePart, ctx: RoutingContext, store: LedgerStore, s
       if (part.task_decision === "create_task") {
         if (isCurrentGoal) return fail("A new task in the current goal is continue_current with create_task, not resume_existing.");
         if (!part.new_task_title) return fail("create_task requires new_task_title.");
-        return done({ kind: "new_task", goal: g.goal, taskTitle: part.new_task_title });
+        const def = definition();
+        if (!def) return fail(missingDefinition);
+        return done({ kind: "new_task", goal: g.goal, taskTitle: part.new_task_title, ...def });
       }
       if (part.task_decision === "resume_task") {
         if (!taskLabel) return fail("resume_task requires task_label.");

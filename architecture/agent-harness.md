@@ -864,6 +864,7 @@ system prompt · fixed behavioral rules · the ten permanent tool schemas
 [GOAL-STABLE — changes only when the goal, its anchors, or its active set change]
 <GOAL>
 title: Socrates memory system
+objective: A memory system that never loses what the user asked for or what the work established.
 workspace: socrates
 anchors:
 - architecture/agent-harness.md — harness architecture and compaction design
@@ -909,6 +910,7 @@ open_tasks:
 <CURRENT_TASK>
 title: Preserve large tool results in compaction
 objective: Ensure compaction never loses large tool results.
+completion_criteria: Every compacted result stays recoverable through a validated evidence reference, proven by tests.
 status: active
 note: Reviewed compaction. The remaining concern is preserving large tool results.
 </CURRENT_TASK>
@@ -944,7 +946,7 @@ Can you fix the information-loss problem?
 Rules:
 
 - The current user message appears exactly once and is the final block before the in-flight turn. There is no separate `latest exchange` field because it would duplicate the newest entry in history.
-- Goal-stable blocks contain only content that changes rarely: the goal title, workspace, and anchor manifest; the frozen Skill shelf; and the active capability set. A Skill activated mid-turn arrives first as the activation tool result; from the next user turn it is carried in `<ACTIVE_CAPABILITIES>`, and history renders the earlier activation call with its one-line linear form so the instructions are never present twice.
+- Goal-stable blocks contain only content that changes rarely: the goal title, objective, workspace, and anchor manifest; the frozen Skill shelf; and the active capability set. A Skill activated mid-turn arrives first as the activation tool result; from the next user turn it is carried in `<ACTIVE_CAPABILITIES>`, and history renders the earlier activation call with its one-line linear form so the instructions are never present twice.
 - Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, nothing before the in-flight turn changes, so every step after the first is a cache hit up to the newest tool result.
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.

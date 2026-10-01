@@ -256,7 +256,8 @@ export class GoalRouter {
     const realGoals = this.store.listGoals().filter((g) => !g.general);
     if (ctx.pending) {
       const answer = ctx.message.toLowerCase();
-      if (/\b(new|neither|none of these)\b/.test(answer)) {
+      // Only an explicit request for new work counts; "the new website one" names a candidate.
+      if (/\b(something new|start (?:something )?new|new (?:goal|project|subject)|neither|none of (?:these|them))\b/.test(answer)) {
         const title = firstWords(ctx.message, 8);
         return { name: "clarification_new_goal", outcome: { kind: "decision", route: syntheticRoute(ctx, { kind: "new_goal", goalTitle: title, taskTitle: title }, "Fallback: the user chose a new subject.") } };
       }
@@ -455,12 +456,20 @@ export class GoalRouter {
         return { goal: target.goal, task, created: { goal: false, task: false } };
       }
       case "new_task": {
-        const task = this.store.createTask(target.goal.id, { title: target.taskTitle, objective: part.request });
+        const task = this.store.createTask(target.goal.id, {
+          title: target.taskTitle,
+          objective: target.objective ?? part.request,
+          completionCriteria: target.completionCriteria ?? null,
+        });
         return { goal: target.goal, task, created: { goal: false, task: true } };
       }
       case "new_goal": {
-        const goal = this.store.createGoal({ title: target.goalTitle });
-        const task = this.store.createTask(goal.id, { title: target.taskTitle, objective: part.request });
+        const goal = this.store.createGoal({ title: target.goalTitle, objective: target.goalObjective ?? null });
+        const task = this.store.createTask(goal.id, {
+          title: target.taskTitle,
+          objective: target.objective ?? part.request,
+          completionCriteria: target.completionCriteria ?? null,
+        });
         return { goal, task, created: { goal: true, task: true } };
       }
     }

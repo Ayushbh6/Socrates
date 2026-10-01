@@ -10,7 +10,20 @@
  * - `ledger_fts` is a derived full-text index over goal and task metadata used by
  *   router candidate retrieval and `ledger_query`.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/**
+ * In-place upgrades from older schema versions, keyed by the version they
+ * upgrade from. Added columns are nullable, so existing rows stay valid and
+ * restoration of older event logs projects them as null.
+ */
+export const MIGRATIONS: Record<number, string> = {
+  1: `
+ALTER TABLE goals ADD COLUMN objective TEXT;
+ALTER TABLE tasks ADD COLUMN completion_criteria TEXT;
+ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
+`,
+};
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -50,6 +63,7 @@ CREATE TABLE IF NOT EXISTS goals (
   title         TEXT NOT NULL,
   status        TEXT NOT NULL CHECK (status IN ('open', 'completed', 'superseded')),
   is_general    INTEGER NOT NULL DEFAULT 0 CHECK (is_general IN (0, 1)),
+  objective     TEXT,
   note          TEXT,
   note_revision INTEGER NOT NULL DEFAULT 0,
   created_at    TEXT NOT NULL,
@@ -76,6 +90,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   task_number       INTEGER NOT NULL,
   title             TEXT NOT NULL,
   objective         TEXT NOT NULL,
+  completion_criteria TEXT,
   status            TEXT NOT NULL CHECK (status IN ('open', 'completed', 'superseded')),
   is_general        INTEGER NOT NULL DEFAULT 0 CHECK (is_general IN (0, 1)),
   continuation_note TEXT,
@@ -92,6 +107,7 @@ CREATE TABLE IF NOT EXISTS task_revisions (
   revision          INTEGER NOT NULL,
   title             TEXT NOT NULL,
   objective         TEXT NOT NULL,
+  completion_criteria TEXT,
   status            TEXT NOT NULL,
   continuation_note TEXT,
   event_id          TEXT NOT NULL REFERENCES events(id),

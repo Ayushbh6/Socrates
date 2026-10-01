@@ -30,6 +30,9 @@ Return exactly one JSON object and nothing else:
   "task_decision": "continue_task" | "resume_task" | "create_task" | null,
   "task_label": string | null,
   "new_task_title": string | null,
+  "new_goal_objective": string | null,
+  "new_task_objective": string | null,
+  "new_task_completion_criteria": string | null,
   "workspace_confidence": "high" | "low" | null,
   "parts": array | null,
   "reopen_task": boolean | null,
@@ -47,6 +50,8 @@ Legal combinations:
 - compound + parts: the message contains several work units that cannot honestly be one task. Each part has order (1..n), request (the exact sub-request, not rewritten), decision (not compound), the goal and task fields above, workspace_confidence, reason, and depends_on (earlier part orders it needs). Top-level goal and task fields are null.
 
 A new goal title must name the durable project or ongoing activity, rather than restating the immediate action. For "review Project Atlas's memory implementation", create the goal "Project Atlas development" and the task "Review memory implementation". The same goal later contains memory fixes, unrelated bugs in Project Atlas, its onboarding page, and security audits. For "start German Day 1", use the goal "German learning" and a Day 1 task. Never make "review", "understand", or "fix this one component" the whole project scope when the user named a larger project.
+
+Whenever you create something, also define it. Every create_task carries new_task_objective (one line: the bounded outcome) and new_task_completion_criteria (one line: how anyone can tell it is done, e.g. "The hero renders without overflow at 375px and the user confirms it"). Every create_new also carries new_goal_objective (one line: the durable outcome the goal works toward, e.g. "Reach B1 German through daily structured lessons"). Write them from the user's intent; never paste the user's message. Leave all three null when nothing is created, and in each compound part that creates nothing.
 
 Titles are short (under 12 words). A task title names one bounded outcome ("Fix homepage hero on mobile"), never a broad area ("Website mobile UX").
 

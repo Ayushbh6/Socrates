@@ -303,6 +303,7 @@ function collectHistory(
 function renderGoalEntry(store: LedgerStore, entry: GoalEntry): string {
   const lines = [`label: ${entry.label}`, `title: ${entry.goal.title}`, `workspace: ${entry.workspace?.name ?? "—"}`];
   if (entry.goal.general) lines.push("kind: the general conversation goal");
+  if (entry.goal.objective) lines.push(`objective: ${excerpt(entry.goal.objective, 300)}`);
   if (entry.goal.note) lines.push(`note: ${excerpt(entry.goal.note, 300)}`);
   const anchors = store.listAnchors(entry.goal.id);
   if (anchors.length) {

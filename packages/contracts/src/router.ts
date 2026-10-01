@@ -23,6 +23,8 @@ export type WorkspaceConfidence = z.infer<typeof WorkspaceConfidence>;
 
 const Title = z.string().trim().min(1).max(120);
 const Reason = z.string().trim().min(1).max(400);
+/** One line; the harness bounds it further in tokens before storing it. */
+const Definition = z.string().trim().min(1).max(400);
 
 export const RoutePart = z.object({
   order: z.number().int().min(1),
@@ -33,6 +35,12 @@ export const RoutePart = z.object({
   task_decision: TaskDecision.nullable(),
   task_label: z.string().nullable(),
   new_task_title: Title.nullable(),
+  /** Required with create_new: the durable outcome the new goal works toward. */
+  new_goal_objective: Definition.nullable().optional(),
+  /** Required with create_task: the new task's one-line bounded outcome. */
+  new_task_objective: Definition.nullable().optional(),
+  /** Required with create_task: how the new task's outcome is known to be done. */
+  new_task_completion_criteria: Definition.nullable().optional(),
   workspace_confidence: WorkspaceConfidence.nullable(),
   /** Explicit status change when resuming a completed task; questions leave it completed. */
   reopen_task: z.boolean().nullable().optional(),
@@ -48,6 +56,9 @@ export const RouterDecision = z.object({
   task_decision: TaskDecision.nullable(),
   task_label: z.string().nullable(),
   new_task_title: Title.nullable(),
+  new_goal_objective: Definition.nullable().optional(),
+  new_task_objective: Definition.nullable().optional(),
+  new_task_completion_criteria: Definition.nullable().optional(),
   workspace_confidence: WorkspaceConfidence.nullable(),
   /** Explicit status change when resuming a completed task; questions leave it completed. */
   reopen_task: z.boolean().nullable().optional(),

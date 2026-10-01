@@ -1,7 +1,7 @@
 import { ModelError } from "@socrates/contracts";
 import { describe, expect, it } from "vitest";
 import { buildRoutingContext } from "../src";
-import { TZ, continueTask, createGoal, createTask, decision, exchange, general, routerWith, setup } from "./helpers";
+import { TZ, continueTask, createGoal, createTask, decision, defineTask, exchange, general, routerWith, setup } from "./helpers";
 
 describe("routing outcomes and binding", () => {
   it("routes a first greeting to the general task", async () => {
@@ -63,8 +63,9 @@ describe("routing outcomes and binding", () => {
         text: decision({
           decision: "create_new",
           new_goal_title: "Checkout",
+          new_goal_objective: "Deliver a working checkout.",
           task_decision: "create_task",
-          new_task_title: "Fix checkout",
+          new_task_title: "Fix checkout", ...defineTask("Fix checkout"),
           workspace_confidence: "low",
         }),
       },
@@ -96,7 +97,7 @@ describe("routing outcomes and binding", () => {
           workspace_confidence: null,
           parts: [
             part(1, { decision: "resume_existing", task_decision: "resume_task", task_label: "task_1" }),
-            part(2, { decision: "continue_current", task_decision: "create_task", new_task_title: "Security review of issue #42 API changes" }),
+            part(2, { decision: "continue_current", task_decision: "create_task", new_task_title: "Security review of issue #42 API changes", ...defineTask("Security review of issue #42 API changes") }),
           ] as never,
         }),
       },
@@ -132,7 +133,7 @@ describe("validation, repair, escalation, and fallback", () => {
     const { store } = setup();
     await exchange(store, "Review the memory system", createGoal("Socrates development", "Review memory system"));
     const { router, routerModel } = routerWith(store, [
-      { text: decision({ decision: "resume_existing", goal_label: "current", task_decision: "create_task", new_task_title: "X" }) },
+      { text: decision({ decision: "resume_existing", goal_label: "current", task_decision: "create_task", new_task_title: "X", ...defineTask("X") }) },
       { text: "not json at all" },
     ]);
     const result = await router.route("new thing");

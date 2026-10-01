@@ -5,7 +5,7 @@ import { buildRoutingContext } from "../src/context";
 import { GoalRouter } from "../src/router";
 import { emptySeen, validateDecisionText } from "../src/validate";
 import { Q_SCENARIO, grade } from "../eval/fixtures";
-import { continueTask, createGoal, createTask, decision, exchange, general, routerWith, setup } from "./helpers";
+import { continueTask, createGoal, createTask, decision, defineTask, exchange, general, routerWith, setup } from "./helpers";
 
 const ask = {
   question: "Which project?",
@@ -52,7 +52,7 @@ describe("PR 3 independent architecture regressions", () => {
     const { store } = await seedTwo();
     const request = "Review yesterday's project for SQL injection and fix the unsafe queries.";
     await routerWith(store, [{ toolCalls: [{ name: "ask_user", input: ask }] }]).router.route(request);
-    const result = await routerWith(store, [{ text: decision({ decision: "resume_existing", goal_label: "older_1", task_decision: "create_task", new_task_title: "Fix SQL injection" }) }]).router.route("The German one");
+    const result = await routerWith(store, [{ text: decision({ decision: "resume_existing", goal_label: "older_1", task_decision: "create_task", new_task_title: "Fix SQL injection", ...defineTask("Fix SQL injection") }) }]).router.route("The German one");
     if (result.kind !== "routed") throw new Error("Expected routing");
     expect(result.parts[0]!.request.includes(request)).toBe(true);
   });
@@ -83,7 +83,7 @@ describe("PR 3 independent architecture regressions", () => {
     const { store } = setup();
     await exchange(store, "hi", general());
     const ctx = buildRoutingContext(store, "Build a website", { timeZone: "UTC" });
-    const bad = decision({ decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Build website" });
+    const bad = decision({ decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Build website", ...defineTask("Build website") });
     expect(validateDecisionText(bad, ctx, store, emptySeen()).ok).toBe(false);
   });
 
@@ -118,8 +118,8 @@ describe("PR 3 independent architecture regressions", () => {
     await exchange(store, "Review memory", createGoal("Socrates development", "Review memory"));
     const base = { goal_label: "current", new_goal_title: null, task_decision: "create_task", task_label: null, workspace_confidence: "high", reason: "wrong work", depends_on: [] };
     const result = await routerWith(store, [{ text: decision({ decision: "compound", workspace_confidence: null, parts: [
-      { ...base, order: 1, request: "Redesign logo", decision: "continue_current", new_task_title: "Redesign logo" },
-      { ...base, order: 2, request: "Create pricing page", decision: "continue_current", new_task_title: "Create pricing page" },
+      { ...base, order: 1, request: "Redesign logo", decision: "continue_current", new_task_title: "Redesign logo", ...defineTask("Redesign logo") },
+      { ...base, order: 2, request: "Create pricing page", decision: "continue_current", new_task_title: "Create pricing page", ...defineTask("Create pricing page") },
     ] as never }) }]).router.route(Q_SCENARIO.steps[9]!.message);
     expect(grade(Q_SCENARIO.steps[9]!.expect, result)).toBe(false);
   });
@@ -168,5 +168,50 @@ describe("clarification recovery and completed-task intent", () => {
     const ctx = buildRoutingContext(store, "German", {timeZone: "UTC", historyBudgetTokens: 1});
     expect(ctx.answeringClarification).toBe(true);
     expect(ctx.pending?.request).toContain("Review yesterday's project.");
+  });
+});
+
+describe("router-proposed task definitions", () => {
+  it("requires an objective and completion criteria when creating, and persists them", async () => {
+    const { store } = setup();
+    const bare = decision({ decision: "create_new", new_goal_title: "Website", task_decision: "create_task", new_task_title: "Hero" });
+    const { router, routerModel } = routerWith(store, [{ text: bare }, createGoal("Website", "Fix homepage hero on mobile")]);
+    const result = await router.route("Fix the homepage hero on mobile for the website");
+    const repair = routerModel.requests[1]!.messages.at(-1)!.content;
+    expect(repair).toContain("new_goal_objective");
+    if (result.kind !== "routed") throw new Error("Expected routing");
+    expect(result.parts[0]!.goal.objective).toBe("Deliver Website.");
+    expect(result.parts[0]!.task).toMatchObject({
+      objective: "Fix homepage hero on mobile.",
+      completionCriteria: "Fix homepage hero on mobile is done and verified.",
+    });
+  });
+
+  it("rejects definitions on routes that create nothing", () => {
+    const { store } = setup();
+    const ctx = buildRoutingContext(store, "hi", { timeZone: "UTC" });
+    const text = decision({ decision: "resume_existing", goal_label: "general", workspace_confidence: null, ...defineTask("Chat") });
+    const result = validateDecisionText(text, ctx, store, emptySeen());
+    expect(result.ok).toBe(false);
+  });
+
+  it("creates fallback tasks with an honest null completion criterion", async () => {
+    const { store } = setup();
+    const { router } = routerWith(store, [{ text: "garbage" }, { text: "garbage" }]);
+    const result = await router.route("Build me a landing page for my bakery please");
+    if (result.kind !== "routed") throw new Error("Expected routing");
+    expect(result.fallback).toBe("first_goal");
+    expect(result.parts[0]!.task.completionCriteria).toBeNull();
+  });
+
+  it("does not treat a candidate described as new as a request for new work", async () => {
+    const { store } = await seedTwo();
+    await routerWith(store, [{ toolCalls: [{ name: "ask_user", input: ask }] }]).router.route("Continue yesterday's project");
+    const goalsBefore = store.listGoals().length;
+    const { router } = routerWith(store, [{ text: "bad" }, { text: "bad" }]);
+    const result = await router.route("the new website one");
+    expect(result.kind).toBe("routed");
+    expect(result.fallback).not.toBe("clarification_new_goal");
+    expect(store.listGoals().length).toBe(goalsBefore);
   });
 });

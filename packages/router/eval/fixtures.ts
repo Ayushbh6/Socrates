@@ -54,15 +54,22 @@ const base = {
   reason: "Fixture oracle.",
 };
 
+/** The bounded definition a router proposes for every task it creates. */
+export const defineTask = (title: string) => ({
+  new_task_objective: `${title}.`,
+  new_task_completion_criteria: `${title} is done and verified with the user.`,
+});
+const defineGoal = (goal: string) => ({ new_goal_objective: `Deliver and maintain ${goal}.` });
+
 const general = (): Oracle => ({ decision: { ...base, decision: "resume_existing", goal_label: "general", workspace_confidence: null } });
 const continueTask = (): Oracle => ({
   decision: { ...base, decision: "continue_current", goal_label: "current", task_decision: "continue_task", task_label: "current" },
 });
 const createTask = (title: string): Oracle => ({
-  decision: { ...base, decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: title },
+  decision: { ...base, decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: title, ...defineTask(title) },
 });
 const createGoal = (goal: string, task: string): Oracle => ({
-  decision: { ...base, decision: "create_new", new_goal_title: goal, task_decision: "create_task", new_task_title: task },
+  decision: { ...base, decision: "create_new", new_goal_title: goal, ...defineGoal(goal), task_decision: "create_task", new_task_title: task, ...defineTask(task) },
 });
 const resume = (goal: string, task: string): Oracle => ({
   decision: { ...base, decision: "resume_existing", goal_label: goal, task_decision: "resume_task", task_label: task },
@@ -194,7 +201,7 @@ export const Q_SCENARIO: Scenario = {
             part(
               2,
               "audit every API endpoint touched by that fix for authentication and authorization problems.",
-              { decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Security review of issue #42 API changes" },
+              { decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Security review of issue #42 API changes", ...defineTask("Security review of issue #42 API changes") },
               [1],
             ),
           ],
@@ -289,8 +296,8 @@ export const T_SCENARIO: Scenario = {
           decision: "compound",
           workspace_confidence: null,
           parts: [
-            part(1, "Post the summary on issue #42", { decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Post summary on issue #42" }),
-            part(2, "audit the touched endpoints", { decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Audit endpoints touched by issue #42" }, [1]),
+            part(1, "Post the summary on issue #42", { decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Post summary on issue #42", ...defineTask("Post summary on issue #42") }),
+            part(2, "audit the touched endpoints", { decision: "continue_current", goal_label: "current", task_decision: "create_task", new_task_title: "Audit endpoints touched by issue #42", ...defineTask("Audit endpoints touched by issue #42") }, [1]),
           ],
         },
       },
