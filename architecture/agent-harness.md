@@ -848,7 +848,7 @@ There is no separate planner agent, answer-writing agent, state-writing agent, o
 9. Continue until the model returns a final response or asks the user a question.
 10. Require the final result to contain a visible answer, a short task-local continuation note, and an optional task-completion proposal.
 11. Persist those fields and all exact tool evidence.
-12. Attach history per the three-tier policy and compact per the "Context and compaction" section if the `160,000`-token trigger is crossed: one history-checkpoint LLM call, then mechanical in-turn linearization. The turn continues naturally. Compaction is strictly task-local; on the task's fifth compaction, the harness performs the automatic rollover described in `Goal-router.md`.
+12. Throughout the loop, attach history per the three-tier policy and, whenever the `160,000`-token trigger is crossed before a model request, compact per the "Context and compaction" section: one history-checkpoint LLM call when completed history lies outside the verbatim window, then mechanical in-turn linearization if still needed. The turn continues naturally. Compaction is strictly task-local; when the trigger would fire for the sixth time in the same chat, the harness performs the automatic rollover described in `Goal-router.md` instead.
 
 ## Working-agent context
 
@@ -982,9 +982,12 @@ Every token number in either architecture document is an absolute value under th
 |---|---|
 | `180,000` tokens | Hard ceiling. The harness must never send a request at or above this size. |
 | `160,000` tokens | Compaction trigger. Measured before every model request in the tool loop. |
-| `60,000 - 80,000` tokens | Post-compaction target. Compaction runs until the prompt fits this range. |
+| `80,000` tokens | Post-compaction target. Compaction runs until the prompt is at or below this size. |
+| `30,000` tokens | Verbatim history window. When layer 1 runs, the newest completed turns up to this size stay exactly as they were attached. |
+| `30,000` tokens | Intact in-turn window. When layer 2 runs, the newest tool calls and results of the current turn up to this size stay intact. |
+| `20,000` tokens | N−1 full-attachment limit. Turn N−1 is attached with its full tool activity only when its full rendering fits this size. |
 
-The gap between trigger and target is the hysteresis: after compaction, the prompt must grow through the whole 40–60k band before the trigger fires again, so compaction never runs on consecutive steps.
+The gap between trigger and target is the hysteresis: after compaction, the prompt must grow by at least 80k tokens before the trigger fires again, so compaction never runs on consecutive steps.
 
 Token counting uses one fixed harness-standard tokenizer, independent of the served model. The canonical counter is `tiktoken` with the `o200k` encoding. Its count is treated as the authoritative budget number for every model; exactness against each provider's native tokenizer is not required, only consistency. Thresholds carry a built-in safety margin, so an estimator drift of a few percent cannot push a request past the provider's real limit.
 
@@ -996,19 +999,27 @@ The unit being measured is the full next model request: stable prefix, history, 
 
 ### Three-tier history attachment
 
-History attaches to the working prompt in three tiers. This policy applies on every turn, not only at compaction time.
+History attaches to the working prompt in three tiers. This policy decides the *shape* of each turn on every request; it does not impose a size cap. Until the compaction trigger fires, every completed turn of the current task chat is attached in its tier shape. Size is managed only by compaction.
 
-1. **Current turn (in flight).** Everything: full tool calls and full bounded results. This is the agent's active working state.
-2. **Turn N−1 (just completed).** Full user query, full final response, plus a compact tool inventory rendered with the linearization grammar below, plus bounded excerpts of the most significant results (for example, a failing assertion). The previous turn is the most likely referent of the next user message, so its evidence stays one glance away.
-3. **Turns N−2 and older.** Full user query and full final response only. No tool calls, no tool results. Tool evidence remains in the event log, reachable through `context_retrieve`.
+1. **Current turn (in flight).** Everything: the full user query, full tool calls, and full bounded results. This is the agent's active working state.
+2. **Turn N−1 (just completed).** Everything: the full user query, every tool call with its bounded result, and the full final response. The previous turn is the most likely referent of the next user message, so its complete working evidence stays in view. If the full rendering of N−1 exceeds the `20,000`-token N−1 limit, it is attached instead as the full user query, the full final response, a tool inventory in the linearization grammar below, and bounded excerpts of the most significant results (for example, a failing assertion).
+3. **Turns N−2 and older.** The full user query and full final response only. No tool calls and no tool results. Tool evidence remains in the event log, reachable through `context_retrieve`.
 
-The exact-history allowance for tier 3 is token-based and configurable. Its initial value is `20,000` tokens. Complete Q&A pairs are preferred over arbitrary message slices, and pairs are selected newest-first.
+Dropping tool activity from older turns is deliberate. Their final responses carry what the work established, re-sending every historical tool call and result wastes most of the context, and the agent works better without that noise. Nothing is lost: every attached turn carries a visible `[TURN k]` label with its permanent `project_turn` number, and that label is a requirement, not decoration. It is what lets the agent call `context_retrieve` `inspect` with `turn_number: k` to recover that turn's exact tool calls and results whenever it needs them.
 
-There is deliberately no blanket rule that keeps every historical user message verbatim. A year-long goal can accumulate hundreds of user messages, and retaining them all would consume the entire post-compaction target. Instead, obligation continuity is carried by the checkpoint's `outstanding_requests` field: the compactor extracts every unanswered request verbatim, and those quotes remain visible in the prompt until resolved. Oversized user messages (for example, a pasted specification) are already handled by bounded ingestion at entry time.
+Complete Q&A pairs are always attached whole; a user query is never separated from its final response. Obligation continuity does not depend on keeping every historical message forever: when compaction runs, the checkpoint's `outstanding_requests` field extracts every unanswered request verbatim, and those quotes remain visible in the prompt until resolved. Oversized user messages (for example, a pasted specification) are already handled by bounded ingestion at entry time.
 
 ### Layer 1: history checkpoint (one LLM call)
 
-When the trigger fires, the harness first compacts completed history. It selects the oldest complete Q&A pairs that must leave the prompt and sends them to one dedicated compactor model call. This is the only LLM call compaction ever makes; it is a bounded, small-context request, not a second agent.
+When the trigger fires, the harness first compacts completed history:
+
+1. Starting with turn N−1 and walking backward, keep the newest complete turns, in the exact shape they were attached, while they fit within the `30,000`-token verbatim history window. N−1 counts at its attached size. The window is turn-atomic: a turn that does not fit whole is not kept.
+2. Every completed turn older than the window, together with the prior active checkpoint when one exists, becomes the compacted span.
+3. The compacted span is sent to one dedicated compactor model call, which produces the new history checkpoint.
+
+This is the only LLM call compaction ever makes; it is a bounded, small-context request, not a second agent.
+
+Layer 1 is skipped when there is no completed turn older than the verbatim window—for example, during the first turn of a task chat, or when the first long turn is still in flight. The trigger then proceeds directly to layer 2.
 
 #### Compactor input contract
 
@@ -1095,13 +1106,19 @@ Active checkpoint (in the prompt, always present, coarsest)
 
 The active checkpoint needs no inspection—it is already verbatim in the prompt. Inspection exists for superseded checkpoints and evidence drill-down: when the active summary compressed away a needed detail, the agent inspects an earlier checkpoint, or more commonly follows a `key_evidence` ref directly to the exact underlying event. The harness validates that a checkpoint's `turns_covered` range and cited turn numbers match the input it was built from, so a checkpoint can never claim coverage it does not have.
 
-If the checkpoint call fails or returns invalid output, the harness retries once and then falls back to purely mechanical trimming: drop the oldest pairs, rely on continuation notes, and record an operational warning. Compaction never blocks the turn on a failing compactor.
+If the checkpoint call fails or returns invalid output, the harness retries once and then falls back to purely mechanical trimming, recording an operational warning. Compaction never blocks the turn on a failing compactor. The mechanical fallback still protects obligations and makes the gap visible:
+
+- the prior active checkpoint, when one exists, stays in the prompt unchanged, so its `outstanding_requests` remain visible verbatim;
+- the turns of the compacted span leave the prompt and are replaced by one omission marker such as `[TURNS 11–25 OMITTED — compactor unavailable; use context_retrieve inspect turn_number to recover them]`;
+- the next successful compaction receives the omitted span again as part of its input, so its obligations are extracted then.
 
 ### Layer 2: in-turn linearization (mechanical, no LLM)
 
-If the prompt is still above the target after the history checkpoint, the harness compacts inside the current turn. This layer is purely mechanical: older tool calls are rewritten into one-line activity entries. No model call, no schema, no latency, fully deterministic.
+If the prompt is still above the target after the history checkpoint—or layer 1 was skipped because no completed history lies outside the verbatim window—the harness compacts inside the current turn. This layer is purely mechanical: older tool calls are rewritten into one-line activity entries. No model call, no schema, no latency, fully deterministic. The current user query itself is never linearized or summarized.
 
-The newest tool calls stay intact; calls older than the intact window are linearized with one bounded line per call:
+This is how a single enormous turn is handled. When the first message of a task drives sixty tool calls and crosses the trigger, there is no history to checkpoint; the turn itself is made lean by linearizing its older calls while the newest work stays intact.
+
+Walking backward from the newest tool call, calls and their results stay intact while they fit within the `30,000`-token intact in-turn window. Every older call is linearized with one bounded line:
 
 | Tool | Linear form |
 |---|---|
@@ -1119,20 +1136,22 @@ Rules for the grammar:
 
 - The call input (command, path, pattern) is verbatim; the outcome is one bounded clause.
 - For failures, the first error line is included because that is the signal the agent needs.
-- Everything else is behind the event-log reference for that call.
+- Every line ends with the evidence handle for that call, such as `[e14]`. Everything else—the complete input and the complete result—is behind that handle and resolvable through `context_retrieve` `inspect`.
 
 Linearization reduces a hundred-call turn from potentially 80–150k tokens to roughly 3–4k. It is lossless where it matters—inputs stay exact—and it works because tool outputs are already bounded at ingestion (see below). A representative linearized block:
 
 ```text
 [TURN 12 — tool activity]
-- read memory/compact.ts (lines 1–120)
-- terminal: pytest tests/memory/ → 2 failed (assert source_ref is None)
-- edit memory/compact.ts (+3 −1)
-- edit memory/rebuild.ts (+2 −0)
-- terminal: pytest tests/memory/ → 24 passed
+- read memory/compact.ts (lines 1–120) [e10]
+- terminal: pytest tests/memory/ → 2 failed (assert source_ref is None) [e11]
+- edit memory/compact.ts (+3 −1) [e12]
+- edit memory/rebuild.ts (+2 −0) [e13]
+- terminal: pytest tests/memory/ → 24 passed [e14]
 ```
 
-The same grammar renders the N−1 turn's tool inventory in tier 2 of history attachment. The harness may also run linearization proactively—linearizing calls older than the most recent fifteen on every step—so the prompt stays lean continuously and the trigger fires later and less often. This is an optional refinement; trigger-based linearization alone is correct.
+The same grammar renders the tool inventory of an oversized N−1 turn in tier 2 of history attachment.
+
+Linearization runs only when the trigger fires, never proactively on every step. Rewriting earlier calls on each step would change the middle of the prompt on every request and invalidate the provider prompt cache each time; trigger-based linearization changes it once per compaction.
 
 ### Bounded ingestion
 
@@ -1142,7 +1161,7 @@ Every tool result is bounded when it enters the prompt, before any compaction de
 
 Compaction boundaries are constrained by two hard correctness rules:
 
-1. **History cuts are turn-atomic.** The history checkpoint's input is always a whole number of complete Q&A turns. Never a user query without its response, never a response without its query, never a partial slice. The N−1 turn is also atomic: it is either fully present with its tool inventory or fully compacted into the checkpoint, never split.
+1. **History cuts are turn-atomic.** The history checkpoint's input is always a whole number of complete Q&A turns. Never a user query without its response, never a response without its query, never a partial slice. The verbatim history window is turn-atomic in the same way, and the N−1 turn is atomic: it is either present in its tier-2 shape or fully compacted into the checkpoint, never split.
 2. **In-turn cuts are pair-atomic.** A linearization boundary never falls between a tool call and its tool result. Every provider API rejects a result without its call, and parallel tool calls emitted by one model response must stay together with all of their results. Cuts happen only at balanced points where every emitted call has its result.
 
 Both invariants are enforced by the harness during input selection, not by the compactor model, and both are covered by contract tests.
@@ -1154,34 +1173,51 @@ After a full compaction, the next model request is:
 ```text
 [stable prefix: system prompt + rules + ten tool schemas]   ← never touched
 
-<HISTORY_CHECKPOINT ref="hc-3" turns="1–10">
+[goal-stable blocks]                                         ← unchanged by compaction
+
+<HISTORY_CHECKPOINT ref="hc-3" turns="1–8">
 Structured checkpoint output: summary, progress, decisions, constraints,
 outstanding_requests (verbatim, turn-cited), next_steps, key_evidence.
 </HISTORY_CHECKPOINT>
 
-[TURN 11 — Q&A + tool activity]                              ← N−1, preserved mechanically
+[TURN 9]                                                     ← verbatim window, Q&A only
+USER: ...
+SOCRATES: ...
+
+[TURN 10]
+USER: ...
+SOCRATES: ...
+
+[TURN 11 — full]                                             ← N−1, verbatim window
 USER: Why are the memory tests failing? Fix them.
+TOOL CALL read memory/compact.ts (lines 1–120) → full bounded result
+TOOL CALL terminal: pytest tests/memory/ → full bounded result
+TOOL CALL edit memory/compact.ts → full bounded result
+TOOL CALL terminal: pytest tests/memory/ → full bounded result
 SOCRATES: Two tests failed because compact_history() dropped...
-TOOL ACTIVITY:
-- read memory/compact.ts (lines 1–120)
-- terminal: pytest tests/memory/ → 2 failed (assert source_ref is None)
-- edit memory/compact.ts (+3 −1)
-- terminal: pytest tests/memory/ → 24 passed
+
+[turn-volatile blocks]
 
 [CURRENT TURN 12 — managed per layer 2]
 USER: Run them again with verbose output.
-... recent tool calls intact, older calls linearized ...
+... newest tool calls intact, older calls linearized ...
 ```
 
-History becomes one checkpoint artifact, the N−1 turn is preserved verbatim as a block, and the current turn is managed in place. The active checkpoint's `outstanding_requests` stay visible in every subsequent request until the next compaction resolves or re-carries them, so a multi-part request made turns ago is never forgotten. Each artifact carries its reference handle, resolvable through `context_retrieve`.
+Turns older than the verbatim window become one checkpoint artifact, the newest ~30k tokens of completed turns stay exactly as they were attached (N−1 with its full tool activity), and the current turn is managed in place. The block order follows the canonical working-agent context in "Working-agent context". The active checkpoint's `outstanding_requests` stay visible in every subsequent request until the next compaction resolves or re-carries them, so a multi-part request made turns ago is never forgotten. Each artifact carries its reference handle, resolvable through `context_retrieve`.
 
 ### Failsafe
 
 If the prompt is still above the target after layer 1 and layer 2—which bounded ingestion makes effectively unreachable—the harness shrinks the intact in-turn window and hard-truncates excerpts, then logs an operational warning. It never silently sends an over-budget request and never pretends the context is smaller than it is.
 
+### Compaction count and rollover
+
+Each time the `160,000`-token trigger fires inside a task chat counts as exactly one compaction, whether it ran layer 1, layer 2, or both. The count belongs to the chat, not the task.
+
+A chat holds at most five compactions. When the trigger would fire for the sixth time in the same chat, the harness performs the automatic task rollover described in `Goal-router.md` ("Task rollover") instead of compacting: it writes a handover capsule, closes the chat, and continues the same task in a linked continuation chat whose count starts at zero. A long task therefore appears in Standard view as a chain of chats: chat 1 holds compactions 1–5, chat 2 holds compactions 6–10, and the eleventh compaction-level trigger starts chat 3.
+
 ### Continuity guarantees
 
-Compaction never rewrites or deletes the underlying event log. It changes only what the next model request sees. The newest complete exchanges and the current user message remain verbatim, the continuation note and checkpoint artifacts carry everything older, and every omitted detail remains retrievable through evidence references.
+Compaction never rewrites or deletes the underlying event log. It changes only what the next model request sees. The verbatim history window and the current user message remain exact, the checkpoint and continuation note carry everything older, and every omitted detail remains retrievable through `[TURN k]` labels, checkpoint handles, and evidence handles. Compaction keeps what is owed visible; `context_retrieve` recovers anything exact. Together they are how Socrates never forgets.
 
 Obligations receive special protection: unanswered user requests survive compaction verbatim inside `outstanding_requests`, are visible in every subsequent request, and are carried forward across checkpoint generations until resolved. Compaction can compress what happened; it can never silently drop what is still owed.
 

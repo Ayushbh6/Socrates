@@ -585,7 +585,7 @@ The backend supplies the selected task's title, objective, expected completion p
 
 This is a mechanical chronological walk backward through complete Q&A pairs already bound to the selected task. It does not include interleaved turns from other tasks or goals and applies no semantic filtering.
 
-Its initial budget is the smaller of `20,000` tokens or `15%` of the selected model's context window. The harness selects newest complete pairs that fit and presents them oldest to newest. Exact messages and tool evidence remain in persistent storage even when they no longer fit here.
+It has no separate token cap. Every completed turn of the current task chat is attached in its three-tier shape (N−1 with full tool activity, older turns as Q&A only), presented oldest to newest, until the `160,000`-token compaction trigger fires; size is then managed only by the compaction design in `agent-harness.md`. Exact messages and tool evidence remain in persistent storage even after compaction removes them from the prompt.
 
 ### `RETRIEVED_OLDER_TASK_HISTORY`
 
@@ -660,10 +660,10 @@ A genuinely long task — hundreds of turns — would otherwise accumulate many 
 
 ### The rule
 
-When a task reaches its **fifth compaction**, the harness performs an automatic rollover:
+A chat holds at most **five compactions**. When the compaction trigger would fire for the **sixth** time in the same chat, the harness performs an automatic rollover instead of compacting (see "Compaction count and rollover" in `agent-harness.md`):
 
 ```text
-Task reaches its fifth compaction
+Compaction trigger fires for the sixth time in this chat
 → finish the current safe model step (never mid-tool-execution)
 → generate and validate a full task handover capsule
 → close the current chat
@@ -696,7 +696,7 @@ const TaskHandover = z.object({
 })
 ```
 
-The capsule is a **system-generated continuation block, never a user message** — the user never wrote it, so it must not masquerade as one. The new chat's context is: the capsule, the goal context, the newest exact exchanges, and relevant retrieved evidence. Every older exchange remains accessible through `context_retrieve`.
+The capsule is a **system-generated continuation block, never a user message** — the user never wrote it, so it must not masquerade as one. The new chat's context follows the canonical working-agent context in `agent-harness.md`, with the capsule in place of a history checkpoint: the goal context, the capsule, the verbatim history window (the newest ~30k tokens of completed turns, exactly as they were attached), the current user message, and the in-flight turn with its older tool calls linearized and its newest calls intact. Every older exchange remains accessible through `context_retrieve`, and the continuation chat's `continuation_of` link lets the agent reach the previous chat directly.
 
 ### Protections
 
@@ -827,7 +827,7 @@ The Main Coding Agent does not maintain a large `saved_state` object. Its final 
 
 The backend automatically records files, commands, tests, tool results, MCP calls, and Skill activations from the execution log — these become the ledger entry's derived fields.
 
-## Continuation note and context trimming
+## Continuation note and compaction
 
 The continuation note is updated by the Main Coding Agent as part of the same final response. It is **task-local**: it describes the current task's progress, not the whole goal:
 
@@ -843,14 +843,9 @@ path can still omit source material.
 
 The user sees only the visible answer. The backend stores both fields.
 
-When exact history exceeds the prompt budget, the harness performs mechanical trimming:
+The continuation note does not manage prompt size. History size is managed only by the compaction design in `agent-harness.md` ("Context and compaction"): the three-tier attachment policy shapes each turn, the `160,000`-token trigger fires the history checkpoint and in-turn linearization, and the sixth trigger in a chat performs the rollover above. That section is the single source of truth for compaction; this document does not define a second trimming mechanism.
 
-1. Keep the newest complete Q&A pairs that fit.
-2. Use the already-saved continuation note to represent earlier progress.
-3. Replace oversized tool results with bounded results and retrievable references.
-4. Keep all original messages and tool events in persistent storage.
-
-There is no extra router, summarizer, or state-writer call after the Main Coding Agent. Prompt trimming changes what the next model request sees, not what Socrates stores.
+There is no extra router, summarizer, or state-writer call after the Main Coding Agent. Compaction changes what the next model request sees, not what Socrates stores.
 
 ## Per-message lifecycle
 
@@ -877,7 +872,7 @@ Persist visible answer, task-local continuation note, and tool evidence
     ↓
 Harness updates the ledger entry; record task completion if proposed
     ↓
-Compaction is task-local; on the fifth compaction, perform the automatic rollover
+Compaction is task-local; on the sixth trigger in a chat, perform the automatic rollover instead
 ```
 
 This preserves the product illusion of one seamless conversation while giving every turn a focused backend context.
