@@ -7,6 +7,7 @@ import { statOrNull } from "../files";
 import { type ToolHandler, json } from "../handler";
 import { page } from "../paging";
 import { runRipgrep } from "../ripgrep";
+import picomatch from "picomatch";
 
 export const GLOB_DEFAULT_LIMIT = 200;
 export const GLOB_MAX_LIMIT = 1000;
@@ -17,8 +18,37 @@ export const GREP_MAX_LINE_CHARS = 500;
 const MAX_COLLECTED_PATHS = 50_000;
 const MAX_COLLECTED_MATCHES = 5_000;
 
-/** Repository metadata is never listed or searched. */
-const EXCLUDE_GIT = ["--glob", "!.git", "--glob", "!**/.git/**"];
+/**
+ * Repository metadata is never listed or searched, and .gitignore applies
+ * whether or not the workspace is a git repository.
+ */
+const EXCLUDE_GIT = ["--no-require-git", "--glob", "!.git", "--glob", "!**/.git/**"];
+
+/**
+ * A matcher for one gitignore-style glob relative to the searched directory:
+ * a pattern without "/" matches file names at any depth.
+ *
+ * Globs are applied here, to the ignore-respecting file list, instead of
+ * being passed to ripgrep, because a ripgrep inclusion glob overrides
+ * .gitignore and would bring ignored files back.
+ */
+function globMatcher(pattern: string): (rel: string) => boolean {
+  const clean = pattern.replace(/^\.\//, "").replace(/^\//, "");
+  try {
+    return picomatch(clean, { dot: true, basename: !clean.includes("/") });
+  } catch (error) {
+    throw new ToolError("invalid_pattern", `The glob pattern is invalid: ${(error as Error).message}`, 'Use a glob such as "**/*.ts" or "src/**/test_*.py".');
+  }
+}
+
+/** Files under a directory that ignore rules allow, as paths relative to it, in stable order. */
+async function listFiles(dirAbs: string, signal: AbortSignal, accept: (rel: string) => boolean, onFile: (rel: string) => boolean): Promise<void> {
+  await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", ...EXCLUDE_GIT], dirAbs, signal, (line) => {
+    if (!line) return true;
+    const rel = line.replace(/^\.\//, "").split(path.sep).join("/");
+    return accept(rel) ? onFile(rel) : true;
+  });
+}
 
 function directory(ctx: HandlerContext, input: string | undefined) {
   const workspace = requireWorkspace(ctx);
@@ -49,18 +79,15 @@ export const globTool: ToolHandler<GlobInput> = {
       if (!info) throw new ToolError("directory_not_found", `${dir.rel} does not exist.`, "Use an existing directory, or omit path to search the whole workspace.");
       if (!info.isDirectory()) throw new ToolError("not_a_directory", `${dir.rel} is a file, not a directory.`, "Pass its parent directory as path, or read the file directly.");
       items = [];
-      const run = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", "--glob", input.pattern, ...EXCLUDE_GIT], dir.abs, ctx.signal, (line) => {
-        if (!line) return true;
-        items.push(workspace.relative(path.resolve(dir.abs, line)));
-        if (items.length >= MAX_COLLECTED_PATHS) {
+      const collected = items;
+      await listFiles(dir.abs, ctx.signal, globMatcher(input.pattern), (rel) => {
+        collected.push(workspace.relative(path.resolve(dir.abs, rel)));
+        if (collected.length >= MAX_COLLECTED_PATHS) {
           capped = true;
           return false;
         }
         return true;
       });
-      if (run.code === 2 && items.length === 0 && run.stderr.trim()) {
-        throw new ToolError("invalid_pattern", `The glob pattern was rejected: ${firstLines(run.stderr, 3)}`, 'Use a glob such as "**/*.ts" or "src/**/test_*.py".');
-      }
     }
     const { out, nextCursor } = page(ctx, key, items, offset, limit, (p) => p);
     const result: Record<string, unknown> = { root: dir.rel, matches: out, returned: out.length, truncated: nextCursor !== null, next_cursor: nextCursor };
@@ -100,6 +127,15 @@ export const grepTool: ToolHandler<GrepInput> = {
       const info = await statOrNull(target.abs);
       if (!info) throw new ToolError("path_not_found", `${target.rel} does not exist.`, "Use an existing file or directory, or omit path to search the whole workspace.");
       const cwd = info.isDirectory() ? target.abs : path.dirname(target.abs);
+      // With a glob filter, only files the ignore rules allow are eligible (see globMatcher).
+      let eligible: Set<string> | null = null;
+      if (input.glob) {
+        const matches = globMatcher(input.glob);
+        eligible = new Set();
+        const allowed = eligible;
+        if (info.isDirectory()) await listFiles(cwd, ctx.signal, matches, (rel) => (allowed.add(rel), true));
+        else if (matches(path.basename(target.abs))) allowed.add(path.basename(target.abs));
+      }
       const args = [
         "--no-config",
         "--json",
@@ -122,6 +158,7 @@ export const grepTool: ToolHandler<GrepInput> = {
         const file = event.data.path.text;
         const text = event.data.lines.text;
         if (file === undefined || text === undefined) return true; // Not valid UTF-8; skipped like binary content.
+        if (eligible && !eligible.has(file.replace(/^\.\//, "").split(path.sep).join("/"))) return true;
         items.push({ path: workspace.relative(path.resolve(cwd, file)), line_number: event.data.line_number, text: cutLine(text.replace(/\r?\n$/, ""), GREP_MAX_LINE_CHARS) });
         if (items.length >= MAX_COLLECTED_MATCHES) {
           capped = true;

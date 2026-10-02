@@ -12,6 +12,10 @@
     "@socrates/store": "workspace:*",
     "@vscode/ripgrep": "^1.18.0",
     "diff": "^8",
+    "picomatch": "^4",
     "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.3"
   }
 }

@@ -12,13 +12,19 @@ export type MatchTier = "exact" | "trailing_whitespace" | "indentation" | "unico
 export interface Match {
   start: number;
   end: number;
+  /**
+   * For an indentation-tolerant match: the shift from the given lines to this
+   * occurrence, applied to the replacement. Each occurrence has its own.
+   * Null when the given lines already have this occurrence's indentation.
+   */
+  reindent: ((text: string) => string) | null;
 }
 
 export interface MatchResult {
   tier: MatchTier;
   matches: Match[];
-  /** Applied to the replacement when an indentation-tolerant match found a consistent shift. */
-  reindent: ((text: string) => string) | null;
+  /** Line numbers of indentation-tolerant matches whose indentation differs non-uniformly from old_text. */
+  unshiftable: number[];
 }
 
 const LINE_TIERS: { tier: Exclude<MatchTier, "exact">; norm: (line: string) => string }[] = [
@@ -29,8 +35,8 @@ const LINE_TIERS: { tier: Exclude<MatchTier, "exact">; norm: (line: string) => s
 
 export function findMatches(content: string, find: string): MatchResult | null {
   const exact: Match[] = [];
-  for (let i = content.indexOf(find); i >= 0; i = content.indexOf(find, i + find.length)) exact.push({ start: i, end: i + find.length });
-  if (exact.length) return { tier: "exact", matches: exact, reindent: null };
+  for (let i = content.indexOf(find); i >= 0; i = content.indexOf(find, i + find.length)) exact.push({ start: i, end: i + find.length, reindent: null });
+  if (exact.length) return { tier: "exact", matches: exact, unshiftable: [] };
 
   const lines = lineSpans(content);
   const endsWithNewline = find.endsWith("\n");
@@ -40,7 +46,7 @@ export function findMatches(content: string, find: string): MatchResult | null {
   for (const { tier, norm } of LINE_TIERS) {
     const target = findLines.map(norm);
     const matches: Match[] = [];
-    let firstAt = -1;
+    const unshiftable: number[] = [];
     for (let i = 0; i + findLines.length <= lines.length; ) {
       let ok = true;
       for (let j = 0; j < findLines.length; j++) {
@@ -53,15 +59,17 @@ export function findMatches(content: string, find: string): MatchResult | null {
         i++;
         continue;
       }
-      if (firstAt < 0) firstAt = i;
       const last = lines[i + findLines.length - 1]!;
-      matches.push({ start: lines[i]!.start, end: endsWithNewline ? Math.min(content.length, last.end + 1) : last.end });
+      let reindent: Match["reindent"] = null;
+      if (tier === "indentation") {
+        const shift = indentShift(lines.slice(i, i + findLines.length).map((l) => l.text), findLines);
+        if (shift === undefined) unshiftable.push(i + 1);
+        else reindent = shift;
+      }
+      matches.push({ start: lines[i]!.start, end: endsWithNewline ? Math.min(content.length, last.end + 1) : last.end, reindent });
       i += findLines.length;
     }
-    if (matches.length) {
-      const matched = lines.slice(firstAt, firstAt + findLines.length).map((l) => l.text);
-      return { tier, matches, reindent: tier === "indentation" ? indentShift(matched, findLines) : null };
-    }
+    if (matches.length) return { tier, matches, unshiftable };
   }
   return null;
 }
@@ -98,9 +106,11 @@ function lineSpans(content: string): { text: string; start: number; end: number 
 
 /**
  * When the model's lines differ from the file only by one constant leading
- * prefix, return a function that applies the same shift to the replacement.
+ * prefix, return a function that applies the same shift to the replacement;
+ * null when there is no shift; undefined when the difference is not one
+ * constant shift, so no replacement indentation can be derived safely.
  */
-function indentShift(actual: string[], given: string[]): ((text: string) => string) | null {
+function indentShift(actual: string[], given: string[]): ((text: string) => string) | null | undefined {
   const lead = (l: string) => /^[ \t]*/.exec(l)![0];
   let shift: { add: string } | { remove: string } | null = null;
   for (let i = 0; i < actual.length; i++) {
@@ -108,11 +118,11 @@ function indentShift(actual: string[], given: string[]): ((text: string) => stri
     const a = lead(actual[i]!);
     const g = lead(given[i]!);
     const candidate = a.endsWith(g) ? { add: a.slice(0, a.length - g.length) } : g.endsWith(a) ? { remove: g.slice(0, g.length - a.length) } : null;
-    if (!candidate) return null;
+    if (!candidate) return undefined;
     if (shift === null) shift = candidate;
-    else if (JSON.stringify(shift) !== JSON.stringify(candidate)) return null;
+    else if (JSON.stringify(shift) !== JSON.stringify(candidate)) return undefined;
   }
-  if (!shift) return null;
+  if (!shift || ("add" in shift ? shift.add : shift.remove) === "") return null;
   const s = shift;
   return (text) =>
     text

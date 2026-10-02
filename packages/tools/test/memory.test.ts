@@ -182,12 +182,12 @@ describe("capability_search and capability_control", () => {
     const ref = (await h.call("capability_search", { query: "github.get_issue" })).json.matches[0].ref;
     const r = await h.call("capability_control", { action: "activate", ref });
     expect(r.json).toMatchObject({ kind: "mcp", status: "activated", public_name: "mcp__github__get_issue", available_on_next_step: true });
-    expect(h.runner.mcpDefinitions(h.binding.goalId)).toEqual([{ name: "mcp__github__get_issue", description: "Read one GitHub issue", inputSchema: ISSUE_TOOL.inputSchema }]);
+    expect(await h.runner.mcpDefinitions(h.binding.goalId)).toEqual([{ name: "mcp__github__get_issue", description: "Read one GitHub issue", inputSchema: ISSUE_TOOL.inputSchema }]);
     const listed = await h.call("capability_control", { action: "list" });
     expect(listed.json.active).toEqual([{ kind: "mcp", name: "github.get_issue", version: "v2", public_name: "mcp__github__get_issue" }]);
     const off = await h.call("capability_control", { action: "deactivate", name: "mcp__github__get_issue" });
     expect(off.json.status).toBe("deactivated");
-    expect(h.runner.mcpDefinitions(h.binding.goalId)).toEqual([]);
+    expect(await h.runner.mcpDefinitions(h.binding.goalId)).toEqual([]);
   });
 
   it("fails truthfully for stale refs, authentication, and inactive names", async () => {

@@ -1,5 +1,5 @@
 import { TerminalControlInput, TerminalInput } from "@socrates/contracts";
-import { countTokens } from "@socrates/shared";
+import { countTokens, truncateToTokens } from "@socrates/shared";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
 import { type HandlerContext, requireWorkspace } from "../context";
 import { ToolError } from "../errors";
@@ -93,6 +93,10 @@ export const terminalTool: ToolHandler<TerminalInput> = {
       }
     }
     if (spec.ready) await awaitReady(session, ctx.signal);
+    if (ctx.signal.aborted) {
+      await terminals.terminate(session);
+      throw new ToolError("cancelled", "The launch was cancelled and the process was stopped.", "No action needed.", false);
+    }
     return running(session, started);
   },
 };
@@ -103,7 +107,7 @@ function launch(ctx: HandlerContext, terminals: TerminalSupervisor, spec: Launch
     onStart: (s) => ctx.store.recordTerminalStarted(refs, { session_id: s.id, name: spec.name, command: spec.command, cwd: spec.cwdRel, background: spec.background }),
     onExit: (s) => {
       try {
-        ctx.store.recordTerminalExited(refs, { session_id: s.id, exit_code: s.exitCode, signal: s.signal, reason: s.exitReason ?? "exited" });
+        ctx.store.recordTerminalExited(refs, { session_id: s.id, exit_code: s.exitCode, signal: s.signal, reason: s.exitReason ?? "exited", facts: testFacts(s) });
       } catch {
         // The store may already be closed when a session outlives it.
       }
@@ -111,18 +115,21 @@ function launch(ctx: HandlerContext, terminals: TerminalSupervisor, spec: Launch
   });
 }
 
+/** The command fact belongs to the launching call; a test outcome is derived once, from the session's exit. */
 function commandFacts(session: TerminalSession): ToolOutput["facts"] {
-  const command = session.spec.command.slice(0, 300);
-  const facts: NonNullable<ToolOutput["facts"]> = [{ kind: "command", value: command }];
-  if (TEST_COMMAND.test(session.spec.command) && session.status === "exited") {
-    facts.push({ kind: "test", value: `${command} → ${session.exitReason === "timeout" ? "timed out" : `exit ${session.exitCode ?? session.signal}`}` });
-  }
-  return facts;
+  return [{ kind: "command", value: session.spec.command.slice(0, 300) }];
+}
+
+function testFacts(session: TerminalSession): { kind: "test"; value: string }[] {
+  if (!TEST_COMMAND.test(session.spec.command)) return [];
+  const outcome = session.exitReason === "timeout" ? "timed out" : session.exitReason === "terminated" ? "stopped" : `exit ${session.exitCode ?? session.signal}`;
+  return [{ kind: "test", value: `${session.spec.command.slice(0, 300)} → ${outcome}` }];
 }
 
 function completed(session: TerminalSession, started: number): ToolOutput {
-  const full = session.output.slice(session.output.start);
-  const out = bounded(full.text, "the complete output is stored with this call");
+  const full = session.output.slice(0);
+  const lostChars = full.from;
+  const out = bounded(full.text, lostChars ? `the first ${lostChars} characters exceeded the retained limit; the rest is stored with this call` : "the complete output is stored with this call");
   const timedOut = session.exitReason === "timeout";
   const result = {
     status: timedOut ? "timed_out" : "completed",
@@ -130,9 +137,10 @@ function completed(session: TerminalSession, started: number): ToolOutput {
     ...exitFields(session),
     output: out.text,
     truncated: out.truncated || full.lost,
+    ...(full.lost ? { output_lost: true, lost_characters: lostChars } : {}),
     wall_time_ms: Date.now() - started,
   };
-  return { content: json(result), result: { ...result, output_full: full.text, output_lost: full.lost }, facts: commandFacts(session) };
+  return { content: json(result), result: { ...result, output_full: full.text, output_lost: full.lost, lost_characters: lostChars }, facts: commandFacts(session) };
 }
 
 function running(session: TerminalSession, started: number): ToolOutput {
@@ -211,23 +219,25 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         const from = parseCursor(input.cursor, session);
         const slice = session.output.slice(from);
         const maxLines = Math.min(input.limit_lines ?? READ_DEFAULT_LINES, READ_MAX_LINES);
-        const lines = slice.text.split("\n");
         let shown = "";
-        let consumed = 0;
         let count = 0;
         let tokens = 0;
-        for (let i = 0; i < lines.length && count < maxLines; i++) {
-          const piece = i === lines.length - 1 ? lines[i]! : `${lines[i]}\n`;
-          if (piece === "") break;
+        let rest = slice.text;
+        while (rest && count < maxLines) {
+          const newline = rest.indexOf("\n");
+          const piece = newline < 0 ? rest : rest.slice(0, newline + 1);
           const cost = countTokens(piece);
-          if (count > 0 && tokens + cost > OUTPUT_TOKENS) break;
-          // A single line above the ceiling is shown by its ends but consumed whole.
-          shown += cost > OUTPUT_TOKENS ? headTail(piece, OUTPUT_TOKENS).text : piece;
-          consumed += piece.length;
-          tokens += Math.min(cost, OUTPUT_TOKENS);
+          if (tokens + cost > OUTPUT_TOKENS) {
+            // A line larger than what is left of the page is paged through, never skipped.
+            if (count === 0) shown = truncateToTokens(piece, OUTPUT_TOKENS).text;
+            break;
+          }
+          shown += piece;
+          tokens += cost;
+          rest = rest.slice(piece.length);
           count++;
         }
-        const next = slice.from + consumed;
+        const next = slice.from + shown.length;
         const end = Math.min(next, session.output.end);
         session.observed = Math.max(session.observed, end);
         const result = {

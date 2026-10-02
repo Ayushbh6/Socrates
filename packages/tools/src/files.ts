@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ToolError } from "./errors";
 import type { ResolvedPath } from "./workspace";
@@ -76,6 +76,26 @@ export async function writeAtomic(abs: string, content: string, mode?: number): 
   } catch (error) {
     await unlink(tmp).catch(() => {});
     throw error;
+  }
+}
+
+/**
+ * Create a file that must not exist yet. The content is written to a
+ * temporary sibling and hard-linked into place, which fails instead of
+ * overwriting if something appeared at the path in the meantime.
+ */
+export async function writeNew(abs: string, content: string, mode?: number): Promise<boolean> {
+  const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.socrates-${randomBytes(4).toString("hex")}`);
+  await writeFile(tmp, content, "utf8");
+  try {
+    if (mode !== undefined) await chmod(tmp, mode);
+    await link(tmp, abs);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    await unlink(tmp).catch(() => {});
   }
 }
 

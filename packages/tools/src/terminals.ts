@@ -146,9 +146,15 @@ export class TerminalSession {
 
 export interface SupervisorOptions {
   maxSessions?: number;
+  /** Output retained per background session. */
   retainChars?: number;
+  /** Output retained per foreground command, whose complete output is stored with its call. */
+  foregroundRetainChars?: number;
   recentExited?: number;
 }
+
+/** Grace period before leftover processes of a finished command are force-killed. */
+const LINGER_GRACE_MS = 2000;
 
 export class TerminalSupervisor {
   private readonly live = new Map<string, TerminalSession>();
@@ -156,12 +162,16 @@ export class TerminalSupervisor {
   private counter = 0;
   private readonly maxSessions: number;
   private readonly retainChars: number;
+  private readonly foregroundRetainChars: number;
   private readonly recentExited: number;
+  /** Process groups whose leader exited while other members were still running. */
+  private readonly lingering = new Set<number>();
   private readonly onProcessExit = () => this.killAllNow();
 
   constructor(options: SupervisorOptions = {}) {
     this.maxSessions = options.maxSessions ?? 16;
     this.retainChars = options.retainChars ?? 4_000_000;
+    this.foregroundRetainChars = options.foregroundRetainChars ?? 16_000_000;
     this.recentExited = options.recentExited ?? 10;
     process.on("exit", this.onProcessExit);
   }
@@ -181,7 +191,7 @@ export class TerminalSupervisor {
     this.assertCanLaunch(spec.name);
     const id = `term-${++this.counter}`;
     const { file, args } = shellCommand(spec.command);
-    const output = new OutputBuffer(this.retainChars);
+    const output = new OutputBuffer(spec.background ? this.retainChars : this.foregroundRetainChars);
     let child: ChildProcessWithoutNullStreams;
     try {
       child = spawn(file, args, { cwd: spec.cwd, env: spec.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
@@ -206,6 +216,8 @@ export class TerminalSupervisor {
     const finish = (code: number | null, signal: string | null, reason: ExitReason) => {
       if (session.status === "exited") return;
       session.clearTimer();
+      // After a deliberate stop the group is already being torn down; only a normal exit is announced.
+      if (child.pid) this.reapGroup(child.pid, session.exitReason === null ? output : null);
       session.status = "exited";
       session.exitCode = code;
       session.signal = signal;
@@ -278,16 +290,47 @@ export class TerminalSupervisor {
   async shutdown(): Promise<void> {
     process.off("exit", this.onProcessExit);
     await Promise.all([...this.live.values()].map((s) => this.terminate(s)));
+    for (const pid of this.lingering) killGroup(pid, "SIGKILL");
+    this.lingering.clear();
+  }
+
+  /**
+   * A command's lifetime is its shell's: background processes it started and
+   * left in its process group are stopped when it exits, so nothing escapes
+   * supervision. Use `background: true` for a long-running service instead.
+   */
+  private reapGroup(pid: number, output: OutputBuffer | null): void {
+    if (!groupAlive(pid)) return;
+    output?.append("\n[The command left background processes running; they were stopped.]\n");
+    this.lingering.add(pid);
+    killGroup(pid, "SIGTERM");
+    const timer = setTimeout(() => {
+      if (groupAlive(pid)) killGroup(pid, "SIGKILL");
+      this.lingering.delete(pid);
+    }, LINGER_GRACE_MS);
+    timer.unref();
   }
 
   private killAllNow(): void {
     for (const s of this.live.values()) if (s.child?.pid) killGroup(s.child.pid, "SIGKILL");
+    for (const pid of this.lingering) killGroup(pid, "SIGKILL");
   }
 }
 
 function shellCommand(command: string): { file: string; args: string[] } {
   if (process.platform === "win32") return { file: "powershell.exe", args: ["-NoProfile", "-NonInteractive", "-Command", command] };
   return { file: existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh", args: ["-c", command] };
+}
+
+/** Whether any process of a process group is still running. */
+function groupAlive(pid: number): boolean {
+  if (process.platform === "win32") return false;
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function killGroup(pid: number, signal: NodeJS.Signals): void {

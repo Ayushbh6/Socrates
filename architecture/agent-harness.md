@@ -68,7 +68,7 @@ Find paths by filename or path pattern.
 }
 ```
 
-`path` is the directory to search and defaults to the selected workspace. `pattern` uses one documented glob dialect: ripgrep's gitignore-style globs, where a pattern without `/` matches file names at any depth and `**` crosses directories. Results are files only, include hidden files, exclude files ignored by the workspace's `.gitignore`, repository metadata (`.git`), and inaccessible paths, and are returned in stable path order. `limit` defaults to `200` and is capped by policy. `cursor` continues the exact bounded result set created by the preceding call; callers do not construct cursors.
+`path` is the directory to search and defaults to the selected workspace. `pattern` uses one documented glob dialect: ripgrep's gitignore-style globs, where a pattern without `/` matches file names at any depth and `**` crosses directories. Results are files only, include hidden files, exclude files ignored by the workspace's `.gitignore` (whether or not the workspace is a git repository), repository metadata (`.git`), and inaccessible paths, and are returned in stable path order. The pattern filters the ignore-respecting file list, so an inclusion pattern can never bring an ignored file back. `limit` defaults to `200` and is capped by policy. `cursor` continues the exact bounded result set created by the preceding call; callers do not construct cursors.
 
 ```json
 {
@@ -98,7 +98,7 @@ Search file contents.
 }
 ```
 
-`pattern` is a regular expression by default, in ripgrep's Rust regex syntax (no lookaround or backreferences). `literal: true` treats it as exact text. Like `glob`, `grep` searches hidden files and skips `.gitignore`-ignored files and `.git`. `case_sensitive` defaults to `true`; the tool never uses an implicit smart-case rule. `path` may be one file or directory and defaults to the selected workspace. `glob` is one inclusion filter such as `*.ts` or `**/*.test.ts`. `limit` defaults to `100` matches and is capped by policy. `cursor` continues the stable bounded result set from the preceding call.
+`pattern` is a regular expression by default, in ripgrep's Rust regex syntax (no lookaround or backreferences). `literal: true` treats it as exact text. Like `glob`, `grep` searches hidden files and skips `.gitignore`-ignored files and `.git`. `case_sensitive` defaults to `true`; the tool never uses an implicit smart-case rule. `path` may be one file or directory and defaults to the selected workspace. `glob` is one inclusion filter such as `*.ts` or `**/*.test.ts`, applied the same way as `glob`'s pattern, so it cannot reinclude ignored files. `limit` defaults to `100` matches and is capped by policy. `cursor` continues the stable bounded result set from the preceding call.
 
 ```json
 {
@@ -136,7 +136,7 @@ Perform a precise replacement in one existing file.
 
 `replace_all` defaults to `false`. With that default, the operation succeeds only when `old_text` occurs exactly once. It fails safely when the text is absent or ambiguous, naming the lines involved. With `replace_all: true`, every occurrence is replaced, but zero occurrences still fail. `old_text` must not be empty.
 
-Matching is exact first. Only when nothing matches exactly, whole lines are compared with increasing tolerance for the drift models commonly introduce: trailing whitespace, then indentation, then typographic punctuation (curly quotes, dashes, non-breaking spaces). Each tier still compares every line, so there is no similarity scoring and a match can never land on a block that merely resembles the request; uniqueness applies at whichever tier matched. When an indentation-tolerant match finds one consistent shift, the same shift is applied to `new_text`. The result's `match` field reports the tier (`exact`, `trailing_whitespace`, `indentation`, or `unicode_punctuation`).
+Matching is exact first. Only when nothing matches exactly, whole lines are compared with increasing tolerance for the drift models commonly introduce: trailing whitespace, then indentation, then typographic punctuation (curly quotes, dashes, non-breaking spaces). Each tier still compares every line, so there is no similarity scoring and a match can never land on a block that merely resembles the request; uniqueness applies at whichever tier matched. When an indentation-tolerant match finds one consistent shift, the same shift is applied to `new_text`; with `replace_all`, each occurrence gets its own shift. If the given lines' relative indentation differs from the file's, so no single shift exists, the edit fails with `old_text_indentation_mismatch` instead of guessing. The result's `match` field reports the tier (`exact`, `trailing_whitespace`, `indentation`, or `unicode_punctuation`).
 
 The backend verifies the current file version under the mutation lock. Every successful `read`, `edit`, and `apply_patch` records the file's content hash for the task; if the file changed after the task last observed it, the edit fails as stale and tells the agent to reread it. A file the task has never observed can be edited, because the exact `old_text` match already proves the expected content. This prevents a successful read followed by a racing overwrite. The tool preserves the file's existing newline convention and does not create missing files.
 
@@ -165,7 +165,7 @@ Apply a grammar-constrained patch that can update, create, move, or delete one o
 
 The normalized tool contract carries the patch as one JSON string field, `{ "patch": "*** Begin Patch\n..." }`, so every provider that supports ordinary function calling can use it. A provider adapter may expose it as a native freeform tool, where the model sends the patch text directly, as an optimization; the core never depends on it. Paths are workspace-relative. Absolute paths, paths outside granted roots, malformed hunks, stale context, and unsupported file types fail before mutation.
 
-The complete patch is validated first and then committed atomically as one operation: either every declared file change succeeds or none does. A move cannot overwrite an undeclared destination, and a delete must match an existing file. Parent directories for declared new files may be created by the backend.
+The complete patch is validated first and then committed as one unit under the workspace mutation lock: either every declared file change succeeds or none does. During the commit each file is checked again immediately before it is touched: a source must still have the content the patch was computed from, and a new or move-destination path must still be free (new files are linked into place, which fails rather than overwrites). If any check or write fails, every file already written is restored, except a file that changed yet again during the rollback, which is left as it is and named in the error. A move cannot overwrite an undeclared destination, and a delete must match an existing file. Parent directories for declared new files may be created by the backend.
 
 ```json
 {
@@ -245,7 +245,7 @@ Persistent result:
 }
 ```
 
-`terminal` is the preferred selector and equals the supplied name when present; otherwise the backend returns a short readable session id. Output is bounded to a head-and-tail excerpt within the universal per-result ceiling (see "Bounded ingestion"), treated as untrusted text, and retained separately for cursor-based reads (the most recent four million characters per session; older output is reported as `output_lost`). The complete output of a finished foreground command is stored with its call. A running session survives model turns, HTTP requests, task suspension, and user steering. The project terminal supervisor runs each session in its own process group, owns process-tree cleanup, and stops its sessions when the application exits; reconciling sessions across an application restart is a later extension. The agent never kills an unverified operating-system PID directly.
+`terminal` is the preferred selector and equals the supplied name when present; otherwise the backend returns a short readable session id. Output is bounded to a head-and-tail excerpt within the universal per-result ceiling (see "Bounded ingestion"), treated as untrusted text, and retained separately for cursor-based reads (the most recent four million characters per background session; older output is reported as `output_lost`). The output of a finished foreground command, up to sixteen million characters, is stored with its call; beyond that the result reports `output_lost` and how many leading characters were dropped. A running session survives model turns, HTTP requests, task suspension, and user steering. The project terminal supervisor runs each session in its own process group and owns process-tree cleanup: when a command's shell exits, processes it left running in its group are stopped (a service belongs in a `background: true` session instead), and all sessions are stopped when the application exits. Reconciling sessions across an application restart is a later extension. A test run's outcome is derived from the session's exit, whenever it happens, and recorded for the launching task. The agent never kills an unverified operating-system PID directly.
 
 #### 7. `terminal_control`
 
@@ -300,7 +300,7 @@ The input is a discriminated union selected by `action`:
 `terminal` accepts either the stable project-local name or returned short session id. The model never needs an operating-system PID.
 
 - `list` returns every owner-visible live session plus a bounded number of recently exited sessions. Each row includes name/id, command summary, cwd, state, readiness, input requirement (`null` while sessions run over pipes, where it cannot be detected), start time, and exit information.
-- `read` returns retained output after `cursor` (by default, after the output this agent last received), paged forward by `limit_lines` (default `200`) within the ceiling, together with a new cursor and explicit truncation or output-loss metadata. Reads are non-destructive, so the UI and model do not steal output from one another.
+- `read` returns retained output after `cursor` (by default, after the output this agent last received), paged forward by `limit_lines` (default `200`) within the ceiling, together with a new cursor and explicit truncation or output-loss metadata. A single line longer than one page is paged through in pieces, never skipped. Reads are non-destructive, so the UI and model do not steal output from one another.
 - `wait` blocks the same tool call without polling the model until the requested terminal event, cancellation, or an operational failure. `pattern` is required only for the `pattern` event. There is deliberately no model-facing polling interval. A configurable policy maximum bounds one wait; reaching it returns the current state with `event: "timeout"`, and the agent may wait again. Surviving an application restart while waiting (a durable event dependency that resumes the task) is a later extension.
 - `write` sends text and/or named keys through the session's serialized input stream. `submit` defaults to `true` when `input` is supplied. Over pipes, text goes to stdin, `ENTER` writes a newline, `CTRL_C` sends `SIGINT` to the process group, `CTRL_D` closes stdin, and keys that need a terminal (`TAB`, `ESCAPE`, arrows) fail with `pty_unavailable`. Writing to a session whose stdin is closed fails.
 - `signal` targets the verified foreground process group. `SIGKILL` requires normal approval policy and is never the default shutdown path.
@@ -448,7 +448,7 @@ Search defaults and validation:
 - `top_n` defaults to `5` and cannot exceed `10`.
 - `cursor` continues the exact frozen result set of the preceding search. A truncated result always returns `next_cursor`; the model can keep paging or narrow its query without requesting an unbounded dump.
 - `hybrid` combines semantic similarity, BM25 or equivalent keyword matching, and a small recency signal. Until the embeddings segment lands (see "Implementation staging"), it is BM25 (SQLite FTS5) plus recency.
-- `exact` performs literal text matching and never silently falls back to hybrid retrieval.
+- `exact` performs literal, case-insensitive text matching after the same Unicode normalization of query and text, and never silently falls back to hybrid retrieval.
 - Search covers exact user messages and visible Socrates responses. It returns Q&A pairs, not tool calls or tool results.
 
 Task selectors never widen silently. A bare `t4` resolves only inside the current goal and successful output identifies that resolution:
@@ -566,7 +566,7 @@ The backend enforces one aggregate output bound for every `context_retrieve` act
 - `10,000` tokens (the universal per-result ceiling in "Bounded ingestion"); or
 - the remaining safe tool-output allowance for the current model request.
 
-The agent cannot request raw output, set its own token allowance, use offsets to reconstruct an unbounded dump, or disable truncation. For an oversized inspection, the backend prioritizes turn identity, the user message, the visible final response, a compact tool-call inventory, and bounded beginning-and-end excerpts. Every omission is explicit and receives a short evidence reference such as `e1`. Inspecting that reference is bounded again by the same policy, so repeated calls never unlock a single unrestricted dump.
+All three actions pass through one limiter at the end: if a result would still exceed any bound, its longest text is shortened and then its longest lists are cut, each with an explicit omission marker, until it fits. Ledger and Q&A searches apply every filter (scope, status, dates in the user's time zone) before their collection limit of 500 rows; when more rows match, the result says so. The agent cannot request raw output, set its own token allowance, use offsets to reconstruct an unbounded dump, or disable truncation. For an oversized inspection, the backend prioritizes turn identity, the user message, the visible final response, a compact tool-call inventory, and bounded beginning-and-end excerpts. Every omission is explicit and receives a short evidence reference such as `e1`. Inspecting that reference is bounded again by the same policy, so repeated calls never unlock a single unrestricted dump.
 
 The backend owns canonical goal, task, message, turn, and event identifiers. Model-facing structure uses permanent human-facing selectors (`gN`, goal-local `tN`, and `gN/tN`); search results use short run-scoped handles such as `r1`; nested evidence uses handles such as `e1`; and `project_turn` is a permanent chronological number that is never renumbered. Exactness comes from backend resolution, not from asking the model to copy opaque identifiers.
 
@@ -735,7 +735,7 @@ MCP activation output:
 }
 ```
 
-For an MCP tool, the harness connects or reconnects to the configured server when necessary, performs a fresh MCP `tools/list`, resolves the exact advertised tool selected by `ref`, validates and bounds its real JSON Schema, assigns a collision-safe public name, and appends only that one tool schema to the next model request. Activation does not invoke the MCP tool and does not count as approval for a later mutating call.
+For an MCP tool, the harness connects or reconnects to the configured server when necessary, performs a fresh MCP `tools/list`, resolves the exact advertised tool selected by `ref`, validates and bounds its real JSON Schema, assigns a collision-safe public name (`mcp__server__tool`, with a short hash of the exact identity whenever a name had to be rewritten or shortened), and appends only that one tool schema to the next model request. Calls to that public name go through the same tool runner as the permanent tools: input validation, corrective errors (the server's complete error output stays in the event log), bounded results with evidence handles, and derived capability facts. A new process restores the goal's active tools by fetching their schemas again; a changed schema is recorded as a replacement, and a tool that cannot be reached is left out and fails closed when called. Active Skills are revalidated by content digest before their instructions are used again. Activation does not invoke the MCP tool and does not count as approval for a later mutating call.
 
 Authentication-required activation returns a structured non-success state and the existing user-facing authentication route; it never asks the model to handle credentials. Offline or failed servers retain bounded internal diagnostics, while the model receives a corrective operational error without secrets or raw stack traces.
 
@@ -1038,7 +1038,7 @@ The `20,000`-token gap between the trigger and the ceiling is a reserve, the sam
 
 The gap between trigger and target is the hysteresis: after compaction, the prompt must grow by at least 80k tokens before the trigger fires again, so compaction never runs on consecutive steps.
 
-Token counting uses one harness-standard tokenizer for every model: `tiktoken` with the `o200k` encoding. Budgets that shape the prompt—the verbatim window, the intact in-turn window, the N−1 budget, and the per-result ceiling—are measured with it directly. They need only be consistent, not exact. Byte-pair encoding is superlinear in the length of a single unbroken run, so runs longer than 64 non-space characters (a progress bar, padding, minified code) are encoded in 32-character pieces: counts stay within a few tokens of exact and the cost stays linear.
+Token counting uses one harness-standard tokenizer for every model: `tiktoken` with the `o200k` encoding. Budgets that shape the prompt—the verbatim window, the intact in-turn window, the N−1 budget, and the per-result ceiling—are measured with it directly. They need only be consistent, not exact. Byte-pair encoding is superlinear in the length of a single unbroken run, so runs of 64 or more non-space characters (a progress bar, padding, a long URL) are encoded in 32-character pieces split at code-point boundaries. The cost stays linear and decoding stays exact. Text without such runs is counted exactly; a long run is over-counted, which is the safe direction for every budget (measured: about 1% for base64, up to 25% for long URLs, up to 2× for one repeated character).
 
 The safety-critical decision is whether the next request crosses the `160,000`-token trigger or the `180,000`-token ceiling. That measurement is calibrated against the provider's own count, without any provider-specific tokenizer:
 
@@ -1379,13 +1379,14 @@ Further rules:
 
 ## Safety and long-running work
 
-- Filesystem tools resolve paths against the selected workspace and enforce the chosen access policy. Symbolic links are resolved before the check, so a link cannot escape the workspace.
+- Filesystem tools resolve every path to its real target before applying the access policy, so a symbolic link cannot escape the workspace, cannot reach protected repository metadata through an alias, and cannot split one file's stale-edit record into two.
+- File mutations take one lock per workspace, shared by every run in the process, and recheck the file's content immediately before writing.
 - Terminal commands use the same workspace and approval policy.
 - Approval is one injected `approve` callback owned by the application. It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, and `timeout_ms: 0`. A denial is a corrective tool error, never a crash.
 - A turn without a workspace (general conversation, or a new goal before a workspace is chosen) can still answer and use `context_retrieve` and capability tools; filesystem and terminal tools fail with `no_workspace`, and the agent asks the user where the work belongs.
 - Every mutating tool records its effect before the next model step.
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.
-- Cancellation propagates to model requests and tool execution.
+- Cancellation propagates to model requests and tool execution. A cancelled call is refused before it starts and after any approval it waited for, file tools check again just before writing, and a command or service launch that is cancelled is stopped.
 - Step, time, and token limits are configurable safeguards for one turn, not a tiny fixed loop count. Defaults: `200` model steps, `60` minutes of wall time, and `5,000,000` tokens across the turn's model calls.
 - If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion.
 - Cancellation makes no further model call. The turn is recorded as interrupted with a mechanical continuation note such as "interrupted after 14 tool calls".

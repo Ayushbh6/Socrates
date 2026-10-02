@@ -34,21 +34,23 @@ export class WorkspaceRoot {
   }
 
   /**
-   * Resolve a model-supplied path. Relative paths are taken from the root;
-   * absolute paths are accepted only when they lie inside it.
+   * Resolve a model-supplied path to its canonical location. Relative paths
+   * are taken from the root; absolute paths are accepted only when they lie
+   * inside it. Symbolic links are resolved first, so every policy (workspace
+   * containment, protected metadata) and every per-file record (stale-edit
+   * observations) applies to the real target, never to an alias of it.
    */
   resolve(input: string, options: { write?: boolean } = {}): ResolvedPath {
     const raw = input.trim();
     if (!raw) throw new ToolError("invalid_path", "The path is empty.", "Pass a workspace-relative path such as src/index.ts.");
     if (raw.includes("\0")) throw new ToolError("invalid_path", "The path contains a NUL character.", "Pass a plain workspace-relative path.");
-    const abs = path.resolve(this.root, raw);
+    const requested = path.resolve(this.root, raw);
+    if (!isInside(this.root, requested)) throw outside(input);
+    const abs = realOfNearestExisting(requested);
     if (!isInside(this.root, abs)) throw outside(input);
-    // A symbolic link anywhere along the path must not lead outside the root.
-    const real = realOfNearestExisting(abs);
-    if (!isInside(this.root, real)) throw outside(input);
     const rel = this.relative(abs);
-    if (options.write && (rel === ".git" || rel.startsWith(".git/"))) {
-      throw new ToolError("protected_path", `${rel} is repository metadata and cannot be modified with file tools.`, "Use git commands through terminal for repository operations.", false);
+    if (options.write && isRepositoryMetadata(rel)) {
+      throw new ToolError("protected_path", `${raw} is repository metadata (${rel}) and cannot be modified with file tools.`, "Use git commands through terminal for repository operations.", false);
     }
     return { abs, rel };
   }
@@ -57,6 +59,10 @@ export class WorkspaceRoot {
     const rel = path.relative(this.root, abs).split(path.sep).join("/");
     return rel === "" ? "." : rel;
   }
+}
+
+function isRepositoryMetadata(rel: string): boolean {
+  return rel === ".git" || rel.startsWith(".git/");
 }
 
 function isInside(root: string, candidate: string): boolean {

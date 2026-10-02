@@ -12,6 +12,8 @@ export class ToolError extends Error {
     message: string,
     readonly correction: string,
     readonly retryable = true,
+    /** The complete failure detail kept in the event log, such as an MCP server's error output. */
+    readonly detail: unknown = null,
   ) {
     super(message);
     this.name = "ToolError";

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { JsonSchema } from "@socrates/contracts";
 
 /**
@@ -50,11 +51,19 @@ export interface LoadedMcpTool {
   connection: "connected";
 }
 
+/** One MCP tool call's result as the server returned it. */
+export interface McpCallResult {
+  content: string;
+  isError: boolean;
+}
+
 export interface CapabilityCatalog {
   entries(): CatalogEntry[];
   loadSkill(name: string): Promise<LoadedSkill>;
   /** Connect when needed and resolve the exact advertised tool. */
   loadMcpTool(name: string): Promise<LoadedMcpTool>;
+  /** Invoke one MCP tool on its server. Throws when the server cannot be reached. */
+  callMcpTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult>;
 }
 
 /** A fixed in-memory catalog: the empty default, and the source used by tests. */
@@ -63,6 +72,7 @@ export class StaticCatalog implements CapabilityCatalog {
     private readonly items: CatalogEntry[] = [],
     private readonly skills: Record<string, LoadedSkill> = {},
     private readonly tools: Record<string, LoadedMcpTool> = {},
+    private readonly handlers: Record<string, (input: Record<string, unknown>) => Promise<McpCallResult> | McpCallResult> = {},
   ) {}
 
   entries(): CatalogEntry[] {
@@ -80,10 +90,27 @@ export class StaticCatalog implements CapabilityCatalog {
     if (!tool) throw new Error(`MCP tool ${name} is not advertised by its server.`);
     return tool;
   }
+
+  async callMcpTool(name: string, input: Record<string, unknown>): Promise<McpCallResult> {
+    const handler = this.handlers[name];
+    if (!handler) throw new Error(`MCP tool ${name} has no server connection.`);
+    return handler(input);
+  }
 }
 
-/** The collision-safe public name of an MCP tool, such as mcp__github__get_issue. */
+const MAX_PUBLIC_NAME = 64;
+
+/**
+ * The collision-safe public name of an MCP tool, such as
+ * mcp__github__get_issue. A server or tool name that is not already a plain
+ * identifier (one that had to be rewritten, contains "__", or is too long)
+ * gets a short hash of its exact identity, so two different tools can never
+ * share a public name.
+ */
 export function mcpPublicName(server: string, tool: string): string {
-  const clean = (s: string) => s.replace(/[^A-Za-z0-9_-]/g, "_");
-  return `mcp__${clean(server)}__${clean(tool)}`.slice(0, 64);
+  const plain = (s: string) => /^[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*$/.test(s);
+  const name = `mcp__${server.replace(/[^A-Za-z0-9_-]/g, "_")}__${tool.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+  if (plain(server) && plain(tool) && name.length <= MAX_PUBLIC_NAME) return name;
+  const suffix = createHash("sha256").update(`${server}\0${tool}`).digest("hex").slice(0, 8);
+  return `${name.slice(0, MAX_PUBLIC_NAME - suffix.length - 1)}_${suffix}`;
 }

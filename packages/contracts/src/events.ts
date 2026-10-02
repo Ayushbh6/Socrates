@@ -62,6 +62,8 @@ export interface EventPayloads {
     content: string;
     result: unknown;
     error: { code: string; message: string; correction: string; retryable: boolean } | null;
+    /** The complete failure detail of a correctable failure, such as an MCP server's error output. */
+    failure_detail?: unknown;
     diagnostics: string | null;
     /** Content hashes the call observed or produced, for the stale-edit check. */
     observed: { path: string; hash: string | null }[];
@@ -71,7 +73,8 @@ export interface EventPayloads {
   /** One file mutation with complete before/after text (null for absent files). */
   file_changed: { call_id: string; path: string; action: "created" | "updated" | "deleted" | "moved"; from_path: string | null; before: string | null; after: string | null };
   terminal_started: { session_id: string; name: string | null; command: string; cwd: string; background: boolean };
-  terminal_exited: { session_id: string; exit_code: number | null; signal: string | null; reason: "exited" | "terminated" | "timeout" | "failed" };
+  /** A session's exit, with the facts derived from it (a test run's outcome) for the launching task. */
+  terminal_exited: { session_id: string; exit_code: number | null; signal: string | null; reason: "exited" | "terminated" | "timeout" | "failed"; facts?: { kind: "test"; value: string }[] };
   approval_decided: { kind: "first_mutation" | "sigkill" | "no_deadline"; granted: boolean; detail: string };
   capability_activated: { kind: "skill" | "mcp"; name: string; version: string; digest: string };
   capability_deactivated: { kind: "skill" | "mcp"; name: string };

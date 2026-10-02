@@ -1,6 +1,9 @@
 import { CapabilityControlInput, CapabilitySearchInput, type ToolDefinition } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
-import { type CatalogEntry, type LoadedMcpTool, mcpPublicName } from "../catalog";
+import type { LedgerStore } from "@socrates/store";
+import { z } from "zod";
+import { RESULT_CEILING_TOKENS, head } from "../bounds";
+import { type CapabilityCatalog, type CatalogEntry, type LoadedMcpTool, type McpCallResult, type McpToolEntry, mcpPublicName } from "../catalog";
 import type { HandlerContext } from "../context";
 import { ToolError } from "../errors";
 import { hashBytes } from "../files";
@@ -14,12 +17,19 @@ export const MAX_ACTIVE_MCP_TOOLS = 16;
 export const MAX_ACTIVE_MCP_SCHEMA_TOKENS = 16_000;
 
 /**
- * Live MCP schemas activated in this process, keyed by goal and catalog name.
- * The goal's active set itself is persisted in the store; the schema is
- * fetched again from its server when it is not loaded here.
+ * The goal-scoped capability runtime. The active set is persisted in the
+ * store; live MCP schemas are held per process and, when missing (a new
+ * process, a reconnected server), fetched again from the catalog and
+ * revalidated: a changed schema is recorded as a replacement, and a tool
+ * that can no longer be loaded is left out until it can.
  */
-export class LoadedTools {
+export class CapabilityRuntime {
   private readonly byGoal = new Map<string, Map<string, { publicName: string; tool: LoadedMcpTool }>>();
+
+  constructor(
+    private readonly store: LedgerStore,
+    readonly catalog: CapabilityCatalog,
+  ) {}
 
   set(goalId: string, name: string, publicName: string, tool: LoadedMcpTool): void {
     if (!this.byGoal.has(goalId)) this.byGoal.set(goalId, new Map());
@@ -34,16 +44,105 @@ export class LoadedTools {
     return this.byGoal.get(goalId)?.get(name);
   }
 
+  /** Load and revalidate every active MCP tool of a goal that this process does not hold. */
+  async rehydrate(goalId: string): Promise<void> {
+    for (const active of this.store.listActiveCapabilities(goalId)) {
+      if (active.kind !== "mcp" || this.get(goalId, active.name)) continue;
+      const entry = this.catalog.entries().find((e): e is McpToolEntry => e.kind === "mcp" && e.name === active.name);
+      if (!entry || entry.availability !== "available") continue;
+      try {
+        const tool = await this.catalog.loadMcpTool(entry.name);
+        if (validateSchema(entry.name, tool)) continue;
+        const digest = hashBytes(JSON.stringify(tool.inputSchema));
+        if (digest !== active.digest) this.store.activateCapability(goalId, { kind: "mcp", name: entry.name, version: tool.schemaVersion, digest });
+        this.set(goalId, entry.name, mcpPublicName(entry.server, entry.tool), tool);
+      } catch {
+        // Unreachable now; left out of the tool list and retried on the next request.
+      }
+    }
+  }
+
   /** Active MCP tool schemas in deterministic public-name order, appended after the permanent tools. */
-  definitions(goalId: string, active: string[]): ToolDefinition[] {
+  async definitions(goalId: string): Promise<ToolDefinition[]> {
+    await this.rehydrate(goalId);
     const loaded = this.byGoal.get(goalId);
-    return active
-      .flatMap((name) => {
-        const entry = loaded?.get(name);
+    return this.store
+      .listActiveCapabilities(goalId)
+      .flatMap((c) => {
+        const entry = c.kind === "mcp" ? loaded?.get(c.name) : undefined;
         return entry ? [{ name: entry.publicName, description: entry.tool.description, inputSchema: entry.tool.inputSchema }] : [];
       })
       .sort((a, b) => a.name.localeCompare(b.name));
   }
+
+  /** The active MCP tool of a goal behind a public name, if any. */
+  async resolve(goalId: string, publicName: string): Promise<{ name: string; tool: LoadedMcpTool } | null> {
+    await this.rehydrate(goalId);
+    for (const [name, entry] of this.byGoal.get(goalId) ?? []) if (entry.publicName === publicName) return { name, tool: entry.tool };
+    return null;
+  }
+
+  /**
+   * Instructions of the goal's active Skills that are still exactly the
+   * activated version, for the goal's context. A Skill whose content changed
+   * or cannot be loaded is reported as stale instead of silently replaced.
+   */
+  async activeSkills(goalId: string): Promise<{ skills: { name: string; version: string; instructions: string }[]; stale: string[] }> {
+    const skills: { name: string; version: string; instructions: string }[] = [];
+    const stale: string[] = [];
+    for (const active of this.store.listActiveCapabilities(goalId)) {
+      if (active.kind !== "skill") continue;
+      try {
+        const skill = await this.catalog.loadSkill(active.name);
+        if (hashBytes(skill.instructions) === active.digest) skills.push({ name: active.name, version: skill.version, instructions: skill.instructions });
+        else stale.push(active.name);
+      } catch {
+        stale.push(active.name);
+      }
+    }
+    return { skills, stale };
+  }
+
+  /** A handler that dispatches calls of one active MCP tool to its server. */
+  mcpHandler(publicName: string, name: string, tool: LoadedMcpTool, goalId: string): ToolHandler<Record<string, unknown>> {
+    const required = Array.isArray(tool.inputSchema.required) ? (tool.inputSchema.required as string[]) : [];
+    return {
+      name: publicName,
+      description: tool.description,
+      schema: z.record(z.string(), z.unknown()).superRefine((input, issue) => {
+        for (const key of required) if (!(key in input)) issue.addIssue({ code: "custom", path: [key], message: "Required." });
+      }),
+      concurrency: "serial",
+      mutating: false,
+      execute: async (input, ctx) => {
+        let result: McpCallResult;
+        try {
+          result = await this.catalog.callMcpTool(name, input, ctx.signal);
+        } catch {
+          this.delete(goalId, name);
+          throw new ToolError("capability_unavailable", `${name} could not be reached.`, "Search for it with capability_search and activate it again, or continue without it.");
+        }
+        const facts = [{ kind: "capability" as const, value: `mcp ${name}` }];
+        if (result.isError) {
+          throw new ToolError("mcp_tool_error", `${publicName} returned an error: ${head(result.content, 400).text}`, "Check the input against the tool's schema, or continue without it.", true, { content: result.content });
+        }
+        const shown = head(result.content, RESULT_CEILING_TOKENS - 200, "the complete result is stored with this call");
+        return { content: shown.text, result: { content: result.content, truncated: shown.truncated }, facts };
+      },
+    };
+  }
+}
+
+/** A reason the advertised schema cannot be used, or null when it is valid. */
+function validateSchema(name: string, tool: LoadedMcpTool): ToolError | null {
+  if (tool.inputSchema.type !== "object") {
+    return new ToolError("invalid_tool_schema", `${name} advertises an input schema that is not an object.`, "Continue without this tool, or search for an alternative.", false);
+  }
+  const tokens = countTokens(JSON.stringify(tool.inputSchema));
+  if (tokens > MAX_MCP_SCHEMA_TOKENS) {
+    return new ToolError("tool_schema_too_large", `${name} has a ${tokens}-token schema, above the ${MAX_MCP_SCHEMA_TOKENS}-token bound.`, "Continue without this tool, or search for an alternative.", false);
+  }
+  return null;
 }
 
 function terms(text: string): string[] {
@@ -114,7 +213,7 @@ export const capabilitySearchTool: ToolHandler<CapabilitySearchInput> = {
   },
 };
 
-export function capabilityControlTool(loaded: LoadedTools): ToolHandler<CapabilityControlInput> {
+export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<CapabilityControlInput> {
   return {
     name: "capability_control",
     description: [
@@ -187,13 +286,9 @@ export function capabilityControlTool(loaded: LoadedTools): ToolHandler<Capabili
 
       const tool = await ctx.catalog.loadMcpTool(entry.name);
       const publicName = mcpPublicName(entry.server, entry.tool);
+      const invalid = validateSchema(entry.name, tool);
+      if (invalid) throw invalid;
       const schemaTokens = countTokens(JSON.stringify(tool.inputSchema));
-      if (tool.inputSchema.type !== "object") {
-        throw new ToolError("invalid_tool_schema", `${entry.name} advertises an input schema that is not an object.`, "Continue without this tool, or search for an alternative.", false);
-      }
-      if (schemaTokens > MAX_MCP_SCHEMA_TOKENS) {
-        throw new ToolError("tool_schema_too_large", `${entry.name} has a ${schemaTokens}-token schema, above the ${MAX_MCP_SCHEMA_TOKENS}-token bound.`, "Continue without this tool, or search for an alternative.", false);
-      }
       const digest = hashBytes(JSON.stringify(tool.inputSchema));
       if (existing && existing.digest === digest && loaded.get(goalId, entry.name)) {
         const result = { kind: "mcp", name: entry.name, status: "already_active", public_name: publicName, schema_version: tool.schemaVersion };

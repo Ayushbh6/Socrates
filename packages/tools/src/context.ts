@@ -85,8 +85,13 @@ export interface HandlerContext {
   catalog: CapabilityCatalog;
   /** The terminal supervisor of the selected workspace, when there is one. */
   terminals: TerminalSupervisor | null;
-  /** Ask the user, record the decision, and fail with a corrective error when denied. */
+  /** Ask the user, record the decision, and fail with a corrective error when denied or cancelled. */
   requireApproval(request: ApprovalRequest): Promise<void>;
+}
+
+/** Fail with the corrective cancellation error once the call has been cancelled. */
+export function throwIfCancelled(signal: AbortSignal): void {
+  if (signal.aborted) throw new ToolError("cancelled", "The call was cancelled before it changed anything.", "No action needed.", false);
 }
 
 export function requireWorkspace(ctx: HandlerContext): WorkspaceRoot {

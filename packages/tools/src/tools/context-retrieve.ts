@@ -1,6 +1,6 @@
 import { ContextRetrieveInput, type EventPayloads } from "@socrates/contracts";
-import { countTokens, truncateToTokens, zonedParts } from "@socrates/shared";
-import { type Evidence, type Goal, type Task, type Turn, excerpt, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
+import { countTokens, nextDay, truncateToTokens, zonedDayStart, zonedParts } from "@socrates/shared";
+import { type Evidence, type Goal, type Task, type Turn, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
 import type { HandlerContext } from "../context";
 import { ToolError } from "../errors";
@@ -93,39 +93,54 @@ function ledgerSearch(input: Query, ctx: HandlerContext) {
 
   let items: LedgerItem[];
   let offset = 0;
+  let capped = false;
   if (input.cursor) {
     ({ items, offset } = ctx.run.takeCursor<LedgerItem>(input.cursor, key));
   } else {
     const store = ctx.store;
     const goals = scope === "current_goal" ? [currentGoal(ctx)] : store.listGoals();
     const goalIds = new Set(goals.map((g) => g.id));
-    const candidates: LedgerItem[] = [];
-    const add = (goal: Goal, task: Task | null) => candidates.push({ kind: task ? "task" : "goal", goal, task, updatedAt: task?.updatedAt ?? goal.updatedAt });
+    // Every filter applies while collecting, so the collection limit never hides a matching row.
+    const keep = (c: LedgerItem) =>
+      goalIds.has(c.goal.id) &&
+      (entity === "both" || (entity === "goals" ? c.kind === "goal" : c.kind === "task")) &&
+      (status === "any" || (c.task ?? c.goal).status === status) &&
+      inRange(ctx, c.updatedAt, input.from, input.to);
+    const collected: LedgerItem[] = [];
+    const add = (goal: Goal, task: Task | null) => {
+      const item: LedgerItem = { kind: task ? "task" : "goal", goal, task, updatedAt: task?.updatedAt ?? goal.updatedAt };
+      if (keep(item)) collected.push(item);
+      return collected.length <= FROZEN_SET_LIMIT;
+    };
 
     if (input.query && match === "hybrid") {
       const fts = toFtsQuery(input.query);
       if (!fts) throw new ToolError("empty_query", "The query contains no searchable words.", "Use distinctive words such as a feature or project name, or omit query to list recent rows.");
-      for (const hit of store.searchLedger(fts, FROZEN_SET_LIMIT)) {
-        if (!goalIds.has(hit.goalId)) continue;
-        const goal = store.requireGoal(hit.goalId);
-        add(goal, hit.entity === "task" ? store.requireTask(hit.entityId) : null);
+      scan: for (let from = 0; ; from += 200) {
+        const hits = store.searchLedger(fts, 200, from);
+        for (const hit of hits) {
+          if (!goalIds.has(hit.goalId)) continue;
+          if (!add(store.requireGoal(hit.goalId), hit.entity === "task" ? store.requireTask(hit.entityId) : null)) break scan;
+        }
+        if (hits.length < 200) break;
       }
     } else {
-      const needle = input.query?.toLowerCase();
-      const hay = (...parts: (string | null)[]) => parts.join("\n").toLowerCase();
+      const needle = input.query ? foldText(input.query) : null;
+      const has = (...parts: (string | null)[]) => !needle || foldText(parts.filter(Boolean).join("\n")).includes(needle);
+      const candidates: { goal: Goal; task: Task | null; updatedAt: string; text: () => boolean }[] = [];
       for (const goal of goals) {
-        if (!needle || hay(goal.title, goal.objective, goal.note).includes(needle)) add(goal, null);
+        const workspace = goal.workspaceId ? (store.getWorkspace(goal.workspaceId)?.name ?? null) : null;
+        const anchors = store.listAnchors(goal.id).map((a) => `${a.path} ${a.role} ${a.summary}`).join("\n");
+        candidates.push({ goal, task: null, updatedAt: goal.updatedAt, text: () => has(goal.title, goal.objective, goal.note, workspace, anchors) });
         for (const task of store.listTasks(goal.id)) {
-          if (!needle || hay(task.title, task.objective, task.completionCriteria, task.continuationNote).includes(needle)) add(goal, task);
+          candidates.push({ goal, task, updatedAt: task.updatedAt, text: () => has(task.title, task.objective, task.completionCriteria, task.continuationNote, workspace, ...store.distinctFacts(task.id)) });
         }
       }
       candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      for (const c of candidates) if (c.text() && !add(c.goal, c.task)) break;
     }
-    items = candidates
-      .filter((c) => entity === "both" || (entity === "goals" ? c.kind === "goal" : c.kind === "task"))
-      .filter((c) => status === "any" || (c.task ?? c.goal).status === status)
-      .filter((c) => inRange(ctx, c.updatedAt, input.from, input.to))
-      .slice(0, FROZEN_SET_LIMIT);
+    capped = collected.length > FROZEN_SET_LIMIT;
+    items = collected.slice(0, FROZEN_SET_LIMIT);
   }
 
   const row = (c: LedgerItem) =>
@@ -133,7 +148,16 @@ function ledgerSearch(input: Query, ctx: HandlerContext) {
       ? { kind: "task", selector: taskSelector(c.goal, c.task), goal: goalLabel(c.goal), title: c.task.title, objective: c.task.objective, status: c.task.status, note: excerpt(c.task.continuationNote, 240) || null, updated_at: c.updatedAt }
       : { kind: "goal", selector: goalSelector(c.goal), title: c.goal.title, objective: c.goal.objective, status: c.goal.status, note: excerpt(c.goal.note, 240) || null, updated_at: c.updatedAt };
   const { out, nextCursor } = page(ctx, key, items, offset, limit, (c) => json(row(c)));
-  return { action: "ledger_search", query: input.query ?? null, scope, results: out.map(row), returned: out.length, more_matches: nextCursor !== null, next_cursor: nextCursor };
+  return {
+    action: "ledger_search",
+    query: input.query ?? null,
+    scope,
+    results: out.map(row),
+    returned: out.length,
+    more_matches: nextCursor !== null || capped,
+    next_cursor: nextCursor,
+    ...(capped ? { note: `More than ${FROZEN_SET_LIMIT} rows match; only the first ${FROZEN_SET_LIMIT} can be paged. Narrow the query, scope, status, or dates.` } : {}),
+  };
 }
 
 // ── search ──────────────────────────────────────────────────────────────────
@@ -185,6 +209,7 @@ function search(input: Search, ctx: HandlerContext) {
 
   let items: Hit[];
   let offset = 0;
+  let capped = false;
   if (input.cursor) {
     ({ items, offset } = ctx.run.takeCursor<Hit>(input.cursor, key));
   } else {
@@ -193,9 +218,17 @@ function search(input: Search, ctx: HandlerContext) {
       fts = toFtsQuery(input.query);
       if (!fts) throw new ToolError("empty_query", "The query contains no searchable words.", 'Use distinctive words, or match "exact" for literal text.');
     }
-    items = ctx.store
-      .searchExchanges({ ...filter, ...(fts ? { fts } : {}), ...(input.query && match === "exact" ? { exact: input.query } : {}), limit: FROZEN_SET_LIMIT })
-      .filter((h) => inRange(ctx, h.at, input.from, input.to));
+    // Dates are the user's calendar days, applied in the query before any limit.
+    const hits = ctx.store.searchExchanges({
+      ...filter,
+      ...(fts ? { fts } : {}),
+      ...(input.query && match === "exact" ? { exact: input.query } : {}),
+      ...(input.from ? { fromIso: zonedDayStart(input.from, ctx.timeZone).toISOString() } : {}),
+      ...(input.to ? { beforeIso: zonedDayStart(nextDay(input.to), ctx.timeZone).toISOString() } : {}),
+      limit: FROZEN_SET_LIMIT + 1,
+    });
+    capped = hits.length > FROZEN_SET_LIMIT;
+    items = hits.slice(0, FROZEN_SET_LIMIT);
   }
 
   const goals = new Map<string, Goal>();
@@ -225,8 +258,9 @@ function search(input: Search, ctx: HandlerContext) {
     ...(scopeNote ? { scope_note: scopeNote } : {}),
     results,
     returned: results.length,
-    more_matches: nextCursor !== null,
+    more_matches: nextCursor !== null || capped,
     next_cursor: nextCursor,
+    ...(capped ? { note: `More than ${FROZEN_SET_LIMIT} exchanges match; only the first ${FROZEN_SET_LIMIT} can be paged. Narrow the query, target, or dates.` } : {}),
   };
 }
 
@@ -258,10 +292,13 @@ function goalView(goal: Goal, ctx: HandlerContext, scale: number) {
   const tasks = store.listTasks(goal.id).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const shown = tasks.slice(0, Math.max(5, Math.floor(40 * scale)));
   const workspace = goal.workspaceId ? store.getWorkspace(goal.workspaceId)?.name ?? null : null;
+  const anchors = store.listAnchors(goal.id);
+  const anchorCap = Math.max(5, Math.floor(40 * scale));
   return {
     action: "inspect",
     goal: { selector: goalSelector(goal), title: goal.title, objective: goal.objective, status: goal.status, workspace, note: goal.note, created_at: goal.createdAt, updated_at: goal.updatedAt },
-    anchors: store.listAnchors(goal.id).map((a) => ({ path: a.path, role: a.role, status: a.status, summary: a.summary })),
+    anchors: anchors.slice(0, anchorCap).map((a) => ({ path: a.path, role: a.role, status: a.status, summary: excerpt(a.summary, Math.max(60, Math.floor(400 * scale))) })),
+    anchors_omitted: Math.max(0, anchors.length - anchorCap),
     tasks: shown.map((t) => ({ selector: taskSelector(goal, t), title: t.title, status: t.status, updated_at: t.updatedAt })),
     tasks_omitted: tasks.length - shown.length,
     bounded: true,
@@ -386,22 +423,55 @@ function inspect(input: Inspect, ctx: HandlerContext) {
       throw new ToolError("unknown_reference", `${ref} is not a recognized reference.`, "Use gN, tN, gN/tN, rN from search, eN for a tool call, hc-N for a checkpoint, or turn_number.");
     }
   }
-  // Shrink the view until it fits every aggregate bound.
+  // Prefer a proportionally smaller view; enforceBounds is the final guarantee.
   for (let scale = 1; ; scale *= 0.6) {
     const view = build(scale);
-    const text = json(view);
-    if ((fits(text) && fits(viewLines(view))) || scale < 0.05) return view;
+    if (fitsBounds(view) || scale < 0.1) return view;
   }
 }
 
-function viewLines(view: unknown): string {
-  return JSON.stringify(view, null, 0).replace(/\\n/g, "\n");
+/** Whether a view's rendering is within every aggregate bound: lines (of its text), bytes, and tokens. */
+function fitsBounds(view: unknown): boolean {
+  const text = json(view);
+  if (Buffer.byteLength(text, "utf8") > MAX_BYTES) return false;
+  if (text.split("\\n").length > MAX_LINES) return false;
+  return countTokens(text) <= RESULT_CEILING_TOKENS - 200;
 }
 
-function fits(text: string): boolean {
-  if (text.split("\n").length > MAX_LINES) return false;
-  if (Buffer.byteLength(text, "utf8") > MAX_BYTES) return false;
-  return countTokens(text) <= RESULT_CEILING_TOKENS - 200;
+/**
+ * The one aggregate bound for every context_retrieve result: shorten the
+ * longest text first, then long lists, each with an explicit omission
+ * marker, until the result fits. Nothing is silently dropped.
+ */
+export function enforceBounds<T>(view: T): T {
+  if (fitsBounds(view)) return view;
+  const copy = structuredClone(view) as unknown;
+  while (!fitsBounds(copy)) {
+    let longest: { holder: Record<string, unknown> | unknown[]; key: string | number; value: string } | null = null;
+    let biggest: unknown[] | null = null;
+    const visit = (node: unknown) => {
+      if (Array.isArray(node)) {
+        if (node.length > 1 && (!biggest || json(node).length > json(biggest).length)) biggest = node;
+        node.forEach((v, i) => (typeof v === "string" ? consider(node, i, v) : visit(v)));
+      } else if (node && typeof node === "object") {
+        for (const [k, v] of Object.entries(node)) typeof v === "string" ? consider(node as Record<string, unknown>, k, v) : visit(v);
+      }
+    };
+    const consider = (holder: Record<string, unknown> | unknown[], key: string | number, value: string) => {
+      if (!longest || value.length > longest.value.length) longest = { holder, key, value };
+    };
+    visit(copy);
+    const text = longest as { holder: Record<string, unknown> | unknown[]; key: string | number; value: string } | null;
+    const list = biggest as unknown[] | null;
+    if (text && text.value.length > 160) {
+      const keep = Math.floor(text.value.length / 2);
+      (text.holder as Record<string | number, unknown>)[text.key] = `${text.value.slice(0, keep)}… [${text.value.length - keep} characters omitted]`;
+    } else if (list) {
+      const drop = Math.ceil(list.length / 2);
+      list.splice(list.length - drop, drop, `[… ${drop} more items omitted; narrow the request to see them …]`);
+    } else break;
+  }
+  return copy as T;
 }
 
 export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
@@ -417,7 +487,7 @@ export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
-    const result = input.action === "ledger_search" ? ledgerSearch(input, ctx) : input.action === "search" ? search(input, ctx) : inspect(input, ctx);
+    const result = enforceBounds(input.action === "ledger_search" ? ledgerSearch(input, ctx) : input.action === "search" ? search(input, ctx) : inspect(input, ctx));
     return { content: json(result), result };
   },
 };

@@ -28,6 +28,7 @@ export function writeFiles(root: string, files: Record<string, string | Buffer>)
 
 export interface Harness {
   store: LedgerStore;
+  clock: ReturnType<typeof fixedClock>;
   runner: ToolRunner;
   root: string;
   workspace: WorkspaceRoot;
@@ -78,6 +79,7 @@ export function harness(options: { files?: Record<string, string | Buffer>; appr
   };
   const h: Harness = {
     store,
+    clock,
     runner,
     root,
     workspace,

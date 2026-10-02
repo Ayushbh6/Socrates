@@ -3,13 +3,13 @@ import { countTokens } from "@socrates/shared";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
-import type { ApprovalRequest, Approve, HandlerContext, RunState, ToolBinding } from "./context";
+import { type ApprovalRequest, type Approve, type HandlerContext, type RunState, type ToolBinding, throwIfCancelled } from "./context";
 import { toDefinition } from "./definitions";
 import { INTERNAL_ERROR, ToolError, renderError } from "./errors";
 import type { ToolHandler, ToolOutput } from "./handler";
 import { TerminalSupervisor, type SupervisorOptions } from "./terminals";
 import { applyPatchTool } from "./tools/apply-patch";
-import { LoadedTools, capabilityControlTool, capabilitySearchTool } from "./tools/capabilities";
+import { CapabilityRuntime, capabilityControlTool, capabilitySearchTool } from "./tools/capabilities";
 import { contextRetrieveTool } from "./tools/context-retrieve";
 import { editTool } from "./tools/edit";
 import { readTool } from "./tools/read";
@@ -58,12 +58,14 @@ export class ToolRunner {
   readonly definitions: ToolDefinition[];
   private readonly handlers: Map<string, ToolHandler>;
   private readonly supervisors = new Map<string, TerminalSupervisor>();
-  private readonly loaded = new LoadedTools();
+  /** Goal-scoped capability state: active MCP schemas, Skill revalidation, and MCP dispatch. */
+  readonly capabilities: CapabilityRuntime;
   private readonly catalog: CapabilityCatalog;
   private serial: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: ToolRunnerOptions) {
     this.catalog = options.catalog ?? new StaticCatalog();
+    this.capabilities = new CapabilityRuntime(options.store, this.catalog);
     const handlers: ToolHandler[] = [
       readTool,
       globTool,
@@ -74,7 +76,7 @@ export class ToolRunner {
       terminalControlTool,
       contextRetrieveTool,
       capabilitySearchTool,
-      capabilityControlTool(this.loaded),
+      capabilityControlTool(this.capabilities),
     ] as ToolHandler[];
     this.handlers = new Map(handlers.map((h) => [h.name, h]));
     this.definitions = handlers.map(toDefinition);
@@ -86,9 +88,8 @@ export class ToolRunner {
   }
 
   /** Schemas of MCP tools active for a goal, appended after the permanent tools. */
-  mcpDefinitions(goalId: string): ToolDefinition[] {
-    const active = this.options.store.listActiveCapabilities(goalId).filter((c) => c.kind === "mcp").map((c) => c.name);
-    return this.loaded.definitions(goalId, active);
+  mcpDefinitions(goalId: string): Promise<ToolDefinition[]> {
+    return this.capabilities.definitions(goalId);
   }
 
   /** The terminal supervisor that owns processes started in one workspace. */
@@ -116,7 +117,7 @@ export class ToolRunner {
     this.supervisors.clear();
   }
 
-  private async execute(call: ToolCall, scope: CallScope, handler: ToolHandler | undefined): Promise<ToolCallResult> {
+  private async execute(call: ToolCall, scope: CallScope, permanent: ToolHandler | undefined): Promise<ToolCallResult> {
     const { store } = this.options;
     const refs: TaskRefs = { goal_id: scope.binding.goalId, task_id: scope.binding.taskId, chat_id: scope.binding.chatId, turn_id: scope.binding.turnId };
     const started = Date.now();
@@ -125,7 +126,13 @@ export class ToolRunner {
     let output: ToolOutput | null = null;
     let error: ToolErrorBody | null = null;
     let diagnostics: string | null = null;
+    let failureDetail: unknown = null;
+    let handler = permanent;
     try {
+      if (!handler) {
+        const mcp = await this.capabilities.resolve(scope.binding.goalId, call.name);
+        if (mcp) handler = this.capabilities.mcpHandler(call.name, mcp.name, mcp.tool, scope.binding.goalId) as ToolHandler;
+      }
       if (!handler) {
         throw new ToolError("unknown_tool", `There is no tool named ${call.name}.`, `Use one of: ${[...this.handlers.keys()].join(", ")}, or an MCP tool activated with capability_control.`);
       }
@@ -134,6 +141,7 @@ export class ToolRunner {
         const issues = parsed.error.issues.slice(0, 8).map((i) => `${i.path.join(".") || "(input)"}: ${i.message}`);
         throw new ToolError("invalid_parameters", `Invalid ${call.name} input — ${issues.join("; ")}`, `Fix the listed parameters and call ${call.name} again.`);
       }
+      throwIfCancelled(scope.signal);
       const ctx = this.context(scope, refs);
       if (handler.mutating && scope.workspace && store.firstMutationGatePending(scope.binding.taskId)) {
         await ctx.requireApproval({ kind: "first_mutation", tool: call.name, detail: `First change in workspace ${scope.workspace.name}: ${describe(call)}` });
@@ -143,7 +151,10 @@ export class ToolRunner {
         store.recordFileChange(refs, { call_id: call.id, path: m.path, action: m.action, from_path: m.fromPath, before: m.before, after: m.after });
       }
     } catch (caught) {
-      if (caught instanceof ToolError) error = caught.body();
+      if (caught instanceof ToolError) {
+        error = caught.body();
+        failureDetail = caught.detail;
+      }
       else {
         error = INTERNAL_ERROR;
         diagnostics = caught instanceof Error ? `${caught.name}: ${caught.message}\n${caught.stack ?? ""}` : String(caught);
@@ -162,6 +173,7 @@ export class ToolRunner {
       status: error ? "error" : "ok",
       content,
       result: output?.result ?? null,
+      ...(error ? { failure_detail: failureDetail } : {}),
       error,
       diagnostics,
       observed: output?.observed ?? [],
@@ -187,6 +199,7 @@ export class ToolRunner {
       async requireApproval(request: ApprovalRequest) {
         const granted = await approve(request);
         store.recordApproval(refs, { kind: request.kind, granted, detail: request.detail });
+        throwIfCancelled(scope.signal);
         if (!granted) {
           throw new ToolError("approval_denied", `The user declined: ${request.detail}`, "Do not retry this action. Continue another way, or ask the user how to proceed.", false);
         }

@@ -516,7 +516,15 @@ export class LedgerStore {
         this.run("DELETE FROM active_capabilities WHERE goal_id = ? AND name = ?", e.goal_id, p.name); break;
       }
       case "user_message": case "assistant_response": case "clarification_asked": case "routing_completed":
-      case "file_changed": case "terminal_started": case "terminal_exited": case "approval_decided": break;
+      case "terminal_exited": {
+        const p = e.payload as EventPayloads["terminal_exited"];
+        if (e.task_id && p.facts?.length) {
+          for (const f of p.facts) this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", newId("fact"), e.task_id, f.kind, f.value, e.id, e.at);
+          this.indexTask(e.task_id);
+        }
+        break;
+      }
+      case "file_changed": case "terminal_started": case "approval_decided": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -610,6 +618,8 @@ export class LedgerStore {
       if (goal.general) throw new StoreError("The general goal has no workspace.");
       const event = this.appendEvent("goal_workspace_bound", { workspace_id: workspaceId }, { goal_id: goalId });
       this.run("UPDATE goals SET workspace_id = ?, updated_at = ? WHERE id = ?", workspaceId, event.at, goalId);
+      this.indexGoal(goalId);
+      for (const task of this.listTasks(goalId)) this.indexTask(task.id);
       return this.requireGoal(goalId);
     });
   }
@@ -1114,8 +1124,9 @@ export class LedgerStore {
     this.appendEvent("terminal_started", payload, refs);
   }
 
+  /** Record a session's exit and the facts derived from it, attributed to the launching task. */
   recordTerminalExited(refs: EventRefs, payload: EventPayloads["terminal_exited"]): void {
-    this.appendEvent("terminal_exited", payload, refs);
+    this.transaction(() => this.projectEvent(this.appendEvent("terminal_exited", payload, refs)));
   }
 
   recordApproval(refs: EventRefs, payload: EventPayloads["approval_decided"]): void {
@@ -1171,6 +1182,7 @@ export class LedgerStore {
     for (const f of p.facts) {
       this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", newId("fact"), taskId, f.kind, f.value, event.id, event.at);
     }
+    if (p.facts.length) this.indexTask(taskId);
   }
 
   private requireEvidence(taskId: string, number: number): Evidence {
@@ -1282,10 +1294,11 @@ export class LedgerStore {
   }
 
   /**
-   * Completed Q&A pairs, filtered by task or goal and by date. With an FTS
-   * expression results are ranked by BM25 and then recency; with `exact` they
-   * are literal case-insensitive substring matches; with neither they are
-   * the newest pairs in range.
+   * Completed Q&A pairs, filtered by task or goal and by completion time
+   * (`fromIso` inclusive, `beforeIso` exclusive) before any limit applies.
+   * With an FTS expression results are ranked by BM25 and then recency; with
+   * `exact` they are case-insensitive literal matches after the same Unicode
+   * normalization on both sides; with neither they are the newest pairs.
    */
   searchExchanges(input: {
     fts?: string;
@@ -1293,30 +1306,22 @@ export class LedgerStore {
     taskIds?: string[];
     goalIds?: string[];
     fromIso?: string;
-    toIso?: string;
+    beforeIso?: string;
     limit: number;
   }): ExchangeHit[] {
     const where: string[] = [];
     const params: (string | number)[] = [];
     if (input.fts) (where.push("exchange_fts MATCH ?"), params.push(input.fts));
-    if (input.exact) {
-      where.push("(instr(lower(x.user_text), ?) > 0 OR instr(lower(x.response_text), ?) > 0)");
-      params.push(input.exact.toLowerCase(), input.exact.toLowerCase());
-    }
     if (input.taskIds) (where.push(`x.task_id IN (${input.taskIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.taskIds));
     if (input.goalIds) (where.push(`x.goal_id IN (${input.goalIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.goalIds));
     if (input.fromIso) (where.push("t.completed_at >= ?"), params.push(input.fromIso));
-    if (input.toIso) (where.push("t.completed_at <= ?"), params.push(input.toIso));
+    if (input.beforeIso) (where.push("t.completed_at < ?"), params.push(input.beforeIso));
     const order = input.fts ? "bm25(exchange_fts, 0.0, 0.0, 0.0, 1.0, 1.0), t.completed_at DESC" : "t.completed_at DESC";
-    const rows = this.all(
-      `SELECT x.turn_id, x.task_id, x.goal_id, x.user_text, x.response_text, t.project_turn, t.completed_at
+    const sql = `SELECT x.turn_id, x.task_id, x.goal_id, x.user_text, x.response_text, t.project_turn, t.completed_at
          FROM exchange_fts x JOIN turns t ON t.id = x.turn_id
         ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-        ORDER BY ${order}, t.project_turn DESC LIMIT ?`,
-      ...params,
-      input.limit,
-    );
-    return rows.map((r) => ({
+        ORDER BY ${order}, t.project_turn DESC`;
+    const toHit = (r: Row): ExchangeHit => ({
       turnId: str(r.turn_id),
       projectTurn: num(r.project_turn),
       taskId: str(r.task_id),
@@ -1324,7 +1329,16 @@ export class LedgerStore {
       at: str(r.completed_at),
       userMessage: str(r.user_text),
       response: str(r.response_text),
-    }));
+    });
+    if (!input.exact) return this.all(`${sql} LIMIT ?`, ...params, input.limit).map(toHit);
+    const needle = foldText(input.exact);
+    const hits: ExchangeHit[] = [];
+    for (const r of this.db.prepare(sql).iterate(...params) as Iterable<Row>) {
+      if (!foldText(str(r.user_text)).includes(needle) && !foldText(str(r.response_text)).includes(needle)) continue;
+      hits.push(toHit(r));
+      if (hits.length >= input.limit) break;
+    }
+    return hits;
   }
 
   /** The newest permanent project turn number, or 0 when there are none. */
@@ -1339,6 +1353,10 @@ export class LedgerStore {
 
   // ── Ledger index and queries ─────────────────────────────────────────────
 
+  private workspaceName(goal: Goal): string {
+    return goal.workspaceId ? (this.getWorkspace(goal.workspaceId)?.name ?? "") : "";
+  }
+
   private indexGoal(goalId: string): void {
     const goal = this.requireGoal(goalId);
     const anchors = this.listAnchors(goalId)
@@ -1350,10 +1368,11 @@ export class LedgerStore {
       goalId,
       goalId,
       goal.title,
-      [goal.objective ?? "", goal.note ?? "", anchors].filter(Boolean).join("\n"),
+      [goal.objective ?? "", goal.note ?? "", this.workspaceName(goal), anchors].filter(Boolean).join("\n"),
     );
   }
 
+  /** Index a task's metadata, including the mechanically derived files, commands, tests, and capabilities. */
   private indexTask(taskId: string): void {
     const task = this.requireTask(taskId);
     this.run("DELETE FROM ledger_fts WHERE entity = 'task' AND entity_id = ?", taskId);
@@ -1362,8 +1381,13 @@ export class LedgerStore {
       taskId,
       task.goalId,
       task.title,
-      [task.objective, task.completionCriteria ?? "", task.continuationNote ?? ""].filter(Boolean).join("\n"),
+      [task.objective, task.completionCriteria ?? "", task.continuationNote ?? "", this.workspaceName(this.requireGoal(task.goalId)), ...this.distinctFacts(taskId)].filter(Boolean).join("\n"),
     );
+  }
+
+  /** Distinct derived fact values of a task, newest first and capped, for indexing and matching. */
+  distinctFacts(taskId: string, limit = 200): string[] {
+    return this.all("SELECT value FROM task_facts WHERE task_id = ? GROUP BY value ORDER BY MAX(created_at) DESC LIMIT ?", taskId, limit).map((r) => str(r.value));
   }
 
   /** Full-text search over goal and task metadata. `query` must already be an FTS5 expression. */
@@ -1411,4 +1435,9 @@ export function handleNumber(handle: string): number {
   const m = /^e(\d+)$/.exec(handle);
   if (!m) throw new StoreError(`Invalid evidence handle: ${handle}`);
   return Number(m[1]);
+}
+
+/** Case-insensitive comparison form that treats composed and decomposed characters alike. */
+export function foldText(text: string): string {
+  return text.normalize("NFC").toLowerCase();
 }
