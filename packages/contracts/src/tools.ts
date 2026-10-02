@@ -119,7 +119,7 @@ export const ContextRetrieveInput = z.discriminatedUnion("action", [
   }),
   z.strictObject({
     action: z.literal("inspect"),
-    ref: z.string().min(1).max(32).optional().describe("gN, tN, gN/tN, rN, eN, or hc-N"),
+    ref: z.string().min(1).max(32).optional().describe("gN, tN, gN/tN, rN, eN, gN/tN/eN, or hc-N"),
     turn_number: z.number().int().min(1).optional(),
   }),
 ]);

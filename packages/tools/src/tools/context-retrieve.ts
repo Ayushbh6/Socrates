@@ -399,11 +399,20 @@ function inspect(input: Inspect, ctx: HandlerContext) {
     build = (scale) => turnView(turn, null, ctx, scale);
   } else {
     const ref = input.ref!.trim();
-    const goal = resolveGoalRef(ctx, ref);
-    const task = goal ? null : resolveTask(ctx, ref);
+    // A qualified gN/tN/eM names evidence of another task, as compound-part handoffs do.
+    const qualified = /^(g\d+\/t\d+)\/e(\d+)$/i.exec(ref);
+    const goal = qualified ? null : resolveGoalRef(ctx, ref);
+    const task = goal ? null : resolveTask(ctx, qualified ? qualified[1]! : ref);
     const runRef = /^r\d+$/i.test(ref) ? ctx.run.ref(ref.toLowerCase()) : undefined;
     const evidence = /^e(\d+)$/i.exec(ref);
-    if (goal) build = (scale) => goalView(goal, ctx, scale);
+    if (qualified) {
+      const e = ctx.store.getEvidence(task!.task.id, Number(qualified[2]));
+      if (!e) {
+        const count = ctx.store.evidenceCount(task!.task.id);
+        throw new ToolError("evidence_not_found", `${ref} does not exist.`, count ? `Evidence handles of ${qualified[1]} run from e1 to e${count}.` : `${qualified[1]} has no recorded tool calls.`);
+      }
+      build = (scale) => evidenceView(e, ctx, scale);
+    } else if (goal) build = (scale) => goalView(goal, ctx, scale);
     else if (task) build = (scale) => taskView(task.goal, task.task, ctx, scale);
     else if (runRef?.kind === "turn") {
       const turn = ctx.store.requireTurn(runRef.turnId);
@@ -420,7 +429,7 @@ function inspect(input: Inspect, ctx: HandlerContext) {
     } else if (/^r\d+$/i.test(ref)) {
       throw new ToolError("unknown_reference", `${ref} is not a search result of this run.`, "Run context_retrieve search again and inspect a ref it returns.");
     } else {
-      throw new ToolError("unknown_reference", `${ref} is not a recognized reference.`, "Use gN, tN, gN/tN, rN from search, eN for a tool call, hc-N for a checkpoint, or turn_number.");
+      throw new ToolError("unknown_reference", `${ref} is not a recognized reference.`, "Use gN, tN, gN/tN, rN from search, eN (or gN/tN/eN for another task) for a tool call, hc-N for a checkpoint, or turn_number.");
     }
   }
   // Prefer a proportionally smaller view; enforceBounds is the final guarantee.

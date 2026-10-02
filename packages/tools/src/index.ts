@@ -6,5 +6,5 @@ export * from "./catalog";
 export * from "./bounds";
 export * from "./definitions";
 export type { ToolHandler, ToolOutput, FileMutation } from "./handler";
-export { TerminalSupervisor } from "./terminals";
+export { TerminalSupervisor, type SupervisorOptions } from "./terminals";
 export { parsePatch } from "./patch";

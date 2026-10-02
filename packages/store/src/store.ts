@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { EventPayloads, EventRefs, EventType, StoredEvent } from "@socrates/contracts";
+import type { EventPayloads, EventRefs, EventType, StoredEvent, TurnStop } from "@socrates/contracts";
 import { type Clock, newId, systemClock, truncateToTokens } from "@socrates/shared";
 import { MIGRATIONS, SCHEMA_SQL, SCHEMA_VERSION } from "./schema";
 
@@ -497,6 +497,8 @@ export class LedgerStore {
         if (this.getEvent(p.response_event_id)?.type !== "assistant_response") throw new StoreError("Completion response is missing.");
         this.run("UPDATE turns SET response_event_id = ?, status = 'completed', completed_at = ? WHERE id = ?", p.response_event_id, e.at, e.turn_id); break;
       }
+      case "turn_interrupted":
+        this.run("UPDATE turns SET status = 'interrupted', completed_at = ? WHERE id = ?", e.at, e.turn_id); break;
       case "anchor_revised": {
         const p = e.payload as EventPayloads["anchor_revised"];
         this.run("INSERT INTO anchors (id, goal_id, path, role, status, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, summary = excluded.summary, updated_at = excluded.updated_at", p.anchor_id, e.goal_id, p.path, p.role, p.status, p.summary, e.at, e.at); break;
@@ -524,7 +526,7 @@ export class LedgerStore {
         }
         break;
       }
-      case "file_changed": case "terminal_started": case "approval_decided": break;
+      case "file_changed": case "terminal_started": case "approval_decided": case "agent_warning": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -965,7 +967,7 @@ export class LedgerStore {
     return this.all("SELECT * FROM turns WHERE user_event_id = ? ORDER BY project_turn", userEventId).map(toTurn);
   }
 
-  /** Store the visible answer for an exchange. Compound parts share one response. */
+  /** Store a visible answer. Each compound part records its own, shown together in part order. */
   recordResponse(text: string, refs: EventRefs = {}): StoredEvent<"assistant_response"> {
     return this.appendEvent("assistant_response", { text }, refs);
   }
@@ -977,27 +979,67 @@ export class LedgerStore {
    */
   completeTurn(
     turnId: string,
-    input: { responseEventId: string; continuationNote?: string | null; goalNote?: string | null; taskComplete?: boolean },
+    input: { responseEventId: string; continuationNote?: string | null; goalNote?: string | null; taskComplete?: boolean; taskCompleteReason?: string | null; stop?: TurnStop },
   ): Turn {
     return this.transaction(() => {
-      const turn = this.requireTurn(turnId);
-      if (turn.kind !== "task" || !turn.taskId || !turn.goalId) throw new StoreError("Only task turns can be completed.");
-      if (turn.status !== "in_progress") throw new StoreError(`Turn ${turn.projectTurn} is already ${turn.status}.`);
+      const turn = this.requireInProgressTurn(turnId);
       if (this.getEvent(input.responseEventId)?.type !== "assistant_response") throw new StoreError("Expected an assistant response event.");
-      this.reviseTask(turn.taskId, {
+      this.reviseTask(turn.taskId!, {
         ...(input.continuationNote !== undefined && input.continuationNote !== null ? { continuationNote: input.continuationNote } : {}),
         ...(input.taskComplete !== undefined ? { status: input.taskComplete ? "completed" as const : "open" as const } : {}),
       });
-      if (input.goalNote) this.reviseGoalNote(turn.goalId, input.goalNote);
+      if (input.goalNote) this.reviseGoalNote(turn.goalId!, input.goalNote);
       const completed = this.appendEvent(
         "turn_completed",
-        { project_turn: turn.projectTurn, response_event_id: input.responseEventId },
+        {
+          project_turn: turn.projectTurn,
+          response_event_id: input.responseEventId,
+          ...(input.stop ? { stop: input.stop } : {}),
+          ...(input.taskCompleteReason !== undefined ? { task_complete_reason: input.taskCompleteReason } : {}),
+        },
         { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id },
       );
       this.run("UPDATE turns SET response_event_id = ?, status = 'completed', completed_at = ? WHERE id = ?", input.responseEventId, completed.at, turnId);
       this.indexExchange(turnId);
       return this.requireTurn(turnId);
     });
+  }
+
+  /**
+   * End a bound turn that produced no final answer (agent-harness.md, "Safety
+   * and long-running work"): record why, and keep the task's ledger entry
+   * truthful with a mechanical continuation note.
+   */
+  interruptTurn(turnId: string, input: { reason: "cancelled" | "failed"; toolCalls: number; continuationNote: string }): Turn {
+    return this.transaction(() => {
+      const turn = this.requireInProgressTurn(turnId);
+      const task = this.reviseTask(turn.taskId!, { continuationNote: input.continuationNote });
+      const event = this.appendEvent(
+        "turn_interrupted",
+        { project_turn: turn.projectTurn, reason: input.reason, tool_calls: input.toolCalls, continuation_note: task.continuationNote ?? input.continuationNote },
+        { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id },
+      );
+      this.run("UPDATE turns SET status = 'interrupted', completed_at = ? WHERE id = ?", event.at, turnId);
+      return this.requireTurn(turnId);
+    });
+  }
+
+  /** Record an operational warning about a turn. It never changes the ledger. */
+  recordWarning(refs: EventRefs, payload: EventPayloads["agent_warning"]): void {
+    this.appendEvent("agent_warning", payload, refs);
+  }
+
+  /** The interruption record of a turn, when it ended without an answer. */
+  interruption(turnId: string): EventPayloads["turn_interrupted"] | null {
+    const event = this.listEvents({ turnId, type: "turn_interrupted" })[0];
+    return event ? (event.payload as EventPayloads["turn_interrupted"]) : null;
+  }
+
+  private requireInProgressTurn(turnId: string): Turn {
+    const turn = this.requireTurn(turnId);
+    if (turn.kind !== "task" || !turn.taskId || !turn.goalId) throw new StoreError("Only task turns can be completed.");
+    if (turn.status !== "in_progress") throw new StoreError(`Turn ${turn.projectTurn} is already ${turn.status}.`);
+    return turn;
   }
 
   /** The goal, task, and chat of the most recent task turn. "Current" is global across workspaces. */
@@ -1037,10 +1079,15 @@ export class LedgerStore {
         if (seen.has(userEventId)) continue;
         seen.add(userEventId);
         const turns = this.turnsForUserEvent(userEventId);
+        // Compound parts may each have their own answer; the exchange shows them in part order.
+        const responseIds = [...new Set(turns.map((t) => t.responseEventId).filter((id): id is string => id !== null))];
+        const response = responseIds.length > 1
+          ? responseIds.map((id) => (this.getEvent(id)!.payload as EventPayloads["assistant_response"]).text).join("\n\n")
+          : (JSON.parse(str(r.response_payload)) as { text: string }).text;
         yield {
           userEventId,
           userMessage: (JSON.parse(str(r.user_payload)) as { text: string }).text,
-          response: (JSON.parse(str(r.response_payload)) as { text: string }).text,
+          response,
           at: str(r.user_at),
           projectTurns: turns.map((t) => t.projectTurn),
           kind: str(r.kind) as Exchange["kind"],

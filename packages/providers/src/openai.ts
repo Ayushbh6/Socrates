@@ -7,6 +7,7 @@ import {
   type ModelResponse,
   type StopReason,
   type ToolCall,
+  userText,
 } from "@socrates/contracts";
 
 export interface OpenAICompatibleModelOptions {
@@ -54,6 +55,7 @@ export class OpenAICompatibleModel implements ModelClient {
               type: "function" as const,
               function: { name: t.name, description: t.description, parameters: t.inputSchema },
             })),
+            ...(request.toolChoice === "none" ? { tool_choice: "none" as const } : {}),
           }
         : {}),
       ...((this.options.maxTokensParam ?? "max_completion_tokens") === "max_tokens"
@@ -102,7 +104,7 @@ export class OpenAICompatibleModel implements ModelClient {
 
 export function toOpenAIMessages(messages: ModelMessage[], provider?: string): OpenAI.Chat.ChatCompletionMessageParam[] {
   return messages.map((m): OpenAI.Chat.ChatCompletionMessageParam => {
-    if (m.role === "user") return { role: "user", content: m.content };
+    if (m.role === "user") return { role: "user", content: userText(m.content) };
     if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
     // Replay the complete native message on the same endpoint/model. DeepSeek
     // reasoning_content and OpenRouter signed reasoning_details are mandatory

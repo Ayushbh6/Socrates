@@ -1,0 +1,18 @@
+{
+  "name": "@socrates/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@socrates/contracts": "workspace:*",
+    "@socrates/providers": "workspace:*",
+    "@socrates/router": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "@socrates/store": "workspace:*",
+    "@socrates/tools": "workspace:*",
+    "zod": "^4.1.0"
+  }
+}

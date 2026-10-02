@@ -17,6 +17,7 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/providers` | Anthropic, DeepSeek, OpenRouter, OpenAI-compatible and Gemini Interactions model adapters, a scripted test model, token calibration |
 | `@socrates/router` | The Goal Router: input assembly, candidate retrieval, validation, repair, escalation, fallback, binding |
 | `@socrates/tools` | The working agent's ten permanent tools behind one tool runner: corrective errors, workspace access and approval policy, bounded results, persisted evidence (`eN`), the terminal supervisor, and the capability catalog interface |
+| `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence), context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints |
 
 ## Development
 
@@ -43,9 +44,12 @@ SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:provider # real function call
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:goal     # real router and scoped worker, persistent goals and artifacts
 pnpm eval:tools                                          # all ten tools, persistent restart and event replay
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a provider-selected tool call
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:agent  # real router and working agent on a disposable project
 ```
 
-`eval:goal` writes disposable Markdown deliverables and SQLite databases to a fresh run directory inside this repository's ignored `.socrates/evals/` folder. It verifies continued and resumed work, independent tasks, general conversation, dependent compound work, clarification recovery after restart, historical ledger tools, deliberate invalid-answer escalation, event-only recovery, and metadata budgets. The worker uses real LLM responses and validated, explicitly allowed artifact names. This evaluation harness does not implement the architecture's future full coding-agent tool loop, compaction or rollover execution.
+`eval:agent` runs the working agent through `Socrates.handle` on a disposable calculator project under `.socrates/evals/agent-*`: a multi-step fix with real edits and test runs, continuation, a restart that rebuilds history from the event log, a compound message, cancellation and recovery, a step-limit wrap-up, and event-only replay. Only the synthetic fixture reaches the provider.
+
+`eval:goal` writes disposable Markdown deliverables and SQLite databases to a fresh run directory inside this repository's ignored `.socrates/evals/` folder. It verifies continued and resumed work, independent tasks, general conversation, dependent compound work, clarification recovery after restart, historical ledger tools, deliberate invalid-answer escalation, event-only recovery, and metadata budgets. The worker uses real LLM responses and validated, explicitly allowed artifact names. Its worker is a scoped stand-in; the real working agent is exercised by `eval:agent`.
 
 Gemini uses the stable [Interactions API](https://ai.google.dev/api/interactions-api-v1) in stateless mode (`store: false`); native output steps, thought signatures and function call IDs are replayed intact. Compatible adapters preserve the entire native assistant message under the exact endpoint/model identity, including DeepSeek reasoning and OpenRouter signed reasoning details. Provider failures have bounded timeouts and secret-free errors.
 

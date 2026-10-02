@@ -250,3 +250,55 @@ describe("OpenRouter signed reasoning", () => {
     expect((captured[2]!.body.messages as Record<string, unknown>[])[2]!.reasoning_details).toBeUndefined();
   });
 });
+
+describe("prompt-cache breakpoints and tool-less requests", () => {
+  const cached: ModelMessage[] = [
+    { role: "user", content: [{ text: "goal " }, { text: "history ", cache: true }, { text: "message" }] },
+    { role: "assistant", content: "", toolCalls: [{ id: "tu_1", name: "read", input: {} }] },
+    { role: "tool", toolCallId: "tu_1", toolName: "read", content: "file", cache: true },
+    { role: "user", content: "wrap up" },
+  ];
+  const tools = [{ name: "read", description: "d", inputSchema: { type: "object" } }];
+
+  it("marks Anthropic breakpoints, caches the system prompt, and forbids calls without dropping tools", async () => {
+    const captured: Captured[] = [];
+    const reply = { id: "m", type: "message", role: "assistant", model: "test-model", content: [{ type: "text", text: "{}" }], stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
+    const client = new Anthropic({ apiKey: "test", maxRetries: 0, fetch: fakeFetch(200, reply, captured) });
+    await new AnthropicModel({ model: "test-model", client }).complete({ system: "sys", messages: cached, tools, toolChoice: "none" });
+    const body = captured[0]!.body;
+    expect(body.system).toEqual([{ type: "text", text: "sys", cache_control: { type: "ephemeral" } }]);
+    expect(body.tool_choice).toEqual({ type: "none" });
+    expect(body.tools).toHaveLength(1);
+    const messages = body.messages as { role: string; content: unknown }[];
+    expect(messages[0]!.content).toEqual([
+      { type: "text", text: "goal " },
+      { type: "text", text: "history ", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "message" },
+    ]);
+    // The harness's request joins the user turn that carries the tool results.
+    expect(messages).toHaveLength(3);
+    expect(messages[2]!.content).toEqual([
+      { type: "tool_result", tool_use_id: "tu_1", content: "file", cache_control: { type: "ephemeral" } },
+      { type: "text", text: "wrap up" },
+    ]);
+  });
+
+  it("joins parts for OpenAI-compatible APIs and sets tool_choice none", async () => {
+    const captured: Captured[] = [];
+    const completion = { id: "c", object: "chat.completion", created: 0, model: "m", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "{}" } }] };
+    const client = new OpenAI({ apiKey: "test", maxRetries: 0, fetch: fakeFetch(200, completion, captured) });
+    await new OpenAICompatibleModel({ model: "m", client }).complete({ system: "s", messages: cached, tools, toolChoice: "none" });
+    const body = captured[0]!.body;
+    expect((body.messages as { content: unknown }[])[1]).toEqual({ role: "user", content: "goal history message" });
+    expect(body.tool_choice).toBe("none");
+  });
+
+  it("sends Gemini no tools when calls are forbidden", async () => {
+    const { GeminiInteractionsModel } = await import("../src");
+    const captured: Captured[] = [];
+    const model = new GeminiInteractionsModel({ model: "g", apiKey: "test", fetch: fakeFetch(200, { status: "completed", steps: [] }, captured) });
+    await model.complete({ system: "s", messages: cached, tools, toolChoice: "none" });
+    expect(captured[0]!.body.tools).toBeUndefined();
+    expect((captured[0]!.body.input as { content: unknown }[])[0]!.content).toEqual([{ type: "text", text: "goal history message" }]);
+  });
+});

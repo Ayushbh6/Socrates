@@ -1,4 +1,4 @@
-import { ModelError, type ModelClient, type ModelMessage, type ModelRequest, type ModelResponse } from "@socrates/contracts";
+import { ModelError, type ModelClient, type ModelMessage, type ModelRequest, type ModelResponse, userText } from "@socrates/contracts";
 
 export interface GeminiInteractionsOptions {
   model: string;
@@ -45,7 +45,8 @@ export class GeminiInteractionsModel implements ModelClient {
           input: toGeminiSteps(request.messages, this.id),
           store: false,
           stream: false,
-          ...(request.tools?.length ? { tools: request.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.inputSchema })) } : {}),
+          // Interactions has no "no new calls" switch; a request that must not call tools sends none.
+          ...(request.tools?.length && request.toolChoice !== "none" ? { tools: request.tools.map(t => ({ type: "function", name: t.name, description: t.description, parameters: t.inputSchema })) } : {}),
           generation_config: { max_output_tokens: request.maxOutputTokens ?? 16_000, thinking_level: this.options.thinkingLevel ?? "low" },
         }),
       });
@@ -91,7 +92,7 @@ export class GeminiInteractionsModel implements ModelClient {
 
 export function toGeminiSteps(messages: ModelMessage[], provider: string): Step[] {
   return messages.flatMap((m): Step[] => {
-    if (m.role === "user") return [{ type: "user_input", content: [{ type: "text", text: m.content }] }];
+    if (m.role === "user") return [{ type: "user_input", content: [{ type: "text", text: userText(m.content) }] }];
     if (m.role === "tool") return [{ type: "function_result", call_id: m.toolCallId, name: m.toolName, result: [{ type: "text", text: m.content }], ...(m.isError ? { is_error: true } : {}) }];
     if (m.raw?.provider === provider && Array.isArray(m.raw.content)) return structuredClone(m.raw.content) as Step[];
     return [

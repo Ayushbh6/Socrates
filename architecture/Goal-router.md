@@ -800,6 +800,8 @@ The Goal Router does not promote files to anchors. The Main Coding Agent may pro
 
 The backend validates that the file exists, belongs to the goal, is not temporary or generated output, has a durable future-facing role, does not violate the anchor budget, and does not silently conflict with an existing anchor.
 
+Concretely: the path must resolve to an existing file inside the goal's workspace; paths under dependency, build, cache, or temporary folders (`node_modules`, `dist`, `build`, `coverage`, `tmp`, and similar) and log, lock, temporary, and source-map files are rejected; a goal holds at most `8` provisional and active anchors; and a proposal that would give an anchored file a different role is rejected, because changing an anchor's authority needs the user. A proposal repeating an existing anchor changes nothing. Every rejection is recorded as an operational warning, never shown as an error to the user.
+
 Anchor states are reversible:
 
 ```text

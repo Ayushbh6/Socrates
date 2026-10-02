@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   type ModelClient,
+  hasCacheBreakpoints,
   ModelError,
   type ModelMessage,
   type ModelRequest,
@@ -56,7 +57,8 @@ export class AnthropicModel implements ModelClient {
     const params: Anthropic.Beta.MessageCreateParamsNonStreaming = {
       model: this.options.model,
       max_tokens: request.maxOutputTokens ?? 16_000,
-      system: request.system,
+      // A request with breakpoints also caches the tools and system prompt that precede them.
+      system: hasCacheBreakpoints(request.messages) ? [{ type: "text", text: request.system, cache_control: { type: "ephemeral" } }] : request.system,
       messages: toAnthropicMessages(request.messages),
       ...(request.tools?.length
         ? {
@@ -65,6 +67,7 @@ export class AnthropicModel implements ModelClient {
               description: t.description,
               input_schema: t.inputSchema as Anthropic.Beta.BetaTool.InputSchema,
             })),
+            ...(request.toolChoice === "none" ? { tool_choice: { type: "none" as const } } : {}),
           }
         : {}),
       ...(this.options.sampling && request.temperature !== undefined ? { temperature: request.temperature } : {}),
@@ -107,7 +110,14 @@ export function toAnthropicMessages(messages: ModelMessage[]): Anthropic.Beta.Be
   const out: Anthropic.Beta.BetaMessageParam[] = [];
   for (const m of messages) {
     if (m.role === "user") {
-      out.push({ role: "user", content: m.content });
+      const content = typeof m.content === "string" ? m.content : m.content.map((p) => ({ type: "text" as const, text: p.text, ...(p.cache ? { cache_control: { type: "ephemeral" as const } } : {}) }));
+      const last = out.at(-1);
+      // A user message right after tool results (such as a harness request) joins their user turn.
+      if (last?.role === "user" && Array.isArray(last.content)) {
+        last.content.push(...(typeof content === "string" ? [{ type: "text" as const, text: content }] : content));
+      } else {
+        out.push({ role: "user", content });
+      }
     } else if (m.role === "assistant") {
       if (m.raw?.provider === PROVIDER) {
         out.push({ role: "assistant", content: m.raw.content as Anthropic.Beta.BetaContentBlockParam[] });
@@ -123,6 +133,7 @@ export function toAnthropicMessages(messages: ModelMessage[]): Anthropic.Beta.Be
         tool_use_id: m.toolCallId,
         content: m.content,
         ...(m.isError ? { is_error: true } : {}),
+        ...(m.cache ? { cache_control: { type: "ephemeral" as const } } : {}),
       };
       const last = out.at(-1);
       if (last?.role === "user" && Array.isArray(last.content) && last.content.every((b) => b.type === "tool_result")) {

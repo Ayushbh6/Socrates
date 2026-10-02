@@ -29,15 +29,43 @@ export interface ProviderContent {
   content: unknown;
 }
 
+/**
+ * One piece of a user message. `cache` marks a prompt-cache breakpoint after
+ * this piece (agent-harness.md, "Prompt caching"): adapters whose provider
+ * needs explicit breakpoints set one there; providers that cache prefixes
+ * automatically ignore it. A request carrying any breakpoint also caches its
+ * system prompt and tool definitions.
+ */
+export interface TextPart {
+  text: string;
+  cache?: boolean;
+}
+
 export type ModelMessage =
-  | { role: "user"; content: string }
+  | { role: "user"; content: string | TextPart[] }
   | { role: "assistant"; content: string; toolCalls?: ToolCall[]; raw?: ProviderContent }
-  | { role: "tool"; toolCallId: string; toolName: string; content: string; isError?: boolean };
+  | { role: "tool"; toolCallId: string; toolName: string; content: string; isError?: boolean; cache?: boolean };
+
+/** The plain text of a user message, whichever form it has. */
+export function userText(content: string | TextPart[]): string {
+  return typeof content === "string" ? content : content.map((p) => p.text).join("");
+}
+
+/** Whether a request marks any prompt-cache breakpoint. */
+export function hasCacheBreakpoints(messages: ModelMessage[]): boolean {
+  return messages.some((m) => (m.role === "tool" && m.cache) || (m.role === "user" && typeof m.content !== "string" && m.content.some((p) => p.cache)));
+}
 
 export interface ModelRequest {
   system: string;
   messages: ModelMessage[];
   tools?: ToolDefinition[];
+  /**
+   * "none" keeps the tool definitions (a conversation that already holds tool
+   * calls may need them) but forbids new calls, as in the working agent's
+   * wrap-up after a limit. Default "auto".
+   */
+  toolChoice?: "auto" | "none";
   maxOutputTokens?: number;
   temperature?: number;
   signal?: AbortSignal;

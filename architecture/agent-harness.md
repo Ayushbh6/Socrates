@@ -513,11 +513,11 @@ or:
 }
 ```
 
-There is deliberately no inspection query. Inspection is deterministic: `gN` opens a bounded goal record, `tN` opens a task in the current goal, `gN/tN` opens a task in another goal, and short refs open the selected search result or evidence. The agent uses `ledger_search` or `search` to locate relevant material before inspecting it.
+There is deliberately no inspection query. Inspection is deterministic: `gN` opens a bounded goal record, `tN` opens a task in the current goal, `gN/tN` opens a task in another goal, short refs open the selected search result or evidence, and a qualified `gN/tN/eM` opens evidence `eM` of another task (the form the compound-part handoff uses). The agent uses `ledger_search` or `search` to locate relevant material before inspecting it.
 
 Inspection also resolves compaction artifacts. A history checkpoint handle such as `hc-3` opens the exact stored checkpoint, and a tool-call evidence handle such as `e1` opens the bounded view of that call and its complete stored result. Compaction therefore never creates unreachable content: everything the prompt summarizes or linearizes remains resolvable through this tool under the same output bounds.
 
-Handles are backend-assigned. `rN` is scoped to the current run. `eN` and `hc-N` are permanent within their task and resolve against the task binding of the current turn; the same label in a different task names a different stored object. Permanent selectors (`gN`, `tN`, `gN/tN`) follow the goal-local task rules above. A stale, unknown, inaccessible, or foreign-task reference fails with a corrective error directing the agent to search again.
+Handles are backend-assigned. `rN` is scoped to the current run. `eN` and `hc-N` are permanent within their task and resolve against the task binding of the current turn; the same label in a different task names a different stored object, which the qualified `gN/tN/eM` form reaches explicitly. Permanent selectors (`gN`, `tN`, `gN/tN`) follow the goal-local task rules above. A stale, unknown, inaccessible, or foreign-task reference fails with a corrective error directing the agent to search again.
 
 Inspection output:
 
@@ -836,7 +836,9 @@ Append bounded results to the model context
 Repeat
 ```
 
-The loop supports multiple tool calls in one model response when the provider supports them and the calls are independent. `read`, `glob`, `grep`, `context_retrieve`, and `capability_search` may run in parallel. `edit`, `apply_patch`, `terminal`, `terminal_control`, `capability_control`, and every MCP tool run one at a time in emitted order, because a shell command or external tool cannot be proven free of side effects. Results are always returned to the model in the order the calls were emitted.
+The loop supports multiple tool calls in one model response when the provider supports them and the calls are independent. `read`, `glob`, `grep`, `context_retrieve`, and `capability_search` may run in parallel. `edit`, `apply_patch`, `terminal`, `terminal_control`, `capability_control`, and every MCP tool run one at a time in emitted order, because a shell command or external tool cannot be proven free of side effects. Adjacent parallel-safe calls run together; a serial call is a barrier, so a `read` emitted after an `edit` sees the edit. Results are always returned to the model in the order the calls were emitted, and every emitted call is executed and recorded, even after a cancellation (where it is refused).
+
+A transient provider failure (rate limit, server, or network) is retried twice, after one and four seconds. Any other failure, or a third transient one, ends the turn as interrupted with reason `failed` and an operational warning; nothing partial is presented as an answer.
 
 There is no separate planner agent, answer-writing agent, state-writing agent, or tool-selection agent in the initial architecture. The same Main Coding Agent returns its visible answer and a short hidden continuation note in one final result.
 
@@ -845,7 +847,7 @@ There is no separate planner agent, answer-writing agent, state-writing agent, o
 1. Receive the user message.
 2. Persist it exactly.
 3. Run the Goal Router described in `Goal-router.md`: it selects the workspace, goal, and task.
-4. Bind the turn to the selected goal and task.
+4. Bind the turn to the selected goal and task. A goal created without a workspace is bound to the application's workspace when the application supplies one (for example, the folder Socrates was launched in); the binding is permanent. Otherwise the turn runs without a workspace (see "Safety and long-running work").
 5. Resolve the goal's frozen Skill shelf and retrieve zero to two likely capability candidates for this turn. (The shelf is frozen per goal; candidates are per turn.)
 6. Assemble the working context for that task in the canonical order defined in "Working-agent context."
 7. Start the model/tool loop with the ten permanent tools.
@@ -957,6 +959,10 @@ Rules:
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
 - Completed turns are sent as harness-formatted text, so the frozen N−1 rendering stays byte-stable for caching and no provider-specific reasoning content has to be replayed across turns. Only the in-flight turn uses native tool-call and tool-result messages. The block order above is binding either way.
+- Everything up to `<CURRENT_USER_MESSAGE>` is one user message made of parts: the goal-stable blocks, one part per completed turn, and the turn-volatile blocks. Part boundaries are where cache breakpoints may fall (see "Prompt caching").
+- The general task receives `<RECENT_ACTIVITY>` instead of `<GOAL_STATE>` and `<CURRENT_TASK>`; it has no durable goal state and is never completed, so its `goal_note` and `task_complete` are ignored.
+- `<CURRENT_USER_MESSAGE>` holds the user's original message exactly. When the router asked a clarification first, one line after it records the question and the user's answer. In a compound part it still holds the whole message, and `<CURRENT_TASK>` names the part this run handles (`this_turn: part 2 of 2 …`).
+- Until their stages land, `<AVAILABLE_SKILLS>`, `<CAPABILITY_CANDIDATES>` (capabilities stage), `<RETRIEVED_HISTORY>` (compaction stage), and `<PROJECT_CONTEXT>` (embeddings) are empty and therefore omitted.
 
 ## Compound tasks
 
@@ -969,6 +975,8 @@ The same Main Coding Agent runs them in order:
 3. Assemble part 2's task context, including only the evidence explicitly passed from part 1.
 4. Run part 2's tool loop.
 5. Return one visible answer covering both outcomes and save one continuation note for each affected task.
+
+Each part's final answer is stored as that part's response, so every task's history holds only its own answer. The user sees the split acknowledgment followed by one numbered section per part, and the stored exchange shows the parts' answers in order. If a part is interrupted, later parts do not start; they are recorded as interrupted with no tool calls.
 
 The original user message is stored once and linked to every affected task. Socrates does not duplicate the message or merge unrelated task histories.
 
@@ -994,11 +1002,11 @@ What part 2 receives from part 1 is defined by the dependency structure, not cho
 files_changed: src/auth/middleware.ts, src/auth/session.ts
 tests: pytest tests/auth/ → 24 passed
 note: Reconnect fix implemented; issue update drafted.
-evidence: e7 (failing test before fix), e12 (final test run)
+evidence: g4/t2/e7 (terminal), g4/t2/e12 (terminal)
 </EVIDENCE_FROM_PART_N>
 ```
 
-The block is built from the ledger entry's derived fields and pointers — the harness selects it, not the model. Each compound part is a task with its own ledger entry, and part 1's entry is finalized when part 1 completes, before part 2's context is assembled — so the handoff always reads a real, finalized entry, never an in-flight one. The block is bounded like any other context block: derived lists at their ledger caps, at most four evidence refs, and the continuation note verbatim. Exact expansion of any ref happens through `context_retrieve` under the normal output bounds, so the handoff cannot become an unbounded dump.
+The block is built from the ledger entry's derived fields and pointers — the harness selects it, not the model. Each compound part is a task with its own ledger entry, and part 1's entry is finalized when part 1 completes, before part 2's context is assembled — so the handoff always reads a real, finalized entry, never an in-flight one. The block is bounded like any other context block: derived lists at their ledger caps, at most four evidence refs (the part's first call and its last three), qualified as `gN/tN/eM` because they belong to another task, and the continuation note verbatim. Exact expansion of any ref happens through `context_retrieve` under the normal output bounds, so the handoff cannot become an unbounded dump.
 
 The handoff is deliberately one-directional and explicit: part 2 sees what part 1 *recorded*, not part 1's working context. If part 2 needs more, it retrieves it from the event log through its own tools.
 
@@ -1064,15 +1072,17 @@ History attaches to the working prompt in three tiers. This policy decides the *
 
 #### Fitting turn N−1
 
-When a turn completes, the harness renders it once as N−1 and freezes that rendering until the turn becomes N−2, so it stays cache-stable. If the full rendering fits the `20,000`-token budget, it is used unchanged. Real working turns are often larger: a turn with three reads, two edits, two searches, and a test run is typically 25–35k tokens in full. Reduction is therefore graduated, never all-or-nothing. The harness applies these steps in order and stops as soon as the turn fits:
+When a turn completes, it is rendered as N−1 until it becomes N−2. The rendering is computed from the event log alone and is deterministic, so the same turn always yields the same text and stays cache-stable without storing a copy. If the full rendering fits the `20,000`-token budget, it is used unchanged. Real working turns are often larger: a turn with three reads, two edits, two searches, and a test run is typically 25–35k tokens in full. Reduction is therefore graduated, never all-or-nothing. The harness applies these steps in order and stops as soon as the turn fits:
 
 1. **Collapse what is reproducible or stale.** These calls become one line in the linearization grammar, with their evidence handle:
-   - `edit` and `apply_patch`, because the change is already on disk: `edit memory/compact.ts (+3 −1) [e12]`;
+   - `edit` and `apply_patch`, because the change is already on disk: `TOOL CALL [e12] edit memory/compact.ts (+3 −1)`;
    - a `read` of a file that a later call in the same turn modified, because its content is out of date;
    - `glob`, `grep`, `context_retrieve`, `capability_search`, `capability_control`, and `terminal_control` calls, as one line with their counts or outcome;
    - `terminal` commands that succeeded, as one line with the exit status and the final output line.
 2. **Trim the largest remaining results evenly.** The harness computes one cap such that every remaining result larger than the cap is cut to it and the turn fits; smaller results are untouched. Reads keep the beginning of their window; failed commands keep their head and tail. Each trimmed result states what was cut and carries its evidence handle. The cap never goes below `1,500` tokens.
 3. **Collapse the oldest remaining calls.** Only if the turn still does not fit with every result at the floor, the oldest remaining calls are collapsed to one line, oldest first, until it fits.
+
+In the rendering, a full call is its `TOOL CALL [eN] tool {input}` line followed by its bounded result; a trimmed result's cap includes its omission marker. A turn that ended without an answer shows that instead of a response, for example `(The user stopped this turn after 14 tool calls; no answer was given.)`, so the next turn never mistakes it for finished work.
 
 The user query and the final response are never reduced. Oversized user messages are already bounded at ingestion.
 
@@ -1331,7 +1341,9 @@ const FinalAnswer = z.object({
 
 `full_answer` comes first so that, once responses stream, the user starts reading immediately while the short hidden fields are written after it. A question to the user is an ordinary final answer: `full_answer` holds the question.
 
-The harness validates the object with Zod and its token bounds. An invalid or missing object gets one repair request that states the validation errors; if that also fails, the harness keeps the model's visible text as the answer, writes a mechanical continuation note, records an operational warning, and persists nothing else from that output. No other final-response shape is accepted.
+The object is the whole text of the final message. Providers cannot combine forced structured output with tool use uniformly, so the harness parses it itself: the message as JSON, or one code fence wrapping the entire message, or its first `{` to its last `}`. Code fences inside `full_answer` belong to the answer and never delimit the object.
+
+The harness validates the object with Zod and its token bounds. The bounds are hard and equal the ledger's: `continuation_note` at most `100` tokens and `goal_note` at most `150`, so nothing is silently truncated when stored. At most three anchor proposals are accepted. An invalid or missing object gets one repair request that states the validation errors and forbids tool calls; if that also fails, the harness keeps the model's visible text as the answer (the `full_answer` string when a malformed object still contains one), writes a mechanical continuation note, records an operational warning, and persists nothing else from that output. No other final-response shape is accepted.
 
 The continuation note is not a second visible answer and is not produced by another agent. It is task-local and bounded (about 100 tokens): the task's verified progress, unresolved work, and important constraints.
 
@@ -1375,6 +1387,7 @@ Further rules:
 - Append dynamic MCP tool schemas after the permanent tools, in deterministic public-name order, so the same active set always produces the same tool list. Changing the active set costs one cache miss; it is not avoided by reordering or hiding schemas.
 - Keep full Skill instructions out of the prompt until activated.
 - Preserve provider prompt-cache handles when the API supports them, without making the core depend on them.
+- Breakpoints are marked in the normalized request and placed at four points, the most explicit-breakpoint providers accept: after the system prompt and tools, after the last Q&A-only turn, after turn N−1, and on the newest message (rolling, so every step reuses everything before it). Each completed turn is its own part, so a provider's prefix lookback also lands on turn boundaries. Providers that cache prefixes automatically ignore the markers; the byte-stability of everything before the in-flight turn is what makes their caches hit.
 - Compaction replaces content only in the dynamic suffix, never in the stable prefix. A history checkpoint, once written, is frozen text: it does not change between steps of the same turn, so the post-compaction prompt remains cache-stable from that point forward.
 
 ## Safety and long-running work
@@ -1388,8 +1401,9 @@ Further rules:
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.
 - Cancellation propagates to model requests and tool execution. A cancelled call is refused before it starts and after any approval it waited for, file tools check again just before writing, and a command or service launch that is cancelled is stopped.
 - Step, time, and token limits are configurable safeguards for one turn, not a tiny fixed loop count. Defaults: `200` model steps, `60` minutes of wall time, and `5,000,000` tokens across the turn's model calls.
-- If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion.
-- Cancellation makes no further model call. The turn is recorded as interrupted with a mechanical continuation note such as "interrupted after 14 tool calls".
+- If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion. The completed turn records which limit ended it (`stop`: `steps`, `time`, `tokens`, or `context`).
+- Until compaction is implemented, a request whose calibrated size reaches the `160,000`-token trigger is treated as the `context` limit: the turn wraps up instead of compacting. The compaction stage replaces this stop with compaction, after which the turn continues.
+- Cancellation makes no further model call. The turn is recorded as interrupted (a `turn_interrupted` event with the reason and the number of tool calls) with a mechanical continuation note such as "Interrupted by the user after 14 tool calls."
 
 ## Initial exclusions
 

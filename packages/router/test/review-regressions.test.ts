@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { userText } from "@socrates/contracts";
 import { countTokens } from "@socrates/shared";
 import { runLedgerQuery } from "@socrates/store";
 import { buildRoutingContext } from "../src/context";
@@ -35,8 +36,8 @@ describe("PR 3 independent architecture regressions", () => {
     const router = new GoalRouter({ store, routerModel, mainModel, timeZone: "UTC", historyBudgetTokens: 30 });
     await router.route("Please resume August's project");
     const mainFirst = mainModel!.requests[0]!;
-    expect(mainFirst.messages[0]!.content.includes("Archived goal")).toBe(false);
-    expect(mainModel!.requests[1]!.messages.at(-1)!.content.includes("ledger_query_limit")).toBe(true);
+    expect(userText(mainFirst.messages[0]!.content).includes("Archived goal")).toBe(false);
+    expect(userText(mainModel!.requests[1]!.messages.at(-1)!.content).includes("ledger_query_limit")).toBe(true);
     expect(mainFirst.messages.some(m => m.role === "tool" && m.content.includes("g1 Archived goal"))).toBe(true);
   });
 

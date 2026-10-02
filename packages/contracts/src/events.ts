@@ -42,7 +42,16 @@ export interface EventPayloads {
     depends_on: number[];
   };
   assistant_response: { text: string };
-  turn_completed: { project_turn: number; response_event_id: string };
+  /**
+   * `stop` says why the working agent ended: its own final answer, or the
+   * wrap-up after a per-turn limit. `task_complete_reason` is the agent's
+   * completion proposal, recorded with the task's completed status.
+   */
+  turn_completed: { project_turn: number; response_event_id: string; stop?: TurnStop; task_complete_reason?: string | null };
+  /** A turn that ended without a final answer: cancelled by the user, or failed. */
+  turn_interrupted: { project_turn: number; reason: "cancelled" | "failed"; tool_calls: number; continuation_note: string };
+  /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
+  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error"; detail: string };
   /**
    * One working-agent tool call, exactly as the model emitted it. `handle` is
    * the call's permanent evidence handle within its task ("e12").
@@ -81,6 +90,8 @@ export interface EventPayloads {
 }
 
 export type EventType = keyof EventPayloads;
+
+export type TurnStop = "final" | "steps" | "time" | "tokens" | "context";
 
 export interface EventRefs {
   goal_id?: string | null;
