@@ -136,7 +136,7 @@ Perform a precise replacement in one existing file.
 
 `replace_all` defaults to `false`. With that default, the operation succeeds only when `old_text` occurs exactly once. It fails safely when the text is absent or ambiguous. With `replace_all: true`, every exact occurrence is replaced, but zero occurrences still fail. `old_text` must not be empty.
 
-The backend verifies the current file version under the mutation lock. If the file changed after the task last observed it, the edit fails as stale and tells the agent to reread it. This prevents a successful read followed by a racing overwrite. The tool preserves the file's existing newline convention and does not create missing files.
+The backend verifies the current file version under the mutation lock. Every successful `read`, `edit`, and `apply_patch` records the file's content hash for the task; if the file changed after the task last observed it, the edit fails as stale and tells the agent to reread it. A file the task has never observed can be edited, because the exact `old_text` match already proves the expected content. This prevents a successful read followed by a racing overwrite. The tool preserves the file's existing newline convention and does not create missing files.
 
 ```json
 {
@@ -160,7 +160,7 @@ Apply a grammar-constrained patch that can update, create, move, or delete one o
 *** End Patch
 ```
 
-`apply_patch` is a freeform tool: the model sends patch text directly rather than wrapping it in JSON. Paths are workspace-relative. Absolute paths, paths outside granted roots, malformed hunks, stale context, and unsupported file types fail before mutation.
+The normalized tool contract carries the patch as one JSON string field, `{ "patch": "*** Begin Patch\n..." }`, so every provider that supports ordinary function calling can use it. A provider adapter may expose it as a native freeform tool, where the model sends the patch text directly, as an optimization; the core never depends on it. Paths are workspace-relative. Absolute paths, paths outside granted roots, malformed hunks, stale context, and unsupported file types fail before mutation.
 
 The complete patch is validated first and then committed atomically as one operation: either every declared file change succeeds or none does. A move cannot overwrite an undeclared destination, and a delete must match an existing file. Parent directories for declared new files may be created by the backend.
 
@@ -203,7 +203,7 @@ Run a command in the selected project workspace and, when necessary, publish it 
 }
 ```
 
-`cwd` defaults to the selected workspace and is resolved through the same access policy as filesystem tools. `env` augments the controlled process environment without requiring fragile shell quoting. `pty` defaults to `false` and should be enabled only for interactive programs or terminal-dependent output.
+`cwd` defaults to the selected workspace and is resolved through the same access policy as filesystem tools. `env` augments the controlled process environment without requiring fragile shell quoting. `pty` defaults to `false` and should be enabled only for interactive programs or terminal-dependent output. The initial implementation runs every session over pipes: `pty: true` fails with the corrective error `pty_unavailable`, and pseudo-terminal support is added later without changing this schema.
 
 `yield_ms` controls only how long the current call waits before returning a live session; it defaults to `10,000` and is capped at `30,000`. It is not a process deadline. `timeout_ms` is the actual execution deadline; the backend supplies a bounded default for ordinary foreground commands, while `0` explicitly requests no deadline when policy allows it.
 
@@ -296,8 +296,8 @@ The input is a discriminated union selected by `action`:
 
 - `list` returns every owner-visible live session plus a bounded number of recently exited sessions. Each row includes name/id, command summary, cwd, state, readiness, input requirement, start time, and exit information.
 - `read` returns retained output after `cursor`, together with a new cursor and explicit truncation or output-loss metadata. Reads are non-destructive, so the UI and model do not steal output from one another.
-- `wait` registers a durable event dependency and suspends the same task without polling the model. The task resumes only for the requested terminal event, user steering, cancellation, or an operational failure. `pattern` is required only for the `pattern` event. There is deliberately no model-facing polling interval.
-- `write` sends text and/or named keys through a serialized PTY input stream. `submit` defaults to `true` when `input` is supplied. Writing to a non-PTY session fails unless that process has an open supported stdin channel.
+- `wait` blocks the same tool call without polling the model until the requested terminal event, cancellation, or an operational failure. `pattern` is required only for the `pattern` event. There is deliberately no model-facing polling interval. A configurable policy maximum bounds one wait; reaching it returns the current state with `event: "timeout"`, and the agent may wait again. Surviving an application restart while waiting (a durable event dependency that resumes the task) is a later extension.
+- `write` sends text and/or named keys through the session's serialized input stream. `submit` defaults to `true` when `input` is supplied. Over pipes, text goes to stdin, `ENTER` writes a newline, `CTRL_C` sends `SIGINT` to the process group, `CTRL_D` closes stdin, and keys that need a terminal (`TAB`, `ESCAPE`, arrows) fail with `pty_unavailable`. Writing to a session whose stdin is closed fails.
 - `signal` targets the verified foreground process group. `SIGKILL` requires normal approval policy and is never the default shutdown path.
 - `terminate` performs graceful process-tree shutdown followed by bounded hard-kill if necessary.
 - `restart` reuses the retained launch and readiness specification and preserves the stable name while returning a new `session_id`.
@@ -413,7 +413,7 @@ The search covers bounded goal/task metadata: titles, objectives, status, contin
 }
 ```
 
-`gN` and `tN` are permanent human-facing ordinal selectors, not database identifiers. Task numbers are local to their goal: `t4` means task 4 of the current goal, while `g7/t4` explicitly selects task 4 of goal 7. Search-result and evidence handles such as `r1` and `e1` remain short run-scoped references.
+`gN` and `tN` are permanent human-facing ordinal selectors, not database identifiers. Task numbers are local to their goal: `t4` means task 4 of the current goal, while `g7/t4` explicitly selects task 4 of goal 7. Search-result handles such as `r1` are short run-scoped references. Evidence handles such as `e1` are permanent within their task: the backend assigns them in order as tool calls are persisted, so the same `e12` keeps naming the same call in later turns, in history checkpoints, and in compound-part handoffs.
 
 The working agent has no router-style three-call cap. It may refine a query, follow stable cursors, and inspect results as needed; the ordinary step, time, token, and output safeguards still apply.
 
@@ -442,7 +442,7 @@ Search defaults and validation:
 - `from` and `to` bound the search to ledger entries whose `updated_at` falls in the range, inclusive. Both are optional and independent.
 - `top_n` defaults to `5` and cannot exceed `10`.
 - `cursor` continues the exact frozen result set of the preceding search. A truncated result always returns `next_cursor`; the model can keep paging or narrow its query without requesting an unbounded dump.
-- `hybrid` combines semantic similarity, BM25 or equivalent keyword matching, and a small recency signal.
+- `hybrid` combines semantic similarity, BM25 or equivalent keyword matching, and a small recency signal. Until the embeddings segment lands (see "Implementation staging"), it is BM25 (SQLite FTS5) plus recency.
 - `exact` performs literal text matching and never silently falls back to hybrid retrieval.
 - Search covers exact user messages and visible Socrates responses. It returns Q&A pairs, not tool calls or tool results.
 
@@ -512,7 +512,7 @@ There is deliberately no inspection query. Inspection is deterministic: `gN` ope
 
 Inspection also resolves compaction artifacts. A history checkpoint handle such as `hc-3` opens the exact stored checkpoint, and a tool-call evidence handle such as `e1` opens the bounded view of that call and its complete stored result. Compaction therefore never creates unreachable content: everything the prompt summarizes or linearizes remains resolvable through this tool under the same output bounds.
 
-Run-scoped handles are backend-assigned. `hc-5` resolves against the task binding of the current turn; the same label in a different task names a different stored object. Permanent selectors (`gN`, `tN`, `gN/tN`) follow the goal-local task rules above. A stale, unknown, inaccessible, or foreign-task reference fails with a corrective error directing the agent to search again.
+Handles are backend-assigned. `rN` is scoped to the current run. `eN` and `hc-N` are permanent within their task and resolve against the task binding of the current turn; the same label in a different task names a different stored object. Permanent selectors (`gN`, `tN`, `gN/tN`) follow the goal-local task rules above. A stale, unknown, inaccessible, or foreign-task reference fails with a corrective error directing the agent to search again.
 
 Inspection output:
 
@@ -831,7 +831,7 @@ Append bounded results to the model context
 Repeat
 ```
 
-The loop supports multiple tool calls in one model response when the provider supports them and the calls are independent. Mutating calls are serialized unless the harness can prove they do not conflict.
+The loop supports multiple tool calls in one model response when the provider supports them and the calls are independent. `read`, `glob`, `grep`, `context_retrieve`, and `capability_search` may run in parallel. `edit`, `apply_patch`, `terminal`, `terminal_control`, `capability_control`, and every MCP tool run one at a time in emitted order, because a shell command or external tool cannot be proven free of side effects. Results are always returned to the model in the order the calls were emitted.
 
 There is no separate planner agent, answer-writing agent, state-writing agent, or tool-selection agent in the initial architecture. The same Main Coding Agent returns its visible answer and a short hidden continuation note in one final result.
 
@@ -846,7 +846,7 @@ There is no separate planner agent, answer-writing agent, state-writing agent, o
 7. Start the model/tool loop with the ten permanent tools.
 8. Let the agent activate a candidate, search for another capability, or use neither.
 9. Continue until the model returns a final response or asks the user a question.
-10. Require the final result to contain a visible answer, a short task-local continuation note, an optional goal-note update, an optional task-completion proposal, and optional anchor proposals.
+10. Require the final message to be one valid `FinalAnswer` (see "Final result"): the visible answer, a short task-local continuation note, an optional goal-note update, an optional task-completion proposal, and optional anchor proposals.
 11. Persist those fields and all exact tool evidence.
 12. Throughout the loop, attach history per the three-tier policy and, whenever the `160,000`-token trigger is crossed before a model request, compact per the "Context and compaction" section: one history-checkpoint LLM call when completed history lies outside the verbatim window, then mechanical in-turn linearization if still needed. The turn continues naturally. Compaction is strictly task-local; when the trigger would fire for the sixth time in the same chat, the harness performs the automatic rollover described in `Goal-router.md` instead.
 
@@ -929,7 +929,8 @@ evidence from other tasks in this goal, retrieved for the current request.
 </RETRIEVED_HISTORY>
 
 <PROJECT_CONTEXT>
-Relevant sections from goal anchors and dynamically retrieved project sources.
+Relevant sections from goal anchors and dynamically retrieved project sources
+(arrives with the embeddings segment; omitted until then).
 </PROJECT_CONTEXT>
 
 <CAPABILITY_CANDIDATES>
@@ -950,7 +951,7 @@ Rules:
 - Chat history follows the three-tier attachment policy in "Context and compaction." It contains at most one active checkpoint—or, in a continuation chat, the handover capsule in the same position—followed by `[TURN k]`-labelled completed turns. Within a turn's tool loop, nothing before the in-flight turn changes, so every step after the first is a cache hit up to the newest tool result.
 - Turn-volatile blocks hold everything that is rewritten between user turns: the goal note and open-task index, the task's continuation note, and per-turn retrieval. Each optional block is omitted entirely when empty.
 - `<RECENT_ACTIVITY>` appears only when the turn is bound to the `general` task. It lets Socrates answer an opening "Hi, how's it going?" with a short recap of recent work and an offer to continue it.
-- The provider adapter decides whether completed turns are sent as native messages or harness-formatted text; the block order above is binding either way.
+- Completed turns are sent as harness-formatted text, so the frozen N−1 rendering stays byte-stable for caching and no provider-specific reasoning content has to be replayed across turns. Only the in-flight turn uses native tool-call and tool-result messages. The block order above is binding either way.
 
 ## Compound tasks
 
@@ -1311,33 +1312,27 @@ Obligations receive special protection: unanswered user requests survive compact
 
 ## Final result
 
-The Main Coding Agent's final result is:
+The Main Coding Agent ends every run with one final message that has no tool calls. That message must always be a single JSON object matching one schema:
 
-```text
-VISIBLE ANSWER
-The response shown to the user.
-
-CONTINUATION NOTE
-A short statement of the task's verified progress, unresolved work, and important constraints.
-
-GOAL NOTE (optional)
-A replacement goal-level note. Absent when the goal's durable state did not change.
-
-TASK COMPLETION (optional)
-complete: The task's objective is met and verified.
-reason: One short sentence. Absent when the task continues.
-
-ANCHOR PROPOSALS (optional)
-- path: learning/30-day-plan.md
-  role: goal_plan
-  reason: Defines the lesson sequence and expected progress for this goal.
+```ts
+const FinalAnswer = z.object({
+  full_answer: z.string(),                    // the response shown to the user
+  continuation_note: z.string(),              // ~100 tokens, task-local
+  goal_note: z.string().nullable(),           // ~150 tokens; null when the goal's durable state did not change
+  task_complete: z.object({ reason: z.string() }).nullable(), // null while the task continues
+  anchors: z.array(z.object({ path: z.string(), role: z.string(), reason: z.string() })),
+})
 ```
 
-The continuation note is not a second visible answer and is not produced by another agent. It is task-local and bounded (about 100 tokens).
+`full_answer` comes first so that, once responses stream, the user starts reading immediately while the short hidden fields are written after it. A question to the user is an ordinary final answer: `full_answer` holds the question.
+
+The harness validates the object with Zod and its token bounds. An invalid or missing object gets one repair request that states the validation errors; if that also fails, the harness keeps the model's visible text as the answer, writes a mechanical continuation note, records an operational warning, and persists nothing else from that output. No other final-response shape is accepted.
+
+The continuation note is not a second visible answer and is not produced by another agent. It is task-local and bounded (about 100 tokens): the task's verified progress, unresolved work, and important constraints.
 
 The goal note is the only goal-level state the agent writes. It records the goal's durable state across tasks: overall progress, durable user constraints and preferences, and what the goal is heading toward. The agent supplies it only when that durable state changed during this turn. It is bounded (about 150 tokens), validated by the harness, and stored as a new append-only revision of the goal record; it appears in `<GOAL_STATE>` and in the router's `KNOWN_GOALS`. The Goal Router never writes it.
 
-The task-completion proposal is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals follow the anchor lifecycle in `Goal-router.md`.
+The task-completion proposal (`task_complete`, with one short reason) is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals (`anchors`, for example `{ "path": "learning/30-day-plan.md", "role": "goal_plan", "reason": "Defines the lesson sequence for this goal." }`) follow the anchor lifecycle in `Goal-router.md`.
 
 ## Provider independence
 
@@ -1379,13 +1374,16 @@ Further rules:
 
 ## Safety and long-running work
 
-- Filesystem tools resolve paths against the selected workspace and enforce the chosen access policy.
+- Filesystem tools resolve paths against the selected workspace and enforce the chosen access policy. Symbolic links are resolved before the check, so a link cannot escape the workspace.
 - Terminal commands use the same workspace and approval policy.
+- Approval is one injected `approve` callback owned by the application. It is consulted for the first-mutation gate (`Goal-router.md`, "Workspace resolution"), `SIGKILL`, and `timeout_ms: 0`. A denial is a corrective tool error, never a crash.
+- A turn without a workspace (general conversation, or a new goal before a workspace is chosen) can still answer and use `context_retrieve` and capability tools; filesystem and terminal tools fail with `no_workspace`, and the agent asks the user where the work belongs.
 - Every mutating tool records its effect before the next model step.
 - Terminal sessions persist independently of one HTTP request and can be rediscovered, read, awaited, or stopped in later turns.
 - Cancellation propagates to model requests and tool execution.
-- Step, time, and token limits are configurable safeguards, not a tiny fixed loop count.
-- If a limit is reached, the harness saves the exact state and reports what remains instead of pretending the task completed.
+- Step, time, and token limits are configurable safeguards for one turn, not a tiny fixed loop count. Defaults: `200` model steps, `60` minutes of wall time, and `5,000,000` tokens across the turn's model calls.
+- If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion.
+- Cancellation makes no further model call. The turn is recorded as interrupted with a mechanical continuation note such as "interrupted after 14 tool calls".
 
 ## Initial exclusions
 
@@ -1402,3 +1400,14 @@ The first harness deliberately excludes:
 - separate worker, planner, router-finalizer, or state-writer agents.
 
 These can be introduced only after evaluations demonstrate a concrete need. Browser, web, GitHub, databases, and similar integrations should normally arrive through conditional capabilities rather than expanding the permanent surface.
+
+## Implementation staging
+
+The working agent is built in this order; each stage is one reviewed change:
+
+1. **Tools** — the ten permanent tools, the shared tool runner and corrective-error contract, workspace access policy, the terminal supervisor, and persisted tool evidence with permanent `eN` handles.
+2. **Agent** — the loop, `FinalAnswer`, context assembly in the canonical layout with three-tier history and N−1 fitting, the per-turn lifecycle including compound parts, and provider prompt-cache breakpoints.
+3. **Compaction** — history checkpoints, in-turn linearization, the failsafe, compaction counting, rollover with the handover capsule, and `<RETRIEVED_HISTORY>`.
+4. **Capabilities** — real Skill sources, MCP activation, the frozen Skill shelf, and automatic candidates.
+
+**Embeddings** follow as their own segment after these four: one embedding index (planned on LanceDB) and one hybrid scoring path shared by router goal candidates, `context_retrieve` search, `<RETRIEVED_HISTORY>`, and `<PROJECT_CONTEXT>`. Until then every "hybrid" search in this document and in `Goal-router.md` is BM25 (SQLite FTS5) plus recency, and goal anchors reach the agent as the manifest in `<GOAL>`, read on demand with the filesystem tools.

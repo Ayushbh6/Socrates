@@ -282,7 +282,7 @@ This section is assembled separately. It contains:
 2. up to three older goal candidates found by hybrid retrieval over every saved goal title, goal note, task continuation note, and lightweight anchor manifest. Each older candidate carries a small task index too: its most recently updated task, labelled `latest`, and up to two other open tasks. When fewer than three goals match the message, the remaining slots are filled with the goals most recently active in the last seven days, so vague temporal references ("the project from yesterday") still see them; and
 3. the general goal, labelled `general`, unless it is already the current goal.
 
-Hybrid retrieval initially combines:
+Hybrid retrieval combines the following; until the embeddings segment lands (`agent-harness.md`, "Implementation staging") it uses every signal except semantic similarity:
 
 - semantic/vector similarity;
 - BM25 or equivalent keyword matching; and
@@ -601,7 +601,7 @@ Okay, let's start today's lesson.
 
 Goal context is split by how often it changes. `<GOAL>` holds the goal's title, objective, workspace, and anchor manifest, which change rarely and therefore sit before the chat history. `<GOAL_STATE>` holds the goal note and a small index of open tasks, which change from turn to turn and therefore sit after it. Goal context is deliberately concise: the overarching objective, durable user constraints and preferences, anchor manifests, and the open-task index. It does not include other tasks' transcripts.
 
-The goal note is written only through the Main Coding Agent's optional `GOAL NOTE` field, validated by the harness (see "Final result" in `agent-harness.md`). The Goal Router never writes it.
+The goal note is written only through the optional `goal_note` field of the Main Coding Agent's `FinalAnswer`, validated by the harness (see "Final result" in `agent-harness.md`). The Goal Router never writes it.
 
 ### `CURRENT_TASK`
 
@@ -786,17 +786,16 @@ This section combines two source classes without confusing them:
 
 An anchor does not mean that the entire file is injected on every turn. The context builder always sees a small anchor manifest containing the path, role, status, and summary, then loads only the relevant sections. For Day 10, it may load the plan outline and Day 10 section rather than all of `30-day-plan.md`.
 
-Dynamic sources are discovered through scoped file, keyword, semantic, and evidence retrieval. They are included only when relevant to the current request.
+Dynamic sources are discovered through scoped file, keyword, semantic, and evidence retrieval. They are included only when relevant to the current request. Until the embeddings segment lands, this section is omitted: the anchor manifest appears in `<GOAL>` and the agent reads anchors with its filesystem tools.
 
 ## Anchor lifecycle
 
-The Goal Router does not promote files to anchors. The Main Coding Agent may return optional `ANCHOR PROPOSALS` as part of its normal final result, whose complete format is defined once in `agent-harness.md` ("Final result"):
+The Goal Router does not promote files to anchors. The Main Coding Agent may propose anchors in the `anchors` field of its `FinalAnswer`, whose complete schema is defined once in `agent-harness.md` ("Final result"):
 
-```text
-ANCHOR PROPOSALS
-- path: learning/30-day-plan.md
-  role: goal_plan
-  reason: Defines the lesson sequence and expected progress for this goal.
+```json
+"anchors": [
+  { "path": "learning/30-day-plan.md", "role": "goal_plan", "reason": "Defines the lesson sequence and expected progress for this goal." }
+]
 ```
 
 The backend validates that the file exists, belongs to the goal, is not temporary or generated output, has a durable future-facing role, does not violate the anchor budget, and does not silently conflict with an existing anchor.
@@ -861,17 +860,17 @@ The backend automatically records files, commands, tests, tool results, MCP call
 
 The continuation note is updated by the Main Coding Agent as part of the same final response. It is **task-local**: it describes the current task's progress, not the whole goal:
 
-```text
-VISIBLE ANSWER
-I added source references to compacted memory records and the focused tests pass.
-
-CONTINUATION NOTE
-Compaction provenance fix implemented. Recovery now validates source references.
-Focused memory and compaction tests pass. Next concern is whether any compaction
-path can still omit source material.
+```json
+{
+  "full_answer": "I added source references to compacted memory records and the focused tests pass.",
+  "continuation_note": "Compaction provenance fix implemented. Recovery now validates source references. Focused memory and compaction tests pass. Next concern is whether any compaction path can still omit source material.",
+  "goal_note": null,
+  "task_complete": null,
+  "anchors": []
+}
 ```
 
-The user sees only the visible answer. The backend stores both fields.
+The user sees only `full_answer`. The backend stores every field.
 
 The continuation note does not manage prompt size. History size is managed only by the compaction design in `agent-harness.md` ("Context and compaction"): the three-tier attachment policy shapes each turn, the `160,000`-token trigger fires the history checkpoint and in-turn linearization, and the sixth trigger in a chat performs the rollover above. That section is the single source of truth for compaction; this document does not define a second trimming mechanism.
 
