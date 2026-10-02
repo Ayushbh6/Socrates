@@ -315,12 +315,94 @@ describe("goal objectives and task completion criteria", () => {
     raw.close();
 
     const store = LedgerStore.open({ path });
-    expect(store.getMeta("schema_version")).toBe("2");
+    expect(store.getMeta("schema_version")).toBe("3");
     expect(store.requireGoal("goal_old")).toMatchObject({ title: "Old goal", objective: null });
     const task = store.createTask("goal_old", { title: "New task", completionCriteria: "It works." });
     expect(task.completionCriteria).toBe("It works.");
     store.close();
-    expect(LedgerStore.open({ path }).getMeta("schema_version")).toBe("2");
+    expect(LedgerStore.open({ path }).getMeta("schema_version")).toBe("3");
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("tool evidence", () => {
+  function boundTask(store: LedgerStore) {
+    const goal = store.createGoal({ title: "Website" });
+    const task = store.createTask(goal.id, { title: "Fix hero" });
+    const user = store.recordUserMessage("Fix the hero.");
+    const turn = store.bindTurn({ userEventId: user.id, taskId: task.id, route: "create_new" });
+    return { goal, task, turn, refs: { goal_id: goal.id, task_id: task.id, chat_id: turn.chatId, turn_id: turn.id } };
+  }
+
+  function completed(handle: string, overrides: Partial<Parameters<LedgerStore["recordToolResult"]>[1]> = {}) {
+    return { call_id: `call_${handle}`, handle, tool: "edit", status: "ok" as const, content: "{}", result: { changed: true }, error: null, diagnostics: null, observed: [], facts: [], wall_time_ms: 5, ...overrides };
+  }
+
+  it("numbers calls per task permanently and refuses a second result for one call", () => {
+    const { store } = openStore();
+    const a = boundTask(store);
+    const first = store.recordToolCall(a.refs, { callId: "call_e1", tool: "read", input: { path: "a.ts" } });
+    const second = store.recordToolCall(a.refs, { callId: "call_e2", tool: "edit", input: { path: "a.ts" } });
+    expect([first.handle, second.handle]).toEqual(["e1", "e2"]);
+    const otherGoal = store.createGoal({ title: "German" });
+    const other = store.createTask(otherGoal.id, { title: "Day 1" });
+    expect(store.recordToolCall({ goal_id: otherGoal.id, task_id: other.id }, { callId: "x", tool: "read", input: {} }).handle).toBe("e1");
+    store.recordToolResult(a.refs, completed("e2", { observed: [{ path: "a.ts", hash: "h1" }], facts: [{ kind: "file_changed", value: "a.ts" }] }));
+    expect(() => store.recordToolResult(a.refs, completed("e2"))).toThrow(/already recorded/);
+    expect(store.getEvidence(a.task.id, 2)).toMatchObject({ handle: "e2", tool: "edit", status: "ok", input: { path: "a.ts" } });
+    expect(store.getEvidence(a.task.id, 1)).toMatchObject({ status: null, result: null });
+    expect(store.observedHash(a.task.id, "a.ts")).toEqual({ hash: "h1" });
+    expect(store.evidenceForTurn(a.turn.id).map((e) => e.handle)).toEqual(["e1", "e2"]);
+  });
+
+  it("rebuilds evidence, observations, facts, capabilities, and the Q&A index from events alone", () => {
+    const { store } = openStore();
+    const a = boundTask(store);
+    store.recordToolCall(a.refs, { callId: "c1", tool: "edit", input: { path: "a.ts" } });
+    store.recordToolResult(a.refs, completed("e1", { observed: [{ path: "a.ts", hash: "h2" }], facts: [{ kind: "file_changed", value: "a.ts" }] }));
+    store.activateCapability(a.goal.id, { kind: "skill", name: "pdf", version: "v1", digest: "d" }, a.refs);
+    store.activateCapability(a.goal.id, { kind: "mcp", name: "github.get_issue", version: "v2", digest: "d2" }, a.refs);
+    store.deactivateCapability(a.goal.id, "pdf", a.refs);
+    const reply = store.recordResponse("Hero overflow fixed at 375px.", a.refs);
+    store.completeTurn(a.turn.id, { responseEventId: reply.id, continuationNote: "Fixed." });
+
+    const recovered = LedgerStore.open({ path: ":memory:" });
+    recovered.restoreEvents(store.listEvents());
+    expect(recovered.getEvidence(a.task.id, 1)).toMatchObject({ handle: "e1", status: "ok" });
+    expect(recovered.observedHash(a.task.id, "a.ts")).toEqual({ hash: "h2" });
+    expect(recovered.taskFacts(a.task.id).map((f) => f.value)).toEqual(["a.ts"]);
+    expect(recovered.listActiveCapabilities(a.goal.id).map((c) => c.name)).toEqual(["github.get_issue"]);
+    expect(recovered.searchExchanges({ fts: toFtsQuery("hero overflow"), limit: 5 }).map((h) => h.projectTurn)).toEqual([1]);
+  });
+
+  it("backfills the Q&A index when a version 2 store is opened", () => {
+    const dir = mkdtempSync(join(tmpdir(), "socrates-migrate-"));
+    const path = join(dir, "v2.db");
+    const original = LedgerStore.open({ path });
+    const a = boundTask(original);
+    const reply = original.recordResponse("Hero overflow fixed.", a.refs);
+    original.completeTurn(a.turn.id, { responseEventId: reply.id });
+    original.db.exec("DELETE FROM exchange_fts");
+    original.setMeta("schema_version", "2");
+    original.close();
+    const upgraded = LedgerStore.open({ path });
+    expect(upgraded.getMeta("schema_version")).toBe("3");
+    expect(upgraded.searchExchanges({ fts: toFtsQuery("overflow"), limit: 5 })).toHaveLength(1);
+    upgraded.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("arms the first-mutation gate only for low-confidence bindings until a mutation is approved", () => {
+    const { store } = openStore();
+    const goal = store.createGoal({ title: "Website" });
+    const task = store.createTask(goal.id, { title: "Fix hero" });
+    expect(store.firstMutationGatePending(task.id)).toBe(false);
+    const user = store.recordUserMessage("Fix it.");
+    store.bindTurn({ userEventId: user.id, taskId: task.id, route: "resume_existing", workspaceConfidence: "low", gateArmed: true });
+    expect(store.firstMutationGatePending(task.id)).toBe(true);
+    store.recordApproval({ goal_id: goal.id, task_id: task.id }, { kind: "first_mutation", granted: false, detail: "edit a.ts" });
+    expect(store.firstMutationGatePending(task.id)).toBe(true);
+    store.recordApproval({ goal_id: goal.id, task_id: task.id }, { kind: "first_mutation", granted: true, detail: "edit a.ts" });
+    expect(store.firstMutationGatePending(task.id)).toBe(false);
   });
 });

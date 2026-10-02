@@ -106,6 +106,52 @@ export interface FtsHit {
   bm25: number;
 }
 
+/** Event references of work bound to a task. */
+export interface TaskRefs extends EventRefs {
+  goal_id: string;
+  task_id: string;
+}
+
+/** One persisted tool call and its result, addressed by its permanent task-local handle. */
+export interface Evidence {
+  taskId: string;
+  number: number;
+  handle: string;
+  callId: string;
+  tool: string;
+  turnId: string | null;
+  input: unknown;
+  status: "ok" | "error" | null;
+  result: EventPayloads["tool_completed"] | null;
+  createdAt: string;
+}
+
+/** One completed Q&A pair as `context_retrieve search` returns it. */
+export interface ExchangeHit {
+  turnId: string;
+  projectTurn: number;
+  taskId: string;
+  goalId: string;
+  at: string;
+  userMessage: string;
+  response: string;
+}
+
+export interface ActiveCapability {
+  goalId: string;
+  kind: "skill" | "mcp";
+  name: string;
+  version: string;
+  digest: string;
+  activatedAt: string;
+}
+
+export interface TaskFact {
+  kind: "file_changed" | "command" | "test" | "capability";
+  value: string;
+  createdAt: string;
+}
+
 export interface TaskWithGoal {
   task: Task;
   goal: Goal;
@@ -229,15 +275,17 @@ export class LedgerStore {
     if (version === null) store.setMeta("schema_version", String(SCHEMA_VERSION));
     else {
       let current = Number(version);
+      const from = current;
       if (current > SCHEMA_VERSION) throw new StoreError(`Unsupported store schema version ${version}; expected ${SCHEMA_VERSION}.`);
       store.transaction(() => {
         while (current < SCHEMA_VERSION) {
           const migration = MIGRATIONS[current];
-          if (!migration) throw new StoreError(`No migration from store schema version ${current}.`);
+          if (migration === undefined) throw new StoreError(`No migration from store schema version ${current}.`);
           db.exec(migration);
           current++;
           store.setMeta("schema_version", String(current));
         }
+        if (from < 3) store.rebuildExchangeIndex();
       });
     }
     return store;
@@ -392,6 +440,7 @@ export class LedgerStore {
       }
       for (const g of this.listGoals()) this.indexGoal(g.id);
       for (const t of this.allTasks()) this.indexTask(t.task.id);
+      this.rebuildExchangeIndex();
     });
   }
 
@@ -452,7 +501,22 @@ export class LedgerStore {
         const p = e.payload as EventPayloads["anchor_revised"];
         this.run("INSERT INTO anchors (id, goal_id, path, role, status, summary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, summary = excluded.summary, updated_at = excluded.updated_at", p.anchor_id, e.goal_id, p.path, p.role, p.status, p.summary, e.at, e.at); break;
       }
-      case "user_message": case "assistant_response": case "clarification_asked": case "routing_completed": break;
+      case "tool_called": {
+        const p = e.payload as EventPayloads["tool_called"];
+        this.insertEvidence(e as StoredEvent<"tool_called">, handleNumber(p.handle)); break;
+      }
+      case "tool_completed":
+        this.projectToolResult(e as StoredEvent<"tool_completed">); break;
+      case "capability_activated": {
+        const p = e.payload as EventPayloads["capability_activated"];
+        this.run("INSERT INTO active_capabilities (goal_id, kind, name, version, digest, activated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(goal_id, name) DO UPDATE SET kind = excluded.kind, version = excluded.version, digest = excluded.digest, activated_at = excluded.activated_at", e.goal_id, p.kind, p.name, p.version, p.digest, e.at); break;
+      }
+      case "capability_deactivated": {
+        const p = e.payload as EventPayloads["capability_deactivated"];
+        this.run("DELETE FROM active_capabilities WHERE goal_id = ? AND name = ?", e.goal_id, p.name); break;
+      }
+      case "user_message": case "assistant_response": case "clarification_asked": case "routing_completed":
+      case "file_changed": case "terminal_started": case "terminal_exited": case "approval_decided": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -921,6 +985,7 @@ export class LedgerStore {
         { goal_id: turn.goalId, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id },
       );
       this.run("UPDATE turns SET response_event_id = ?, status = 'completed', completed_at = ? WHERE id = ?", input.responseEventId, completed.at, turnId);
+      this.indexExchange(turnId);
       return this.requireTurn(turnId);
     });
   }
@@ -1016,6 +1081,262 @@ export class LedgerStore {
     }));
   }
 
+  // ── Tool evidence ────────────────────────────────────────────────────────
+
+  /**
+   * Persist one tool call as the model emitted it and assign its permanent
+   * task-local evidence handle (`e1`, `e2`, ...).
+   */
+  recordToolCall(refs: TaskRefs, input: { callId: string; tool: string; input: unknown }): Evidence {
+    return this.transaction(() => {
+      const row = this.get("SELECT COALESCE(MAX(number), 0) + 1 AS next FROM evidence WHERE task_id = ?", refs.task_id);
+      const number = num(row?.next);
+      const event = this.appendEvent("tool_called", { call_id: input.callId, tool: input.tool, input: input.input, handle: `e${number}` }, refs);
+      this.insertEvidence(event, number);
+      return this.requireEvidence(refs.task_id, number);
+    });
+  }
+
+  /** Persist the complete result of a recorded call, its observed file hashes, and its derived task facts. */
+  recordToolResult(refs: TaskRefs, payload: EventPayloads["tool_completed"]): Evidence {
+    return this.transaction(() => {
+      const event = this.appendEvent("tool_completed", payload, refs);
+      this.projectToolResult(event);
+      return this.requireEvidence(refs.task_id, handleNumber(payload.handle));
+    });
+  }
+
+  recordFileChange(refs: EventRefs, payload: EventPayloads["file_changed"]): void {
+    this.appendEvent("file_changed", payload, refs);
+  }
+
+  recordTerminalStarted(refs: EventRefs, payload: EventPayloads["terminal_started"]): void {
+    this.appendEvent("terminal_started", payload, refs);
+  }
+
+  recordTerminalExited(refs: EventRefs, payload: EventPayloads["terminal_exited"]): void {
+    this.appendEvent("terminal_exited", payload, refs);
+  }
+
+  recordApproval(refs: EventRefs, payload: EventPayloads["approval_decided"]): void {
+    this.appendEvent("approval_decided", payload, refs);
+  }
+
+  /**
+   * Whether the first-mutation gate (Goal-router.md, "Workspace resolution")
+   * still applies to this task: some turn of the task was bound with low
+   * workspace confidence, and the user has not yet confirmed a mutation.
+   */
+  firstMutationGatePending(taskId: string): boolean {
+    if (!this.get("SELECT 1 AS x FROM turns WHERE task_id = ? AND gate_armed = 1 LIMIT 1", taskId)) return false;
+    return !this.all("SELECT payload FROM events WHERE task_id = ? AND type = 'approval_decided'", taskId).some((r) => {
+      const p = JSON.parse(str(r.payload)) as EventPayloads["approval_decided"];
+      return p.kind === "first_mutation" && p.granted;
+    });
+  }
+
+  private insertEvidence(event: StoredEvent<"tool_called">, number: number): void {
+    if (!event.task_id) throw new StoreError("Tool calls must be bound to a task.");
+    this.run(
+      "INSERT INTO evidence (task_id, number, call_id, tool, turn_id, call_event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      event.task_id,
+      number,
+      event.payload.call_id,
+      event.payload.tool,
+      event.turn_id,
+      event.id,
+      event.at,
+    );
+  }
+
+  private projectToolResult(event: StoredEvent<"tool_completed">): void {
+    const p = event.payload;
+    const taskId = event.task_id;
+    if (!taskId) throw new StoreError("Tool results must be bound to a task.");
+    const number = handleNumber(p.handle);
+    const existing = this.get("SELECT result_event_id FROM evidence WHERE task_id = ? AND number = ?", taskId, number);
+    if (!existing) throw new StoreError(`Tool result ${p.handle} has no recorded call.`);
+    if (existing.result_event_id !== null) throw new StoreError(`Tool result ${p.handle} is already recorded.`);
+    this.run("UPDATE evidence SET result_event_id = ?, status = ? WHERE task_id = ? AND number = ?", event.id, p.status, taskId, number);
+    for (const o of p.observed) {
+      this.run(
+        "INSERT INTO file_observations (task_id, path, hash, event_id, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(task_id, path) DO UPDATE SET hash = excluded.hash, event_id = excluded.event_id, updated_at = excluded.updated_at",
+        taskId,
+        o.path,
+        o.hash,
+        event.id,
+        event.at,
+      );
+    }
+    for (const f of p.facts) {
+      this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", newId("fact"), taskId, f.kind, f.value, event.id, event.at);
+    }
+  }
+
+  private requireEvidence(taskId: string, number: number): Evidence {
+    const evidence = this.getEvidence(taskId, number);
+    if (!evidence) throw new StoreError(`Evidence e${number} does not exist for this task.`);
+    return evidence;
+  }
+
+  /** One tool call of a task by its permanent handle number, with its result when recorded. */
+  getEvidence(taskId: string, number: number): Evidence | null {
+    const r = this.get("SELECT * FROM evidence WHERE task_id = ? AND number = ?", taskId, number);
+    return r ? this.toEvidence(r) : null;
+  }
+
+  /** Every tool call of one turn, in call order. */
+  evidenceForTurn(turnId: string): Evidence[] {
+    return this.all("SELECT * FROM evidence WHERE turn_id = ? ORDER BY number", turnId).map((r) => this.toEvidence(r));
+  }
+
+  /** The number of tool calls recorded for a task, which is also its newest handle number. */
+  evidenceCount(taskId: string): number {
+    return num(this.get("SELECT COUNT(*) AS n FROM evidence WHERE task_id = ?", taskId)?.n);
+  }
+
+  private toEvidence(r: Row): Evidence {
+    const call = this.getEvent(str(r.call_event_id)) as StoredEvent<"tool_called">;
+    const result = r.result_event_id === null ? null : (this.getEvent(str(r.result_event_id)) as StoredEvent<"tool_completed">);
+    return {
+      taskId: str(r.task_id),
+      number: num(r.number),
+      handle: `e${num(r.number)}`,
+      callId: str(r.call_id),
+      tool: str(r.tool),
+      turnId: strOrNull(r.turn_id),
+      input: call.payload.input,
+      status: strOrNull(r.status) as Evidence["status"],
+      result: result?.payload ?? null,
+      createdAt: str(r.created_at),
+    };
+  }
+
+  /** The content hash this task last observed for a workspace-relative path, if any. */
+  observedHash(taskId: string, path: string): { hash: string | null } | null {
+    const r = this.get("SELECT hash FROM file_observations WHERE task_id = ? AND path = ?", taskId, path);
+    return r ? { hash: strOrNull(r.hash) } : null;
+  }
+
+  /** Mechanically derived facts of a task, newest first. */
+  taskFacts(taskId: string, limit = 200): TaskFact[] {
+    return this.all("SELECT kind, value, created_at FROM task_facts WHERE task_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?", taskId, limit).map((r) => ({
+      kind: str(r.kind) as TaskFact["kind"],
+      value: str(r.value),
+      createdAt: str(r.created_at),
+    }));
+  }
+
+  // ── Capabilities ─────────────────────────────────────────────────────────
+
+  activateCapability(goalId: string, input: { kind: "skill" | "mcp"; name: string; version: string; digest: string }, refs: EventRefs = {}): ActiveCapability {
+    return this.transaction(() => {
+      const event = this.appendEvent("capability_activated", input, { ...refs, goal_id: goalId });
+      this.projectEvent(event);
+      return this.listActiveCapabilities(goalId).find((c) => c.name === input.name)!;
+    });
+  }
+
+  deactivateCapability(goalId: string, name: string, refs: EventRefs = {}): boolean {
+    return this.transaction(() => {
+      const active = this.listActiveCapabilities(goalId).find((c) => c.name === name);
+      if (!active) return false;
+      const event = this.appendEvent("capability_deactivated", { kind: active.kind, name }, { ...refs, goal_id: goalId });
+      this.projectEvent(event);
+      return true;
+    });
+  }
+
+  listActiveCapabilities(goalId: string): ActiveCapability[] {
+    return this.all("SELECT * FROM active_capabilities WHERE goal_id = ? ORDER BY name", goalId).map((r) => ({
+      goalId: str(r.goal_id),
+      kind: str(r.kind) as ActiveCapability["kind"],
+      name: str(r.name),
+      version: str(r.version),
+      digest: str(r.digest),
+      activatedAt: str(r.activated_at),
+    }));
+  }
+
+  // ── Exchange index ───────────────────────────────────────────────────────
+
+  private indexExchange(turnId: string): void {
+    const turn = this.requireTurn(turnId);
+    if (turn.kind !== "task" || !turn.responseEventId) return;
+    const response = this.getEvent(turn.responseEventId)?.payload as EventPayloads["assistant_response"] | undefined;
+    this.run("DELETE FROM exchange_fts WHERE turn_id = ?", turnId);
+    this.run(
+      "INSERT INTO exchange_fts (turn_id, task_id, goal_id, user_text, response_text) VALUES (?, ?, ?, ?, ?)",
+      turnId,
+      turn.taskId,
+      turn.goalId,
+      this.requestForTurn(turnId).request,
+      response?.text ?? "",
+    );
+  }
+
+  /** Rebuild the derived Q&A index from completed turns. */
+  rebuildExchangeIndex(): void {
+    this.run("DELETE FROM exchange_fts");
+    for (const r of this.all("SELECT id FROM turns WHERE kind = 'task' AND status = 'completed' ORDER BY project_turn")) this.indexExchange(str(r.id));
+  }
+
+  /**
+   * Completed Q&A pairs, filtered by task or goal and by date. With an FTS
+   * expression results are ranked by BM25 and then recency; with `exact` they
+   * are literal case-insensitive substring matches; with neither they are
+   * the newest pairs in range.
+   */
+  searchExchanges(input: {
+    fts?: string;
+    exact?: string;
+    taskIds?: string[];
+    goalIds?: string[];
+    fromIso?: string;
+    toIso?: string;
+    limit: number;
+  }): ExchangeHit[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (input.fts) (where.push("exchange_fts MATCH ?"), params.push(input.fts));
+    if (input.exact) {
+      where.push("(instr(lower(x.user_text), ?) > 0 OR instr(lower(x.response_text), ?) > 0)");
+      params.push(input.exact.toLowerCase(), input.exact.toLowerCase());
+    }
+    if (input.taskIds) (where.push(`x.task_id IN (${input.taskIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.taskIds));
+    if (input.goalIds) (where.push(`x.goal_id IN (${input.goalIds.map(() => "?").join(", ") || "NULL"})`), params.push(...input.goalIds));
+    if (input.fromIso) (where.push("t.completed_at >= ?"), params.push(input.fromIso));
+    if (input.toIso) (where.push("t.completed_at <= ?"), params.push(input.toIso));
+    const order = input.fts ? "bm25(exchange_fts, 0.0, 0.0, 0.0, 1.0, 1.0), t.completed_at DESC" : "t.completed_at DESC";
+    const rows = this.all(
+      `SELECT x.turn_id, x.task_id, x.goal_id, x.user_text, x.response_text, t.project_turn, t.completed_at
+         FROM exchange_fts x JOIN turns t ON t.id = x.turn_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+        ORDER BY ${order}, t.project_turn DESC LIMIT ?`,
+      ...params,
+      input.limit,
+    );
+    return rows.map((r) => ({
+      turnId: str(r.turn_id),
+      projectTurn: num(r.project_turn),
+      taskId: str(r.task_id),
+      goalId: str(r.goal_id),
+      at: str(r.completed_at),
+      userMessage: str(r.user_text),
+      response: str(r.response_text),
+    }));
+  }
+
+  /** The newest permanent project turn number, or 0 when there are none. */
+  latestProjectTurn(): number {
+    return num(this.get("SELECT COALESCE(MAX(project_turn), 0) AS n FROM turns")?.n);
+  }
+
+  /** Turns bound to one task, oldest first. */
+  turnsForTask(taskId: string): Turn[] {
+    return this.all("SELECT * FROM turns WHERE task_id = ? ORDER BY project_turn", taskId).map(toTurn);
+  }
+
   // ── Ledger index and queries ─────────────────────────────────────────────
 
   private indexGoal(goalId: string): void {
@@ -1083,4 +1404,11 @@ export class LedgerStore {
   hasAnyActivity(): boolean {
     return this.get("SELECT 1 AS x FROM turns LIMIT 1") !== undefined;
   }
+}
+
+/** The number of a permanent evidence handle such as "e12". */
+export function handleNumber(handle: string): number {
+  const m = /^e(\d+)$/.exec(handle);
+  if (!m) throw new StoreError(`Invalid evidence handle: ${handle}`);
+  return Number(m[1]);
 }

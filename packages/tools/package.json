@@ -1,0 +1,17 @@
+{
+  "name": "@socrates/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@socrates/contracts": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "@socrates/store": "workspace:*",
+    "@vscode/ripgrep": "^1.18.0",
+    "diff": "^8",
+    "zod": "^4.1.0"
+  }
+}

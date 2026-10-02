@@ -1,0 +1,212 @@
+import type { EventPayloads, ToolCall, ToolDefinition, ToolErrorBody } from "@socrates/contracts";
+import { countTokens } from "@socrates/shared";
+import type { LedgerStore, TaskRefs } from "@socrates/store";
+import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
+import { type CapabilityCatalog, StaticCatalog } from "./catalog";
+import type { ApprovalRequest, Approve, HandlerContext, RunState, ToolBinding } from "./context";
+import { toDefinition } from "./definitions";
+import { INTERNAL_ERROR, ToolError, renderError } from "./errors";
+import type { ToolHandler, ToolOutput } from "./handler";
+import { TerminalSupervisor, type SupervisorOptions } from "./terminals";
+import { applyPatchTool } from "./tools/apply-patch";
+import { LoadedTools, capabilityControlTool, capabilitySearchTool } from "./tools/capabilities";
+import { contextRetrieveTool } from "./tools/context-retrieve";
+import { editTool } from "./tools/edit";
+import { readTool } from "./tools/read";
+import { globTool, grepTool } from "./tools/search";
+import { terminalControlTool, terminalTool } from "./tools/terminal";
+import type { WorkspaceRoot } from "./workspace";
+
+export interface ToolRunnerOptions {
+  store: LedgerStore;
+  approve: Approve;
+  /** IANA time zone for dates shown by context_retrieve. */
+  timeZone: string;
+  catalog?: CapabilityCatalog;
+  terminals?: SupervisorOptions;
+  /** Receives internal diagnostics of infrastructure failures. Never shown to a model. */
+  log?: (message: string) => void;
+}
+
+/** Where one call runs: its task binding, workspace, run state, and cancellation. */
+export interface CallScope {
+  binding: ToolBinding;
+  workspace: WorkspaceRoot | null;
+  run: RunState;
+  signal: AbortSignal;
+}
+
+export interface ToolCallResult {
+  callId: string;
+  name: string;
+  /** Permanent evidence handle within the task, such as "e12". */
+  handle: string;
+  isError: boolean;
+  /** Model-facing content, never above the result ceiling. */
+  content: string;
+}
+
+/**
+ * The shared tool runner (agent-harness.md, "Corrective tool errors"). Every
+ * call goes through one path: persist the call, validate its input, apply the
+ * access and approval policy, execute, normalize any failure into the one
+ * corrective-error shape, bound the result, and persist the result with its
+ * file mutations. Invalid calls have no side effects beyond their own record.
+ */
+export class ToolRunner {
+  /** The ten permanent tools, in their fixed order. */
+  readonly definitions: ToolDefinition[];
+  private readonly handlers: Map<string, ToolHandler>;
+  private readonly supervisors = new Map<string, TerminalSupervisor>();
+  private readonly loaded = new LoadedTools();
+  private readonly catalog: CapabilityCatalog;
+  private serial: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly options: ToolRunnerOptions) {
+    this.catalog = options.catalog ?? new StaticCatalog();
+    const handlers: ToolHandler[] = [
+      readTool,
+      globTool,
+      grepTool,
+      editTool,
+      applyPatchTool,
+      terminalTool,
+      terminalControlTool,
+      contextRetrieveTool,
+      capabilitySearchTool,
+      capabilityControlTool(this.loaded),
+    ] as ToolHandler[];
+    this.handlers = new Map(handlers.map((h) => [h.name, h]));
+    this.definitions = handlers.map(toDefinition);
+  }
+
+  /** Whether calls to this tool may run in parallel. Unknown and MCP tools are serial. */
+  concurrency(name: string): "parallel" | "serial" {
+    return this.handlers.get(name)?.concurrency ?? "serial";
+  }
+
+  /** Schemas of MCP tools active for a goal, appended after the permanent tools. */
+  mcpDefinitions(goalId: string): ToolDefinition[] {
+    const active = this.options.store.listActiveCapabilities(goalId).filter((c) => c.kind === "mcp").map((c) => c.name);
+    return this.loaded.definitions(goalId, active);
+  }
+
+  /** The terminal supervisor that owns processes started in one workspace. */
+  terminals(workspace: WorkspaceRoot): TerminalSupervisor {
+    let supervisor = this.supervisors.get(workspace.root);
+    if (!supervisor) {
+      supervisor = new TerminalSupervisor(this.options.terminals);
+      this.supervisors.set(workspace.root, supervisor);
+    }
+    return supervisor;
+  }
+
+  async run(call: ToolCall, scope: CallScope): Promise<ToolCallResult> {
+    const handler = this.handlers.get(call.name);
+    const execute = () => this.execute(call, scope, handler);
+    if (handler?.concurrency === "parallel") return execute();
+    // Serial calls run one at a time, in the order they were submitted.
+    const next = this.serial.then(execute, execute);
+    this.serial = next.catch(() => {});
+    return next;
+  }
+
+  async close(): Promise<void> {
+    await Promise.all([...this.supervisors.values()].map((s) => s.shutdown()));
+    this.supervisors.clear();
+  }
+
+  private async execute(call: ToolCall, scope: CallScope, handler: ToolHandler | undefined): Promise<ToolCallResult> {
+    const { store } = this.options;
+    const refs: TaskRefs = { goal_id: scope.binding.goalId, task_id: scope.binding.taskId, chat_id: scope.binding.chatId, turn_id: scope.binding.turnId };
+    const started = Date.now();
+    const evidence = store.recordToolCall(refs, { callId: call.id, tool: call.name, input: call.input });
+
+    let output: ToolOutput | null = null;
+    let error: ToolErrorBody | null = null;
+    let diagnostics: string | null = null;
+    try {
+      if (!handler) {
+        throw new ToolError("unknown_tool", `There is no tool named ${call.name}.`, `Use one of: ${[...this.handlers.keys()].join(", ")}, or an MCP tool activated with capability_control.`);
+      }
+      const parsed = handler.schema.safeParse(normalizeInput(call.input));
+      if (!parsed.success) {
+        const issues = parsed.error.issues.slice(0, 8).map((i) => `${i.path.join(".") || "(input)"}: ${i.message}`);
+        throw new ToolError("invalid_parameters", `Invalid ${call.name} input — ${issues.join("; ")}`, `Fix the listed parameters and call ${call.name} again.`);
+      }
+      const ctx = this.context(scope, refs);
+      if (handler.mutating && scope.workspace && store.firstMutationGatePending(scope.binding.taskId)) {
+        await ctx.requireApproval({ kind: "first_mutation", tool: call.name, detail: `First change in workspace ${scope.workspace.name}: ${describe(call)}` });
+      }
+      output = await handler.execute(parsed.data, ctx);
+      for (const m of output.mutations ?? []) {
+        store.recordFileChange(refs, { call_id: call.id, path: m.path, action: m.action, from_path: m.fromPath, before: m.before, after: m.after });
+      }
+    } catch (caught) {
+      if (caught instanceof ToolError) error = caught.body();
+      else {
+        error = INTERNAL_ERROR;
+        diagnostics = caught instanceof Error ? `${caught.name}: ${caught.message}\n${caught.stack ?? ""}` : String(caught);
+        this.options.log?.(`tool ${call.name} (${evidence.handle}) failed: ${diagnostics}`);
+      }
+    }
+
+    let content = error ? renderError(error) : output!.content;
+    if (countTokens(content) > RESULT_CEILING_TOKENS) {
+      content = headTail(content, RESULT_CEILING_TOKENS - 100, `the complete result is stored as ${evidence.handle}`).text;
+    }
+    const payload: EventPayloads["tool_completed"] = {
+      call_id: call.id,
+      handle: evidence.handle,
+      tool: call.name,
+      status: error ? "error" : "ok",
+      content,
+      result: output?.result ?? null,
+      error,
+      diagnostics,
+      observed: output?.observed ?? [],
+      facts: output?.facts ?? [],
+      wall_time_ms: Date.now() - started,
+    };
+    store.recordToolResult(refs, payload);
+    return { callId: call.id, name: call.name, handle: evidence.handle, isError: error !== null, content };
+  }
+
+  private context(scope: CallScope, refs: TaskRefs): HandlerContext {
+    const { store, approve, timeZone } = this.options;
+    return {
+      store,
+      binding: scope.binding,
+      workspace: scope.workspace,
+      run: scope.run,
+      signal: scope.signal,
+      approve,
+      timeZone,
+      catalog: this.catalog,
+      terminals: scope.workspace ? this.terminals(scope.workspace) : null,
+      async requireApproval(request: ApprovalRequest) {
+        const granted = await approve(request);
+        store.recordApproval(refs, { kind: request.kind, granted, detail: request.detail });
+        if (!granted) {
+          throw new ToolError("approval_denied", `The user declined: ${request.detail}`, "Do not retry this action. Continue another way, or ask the user how to proceed.", false);
+        }
+      },
+    };
+  }
+}
+
+/** Providers sometimes deliver arguments as a JSON string. */
+function normalizeInput(input: unknown): unknown {
+  if (typeof input !== "string") return input;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return input;
+  }
+}
+
+function describe(call: ToolCall): string {
+  const input = normalizeInput(call.input) as Record<string, unknown> | null;
+  const detail = input && typeof input === "object" ? (input.command ?? input.path ?? "") : "";
+  return `${call.name}${detail ? ` ${String(detail).slice(0, 200)}` : ""}`;
+}

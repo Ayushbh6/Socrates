@@ -14,9 +14,34 @@ function getEncoder(): Tiktoken {
   return encoder;
 }
 
+/**
+ * Byte-pair encoding is superlinear in the length of one unbroken run (a
+ * progress bar or padding of thousands of identical characters can take
+ * seconds). Runs longer than LONG_RUN characters are encoded in RUN_CHUNK
+ * pieces: the count stays within a few tokens of exact, decoding still
+ * reproduces the text exactly, and the cost stays linear.
+ */
+const LONG_RUN = 64;
+const RUN_CHUNK = 32;
+const LONG_RUN_PATTERN = new RegExp(`\\S{${LONG_RUN},}`, "g");
+
+function encode(text: string): number[] {
+  const enc = getEncoder();
+  if (text.length < LONG_RUN) return enc.encode(text);
+  const tokens: number[] = [];
+  let last = 0;
+  for (const m of text.matchAll(LONG_RUN_PATTERN)) {
+    if (m.index > last) tokens.push(...enc.encode(text.slice(last, m.index)));
+    for (let i = 0; i < m[0].length; i += RUN_CHUNK) tokens.push(...enc.encode(m[0].slice(i, i + RUN_CHUNK)));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) tokens.push(...enc.encode(text.slice(last)));
+  return tokens;
+}
+
 export function countTokens(text: string): number {
   if (text.length === 0) return 0;
-  return getEncoder().encode(text).length;
+  return encode(text).length;
 }
 
 /**
@@ -24,8 +49,17 @@ export function countTokens(text: string): number {
  * original string when it already fits.
  */
 export function truncateToTokens(text: string, maxTokens: number): { text: string; truncated: boolean } {
-  const enc = getEncoder();
-  const tokens = enc.encode(text);
+  const tokens = encode(text);
   if (tokens.length <= maxTokens) return { text, truncated: false };
-  return { text: enc.decode(tokens.slice(0, Math.max(0, maxTokens))), truncated: true };
+  return { text: getEncoder().decode(tokens.slice(0, Math.max(0, maxTokens))), truncated: true };
+}
+
+/**
+ * Keep the last `maxTokens` tokens of text. Returns the original string when
+ * it already fits.
+ */
+export function truncateTailToTokens(text: string, maxTokens: number): { text: string; truncated: boolean } {
+  const tokens = encode(text);
+  if (tokens.length <= maxTokens) return { text, truncated: false };
+  return { text: getEncoder().decode(tokens.slice(tokens.length - Math.max(0, maxTokens))), truncated: true };
 }

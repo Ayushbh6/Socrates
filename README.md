@@ -16,10 +16,11 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/store` | SQLite event log (append-only) and ledger: goals, tasks, revisions, chats, turns, anchors, FTS index, `ledger_query` |
 | `@socrates/providers` | Anthropic, DeepSeek, OpenRouter, OpenAI-compatible and Gemini Interactions model adapters, a scripted test model, token calibration |
 | `@socrates/router` | The Goal Router: input assembly, candidate retrieval, validation, repair, escalation, fallback, binding |
+| `@socrates/tools` | The working agent's ten permanent tools behind one tool runner: corrective errors, workspace access and approval policy, bounded results, persisted evidence (`eN`), the terminal supervisor, and the capability catalog interface |
 
 ## Development
 
-Requires Node 22.13 or later (for `node:sqlite`) and pnpm.
+Requires Node 22.13 or later (for `node:sqlite`) and pnpm. `glob` and `grep` use ripgrep: the newer of an `rg` on `PATH` and the binary bundled through `@vscode/ripgrep`.
 
 ```sh
 pnpm install

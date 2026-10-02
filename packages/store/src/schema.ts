@@ -9,8 +9,15 @@
  *   produces one turn per part; all of them point at the same stored user event.
  * - `ledger_fts` is a derived full-text index over goal and task metadata used by
  *   router candidate retrieval and `ledger_query`.
+ * - `evidence` numbers every working-agent tool call within its task; the
+ *   number is the call's permanent `eN` handle (agent-harness.md, "inspect").
+ * - `file_observations` holds the content hash each task last observed per
+ *   path, for the stale-edit check.
+ * - `exchange_fts` is a derived full-text index over completed Q&A pairs used
+ *   by `context_retrieve search`.
+ * - `active_capabilities` is the goal-scoped active Skill and MCP set.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /**
  * In-place upgrades from older schema versions, keyed by the version they
@@ -23,6 +30,8 @@ ALTER TABLE goals ADD COLUMN objective TEXT;
 ALTER TABLE tasks ADD COLUMN completion_criteria TEXT;
 ALTER TABLE task_revisions ADD COLUMN completion_criteria TEXT;
 `,
+  // Version 3 adds only new tables, which SCHEMA_SQL creates with IF NOT EXISTS.
+  2: "",
 };
 
 export const SCHEMA_SQL = `
@@ -177,6 +186,48 @@ CREATE VIRTUAL TABLE IF NOT EXISTS ledger_fts USING fts5(
   goal_id UNINDEXED,
   title,
   body,
+  tokenize = 'porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS evidence (
+  task_id          TEXT NOT NULL REFERENCES tasks(id),
+  number           INTEGER NOT NULL,
+  call_id          TEXT NOT NULL,
+  tool             TEXT NOT NULL,
+  turn_id          TEXT REFERENCES turns(id),
+  call_event_id    TEXT NOT NULL REFERENCES events(id),
+  result_event_id  TEXT REFERENCES events(id),
+  status           TEXT CHECK (status IN ('ok', 'error')),
+  created_at       TEXT NOT NULL,
+  PRIMARY KEY (task_id, number)
+);
+CREATE INDEX IF NOT EXISTS evidence_by_turn ON evidence(turn_id, number);
+
+CREATE TABLE IF NOT EXISTS file_observations (
+  task_id    TEXT NOT NULL REFERENCES tasks(id),
+  path       TEXT NOT NULL,
+  hash       TEXT,
+  event_id   TEXT NOT NULL REFERENCES events(id),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS active_capabilities (
+  goal_id      TEXT NOT NULL REFERENCES goals(id),
+  kind         TEXT NOT NULL CHECK (kind IN ('skill', 'mcp')),
+  name         TEXT NOT NULL,
+  version      TEXT NOT NULL,
+  digest       TEXT NOT NULL,
+  activated_at TEXT NOT NULL,
+  PRIMARY KEY (goal_id, name)
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS exchange_fts USING fts5(
+  turn_id UNINDEXED,
+  task_id UNINDEXED,
+  goal_id UNINDEXED,
+  user_text,
+  response_text,
   tokenize = 'porter unicode61'
 );
 `;
