@@ -42,7 +42,7 @@ export function assembleContext(input: ContextInput): TextPart[] {
     task.general ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
-    block("CURRENT_USER_MESSAGE", currentMessage(store, turn)),
+    `<CURRENT_USER_MESSAGE>\n${currentMessage(store, turn)}\n</CURRENT_USER_MESSAGE>`,
   ].filter((b): b is string => b !== null);
   parts.push({ text: volatile.join("\n\n") });
   return parts;
@@ -106,7 +106,8 @@ function evidenceFromPart(store: LedgerStore, order: number, turn: Turn): string
   const facts = store.listEvents({ turnId: turn.id, type: "tool_completed" }).flatMap((e) => (e.payload as EventPayloads["tool_completed"]).facts);
   const files = [...new Set(facts.filter((f) => f.kind === "file_changed").map((f) => f.value))].slice(0, HANDOFF_MAX_FACTS);
   const commands = [...new Set(facts.filter((f) => f.kind === "command").map((f) => f.value))].slice(-HANDOFF_MAX_FACTS);
-  const tests = store.taskFacts(task.id).filter((f) => f.kind === "test" && f.createdAt >= turn.createdAt).map((f) => f.value);
+  const exits = store.listEvents({ turnId: turn.id, type: "terminal_exited" });
+  const tests = [...facts, ...exits.flatMap(e => (e.payload as EventPayloads["terminal_exited"]).facts ?? [])].filter(f => f.kind === "test").map(f => f.value);
   // The first and the last calls frame what the part did: what it found, and how it ended.
   const picked = evidence.length <= HANDOFF_MAX_EVIDENCE ? evidence : [...evidence.slice(0, 1), ...evidence.slice(-(HANDOFF_MAX_EVIDENCE - 1))];
   const lines = [

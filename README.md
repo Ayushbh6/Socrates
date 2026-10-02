@@ -47,7 +47,7 @@ SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a 
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:agent  # real router and working agent on a disposable project
 ```
 
-`eval:agent` runs the working agent through `Socrates.handle` on a disposable calculator project under `.socrates/evals/agent-*`: a multi-step fix with real edits and test runs, continuation, a restart that rebuilds history from the event log, a compound message, cancellation and recovery, a step-limit wrap-up, and event-only replay. Only the synthetic fixture reaches the provider.
+`eval:agent` runs the working agent through `Socrates.handle` on a disposable calculator project under `.socrates/evals/agent-*`: a multi-step fix with real edits and test runs, continuation, a restart that rebuilds history from the event log, a compound message, cancellation and recovery, a step-limit wrap-up, explicit anchor approval, cancellation concurrent with a final response, and event-only replay. Only the synthetic fixture reaches the provider. The [Agent-stage closure report](docs/reviews/agent-stage-closure.md) records the reviewed safeguards and their regression coverage.
 
 `eval:goal` writes disposable Markdown deliverables and SQLite databases to a fresh run directory inside this repository's ignored `.socrates/evals/` folder. It verifies continued and resumed work, independent tasks, general conversation, dependent compound work, clarification recovery after restart, historical ledger tools, deliberate invalid-answer escalation, event-only recovery, and metadata budgets. The worker uses real LLM responses and validated, explicitly allowed artifact names. Its worker is a scoped stand-in; the real working agent is exercised by `eval:agent`.
 

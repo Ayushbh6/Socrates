@@ -1,14 +1,16 @@
 import { type FinalAnswer, type ModelClient, ModelError, type ModelMessage, type ModelResponse, type TextPart, type ToolCall, type ToolDefinition, type TurnStop, userText } from "@socrates/contracts";
 import type { TokenCalibration } from "@socrates/providers";
-import { countTokens } from "@socrates/shared";
+import { abortable, countTokens } from "@socrates/shared";
 import type { CallScope, ToolRunner } from "@socrates/tools";
-import { type FinalValidation, validateFinalAnswer } from "./final";
+import { mechanicalNote, validateFinalAnswer } from "./final";
 import { repairRequest, wrapUpRequest } from "./prompt";
 
 /** Per-turn safeguards (agent-harness.md, "Safety and long-running work"). All configurable. */
 export interface AgentLimits {
   maxSteps: number;
   maxWallMs: number;
+  /** Separate bounded allowance for the tool-free wrap-up and its repair. */
+  finalizationMs?: number;
   /** Prompt plus output tokens across all of the turn's model calls. */
   maxTokens: number;
   /**
@@ -35,110 +37,158 @@ export interface RunInput {
   /** Delays before retrying a transient provider failure; one retry per entry. */
   retryDelaysMs?: number[];
   now?: () => number;
+  /** Persist every received response before executing or interpreting it. */
+  onResponse?: (response: ModelResponse, phase: "work" | "wrap_up" | "repair") => void;
 }
 
 export type RunOutcome =
   | { kind: "answer"; answer: FinalAnswer; stop: TurnStop; toolCalls: number; steps: number }
+  | { kind: "limited"; text: string; note: string; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "invalid"; text: string; errors: string[]; stop: TurnStop; toolCalls: number; steps: number }
   | { kind: "interrupted"; reason: "cancelled" | "failed"; detail: string | null; toolCalls: number; steps: number };
 
 const TRANSIENT = new Set<ModelError["kind"]>(["rate_limit", "server", "network"]);
 
-/**
- * The one agent loop (agent-harness.md, "One agent loop"): send the context
- * and tools, execute the returned calls, append their bounded results, and
- * repeat until the model answers without tools. A limit ends the turn with
- * one tool-less wrap-up request; cancellation ends it without another call.
- */
+export const HARD_CONTEXT_TOKENS = 180_000;
+
+type Phase = "work" | "wrap_up" | "repair";
+type CallResult = { kind: "response"; response: ModelResponse } | { kind: "failed"; detail: string } | { kind: "cancelled" | "deadline" | "context" };
+
+/** Run the model and tools until a final answer, interruption or bounded wrap-up. */
 export async function runAgent(input: RunInput): Promise<RunOutcome> {
   const now = input.now ?? Date.now;
   const started = now();
   const { model, limits, scope } = input;
   const messages: ModelMessage[] = [{ role: "user", content: input.context }];
-  const baseTokens = countTokens(input.system) + countTokens(JSON.stringify(input.tools));
-  const sizes: number[] = [countTokens(userText(input.context))];
-  let steps = 0;
-  let spent = 0;
-  let toolCalls = 0;
-
-  const interrupted = (reason: "cancelled" | "failed", detail: string | null = null): RunOutcome => ({ kind: "interrupted", reason, detail, toolCalls, steps });
-  const push = (message: ModelMessage) => {
-    messages.push(message);
-    sizes.push(messageTokens(message));
+  const baseTokens = countTokens(input.system) + countTokens(JSON.stringify(input.tools)) + 32;
+  const sizes: number[] = [messageTokens(messages[0]!)];
+  let steps = 0, spent = 0, toolCalls = 0;
+  const deadline = new AbortController();
+  const workSignal = AbortSignal.any([scope.signal, deadline.signal]);
+  const workTimer = setTimeout(() => deadline.abort(), Math.max(0, limits.maxWallMs - (now() - started)));
+  let finalTimer: ReturnType<typeof setTimeout> | undefined;
+  let finalSignal: AbortSignal | undefined;
+  const finalization = () => {
+    if (!finalSignal) {
+      const controller = new AbortController();
+      finalTimer = setTimeout(() => controller.abort(), limits.finalizationMs ?? 60_000);
+      finalSignal = AbortSignal.any([scope.signal, controller.signal]);
+    }
+    return finalSignal;
   };
+  const timeExpired = () => {
+    if (now() - started >= limits.maxWallMs) deadline.abort();
+    return deadline.signal.aborted;
+  };
+  const interrupted = (reason: "cancelled" | "failed", detail: string | null = null): RunOutcome => ({ kind: "interrupted", reason, detail, toolCalls, steps });
+  const push = (message: ModelMessage) => { messages.push(message); sizes.push(messageTokens(message)); };
+  const contextFallback = (stop: TurnStop): RunOutcome => ({
+    kind: "limited", stop, toolCalls, steps,
+    text: "Stopped because the working context is too large to request a safe final answer. The work and tool results are saved. This task is not being marked complete; ask me to continue from the saved evidence.",
+    note: mechanicalNote("Stopped at the context ceiling; work and evidence saved", toolCalls),
+  });
+  const invalid = (text: string, errors: string[], stop: TurnStop): RunOutcome => ({ kind: "invalid", text, errors, stop, toolCalls, steps });
 
-  /** One model request; null when cancelled, a string when it failed. */
-  const call = async (toolChoice: "auto" | "none"): Promise<ModelResponse | string | null> => {
+  const call = async (phase: Phase, signal: AbortSignal): Promise<CallResult> => {
     const harnessCount = baseTokens + sizes.reduce((a, b) => a + b, 0);
-    const request = {
-      system: input.system,
-      messages: withRollingBreakpoint(messages),
-      tools: input.tools,
-      toolChoice,
-      maxOutputTokens: input.maxOutputTokens ?? 16_000,
-      signal: scope.signal,
-    };
     for (let attempt = 0; ; attempt++) {
-      if (scope.signal.aborted) return null;
+      if (scope.signal.aborted) return { kind: "cancelled" };
+      if ((phase === "work" && timeExpired()) || signal.aborted) return { kind: "deadline" };
+      // The same gate covers ordinary requests, retries, wrap-up and repair.
+      if (input.calibration.measure(model.id, harnessCount) >= HARD_CONTEXT_TOKENS) return { kind: "context" };
       try {
-        const response = await model.complete(request);
+        const response = await abortable(model.complete({
+          system: input.system, messages: withRollingBreakpoint(messages), tools: input.tools,
+          toolChoice: phase === "work" ? "auto" : "none", maxOutputTokens: input.maxOutputTokens ?? 16_000, signal,
+        }), signal);
+        input.onResponse?.(response, phase);
         steps++;
         spent += response.usage.promptTokens + response.usage.outputTokens;
         input.calibration.observe(model.id, harnessCount, response.usage);
-        return response;
+        return { kind: "response", response };
       } catch (error) {
-        if (scope.signal.aborted || (error instanceof ModelError && error.kind === "aborted")) return null;
-        const delay = input.retryDelaysMs?.[attempt] ?? (attempt < 2 ? [1_000, 4_000][attempt]! : undefined);
+        if (scope.signal.aborted) return { kind: "cancelled" };
+        if (signal.aborted) return { kind: "deadline" };
+        if (error instanceof ModelError && error.kind === "aborted") return { kind: "cancelled" };
+        const delays = input.retryDelaysMs ?? [1_000, 4_000];
+        const delay = delays[attempt];
         if (!(error instanceof ModelError) || !TRANSIENT.has(error.kind) || delay === undefined) {
-          return error instanceof Error ? error.message : String(error);
+          return { kind: "failed", detail: error instanceof Error ? error.message : String(error) };
         }
-        await sleep(delay, scope.signal);
+        await sleep(delay, signal);
       }
     }
   };
 
-  /** Validate a final message, with one repair request when it is invalid. */
-  const finish = async (response: ModelResponse, stop: TurnStop): Promise<RunOutcome> => {
-    const first = validateFinalAnswer(response.text);
-    if (first.ok) return { kind: "answer", answer: first.value, stop, toolCalls, steps };
-    push({ role: "assistant", content: response.text, ...(response.raw ? { raw: response.raw } : {}) });
-    push({ role: "user", content: repairRequest(first.errors) });
-    const repaired = await call("none");
-    if (repaired === null) return interrupted("cancelled");
-    if (typeof repaired === "string") return invalid(response.text, first, stop);
-    const second = validateFinalAnswer(repaired.text);
-    if (second.ok) return { kind: "answer", answer: second.value, stop, toolCalls, steps };
-    // Keep whichever visible text the model wrote most recently.
-    return invalid(repaired.text.trim() ? repaired.text : response.text, second, stop);
-  };
-  const invalid = (text: string, v: FinalValidation, stop: TurnStop): RunOutcome => ({ kind: "invalid", text, errors: v.ok ? [] : v.errors, stop, toolCalls, steps });
-
-  /** The single tool-less request after a limit. */
-  const wrapUp = async (stop: Exclude<TurnStop, "final">): Promise<RunOutcome> => {
-    push({ role: "user", content: wrapUpRequest(LIMIT_TEXT[stop](limits)) });
-    const response = await call("none");
-    if (response === null) return interrupted("cancelled");
-    if (typeof response === "string") return interrupted("failed", response);
-    // Calls a provider emitted anyway are ignored, and its raw content is not replayed with them.
-    return finish(response.toolCalls.length ? { ...response, toolCalls: [], raw: undefined } : response, stop);
-  };
-
-  while (true) {
-    if (scope.signal.aborted) return interrupted("cancelled");
-    const size = input.calibration.measure(model.id, baseTokens + sizes.reduce((a, b) => a + b, 0));
-    const limit: Exclude<TurnStop, "final"> | null =
-      steps >= limits.maxSteps ? "steps" : now() - started >= limits.maxWallMs ? "time" : spent >= limits.maxTokens ? "tokens" : size >= limits.contextTokens ? "context" : null;
-    if (limit) return wrapUp(limit);
-
-    const response = await call("auto");
-    if (response === null) return interrupted("cancelled");
-    if (typeof response === "string") return interrupted("failed", response);
-    if (response.toolCalls.length === 0) return finish(response, "final");
-
+  const appendResponse = async (response: ModelResponse, signal: AbortSignal) => {
     push({ role: "assistant", content: response.text, toolCalls: response.toolCalls, ...(response.raw ? { raw: response.raw } : {}) });
-    const results = await execute(input.runner, response.toolCalls, scope);
+    if (signal === workSignal) timeExpired();
+    const results = await execute(input.runner, response.toolCalls, { ...scope, signal });
     toolCalls += results.length;
     for (const r of results) push({ role: "tool", toolCallId: r.callId, toolName: r.name, content: r.content, ...(r.isError ? { isError: true } : {}) });
+  };
+  // Unexpected tool calls during finalization are recorded as refused. Never
+  // execute them or accept their accompanying state proposals as a final answer.
+  const refused = AbortSignal.abort();
+  const validate = (response: ModelResponse) => response.toolCalls.length
+    ? { ok: false as const, errors: ["A final answer must not contain tool calls; these calls were refused."] }
+    : validateFinalAnswer(response.text);
+  const failedCall = (result: Exclude<CallResult, { kind: "response" }>, stop: TurnStop): RunOutcome => {
+    if (result.kind === "cancelled" || scope.signal.aborted) return interrupted("cancelled");
+    if (result.kind === "context") return contextFallback(stop === "final" ? "context" : stop);
+    return interrupted("failed", result.kind === "failed" ? result.detail : "The final-answer deadline expired.");
+  };
+  const finish = async (response: ModelResponse, stop: TurnStop): Promise<RunOutcome> => {
+    if (scope.signal.aborted) {
+      if (response.toolCalls.length) await appendResponse(response, refused);
+      return interrupted("cancelled");
+    }
+    const first = validate(response);
+    if (first.ok) return { kind: "answer", answer: first.value, stop, toolCalls, steps };
+    await appendResponse(response, refused);
+    push({ role: "user", content: repairRequest(first.errors) });
+    const repaired = await call("repair", finalization());
+    if (repaired.kind !== "response") return failedCall(repaired, stop);
+    if (repaired.response.toolCalls.length) await appendResponse(repaired.response, refused);
+    if (scope.signal.aborted) return interrupted("cancelled");
+    if (finalSignal!.aborted) return interrupted("failed", "The final-answer deadline expired.");
+    const second = validate(repaired.response);
+    if (second.ok) return { kind: "answer", answer: second.value, stop, toolCalls, steps };
+    return invalid(repaired.response.text.trim() ? repaired.response.text : response.text, second.errors, stop);
+  };
+  const wrapUp = async (stop: Exclude<TurnStop, "final">): Promise<RunOutcome> => {
+    push({ role: "user", content: wrapUpRequest(LIMIT_TEXT[stop](limits)) });
+    const result = await call("wrap_up", finalization());
+    if (result.kind !== "response") return failedCall(result, stop);
+    if (scope.signal.aborted) return finish(result.response, stop);
+    if (finalSignal!.aborted) {
+      if (result.response.toolCalls.length) await appendResponse(result.response, refused);
+      return interrupted("failed", "The final-answer deadline expired.");
+    }
+    return finish(result.response, stop);
+  };
+
+  try {
+    while (true) {
+      if (scope.signal.aborted) return interrupted("cancelled");
+      const size = input.calibration.measure(model.id, baseTokens + sizes.reduce((a, b) => a + b, 0));
+      const limit = steps >= limits.maxSteps ? "steps" : timeExpired() ? "time" : spent >= limits.maxTokens ? "tokens" : size >= limits.contextTokens ? "context" : null;
+      if (limit) return await wrapUp(limit);
+      const result = await call("work", workSignal);
+      if (result.kind === "deadline") return await wrapUp("time");
+      if (result.kind !== "response") return failedCall(result, "context");
+      const response = result.response;
+      if (scope.signal.aborted || timeExpired()) {
+        await appendResponse(response, refused);
+        if (scope.signal.aborted) return interrupted("cancelled");
+        return await wrapUp("time");
+      }
+      if (response.toolCalls.length === 0) return await finish(response, "final");
+      await appendResponse(response, workSignal);
+    }
+  } finally {
+    clearTimeout(workTimer);
+    clearTimeout(finalTimer);
   }
 }
 
@@ -179,9 +229,12 @@ function withRollingBreakpoint(messages: ModelMessage[]): ModelMessage[] {
 }
 
 function messageTokens(m: ModelMessage): number {
-  if (m.role === "user") return countTokens(userText(m.content));
-  if (m.role === "tool") return countTokens(m.content) + 8;
-  return countTokens(m.content) + (m.toolCalls?.length ? countTokens(JSON.stringify(m.toolCalls)) : 0);
+  if (m.role === "user") return countTokens(userText(m.content)) + 16;
+  if (m.role === "tool") return countTokens(m.content) + countTokens(m.toolName) + 16;
+  const normalized = countTokens(m.content) + (m.toolCalls?.length ? countTokens(JSON.stringify(m.toolCalls)) : 0);
+  // Native replay may include substantial reasoning/signature blocks absent
+  // from normalized text. Count them conservatively before calibration.
+  return Math.max(normalized, m.raw ? countTokens(JSON.stringify(m.raw.content)) : 0) + 16;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

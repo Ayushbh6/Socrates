@@ -373,12 +373,13 @@ export class LedgerStore {
     return r ? this.toEvent(r) : null;
   }
 
-  listEvents(filter: { type?: EventType; turnId?: string; taskId?: string } = {}): StoredEvent[] {
+  listEvents(filter: { type?: EventType; turnId?: string; taskId?: string; goalId?: string } = {}): StoredEvent[] {
     const where: string[] = [];
     const params: string[] = [];
     if (filter.type) (where.push("type = ?"), params.push(filter.type));
     if (filter.turnId) (where.push("turn_id = ?"), params.push(filter.turnId));
     if (filter.taskId) (where.push("task_id = ?"), params.push(filter.taskId));
+    if (filter.goalId) (where.push("goal_id = ?"), params.push(filter.goalId));
     const sql = `SELECT * FROM events ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY seq`;
     return this.all(sql, ...params).map((r) => this.toEvent(r));
   }
@@ -526,7 +527,7 @@ export class LedgerStore {
         }
         break;
       }
-      case "file_changed": case "terminal_started": case "approval_decided": case "agent_warning": break;
+      case "file_changed": case "terminal_started": case "approval_decided": case "agent_warning": case "agent_message": case "anchor_question": case "anchor_decided": break;
       default: throw new StoreError(`Unsupported event type: ${e.type}`);
     }
   }
@@ -1099,13 +1100,13 @@ export class LedgerStore {
 
   // ── Anchors ──────────────────────────────────────────────────────────────
 
-  upsertAnchor(input: { goalId: string; path: string; role: string; summary: string; status?: Anchor["status"] }): Anchor {
+  upsertAnchor(input: { goalId: string; path: string; role: string; summary: string; status?: Anchor["status"] }, refs: EventRefs = {}): Anchor {
     return this.transaction(() => {
       const existing = this.get("SELECT id FROM anchors WHERE goal_id = ? AND path = ? AND role = ?", input.goalId, input.path, input.role);
       const id = existing ? str(existing.id) : newId("anchor");
       const status = input.status ?? "provisional";
       input = { ...input, summary: truncateToTokens(input.summary, 100).text };
-      const event = this.appendEvent("anchor_revised", { anchor_id: id, path: input.path, role: input.role, status, summary: input.summary }, { goal_id: input.goalId });
+      const event = this.appendEvent("anchor_revised", { anchor_id: id, path: input.path, role: input.role, status, summary: input.summary }, { ...refs, goal_id: input.goalId });
       const at = event.at;
       if (existing) {
         this.run("UPDATE anchors SET summary = ?, status = ?, updated_at = ? WHERE id = ?", input.summary, status, at, id);

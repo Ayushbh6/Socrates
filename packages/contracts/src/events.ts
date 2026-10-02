@@ -1,3 +1,5 @@
+import type { ModelResponse } from "./model";
+
 /**
  * Event log payloads. The event log is append-only and is the source of
  * truth; every ledger projection is derived from or recorded alongside these
@@ -28,6 +30,8 @@ export interface EventPayloads {
   chat_opened: { ordinal: number; continuation_of: string | null; handover_ref: string | null };
   clarification_bound: { project_turn: number; user_event_id: string };
   anchor_revised: { anchor_id: string; path: string; role: string; status: "provisional" | "active" | "superseded"; summary: string };
+  anchor_question: { proposals: { path: string; role: string; reason: string; hash: string; conflicts: string[] }[] };
+  anchor_decided: { path: string; role: string; hash: string; decision: "approved" | "rejected" | "ignored"; question_id?: string };
   turn_bound: {
     project_turn: number;
     part_order: number | null;
@@ -42,6 +46,9 @@ export interface EventPayloads {
     depends_on: number[];
   };
   assistant_response: { text: string };
+  /** Exact received agent output, including intermediate and invalid candidates.
+   * Separate from assistant_response, which is the accepted visible answer. */
+  agent_message: { phase: "work" | "wrap_up" | "repair"; response: ModelResponse };
   /**
    * `stop` says why the working agent ended: its own final answer, or the
    * wrap-up after a per-turn limit. `task_complete_reason` is the agent's
@@ -51,7 +58,7 @@ export interface EventPayloads {
   /** A turn that ended without a final answer: cancelled by the user, or failed. */
   turn_interrupted: { project_turn: number; reason: "cancelled" | "failed"; tool_calls: number; continuation_note: string };
   /** An operational warning about one turn, such as a rejected final answer or anchor proposal. */
-  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error"; detail: string };
+  agent_warning: { kind: "final_answer_invalid" | "anchor_rejected" | "model_error" | "agent_error" | "context_limit"; detail: string };
   /**
    * One working-agent tool call, exactly as the model emitted it. `handle` is
    * the call's permanent evidence handle within its task ("e12").

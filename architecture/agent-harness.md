@@ -1027,6 +1027,8 @@ The harness stores:
 
 Large tool outputs may be replaced in the active prompt by a short result plus a retrievable reference, but the complete result remains stored.
 
+Every received working-agent response is stored as an `agent_message` event before interpretation or tool execution, tagged `work`, `wrap_up`, or `repair`. This includes intermediate text, invalid candidates, tool-call grouping, usage and native replay content. The accepted visible answer remains a separate `assistant_response`. Turn inspection exposes bounded assistant text; native reasoning/signatures remain internal. Responses that arrive after an aborted await has ended are consumed without changing the finished turn.
+
 ### Token budget and trigger points
 
 Compaction is governed by one universal, model-independent budget. The harness does not scale its budget to the served model's context window; a fixed ceiling gives one compaction implementation, one test suite, and consistent cost behavior across providers. Practical agent quality is best between roughly 180k and 250k tokens of context regardless of the advertised window, so a larger window is never used beyond the ceiling.
@@ -1345,11 +1347,15 @@ The object is the whole text of the final message. Providers cannot combine forc
 
 The harness validates the object with Zod and its token bounds. The bounds are hard and equal the ledger's: `continuation_note` at most `100` tokens and `goal_note` at most `150`, so nothing is silently truncated when stored. At most three anchor proposals are accepted. An invalid or missing object gets one repair request that states the validation errors and forbids tool calls; if that also fails, the harness keeps the model's visible text as the answer (the `full_answer` string when a malformed object still contains one), writes a mechanical continuation note, records an operational warning, and persists nothing else from that output. No other final-response shape is accepted.
 
+A returned-but-invalid repair and a failed provider request are distinct: a provider failure interrupts the turn and never presents a partial candidate as the answer. Any native calls unexpectedly returned during wrap-up or repair are recorded as refused; their accompanying JSON cannot update state. Cancellation is checked again after responses and before final persistence. Accepted answers, anchor changes and turn completion are persisted in one transaction.
+
 The continuation note is not a second visible answer and is not produced by another agent. It is task-local and bounded (about 100 tokens): the task's verified progress, unresolved work, and important constraints.
 
 The goal note is the only goal-level state the agent writes. It records the goal's durable state across tasks: overall progress, durable user constraints and preferences, and what the goal is heading toward. The agent supplies it only when that durable state changed during this turn. It is bounded (about 150 tokens), validated by the harness, and stored as a new append-only revision of the goal record; it appears in `<GOAL_STATE>` and in the router's `KNOWN_GOALS`. The Goal Router never writes it.
 
 The task-completion proposal (`task_complete`, with one short reason) is recorded by the harness and can always be overridden or reopened by the user — the user has the final say. Anchor proposals (`anchors`, for example `{ "path": "learning/30-day-plan.md", "role": "goal_plan", "reason": "Defines the lesson sequence for this goal." }`) follow the anchor lifecycle in `Goal-router.md`.
+
+A null completion proposal leaves task status unchanged. Only the router's explicit `reopen_task: true` reopens completed work; a historical question must preserve completion.
 
 ## Provider independence
 
@@ -1403,6 +1409,9 @@ Further rules:
 - Step, time, and token limits are configurable safeguards for one turn, not a tiny fixed loop count. Defaults: `200` model steps, `60` minutes of wall time, and `5,000,000` tokens across the turn's model calls.
 - If a limit is reached, the harness saves the exact state and makes one final request with tools disabled, asking for the `FinalAnswer`: what was done and what remains. The user sees an honest partial result instead of a pretended completion. The completed turn records which limit ended it (`stop`: `steps`, `time`, `tokens`, or `context`).
 - Until compaction is implemented, a request whose calibrated size reaches the `160,000`-token trigger is treated as the `context` limit: the turn wraps up instead of compacting. The compaction stage replaces this stop with compaction, after which the turn continues.
+- Every provider request, including retries, wrap-up and repair, passes the calibrated `180,000`-token hard gate. Counts include native replay blocks as well as normalized text. If the final request itself cannot fit, the harness sends no oversized request: it saves a mechanical partial answer and continuation note, records `context_limit`, and applies no model-proposed state. This is the pre-compaction failsafe, not history compaction.
+- The wall-time deadline aborts pending model requests, tool operations and approval waits. No new mutation starts after expiry. Tool-free finalization (wrap-up and any one repair) has a separate shared allowance, default `60,000` ms and configurable as `finalizationMs`; its expiry records failure. User cancellation aborts both allowances. Late provider responses or approvals cannot resume work.
+- Part setup is covered by turn failure handling. If workspace resolution, an application acknowledgment callback or context setup throws, the failed part is interrupted and later bound parts are finalized as not started. Exact tool evidence remains available. Application diagnostics stay out of model-facing errors.
 - Cancellation makes no further model call. The turn is recorded as interrupted (a `turn_interrupted` event with the reason and the number of tool calls) with a mechanical continuation note such as "Interrupted by the user after 14 tool calls."
 
 ## Initial exclusions

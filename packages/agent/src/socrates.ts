@@ -1,5 +1,4 @@
-import { statSync } from "node:fs";
-import type { AnchorProposal, EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
+import type { EventRefs, ModelClient, TurnStop } from "@socrates/contracts";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
@@ -8,11 +7,8 @@ import { assembleContext } from "./context";
 import { fallbackAnswer, mechanicalNote } from "./final";
 import { type AgentLimits, DEFAULT_LIMITS, type RunOutcome, runAgent } from "./loop";
 import { AGENT_SYSTEM_PROMPT } from "./prompt";
-
-/** A goal holds at most this many provisional and active anchors. */
-export const MAX_GOAL_ANCHORS = 8;
-/** Paths that are temporary or generated output and never become anchors. */
-const TEMPORARY_PATH = /(^|\/)(node_modules|dist|build|out|coverage|tmp|temp|\.cache|\.next|target|__pycache__)(\/|$)|\.(log|tmp|lock|map)$/i;
+import { applyAnchors, type AnchorDecision, type AnchorChange } from "./anchors";
+export { MAX_GOAL_ANCHORS } from "./anchors";
 
 export interface SocratesOptions {
   store: LedgerStore;
@@ -47,6 +43,8 @@ export interface HandleOptions {
   approve?: Approve;
   /** Receives the one-line plan of a compound message before part 1 starts. */
   onAcknowledgment?: (text: string) => void;
+  /** Explicit selections from the user, never inferred from model proposals. */
+  anchorDecisions?: AnchorDecision[];
 }
 
 export interface PartResult {
@@ -58,6 +56,8 @@ export interface PartResult {
   /** What the user sees for this part. */
   answer: string;
   toolCalls: number;
+  /** Quiet, reversible anchor notifications for the application. */
+  anchorChanges?: AnchorChange[];
 }
 
 export type HandleResult =
@@ -101,13 +101,28 @@ export class Socrates {
       this.approveCurrent = options.approve ?? this.options.approve;
       const routed = await this.router.route(message, signal);
       if (routed.kind === "clarify") return { kind: "clarify", text: routed.text };
-      if (routed.acknowledgment) options.onAcknowledgment?.(routed.acknowledgment);
+      let setupError: { error: unknown } | null = null;
+      try { if (routed.acknowledgment) options.onAcknowledgment?.(routed.acknowledgment); }
+      catch (error) { setupError = { error }; }
 
       const results: PartResult[] = [];
       let stopped = false;
       for (const part of routed.parts) {
         // A part runs only after every earlier part finished with an answer.
-        results.push(stopped || signal.aborted ? this.skipPart(part) : await this.runPart(part, routed.parts, signal));
+        if (stopped || signal.aborted) results.push(this.skipPart(part));
+        else {
+          try {
+            if (setupError) throw setupError.error;
+            results.push(await this.runPart(part, routed.parts, signal, options.anchorDecisions ?? []));
+          } catch (error) {
+            this.options.log?.(`agent part ${part.order} failed: ${error instanceof Error ? error.message : String(error)}`);
+            const refs = { goal_id: part.goal.id, task_id: part.task.id, turn_id: part.turn.id, chat_id: part.turn.chatId };
+            this.store.recordWarning(refs, { kind: "agent_error", detail: "The agent could not finish setting up or running this part." });
+            const calls = this.store.evidenceForTurn(part.turn.id).length;
+            this.store.interruptTurn(part.turn.id, { reason: signal.aborted ? "cancelled" : "failed", toolCalls: calls, continuationNote: mechanicalNote("Interrupted by an agent failure", calls) });
+            results.push({ order: part.order, turn: this.store.requireTurn(part.turn.id), task: this.store.requireTask(part.task.id), status: "interrupted", stop: null, answer: "I could not finish this part. The work so far is saved; ask me to continue.", toolCalls: calls });
+          }
+        }
         if (results.at(-1)!.status === "interrupted") stopped = true;
       }
       const text =
@@ -125,7 +140,7 @@ export class Socrates {
     await this.runner.close();
   }
 
-  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal): Promise<PartResult> {
+  private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, anchorDecisions: AnchorDecision[]): Promise<PartResult> {
     const { store } = this;
     const turn = part.turn;
     const goal = store.requireGoal(turn.goalId!);
@@ -150,11 +165,12 @@ export class Socrates {
       context,
       scope: { binding: { goalId: goal.id, taskId: turn.taskId!, chatId: turn.chatId, turnId: turn.id }, workspace, run: new RunState(), signal },
       limits: this.limits,
+      onResponse: (response, phase) => store.appendEvent("agent_message", { response, phase }, { goal_id: goal.id, task_id: turn.taskId, chat_id: turn.chatId, turn_id: turn.id }),
       ...(this.options.maxOutputTokens ? { maxOutputTokens: this.options.maxOutputTokens } : {}),
       ...(this.options.retryDelaysMs ? { retryDelaysMs: this.options.retryDelaysMs } : {}),
       ...(this.options.now ? { now: this.options.now } : {}),
     });
-    return this.persist(part, goal, workspace, outcome);
+    return this.persist(part, goal, workspace, signal.aborted ? { kind: "interrupted", reason: "cancelled", detail: null, toolCalls: outcome.toolCalls, steps: outcome.steps } : outcome, anchorDecisions);
   }
 
   /**
@@ -162,7 +178,11 @@ export class Socrates {
    * propose, the harness disposes. Only a valid final answer may change the
    * goal note, the task status, or the anchors.
    */
-  private persist(part: RoutedPart, goal: Goal, workspace: WorkspaceRoot | null, outcome: RunOutcome): PartResult {
+  private persist(part: RoutedPart, goal: Goal, workspace: WorkspaceRoot | null, outcome: RunOutcome, anchorDecisions: AnchorDecision[]): PartResult {
+    return this.store.transaction(() => this.persistOutcome(part, goal, workspace, outcome, anchorDecisions));
+  }
+
+  private persistOutcome(part: RoutedPart, goal: Goal, workspace: WorkspaceRoot | null, outcome: RunOutcome, anchorDecisions: AnchorDecision[]): PartResult {
     const { store } = this;
     const turn = part.turn;
     const task = store.requireTask(turn.taskId!);
@@ -185,6 +205,13 @@ export class Socrates {
       return result("interrupted", null, answer);
     }
 
+    if (outcome.kind === "limited") {
+      store.recordWarning(refs, { kind: "context_limit", detail: "The final request was refused at the hard context ceiling." });
+      const response = store.recordResponse(outcome.text, refs);
+      store.completeTurn(turn.id, { responseEventId: response.id, continuationNote: outcome.note, stop: outcome.stop });
+      return result("completed", outcome.stop, outcome.text);
+    }
+
     if (outcome.kind === "invalid") {
       store.recordWarning(refs, { kind: "final_answer_invalid", detail: outcome.errors.join("; ") });
       const answer = fallbackAnswer(outcome.text);
@@ -194,64 +221,24 @@ export class Socrates {
     }
 
     const { answer } = outcome;
-    const response = store.recordResponse(answer.full_answer, refs);
-    this.applyAnchors(goal, workspace, answer.anchors, refs);
+    const anchors = applyAnchors({ store, goal, workspace, turn, proposals: answer.anchors, decisions: anchorDecisions, refs });
+    const visible = [answer.full_answer, anchors.question].filter(Boolean).join("\n\n");
+    const response = store.recordResponse(visible, refs);
     store.completeTurn(turn.id, {
       responseEventId: response.id,
       continuationNote: answer.continuation_note,
       // The general conversation has no durable goal state and no completion.
       goalNote: goal.general ? null : answer.goal_note,
-      ...(task.general ? {} : { taskComplete: answer.task_complete !== null, taskCompleteReason: answer.task_complete?.reason ?? null }),
+      ...(!task.general && answer.task_complete ? { taskComplete: true, taskCompleteReason: answer.task_complete.reason } : {}),
       stop: outcome.stop,
     });
-    return result("completed", outcome.stop, answer.full_answer);
+    return { ...result("completed", outcome.stop, visible), anchorChanges: anchors.changes };
   }
 
   /** A part that never ran because an earlier part was interrupted or the message was cancelled. */
   private skipPart(part: RoutedPart): PartResult {
     this.store.interruptTurn(part.turn.id, { reason: "cancelled", toolCalls: 0, continuationNote: mechanicalNote("Not started; an earlier part of the message was interrupted", 0) });
     return { order: part.order, turn: this.store.requireTurn(part.turn.id), task: this.store.requireTask(part.task.id), status: "interrupted", stop: null, answer: "Not started.", toolCalls: 0 };
-  }
-
-  /**
-   * Validate anchor proposals (Goal-router.md, "Anchor lifecycle"): an
-   * existing, durable file of the goal's workspace, within the anchor budget,
-   * that does not silently change an existing anchor. Accepted proposals
-   * become provisional; rejections are recorded as warnings.
-   */
-  private applyAnchors(goal: Goal, workspace: WorkspaceRoot | null, proposals: AnchorProposal[], refs: EventRefs): void {
-    for (const p of proposals) {
-      const reject = (why: string) => this.store.recordWarning(refs, { kind: "anchor_rejected", detail: `${p.path} (${p.role}): ${why}` });
-      if (goal.general || !workspace) {
-        reject("this work has no workspace");
-        continue;
-      }
-      let rel: string;
-      try {
-        const file = workspace.resolve(p.path);
-        if (!statSync(file.abs).isFile()) throw new Error("not a file");
-        rel = file.rel;
-      } catch {
-        reject("not an existing file of the workspace");
-        continue;
-      }
-      if (TEMPORARY_PATH.test(rel)) {
-        reject("temporary or generated files are not anchors");
-        continue;
-      }
-      const anchors = this.store.listAnchors(goal.id);
-      const same = anchors.find((a) => a.path === rel);
-      if (same?.role === p.role) continue;
-      if (same) {
-        reject(`already anchored as ${same.role}; changing an anchor's role needs the user`);
-        continue;
-      }
-      if (anchors.length >= MAX_GOAL_ANCHORS) {
-        reject(`the goal already has ${MAX_GOAL_ANCHORS} anchors`);
-        continue;
-      }
-      this.store.upsertAnchor({ goalId: goal.id, path: rel, role: p.role, summary: p.reason, status: "provisional" });
-    }
   }
 
   private workspaceFor(goal: Goal): WorkspaceRoot | null {

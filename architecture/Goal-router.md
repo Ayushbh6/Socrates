@@ -800,7 +800,7 @@ The Goal Router does not promote files to anchors. The Main Coding Agent may pro
 
 The backend validates that the file exists, belongs to the goal, is not temporary or generated output, has a durable future-facing role, does not violate the anchor budget, and does not silently conflict with an existing anchor.
 
-Concretely: the path must resolve to an existing file inside the goal's workspace; paths under dependency, build, cache, or temporary folders (`node_modules`, `dist`, `build`, `coverage`, `tmp`, and similar) and log, lock, temporary, and source-map files are rejected; a goal holds at most `8` provisional and active anchors; and a proposal that would give an anchored file a different role is rejected, because changing an anchor's authority needs the user. A proposal repeating an existing anchor changes nothing. Every rejection is recorded as an operational warning, never shown as an error to the user.
+Concretely: the path must resolve to an existing file inside the goal's workspace; paths under dependency, build, cache, repository metadata or temporary folders (`node_modules`, `dist`, `build`, `coverage`, `tmp`, and similar) and log, lock, temporary, and source-map files are rejected; a goal holds at most `8` provisional and active anchors. Changing an anchored file's role or replacing the file occupying a role needs user approval. An autonomous repeat of an existing file-and-role proposal changes nothing. Every rejection is recorded as an operational warning, never shown as an error to the user.
 
 Anchor states are reversible:
 
@@ -825,6 +825,12 @@ Anti-annoyance rules are enforced by the backend rather than left to prompt judg
 - A rejected file-and-role proposal is not asked again unless the file materially changes or the user reopens the decision.
 - An ignored question defaults to dynamic retrieval.
 - Non-conflicting provisional changes use a quiet, reversible notification rather than a question.
+
+The Agent API returns quiet changes in each part's `anchorChanges`. Trusted application selections use `handle(message, { anchorDecisions: [{ goalId, path, role, decision }] })`, with `approve`, `reject`, or `supersede`; the model never supplies these decisions. For direct text declarations, the harness recognizes a complete sentence such as `I approve PLAN.md as the active canonical goal plan.` or `Use PLAN.md as the canonical goal plan.` Other wording can be resolved through application selections or a specific confirmation; quotations, negations and arbitrary prose do not authorize changes.
+
+Conflicting autonomous proposals produce one combined question appended after the valid final answer. `anchor_question` records the exact files, content hashes and competing anchor IDs. A yes/no response applies only to the immediately following user exchange, when the question's turn supplied the latest visible answer; intervening requests or another part's answer expire it. The proposed file and competing authority are checked again before approval is applied. Rejected or ignored proposals are suppressed for that file/role/hash; a content change or explicit user selection can reopen them. `anchor_decided` and `anchor_revised` preserve this policy across restart and event replay. Explicit removal supersedes a reference without deleting its file.
+
+Repeated successful use is two successful reads of the current file bytes on distinct completed turns after its provisional revision. Multiple reads in one turn and interrupted turns do not count. All automatic promotion and explicit decisions are applied only when accepting a valid, uncancelled final result, in the same transaction as turn completion.
 
 Anchors are goal-scoped context policy, not a new user-facing hierarchy. The product model remains `Workspace → Goals → Tasks → Turns`, with the workspace itself resolved by routing rather than selected by the user.
 

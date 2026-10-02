@@ -1,5 +1,5 @@
 import type { EventPayloads, ToolCall, ToolDefinition, ToolErrorBody } from "@socrates/contracts";
-import { countTokens } from "@socrates/shared";
+import { abortable, countTokens } from "@socrates/shared";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
@@ -199,7 +199,12 @@ export class ToolRunner {
       catalog: this.catalog,
       terminals: scope.workspace ? this.terminals(scope.workspace) : null,
       async requireApproval(request: ApprovalRequest) {
-        const granted = await approve(request);
+        throwIfCancelled(scope.signal);
+        const granted = await abortable(approve(request), scope.signal).catch(error => {
+          throwIfCancelled(scope.signal);
+          throw error;
+        });
+        throwIfCancelled(scope.signal);
         store.recordApproval(refs, { kind: request.kind, granted, detail: request.detail });
         throwIfCancelled(scope.signal);
         if (!granted) {

@@ -364,6 +364,12 @@ function turnView(turn: Turn, ref: string | null, ctx: HandlerContext, scale: nu
     })),
     ...(evidence.length && !sameTask ? { tool_note: "Tool calls of another task are inspected from within that task." } : {}),
     final_response: component(response, Math.floor(2_500 * scale)),
+    // Exact received text remains in agent_message events; inspection exposes
+    // a bounded transcript without provider-private reasoning or signatures.
+    assistant_messages: component(store.listEvents({ turnId: turn.id, type: "agent_message" }).map(e => {
+      const p = e.payload as EventPayloads["agent_message"];
+      return `${p.phase}: ${p.response.text}`;
+    }).join("\n\n"), Math.floor(1_500 * scale)),
     bounded: true,
   };
 }

@@ -144,6 +144,20 @@ async function run() {
   assert(stop === "steps" || stop === "final");
   assert.equal(limited.parts[0]!.turn.status, "completed");
   passed("per-turn step limit ends with an honest wrap-up", `stop=${stop}`);
+
+  const approved = answered(await socrates.handle("Use README.md as the canonical project reference."));
+  assert.equal(approved.parts[0]!.turn.goalId, goalId);
+  assert(store.listAnchors(goalId).some(a => a.path === "README.md" && a.role === "project_reference" && a.status === "active"));
+  passed("explicit user anchor authority through the real router and agent");
+
+  const finalController = new AbortController();
+  intercept = (response) => {
+    if (!response.toolCalls.length) { finalController.abort(); intercept = null; }
+  };
+  const finalCancelled = answered(await socrates.handle("Briefly summarize the calculator work from context, without tools.", { signal: finalController.signal }));
+  assert.equal(finalCancelled.parts[0]!.status, "interrupted");
+  assert(store.listEvents({ turnId: finalCancelled.parts[0]!.turn.id, type: "agent_message" }).length > 0);
+  passed("cancellation concurrent with a real final response saves the exact response but interrupts the turn");
   await socrates.close();
 
   const recovered = LedgerStore.open({ path: ":memory:" });

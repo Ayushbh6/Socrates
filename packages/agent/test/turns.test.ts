@@ -114,6 +114,34 @@ describe("turn lifecycle", () => {
     expect(warnings).toEqual(["missing.md (spec): not an existing file of the workspace", "node_modules/x/index.js (dependency): temporary or generated files are not anchors"]);
   });
 
+  it.each(["workspace", "acknowledgment"])("finalizes every compound part after a %s setup failure", async failure => {
+    const w = await world({ workspace: false });
+    const { socrates, model } = w.socrates([compound()], [], {
+      ...(failure === "workspace" ? { resolveWorkspace: () => { throw new Error("Unavailable workspace"); } } : {}),
+    });
+    const result = await socrates.handle("Fix a.txt, then write the docs", {
+      ...(failure === "acknowledgment" ? { onAcknowledgment: () => { throw undefined; } } : {}),
+    });
+    if (result.kind !== "answered") throw new Error("route");
+    expect(result.parts.map(p => p.turn.status)).toEqual(["interrupted", "interrupted"]);
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("rolls back the response and anchor revisions if final persistence fails", async () => {
+    const w = await world({ files: { "PLAN.md": "Plan" } });
+    const { socrates } = w.socrates([continueTask()], [final({ anchors: [{ path: "PLAN.md", role: "goal_plan", reason: "Durable" }], task_complete: { reason: "Done" } })]);
+    const complete = w.store.completeTurn.bind(w.store);
+    w.store.completeTurn = () => { throw new Error("Projection failure"); };
+    try {
+      const result = await socrates.handle("Plan the work");
+      if (result.kind !== "answered") throw new Error("route");
+      expect(result.parts[0]!.status).toBe("interrupted");
+      expect(w.store.listEvents({ type: "assistant_response", turnId: result.parts[0]!.turn.id })).toEqual([]);
+      expect(w.store.listAnchors(w.goalId)).toEqual([]);
+      expect(w.store.requireTask(w.taskId).status).toBe("open");
+    } finally { w.store.completeTurn = complete; }
+  });
+
   it("gives the general task recent activity and ignores goal state and completion", async () => {
     const w = await world();
     const { socrates, model } = w.socrates([general()], [final({ full_answer: "Hi! Last time we started the server work.", goal_note: "chatty", task_complete: { reason: "greeted" } })]);
