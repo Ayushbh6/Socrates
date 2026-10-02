@@ -64,7 +64,8 @@ export class OutputBuffer {
   append(chunk: string): void {
     this.text += chunk;
     if (this.text.length > this.retainChars) {
-      const drop = this.text.length - this.retainChars;
+      let drop = this.text.length - this.retainChars;
+      if (/[\uDC00-\uDFFF]/.test(this.text[drop] ?? "")) drop++;
       this.text = this.text.slice(drop);
       this.first += drop;
     }
@@ -115,13 +116,19 @@ export class TerminalSession {
   }
 
   /** Resolves on the next output or lifecycle change. */
-  changed(): Promise<void> {
+  changed(timeoutMs?: number, signal?: AbortSignal): Promise<void> {
     return new Promise((done) => {
+      let timer: NodeJS.Timeout | undefined;
       const listener = () => {
         this.listeners.delete(listener);
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", listener);
         done();
       };
       this.listeners.add(listener);
+      if (timeoutMs !== undefined) timer = setTimeout(listener, timeoutMs);
+      signal?.addEventListener("abort", listener, { once: true });
+      if (signal?.aborted) listener();
     });
   }
 
@@ -165,7 +172,7 @@ export class TerminalSupervisor {
   private readonly foregroundRetainChars: number;
   private readonly recentExited: number;
   /** Process groups whose leader exited while other members were still running. */
-  private readonly lingering = new Set<number>();
+  private readonly lingering = new Map<number, NodeJS.Timeout>();
   private readonly onProcessExit = () => this.killAllNow();
 
   constructor(options: SupervisorOptions = {}) {
@@ -217,7 +224,6 @@ export class TerminalSupervisor {
       if (session.status === "exited") return;
       session.clearTimer();
       // After a deliberate stop the group is already being torn down; only a normal exit is announced.
-      if (child.pid) this.reapGroup(child.pid, session.exitReason === null ? output : null);
       session.status = "exited";
       session.exitCode = code;
       session.signal = signal;
@@ -233,6 +239,11 @@ export class TerminalSupervisor {
     child.on("error", (error) => {
       output.append(`\n[failed to start: ${error.message}]\n`);
       finish(null, null, "failed");
+    });
+    // Descendants can inherit the pipes and prevent `close` after the shell
+    // exits. Reap on `exit`, then let `close` drain the final output.
+    child.once("exit", () => {
+      if (child.pid) this.reapGroup(child.pid, session.exitReason === null ? output : null);
     });
     child.on("close", (code, signal) => finish(code, signal, "exited"));
     if (spec.timeoutMs !== null) {
@@ -290,7 +301,10 @@ export class TerminalSupervisor {
   async shutdown(): Promise<void> {
     process.off("exit", this.onProcessExit);
     await Promise.all([...this.live.values()].map((s) => this.terminate(s)));
-    for (const pid of this.lingering) killGroup(pid, "SIGKILL");
+    for (const [pid, timer] of this.lingering) {
+      clearTimeout(timer);
+      if (groupAlive(pid)) killGroup(pid, "SIGKILL");
+    }
     this.lingering.clear();
   }
 
@@ -302,18 +316,18 @@ export class TerminalSupervisor {
   private reapGroup(pid: number, output: OutputBuffer | null): void {
     if (!groupAlive(pid)) return;
     output?.append("\n[The command left background processes running; they were stopped.]\n");
-    this.lingering.add(pid);
     killGroup(pid, "SIGTERM");
     const timer = setTimeout(() => {
       if (groupAlive(pid)) killGroup(pid, "SIGKILL");
       this.lingering.delete(pid);
     }, LINGER_GRACE_MS);
+    this.lingering.set(pid, timer);
     timer.unref();
   }
 
   private killAllNow(): void {
     for (const s of this.live.values()) if (s.child?.pid) killGroup(s.child.pid, "SIGKILL");
-    for (const pid of this.lingering) killGroup(pid, "SIGKILL");
+    for (const pid of this.lingering.keys()) killGroup(pid, "SIGKILL");
   }
 }
 
@@ -351,7 +365,7 @@ export async function settles(session: TerminalSession, ms: number, signal?: Abo
   while (session.status === "running") {
     const left = deadline - Date.now();
     if (left <= 0 || signal?.aborted) return false;
-    await Promise.race([session.changed(), sleep(Math.min(left, 250))]);
+    await session.changed(Math.min(left, 250), signal);
   }
   return true;
 }
@@ -380,14 +394,16 @@ export function portOpen(port: number): Promise<boolean> {
  * Resolve readiness: every supplied condition (output pattern and/or port)
  * must pass. Returns false when the session exits or the timeout elapses.
  */
-export async function awaitReady(session: TerminalSession, signal: AbortSignal): Promise<boolean> {
+export async function awaitReady(session: TerminalSession, signal: AbortSignal, maxWaitMs = Infinity): Promise<boolean> {
   const ready = session.spec.ready;
   if (!ready) return true;
   const pattern = ready.pattern ? new RegExp(ready.pattern) : null;
-  const deadline = Date.now() + ready.timeoutMs;
+  const deadline = Date.now() + Math.min(ready.timeoutMs, maxWaitMs);
   while (true) {
+    if (session.status !== "running" || signal.aborted) return false;
     const patternOk = !pattern || pattern.test(session.output.slice(session.output.start).text);
     const portOk = ready.port === null || (await portOpen(ready.port));
+    if (session.status !== "running" || signal.aborted) return false;
     if (patternOk && portOk) {
       if (!session.ready) {
         session.ready = true;
@@ -397,6 +413,6 @@ export async function awaitReady(session: TerminalSession, signal: AbortSignal):
     }
     const left = deadline - Date.now();
     if (session.status !== "running" || left <= 0 || signal.aborted) return false;
-    await Promise.race([session.changed(), sleep(Math.min(left, 250))]);
+    await session.changed(Math.min(left, 250), signal);
   }
 }

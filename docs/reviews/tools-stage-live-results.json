@@ -1,0 +1,134 @@
+{
+  "pass": true,
+  "permanentTools": [
+    "read",
+    "glob",
+    "grep",
+    "edit",
+    "apply_patch",
+    "terminal",
+    "terminal_control",
+    "capability_search",
+    "capability_control",
+    "context_retrieve"
+  ],
+  "calls": [
+    {
+      "name": "read",
+      "handle": "e1",
+      "isError": false
+    },
+    {
+      "name": "glob",
+      "handle": "e2",
+      "isError": false
+    },
+    {
+      "name": "grep",
+      "handle": "e3",
+      "isError": false
+    },
+    {
+      "name": "edit",
+      "handle": "e4",
+      "isError": false
+    },
+    {
+      "name": "apply_patch",
+      "handle": "e5",
+      "isError": false
+    },
+    {
+      "name": "terminal",
+      "handle": "e6",
+      "isError": false
+    },
+    {
+      "name": "terminal",
+      "handle": "e7",
+      "isError": false
+    },
+    {
+      "name": "terminal_control",
+      "handle": "e8",
+      "isError": false
+    },
+    {
+      "name": "terminal_control",
+      "handle": "e9",
+      "isError": false
+    },
+    {
+      "name": "terminal_control",
+      "handle": "e10",
+      "isError": false
+    },
+    {
+      "name": "terminal_control",
+      "handle": "e11",
+      "isError": false
+    },
+    {
+      "name": "capability_search",
+      "handle": "e12",
+      "isError": false
+    },
+    {
+      "name": "capability_control",
+      "handle": "e13",
+      "isError": false
+    },
+    {
+      "name": "capability_search",
+      "handle": "e14",
+      "isError": false
+    },
+    {
+      "name": "capability_control",
+      "handle": "e15",
+      "isError": false
+    },
+    {
+      "name": "mcp__demo__echo",
+      "handle": "e16",
+      "isError": false
+    },
+    {
+      "name": "mcp__demo__echo",
+      "handle": "e17",
+      "isError": true
+    },
+    {
+      "name": "context_retrieve",
+      "handle": "e18",
+      "isError": false
+    },
+    {
+      "name": "context_retrieve",
+      "handle": "e19",
+      "isError": false
+    },
+    {
+      "name": "context_retrieve",
+      "handle": "e20",
+      "isError": false
+    },
+    {
+      "name": "mcp__demo__echo",
+      "handle": "e21",
+      "isError": false
+    },
+    {
+      "name": "read",
+      "handle": "e22",
+      "isError": false
+    }
+  ],
+  "persistentRestart": true,
+  "eventReplay": true,
+  "live": {
+    "provider": "gemini:interactions:gemini-3.8-flash",
+    "servedBy": "gemini-3.8-flash",
+    "pass": true
+  }
+}

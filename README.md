@@ -41,6 +41,8 @@ Environment loading reads only known provider keys/configuration and never logs 
 ```sh
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:provider # real function call/result continuation with native metadata
 SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:goal     # real router and scoped worker, persistent goals and artifacts
+pnpm eval:tools                                          # all ten tools, persistent restart and event replay
+SOCRATES_ENV_FILE=/absolute/path/to/.env pnpm eval:tools --live # also verify a provider-selected tool call
 ```
 
 `eval:goal` writes disposable Markdown deliverables and SQLite databases to a fresh run directory inside this repository's ignored `.socrates/evals/` folder. It verifies continued and resumed work, independent tasks, general conversation, dependent compound work, clarification recovery after restart, historical ledger tools, deliberate invalid-answer escalation, event-only recovery, and metadata budgets. The worker uses real LLM responses and validated, explicitly allowed artifact names. This evaluation harness does not implement the architecture's future full coding-agent tool loop, compaction or rollover execution.

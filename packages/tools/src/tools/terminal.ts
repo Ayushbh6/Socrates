@@ -1,11 +1,11 @@
 import { TerminalControlInput, TerminalInput } from "@socrates/contracts";
 import { countTokens, truncateToTokens } from "@socrates/shared";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
-import { type HandlerContext, requireWorkspace } from "../context";
+import { type HandlerContext, requireWorkspace, throwIfCancelled } from "../context";
 import { ToolError } from "../errors";
 import { statOrNull } from "../files";
 import { type ToolHandler, type ToolOutput, json } from "../handler";
-import { type LaunchSpec, type TerminalSession, type TerminalSupervisor, awaitReady, commandEnvironment, settles, sleep } from "../terminals";
+import { type LaunchSpec, type TerminalSession, type TerminalSupervisor, awaitReady, commandEnvironment, settles } from "../terminals";
 
 export const DEFAULT_YIELD_MS = 10_000;
 export const MAX_YIELD_MS = 30_000;
@@ -35,7 +35,13 @@ function compilePattern(pattern: string, field: string): RegExp {
 }
 
 function bounded(text: string, hint: string) {
-  return headTail(text, OUTPUT_TOKENS, hint);
+  let budget = OUTPUT_TOKENS;
+  let out = headTail(text, budget, hint);
+  while (countTokens(json(out.text)) > OUTPUT_TOKENS) {
+    budget = Math.floor(budget * 0.8);
+    out = headTail(text, budget, hint);
+  }
+  return out;
 }
 
 function exitFields(s: TerminalSession) {
@@ -49,7 +55,7 @@ export const terminalTool: ToolHandler<TerminalInput> = {
     `The call waits up to yield_ms (default ${DEFAULT_YIELD_MS}, max ${MAX_YIELD_MS}). A command that finishes returns status "completed" with exit_code and output; one still running is kept alive as a terminal session (status "running") that terminal_control can read, wait on, write to, or stop.`,
     `timeout_ms is the real deadline (default ${DEFAULT_FOREGROUND_TIMEOUT_MS / 60000} minutes for foreground commands, none for background); 0 asks the user for no deadline.`,
     'For servers and watchers set background: true, a name such as "dev-server", and ready (an output pattern and/or a local port) to return once it is ready.',
-    "Output is cut to its beginning and end when long; the full output stays retained. Prefer read, glob, grep, edit, and apply_patch over cat, find, grep, sed, or echo redirection.",
+    "Long output returns its beginning and end; retained output is available through terminal_control or the evidence handle. Retention is bounded (four million characters for background sessions, sixteen million for foreground), and any loss is reported. Prefer read, glob, grep, edit, and apply_patch over cat, find, grep, sed, or echo redirection.",
   ].join(" "),
   schema: TerminalInput,
   concurrency: "serial",
@@ -78,6 +84,7 @@ export const terminalTool: ToolHandler<TerminalInput> = {
         : null,
     };
     const started = Date.now();
+    throwIfCancelled(ctx.signal);
     const session = launch(ctx, terminals, spec);
 
     if (!spec.background) {
@@ -156,7 +163,8 @@ function running(session: TerminalSession, started: number): ToolOutput {
     ...(session.status === "exited" ? exitFields(session) : {}),
     output: out.text,
     cursor: `c${session.observed}`,
-    truncated: out.truncated,
+    truncated: out.truncated || seen.lost,
+    output_lost: seen.lost,
     wall_time_ms: Date.now() - started,
   };
   return { content: json(result), result, facts: commandFacts(session) };
@@ -178,7 +186,7 @@ function unseen(session: TerminalSession) {
   const seen = session.output.slice(session.observed);
   const out = bounded(seen.text, `terminal_control read with cursor c${seen.from} pages through all of it`);
   session.observed = session.output.end;
-  return { output: out.text, cursor: `c${session.observed}`, truncated: out.truncated, output_lost: seen.lost };
+  return { output: out.text, cursor: `c${session.observed}`, truncated: out.truncated || seen.lost, output_lost: seen.lost };
 }
 
 export const terminalControlTool: ToolHandler<TerminalControlInput> = {
@@ -194,7 +202,7 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
   ].join(" "),
   schema: TerminalControlInput,
   concurrency: "serial",
-  mutating: false,
+  mutating: (input) => !["list", "read", "wait"].includes(input.action),
   async execute(input, ctx) {
     const terminals = supervisor(ctx);
     if (input.action === "list") {
@@ -226,10 +234,17 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
         while (rest && count < maxLines) {
           const newline = rest.indexOf("\n");
           const piece = newline < 0 ? rest : rest.slice(0, newline + 1);
-          const cost = countTokens(piece);
+          const cost = countTokens(json(piece));
           if (tokens + cost > OUTPUT_TOKENS) {
             // A line larger than what is left of the page is paged through, never skipped.
-            if (count === 0) shown = truncateToTokens(piece, OUTPUT_TOKENS).text;
+            if (count === 0) {
+              let budget = OUTPUT_TOKENS;
+              shown = truncateToTokens(piece, budget).text;
+              while (countTokens(json(shown)) > OUTPUT_TOKENS) {
+                budget = Math.floor(budget * 0.8);
+                shown = truncateToTokens(piece, budget).text;
+              }
+            }
             break;
           }
           shown += piece;
@@ -268,10 +283,10 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
           if (input.event === "exit" && session.status === "exited") event = "exit";
           else if (input.event === "output" && fresh.length > 0) event = "output";
           else if (pattern && pattern.test(fresh)) event = "pattern";
-          else if (input.event === "ready" && (session.ready || (session.status === "running" && (await awaitReady(session, ctx.signal))))) event = "ready";
+          else if (input.event === "ready" && (session.ready || (session.status === "running" && (await awaitReady(session, ctx.signal, Math.max(1, deadline - Date.now())))))) event = "ready";
           else if (session.status === "exited") event = "exit";
           else if (Date.now() >= deadline) event = "timeout";
-          else await Promise.race([session.changed(), sleep(Math.min(250, deadline - Date.now()))]);
+          else await session.changed(Math.min(250, deadline - Date.now()), ctx.signal);
         }
         const result = { action: "wait", ...identity(session), event, ready: session.ready, ...unseen(session), ...exitFields(session) };
         return { content: json(result), result };
@@ -317,9 +332,14 @@ export const terminalControlTool: ToolHandler<TerminalControlInput> = {
       case "restart": {
         const started = Date.now();
         await terminals.terminate(session);
+        throwIfCancelled(ctx.signal);
         const replacement = launch(ctx, terminals, session.spec);
         if (replacement.spec.ready) await awaitReady(replacement, ctx.signal);
         else await settles(replacement, 1000, ctx.signal);
+        if (ctx.signal.aborted) {
+          await terminals.terminate(replacement);
+          throwIfCancelled(ctx.signal);
+        }
         const out = running(replacement, started);
         const result = { action: "restart", previous_session_id: session.id, ...(out.result as object), state_version: replacement.stateVersion };
         return { content: json(result), result, facts: out.facts ?? [] };

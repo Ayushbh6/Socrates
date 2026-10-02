@@ -29,7 +29,7 @@ export interface ToolHandler<I = unknown> {
   /** Parallel-safe calls may run concurrently; serial calls run one at a time in emitted order. */
   concurrency: "parallel" | "serial";
   /** Whether a call may change the workspace (first-mutation gate). */
-  mutating: boolean;
+  mutating: boolean | ((input: I) => boolean);
   execute(input: I, ctx: HandlerContext): Promise<ToolOutput>;
 }
 

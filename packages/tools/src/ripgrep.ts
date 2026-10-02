@@ -80,7 +80,10 @@ export async function runRipgrep(
   signal: AbortSignal,
   onLine: (line: string) => boolean,
 ): Promise<{ code: number | null; stderr: string; stopped: boolean }> {
+  const cancelled = () => new ToolError("cancelled", "The search was cancelled.", "No action needed.", false);
+  if (signal.aborted) throw cancelled();
   const binary = await ripgrepPath();
+  if (signal.aborted) throw cancelled();
   return new Promise((done, fail) => {
     const child = spawn(binary, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let buffer = "";

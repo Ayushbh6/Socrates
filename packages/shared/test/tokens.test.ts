@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 import { countTokens, truncateTailToTokens, truncateToTokens } from "../src";
 
 describe("token counting", () => {
+  it("counts literal special-token text and large ordinary output without throwing", () => {
+    const special = "<|endoftext|> <|fim_prefix|>";
+    expect(countTokens(special)).toBeGreaterThan(0);
+    expect(truncateToTokens(special, 2).text).toBeTruthy();
+    expect(countTokens("word ".repeat(150000))).toBeGreaterThan(100000);
+  });
   it("counts ordinary text exactly and truncates at token boundaries from either end", () => {
     const code = "export function f(x) { return x + 1; }\n".repeat(50);
     expect(countTokens(code)).toBe(650);

@@ -34,7 +34,7 @@ export type RunRef =
  * result sets behind cursors and the short references issued by searches.
  */
 export class RunState {
-  private readonly cursors = new Map<string, { key: string; items: unknown[]; offset: number }>();
+  private readonly cursors = new Map<string, { key: string; items: unknown[]; offset: number; capped: boolean }>();
   private readonly refs = new Map<string, RunRef>();
   private cursorCounter = 0;
   private readonly refCounters = new Map<string, number>();
@@ -42,21 +42,21 @@ export class RunState {
   constructor(private readonly maxCursors = 64) {}
 
   /** Freeze the remainder of a result set and return the cursor that continues it. */
-  saveCursor(key: string, items: unknown[], offset: number): string {
+  saveCursor(key: string, items: unknown[], offset: number, capped = false): string {
     const id = `k${++this.cursorCounter}`;
-    this.cursors.set(id, { key, items, offset });
+    this.cursors.set(id, { key, items, offset, capped });
     while (this.cursors.size > this.maxCursors) this.cursors.delete(this.cursors.keys().next().value!);
     return id;
   }
 
   /** The frozen set behind a cursor, which must have been issued for the same request. */
-  takeCursor<T>(id: string, key: string): { items: T[]; offset: number } {
+  takeCursor<T>(id: string, key: string): { items: T[]; offset: number; capped: boolean } {
     const entry = this.cursors.get(id);
     if (!entry) throw new ToolError("cursor_expired", `Cursor ${id} is unknown or expired.`, "Repeat the call without cursor to start a new result set.");
     if (entry.key !== key) {
       throw new ToolError("cursor_mismatch", `Cursor ${id} belongs to a different request.`, "Present a cursor only with the exact parameters of the call that returned it, or omit cursor to search again.");
     }
-    return { items: entry.items as T[], offset: entry.offset };
+    return { items: entry.items as T[], offset: entry.offset, capped: entry.capped };
   }
 
   /** Issue the next short reference with the given prefix, such as r1 or c3. */

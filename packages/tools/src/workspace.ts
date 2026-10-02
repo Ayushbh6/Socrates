@@ -62,12 +62,12 @@ export class WorkspaceRoot {
 }
 
 function isRepositoryMetadata(rel: string): boolean {
-  return rel === ".git" || rel.startsWith(".git/");
+  return rel.split("/").includes(".git");
 }
 
 function isInside(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
 function realOfNearestExisting(abs: string): string {

@@ -519,7 +519,7 @@ export class LedgerStore {
       case "terminal_exited": {
         const p = e.payload as EventPayloads["terminal_exited"];
         if (e.task_id && p.facts?.length) {
-          for (const f of p.facts) this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", newId("fact"), e.task_id, f.kind, f.value, e.id, e.at);
+          for (const [index, f] of p.facts.entries()) this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", `fact_${e.id}_${index}`, e.task_id, f.kind, f.value, e.id, e.at);
           this.indexTask(e.task_id);
         }
         break;
@@ -1179,8 +1179,8 @@ export class LedgerStore {
         event.at,
       );
     }
-    for (const f of p.facts) {
-      this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", newId("fact"), taskId, f.kind, f.value, event.id, event.at);
+    for (const [index, f] of p.facts.entries()) {
+      this.run("INSERT INTO task_facts (id, task_id, kind, value, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", `fact_${event.id}_${index}`, taskId, f.kind, f.value, event.id, event.at);
     }
     if (p.facts.length) this.indexTask(taskId);
   }

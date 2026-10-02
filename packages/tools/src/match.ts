@@ -61,7 +61,7 @@ export function findMatches(content: string, find: string): MatchResult | null {
       }
       const last = lines[i + findLines.length - 1]!;
       let reindent: Match["reindent"] = null;
-      if (tier === "indentation") {
+      if (tier === "indentation" || tier === "unicode_punctuation") {
         const shift = indentShift(lines.slice(i, i + findLines.length).map((l) => l.text), findLines);
         if (shift === undefined) unshiftable.push(i + 1);
         else reindent = shift;

@@ -9,7 +9,10 @@ import { z } from "zod";
 
 const Path = z.string().min(1).max(4096);
 const Cursor = z.string().min(1).max(64);
-const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.");
+const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD.").refine((day) => {
+  const date = new Date(`${day}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === day;
+}, "Use a real calendar date.");
 
 export const ReadInput = z.strictObject({
   path: Path.describe("Workspace-relative path of one UTF-8 text file."),

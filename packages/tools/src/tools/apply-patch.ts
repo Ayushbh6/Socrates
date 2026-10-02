@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, unlink } from "node:fs/promises";
+import { mkdir, readFile, rm, rmdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { ApplyPatchInput } from "@socrates/contracts";
 import { type HandlerContext, requireWorkspace, throwIfCancelled } from "../context";
@@ -28,11 +28,12 @@ const encoded = (c: PlannedChange) => encodeText(c.after!, c.before ?? { eol: "\
  * free. On any failure every file already written is restored, except one the
  * user changed again in the meantime, which is left as it is and named.
  */
-async function commit(planned: PlannedChange[]): Promise<void> {
+async function commit(planned: PlannedChange[], ctx: HandlerContext): Promise<void> {
   const undo: { path: string; restore: () => Promise<boolean> }[] = [];
   const unchanged = (abs: string, hash: string) => async () => (await currentHash(abs)) === hash;
   try {
     for (const change of planned) {
+      throwIfCancelled(ctx.signal);
       if (change.before && (await currentHash(change.source.abs)) !== change.before.hash) throw changedDuringCall(change.source.rel);
       if (change.after !== null) {
         const content = encoded(change);
@@ -41,14 +42,42 @@ async function commit(planned: PlannedChange[]): Promise<void> {
         if (change.action === "updated") {
           const original = await readFile(change.target.abs);
           await writeAtomic(change.target.abs, content, change.before?.mode);
-          undo.push({ path: change.target.rel, restore: async () => (await isWritten()) && (await writeAtomic(change.target.abs, original.toString("utf8"), change.before?.mode), true) });
+          undo.push({ path: change.target.rel, restore: async () => {
+            if (!(await isWritten())) return false;
+            await writeAtomic(change.target.abs, original.toString("utf8"), change.before?.mode);
+            return true;
+          } });
         } else {
           const createdDir = await mkdir(path.dirname(change.target.abs), { recursive: true });
-          if (createdDir) undo.push({ path: path.dirname(change.target.rel), restore: async () => (await rm(createdDir, { recursive: true, force: true }), true) });
+          if (createdDir) {
+            // Remove only empty directories this patch created. A concurrent
+            // user file inside one must survive rollback.
+            const dirs: string[] = [];
+            for (let dir = path.dirname(change.target.abs); ; dir = path.dirname(dir)) {
+              dirs.push(dir);
+              if (dir === createdDir) break;
+            }
+            undo.push({ path: path.dirname(change.target.rel), restore: async () => {
+              for (const dir of dirs) {
+                try { await rmdir(dir); }
+                catch (error) {
+                  const code = (error as NodeJS.ErrnoException).code;
+                  if (code === "ENOENT") continue;
+                  if (code === "ENOTEMPTY" || code === "EEXIST") return true;
+                  throw error;
+                }
+              }
+              return true;
+            } });
+          }
           if (!(await writeNew(change.target.abs, content, change.before?.mode))) {
             throw new ToolError("file_exists", `${change.target.rel} appeared while the patch was being applied, so nothing was written.`, `Check ${change.target.rel}, then rebuild the patch.`);
           }
-          undo.push({ path: change.target.rel, restore: async () => (await isWritten()) && (await rm(change.target.abs, { force: true }), true) });
+          undo.push({ path: change.target.rel, restore: async () => {
+            if (!(await isWritten())) return false;
+            await rm(change.target.abs, { force: true });
+            return true;
+          } });
         }
       }
       if (change.action === "deleted" || change.action === "moved") {
@@ -58,11 +87,12 @@ async function commit(planned: PlannedChange[]): Promise<void> {
         undo.push({ path: change.source.rel, restore: async () => writeNew(change.source.abs, original.toString("utf8"), change.before?.mode) });
       }
     }
+    throwIfCancelled(ctx.signal);
   } catch (error) {
     const conflicts: string[] = [];
     for (const step of undo.reverse()) if (!(await step.restore().catch(() => false))) conflicts.push(step.path);
-    if (conflicts.length && error instanceof ToolError) {
-      throw new ToolError(error.code, `${error.message} Rolled back the other files, but left ${conflicts.join(", ")} as it is now because it changed again during the rollback.`, error.correction, error.retryable);
+    if (conflicts.length) {
+      throw new ToolError("patch_rollback_conflict", `The patch failed. Rollback could not restore ${conflicts.join(", ")}; concurrent changes were preserved.`, "Inspect the named files and rebuild the patch from their current contents.", false, { conflicts, cause: error instanceof ToolError ? error.body() : String(error) });
     }
     throw error;
   }
@@ -108,7 +138,7 @@ async function applyHunks(hunks: PatchHunk[], workspace: WorkspaceRoot, ctx: Han
   }
 
   throwIfCancelled(ctx.signal);
-  await commit(planned);
+  await commit(planned, ctx);
 
   const files = planned.map((c) => ({ path: c.target.rel, action: c.action, ...(c.action === "moved" ? { from: c.source.rel } : {}) }));
   const { diff, truncated } = boundedDiff(planned.map((c) => unifiedDiff(c.target.rel, c.before?.text ?? null, c.after)));
@@ -135,7 +165,7 @@ async function applyHunks(hunks: PatchHunk[], workspace: WorkspaceRoot, ctx: Han
 export const applyPatchTool: ToolHandler<ApplyPatchInput> = {
   name: "apply_patch",
   description: [
-    "Create, update, move, or delete one or more files with one patch. The whole patch is validated first and then applied as one unit: every file change succeeds or none does.",
+    "Create, update, move, or delete one or more files with one patch. All changes are validated first. On failure or cancellation, completed writes are rolled back; concurrent user changes are preserved and any rollback conflicts are reported.",
     PATCH_FORMAT_HINT,
     'Paths are workspace-relative. Context lines must match the current file (read it first); "@@ line" may name a nearby line such as a function signature to anchor a chunk. Use "*** Move to: path" after Update File to rename.',
     "Prefer edit for one small replacement; use apply_patch for new files, several hunks, or coordinated multi-file changes.",

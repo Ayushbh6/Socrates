@@ -7,7 +7,6 @@ import { statOrNull } from "../files";
 import { type ToolHandler, json } from "../handler";
 import { page } from "../paging";
 import { runRipgrep } from "../ripgrep";
-import picomatch from "picomatch";
 
 export const GLOB_DEFAULT_LIMIT = 200;
 export const GLOB_MAX_LIMIT = 1000;
@@ -24,30 +23,21 @@ const MAX_COLLECTED_MATCHES = 5_000;
  */
 const EXCLUDE_GIT = ["--no-require-git", "--glob", "!.git", "--glob", "!**/.git/**"];
 
-/**
- * A matcher for one gitignore-style glob relative to the searched directory:
- * a pattern without "/" matches file names at any depth.
- *
- * Globs are applied here, to the ignore-respecting file list, instead of
- * being passed to ripgrep, because a ripgrep inclusion glob overrides
- * .gitignore and would bring ignored files back.
- */
-function globMatcher(pattern: string): (rel: string) => boolean {
-  const clean = pattern.replace(/^\.\//, "").replace(/^\//, "");
-  try {
-    return picomatch(clean, { dot: true, basename: !clean.includes("/") });
-  } catch (error) {
-    throw new ToolError("invalid_pattern", `The glob pattern is invalid: ${(error as Error).message}`, 'Use a glob such as "**/*.ts" or "src/**/test_*.py".');
+/** Intersect ripgrep's native glob matches with its ignore-respecting file list. */
+async function listFiles(dirAbs: string, signal: AbortSignal, pattern: string | undefined, onFile: (rel: string) => boolean): Promise<void> {
+  let matching: Set<string> | null = null;
+  if (pattern !== undefined) {
+    matching = new Set();
+    const candidates = matching;
+    const filtered = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", "--glob", pattern, ...EXCLUDE_GIT], dirAbs, signal, (line) => (candidates.add(line.replace(/^\.\//, "").split(path.sep).join("/")), true));
+    if (filtered.code === 2) throw new ToolError("invalid_pattern", `The glob was rejected: ${firstLines(filtered.stderr, 3)}`, 'Use a glob such as "**/*.ts" or "src/**/test_*.py".');
   }
-}
-
-/** Files under a directory that ignore rules allow, as paths relative to it, in stable order. */
-async function listFiles(dirAbs: string, signal: AbortSignal, accept: (rel: string) => boolean, onFile: (rel: string) => boolean): Promise<void> {
-  await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", ...EXCLUDE_GIT], dirAbs, signal, (line) => {
+  const listed = await runRipgrep(["--no-config", "--files", "--hidden", "--sort", "path", ...EXCLUDE_GIT], dirAbs, signal, (line) => {
     if (!line) return true;
     const rel = line.replace(/^\.\//, "").split(path.sep).join("/");
-    return accept(rel) ? onFile(rel) : true;
+    return !matching || matching.has(rel) ? onFile(rel) : true;
   });
+  if (listed.code === 2 && !listed.stopped) throw new ToolError("search_failed", `The file listing failed: ${firstLines(listed.stderr, 3)}`, "Check directory permissions and retry.");
 }
 
 function directory(ctx: HandlerContext, input: string | undefined) {
@@ -73,14 +63,14 @@ export const globTool: ToolHandler<GlobInput> = {
     let offset = 0;
     let capped = false;
     if (input.cursor) {
-      ({ items, offset } = ctx.run.takeCursor<string>(input.cursor, key));
+      ({ items, offset, capped } = ctx.run.takeCursor<string>(input.cursor, key));
     } else {
       const info = await statOrNull(dir.abs);
       if (!info) throw new ToolError("directory_not_found", `${dir.rel} does not exist.`, "Use an existing directory, or omit path to search the whole workspace.");
       if (!info.isDirectory()) throw new ToolError("not_a_directory", `${dir.rel} is a file, not a directory.`, "Pass its parent directory as path, or read the file directly.");
       items = [];
       const collected = items;
-      await listFiles(dir.abs, ctx.signal, globMatcher(input.pattern), (rel) => {
+      await listFiles(dir.abs, ctx.signal, input.pattern, (rel) => {
         collected.push(workspace.relative(path.resolve(dir.abs, rel)));
         if (collected.length >= MAX_COLLECTED_PATHS) {
           capped = true;
@@ -89,8 +79,9 @@ export const globTool: ToolHandler<GlobInput> = {
         return true;
       });
     }
-    const { out, nextCursor } = page(ctx, key, items, offset, limit, (p) => p);
+    const { out, nextCursor } = page(ctx, key, items, offset, limit, (p) => json(p), { capped });
     const result: Record<string, unknown> = { root: dir.rel, matches: out, returned: out.length, truncated: nextCursor !== null, next_cursor: nextCursor };
+    result.collection_capped = capped;
     if (capped) result.note = `Stopped collecting at ${MAX_COLLECTED_PATHS} paths; narrow the pattern or path to see everything.`;
     if (items.length === 0) result.note = "No files matched. Files ignored by .gitignore are not listed.";
     return { content: json(result), result };
@@ -122,19 +113,20 @@ export const grepTool: ToolHandler<GrepInput> = {
     let offset = 0;
     let capped = false;
     if (input.cursor) {
-      ({ items, offset } = ctx.run.takeCursor<GrepMatch>(input.cursor, key));
+      ({ items, offset, capped } = ctx.run.takeCursor<GrepMatch>(input.cursor, key));
     } else {
       const info = await statOrNull(target.abs);
       if (!info) throw new ToolError("path_not_found", `${target.rel} does not exist.`, "Use an existing file or directory, or omit path to search the whole workspace.");
       const cwd = info.isDirectory() ? target.abs : path.dirname(target.abs);
-      // With a glob filter, only files the ignore rules allow are eligible (see globMatcher).
+      // Filters and explicit file targets never override ignore rules.
       let eligible: Set<string> | null = null;
-      if (input.glob) {
-        const matches = globMatcher(input.glob);
+      if (input.glob || !info.isDirectory()) {
         eligible = new Set();
         const allowed = eligible;
-        if (info.isDirectory()) await listFiles(cwd, ctx.signal, matches, (rel) => (allowed.add(rel), true));
-        else if (matches(path.basename(target.abs))) allowed.add(path.basename(target.abs));
+        await listFiles(cwd, ctx.signal, input.glob, (rel) => {
+          if (info.isDirectory() || rel === path.basename(target.abs)) allowed.add(rel);
+          return true;
+        });
       }
       const args = [
         "--no-config",
@@ -177,8 +169,9 @@ export const grepTool: ToolHandler<GrepInput> = {
         if (run.stderr.trim()) throw new ToolError("search_failed", `The search failed: ${firstLines(run.stderr, 3)}`, "Check the path and glob, then retry.");
       }
     }
-    const { out, nextCursor } = page(ctx, key, items, offset, limit, (m) => json(m));
+    const { out, nextCursor } = page(ctx, key, items, offset, limit, (m) => json(m), { capped });
     const result: Record<string, unknown> = { matches: out, returned: out.length, truncated: nextCursor !== null, next_cursor: nextCursor };
+    result.collection_capped = capped;
     if (capped) result.note = `Stopped collecting at ${MAX_COLLECTED_MATCHES} matches; narrow the pattern, path, or glob to see everything.`;
     return { content: json(result), result };
   },

@@ -4,9 +4,10 @@ import type { LedgerStore } from "@socrates/store";
 import { z } from "zod";
 import { RESULT_CEILING_TOKENS, head } from "../bounds";
 import { type CapabilityCatalog, type CatalogEntry, type LoadedMcpTool, type McpCallResult, type McpToolEntry, mcpPublicName } from "../catalog";
-import type { HandlerContext } from "../context";
+import { type HandlerContext, throwIfCancelled } from "../context";
 import { ToolError } from "../errors";
 import { hashBytes } from "../files";
+import { compileToolSchema } from "../schema";
 import { type ToolHandler, json } from "../handler";
 
 export const SEARCH_DEFAULT_LIMIT = 3;
@@ -44,42 +45,67 @@ export class CapabilityRuntime {
     return this.byGoal.get(goalId)?.get(name);
   }
 
-  /** Load and revalidate every active MCP tool of a goal that this process does not hold. */
+  /** Refresh the goal's active schemas for the next model request. */
   async rehydrate(goalId: string): Promise<void> {
-    for (const active of this.store.listActiveCapabilities(goalId)) {
-      if (active.kind !== "mcp" || this.get(goalId, active.name)) continue;
-      const entry = this.catalog.entries().find((e): e is McpToolEntry => e.kind === "mcp" && e.name === active.name);
+    const active = this.store.listActiveCapabilities(goalId).filter((c) => c.kind === "mcp");
+    const refreshed: { item: typeof active[number]; entry: McpToolEntry; tool: LoadedMcpTool; digest: string }[] = [];
+    let total = 0;
+    for (const item of active) {
+      const entry = this.catalog.entries().find((e): e is McpToolEntry => e.kind === "mcp" && e.name === item.name);
       if (!entry || entry.availability !== "available") continue;
-      try {
-        const tool = await this.catalog.loadMcpTool(entry.name);
-        if (validateSchema(entry.name, tool)) continue;
-        const digest = hashBytes(JSON.stringify(tool.inputSchema));
-        if (digest !== active.digest) this.store.activateCapability(goalId, { kind: "mcp", name: entry.name, version: tool.schemaVersion, digest });
-        this.set(goalId, entry.name, mcpPublicName(entry.server, entry.tool), tool);
-      } catch {
-        // Unreachable now; left out of the tool list and retried on the next request.
-      }
+      let tool: LoadedMcpTool;
+      try { tool = await this.catalog.loadMcpTool(entry.name); }
+      catch { continue; }
+      if (validateSchema(entry.name, tool)) continue;
+      total += countTokens(JSON.stringify(tool.inputSchema));
+      const digest = hashBytes(JSON.stringify(tool.inputSchema));
+      refreshed.push({ item, entry, tool, digest });
+    }
+    if (active.length > MAX_ACTIVE_MCP_TOOLS || total > MAX_ACTIVE_MCP_SCHEMA_TOKENS) {
+      throw new ToolError("too_many_active_tools", "The refreshed active MCP schemas exceed the goal's limits.", "Deactivate tools before continuing.");
+    }
+    // Validate the complete set before replacing persisted digests or cached
+    // definitions, so a failed refresh cannot leave a partial replacement.
+    this.byGoal.set(goalId, new Map());
+    for (const { item, entry, tool, digest } of refreshed) {
+      if (digest !== item.digest || tool.schemaVersion !== item.version) this.store.activateCapability(goalId, { kind: "mcp", name: entry.name, version: tool.schemaVersion, digest });
+      this.set(goalId, entry.name, mcpPublicName(entry.server, entry.tool), tool);
     }
   }
 
-  /** Active MCP tool schemas in deterministic public-name order, appended after the permanent tools. */
   async definitions(goalId: string): Promise<ToolDefinition[]> {
     await this.rehydrate(goalId);
-    const loaded = this.byGoal.get(goalId);
-    return this.store
-      .listActiveCapabilities(goalId)
-      .flatMap((c) => {
-        const entry = c.kind === "mcp" ? loaded?.get(c.name) : undefined;
-        return entry ? [{ name: entry.publicName, description: entry.tool.description, inputSchema: entry.tool.inputSchema }] : [];
-      })
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return this.store.listActiveCapabilities(goalId).flatMap((c) => {
+      const entry = c.kind === "mcp" ? this.get(goalId, c.name) : undefined;
+      return entry ? [{ name: entry.publicName, description: entry.tool.description, inputSchema: entry.tool.inputSchema }] : [];
+    }).sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** The active MCP tool of a goal behind a public name, if any. */
+  /** Revalidate at dispatch; a schema changed since surfacing must never execute. */
   async resolve(goalId: string, publicName: string): Promise<{ name: string; tool: LoadedMcpTool } | null> {
-    await this.rehydrate(goalId);
-    for (const [name, entry] of this.byGoal.get(goalId) ?? []) if (entry.publicName === publicName) return { name, tool: entry.tool };
-    return null;
+    const active = this.store.listActiveCapabilities(goalId).filter((c) => c.kind === "mcp");
+    const entries = this.catalog.entries();
+    const entry = entries.find((e): e is McpToolEntry => e.kind === "mcp" && mcpPublicName(e.server, e.tool) === publicName && active.some((c) => c.name === e.name));
+    if (!entry) return null;
+    if (entry.availability !== "available") {
+      this.delete(goalId, entry.name);
+      throw new ToolError("capability_unavailable", `${entry.name} is ${entry.availability}.`, "Search or activate it again once available.");
+    }
+    let tool: LoadedMcpTool;
+    try { tool = await this.catalog.loadMcpTool(entry.name); }
+    catch {
+      this.delete(goalId, entry.name);
+      throw new ToolError("capability_unavailable", `${entry.name} could not be reached.`, "Search or activate it again.");
+    }
+    const invalid = validateSchema(entry.name, tool);
+    if (invalid) { this.delete(goalId, entry.name); throw invalid; }
+    const original = active.find((c) => c.name === entry.name)!;
+    if (hashBytes(JSON.stringify(tool.inputSchema)) !== original.digest) {
+      this.delete(goalId, entry.name);
+      throw new ToolError("tool_schema_changed", `${entry.name} changed its schema since it was made available.`, "Activate it again or refresh the tool definitions before retrying.");
+    }
+    this.set(goalId, entry.name, publicName, tool);
+    return { name: entry.name, tool };
   }
 
   /**
@@ -92,9 +118,11 @@ export class CapabilityRuntime {
     const stale: string[] = [];
     for (const active of this.store.listActiveCapabilities(goalId)) {
       if (active.kind !== "skill") continue;
+      const entry = this.catalog.entries().find((e) => e.kind === "skill" && e.name === active.name);
+      if (!entry || entry.availability !== "available") { stale.push(active.name); continue; }
       try {
         const skill = await this.catalog.loadSkill(active.name);
-        if (hashBytes(skill.instructions) === active.digest) skills.push({ name: active.name, version: skill.version, instructions: skill.instructions });
+        if (skill.version === active.version && countTokens(skill.instructions) <= MAX_SKILL_TOKENS && hashBytes(skill.instructions) === active.digest) skills.push({ name: active.name, version: skill.version, instructions: skill.instructions });
         else stale.push(active.name);
       } catch {
         stale.push(active.name);
@@ -105,23 +133,27 @@ export class CapabilityRuntime {
 
   /** A handler that dispatches calls of one active MCP tool to its server. */
   mcpHandler(publicName: string, name: string, tool: LoadedMcpTool, goalId: string): ToolHandler<Record<string, unknown>> {
-    const required = Array.isArray(tool.inputSchema.required) ? (tool.inputSchema.required as string[]) : [];
+    const validate = compileToolSchema(name, tool.inputSchema);
     return {
       name: publicName,
       description: tool.description,
       schema: z.record(z.string(), z.unknown()).superRefine((input, issue) => {
-        for (const key of required) if (!(key in input)) issue.addIssue({ code: "custom", path: [key], message: "Required." });
+        if (!validate(input)) for (const error of (validate.errors ?? []).slice(0, 8)) {
+          issue.addIssue({ code: "custom", message: `${error.instancePath || "(input)"}: ${error.message}` });
+        }
       }),
       concurrency: "serial",
-      mutating: false,
+      mutating: true,
       execute: async (input, ctx) => {
         let result: McpCallResult;
         try {
           result = await this.catalog.callMcpTool(name, input, ctx.signal);
         } catch {
+          throwIfCancelled(ctx.signal);
           this.delete(goalId, name);
           throw new ToolError("capability_unavailable", `${name} could not be reached.`, "Search for it with capability_search and activate it again, or continue without it.");
         }
+        if (ctx.signal.aborted) throw new ToolError("cancelled", "The MCP call was cancelled.", "Inspect its recorded outcome before deciding whether to retry.", false, result);
         const facts = [{ kind: "capability" as const, value: `mcp ${name}` }];
         if (result.isError) {
           throw new ToolError("mcp_tool_error", `${publicName} returned an error: ${head(result.content, 400).text}`, "Check the input against the tool's schema, or continue without it.", true, { content: result.content });
@@ -142,6 +174,8 @@ function validateSchema(name: string, tool: LoadedMcpTool): ToolError | null {
   if (tokens > MAX_MCP_SCHEMA_TOKENS) {
     return new ToolError("tool_schema_too_large", `${name} has a ${tokens}-token schema, above the ${MAX_MCP_SCHEMA_TOKENS}-token bound.`, "Continue without this tool, or search for an alternative.", false);
   }
+  try { compileToolSchema(name, tool.inputSchema); }
+  catch (error) { return error as ToolError; }
   return null;
 }
 
@@ -227,6 +261,7 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
       const goalId = ctx.binding.goalId;
       const refs = { task_id: ctx.binding.taskId, chat_id: ctx.binding.chatId, turn_id: ctx.binding.turnId };
       if (input.action === "list") {
+        await loaded.rehydrate(goalId);
         const active = ctx.store.listActiveCapabilities(goalId).map((c) => ({
           kind: c.kind,
           name: c.name,
@@ -239,7 +274,7 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
 
       if (input.action === "deactivate") {
         const active = ctx.store.listActiveCapabilities(goalId);
-        const target = active.find((c) => c.name === input.name || loaded.get(goalId, c.name)?.publicName === input.name);
+        const target = active.find((c) => c.name === input.name || (c.kind === "mcp" && ctx.catalog.entries().some((e) => e.kind === "mcp" && e.name === c.name && mcpPublicName(e.server, e.tool) === input.name)));
         if (!target) {
           throw new ToolError("capability_not_active", `${input.name} is not active for this goal.${active.length ? ` Active: ${active.map((c) => c.name).join(", ")}.` : ""}`, "Use capability_control list to see the active names.");
         }
@@ -266,7 +301,7 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
 
       if (entry.kind === "skill") {
         const skill = await ctx.catalog.loadSkill(entry.name);
-        if (existing && existing.version === skill.version) {
+        if (existing && existing.version === skill.version && existing.digest === hashBytes(skill.instructions)) {
           const result = { kind: "skill", name: entry.name, status: "already_active", version: skill.version };
           return { content: json(result), result };
         }
@@ -279,8 +314,10 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
           const status = !dep ? "unavailable" : current.some((c) => c.name === name) ? "active" : dep.availability === "available" ? "inactive" : dep.availability;
           return { kind: dep?.kind ?? "unknown", name, status };
         });
-        ctx.store.activateCapability(goalId, { kind: "skill", name: entry.name, version: skill.version, digest: hashBytes(skill.instructions) }, refs);
         const result = { kind: "skill", name: entry.name, status: "activated", version: skill.version, instructions: skill.instructions, resource_base: skill.resourceBase, dependencies };
+        if (countTokens(json(result)) > RESULT_CEILING_TOKENS) throw new ToolError("skill_too_large", `${entry.name} and its metadata exceed the result ceiling.`, "Shorten the Skill or continue without it.", false);
+        throwIfCancelled(ctx.signal);
+        ctx.store.activateCapability(goalId, { kind: "skill", name: entry.name, version: skill.version, digest: hashBytes(skill.instructions) }, refs);
         return { content: json(result), result, facts: [{ kind: "capability", value: `skill ${entry.name}` }] };
       }
 
@@ -290,10 +327,12 @@ export function capabilityControlTool(loaded: CapabilityRuntime): ToolHandler<Ca
       if (invalid) throw invalid;
       const schemaTokens = countTokens(JSON.stringify(tool.inputSchema));
       const digest = hashBytes(JSON.stringify(tool.inputSchema));
-      if (existing && existing.digest === digest && loaded.get(goalId, entry.name)) {
+      if (existing && existing.digest === digest && existing.version === tool.schemaVersion && loaded.get(goalId, entry.name)) {
         const result = { kind: "mcp", name: entry.name, status: "already_active", public_name: publicName, schema_version: tool.schemaVersion };
         return { content: json(result), result };
       }
+      await loaded.rehydrate(goalId);
+      throwIfCancelled(ctx.signal);
       const otherMcp = current.filter((c) => c.kind === "mcp" && c.name !== entry.name);
       const otherTokens = otherMcp.reduce((sum, c) => sum + countTokens(JSON.stringify(loaded.get(goalId, c.name)?.tool.inputSchema ?? {})), 0);
       if (otherMcp.length >= MAX_ACTIVE_MCP_TOOLS || otherTokens + schemaTokens > MAX_ACTIVE_MCP_SCHEMA_TOKENS) {

@@ -69,13 +69,12 @@ export async function currentHash(abs: string): Promise<string | null> {
 /** Write through a temporary sibling and rename, so readers never see a half-written file. */
 export async function writeAtomic(abs: string, content: string, mode?: number): Promise<void> {
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.socrates-${randomBytes(4).toString("hex")}`);
-  await writeFile(tmp, content, "utf8");
   try {
+    await writeFile(tmp, content, "utf8");
     if (mode !== undefined) await chmod(tmp, mode);
     await rename(tmp, abs);
-  } catch (error) {
+  } finally {
     await unlink(tmp).catch(() => {});
-    throw error;
   }
 }
 
@@ -86,8 +85,8 @@ export async function writeAtomic(abs: string, content: string, mode?: number): 
  */
 export async function writeNew(abs: string, content: string, mode?: number): Promise<boolean> {
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.socrates-${randomBytes(4).toString("hex")}`);
-  await writeFile(tmp, content, "utf8");
   try {
+    await writeFile(tmp, content, "utf8");
     if (mode !== undefined) await chmod(tmp, mode);
     await link(tmp, abs);
     return true;

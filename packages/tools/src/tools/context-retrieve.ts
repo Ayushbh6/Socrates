@@ -95,7 +95,7 @@ function ledgerSearch(input: Query, ctx: HandlerContext) {
   let offset = 0;
   let capped = false;
   if (input.cursor) {
-    ({ items, offset } = ctx.run.takeCursor<LedgerItem>(input.cursor, key));
+    ({ items, offset, capped } = ctx.run.takeCursor<LedgerItem>(input.cursor, key));
   } else {
     const store = ctx.store;
     const goals = scope === "current_goal" ? [currentGoal(ctx)] : store.listGoals();
@@ -147,7 +147,7 @@ function ledgerSearch(input: Query, ctx: HandlerContext) {
     c.task
       ? { kind: "task", selector: taskSelector(c.goal, c.task), goal: goalLabel(c.goal), title: c.task.title, objective: c.task.objective, status: c.task.status, note: excerpt(c.task.continuationNote, 240) || null, updated_at: c.updatedAt }
       : { kind: "goal", selector: goalSelector(c.goal), title: c.goal.title, objective: c.goal.objective, status: c.goal.status, note: excerpt(c.goal.note, 240) || null, updated_at: c.updatedAt };
-  const { out, nextCursor } = page(ctx, key, items, offset, limit, (c) => json(row(c)));
+  const { out, nextCursor } = page(ctx, key, items, offset, limit, (c) => json(row(c)), { capped, maxBytes: MAX_BYTES, maxLines: MAX_LINES });
   return {
     action: "ledger_search",
     query: input.query ?? null,
@@ -211,7 +211,7 @@ function search(input: Search, ctx: HandlerContext) {
   let offset = 0;
   let capped = false;
   if (input.cursor) {
-    ({ items, offset } = ctx.run.takeCursor<Hit>(input.cursor, key));
+    ({ items, offset, capped } = ctx.run.takeCursor<Hit>(input.cursor, key));
   } else {
     let fts: string | undefined;
     if (input.query && match === "hybrid") {
@@ -247,7 +247,7 @@ function search(input: Search, ctx: HandlerContext) {
       omitted: [user.omitted && `user message: ${user.omitted}`, reply.omitted && `response: ${reply.omitted}`].filter(Boolean).join("; ") || null,
     };
   };
-  const { out, nextCursor } = page(ctx, key, items, offset, topN, (h) => json(render(h, "r0")));
+  const { out, nextCursor } = page(ctx, key, items, offset, topN, (h) => json(render(h, "r0")), { capped, maxBytes: MAX_BYTES, maxLines: MAX_LINES });
   const results = out.map((h) => render(h, ctx.run.issueRef("r", { kind: "turn", turnId: h.turnId })));
   return {
     action: "search",
@@ -282,7 +282,7 @@ function compactInput(input: unknown, tokens: number): string {
 function storedOutput(e: Evidence): string {
   const r = e.result;
   if (!r) return "(no result recorded; the call was interrupted)";
-  if (r.status === "error") return JSON.stringify({ error: r.error });
+  if (r.status === "error") return JSON.stringify({ error: r.error, failure_detail: r.failure_detail ?? null });
   const full = (r.result as { output_full?: unknown } | null)?.output_full;
   return typeof full === "string" ? full : JSON.stringify(r.result);
 }
@@ -448,13 +448,16 @@ export function enforceBounds<T>(view: T): T {
   const copy = structuredClone(view) as unknown;
   while (!fitsBounds(copy)) {
     let longest: { holder: Record<string, unknown> | unknown[]; key: string | number; value: string } | null = null;
-    let biggest: unknown[] | null = null;
+    let biggest: { holder: Record<string, unknown>; key: string; value: unknown[] } | null = null;
     const visit = (node: unknown) => {
       if (Array.isArray(node)) {
-        if (node.length > 1 && (!biggest || json(node).length > json(biggest).length)) biggest = node;
         node.forEach((v, i) => (typeof v === "string" ? consider(node, i, v) : visit(v)));
       } else if (node && typeof node === "object") {
-        for (const [k, v] of Object.entries(node)) typeof v === "string" ? consider(node as Record<string, unknown>, k, v) : visit(v);
+        for (const [k, v] of Object.entries(node)) {
+          if (Array.isArray(v) && v.length && (!biggest || json(v).length > json(biggest.value).length)) biggest = { holder: node as Record<string, unknown>, key: k, value: v };
+          if (typeof v === "string") consider(node as Record<string, unknown>, k, v);
+          else visit(v);
+        }
       }
     };
     const consider = (holder: Record<string, unknown> | unknown[], key: string | number, value: string) => {
@@ -462,15 +465,28 @@ export function enforceBounds<T>(view: T): T {
     };
     visit(copy);
     const text = longest as { holder: Record<string, unknown> | unknown[]; key: string | number; value: string } | null;
-    const list = biggest as unknown[] | null;
+    const list = biggest as { holder: Record<string, unknown>; key: string; value: unknown[] } | null;
     if (text && text.value.length > 160) {
       const keep = Math.floor(text.value.length / 2);
-      (text.holder as Record<string | number, unknown>)[text.key] = `${text.value.slice(0, keep)}… [${text.value.length - keep} characters omitted]`;
+      const end = /[\uD800-\uDBFF]/.test(text.value[keep - 1] ?? "") ? keep - 1 : keep;
+      (text.holder as Record<string | number, unknown>)[text.key] = `${text.value.slice(0, end)}… [${text.value.length - end} characters omitted]`;
+      if (!Array.isArray(text.holder) && "complete" in text.holder) {
+        text.holder.complete = false;
+        text.holder.omitted = "Content shortened to fit aggregate output bounds.";
+      }
     } else if (list) {
-      const drop = Math.ceil(list.length / 2);
-      list.splice(list.length - drop, drop, `[… ${drop} more items omitted; narrow the request to see them …]`);
+      const drop = Math.ceil(list.value.length / 2);
+      const removed = list.value.splice(list.value.length - drop, drop);
+      const key = `${list.key}_omitted`;
+      list.holder[key] = Number(list.holder[key] ?? 0) + drop;
+      // Preserve a bounded reference range for omitted tool evidence.
+      if (list.key === "tool_activity") {
+        const refs = removed.flatMap((v) => v && typeof v === "object" && "ref" in v && typeof v.ref === "string" ? [v.ref] : []);
+        if (refs.length) list.holder.tool_activity_omitted_refs = [refs[0], refs.at(-1)];
+      }
     } else break;
   }
+  if (!fitsBounds(copy)) throw new ToolError("result_too_large", "This record cannot be represented within the output bounds.", "Inspect a more specific turn or evidence reference.");
   return copy as T;
 }
 

@@ -31,22 +31,26 @@ const LONG_RUN_PATTERN = new RegExp(`\\S{${LONG_RUN},}`, "g");
 
 function encode(text: string): number[] {
   const enc = getEncoder();
-  if (text.length < LONG_RUN) return enc.encode(text);
+  if (text.length < LONG_RUN) return enc.encode(text, [], []);
   const tokens: number[] = [];
+  const append = (part: string) => {
+    // Spreading a large token array exceeds V8's argument limit.
+    for (const token of enc.encode(part, [], [])) tokens.push(token);
+  };
   let last = 0;
   for (const m of text.matchAll(LONG_RUN_PATTERN)) {
-    if (m.index > last) tokens.push(...enc.encode(text.slice(last, m.index)));
+    if (m.index > last) append(text.slice(last, m.index));
     const run = m[0];
     for (let i = 0; i < run.length; ) {
       // Never split a surrogate pair: every chunk stays valid text, so decoding stays exact.
       let end = Math.min(run.length, i + RUN_CHUNK);
       if (end < run.length && /[\uD800-\uDBFF]/.test(run[end - 1]!)) end++;
-      tokens.push(...enc.encode(run.slice(i, end)));
+      append(run.slice(i, end));
       i = end;
     }
     last = m.index + m[0].length;
   }
-  if (last < text.length) tokens.push(...enc.encode(text.slice(last)));
+  if (last < text.length) append(text.slice(last));
   return tokens;
 }
 

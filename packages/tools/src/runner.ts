@@ -129,6 +129,7 @@ export class ToolRunner {
     let failureDetail: unknown = null;
     let handler = permanent;
     try {
+      throwIfCancelled(scope.signal);
       if (!handler) {
         const mcp = await this.capabilities.resolve(scope.binding.goalId, call.name);
         if (mcp) handler = this.capabilities.mcpHandler(call.name, mcp.name, mcp.tool, scope.binding.goalId) as ToolHandler;
@@ -143,7 +144,8 @@ export class ToolRunner {
       }
       throwIfCancelled(scope.signal);
       const ctx = this.context(scope, refs);
-      if (handler.mutating && scope.workspace && store.firstMutationGatePending(scope.binding.taskId)) {
+      const mutating = typeof handler.mutating === "function" ? handler.mutating(parsed.data) : handler.mutating;
+      if (mutating && scope.workspace && store.firstMutationGatePending(scope.binding.taskId)) {
         await ctx.requireApproval({ kind: "first_mutation", tool: call.name, detail: `First change in workspace ${scope.workspace.name}: ${describe(call)}` });
       }
       output = await handler.execute(parsed.data, ctx);
