@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-/** The session cookie; named for this Socrates so another app on 127.0.0.1 never shares it. */
+/** The version's session cookie. Browser cookies are shared across ports on the same host. */
 export const SESSION_COOKIE = "socrates_v2_session";
 
 /** A fresh secret per launch. The printed link carries it once; the browser keeps it as a cookie. */
@@ -43,6 +43,7 @@ export function guard(port: number, token: string) {
     if (!hosts.includes(request.headers.host ?? "")) return reply.code(403).send(problem("forbidden_host", "Open Socrates at 127.0.0.1 or localhost."));
     const origin = request.headers.origin;
     if (origin !== undefined && !origins.includes(origin)) return reply.code(403).send(problem("forbidden_origin", "Requests from other sites are refused."));
+    if (request.headers["sec-fetch-site"] === "cross-site") return reply.code(403).send(problem("forbidden_origin", "Requests from other sites are refused."));
     const route = request.url.split("?")[0];
     if (route === "/api/health" || route === "/auth") return;
     if (!authorized(request, token)) return reply.code(401).send(problem("unauthorized", "Open Socrates from the link it printed when it started."));

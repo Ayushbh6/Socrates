@@ -113,9 +113,18 @@ export type HandleResult =
  * user can continue it. Returns the turns it interrupted.
  */
 export function interruptUnfinishedTurns(store: LedgerStore): Turn[] {
-  return store.unfinishedTurns().map((turn) => {
-    const calls = store.evidenceForTurn(turn.id).length;
-    return store.interruptTurn(turn.id, { reason: "restarted", toolCalls: calls, continuationNote: mechanicalNote("Interrupted when Socrates stopped", calls) });
+  return store.transaction(() => {
+    const notes = new Map<string, string>();
+    const turns = store.unfinishedTurns().map((turn) => {
+      const calls = store.evidenceForTurn(turn.id).length;
+      const note = mechanicalNote("Interrupted when Socrates stopped", calls);
+      // A later queued handoff has done no work. Its zero-call note must not
+      // replace the continuation of the turn that was actually running.
+      if (!notes.has(turn.taskId!) || calls > 0) notes.set(turn.taskId!, note);
+      return store.interruptTurn(turn.id, { reason: "restarted", toolCalls: calls, continuationNote: note });
+    });
+    for (const [taskId, note] of notes) if (store.requireTask(taskId).continuationNote !== note) store.reviseTask(taskId, { continuationNote: note });
+    return turns;
   });
 }
 

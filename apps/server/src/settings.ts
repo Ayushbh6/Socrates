@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
 import { z } from "zod";
+import { writePrivateFile } from "./private-file";
 
 const PROVIDERS = Object.keys(PROVIDER_DEFAULTS) as [keyof typeof PROVIDER_DEFAULTS, ...(keyof typeof PROVIDER_DEFAULTS)[]];
 
@@ -29,10 +30,13 @@ export const Settings = z.object({
   embeddings: z.object({
     provider: z.enum(["ollama", "openrouter", "openai", "custom"]),
     model: z.string().trim().min(1).max(200).nullable(),
-    url: z.url().nullable(),
+    url: z.url().refine((value) => {
+      const url = new URL(value);
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+    }, "Use an HTTP or HTTPS base URL without credentials, query parameters or a fragment.").nullable(),
   }).strict().default({ provider: "ollama", model: null, url: null }),
   timeZone: TimeZone.nullable().default(null),
-  workingFolder: z.string().nullable().default(null),
+  workingFolder: z.string().min(1).nullable().default(null),
 }).strict();
 export type Settings = z.infer<typeof Settings>;
 
@@ -54,7 +58,5 @@ export function loadSettings(file: string): Settings {
 
 /** Written whole and swapped in, so a crash never leaves half a file. */
 export function saveSettings(file: string, settings: Settings): void {
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
-  renameSync(tmp, file);
+  writePrivateFile(file, `${JSON.stringify(settings, null, 2)}\n`);
 }

@@ -4,6 +4,7 @@ import path from "node:path";
 import type { EventPayloads } from "@socrates/contracts";
 import { callLine } from "@socrates/retrieval";
 import type { LedgerStore, Turn, Workspace } from "@socrates/store";
+import { assertSeparateFromClassic } from "./config";
 
 /** Turns per history page; a message's compound parts always stay on one page. */
 export const HISTORY_PAGE_TURNS = 30;
@@ -29,6 +30,8 @@ export interface HistoryItem {
   id: string;
   at: string;
   message: string;
+  /** The exact message is saved, but routing has not bound any part yet. */
+  unrouted: boolean;
   /** The router's question, when the message was answered with one instead of being worked on. */
   question: string | null;
   parts: HistoryPart[];
@@ -36,31 +39,28 @@ export interface HistoryItem {
 
 /**
  * One conversation's history, newest message first (architecture/server.md,
- * "History"). `before` pages backward by project turn; `next` is the value
+ * "History"). `before` pages backward by message event; `next` is the value
  * for the following page, or null at the start.
  */
 export function conversationHistory(store: LedgerStore, laneId: string | null, before?: number, limit = HISTORY_PAGE_TURNS): { items: HistoryItem[]; next: number | null } {
-  const turns = store.conversationTurns(laneId, { ...(before !== undefined ? { before } : {}), limit });
+  const messages = store.conversationMessages(laneId, { ...(before !== undefined ? { before } : {}), limit });
   const items: HistoryItem[] = [];
-  const seen = new Set<string>();
-  let next: number | null = turns.length === limit ? turns.at(-1)!.projectTurn : null;
-  for (const turn of turns) {
-    if (seen.has(turn.userEventId)) continue;
-    seen.add(turn.userEventId);
-    const event = store.getEvent(turn.userEventId)!;
-    const sentIn = (event.payload as EventPayloads["user_message"]).lane_id ?? null;
+  for (const event of messages) {
+    const turns = store.turnsForUserEvent(event.id);
     // In the main conversation, a message's parts include any handed to a lane; in a lane, only its own.
-    const all = store.turnsForUserEvent(turn.userEventId).filter((t) => (laneId ? t.laneId === laneId : sentIn === null));
-    if (next !== null) next = Math.min(next, ...all.map((t) => t.projectTurn));
+    const all = turns.filter((t) => !laneId || t.laneId === laneId);
     const clarification = all.find((t) => t.kind === "clarification");
     items.push({
-      id: turn.userEventId,
+      id: event.id,
       at: event.at,
-      message: (event.payload as EventPayloads["user_message"]).text,
+      message: event.payload.text,
+      unrouted: turns.length === 0,
       question: clarification ? responseText(store, clarification) : null,
       parts: all.filter((t) => t.kind === "task").map((t) => part(store, t, laneId)),
     });
   }
+  const oldest = messages.at(-1)?.seq;
+  const next = oldest !== undefined && store.conversationMessages(laneId, { before: oldest, limit: 1 }).length ? oldest : null;
   return { items, next };
 }
 
@@ -112,12 +112,13 @@ export class FolderError extends Error {
  */
 export function workspaceFolder(input: string, dataHome: string): string {
   if (!path.isAbsolute(input)) throw new FolderError("Give the folder's full path.");
-  if (!existsSync(input) || !statSync(input).isDirectory()) throw new FolderError("That folder does not exist.");
-  const real = realpathSync(input);
+  const real = folderPath(input);
   const home = realpathSync(homedir());
   if (real === path.parse(real).root || real === home) throw new FolderError("Choose a project folder, not the whole disk or your home folder.");
   const data = existsSync(dataHome) ? realpathSync(dataHome) : path.resolve(dataHome);
   if (real === data || real.startsWith(`${data}${path.sep}`)) throw new FolderError("That folder is Socrates' own data folder.");
+  if (data.startsWith(`${real}${path.sep}`)) throw new FolderError("That folder contains Socrates' own data folder.");
+  try { assertSeparateFromClassic(real); } catch { throw new FolderError("That folder belongs to Socrates 0.1. Choose a project folder."); }
   return real;
 }
 
@@ -135,13 +136,22 @@ export function workspaceFor(store: LedgerStore, folder: string): Workspace {
 export function listFolders(input: string | undefined): { path: string; parent: string | null; folders: { name: string; path: string }[] } {
   const dir = input ?? homedir();
   if (!path.isAbsolute(dir)) throw new FolderError("Give the folder's full path.");
-  if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new FolderError("That folder does not exist.");
-  const real = realpathSync(dir);
-  const folders = readdirSync(real, { withFileTypes: true })
+  const real = folderPath(dir);
+  let entries;
+  try { entries = readdirSync(real, { withFileTypes: true }); }
+  catch { throw new FolderError("That folder cannot be read. Choose an accessible folder."); }
+  const folders = entries
     .filter((e) => e.isDirectory() && !e.name.startsWith("."))
     .map((e) => ({ name: e.name, path: path.join(real, e.name) }))
     .sort((a, b) => a.name.localeCompare(b.name))
     .slice(0, FOLDER_LIST_MAX);
   const parent = path.dirname(real);
   return { path: real, parent: parent === real ? null : parent, folders };
+}
+
+function folderPath(input: string): string {
+  try {
+    if (statSync(input).isDirectory()) return realpathSync(input);
+  } catch {}
+  throw new FolderError("That folder does not exist.");
 }

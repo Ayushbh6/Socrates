@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -41,8 +41,43 @@ export function resolveConfig(env: Record<string, string | undefined> = process.
  * are one folder, and this Socrates must never read or write that one.
  */
 export function prepareHome(config: ServerConfig): void {
-  if (existsSync(path.join(config.home, "socrates.sqlite"))) {
-    throw new Error(`${config.home} belongs to Socrates 0.1 (it holds socrates.sqlite). Choose another folder with SOCRATES_HOME.`);
+  // Resolve existing ancestors too, so aliases and a new subfolder of the old
+  // home cannot bypass the 0.1 guard. Check before creating or changing anything.
+  const home = canonicalPath(config.home);
+  const userHome = realpathSync(homedir());
+  if (userHome === home || userHome.startsWith(`${home}${path.sep}`) || home === path.parse(home).root) {
+    throw new Error("Choose a dedicated data folder with SOCRATES_HOME, not your home folder or its ancestors.");
   }
+  assertSeparateFromClassic(home);
+  for (const relative of ["logs", "logs/server.log", "logs/server.log.1", "ledger.db", "ledger.db-wal", "ledger.db-shm", "ledger.db.lance", "settings.json", ".env", "mcp.json", "skills", ".server-lock.db", ".server-lock.db-journal"]) {
+    const file = path.join(home, relative);
+    try {
+      if (lstatSync(file).isSymbolicLink()) throw new Error(`${file} must not be a symbolic link. Choose a separate data folder.`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  mkdirSync(config.home, { recursive: true, mode: 0o700 });
+  chmodSync(config.home, 0o700);
   mkdirSync(path.dirname(config.logPath), { recursive: true, mode: 0o700 });
+  chmodSync(path.dirname(config.logPath), 0o700);
+  for (const file of [config.keysPath, config.settingsPath, config.logPath]) if (existsSync(file)) chmodSync(file, 0o600);
+}
+
+/** The real path even when its last components have not been created yet. */
+function canonicalPath(input: string): string {
+  if (existsSync(input)) return realpathSync(input);
+  const parent = path.dirname(input);
+  return parent === input ? input : path.join(canonicalPath(parent), path.basename(input));
+}
+
+export function assertSeparateFromClassic(folder: string): void {
+  const classic = path.join(realpathSync(homedir()), ".socrates");
+  const name = process.platform === "darwin" ? folder.toLowerCase() : folder;
+  const old = process.platform === "darwin" ? classic.toLowerCase() : classic;
+  if (name === old || name.startsWith(`${old}${path.sep}`)) throw new Error(`${folder} belongs to Socrates 0.1. Choose another folder.`);
+  for (let dir = folder; ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, "socrates.sqlite"))) throw new Error(`${folder} belongs to Socrates 0.1 (it holds socrates.sqlite). Choose another folder.`);
+    if (path.dirname(dir) === dir) break;
+  }
 }

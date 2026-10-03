@@ -1,6 +1,7 @@
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import { PROVIDER_DEFAULTS } from "@socrates/providers";
+import { writePrivateFile } from "./private-file";
 
 /** The API keys the data folder's `.env` may hold; nothing else is read from or written to it. */
 export const KEY_NAMES: readonly string[] = [...new Set([...Object.values(PROVIDER_DEFAULTS).flatMap((d) => [...d.keys]), "SOCRATES_EMBEDDINGS_API_KEY"])];
@@ -21,10 +22,8 @@ export function writeKey(file: string, name: string, value: string | null): void
   const keys = readKeys(file);
   if (value === null) delete keys[name];
   else keys[name] = value;
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, Object.entries(keys).map(([k, v]) => `${k}="${v}"`).join("\n") + "\n", { mode: 0o600 });
-  renameSync(tmp, file);
-  chmodSync(file, 0o600);
+  // Single quotes preserve literal backslashes; double quotes decode \n/\r.
+  writePrivateFile(file, Object.entries(keys).map(([k, v]) => `${k}='${v}'`).join("\n") + "\n");
 }
 
 export class KeyError extends Error {

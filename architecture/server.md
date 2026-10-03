@@ -21,20 +21,21 @@ Everything lives in one folder, `~/.socrates-v2` unless `SOCRATES_HOME` names an
 | `.env` | API keys, mode `600` |
 | `skills/`, `mcp.json` | global Skills and MCP servers |
 | `logs/server.log` | diagnostics; one previous log of up to 5 MB is kept |
+| `.server-lock.db` | the exclusive runtime ownership lock, automatically released when its process stops |
 
-A folder that holds Socrates 0.1's `socrates.sqlite` is refused. On macOS `~/.Socrates` and `~/.socrates` are the same folder, and this Socrates must never read or write the live 0.1 data.
+A folder that holds Socrates 0.1's `socrates.sqlite`, its descendants, and aliases of them are refused, as is the old `~/.socrates` location itself. On macOS `~/.Socrates` and `~/.socrates` are the same folder, and this Socrates must never read or write the live 0.1 data. The home folder and its ancestors cannot be used as the data folder. Existing data and log directories are made private; managed paths cannot redirect through symbolic links.
 
 The server listens on `127.0.0.1` port `4200` (`SOCRATES_PORT` changes it), beside Socrates 0.1's `4100` and `3100`.
 
 ## Startup
 
-1. Open the ledger and interrupt every turn a stopped process left running (`turn_interrupted` with reason `restarted`, a mechanical continuation note, and its exact evidence kept), so the user can continue it.
+1. Claim the data folder exclusively, validate settings, then open the ledger and interrupt every turn a stopped process left running (`turn_interrupted` with reason `restarted`, a mechanical continuation note, and its exact evidence kept), so the user can continue it. A second server using the same data folder is refused before it can recover the live owner's turns. Recovery is atomic; zero-call queued handoffs do not replace the continuation note of work that already ran.
 2. Open the installed Skills and MCP servers from the data folder. A failure is logged and Socrates runs without them.
-3. Open the embedding index with the chosen embedder. A failure (no Ollama, an index from another model) is logged and reported in status; memory search then uses keywords only.
+3. Probe the chosen embedder with a generic query, bounded to three seconds, then open its embedding index. A failure is logged and reported in status; memory search then uses keywords only. Opening an index alone never means that Ollama or a hosted provider is reachable. Later embedding failures update status too; each model and endpoint uses its own index namespace.
 4. Choose the models. The chosen chat model, or else the first provider with a key (Anthropic, OpenAI, Gemini, OpenRouter, DeepSeek) and its default models. The router model is the chosen one, or the chat provider's default router model.
 5. Build `Socrates`. Without a usable chat model the server still starts, reports what setup is needed, and takes no messages.
 
-Settings and keys can change only while Socrates is idle (no main-conversation message and no lane running); a change rebuilds Socrates from the new values. Stopping the server (Ctrl-C) cancels running work, which is recorded as interrupted, then closes terminals, MCP servers, and the index.
+Settings and keys can change only while Socrates is idle (no main-conversation message and no lane running); a change rebuilds Socrates from the new values. This claim lasts through the entire rebuild, and overlapping changes receive `busy`. The old runtime is detached before teardown; close drains a pending change and is idempotent. Stopping the server (Ctrl-C or SIGTERM) cancels running work, which is recorded as interrupted, then closes terminals, MCP servers, and the index. Signals during startup also cancel service discovery and embedding probes, including child processes started before the HTTP listener exists.
 
 ## Settings
 
@@ -50,9 +51,9 @@ Settings and keys can change only while Socrates is idle (no main-conversation m
 
 A change sends only the fields that change; the others keep their values.
 
-**Keys** are not settings. They live in the data folder's `.env`, which holds only known key names (each provider's keys and `SOCRATES_EMBEDDINGS_API_KEY`) and is written whole with mode `600`. Keys there take precedence over the process environment. The API never returns a key, only whether it is set.
+**Keys** are not settings. They live in the data folder's `.env`, which holds only known key names (each provider's keys and `SOCRATES_EMBEDDINGS_API_KEY`) and is written atomically with mode `600`, preserving literal backslashes. Keys there take precedence over the process environment. The API never returns a key, only its effective presence, including inherited keys. Deleting a stored key restores any inherited value of the same name. Provider diagnostics and setup messages redact secrets. Embedding URLs must be HTTP or HTTPS base URLs without embedded credentials, query parameters or fragments.
 
-**Working folder.** A goal is bound to a workspace permanently when its work starts (`Goal-router.md`, "Workspace resolution"). The server binds a new goal to the workspace chosen as the working folder; without one, the goal works without files and the agent asks where the work belongs. A workspace is added from a folder's full path: an existing directory, by its real path, never the whole disk, the home folder itself, or the data folder. Adding the same folder again returns its workspace; a second folder with the same name gets a numbered name.
+**Working folder.** A goal is bound to a workspace permanently when its work starts (`Goal-router.md`, "Workspace resolution"). The server binds a new goal to the workspace chosen as the working folder; without one, the goal works without files and the agent asks where the work belongs. A workspace is added from a folder's full path: an existing directory, by its real path, never the whole disk, the home folder itself, classic Socrates data, or a folder inside or containing this server's data. Selection and new-goal binding revalidate the stored path; a missing folder, file, or changed alias is unavailable. Adding the same folder again returns its workspace; a second folder with the same name gets a numbered name.
 
 ## Security
 
@@ -62,11 +63,14 @@ The server can run shell commands on the user's machine, so:
 - each launch makes a random 256-bit secret. The printed link `/auth?token=…` exchanges it for an `HttpOnly`, `SameSite=Strict` session cookie and redirects, so the secret leaves the address bar; scripts may send it as `Authorization: Bearer …`;
 - every request's `Host` must be this server's own address (`127.0.0.1` or `localhost` with its port), so a site cannot reach it through a rebound domain name;
 - a request carrying a browser `Origin` must come from this server, so another site open in the browser cannot drive the agent;
+- requests marked cross-site by the browser are refused, even without an `Origin`;
 - everything except `/api/health` and `/auth` requires the session.
+
+Responses cannot be cached, the launch link cannot become a referrer, and the page cannot be framed. Cookies are scoped to a host, not a port; the Origin and Host checks remain necessary when other local apps use that host.
 
 ## HTTP API
 
-Every response is JSON. A failure is `{ "error": { "code", "message" } }` with a message meant for the user: `invalid_request` (400), `unauthorized` (401), `forbidden_host` or `forbidden_origin` (403), `not_found` (404), `busy` (409, a change while Socrates works), or `internal` (500, details only in the log).
+API responses are JSON. A failure, including an unknown route, is `{ "error": { "code", "message" } }` with a message meant for the user: `invalid_request` (400), `unauthorized` (401), `forbidden_host` or `forbidden_origin` (403), `not_found` (404), `busy` (409, a change while Socrates works or rebuilds), or `internal` (500, details only in the log). Repeated query parameters and malformed JSON are rejected without echoing a key-bearing request body. `/auth` redirects; `/` currently serves the app placeholder.
 
 | Route | Returns |
 |---|---|
@@ -83,9 +87,9 @@ Every response is JSON. A failure is `{ "error": { "code", "message" } }` with a
 
 ## History
 
-`GET /api/history?conversation=main|<lane id>&before=<project turn>` returns a conversation's messages, newest first, `30` turns per page; `next` is the `before` value of the following page, or `null`. A message's compound parts always stay on one page.
+`GET /api/history?conversation=main|<lane id>&before=<cursor>` returns a conversation's messages in send order, newest first, with a budget of `30` turns per page; a message with no bound turn counts as one. `next` is the `before` value of the following page, or `null` when no older message exists. The cursor is a stable message-event sequence; callers pass the returned value, never a project-turn number. A message's compound parts always stay on one page, even when they interleave with other messages.
 
-Each item holds the exact message, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists the parts that ran in it.
+Each item holds the exact message, `unrouted` when no part has been bound yet, the router's question when it asked one instead, and one entry per part: its project turn, status, goal and task (number and title), the lane it ran in, its answer, why it was interrupted, and its tool calls as one line each with their evidence handle and status. A message saved before routing, or queued in a lane, remains visible after restart. The main conversation lists the messages sent there, including parts handed to a lane (marked `handedOff`); a lane lists messages sent there and parts handed to it.
 
 ## Approvals
 

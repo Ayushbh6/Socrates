@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_by_task ON events(task_id, seq);
 CREATE INDEX IF NOT EXISTS events_by_turn ON events(turn_id, seq);
+CREATE INDEX IF NOT EXISTS events_by_type ON events(type, seq);
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
   BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
@@ -182,6 +183,7 @@ CREATE TABLE IF NOT EXISTS turns (
   CHECK (kind = 'clarification' OR (goal_id IS NOT NULL AND task_id IS NOT NULL AND chat_id IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS turns_by_task ON turns(task_id, project_turn);
+CREATE INDEX IF NOT EXISTS turns_by_user_event ON turns(user_event_id, project_turn);
 
 CREATE TABLE IF NOT EXISTS lanes (
   id          TEXT PRIMARY KEY,

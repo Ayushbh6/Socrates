@@ -51,10 +51,15 @@ export class InstalledCatalog implements CapabilityCatalog {
     }
   }
 
-  static async open(options: InstalledCatalogOptions): Promise<InstalledCatalog> {
+  static async open(options: InstalledCatalogOptions, signal?: AbortSignal): Promise<InstalledCatalog> {
     const catalog = new InstalledCatalog(options);
-    await catalog.refresh();
-    return catalog;
+    try {
+      await catalog.refresh(signal);
+      return catalog;
+    } catch (error) {
+      await catalog.close();
+      throw error;
+    }
   }
 
   /** Rescan Skills and retry first discovery for servers without a snapshot after backoff. */

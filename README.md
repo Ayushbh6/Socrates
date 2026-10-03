@@ -21,7 +21,6 @@ The design lives in [`architecture/`](architecture):
 | `@socrates/capabilities` | The installed capability sources behind the catalog interface: global Skills in `~/.socrates-v2/skills/` and global MCP servers in `~/.socrates-v2/mcp.json` (stdio and streamable HTTP through the official SDK, connected when first needed), with recorded tool-list snapshots |
 | `@socrates/retrieval` | The embedding index of Socrates' memory: LanceDB storage beside the ledger, background indexing of goals, tasks, exchanges, tool calls, capabilities and workspace files (secrets and generated files excluded), meaning search with similarity floors, and the one hybrid (reciprocal rank fusion) scoring function |
 | `@socrates/agent` | The working agent: `Socrates.handle` runs one message end to end (route, bind, agent loop per part, `FinalAnswer` validation and persistence) in the main conversation or a parallel lane, one run per task, recovery of turns a stopped process left running, context assembly in the canonical layout, three-tier history with N−1 fitting, per-turn limits, cancellation, and prompt-cache breakpoints, and compaction: history checkpoints, in-turn linearization, the failsafe, automatic rollover with handover capsules, and `<RETRIEVED_HISTORY>` |
-
 | `@socrates/server` (`apps/server`) | The local app server: builds the one Socrates from `~/.socrates-v2` (settings, keys, Skills, MCP servers, embedding index), interrupts turns left running at startup, and serves the session-protected HTTP API on `127.0.0.1:4200` |
 
 ## Running Socrates
@@ -31,6 +30,8 @@ pnpm server
 ```
 
 It prints a link to open, with this launch's session secret. Data lives in `~/.socrates-v2` (`SOCRATES_HOME` changes it), never in Socrates 0.1's folder. Without an API key it starts and reports what setup is needed; add a key with `PUT /api/keys/<NAME>` until the web app arrives.
+
+S1 is reviewed and closed in the [server-core closure report](docs/reviews/server-s1-closure.md). Run its live acceptance with `SOCRATES_ENV_FILE=.env pnpm eval:server-core`; it uses disposable data and synthetic project content. Message execution in this evaluation calls the runtime directly. S2 supplies the live transport, approvals and cancellation controls.
 
 ## Development
 

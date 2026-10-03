@@ -4,11 +4,13 @@ import { InstalledCatalog } from "@socrates/capabilities";
 import { type EmbeddingClient, type ModelClient, ModelError } from "@socrates/contracts";
 import { PROVIDER_DEFAULTS, type Provider, makeEmbedder, makeModel } from "@socrates/providers";
 import { Retrieval } from "@socrates/retrieval";
-import type { Clock } from "@socrates/shared";
+import { abortable, type Clock } from "@socrates/shared";
 import { LedgerStore, type Workspace } from "@socrates/store";
 import { type ServerConfig, prepareHome } from "./config";
 import { readKeys, writeKey } from "./keys";
+import { lockHome } from "./home-lock";
 import { Settings, SettingsPatch, loadSettings, saveSettings } from "./settings";
+import { workspaceFolder } from "./views";
 
 /** The order in which a chat provider is picked when none is chosen: the first with a key. */
 const DETECTION_ORDER: Provider[] = ["anthropic", "openai", "gemini", "openrouter", "deepseek"];
@@ -27,6 +29,9 @@ export interface RuntimeDeps {
   clock?: Clock;
   /** The process environment; keys in the data folder override it. */
   env?: Record<string, string | undefined>;
+  embeddingProbeTimeoutMs?: number;
+  /** Allows startup services to be stopped before the HTTP listener exists. */
+  signal?: AbortSignal;
   /** Diagnostics; production appends to the data folder's log. */
   log?: (message: string) => void;
 }
@@ -53,6 +58,9 @@ export class Runtime {
   embeddings: { state: "ready" | "unavailable"; detail: string | null } = { state: "unavailable", detail: null };
   private retrieval: Retrieval | null = null;
   private catalog: InstalledCatalog | null = null;
+  private changing = false;
+  private changePending: Promise<unknown> | null = null;
+  private closing: Promise<void> | null = null;
 
   private constructor(
     readonly config: ServerConfig,
@@ -61,34 +69,56 @@ export class Runtime {
     readonly recovered: number,
     private readonly deps: RuntimeDeps,
     readonly log: (message: string) => void,
+    private readonly unlock: () => void,
+    settings: Settings,
   ) {
-    this.settings = loadSettings(config.settingsPath);
+    this.settings = settings;
   }
 
   static async open(config: ServerConfig, deps: RuntimeDeps = {}): Promise<Runtime> {
+    deps.signal?.throwIfAborted();
     prepareHome(config);
-    const log = deps.log ?? fileLog(config.logPath);
-    const store = LedgerStore.open({ path: config.dbPath, ...(deps.clock ? { clock: deps.clock } : {}) });
-    let runtime: Runtime;
+    const unlock = lockHome(config.home);
+    let store: LedgerStore | undefined;
+    let runtime: Runtime | undefined;
     try {
+      // Invalid settings never interrupt existing turns or reset their notes.
+      const settings = loadSettings(config.settingsPath);
+      const sink = deps.log ?? fileLog(config.logPath);
+      const secrets = new Set<string>();
+      const capture = () => {
+        for (const [name, value] of Object.entries({ ...(deps.env ?? process.env), ...readKeys(config.keysPath) })) if (value && /(?:KEY|TOKEN|SECRET|PASSWORD)/i.test(name)) secrets.add(value);
+      };
+      capture();
+      const log = (line: string) => {
+        // Diagnostics must still redact known secrets if the key file or
+        // log destination becomes unreadable during a run.
+        try { capture(); } catch {}
+        try { sink(redact(line, Object.fromEntries([...secrets].map((value, i) => [`SECRET_${i}`, value])))); } catch {}
+      };
+      store = LedgerStore.open({ path: config.dbPath, ...(deps.clock ? { clock: deps.clock } : {}) });
       const recovered = interruptUnfinishedTurns(store).length;
       if (recovered) log(`interrupted ${recovered} turn(s) left running when Socrates last stopped`);
-      runtime = new Runtime(config, store, recovered, deps, log);
+      runtime = new Runtime(config, store, recovered, deps, log, unlock, settings);
+      await runtime.start();
+      return runtime;
     } catch (error) {
-      store.close();
+      if (runtime) await runtime.close();
+      else {
+        store?.close();
+        unlock();
+      }
       throw error;
     }
-    await runtime.start();
-    return runtime;
   }
 
   get timeZone(): string {
     return this.settings.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
-  /** True while the main conversation or any lane is working. */
+  /** True while work, a configuration rebuild, or shutdown owns the runtime. */
   busy(): boolean {
-    return !!this.socrates && (this.socrates.busy || this.socrates.lanes().some((l) => l.running));
+    return this.changing || this.closing !== null || !!this.socrates && (this.socrates.busy || this.socrates.lanes().some((l) => l.running));
   }
 
   lanes(): LaneState[] {
@@ -99,11 +129,24 @@ export class Runtime {
   workingFolder(): Workspace | null {
     const id = this.settings.workingFolder;
     const workspace = id ? this.store.getWorkspace(id) : null;
-    return workspace?.rootPath && existsSync(workspace.rootPath) ? workspace : null;
+    if (!workspace?.rootPath) return null;
+    try {
+      return workspaceFolder(workspace.rootPath, this.config.home) === workspace.rootPath ? workspace : null;
+    } catch {
+      return null;
+    }
   }
 
   async embeddingStatus(): Promise<{ documents: number } | null> {
-    return this.retrieval ? { documents: (await this.retrieval.status()).documents } : null;
+    const retrieval = this.retrieval;
+    if (!retrieval) return null;
+    try {
+      const status = await retrieval.status();
+      return retrieval === this.retrieval ? { documents: status.documents } : null;
+    } catch (error) {
+      if (retrieval !== this.retrieval) return null;
+      throw error;
+    }
   }
 
   /** Apply a settings change and rebuild Socrates from it. */
@@ -112,32 +155,59 @@ export class Runtime {
     const parsed = SettingsPatch.parse(patch) as Record<string, unknown>;
     const sent = Object.fromEntries(Object.keys(patch as object).map((key) => [key, parsed[key]]));
     const next = Settings.parse({ ...this.settings, ...sent });
-    if (next.workingFolder && !this.store.getWorkspace(next.workingFolder)) throw new SettingsError("That workspace does not exist.");
-    this.assertIdle();
-    saveSettings(this.config.settingsPath, next);
-    this.settings = next;
-    await this.restart();
-    return next;
+    if (Object.hasOwn(sent, "workingFolder") && next.workingFolder) {
+      const workspace = this.store.getWorkspace(next.workingFolder);
+      if (!workspace) throw new SettingsError("That workspace does not exist.");
+      if (!workspace.rootPath || workspaceFolder(workspace.rootPath, this.config.home) !== workspace.rootPath) throw new SettingsError("That workspace folder is no longer available. Add the folder again.");
+    }
+    return this.change(async () => {
+      saveSettings(this.config.settingsPath, next);
+      this.settings = next;
+      await this.restart();
+      return next;
+    });
   }
 
   /** Set or remove one API key and rebuild Socrates with it. */
   async setKey(name: string, value: string | null): Promise<void> {
-    this.assertIdle();
-    writeKey(this.config.keysPath, name, value);
-    await this.restart();
+    await this.change(async () => {
+      writeKey(this.config.keysPath, name, value);
+      await this.restart();
+    });
   }
 
   keyNames(): Set<string> {
-    return new Set(Object.keys(readKeys(this.config.keysPath)));
+    const env = this.env();
+    return new Set(Object.keys(env).filter((name) => env[name]));
   }
 
-  async close(): Promise<void> {
-    await this.stop();
-    this.store.close();
+  close(): Promise<void> {
+    return this.closing ??= (async () => {
+      await this.changePending?.catch(() => {});
+      try {
+        await this.stop();
+      } finally {
+        try { this.store.close(); } finally { this.unlock(); }
+      }
+    })();
   }
 
   private assertIdle(): void {
     if (this.busy()) throw new RuntimeBusyError("Socrates is working; change settings when it is idle.");
+  }
+
+  /** Claim synchronously, before the first await, including the rebuild itself. */
+  private async change<T>(work: () => Promise<T>): Promise<T> {
+    this.assertIdle();
+    this.changing = true;
+    try {
+      const pending = work();
+      this.changePending = pending;
+      return await pending;
+    } finally {
+      this.changePending = null;
+      this.changing = false;
+    }
   }
 
   private async restart(): Promise<void> {
@@ -154,12 +224,14 @@ export class Runtime {
     const env = this.env();
     this.setup = [];
     try {
-      this.catalog = await InstalledCatalog.open({ store: this.store, home: this.config.home, env, log: this.log });
+      this.catalog = await InstalledCatalog.open({ store: this.store, home: this.config.home, env, log: this.log }, this.deps.signal);
     } catch (error) {
+      this.deps.signal?.throwIfAborted();
       this.catalog = null;
       this.log(`capabilities unavailable: ${message(error)}`);
     }
     await this.openEmbeddings(env);
+    this.deps.signal?.throwIfAborted();
 
     const chat = this.chatChoice(env);
     if (!chat) {
@@ -178,7 +250,7 @@ export class Runtime {
       model = build(chat.provider, chat.model, env);
       routerModel = build(router.provider, router.model, env);
     } catch (error) {
-      this.setup.push(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`);
+      this.setup.push(redact(error instanceof ModelError && error.kind === "authentication" ? `${error.message} Add it in settings.` : `The chat model cannot start: ${message(error)}`, env));
       return;
     }
     this.socrates = new Socrates({
@@ -201,17 +273,36 @@ export class Runtime {
   private async openEmbeddings(env: Record<string, string | undefined>): Promise<void> {
     const e = this.settings.embeddings;
     try {
-      const embedder = (this.deps.makeEmbedder ?? makeEmbedder)({
+      const client = (this.deps.makeEmbedder ?? makeEmbedder)({
         ...env,
         SOCRATES_EMBEDDINGS_PROVIDER: e.provider,
         SOCRATES_EMBEDDINGS_MODEL: e.model ?? undefined,
         SOCRATES_EMBEDDINGS_URL: e.url ?? undefined,
       });
+      // Opening a vector table says nothing about whether its provider works.
+      const embedder: EmbeddingClient = {
+        id: client.id,
+        embed: async (texts, purpose, signal) => {
+          try {
+            const vectors = await client.embed(texts, purpose, signal);
+            signal?.throwIfAborted();
+            this.embeddings = { state: "ready", detail: null };
+            return vectors;
+          } catch (error) {
+            if (!signal?.aborted) this.embeddings = { state: "unavailable", detail: `${redact(message(error), env)} Memory search uses keywords only.` };
+            throw error;
+          }
+        },
+      };
+      const signal = AbortSignal.any([AbortSignal.timeout(this.deps.embeddingProbeTimeoutMs ?? 3_000), ...(this.deps.signal ? [this.deps.signal] : [])]);
+      const vectors = await abortable(embedder.embed(["Socrates memory search"], "query", signal), signal);
+      if (vectors.length !== 1 || !vectors[0]?.length || !vectors[0].every(Number.isFinite)) throw new Error("The embedding provider returned an invalid vector.");
       this.retrieval = await Retrieval.open({ store: this.store, embedder, uri: this.config.indexPath, capabilities: () => this.catalog?.entries() ?? [], log: this.log });
       this.embeddings = { state: "ready", detail: null };
     } catch (error) {
+      this.deps.signal?.throwIfAborted();
       this.retrieval = null;
-      this.embeddings = { state: "unavailable", detail: `${message(error)} Memory search uses keywords only.` };
+      this.embeddings = { state: "unavailable", detail: `${redact(message(error), env)} Memory search uses keywords only.` };
       this.log(`embeddings unavailable: ${message(error)}`);
     }
   }
@@ -224,14 +315,18 @@ export class Runtime {
 
   /** Socrates closes its catalog and index; without Socrates they are closed here. */
   private async stop(): Promise<void> {
-    if (this.socrates) await this.socrates.close();
-    else {
-      await this.catalog?.close();
-      await this.retrieval?.close();
-    }
+    const { socrates, catalog, retrieval } = this;
     this.socrates = null;
     this.catalog = null;
     this.retrieval = null;
+    // Close all services even if one shutdown fails. Socrates' closes are
+    // idempotent; the fallback also covers partial startup or runner failure.
+    const outcomes = await Promise.allSettled([
+      (async () => { try { await socrates?.close(); } finally { await catalog?.close(); } })(),
+      retrieval?.close(),
+    ]);
+    const failed = outcomes.find((r) => r.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   }
 }
 
@@ -241,15 +336,19 @@ export class SettingsError extends Error {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+export function redact(line: string, env: Record<string, string | undefined>): string {
+  const secrets = Object.entries(env).flatMap(([name, value]) => value && /(?:KEY|TOKEN|SECRET|PASSWORD)/i.test(name) ? [value] : []).sort((a, b) => b.length - a.length);
+  for (const value of secrets) line = line.replaceAll(value, "[redacted]");
+  return line.replace(/(https?:\/\/)[^\s/@]+@/gi, "$1[redacted]@");
+}
+
 /** Appends timestamped lines to the data folder's log, keeping one previous log of up to 5 MB. */
 export function fileLog(file: string): (message: string) => void {
-  try {
-    if (existsSync(file) && statSync(file).size > 5 * 1024 * 1024) renameSync(file, `${file}.1`);
-  } catch {}
   return (line) => {
     try {
-      appendFileSync(file, `${new Date().toISOString()} ${line}\n`, { mode: 0o600 });
+      const record = `${new Date().toISOString()} ${line.slice(0, 32_768)}\n`;
+      if (existsSync(file) && statSync(file).size + Buffer.byteLength(record) > 5 * 1024 * 1024) renameSync(file, `${file}.1`);
+      appendFileSync(file, record, { mode: 0o600 });
     } catch {}
   };
 }
-

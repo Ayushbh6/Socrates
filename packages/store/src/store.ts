@@ -316,28 +316,33 @@ export class LedgerStore {
 
   static open(options: OpenStoreOptions): LedgerStore {
     const db = new DatabaseSync(options.path);
-    db.exec("PRAGMA foreign_keys = ON;");
-    if (options.path !== ":memory:") db.exec("PRAGMA journal_mode = WAL;");
-    db.exec(SCHEMA_SQL);
-    const store = new LedgerStore(db, options.clock ?? systemClock);
-    const version = store.getMeta("schema_version");
-    if (version === null) store.setMeta("schema_version", String(SCHEMA_VERSION));
-    else {
-      let current = Number(version);
-      const from = current;
-      if (current > SCHEMA_VERSION) throw new StoreError(`Unsupported store schema version ${version}; expected ${SCHEMA_VERSION}.`);
-      store.transaction(() => {
-        while (current < SCHEMA_VERSION) {
-          const migration = MIGRATIONS[current];
-          if (migration === undefined) throw new StoreError(`No migration from store schema version ${current}.`);
-          db.exec(migration);
-          current++;
-          store.setMeta("schema_version", String(current));
-        }
-        if (from < 3) store.rebuildExchangeIndex();
-      });
+    try {
+      db.exec("PRAGMA foreign_keys = ON;");
+      if (options.path !== ":memory:") db.exec("PRAGMA journal_mode = WAL;");
+      db.exec(SCHEMA_SQL);
+      const store = new LedgerStore(db, options.clock ?? systemClock);
+      const version = store.getMeta("schema_version");
+      if (version === null) store.setMeta("schema_version", String(SCHEMA_VERSION));
+      else {
+        let current = Number(version);
+        const from = current;
+        if (current > SCHEMA_VERSION) throw new StoreError(`Unsupported store schema version ${version}; expected ${SCHEMA_VERSION}.`);
+        store.transaction(() => {
+          while (current < SCHEMA_VERSION) {
+            const migration = MIGRATIONS[current];
+            if (migration === undefined) throw new StoreError(`No migration from store schema version ${current}.`);
+            db.exec(migration);
+            current++;
+            store.setMeta("schema_version", String(current));
+          }
+          if (from < 3) store.rebuildExchangeIndex();
+        });
+      }
+      return store;
+    } catch (error) {
+      db.close();
+      throw error;
     }
-    return store;
   }
 
   close(): void {
@@ -1248,19 +1253,33 @@ export class LedgerStore {
   }
 
   /**
-   * One conversation's turns, newest first, before a project turn: the main
-   * conversation's are those whose message was sent there (including turns
-   * later handed to a lane), a lane's are those that ran in it.
+   * One conversation's exact messages, newest first, before an event sequence.
+   * Include messages still routing or queued, with no turn yet. The page's
+   * turn budget expands to keep each compound message together.
    */
-  conversationTurns(laneId: string | null, options: { before?: number; limit: number }): Turn[] {
-    const where = laneId ? "t.lane_id = ?" : "json_extract(e.payload, '$.lane_id') IS NULL";
+  conversationMessages(laneId: string | null, options: { before?: number; limit: number }): StoredEvent<"user_message">[] {
+    const where = laneId
+      ? "(json_extract(e.payload, '$.lane_id') = ? OR EXISTS (SELECT 1 FROM turns lane WHERE lane.user_event_id = e.id AND lane.lane_id = ?))"
+      : "json_extract(e.payload, '$.lane_id') IS NULL";
     return this.all(
-      `SELECT t.* FROM turns t JOIN events e ON e.id = t.user_event_id
-        WHERE ${where} AND t.project_turn < ? ORDER BY t.project_turn DESC LIMIT ?`,
-      ...(laneId ? [laneId] : []),
+      `WITH candidates AS (
+         SELECT e.* FROM events e WHERE e.type = 'user_message' AND e.seq < ? AND ${where}
+         ORDER BY e.seq DESC LIMIT ?
+       ), messages AS (
+         SELECT e.*, MAX(1, COUNT(t.id)) AS parts FROM candidates e
+         LEFT JOIN turns t ON t.user_event_id = e.id ${laneId ? "AND t.lane_id = ?" : ""}
+         GROUP BY e.id
+       ), page AS (
+         SELECT *, COALESCE(SUM(parts) OVER (ORDER BY seq DESC ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0) AS preceding
+         FROM messages
+       )
+       SELECT * FROM page WHERE preceding < ? ORDER BY seq DESC`,
       options.before ?? Number.MAX_SAFE_INTEGER,
+      ...(laneId ? [laneId, laneId] : []),
       options.limit,
-    ).map(toTurn);
+      ...(laneId ? [laneId] : []),
+      options.limit,
+    ).map((row) => this.toEvent(row) as StoredEvent<"user_message">);
   }
 
   /** The earliest unfinished turn in a lane, otherwise its most recently finished turn.

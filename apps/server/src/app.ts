@@ -14,7 +14,7 @@ export interface ServerOptions {
 const History = z.object({
   conversation: z.string().default("main"),
   before: z.coerce.number().int().positive().optional(),
-});
+}).strict();
 
 /**
  * The HTTP API (architecture/server.md, "HTTP API"). Every response is JSON;
@@ -23,13 +23,21 @@ const History = z.object({
  */
 export async function buildServer({ runtime, token }: ServerOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: false, bodyLimit: 1024 * 1024 });
+  app.addHook("onRequest", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("content-security-policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
+  });
   app.addHook("onRequest", guard(runtime.config.port, token));
+  app.setNotFoundHandler((_request, reply) => reply.code(404).send(problem("not_found", "There is no such route.")));
 
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) return reply.code(400).send(problem("invalid_request", error.issues.map((i) => `${i.path.join(".") || "request"}: ${i.message}`).join("; ")));
     if (error instanceof RuntimeBusyError) return reply.code(409).send(problem("busy", error.message));
     if (error instanceof KeyError || error instanceof FolderError || error instanceof SettingsError) return reply.code(400).send(problem("invalid_request", error.message));
     const status = (error as { statusCode?: number }).statusCode;
+    if ((error as { code?: string }).code === "FST_ERR_CTP_INVALID_JSON_BODY") return reply.code(400).send(problem("invalid_request", "The request body must be valid JSON."));
     if (status && status >= 400 && status < 500) return reply.code(status).send(problem("invalid_request", (error as Error).message));
     runtime.log(`request failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
     return reply.code(500).send(problem("internal", "Something went wrong on the server. Details are in the server log."));
@@ -39,7 +47,7 @@ export async function buildServer({ runtime, token }: ServerOptions): Promise<Fa
 
   // The printed link: exchange the secret for a session cookie, then drop it from the address bar.
   app.get("/auth", async (request, reply) => {
-    const given = (request.query as { token?: string }).token;
+    const { token: given } = z.object({ token: z.string().optional() }).strict().parse(request.query);
     if (!sameSecret(given, token)) return reply.code(401).send(problem("unauthorized", "This link is from an earlier launch. Use the one Socrates printed when it started."));
     return reply.header("set-cookie", sessionCookie(token)).redirect("/");
   });
@@ -48,13 +56,14 @@ export async function buildServer({ runtime, token }: ServerOptions): Promise<Fa
     reply.type("text/html; charset=utf-8").send("<!doctype html><title>Socrates</title><p>Socrates is running. The app arrives with the next update.</p>"));
 
   app.get("/api/status", async () => {
+    const index = await runtime.embeddingStatus();
     const folder = runtime.workingFolder();
     return {
       home: runtime.config.home,
       ready: runtime.socrates !== null,
       setup: runtime.setup,
       models: runtime.models,
-      embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index: await runtime.embeddingStatus() },
+      embeddings: { ...runtime.settings.embeddings, ...runtime.embeddings, index },
       timeZone: runtime.timeZone,
       busy: runtime.socrates?.busy ?? false,
       lanes: runtime.lanes(),
@@ -99,7 +108,7 @@ export async function buildServer({ runtime, token }: ServerOptions): Promise<Fa
     return { id: workspace.id, name: workspace.name, path: workspace.rootPath };
   });
 
-  app.get("/api/folders", async (request) => listFolders((request.query as { path?: string }).path));
+  app.get("/api/folders", async (request) => listFolders(z.object({ path: z.string().optional() }).strict().parse(request.query).path));
 
   return app;
 }
