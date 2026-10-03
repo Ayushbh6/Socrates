@@ -106,7 +106,7 @@ describe("layer 1: history checkpoint", () => {
     await next.socrates.handle("So how do I test the lexer?");
     const later = contextText(next.model.requests[0]!);
     expect(later).toContain('<HISTORY_CHECKPOINT ref="hc-1"');
-    expect(later).toContain("<RETRIEVED_HISTORY>\n[TURN 2] (retrieved)\nUSER:\nHere are two questions");
+    expect(later).toContain("<RETRIEVED_HISTORY>\n[TURN 2 — 2026-09-01] (retrieved)\nUSER:\nHere are two questions");
     expect(compactions(w)).toHaveLength(1);
   });
 

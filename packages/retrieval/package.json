@@ -1,0 +1,22 @@
+{
+  "name": "@socrates/retrieval",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.39.0",
+    "@socrates/contracts": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "@socrates/store": "workspace:*",
+    "apache-arrow": "18.1.0"
+  },
+  "devDependencies": {
+    "@socrates/agent": "workspace:*",
+    "@socrates/providers": "workspace:*",
+    "@socrates/router": "workspace:*",
+    "@socrates/tools": "workspace:*"
+  }
+}

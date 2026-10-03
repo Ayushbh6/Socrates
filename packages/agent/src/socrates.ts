@@ -3,6 +3,7 @@ import { abortable } from "@socrates/shared";
 import { TokenCalibration } from "@socrates/providers";
 import { GoalRouter, type RoutedPart } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
+import type { SemanticHit, SemanticIndex } from "@socrates/retrieval";
 import { type Approve, type CapabilityCatalog, RunState, type ShelfOptions, type SupervisorOptions, ToolRunner, WorkspaceRoot, capabilityCandidates, skillShelf } from "@socrates/tools";
 import { assembleContext } from "./context";
 import { fallbackAnswer, mechanicalNote } from "./final";
@@ -32,6 +33,14 @@ export interface SocratesOptions {
   resolveWorkspace?: (goal: Goal) => { name: string; rootPath: string } | null;
   /** Installed Skills and MCP servers; the application opens it and Socrates.close closes it. */
   catalog?: CapabilityCatalog;
+  /**
+   * The embedding index of Socrates' memory, for meaning-based retrieval in
+   * routing, context_retrieve, `<RETRIEVED_HISTORY>`, and capability
+   * candidates. The application opens it; Socrates refreshes it in the
+   * background after every message and closes it in close(). Without it,
+   * every search is keyword and recency only.
+   */
+  semantic?: SemanticIndex;
   /** The user's pinned and the deployment's default Skills, first on a new goal's shelf. */
   shelf?: ShelfOptions;
   limits?: Partial<AgentLimits>;
@@ -96,12 +105,13 @@ export class Socrates {
     this.limits = { ...DEFAULT_LIMITS, ...options.limits };
     this.budgets = { ...DEFAULT_BUDGETS, ...options.budgets };
     this.approveCurrent = options.approve;
-    this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone });
+    this.router = new GoalRouter({ store: options.store, routerModel: options.routerModel ?? options.model, mainModel: options.model, timeZone: options.timeZone, ...(options.semantic ? { semantic: options.semantic } : {}) });
     this.runner = new ToolRunner({
       store: options.store,
       timeZone: options.timeZone,
       approve: (request) => this.approveCurrent(request),
       ...(options.catalog ? { catalog: options.catalog } : {}),
+      ...(options.semantic ? { semantic: options.semantic } : {}),
       ...(options.terminals ? { terminals: options.terminals } : {}),
       ...(options.log ? { log: options.log } : {}),
     });
@@ -150,13 +160,16 @@ export class Socrates {
     } finally {
       this.approveCurrent = this.options.approve;
       this.busy = false;
+      // Index what this message added, in the background; replies never wait for it.
+      this.options.semantic?.scheduleSync();
     }
   }
 
-  /** Stop terminals and every MCP server connection. */
+  /** Stop terminals, every MCP server connection, and the embedding index. */
   async close(): Promise<void> {
     await this.runner.close();
     await this.runner.capabilities.catalog.close?.();
+    await this.options.semantic?.close();
   }
 
   private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions): Promise<PartResult> {
@@ -172,7 +185,18 @@ export class Socrates {
     const setupSignal = AbortSignal.any([signal, setupDeadline.signal]);
     const setupTimer = setTimeout(() => setupDeadline.abort(), Math.max(0, this.limits.maxWallMs - ((this.options.now ?? Date.now)() - startedAt)));
     let initialTools = this.runner.definitions;
+    const request = store.requestForTurn(turn.id).request;
+    const semantic = { task: [] as SemanticHit[], siblings: [] as SemanticHit[], capabilities: [] as SemanticHit[] };
     try {
+      if (this.options.semantic) {
+        // One query embedding (cached) serves all three searches; failures return nothing and keywords carry on.
+        const search = this.options.semantic;
+        [semantic.task, semantic.siblings, semantic.capabilities] = await Promise.all([
+          search.search(request, { kinds: ["exchange", "tool_call"], taskIds: [turn.taskId!], limit: 20 }, setupSignal),
+          search.search(request, { kinds: ["exchange", "tool_call"], goalIds: [goal.id], excludeTaskIds: [turn.taskId!], limit: 3, min: "strong" }, setupSignal),
+          search.search(request, { kinds: ["capability"], limit: 5, min: "suggest" }, setupSignal),
+        ]);
+      }
       if (capabilities.catalog.refresh) {
         await abortable(capabilities.catalog.refresh(setupSignal), setupSignal).catch((error) => {
           setupSignal.throwIfAborted();
@@ -188,7 +212,7 @@ export class Socrates {
     } finally { clearTimeout(setupTimer); }
     const run = new RunState();
     const shelf = skillShelf(store, capabilities.catalog, goal.id, this.options.shelf);
-    const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: store.requestForTurn(turn.id).request, run });
+    const candidates = capabilityCandidates({ store, catalog: capabilities.catalog, goalId: goal.id, message: request, run, semantic: semantic.capabilities });
     // Rebuilt from the current active set each time, so compaction mid-turn keeps a Skill activated earlier in the turn.
     const assemble = (previousTurn?: number) =>
       assembleContext({
@@ -197,6 +221,7 @@ export class Socrates {
         capabilities: capabilities.current(goal.id),
         shelf,
         candidates,
+        semantic,
         dependsOn: part.dependsOn.map((order) => ({ order, turn: parts.find((p) => p.order === order)!.turn })),
         part: parts.length > 1 ? { order: part.order, count: parts.length } : null,
         now: store.clock.now(),

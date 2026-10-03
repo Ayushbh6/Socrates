@@ -7,6 +7,11 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@socrates/contracts": "workspace:*", "@socrates/shared": "workspace:*", "@socrates/store": "workspace:*", "@socrates/providers": "workspace:*", "zod": "^4.1.0"
+    "@socrates/contracts": "workspace:*",
+    "@socrates/providers": "workspace:*",
+    "@socrates/retrieval": "workspace:*",
+    "@socrates/shared": "workspace:*",
+    "@socrates/store": "workspace:*",
+    "zod": "^4.1.0"
   }
 }

@@ -221,7 +221,7 @@ describe("handover obligations and retrieved history", () => {
     const otherTask = w.store.createTask(w.goalId, { title: "Other" });
     end({ store: w.store, taskId: otherTask.id }, "quasar", "FOREIGN quasar");
     const text = retrievedHistory(w.store, { taskId: w.taskId, message: "quasar", boundary: old.projectTurn, maxTokens: 8000 });
-    expect(text).toContain(`[TURN ${old.projectTurn}] (retrieved)`);
+    expect(text).toContain(`[TURN ${old.projectTurn} — 2026-09-01] (retrieved)`);
     expect(text).toContain("old answer");
     expect(text).not.toContain("FOREIGN");
     expect(text).not.toContain("quasar quasar quasar");

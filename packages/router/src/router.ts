@@ -9,7 +9,8 @@ import {
   type ToolCall,
 } from "@socrates/contracts";
 import { type Chat, type Goal, type LedgerStore, type Task, type Turn, parseGoalSelector, parseTaskSelector, toFtsQuery } from "@socrates/store";
-import { type RoutingContext, buildRoutingContext } from "./context";
+import type { SemanticSearch } from "@socrates/retrieval";
+import { type RoutingContext, buildRoutingContext, candidateQuery } from "./context";
 import { ROUTER_SYSTEM_PROMPT } from "./prompt";
 import { ASK_USER_TOOL, LEDGER_QUERY_TOOL, executeLedgerQuery, renderToolError } from "./tools";
 import {
@@ -32,6 +33,8 @@ export interface GoalRouterOptions {
   historyBudgetTokens?: number;
   /** Model steps per routing attempt (tool rounds plus the final answer). */
   maxSteps?: number;
+  /** Meaning-based goal and task search; without it, candidates are keyword and recency only. */
+  semantic?: SemanticSearch;
 }
 
 export interface RoutedPart {
@@ -91,8 +94,10 @@ export class GoalRouter {
   private readonly timeZone: string;
   private readonly historyBudgetTokens: number | undefined;
   private readonly maxSteps: number;
+  private readonly semantic: SemanticSearch | undefined;
 
   constructor(options: GoalRouterOptions) {
+    this.semantic = options.semantic;
     this.store = options.store;
     this.routerModel = options.routerModel;
     this.mainModel = options.mainModel && options.mainModel !== options.routerModel ? options.mainModel : undefined;
@@ -104,8 +109,10 @@ export class GoalRouter {
   /** Persist the exact message, route it, and bind it. */
   async route(message: string, signal?: AbortSignal): Promise<RoutingResult> {
     const userEvent = this.store.recordUserMessage(message);
+    const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
+      semantic,
       ...(this.historyBudgetTokens !== undefined ? { historyBudgetTokens: this.historyBudgetTokens } : {}),
     });
     const seen = emptySeen();

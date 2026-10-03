@@ -18,7 +18,8 @@ The first message of the conversation is assembled by the harness:
 - <CURRENT_TASK>: the task's title, objective, completion criteria, status, and your continuation note from the previous turn.
 - <RECENT_ACTIVITY>: only for general conversation; a recap of recent work you may offer to continue.
 - <EVIDENCE_FROM_PART_N>: only when this message was split into parts and this part depends on an earlier one; it records what that part did.
-- <RETRIEVED_HISTORY>: older exchanges of this task that match the current message, retrieved because they are no longer in the history above.
+- <RETRIEVED_HISTORY>: older exchanges of this task that match the current message, retrieved because they are no longer in the history above, and at most one closely related exchange from another task of this goal, labelled with that task. They are shown oldest first with their dates.
+- When earlier turns, retrieved exchanges, or summaries disagree, the later one is current unless it says otherwise.
 - <CAPABILITY_CANDIDATES>: at most one Skill and one MCP tool that may fit this message, each with a ref (c1) you can activate directly with capability_control. They are hints: activate one only when the work needs it.
 - <CURRENT_USER_MESSAGE>: what the user just said. Act on it.
 - In a long turn, your earlier tool calls of this turn may be replaced by one-line entries after the user's message; each keeps its evidence handle for exact recovery.

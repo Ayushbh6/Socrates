@@ -1,5 +1,6 @@
 import type { EventPayloads, ToolCall, ToolDefinition, ToolErrorBody } from "@socrates/contracts";
 import { abortable, countTokens } from "@socrates/shared";
+import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore, TaskRefs } from "@socrates/store";
 import { RESULT_CEILING_TOKENS, headTail } from "./bounds";
 import { type CapabilityCatalog, StaticCatalog } from "./catalog";
@@ -23,6 +24,8 @@ export interface ToolRunnerOptions {
   /** IANA time zone for dates shown by context_retrieve. */
   timeZone: string;
   catalog?: CapabilityCatalog;
+  /** Meaning-based memory search for context_retrieve. */
+  semantic?: SemanticSearch;
   terminals?: SupervisorOptions;
   /** Receives internal diagnostics of infrastructure failures. Never shown to a model. */
   log?: (message: string) => void;
@@ -198,6 +201,7 @@ export class ToolRunner {
       approve,
       timeZone,
       catalog: this.catalog,
+      ...(this.options.semantic ? { semantic: this.options.semantic } : {}),
       resolveReadPath: async (input) => {
         throwIfCancelled(scope.signal);
         const resource = await this.capabilities.resourcePath(scope.binding.goalId, input, scope.signal);

@@ -1,3 +1,4 @@
+import type { SemanticSearch } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
 import type { CapabilityCatalog } from "./catalog";
 import { ToolError } from "./errors";
@@ -85,6 +86,8 @@ export interface HandlerContext {
   approve: Approve;
   timeZone: string;
   catalog: CapabilityCatalog;
+  /** Meaning-based search over memory; absent or unavailable means keyword search alone. */
+  semantic?: SemanticSearch;
   /** Resolve read-only access to an active Skill resource, or fall back to workspace policy. */
   resolveReadPath?: (input: string) => Promise<ResolvedPath>;
   /** The terminal supervisor of the selected workspace, when there is one. */

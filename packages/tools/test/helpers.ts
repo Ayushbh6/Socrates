@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
+import type { SemanticSearch } from "@socrates/retrieval";
 import { afterEach } from "vitest";
 import { type ApprovalRequest, type CapabilityCatalog, RunState, type ToolBinding, ToolRunner, WorkspaceRoot } from "../src";
 
@@ -49,7 +50,7 @@ export interface Result {
   json: any;
 }
 
-export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean); catalog?: CapabilityCatalog; gateArmed?: boolean } = {}): Harness {
+export function harness(options: { files?: Record<string, string | Buffer>; approve?: boolean | ((r: ApprovalRequest) => boolean); catalog?: CapabilityCatalog; gateArmed?: boolean; semantic?: SemanticSearch } = {}): Harness {
   const root = tempDir();
   writeFiles(root, options.files ?? {});
   const clock = fixedClock("2026-09-01T10:00:00Z");
@@ -60,6 +61,7 @@ export function harness(options: { files?: Record<string, string | Buffer>; appr
     store,
     timeZone: "UTC",
     ...(options.catalog ? { catalog: options.catalog } : {}),
+    ...(options.semantic ? { semantic: options.semantic } : {}),
     approve: async (r) => {
       approvals.push(r);
       return typeof decide === "function" ? decide(r) : decide;

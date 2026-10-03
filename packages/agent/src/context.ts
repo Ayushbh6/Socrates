@@ -1,4 +1,5 @@
 import type { EventPayloads, ModelMessage, TextPart } from "@socrates/contracts";
+import type { SemanticHit } from "@socrates/retrieval";
 import type { ActiveCapabilities } from "@socrates/tools";
 import { renderActivity } from "@socrates/router";
 import type { Goal, LedgerStore, Task, Turn } from "@socrates/store";
@@ -21,6 +22,8 @@ export interface ContextInput {
   shelf?: string | null;
   /** This turn's `<CAPABILITY_CANDIDATES>` block, or null. */
   candidates?: string | null;
+  /** Meaning matches for `<RETRIEVED_HISTORY>`, searched once per turn. */
+  semantic?: { task: SemanticHit[]; siblings: SemanticHit[] };
   /** Dependent compound parts: the finalized turns of the parts this one depends on. */
   dependsOn: { order: number; turn: Turn }[];
   /** Compound position of this part, or null for a single-task message. */
@@ -53,7 +56,17 @@ export function assembleContext(input: ContextInput): TextPart[] {
     task.general ? null : currentTask(task, input.part, store.requestForTurn(turn.id).request),
     task.general ? block("RECENT_ACTIVITY", renderActivity(store, input.now, input.timeZone)) : null,
     ...input.dependsOn.map((d) => evidenceFromPart(store, d.order, d.turn)),
-    retrievedHistory(store, { taskId: task.id, message, boundary, maxTokens: budgets.retrievedMax }),
+    retrievedHistory(store, {
+      taskId: task.id,
+      message,
+      boundary,
+      maxTokens: budgets.retrievedMax,
+      ...(input.semantic ? { semantic: input.semantic.task, siblings: goal.general ? [] : input.semantic.siblings } : {}),
+      // The other parts of a compound message are never "older" history.
+      excludeTurnIds: new Set(store.turnsForUserEvent(turn.userEventId).map((t) => t.id)),
+      now: input.now,
+      timeZone: input.timeZone,
+    }),
     input.candidates ?? null,
     `<CURRENT_USER_MESSAGE>\n${message}\n</CURRENT_USER_MESSAGE>`,
   ].filter((b): b is string => b !== null);

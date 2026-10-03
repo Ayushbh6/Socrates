@@ -447,7 +447,7 @@ Search defaults and validation:
 - `from` and `to` bound the search to exchanges completed within the range, inclusive, by date in the user's time zone. Both are optional and independent.
 - `top_n` defaults to `5` and cannot exceed `10`.
 - `cursor` continues the exact frozen result set of the preceding search. A truncated result always returns `next_cursor`; the model can keep paging or narrow its query without requesting an unbounded dump.
-- `hybrid` combines semantic similarity, BM25 or equivalent keyword matching, and a small recency signal. Until the embeddings segment lands (see "Implementation staging"), it is BM25 (SQLite FTS5) plus recency.
+- `hybrid` fuses the BM25 (SQLite FTS5) ranking with the meaning ranking from the embedding index, plus a small recency boost (see "Embeddings and hybrid retrieval"). A meaning match on an exchange or on one of its tool calls finds the exchange. Without an embedding index, or while the embedder is unreachable, it is BM25 plus recency.
 - `exact` performs literal, case-insensitive text matching after the same Unicode normalization of query and text, and never silently falls back to hybrid retrieval.
 - Search covers exact user messages and visible Socrates responses. It returns Q&A pairs, not tool calls or tool results.
 
@@ -600,7 +600,7 @@ Before the first working-agent call of every user turn (each compound part separ
 </CAPABILITY_CANDIDATES>
 ```
 
-The retriever uses the same ranking as `capability_search`: exact names, aliases, name words, tags, and description words, with common stop words ignored. It is lexical only until the embeddings segment adds a semantic score, and performs no LLM call. Each kind has its own threshold (`40` for a Skill, `60` for an MCP tool, so an MCP server's name alone never qualifies a tool) and may return no candidate; an MCP result cannot crowd out a stronger Skill result or vice versa. Attachment types join the signals when attachments exist.
+The retriever uses the same keyword ranking as `capability_search`: exact names, aliases, name words, tags, and description words, with common stop words ignored. Each kind has its own keyword threshold (`40` for a Skill, `60` for an MCP tool, so an MCP server's name alone never qualifies a tool) and may return no candidate; an MCP result cannot crowd out a stronger Skill result or vice versa. With an embedding index, a capability whose name and description match the message in meaning at the `suggest` floor also qualifies (shown as "similar in meaning"), and the keyword and meaning rankings are fused. It performs no LLM call. Attachment types join the signals when attachments exist.
 
 Long prompts are not scored as one undifferentiated query. The retriever preserves the exact prompt for the agent but scores overlapping windows of `48` words (stride `24`) independently and keeps each capability's best window. This allows a relevant sentence buried in a long specification to match, while words scattered across the whole request cannot add up to a false match.
 
@@ -945,8 +945,8 @@ Only for a dependent compound part (see "Compound tasks").
 </EVIDENCE_FROM_PART_1>
 
 <RETRIEVED_HISTORY>
-Older exact exchanges or evidence from this task, or specifically relevant
-evidence from other tasks in this goal, retrieved for the current request.
+Older exact exchanges of this task, and at most one strongly related
+exchange of another task in this goal, oldest first with their dates.
 </RETRIEVED_HISTORY>
 
 <PROJECT_CONTEXT>
@@ -1422,6 +1422,38 @@ Further rules:
 - Breakpoints are marked in the normalized request and placed at four points, the most explicit-breakpoint providers accept: after the system prompt and tools, after the last Q&A-only turn, after turn N−1, and on the newest message (rolling, so every step reuses everything before it). Each completed turn is its own part, so a provider's prefix lookback also lands on turn boundaries. Providers that cache prefixes automatically ignore the markers; the byte-stability of everything before the in-flight turn is what makes their caches hit.
 - Compaction replaces content only in the dynamic suffix, never in the stable prefix. A history checkpoint, once written, is frozen text: it does not change between steps of the same turn, so the post-compaction prompt remains cache-stable from that point forward.
 
+## Embeddings and hybrid retrieval
+
+Every "hybrid" search in this document and in `Goal-router.md` uses one embedding index and one scoring function. The index is optional: without it, or while the embedder is unreachable, every search is BM25 plus recency and nothing else changes.
+
+**Embedding model.** Chosen like the chat models. The default is local: Ollama with `embeddinggemma`, so memory never leaves the machine and search works offline. `SOCRATES_EMBEDDINGS_PROVIDER` selects `ollama`, `openrouter`, `openai`, or `custom` (any OpenAI-compatible embeddings endpoint at `SOCRATES_EMBEDDINGS_URL`, with an optional `SOCRATES_EMBEDDINGS_API_KEY`); `SOCRATES_EMBEDDINGS_MODEL` names the model. Models trained with instruction prefixes (embeddinggemma, nomic-embed) receive their query and document prefixes automatically.
+
+**Index.** LanceDB, an embedded vector database, in a folder beside the ledger (`<database>.lance`), with cosine distance and filters applied before the nearest-neighbour search. Each embedding model has its own table, so vectors from different models never mix; changing the model re-embeds everything in the background while keyword search covers the gap. The event log stays the source of truth: vectors are derived data keyed by a content hash, so nothing is embedded twice, and a deleted index is rebuilt from the log.
+
+**What is embedded.** Each document points back to its exact source; a search returns pointers, never a replacement for the source.
+
+- each goal: title, objective, note, workspace, and anchors (the same text the keyword index holds);
+- each task: title, objective, completion criteria, continuation note, and derived facts;
+- each exchange: the user's request and the final answer of a turn, in overlapping chunks of `4,000` characters (`600` overlapping) so a long exchange fits the model's input;
+- each tool call: one line naming the tool and its input, such as `terminal: npm run migrate` or `edit src/cart.js`. Outputs are not embedded; a match leads to the exchange, and the call's evidence handle opens the output;
+- each installed Skill and MCP tool: its name and description.
+
+Compaction summaries are not embedded: every turn they cover is embedded as its exact exchange, and a summary never replaces its source.
+
+**Background indexing.** After every message, Socrates schedules one sync: the documents touched by events since the last sync's watermark are re-derived, the changed ones embedded in batches, and the watermark advanced. A reply never waits for indexing; a record not yet indexed is ranked by keywords alone until it is. The only embedding on the reply path is the query itself: it is cached, bounded to `3` seconds, and after a failure meaning search is skipped for `30` seconds, so an unreachable Ollama costs nothing.
+
+**Similarity floors.** Measured for embeddinggemma on Socrates-shaped text and configurable per deployment:
+
+| Floor | Value | Use |
+| --- | --- | --- |
+| `related` | `0.20` | A meaning match may join a fused ranking: router goal candidates, `context_retrieve`, this task's `<RETRIEVED_HISTORY>`. Keywords and the router still decide. |
+| `suggest` | `0.35` | A capability may be suggested on meaning alone. |
+| `strong` | `0.45` | Another task's exchange may be added to `<RETRIEVED_HISTORY>` on meaning alone. |
+
+**Scoring.** Keyword and meaning rankings are merged by reciprocal rank fusion (`K = 10`), in units where first place in one ranking is worth `1` and place `r` is worth `(K + 1) / (K + r)`; raw BM25 and cosine values are never compared directly. A recency boost of at most `0.05`, halving every `30` days, settles near-ties in favour of newer evidence; it is about half the gap between first and second place, so it never buries a clearly more relevant old record. Router candidates add a `0.05` boost for open goals.
+
+**Conflicting evidence.** Ranking cannot tell that two records disagree; the model reading them can. Retrieved exchanges are therefore shown oldest first with their dates and turn numbers, and the agent's instructions say that when earlier turns, retrieved exchanges, or summaries disagree, the later one is current unless it says otherwise.
+
 ## Safety and long-running work
 
 - Filesystem tools resolve every path to its real target before applying the access policy, so a symbolic link cannot escape the workspace, cannot reach protected repository metadata through an alias, and cannot split one file's stale-edit record into two.
@@ -1464,4 +1496,7 @@ The working agent is built in this order; each stage is one reviewed change:
 3. **Compaction** — history checkpoints, in-turn linearization, the failsafe, compaction counting, rollover with the handover capsule, and `<RETRIEVED_HISTORY>`.
 4. **Capabilities** — real Skill sources, MCP activation, the frozen Skill shelf, and automatic candidates.
 
-**Embeddings** follow as their own segment after these four: one embedding index (planned on LanceDB) and one hybrid scoring path shared by router goal candidates, `context_retrieve` search, `<RETRIEVED_HISTORY>`, and `<PROJECT_CONTEXT>`. Until then every "hybrid" search in this document and in `Goal-router.md` is BM25 (SQLite FTS5) plus recency, and goal anchors reach the agent as the manifest in `<GOAL>`, read on demand with the filesystem tools.
+**Embeddings** follow as their own segment after these four, in two changes:
+
+- **E1, the retrieval core:** the embedding clients, the LanceDB index with background indexing, and the one hybrid scoring path, used by router goal candidates, `context_retrieve` search, `<RETRIEVED_HISTORY>` (including one strongly related exchange from another task of the goal), and capability candidates. See "Embeddings and hybrid retrieval".
+- **E2, `<PROJECT_CONTEXT>`:** relevant sections of goal anchors and workspace files. Until it lands, goal anchors reach the agent as the manifest in `<GOAL>`, read on demand with the filesystem tools.

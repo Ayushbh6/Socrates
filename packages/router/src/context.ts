@@ -9,6 +9,7 @@ import {
   excerpt,
   toFtsQuery,
 } from "@socrates/store";
+import { type SemanticHit, fuse, recencyBoost } from "@socrates/retrieval";
 import { countTokens, truncateToTokens, zonedParts } from "@socrates/shared";
 
 /**
@@ -58,6 +59,17 @@ export interface RoutingContext {
 export interface BuildContextOptions {
   timeZone: string;
   historyBudgetTokens?: number;
+  /** Meaning matches of goals and tasks for candidateQuery(), from the semantic index. */
+  semantic?: SemanticHit[];
+}
+
+/** An open goal whose scope matched gets this much, in fused-rank units. */
+export const OPEN_GOAL_BOOST = 0.05;
+
+/** What candidate retrieval searches for: the message, plus the pending request it answers. */
+export function candidateQuery(store: LedgerStore, message: string): string {
+  const pending = store.pendingClarification();
+  return pending ? `${(store.getEvent(pending.userEventId)!.payload as { text: string }).text} ${message}` : message;
 }
 
 export function buildRoutingContext(store: LedgerStore, message: string, options: BuildContextOptions): RoutingContext {
@@ -81,7 +93,7 @@ export function buildRoutingContext(store: LedgerStore, message: string, options
     });
   }
 
-  selectOlderCandidates(store, pending ? `${pending.request} ${message}` : message, now, current?.goal.id ?? null).forEach((goal, i) => {
+  selectOlderCandidates(store, candidateQuery(store, message), now, current?.goal.id ?? null, options.semantic ?? []).forEach((goal, i) => {
     const label = `older_${i + 1}`;
     goals.set(label, {
       label,
@@ -161,12 +173,13 @@ function olderGoalTasks(store: LedgerStore, goal: Goal): TaskEntry[] {
 
 /**
  * Hybrid candidate retrieval over goal titles, goal notes, task metadata, and
- * anchors: keyword relevance (BM25) plus a small recency boost and a small
- * boost for open goals that matched. Remaining slots are filled with goals
- * active in the last week, so vague temporal references still see them.
- * Retrieval only builds a shortlist; the router decides.
+ * anchors: the keyword (BM25) ranking and the meaning ranking of goals are
+ * fused, with a small recency boost and a small boost for open goals that
+ * matched. Remaining slots are filled with goals active in the last week, so
+ * vague temporal references still see them. Retrieval only builds a
+ * shortlist; the router decides.
  */
-export function selectOlderCandidates(store: LedgerStore, message: string, now: Date, currentGoalId: string | null): Goal[] {
+export function selectOlderCandidates(store: LedgerStore, message: string, now: Date, currentGoalId: string | null, semantic: SemanticHit[] = []): Goal[] {
   const eligible = (goal: Goal | null): goal is Goal => !!goal && !goal.general && goal.id !== currentGoalId;
 
   const lexical = new Map<string, number>();
@@ -177,19 +190,14 @@ export function selectOlderCandidates(store: LedgerStore, message: string, now: 
       if (score > (lexical.get(hit.goalId) ?? 0)) lexical.set(hit.goalId, score);
     }
   }
-  const best = Math.max(0, ...lexical.values());
-
-  const scored: { goal: Goal; score: number }[] = [];
-  for (const [goalId, raw] of lexical) {
-    const goal = store.getGoal(goalId);
-    if (!eligible(goal)) continue;
-    const ageDays = (now.getTime() - new Date(goal.updatedAt).getTime()) / 86_400_000;
-    const recency = 0.15 * Math.exp(-Math.max(0, ageDays) / 14);
-    const open = store.listTasks(goal.id, { status: "open" }).length > 0 || goal.status === "open" ? 0.1 : 0;
-    scored.push({ goal, score: (best > 0 ? raw / best : 0) + recency + open });
-  }
-  scored.sort((a, b) => b.score - a.score);
-  const picked = scored.slice(0, MAX_OLDER_CANDIDATES).map((s) => s.goal);
+  const goals = (ids: string[]) => [...new Set(ids)].map((id) => store.getGoal(id)).filter(eligible);
+  const byKeywords = goals([...lexical].sort((a, b) => b[1] - a[1]).map(([id]) => id));
+  // Hits arrive best first; a goal ranks by its own best match or its best task's.
+  const byMeaning = goals(semantic.flatMap((h) => (h.goalId ? [h.goalId] : [])));
+  const open = (goal: Goal) => (store.listTasks(goal.id, { status: "open" }).length > 0 || goal.status === "open" ? OPEN_GOAL_BOOST : 0);
+  const picked = fuse([byKeywords, byMeaning], (g) => g.id, (g) => recencyBoost(g.updatedAt, now) + open(g))
+    .slice(0, MAX_OLDER_CANDIDATES)
+    .map((s) => s.item);
 
   if (picked.length < MAX_OLDER_CANDIDATES) {
     const since = new Date(now.getTime() - ACTIVITY_DAYS * 86_400_000).toISOString();

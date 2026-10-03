@@ -405,9 +405,10 @@ export class LedgerStore {
     return r ? this.toEvent(r) : null;
   }
 
-  listEvents(filter: { type?: EventType; turnId?: string; taskId?: string; goalId?: string } = {}): StoredEvent[] {
+  listEvents(filter: { type?: EventType; turnId?: string; taskId?: string; goalId?: string; afterSeq?: number } = {}): StoredEvent[] {
     const where: string[] = [];
-    const params: string[] = [];
+    const params: (string | number)[] = [];
+    if (filter.afterSeq !== undefined) (where.push("seq > ?"), params.push(filter.afterSeq));
     if (filter.type) (where.push("type = ?"), params.push(filter.type));
     if (filter.turnId) (where.push("turn_id = ?"), params.push(filter.turnId));
     if (filter.taskId) (where.push("task_id = ?"), params.push(filter.taskId));
@@ -1559,6 +1560,26 @@ export class LedgerStore {
     return hits;
   }
 
+  /** One searchable exchange, exactly as the keyword index holds it, or null when the turn has none. */
+  exchangeForTurn(turnId: string): ExchangeHit | null {
+    const r = this.get(
+      `SELECT x.turn_id, x.task_id, x.goal_id, x.user_text, x.response_text, t.project_turn, t.completed_at
+         FROM exchange_fts x JOIN turns t ON t.id = x.turn_id WHERE x.turn_id = ?`,
+      turnId,
+    );
+    return r ? { turnId: str(r.turn_id), projectTurn: num(r.project_turn), taskId: str(r.task_id), goalId: str(r.goal_id), at: str(r.completed_at), userMessage: str(r.user_text), response: str(r.response_text) } : null;
+  }
+
+  /** Every turn that has a searchable exchange, oldest first. */
+  exchangeTurnIds(): string[] {
+    return this.all("SELECT x.turn_id FROM exchange_fts x JOIN turns t ON t.id = x.turn_id ORDER BY t.project_turn").map((r) => str(r.turn_id));
+  }
+
+  /** The newest event sequence number, or 0 for an empty log. */
+  latestEventSeq(): number {
+    return num(this.get("SELECT COALESCE(MAX(seq), 0) AS n FROM events")?.n);
+  }
+
   /** The newest permanent project turn number, or 0 when there are none. */
   latestProjectTurn(): number {
     return num(this.get("SELECT COALESCE(MAX(project_turn), 0) AS n FROM turns")?.n);
@@ -1575,32 +1596,32 @@ export class LedgerStore {
     return goal.workspaceId ? (this.getWorkspace(goal.workspaceId)?.name ?? "") : "";
   }
 
-  private indexGoal(goalId: string): void {
+  /** A goal's searchable text: title, objective, note, workspace, and anchors. Shared by the keyword and embedding indexes. */
+  goalSearchText(goalId: string): { title: string; body: string } {
     const goal = this.requireGoal(goalId);
     const anchors = this.listAnchors(goalId)
       .map((a) => `${a.path} ${a.role} ${a.summary}`)
       .join("\n");
-    this.run("DELETE FROM ledger_fts WHERE entity = 'goal' AND entity_id = ?", goalId);
-    this.run(
-      "INSERT INTO ledger_fts (entity, entity_id, goal_id, title, body) VALUES ('goal', ?, ?, ?, ?)",
-      goalId,
-      goalId,
-      goal.title,
-      [goal.objective ?? "", goal.note ?? "", this.workspaceName(goal), anchors].filter(Boolean).join("\n"),
-    );
+    return { title: goal.title, body: [goal.objective ?? "", goal.note ?? "", this.workspaceName(goal), anchors].filter(Boolean).join("\n") };
   }
 
-  /** Index a task's metadata, including the mechanically derived files, commands, tests, and capabilities. */
+  /** A task's searchable text, including the mechanically derived files, commands, tests, and capabilities. */
+  taskSearchText(taskId: string): { title: string; body: string } {
+    const task = this.requireTask(taskId);
+    return { title: task.title, body: [task.objective, task.completionCriteria ?? "", task.continuationNote ?? "", this.workspaceName(this.requireGoal(task.goalId)), ...this.distinctFacts(taskId)].filter(Boolean).join("\n") };
+  }
+
+  private indexGoal(goalId: string): void {
+    const { title, body } = this.goalSearchText(goalId);
+    this.run("DELETE FROM ledger_fts WHERE entity = 'goal' AND entity_id = ?", goalId);
+    this.run("INSERT INTO ledger_fts (entity, entity_id, goal_id, title, body) VALUES ('goal', ?, ?, ?, ?)", goalId, goalId, title, body);
+  }
+
   private indexTask(taskId: string): void {
     const task = this.requireTask(taskId);
+    const { title, body } = this.taskSearchText(taskId);
     this.run("DELETE FROM ledger_fts WHERE entity = 'task' AND entity_id = ?", taskId);
-    this.run(
-      "INSERT INTO ledger_fts (entity, entity_id, goal_id, title, body) VALUES ('task', ?, ?, ?, ?)",
-      taskId,
-      task.goalId,
-      task.title,
-      [task.objective, task.completionCriteria ?? "", task.continuationNote ?? "", this.workspaceName(this.requireGoal(task.goalId)), ...this.distinctFacts(taskId)].filter(Boolean).join("\n"),
-    );
+    this.run("INSERT INTO ledger_fts (entity, entity_id, goal_id, title, body) VALUES ('task', ?, ?, ?, ?)", taskId, task.goalId, title, body);
   }
 
   /** Distinct derived fact values of a task, newest first and capped, for indexing and matching. */

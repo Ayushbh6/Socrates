@@ -1,6 +1,7 @@
 import { ContextRetrieveInput, type EventPayloads } from "@socrates/contracts";
 import { countTokens, nextDay, truncateToTokens, zonedDayStart, zonedParts } from "@socrates/shared";
 import { type Evidence, type Goal, type Task, type Turn, excerpt, foldText, goalSelector, parseGoalSelector, parseTaskSelector, taskSelector, toFtsQuery } from "@socrates/store";
+import { fuse, recencyBoost } from "@socrates/retrieval";
 import { RESULT_CEILING_TOKENS, headTail } from "../bounds";
 import type { HandlerContext } from "../context";
 import { ToolError } from "../errors";
@@ -82,7 +83,7 @@ interface LedgerItem {
   updatedAt: string;
 }
 
-function ledgerSearch(input: Query, ctx: HandlerContext) {
+async function ledgerSearch(input: Query, ctx: HandlerContext) {
   checkRange(input.from, input.to);
   const entity = input.entity ?? "both";
   const scope = input.scope ?? "current_goal";
@@ -124,6 +125,19 @@ function ledgerSearch(input: Query, ctx: HandlerContext) {
         }
         if (hits.length < 200) break;
       }
+      // Meaning matches join the keyword matches in one fused ranking.
+      const lexical = collected.splice(0);
+      const semantic = await ctx.semantic?.search(input.query, { kinds: entity === "goals" ? ["goal"] : entity === "tasks" ? ["task"] : ["goal", "task"], goalIds: [...goalIds], limit: 50 }, ctx.signal) ?? [];
+      const meaning: LedgerItem[] = [];
+      for (const h of semantic) {
+        const task = h.kind === "task" ? store.getTask(h.sourceId) : null;
+        const goal = store.getGoal(task?.goalId ?? h.sourceId);
+        if (!goal) continue;
+        const item: LedgerItem = { kind: task ? "task" : "goal", goal, task, updatedAt: task?.updatedAt ?? goal.updatedAt };
+        if (keep(item)) meaning.push(item);
+      }
+      const now = store.clock.now();
+      collected.push(...fuse([lexical, meaning], (c) => `${c.kind}:${(c.task ?? c.goal).id}`, (c) => recencyBoost(c.updatedAt, now)).map((f) => f.item));
     } else {
       const needle = input.query ? foldText(input.query) : null;
       const has = (...parts: (string | null)[]) => !needle || foldText(parts.filter(Boolean).join("\n")).includes(needle);
@@ -177,7 +191,7 @@ function preview(text: string, tokens: number) {
   return { text: cut.truncated ? `${cut.text}…` : text, complete: !cut.truncated, omitted: cut.truncated ? `about ${countTokens(text) - tokens} tokens omitted` : null };
 }
 
-function search(input: Search, ctx: HandlerContext) {
+async function search(input: Search, ctx: HandlerContext) {
   checkRange(input.from, input.to);
   if (!input.query && !input.from && !input.to) {
     throw new ToolError("query_or_range_required", "search needs a query, a date range, or both.", 'Pass query, or from/to dates (YYYY-MM-DD) for "what did we do last week" questions.');
@@ -219,15 +233,28 @@ function search(input: Search, ctx: HandlerContext) {
       if (!fts) throw new ToolError("empty_query", "The query contains no searchable words.", 'Use distinctive words, or match "exact" for literal text.');
     }
     // Dates are the user's calendar days, applied in the query before any limit.
-    const hits = ctx.store.searchExchanges({
-      ...filter,
-      ...(fts ? { fts } : {}),
-      ...(input.query && match === "exact" ? { exact: input.query } : {}),
+    const dates = {
       ...(input.from ? { fromIso: zonedDayStart(input.from, ctx.timeZone).toISOString() } : {}),
       ...(input.to ? { beforeIso: zonedDayStart(nextDay(input.to), ctx.timeZone).toISOString() } : {}),
+    };
+    let hits: Hit[] = ctx.store.searchExchanges({
+      ...filter,
+      ...dates,
+      ...(fts ? { fts } : {}),
+      ...(input.query && match === "exact" ? { exact: input.query } : {}),
       limit: FROZEN_SET_LIMIT + 1,
     });
-    capped = hits.length > FROZEN_SET_LIMIT;
+    if (fts && ctx.semantic) {
+      // A meaning match on an exchange or on one of its tool calls finds the exchange.
+      const semantic = await ctx.semantic.search(input.query!, { kinds: ["exchange", "tool_call"], ...filter, limit: 50 }, ctx.signal);
+      const meaning = [...new Set(semantic.map((h) => h.turnId!))]
+        .map((id) => ctx.store.exchangeForTurn(id))
+        .filter((h): h is Hit => !!h && (!dates.fromIso || h.at >= dates.fromIso) && (!dates.beforeIso || h.at < dates.beforeIso));
+      const now = ctx.store.clock.now();
+      capped = hits.length > FROZEN_SET_LIMIT;
+      hits = fuse([hits.slice(0, FROZEN_SET_LIMIT), meaning], (h) => h.turnId, (h) => recencyBoost(h.at, now)).map((f) => f.item);
+    }
+    capped ||= hits.length > FROZEN_SET_LIMIT;
     items = hits.slice(0, FROZEN_SET_LIMIT);
   }
 
@@ -540,7 +567,7 @@ export const contextRetrieveTool: ToolHandler<ContextRetrieveInput> = {
   concurrency: "parallel",
   mutating: false,
   async execute(input, ctx) {
-    const result = enforceBounds(input.action === "ledger_search" ? ledgerSearch(input, ctx) : input.action === "search" ? search(input, ctx) : inspect(input, ctx));
+    const result = enforceBounds(input.action === "ledger_search" ? await ledgerSearch(input, ctx) : input.action === "search" ? await search(input, ctx) : inspect(input, ctx));
     return { content: json(result), result };
   },
 };

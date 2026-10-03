@@ -113,3 +113,14 @@ export class ModelError extends Error {
     this.name = "ModelError";
   }
 }
+
+/**
+ * One embedding model (agent-harness.md, "Embeddings"). Queries and stored
+ * documents are embedded separately because some models expect a different
+ * instruction prefix for each. Vectors are compared by cosine similarity.
+ */
+export interface EmbeddingClient {
+  /** Stable identity of the vector space, such as "ollama:embeddinggemma"; vectors of different ids never mix. */
+  readonly id: string;
+  embed(texts: string[], purpose: "query" | "document", signal?: AbortSignal): Promise<number[][]>;
+}

@@ -282,7 +282,7 @@ This section is assembled separately. It contains:
 2. up to three older goal candidates found by hybrid retrieval over every saved goal title, goal note, task continuation note, and lightweight anchor manifest. Each older candidate carries a small task index too: its most recently updated task, labelled `latest`, and up to two other open tasks. When fewer than three goals match the message, the remaining slots are filled with the goals most recently active in the last seven days, so vague temporal references ("the project from yesterday") still see them; and
 3. the general goal, labelled `general`, unless it is already the current goal.
 
-Hybrid retrieval combines the following; until the embeddings segment lands (`agent-harness.md`, "Implementation staging") it uses every signal except semantic similarity:
+Hybrid retrieval fuses the keyword and meaning rankings of goals (a goal ranks by its own best match or its best task's) and adds two small boosts (`agent-harness.md`, "Embeddings and hybrid retrieval"); without an embedding index it uses every signal except semantic similarity:
 
 - semantic/vector similarity;
 - BM25 or equivalent keyword matching; and
@@ -621,7 +621,7 @@ When the turn is bound to the `general` task, the working agent receives the sam
 
 After excluding turns already present in chat history, the backend performs hybrid retrieval over the selected task's older exchanges—those compacted into a checkpoint or held in an earlier chat of the task's continuation chain—and, when specifically relevant to the current request, over the ledger entries of other tasks in the same goal.
 
-Until the embeddings segment, the block is narrower: BM25 over the current task's exchanges that history no longer shows (covered by the active checkpoint or capsule, or omitted), filtered to the eligible older turn range before ranking or limiting, ranked against the current user message, at most three exchanges and `8,000` tokens in total, each with its `[TURN k]` label. Other tasks' entries wait for semantic retrieval, because keyword matching across tasks is too noisy. The block is omitted when nothing older matches.
+Concretely: the current task's exchanges that history no longer shows (covered by the active checkpoint or capsule, or omitted), filtered to the eligible older turn range before ranking or limiting, ranked by the fused keyword and meaning rankings against the current user message plus a small recency boost, at most three; and at most one exchange of another task in the same goal, on a meaning match at the `strong` floor only, because keyword matching across tasks is too noisy. A meaning match on one of a turn's tool calls finds that turn's exchange. Turns of the current message (other compound parts) are never retrieved, and the general goal takes no other task's history. Everything fits `8,000` tokens and is shown oldest first, each labelled `[TURN k — YYYY-MM-DD]` and, for another task, `(retrieved from task gN/tM "Title")`, so that when two exchanges disagree the later one is recognisable as current. Without an embedding index, the block is this task's keyword matches only. The block is omitted when nothing matches.
 
 Hybrid retrieval uses semantic similarity, BM25 or equivalent keyword matching, and recency. It first retrieves compact ledger entries or turn references, then expands only the exact source exchanges or evidence required for the current turn. A summary is never treated as a replacement for its exact source.
 

@@ -5,6 +5,7 @@ import type { FinalAnswer, ModelRequest, TextPart } from "@socrates/contracts";
 import { ScriptedModel, type ScriptedStep } from "@socrates/providers";
 import { fixedClock } from "@socrates/shared";
 import { LedgerStore } from "@socrates/store";
+import type { SemanticIndex } from "@socrates/retrieval";
 import type { ApprovalRequest, CapabilityCatalog, ShelfOptions } from "@socrates/tools";
 import { afterEach } from "vitest";
 import { type AgentLimits, type ContextBudgets, Socrates, type SocratesOptions } from "../src";
@@ -46,7 +47,7 @@ export interface World {
   socrates(
     router: ScriptedStep[],
     agent: ScriptedStep[],
-    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions },
+    options?: { limits?: Partial<AgentLimits>; approve?: boolean; now?: () => number; resolveWorkspace?: SocratesOptions["resolveWorkspace"]; budgets?: Partial<ContextBudgets>; compactor?: ScriptedStep[]; catalog?: CapabilityCatalog; shelf?: ShelfOptions; semantic?: SemanticIndex },
   ): { socrates: Socrates; routerModel: ScriptedModel; model: ScriptedModel; compactor: ScriptedModel };
 }
 
@@ -92,6 +93,7 @@ export async function world(options: { files?: Record<string, string>; workspace
         ...(o.budgets ? { budgets: o.budgets } : {}),
         ...(o.catalog ? { catalog: o.catalog } : {}),
         ...(o.shelf ? { shelf: o.shelf } : {}),
+        ...(o.semantic ? { semantic: o.semantic } : {}),
         compactorModel: compactor,
       });
       cleanups.push(() => socrates.close());

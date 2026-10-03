@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@socrates/contracts": "workspace:*",
+    "@socrates/retrieval": "workspace:*",
     "@socrates/shared": "workspace:*",
     "@socrates/store": "workspace:*",
     "@vscode/ripgrep": "^1.18.0",

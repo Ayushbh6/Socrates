@@ -1,3 +1,4 @@
+import { type SemanticHit, fuse } from "@socrates/retrieval";
 import type { LedgerStore } from "@socrates/store";
 import type { CapabilityCatalog, CatalogEntry } from "./catalog";
 import { mcpPublicName } from "./catalog";
@@ -114,26 +115,33 @@ function chunks(message: string): string[] {
 /**
  * `<CAPABILITY_CANDIDATES>`: at most one inactive, available Skill and one
  * inactive, available MCP tool that match the current message, each with a
- * run-scoped ref for capability_control. Each kind has its own threshold, so
- * neither can crowd out the other; a capability named exactly always
- * qualifies. Candidates are hints: nothing is activated. Null when none clears.
+ * run-scoped ref for capability_control. Each kind has its own keyword
+ * threshold, so neither can crowd out the other; a meaning match
+ * (`semantic`, already filtered to the suggest floor) also qualifies, and the
+ * keyword and meaning rankings are fused. A capability named exactly always
+ * wins. Candidates are hints: nothing is activated. Null when none clears.
  */
-export function capabilityCandidates(input: { store: LedgerStore; catalog: CapabilityCatalog; goalId: string; message: string; run: RunState }): string | null {
+export function capabilityCandidates(input: { store: LedgerStore; catalog: CapabilityCatalog; goalId: string; message: string; run: RunState; semantic?: SemanticHit[] }): string | null {
   const active = new Set(input.store.listActiveCapabilities(input.goalId).map((c) => c.name));
   const windows = chunks(input.message);
+  const meaning = (input.semantic ?? []).filter((h) => h.kind === "capability").map((h) => h.sourceId);
   const lines: string[] = [];
   for (const [kind, threshold] of [["skill", SKILL_CANDIDATE_THRESHOLD], ["mcp", MCP_CANDIDATE_THRESHOLD]] as const) {
-    let best: { entry: CatalogEntry; score: number; reason: string } | null = null;
-    for (const entry of input.catalog.entries()) {
-      if (entry.kind !== kind || entry.availability !== "available" || active.has(entry.name)) continue;
-      let candidate: { score: number; reason: string };
-      if (named(entry, input.message)) candidate = { score: Number.POSITIVE_INFINITY, reason: "named in the message" };
-      else {
-        const top = windows.map((w) => matchCapability(entry, w)).reduce((a, b) => (b.score > a.score ? b : a));
-        candidate = { score: top.score, reason: `matched: ${top.matched.slice(0, 4).join(", ")}` };
+    const entries = input.catalog.entries().filter((e) => e.kind === kind && e.availability === "available" && !active.has(e.name));
+    let best: { entry: CatalogEntry; reason: string } | null = null;
+    const exact = entries.filter((e) => named(e, input.message)).sort((a, b) => a.name.localeCompare(b.name))[0];
+    if (exact) best = { entry: exact, reason: "named in the message" };
+    else {
+      const lexical = entries
+        .map((entry) => ({ entry, top: windows.map((w) => matchCapability(entry, w)).reduce((a, b) => (b.score > a.score ? b : a)) }))
+        .filter((c) => c.top.score >= threshold)
+        .sort((a, b) => b.top.score - a.top.score || a.entry.name.localeCompare(b.entry.name));
+      const similar = meaning.map((name) => entries.find((e) => e.name === name)).filter((e): e is CatalogEntry => !!e);
+      const top = fuse([lexical.map((c) => c.entry), similar], (e) => e.name)[0]?.item;
+      if (top) {
+        const words = lexical.find((c) => c.entry === top)?.top.matched;
+        best = { entry: top, reason: words ? `matched: ${words.slice(0, 4).join(", ")}` : "similar in meaning" };
       }
-      if (candidate.score < threshold) continue;
-      if (!best || candidate.score > best.score || (candidate.score === best.score && entry.name.localeCompare(best.entry.name) < 0)) best = { entry, ...candidate };
     }
     if (!best) continue;
     const ref = input.run.issueRef("c", { kind: "capability", entryKind: kind, name: best.entry.name, goalId: input.goalId });

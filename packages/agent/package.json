@@ -9,6 +9,7 @@
   "dependencies": {
     "@socrates/contracts": "workspace:*",
     "@socrates/providers": "workspace:*",
+    "@socrates/retrieval": "workspace:*",
     "@socrates/router": "workspace:*",
     "@socrates/shared": "workspace:*",
     "@socrates/store": "workspace:*",
