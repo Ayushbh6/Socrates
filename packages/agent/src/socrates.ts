@@ -117,6 +117,13 @@ export interface LaneState extends Lane {
   running: boolean;
 }
 
+interface TaskLock {
+  laneId: string | null;
+  done: Promise<void>;
+  previous?: TaskLock;
+  cancelled?: boolean;
+}
+
 /**
  * One Socrates (agent-harness.md, "Exact per-turn lifecycle" and "Lanes"):
  * persist the message, route and bind it, then run the working agent once per
@@ -140,7 +147,9 @@ export class Socrates {
   /** Messages in progress per lane, including ones waiting for a task. */
   private readonly laneRuns = new Map<string, number>();
   /** The newest run queued on each task; its `done` settles after every earlier run on the task. */
-  private readonly taskLocks = new Map<string, { laneId: string | null; done: Promise<void> }>();
+  private readonly taskLocks = new Map<string, TaskLock>();
+  /** Whole messages queued per lane, including routing and compound parts. */
+  private readonly laneQueues = new Map<string, Promise<void>>();
   /** Runs in progress per goal; only the first resets the goal's capability cache. */
   private readonly goalRuns = new Map<string, number>();
   /** Each running turn's approval callback and lane. */
@@ -189,14 +198,28 @@ export class Socrates {
    */
   handle(message: string, options: HandleOptions = {}): Promise<HandleResult> {
     if (this.closed) return Promise.reject(new Error("Socrates is closed."));
+    if (options.signal?.aborted) return Promise.reject(options.signal.reason);
     let laneId: string | null;
     try {
       laneId = this.claim(options.lane);
     } catch (error) {
       return Promise.reject(error);
     }
-    if (laneId && options.lane === "new") options.onLane?.(laneId);
-    const run = this.handleIn(laneId, message, options);
+    let userEventId: string | undefined;
+    try {
+      if (laneId) userEventId = this.store.recordUserMessage(message, laneId).id;
+    } catch (error) {
+      if (laneId) this.leaveLane(laneId);
+      return Promise.reject(error);
+    }
+    const signal = AbortSignal.any([this.lifetime.signal, ...(options.signal ? [options.signal] : [])]);
+    const work = () => {
+      if (laneId && options.lane === "new") options.onLane?.(laneId);
+      return this.handleIn(laneId, message, options, userEventId);
+    };
+    const run = laneId
+      ? this.enqueueLane(laneId, work, signal).finally(() => this.leaveLane(laneId))
+      : work();
     this.inflight.add(run);
     void run.finally(() => this.inflight.delete(run)).catch(() => {});
     return run;
@@ -241,7 +264,26 @@ export class Socrates {
     else this.laneRuns.delete(laneId);
   }
 
-  private async handleIn(laneId: string | null, message: string, options: HandleOptions): Promise<HandleResult> {
+  /** Serialize a lane before routing as well as execution, preserving cancelled queue tails. */
+  private enqueueLane<T>(laneId: string, work: () => Promise<T>, signal: AbortSignal): Promise<T> {
+    const previous = this.laneQueues.get(laneId) ?? Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => mine);
+    this.laneQueues.set(laneId, tail);
+    return (async () => {
+      try {
+        await abortable(previous, signal);
+        signal.throwIfAborted();
+        return await work();
+      } finally {
+        release();
+        void tail.then(() => { if (this.laneQueues.get(laneId) === tail) this.laneQueues.delete(laneId); });
+      }
+    })();
+  }
+
+  private async handleIn(laneId: string | null, message: string, options: HandleOptions, userEventId?: string): Promise<HandleResult> {
     let holdsMain = laneId === null;
     const releaseMain = () => {
       if (!holdsMain) return;
@@ -256,11 +298,11 @@ export class Socrates {
       let acknowledgment: string | null = null;
       let setupError: { error: unknown } | null = null;
       if (laneId && target) {
-        const userEvent = this.store.recordUserMessage(message, laneId);
+        const userEvent = userEventId ? this.store.getEvent(userEventId)! : this.store.recordUserMessage(message, laneId);
         const turn = this.store.bindTurn({ userEventId: userEvent.id, taskId: target.task.id, route: "lane" });
         parts = [{ order: 1, request: message, dependsOn: [], turn, goal: target.goal, task: target.task, chat: this.store.currentChat(target.task.id), clarification: null, created: { goal: false, task: false } }];
       } else {
-        const routed = await this.router.route(message, signal, { laneId });
+        const routed = await this.router.route(message, signal, { laneId, userEventId });
         if (routed.kind === "clarify") return { kind: "clarify", text: routed.text, laneId };
         parts = routed.parts;
         acknowledgment = routed.acknowledgment;
@@ -276,7 +318,7 @@ export class Socrates {
         else {
           try {
             if (setupError) throw setupError.error;
-            results.push(await this.runLocked(part, parts, signal, options, laneId, releaseMain));
+            results.push(await this.runLocked(part, parts, signal, options, laneId, parts.length === 1 ? releaseMain : () => {}));
           } catch (error) {
             const cancelled = signal.aborted;
             const refs = { goal_id: part.goal.id, task_id: part.task.id, turn_id: part.turn.id, chat_id: part.turn.chatId };
@@ -298,7 +340,6 @@ export class Socrates {
       return { kind: "answered", text, acknowledgment, parts: results, laneId };
     } finally {
       releaseMain();
-      if (laneId) this.leaveLane(laneId);
       // Index what this message added, in the background; replies never wait for it.
       this.options.semantic?.scheduleSync();
     }
@@ -312,24 +353,30 @@ export class Socrates {
   private async runLocked(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions, channel: string | null, releaseMain: () => void): Promise<PartResult> {
     const taskId = part.task.id;
     const held = this.taskLocks.get(taskId);
-    let laneId = channel;
-    let handedOff = false;
+    const laneId = channel;
     if (channel === null && held?.laneId) {
-      laneId = held.laneId;
-      this.store.moveTurnToLane(part.turn.id, laneId);
-      this.enterLane(laneId);
-      handedOff = true;
+      const destination = held.laneId;
+      this.store.moveTurnToLane(part.turn.id, destination);
+      this.enterLane(destination);
       releaseMain();
-      options.onHandoff?.(laneId);
+      try {
+        options.onHandoff?.(destination);
+        // Do not reserve the task before the lane is available: its earlier
+        // queued messages may themselves need that task.
+        return await this.enqueueLane(destination, () => this.runLocked(part, parts, signal, options, destination, () => {}), signal);
+      } finally { this.leaveLane(destination); }
     }
     const previous = held?.done ?? Promise.resolve();
     let unlock!: () => void;
     const mine = new Promise<void>((done) => (unlock = done));
-    const entry = { laneId, done: previous.then(() => mine) };
+    const entry: TaskLock = { laneId, done: previous.then(() => mine), previous: held };
     this.taskLocks.set(taskId, entry);
     const goalId = part.goal.id;
+    let acquired = false;
     try {
       await abortable(previous, signal);
+      signal.throwIfAborted();
+      acquired = true;
       const fresh = !this.goalRuns.get(goalId);
       this.goalRuns.set(goalId, (this.goalRuns.get(goalId) ?? 0) + 1);
       this.approvers.set(part.turn.id, { approve: options.approve ?? this.options.approve, laneId });
@@ -343,8 +390,15 @@ export class Socrates {
       }
     } finally {
       unlock();
-      if (this.taskLocks.get(taskId) === entry) this.taskLocks.delete(taskId);
-      if (handedOff) this.leaveLane(laneId!);
+      if (!acquired) {
+        entry.cancelled = true;
+        let tail = this.taskLocks.get(taskId);
+        while (tail?.cancelled) tail = tail.previous;
+        if (tail) this.taskLocks.set(taskId, tail);
+        else this.taskLocks.delete(taskId);
+      }
+      // A cancelled waiter must not erase the still-running predecessor.
+      void entry.done.then(() => { if (this.taskLocks.get(taskId) === entry) this.taskLocks.delete(taskId); });
     }
   }
 

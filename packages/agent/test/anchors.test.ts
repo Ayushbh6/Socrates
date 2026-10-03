@@ -123,3 +123,24 @@ describe("anchor authority lifecycle", () => {
     expect(w.store.listAnchors(w.goalId)).toEqual([]);
   });
 });
+
+
+it("keeps a main anchor confirmation pending while another lane exchanges messages", async () => {
+  const w = await setup();
+  w.store.upsertAnchor({ goalId: w.goalId, path: "PLAN.md", role: "goal_plan", summary: "Plan", status: "active" });
+  const h = w.socrates([continueTask(), continueTask(), continueTask()], [final({ anchors: [proposal("NEW.md")] }), final(), final()]);
+  await h.socrates.handle("Consider a new plan");
+  await h.socrates.handle("Unrelated work", { lane: "new" });
+  await h.socrates.handle("Yes");
+  expect(w.store.listAnchors(w.goalId).find((a) => a.path === "NEW.md")?.status).toBe("active");
+});
+
+it("a yes in another lane cannot approve main's anchor replacement", async () => {
+  const w = await setup();
+  w.store.upsertAnchor({ goalId: w.goalId, path: "PLAN.md", role: "goal_plan", summary: "Plan", status: "active" });
+  const h = w.socrates([continueTask(), continueTask()], [final({ anchors: [proposal("NEW.md")] }), final()]);
+  await h.socrates.handle("Consider a new plan");
+  await h.socrates.handle("Yes", { lane: "new" });
+  expect(w.store.listAnchors(w.goalId).find((a) => a.path === "PLAN.md")?.status).toBe("active");
+  expect(w.store.listAnchors(w.goalId).find((a) => a.path === "NEW.md")).toBeUndefined();
+});

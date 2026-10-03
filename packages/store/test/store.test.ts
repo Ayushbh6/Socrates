@@ -482,3 +482,40 @@ describe("lanes", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+
+describe("handoff history boundaries", () => {
+  it("does not resurrect a clarification after its answer moves to a lane, including replay", () => {
+    const { store } = openStore();
+    const goal = store.createGoal({ title: "Shop" });
+    const task = store.createTask(goal.id, { title: "Checkout" });
+    const lane = store.openLane();
+    const question = store.recordClarification(store.recordUserMessage("Which?").id, "This one?");
+    const answer = store.bindTurn({ userEventId: store.recordUserMessage("Yes").id, taskId: task.id, route: "test", clarificationTurnId: question.id });
+    store.moveTurnToLane(answer.id, lane.id);
+    expect(store.pendingClarification()).toBeNull();
+    const replay = openStore().store;
+    replay.restoreEvents(store.listEvents());
+    expect(replay.pendingClarification()).toBeNull();
+    replay.close(); store.close();
+  });
+
+  it("filters compound responses and bindings to the requested conversation", () => {
+    const { store } = openStore();
+    const goal = store.createGoal({ title: "Shop" });
+    const first = store.createTask(goal.id, { title: "One" });
+    const second = store.createTask(goal.id, { title: "Two" });
+    const lane = store.openLane();
+    const user = store.recordUserMessage("Do both");
+    const a = store.bindTurn({ userEventId: user.id, taskId: first.id, route: "test", partOrder: 1 });
+    const b = store.bindTurn({ userEventId: user.id, taskId: second.id, route: "test", partOrder: 2 });
+    store.completeTurn(a.id, { responseEventId: store.recordResponse("MAIN ANSWER").id });
+    store.completeTurn(b.id, { responseEventId: store.recordResponse("LANE ANSWER").id });
+    store.moveTurnToLane(b.id, lane.id);
+    const main = [...store.recentExchanges()][0]!;
+    expect(main.response).toBe("MAIN ANSWER");
+    expect(main.bindings.map((b) => b.taskId)).toEqual([first.id]);
+    expect([...store.recentExchanges([lane.id])][0]!.response).toBe("LANE ANSWER");
+    store.close();
+  });
+});

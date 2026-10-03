@@ -456,7 +456,10 @@ export class LedgerStore {
   /** The conversation's latest turn when it is a clarification: the main conversation's, or a lane's. */
   pendingClarification(laneId: string | null = null): Turn | null {
     const r = this.get(`SELECT * FROM turns WHERE ${channel(laneId)} ORDER BY project_turn DESC LIMIT 1`, ...(laneId ? [laneId] : []));
-    return r && r.kind === "clarification" ? toTurn(r) : null;
+    if (!r || r.kind !== "clarification") return null;
+    // Its answering turn may now live in another lane after a handoff.
+    if (this.get("SELECT 1 FROM events WHERE type = 'turn_bound' AND json_extract(payload, '$.clarification_turn_id') = ? LIMIT 1", str(r.id))) return null;
+    return toTurn(r);
   }
 
   /** Exact request and clarification records for the worker handoff. */
@@ -1295,7 +1298,7 @@ export class LedgerStore {
         const userEventId = str(r.user_event_id);
         if (seen.has(userEventId)) continue;
         seen.add(userEventId);
-        const turns = this.turnsForUserEvent(userEventId);
+        const turns = this.turnsForUserEvent(userEventId).filter((turn) => lanes.includes(turn.laneId));
         // Compound parts may each have their own answer; the exchange shows them in part order.
         const responseIds = [...new Set(turns.map((t) => t.responseEventId).filter((id): id is string => id !== null))];
         const response = responseIds.length > 1

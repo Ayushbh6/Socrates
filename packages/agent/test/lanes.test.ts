@@ -267,3 +267,187 @@ describe("lanes", () => {
     rebuilt.close();
   });
 });
+
+
+describe("L1 lifecycle regressions", () => {
+  it("serializes messages arriving before a new lane finishes routing", async () => {
+    const w = await world();
+    const started = gate(), route = gate();
+    const router = new Responder("router", async () => { started.open(); await route.opened; return createTask("Lane task"); });
+    const agent = new Responder("agent", (m) => final({ full_answer: m }));
+    const s = socrates(w.store, router, agent);
+    let id = "";
+    const first = s.handle("First", { lane: "new", onLane: (lane) => { id = lane; } });
+    await started.opened;
+    const second = s.handle("Second", { lane: id });
+    expect(await settled(second)).toBe(false);
+    expect(router.requests).toHaveLength(1);
+    expect(w.store.listEvents({ type: "user_message" }).filter((e) => (e.payload as { text: string }).text === "Second")).toHaveLength(1);
+    route.open();
+    const [a, b] = await Promise.all([first, second]);
+    expect(router.requests).toHaveLength(1);
+    expect(a.kind === "answered" && b.kind === "answered" && a.parts[0]!.task.id === b.parts[0]!.task.id).toBe(true);
+    expect(contextText(agent.requests[1]!)).toContain("First");
+    await s.close();
+  });
+
+  it("cancelling a task waiter does not let another lane overlap its predecessor", async () => {
+    const w = await world();
+    const started = gate(), hold = gate();
+    const agent = new Responder("agent", async (m) => {
+      if (m === "First") { started.open(); await hold.opened; }
+      return final({ full_answer: m });
+    });
+    const s = socrates(w.store, new Responder("router", () => continueTask()), agent);
+    const first = s.handle("First", { lane: "new" });
+    await started.opened;
+    const controller = new AbortController();
+    const second = s.handle("Second", { lane: "new", signal: controller.signal });
+    expect(await settled(second)).toBe(false);
+    controller.abort();
+    expect(await second).toMatchObject({ kind: "answered", parts: [expect.objectContaining({ status: "interrupted" })] });
+    const third = s.handle("Third", { lane: "new" });
+    expect(await settled(third)).toBe(false);
+    expect(agent.requests.map(messageOf)).toEqual(["First"]);
+    hold.open();
+    await Promise.all([first, third]);
+    await s.close();
+  });
+
+  it("releases lane reservations when lifecycle callbacks throw", async () => {
+    const w = await world();
+    const started = gate(), hold = gate();
+    const s = socrates(w.store, new Responder("router", () => continueTask()), new Responder("agent", async (m) => {
+      if (m === "First") { started.open(); await hold.opened; }
+      return final();
+    }));
+    await expect(s.handle("Rejected", { lane: "new", onLane() { throw new Error("UI failed"); } })).rejects.toThrow("UI failed");
+    expect(s.lanes()[0]!.running).toBe(false);
+    s.closeLane(s.lanes()[0]!.id);
+    const first = s.handle("First", { lane: "new" });
+    await started.opened;
+    expect(await s.handle("Handed", { onHandoff() { throw new Error("UI failed"); } })).toMatchObject({ kind: "answered", parts: [expect.objectContaining({ status: "interrupted" })] });
+    hold.open();
+    await first;
+    expect(s.lanes().every((lane) => !lane.running)).toBe(true);
+    s.closeLane(s.lanes()[0]!.id);
+    await s.close();
+  });
+
+  it("close cancels even a router provider that ignores its signal", async () => {
+    const w = await world();
+    const started = gate();
+    const router: ModelClient = { id: "uncooperative", complete() { started.open(); return new Promise(() => {}); } };
+    const s = new Socrates({ store: w.store, model: new Responder("agent", () => final()), routerModel: router, timeZone: "UTC", approve: async () => true });
+    const run = s.handle("Work", { lane: "new" }).catch(() => null);
+    await started.opened;
+    await s.close();
+    await run;
+    expect(s.lanes()[0]!.running).toBe(false);
+    expect(w.store.listEvents({ type: "turn_bound" })).toHaveLength(1); // Only world's seed.
+  });
+
+  it("an already-cancelled message records no lane or user message", async () => {
+    const w = await world();
+    const s = socrates(w.store, new Responder("router", () => continueTask()), new Responder("agent", () => final()));
+    const before = w.store.latestEventSeq();
+    await expect(s.handle("Work", { lane: "new", signal: AbortSignal.abort() })).rejects.toBeDefined();
+    expect(w.store.latestEventSeq()).toBe(before);
+    await s.close();
+  });
+});
+
+
+it("a handoff waits behind the lane's queued follow-up without deadlocking", async () => {
+  const w = await world();
+  const started = gate(), hold = gate();
+  const agent = new Responder("agent", async (m) => {
+    if (m === "First") { started.open(); await hold.opened; }
+    return final({ full_answer: m });
+  });
+  const s = socrates(w.store, new Responder("router", () => continueTask()), agent);
+  const first = s.handle("First", { lane: "new" });
+  await started.opened;
+  const second = s.handle("Second", { lane: s.lanes()[0]!.id });
+  const third = s.handle("Third");
+  expect(await settled(third)).toBe(false);
+  expect(s.busy).toBe(false);
+  hold.open();
+  await Promise.all([first, second, third]);
+  expect(agent.requests.map(messageOf)).toEqual(["First", "Second", "Third"]);
+  await s.close();
+});
+
+
+it("cancels queued lane work promptly while retaining its single recorded message", async () => {
+  const w = await world();
+  const started = gate(), hold = gate();
+  const agent = new Responder("agent", async (m) => {
+    if (m === "First") { started.open(); await hold.opened; }
+    return final();
+  });
+  const s = socrates(w.store, new Responder("router", () => continueTask()), agent);
+  const first = s.handle("First", { lane: "new" });
+  await started.opened;
+  const stop = new AbortController();
+  const queued = s.handle("Queued", { lane: s.lanes()[0]!.id, signal: stop.signal });
+  const rejected = expect(queued).rejects.toBeDefined();
+  stop.abort();
+  await rejected;
+  expect(agent.requests.map(messageOf)).toEqual(["First"]);
+  expect(w.store.listEvents({ type: "user_message" }).filter((e) => (e.payload as { text: string }).text === "Queued")).toHaveLength(1);
+  hold.open(); await first; await s.close();
+});
+
+it("a cancelled waiter does not redirect handoffs into its now-closed lane", async () => {
+  const w = await world();
+  const started = gate(), hold = gate(), handed = gate();
+  const s = socrates(w.store, new Responder("router", () => continueTask()), new Responder("agent", async (m) => {
+    if (m === "First") { started.open(); await hold.opened; }
+    return final();
+  }));
+  const first = s.handle("First", { lane: "new" });
+  await started.opened;
+  const owner = s.lanes()[0]!.id;
+  const stop = new AbortController();
+  const waiting = s.handle("Wait", { lane: "new", signal: stop.signal });
+  expect(await settled(waiting)).toBe(false);
+  stop.abort();
+  const cancelled = await waiting;
+  s.closeLane(cancelled.laneId!);
+  let destination = "";
+  const main = s.handle("Main", { onHandoff(id) { destination = id; handed.open(); } });
+  await handed.opened;
+  expect(destination).toBe(owner);
+  hold.open();
+  await Promise.all([first, main]);
+  await s.close();
+});
+
+it("retains main's reservation while a compound message still has main work", async () => {
+  const w = await world();
+  const started = gate(), hold = gate(), handed = gate();
+  const text = "Fix the server, then write the docs.";
+  const part = (order: number, extra: object) => ({ order, request: order === 1 ? "Fix the server" : "write the docs", goal_label: "current", new_goal_title: null, task_label: null, new_task_title: null, workspace_confidence: "high", reason: "r", depends_on: order === 2 ? [1] : [], ...extra });
+  const router = new Responder("router", (m) => m === text ? { text: decision({ decision: "compound", workspace_confidence: null, parts: [
+    part(1, { decision: "continue_current", task_decision: "continue_task", task_label: "current" }),
+    part(2, { decision: "continue_current", task_decision: "create_task", new_task_title: "Write the docs", ...defineTask("Write the docs") }),
+  ] as never }) } : continueTask());
+  const agent = new Responder("agent", async (m) => {
+    if (m === "First") { started.open(); await hold.opened; }
+    return final();
+  });
+  const s = socrates(w.store, router, agent);
+  const first = s.handle("First", { lane: "new" });
+  await started.opened;
+  const main = s.handle(text, { onHandoff() { handed.open(); } });
+  await handed.opened;
+  expect(s.busy).toBe(true);
+  await expect(s.handle("Another main message")).rejects.toMatchObject({ reason: "main_busy" });
+  hold.open();
+  await first;
+  const result = await main;
+  expect(result.kind === "answered" && result.parts.map((p) => p.status)).toEqual(["completed", "completed"]);
+  expect(s.busy).toBe(false);
+  await s.close();
+});

@@ -55,12 +55,12 @@ export function applyAnchors(input: {
     if (parsed.success) candidates.push({ ...parsed.data, approved: true });
   }
   const history = store.listEvents({ goalId: goal.id });
-  const question = history.filter(e => e.type === "anchor_question").at(-1);
+  const question = history.filter(e => e.type === "anchor_question" && e.turn_id && store.getTurn(e.turn_id)?.laneId === turn.laneId).at(-1);
   if (question && question.seq < user.seq && !history.some(e => e.type === "anchor_decided" && (e.payload as EventPayloads["anchor_decided"]).question_id === question.id)) {
     // Bare yes/no applies only to the immediately preceding user exchange.
     // Intervening requests, including router clarification, expire the question.
-    const lastAnswer = store.listEvents({ type: "assistant_response" }).filter(e => e.seq < user.seq).at(-1);
-    const immediate = lastAnswer?.turn_id === question.turn_id && store.listEvents({ type: "user_message" }).filter(e => e.seq > question.seq && e.seq <= user.seq).length === 1;
+    const lastAnswer = store.listEvents({ type: "assistant_response" }).filter(e => e.seq < user.seq && e.turn_id && store.getTurn(e.turn_id)?.laneId === turn.laneId).at(-1);
+    const immediate = lastAnswer?.turn_id === question.turn_id && store.listEvents({ type: "user_message" }).filter(e => e.seq > question.seq && e.seq <= user.seq && (store.turnsForUserEvent(e.id).some(t => t.laneId === turn.laneId) || (!store.turnsForUserEvent(e.id).length && ((e.payload as EventPayloads["user_message"]).lane_id ?? null) === turn.laneId))).length === 1;
     const yes = immediate && /^(?:yes|yes,? please|approve|approved|confirm|confirmed|go ahead)[.!]?$/i.test(text);
     const no = immediate && /^(?:no|no thanks|reject|rejected|decline)[.!]?$/i.test(text);
     for (const p of (question.payload as EventPayloads["anchor_question"]).proposals) {

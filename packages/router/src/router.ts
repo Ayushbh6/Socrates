@@ -1,3 +1,4 @@
+import { abortable } from "@socrates/shared";
 import {
   type AskUserInput,
   LEDGER_QUERY_MAX_CALLS,
@@ -107,9 +108,11 @@ export class GoalRouter {
   }
 
   /** Persist the exact message, route it, and bind it. A lane's message is recorded in that lane. */
-  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null } = {}): Promise<RoutingResult> {
+  async route(message: string, signal?: AbortSignal, options: { laneId?: string | null; userEventId?: string } = {}): Promise<RoutingResult> {
+    signal?.throwIfAborted();
     const laneId = options.laneId ?? null;
-    const userEvent = this.store.recordUserMessage(message, laneId);
+    const userEvent = options.userEventId ? this.store.getEvent(options.userEventId) : this.store.recordUserMessage(message, laneId);
+    if (!userEvent || userEvent.type !== "user_message" || (userEvent.payload as { text: string }).text !== message || ((userEvent.payload as { lane_id?: string }).lane_id ?? null) !== laneId) throw new Error("The recorded message does not belong to this routing request.");
     const semantic = this.semantic ? await this.semantic.search(candidateQuery(this.store, message, laneId), { kinds: ["goal", "task"], limit: 30 }, signal) : [];
     const ctx = buildRoutingContext(this.store, message, {
       timeZone: this.timeZone,
@@ -143,6 +146,7 @@ export class GoalRouter {
     }
 
     const meta = { model: modelId, attempts, escalated, fallback, ledgerQueries: budget.ledgerQueries, errors: budget.errors };
+    signal?.throwIfAborted();
     if (final.kind === "clarify") return this.applyClarify(userEvent.id, final.ask, ctx, meta);
     return this.applyDecision(userEvent.id, final.route, ctx, meta);
   }
@@ -163,7 +167,8 @@ export class GoalRouter {
     for (let step = 0; step < this.maxSteps; step++) {
       let response: ModelResponse;
       try {
-        response = await model.complete({
+        signal?.throwIfAborted();
+        const completion = model.complete({
           system: ROUTER_SYSTEM_PROMPT,
           messages,
           tools,
@@ -171,9 +176,12 @@ export class GoalRouter {
           temperature: 0,
           ...(signal ? { signal } : {}),
         });
+        response = signal ? await abortable(completion, signal) : await completion;
+        signal?.throwIfAborted();
       } catch (error) {
         // A cancelled turn stops routing. Any other model failure is treated like an
         // invalid answer, so escalation and the fallback ladder still bind the message.
+        signal?.throwIfAborted();
         if (error instanceof ModelError && error.kind === "aborted") throw error;
         const failure = `${model.id} failed: ${error instanceof ModelError ? `${error.kind}${error.status ? ` (${error.status})` : ""}: ${error.message}` : "unexpected model failure"}`;
         budget.errors.push(failure);
