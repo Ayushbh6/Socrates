@@ -29,7 +29,7 @@ export interface SocratesOptions {
    * the agent asks where the work belongs.
    */
   resolveWorkspace?: (goal: Goal) => { name: string; rootPath: string } | null;
-  /** Installed Skills and MCP servers; the application opens and closes it. */
+  /** Installed Skills and MCP servers; the application opens it and Socrates.close closes it. */
   catalog?: CapabilityCatalog;
   /** The user's pinned and the deployment's default Skills, first on a new goal's shelf. */
   shelf?: ShelfOptions;
@@ -150,8 +150,10 @@ export class Socrates {
     }
   }
 
+  /** Stop terminals and every MCP server connection. */
   async close(): Promise<void> {
     await this.runner.close();
+    await this.runner.capabilities.catalog.close?.();
   }
 
   private async runPart(part: RoutedPart, parts: RoutedPart[], signal: AbortSignal, options: HandleOptions): Promise<PartResult> {

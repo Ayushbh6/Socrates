@@ -74,6 +74,8 @@ export interface CapabilityCatalog {
   callMcpTool(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<McpCallResult>;
   /** Pick up sources that changed since the catalog was opened, such as newly installed Skills. */
   refresh?(): Promise<void>;
+  /** Stop every connection the catalog opened; called when Socrates closes. */
+  close?(): Promise<void>;
 }
 
 /** A fixed in-memory catalog: the empty default, and the source used by tests. */

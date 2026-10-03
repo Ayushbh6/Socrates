@@ -3,8 +3,8 @@
  * stdio MCP server (the SDK-built tracker fixture). It covers the frozen Skill
  * shelf, per-turn candidates, activating and calling an MCP tool in the same
  * turn, following a Skill, approval once per MCP tool per goal, Skill
- * instructions carried once, restart with a fresh server process, and
- * event-only replay. Only synthetic fixture content reaches the provider. */
+ * instructions carried once, restart with a fresh server process, a server
+ * changing an active tool's schema, and event-only replay. Only synthetic fixture content reaches the provider. */
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -101,7 +101,7 @@ const everything = (r: ModelRequest) => r.messages.map((m) => (typeof m.content 
 async function run() {
   await open();
   const listed = catalog.entries().map((e) => e.name);
-  assert.deepEqual(listed, ["pdf", "release-notes", "tracker.note_add", "tracker.note_list", "tracker.reveal_extra", "tracker.ticket_get"]);
+  assert.deepEqual(listed, ["pdf", "release-notes", "tracker.migrate_ticket_schema", "tracker.note_add", "tracker.note_list", "tracker.reveal_extra", "tracker.ticket_get"]);
   console.log(`Live capabilities acceptance: ${main.id} (router ${routerModel.id}); catalog ${listed.join(", ")}`);
   console.log(`Workspace, Socrates home and database: ${dir}`);
 
@@ -157,7 +157,23 @@ async function run() {
   assert.match(fifth.result.text, /closed/i);
   passed("restart restores the active MCP tool with a fresh server process", short(fifth.result.text));
 
-  // 6. Event-only replay of every projection, including the active capability set.
+  // 6. The server changes an active tool's schema: the next request carries the replacement, recorded with its new digest.
+  const snapshots = store.listEvents({ type: "mcp_tools_listed" }).length;
+  await catalog.callMcpTool("tracker.migrate_ticket_schema", {}, new AbortController().signal);
+  for (let i = 0; i < 50 && store.listEvents({ type: "mcp_tools_listed" }).length === snapshots; i++) await new Promise((done) => setTimeout(done, 100));
+  assert(store.listEvents({ type: "mcp_tools_listed" }).length > snapshots, "the changed tool list was not recorded");
+  const digestBefore = store.listActiveCapabilities(goalId).find((c) => c.name === "tracker.ticket_get")!.digest;
+  const sixth = await ask("Check ticket 42 in the tracker again: is it still open, and who owns it?");
+  const migrated = sixth.made[0]!.tools!.find((t) => t.name === "mcp__tracker__ticket_get");
+  assert.deepEqual(Object.keys((migrated?.inputSchema.properties ?? {}) as object), ["ticket_id"], "the request must carry the replacement schema");
+  assert.notEqual(store.listActiveCapabilities(goalId).find((c) => c.name === "tracker.ticket_get")!.digest, digestBefore);
+  const sixthTurn = sixth.result.parts[0]!.turn;
+  const ticketCalls = store.evidenceForTurn(sixthTurn.id).filter((e) => e.tool === "mcp__tracker__ticket_get");
+  assert(ticketCalls.some((e) => e.status === "ok" && JSON.stringify(e.input).includes("ticket_id")), `calls: ${JSON.stringify(ticketCalls.map((e) => e.input))}`);
+  assert.match(sixth.result.text, /Mira/);
+  passed("a server's schema change reaches the agent as one replacement schema", `${ticketCalls.map((e) => JSON.stringify(e.input)).join(", ")}; ${short(sixth.result.text)}`);
+
+  // 7. Event-only replay of every projection, including the active capability set.
   const recovered = LedgerStore.open({ path: ":memory:" });
   recovered.restoreEvents(store.listEvents());
   for (const table of ["goals", "tasks", "chats", "turns", "evidence", "task_facts", "active_capabilities"]) {

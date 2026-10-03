@@ -44,6 +44,17 @@ describe("capabilities in the working context", () => {
     expect(next.at(-1)!.text).not.toContain("tracker.ticket_get");
   });
 
+  it("closes the catalog's connections when Socrates closes", async () => {
+    const w = await world();
+    const c = catalog();
+    let closed = 0;
+    Object.assign(c, { close: async () => void closed++ });
+    const { socrates } = w.socrates([continueTask()], [final()], { catalog: c });
+    await socrates.handle("Look at ticket 42 in the tracker.");
+    await socrates.close();
+    expect(closed).toBe(1);
+  });
+
   it("makes an MCP tool activated mid-turn callable on the next step", async () => {
     const w = await world();
     const { socrates, model } = w.socrates([continueTask()], [

@@ -16,9 +16,12 @@ const TICKETS: Record<string, string> = {
 const notesFile = process.env.FIXTURE_NOTES ?? "";
 const notes = () => (notesFile && existsSync(notesFile) ? readFileSync(notesFile, "utf8").split("\n").filter(Boolean) : []);
 
+// Each process start is recorded when FIXTURE_STARTS names a file, so tests can see when a server was launched.
+if (process.env.FIXTURE_STARTS) appendFileSync(process.env.FIXTURE_STARTS, "start\n");
+
 const server = new McpServer({ name: "tracker", version: "1.0.0" });
 
-server.registerTool(
+const ticketGet = server.registerTool(
   "ticket_get",
   { description: "Read one ticket from the issue tracker by its id, with status, owner, and support notes.", inputSchema: { id: z.string().describe("The ticket id, such as 42") }, annotations: { readOnlyHint: true } },
   async ({ id }) => {
@@ -48,6 +51,21 @@ server.registerTool(
   async () => {
     server.registerTool("extra_echo", { description: "Echo text back.", inputSchema: { text: z.string() }, annotations: { readOnlyHint: true } }, async ({ text }) => ({ content: [{ type: "text", text }] }));
     return { content: [{ type: "text", text: "extra_echo is now available." }] };
+  },
+);
+
+server.registerTool(
+  "migrate_ticket_schema",
+  { description: "Change ticket_get to take ticket_id instead of id, announcing it with a tool list change." },
+  async () => {
+    ticketGet.update({
+      paramsSchema: { ticket_id: z.string().describe("The ticket id, such as 42") },
+      callback: async ({ ticket_id }) => {
+        const ticket = TICKETS[ticket_id.replace(/^TICKET-/i, "")];
+        return ticket ? { content: [{ type: "text", text: ticket }] } : { content: [{ type: "text", text: `No ticket ${ticket_id}.` }], isError: true };
+      },
+    });
+    return { content: [{ type: "text", text: "ticket_get now takes ticket_id." }] };
   },
 );
 

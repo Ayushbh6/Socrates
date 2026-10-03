@@ -31,8 +31,10 @@ export interface InstalledCatalogOptions {
  * The installed capabilities (agent-harness.md, "Capability sources"): the
  * global Skills in `<home>/skills/` and the global MCP servers in
  * `<home>/mcp.json`. Sources are global because a goal need not have a
- * project folder. Opening connects every enabled server once; a server that
- * fails is retried on demand after a short back-off.
+ * project folder. Servers connect when first needed — activation or a call —
+ * and are reused; search reads the recorded tool lists and never connects.
+ * Opening connects only servers with no recorded list yet, so their tools
+ * can be found. A server that fails is retried after a short back-off.
  */
 export class InstalledCatalog implements CapabilityCatalog {
   private skills: InstalledSkill[] = [];
@@ -52,7 +54,8 @@ export class InstalledCatalog implements CapabilityCatalog {
   static async open(options: InstalledCatalogOptions): Promise<InstalledCatalog> {
     const catalog = new InstalledCatalog(options);
     await catalog.refresh();
-    await Promise.allSettled(catalog.servers.filter((s) => s.availability() === "available").map((s) => s.connect()));
+    const known = options.store.mcpToolSnapshots();
+    await Promise.allSettled(catalog.servers.filter((s) => !known.has(s.name) && s.availability() === "available").map((s) => s.connect()));
     return catalog;
   }
 

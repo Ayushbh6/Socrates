@@ -104,6 +104,24 @@ describe("mcp.json", () => {
 });
 
 describe("InstalledCatalog", () => {
+  it("connects a server when first needed: on open only while its tools are unknown, and closes it", { timeout: 30_000 }, async () => {
+    const dir = home();
+    const starts = path.join(dir, "starts.txt");
+    const count = () => readFileSync(starts, "utf8").split("\n").filter(Boolean).length;
+    writeFileSync(path.join(dir, "mcp.json"), mcpJson({ tracker: tracker(path.join(dir, "notes.txt"), { env: { FIXTURE_NOTES: path.join(dir, "notes.txt"), FIXTURE_STARTS: starts } }) }));
+    const s = store();
+    // Unknown tools: opening connects once so they can be found.
+    await (await open({ store: s, home: dir })).close();
+    expect(count()).toBe(1);
+    // Known tools: search works from the recorded list and nothing is launched until use.
+    const catalog = await open({ store: s, home: dir });
+    expect(catalog.entries().filter((e) => e.kind === "mcp")).toHaveLength(5);
+    expect(count()).toBe(1);
+    await catalog.loadMcpTool("tracker.ticket_get");
+    await catalog.loadMcpTool("tracker.note_add");
+    expect(count()).toBe(2);
+  });
+
   it("indexes a stdio server's tools/list as a snapshot and calls its tools", { timeout: 30_000 }, async () => {
     const dir = home({ "skills/release-notes/SKILL.md": SKILL });
     const notes = path.join(dir, "notes.txt");
@@ -114,6 +132,7 @@ describe("InstalledCatalog", () => {
     const entries = catalog.entries();
     expect(entries.map((e) => `${e.kind}:${e.name}:${e.availability}`)).toEqual([
       "skill:release-notes:available",
+      "mcp:tracker.migrate_ticket_schema:available",
       "mcp:tracker.note_add:available",
       "mcp:tracker.note_list:available",
       "mcp:tracker.reveal_extra:available",
@@ -151,6 +170,9 @@ describe("InstalledCatalog", () => {
     let now = 1_000_000;
     const logs: string[] = [];
     const catalog = await open({ store: s, home: dir, now: () => now, log: (m) => logs.push(m) });
+    // A recorded server is not connected on open; the first use tries and fails.
+    expect(new Set(catalog.entries().map((e) => e.availability))).toEqual(new Set(["available"]));
+    await expect(catalog.loadMcpTool("tracker.ticket_get")).rejects.toThrow();
     expect(new Set(catalog.entries().map((e) => e.availability))).toEqual(new Set(["offline"]));
     expect(logs.some((l) => l.includes("MCP server tracker: connection failed"))).toBe(true);
     await expect(catalog.loadMcpTool("tracker.ticket_get")).rejects.toThrow("offline");
@@ -177,6 +199,8 @@ describe("InstalledCatalog", () => {
     }));
     const logs: string[] = [];
     const catalog = await open({ store: s, home: dir, env: {}, log: (m) => logs.push(m) });
+    // Recorded servers connect on first use; the refused one learns it needs credentials then.
+    await expect(catalog.loadMcpTool("refused.get")).rejects.toThrow();
     expect(Object.fromEntries(catalog.entries().map((e) => [e.name, e.availability]))).toEqual({ "needs-env.get": "authentication_required", "refused.get": "authentication_required", "off.get": "disabled" });
     expect(logs).toContain("MCP server needs-env needs the environment variables SOCRATES_TEST_ABSENT_TOKEN.");
     expect(logs.join("\n")).not.toContain("wrong");
@@ -213,5 +237,34 @@ describe("InstalledCatalog", () => {
     const skill = (await call("capability_search", { query: "release-notes", kind: "skill" })).matches[0];
     expect(await call("capability_control", { action: "activate", ref: skill.ref })).toMatchObject({ status: "activated", instructions: "# Release notes\nStart with RELEASE NOTES.", dependencies: [{ kind: "mcp", name: "tracker.ticket_get", status: "active" }] });
     expect(runner.capabilities.current(goal.id)).toEqual({ skills: [{ name: "release-notes", instructions: "# Release notes\nStart with RELEASE NOTES." }], mcpTools: ["mcp__tracker__note_add", "mcp__tracker__ticket_get"] });
+  });
+});
+
+describe("MCP schema changes", () => {
+  it("replaces an active tool's schema after the server changes it, and never runs the old one", { timeout: 30_000 }, async () => {
+    const dir = home();
+    writeFileSync(path.join(dir, "mcp.json"), mcpJson({ tracker: tracker(path.join(dir, "notes.txt")) }));
+    const s = store();
+    const catalog = await open({ store: s, home: dir });
+    const runner = new ToolRunner({ store: s, timeZone: "UTC", catalog, approve: async () => true });
+    cleanups.push(() => runner.close());
+    const goal = s.createGoal({ title: "Tracker work", objective: "Handle tickets." });
+    const task = s.createTask(goal.id, { title: "Ticket 42", objective: "Fix it." });
+    const turn = s.bindTurn({ userEventId: s.recordUserMessage("Fix ticket 42").id, taskId: task.id, route: "continue_current", gateArmed: false, workspaceConfidence: "high" });
+    const scope = { binding: { goalId: goal.id, taskId: task.id, chatId: turn.chatId, turnId: turn.id }, workspace: null, run: new RunState(), signal: new AbortController().signal };
+    const ref = JSON.parse((await runner.run({ id: "s", name: "capability_search", input: { query: "tracker.ticket_get" } }, scope)).content).matches[0].ref;
+    await runner.run({ id: "a", name: "capability_control", input: { action: "activate", ref } }, scope);
+    const before = s.listActiveCapabilities(goal.id)[0]!.digest;
+
+    await catalog.callMcpTool("tracker.migrate_ticket_schema", {}, new AbortController().signal);
+    await expect.poll(() => s.listEvents({ type: "mcp_tools_listed" }).length, { timeout: 5_000 }).toBe(2);
+    // A call with the old schema fails closed instead of reaching the changed tool.
+    const stale = JSON.parse((await runner.run({ id: "c1", name: "mcp__tracker__ticket_get", input: { id: "42" } }, scope)).content);
+    expect(stale.error.code).toBe("tool_schema_changed");
+    // The next request carries the one replacement schema, recorded with its new digest.
+    const [definition] = await runner.mcpDefinitions(goal.id);
+    expect(Object.keys(definition!.inputSchema.properties as object)).toEqual(["ticket_id"]);
+    expect(s.listActiveCapabilities(goal.id)[0]!.digest).not.toBe(before);
+    expect((await runner.run({ id: "c2", name: "mcp__tracker__ticket_get", input: { ticket_id: "42" } }, scope)).content).toContain("lantern-7");
   });
 });
